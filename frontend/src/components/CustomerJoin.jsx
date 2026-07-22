@@ -5,6 +5,7 @@ function CustomerJoin({ API_BASE }) {
   const { businessSlug } = useParams()
   const [form, setForm] = useState({ name: '', phone: '', email: '' })
   const [submitted, setSubmitted] = useState(false)
+  const [customerId, setCustomerId] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
@@ -21,6 +22,7 @@ function CustomerJoin({ API_BASE }) {
       })
       const data = await res.json()
       if (res.ok) {
+        setCustomerId(data.public_id)
         setSubmitted(true)
       } else {
         setError(data.detail || 'Something went wrong')
@@ -43,7 +45,7 @@ function CustomerJoin({ API_BASE }) {
             <p style={styles.infoValue}>Show this QR code on every visit</p>
           </div>
           <button 
-            onClick={() => navigate(`/wallet/${businessSlug}`)}
+            onClick={() => navigate(`/wallet/${customerId}`)}
             style={styles.walletBtn}
           >
             📱 View My Digital Card
