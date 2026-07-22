@@ -508,6 +508,206 @@ def create_customer(public_id: str, request: CustomerSignupRequest, db: Session 
     db.refresh(customer)
     return customer
 
+@app.get("/api/v1/business/{public_id}/customers")
+def list_customers(public_id: str, db: Session = Depends(get_db)):
+    business = db.query(Business).filter(Business.public_id == public_id).first()
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    customers = db.query(Customer).filter(Customer.business_id == business.id).all()
+    program = business.loyalty_program
+
+    result = []
+    for c in customers:
+        confirmed_stamps = db.query(Stamp).filter(Stamp.customer_id == c.id, Stamp.status == StampStatus.CONFIRMED).count()
+        unlocked_rewards = db.query(Reward).filter(Reward.customer_id == c.id, Reward.status == RewardStatus.UNLOCKED).count()
+        result.append({
+            "id": c.id,
+            "public_id": c.public_id,
+            "name": c.name,
+            "phone": c.phone,
+            "stamp_count": confirmed_stamps,
+            "reward_threshold": program.stamp_goal if program else 8,
+            "reward_unlocked": unlocked_rewards > 0,
+            "created_at": c.created_at
+        })
+    return result
+
+@app.get("/api/v1/business/{public_id}/staff")
+def list_staff(public_id: str, db: Session = Depends(get_db)):
+    business = db.query(Business).filter(Business.public_id == public_id).first()
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    staff = db.query(Staff).filter(Staff.business_id == business.id).all()
+    return [{"id": s.id, "public_id": s.public_id, "name": s.name, "email": s.email, "role": s.role.value, "is_active": s.is_active} for s in staff]
+
+@app.get("/api/v1/business/{public_id}/stats")
+def get_business_stats(public_id: str, db: Session = Depends(get_db)):
+    business = db.query(Business).filter(Business.public_id == public_id).first()
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    total_customers = db.query(Customer).filter(Customer.business_id == business.id).count()
+    active_cards = total_customers  # All enrolled customers have active cards
+    stamps_issued = db.query(Stamp).filter(Stamp.business_id == business.id, Stamp.status == StampStatus.CONFIRMED).count()
+    rewards_redeemed = db.query(Reward).filter(Reward.business_id == business.id, Reward.status == RewardStatus.REDEEMED).count()
+
+    return {
+        "total_customers": total_customers,
+        "active_cards": active_cards,
+        "stamps_issued": stamps_issued,
+        "rewards_redeemed": rewards_redeemed
+    }
+
+@app.get("/api/v1/admin/businesses")
+def list_all_businesses(db: Session = Depends(get_db)):
+    businesses = db.query(Business).all()
+    result = []
+    for b in businesses:
+        customer_count = db.query(Customer).filter(Customer.business_id == b.id).count()
+        result.append({
+            "id": b.id,
+            "name": b.name,
+            "status": b.status.value,
+            "plan": b.plan,
+            "customer_count": customer_count
+        })
+    return result
+
+@app.get("/api/v1/admin/stats")
+def get_admin_stats(db: Session = Depends(get_db)):
+    total_businesses = db.query(Business).count()
+    total_customers = db.query(Customer).count()
+    total_stamps = db.query(Stamp).filter(Stamp.status == StampStatus.CONFIRMED).count()
+
+    return {
+        "total_businesses": total_businesses,
+        "total_customers": total_customers,
+        "total_stamps": total_stamps,
+        "revenue": 0  # Placeholder - implement billing later
+    }
+
+@app.get("/api/v1/customer/{customer_public_id}/profile")
+def get_customer_profile(customer_public_id: str, db: Session = Depends(get_db)):
+    customer = db.query(Customer).filter(Customer.public_id == customer_public_id).first()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    business = customer.business
+    program = business.loyalty_program if business else None
+    confirmed_stamps = db.query(Stamp).filter(Stamp.customer_id == customer.id, Stamp.status == StampStatus.CONFIRMED).count()
+    unlocked_rewards = db.query(Reward).filter(Reward.customer_id == customer.id, Reward.status == RewardStatus.UNLOCKED).count()
+
+    return {
+        "id": customer.id,
+        "public_id": customer.public_id,
+        "name": customer.name,
+        "phone": customer.phone,
+        "stamp_count": confirmed_stamps,
+        "reward_threshold": program.stamp_goal if program else 8,
+        "reward_unlocked": unlocked_rewards > 0
+    }
+
+@app.post("/api/v1/stamp/add")
+def add_stamp_api(request: dict, db: Session = Depends(get_db)):
+    customer = db.query(Customer).filter(Customer.id == request.get("customer_id")).first()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    business = customer.business
+    program = business.loyalty_program if business else None
+
+    existing_stamps = db.query(Stamp).filter(Stamp.customer_id == customer.id, Stamp.status == StampStatus.CONFIRMED).count()
+    stamp_number = existing_stamps + 1
+
+    stamp = Stamp(
+        business_id=business.id,
+        customer_id=customer.id,
+        stamp_number=stamp_number,
+        status=StampStatus.CONFIRMED,
+        transaction_id=request.get("transaction_id", ""),
+        transaction_amount_cents=int(request.get("amount", 0) * 100),
+        can_void_until=datetime.utcnow() + timedelta(hours=24)
+    )
+    db.add(stamp)
+    customer.total_stamps += 1
+    customer.last_visit_at = datetime.utcnow()
+
+    reward_unlocked = False
+    if program and stamp_number % program.stamp_goal == 0:
+        reward = Reward(
+            business_id=business.id,
+            customer_id=customer.id,
+            unlocked_by_stamp_ids=[stamp.id],
+            status=RewardStatus.UNLOCKED,
+            expires_at=datetime.utcnow() + timedelta(days=program.reward_expiry_days)
+        )
+        db.add(reward)
+        customer.total_rewards_earned += 1
+        reward_unlocked = True
+
+    db.commit()
+
+    return {
+        "stamp_public_id": stamp.public_id,
+        "stamps_current": customer.total_stamps,
+        "stamps_needed": program.stamp_goal if program else 8,
+        "reward_unlocked": reward_unlocked
+    }
+
+@app.post("/api/v1/reward/redeem")
+def redeem_reward_api(request: dict, db: Session = Depends(get_db)):
+    customer = db.query(Customer).filter(Customer.id == request.get("customer_id")).first()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    reward = db.query(Reward).filter(
+        Reward.customer_id == customer.id,
+        Reward.status == RewardStatus.UNLOCKED
+    ).first()
+
+    if not reward:
+        raise HTTPException(status_code=400, detail="No unlocked reward found")
+
+    reward.status = RewardStatus.REDEEMED
+    reward.redeemed_at = datetime.utcnow()
+    customer.total_rewards_redeemed += 1
+    db.commit()
+
+    return {
+        "stamps_remaining": customer.total_stamps,
+        "reward_redeemed": True
+    }
+
+@app.post("/api/v1/customer/join")
+def customer_join(request: dict, db: Session = Depends(get_db)):
+    business_slug = request.get("business_slug")
+    business = db.query(Business).filter(Business.public_id == business_slug).first()
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    existing = db.query(Customer).filter(Customer.business_id == business.id, Customer.phone == request.get("phone")).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Customer already enrolled")
+
+    customer = Customer(
+        business_id=business.id,
+        name=request.get("name"),
+        phone=request.get("phone"),
+        email=request.get("email"),
+        pass_serial_number=secrets.token_hex(16)
+    )
+    db.add(customer)
+    db.commit()
+    db.refresh(customer)
+
+    return {
+        "public_id": customer.public_id,
+        "name": customer.name,
+        "phone": customer.phone
+    }
+
 @app.get("/api/v1/business/{public_id}/customers/{customer_public_id}")
 def get_customer_card(public_id: str, customer_public_id: str, db: Session = Depends(get_db)):
     business = db.query(Business).filter(Business.public_id == public_id).first()
