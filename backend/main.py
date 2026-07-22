@@ -1142,13 +1142,32 @@ class GoogleWalletPass:
                 import json
                 key_data = json.loads(self.service_account_json)
                 raw_key = key_data.get("private_key", "")
-                # Convert JSON escaped newlines to actual newlines
-                self.private_key = raw_key.replace('\\n', '\n')
+
+                # Handle different escaping scenarios
+                # Case 1: Already has actual newlines (rare in env vars)
+                # Case 2: Has \n (double escaped from JSON string)
+                # Case 3: Has 
+ (single escaped, most common in env vars)
+                if "\n" in raw_key:
+                    self.private_key = raw_key.replace("\n", "
+")
+                elif "\n" in raw_key:
+                    self.private_key = raw_key.replace("\n", "
+")
+                else:
+                    self.private_key = raw_key
+
+                print(f"[WALLET DEBUG] Raw key first 100 chars: {repr(raw_key[:100])}")
+                print(f"[WALLET DEBUG] Processed key first 100 chars: {repr(self.private_key[:100])}")
+                print(f"[WALLET DEBUG] Key length: {len(self.private_key)}")
+                print(f"[WALLET DEBUG] Contains actual newlines: {'\n' in self.private_key}")
+
                 if not self.service_account_email:
                     self.service_account_email = key_data.get("client_email", "")
-                print(f"[WALLET DEBUG] Loaded key from JSON, length: {len(self.private_key)}")
             except Exception as e:
                 print(f"[WALLET DEBUG] Error parsing JSON key: {e}")
+                import traceback
+                traceback.print_exc()
                 self.private_key = ""
 
     def create_pass_class(self, business_name: str, program_name: str, primary_color: str = "#0d9488"):
@@ -1295,9 +1314,9 @@ class GoogleWalletPass:
             return None
 
         try:
-            # The private_key from JSON has \n which needs to be actual newlines
-            private_key_pem = self.private_key.replace('\\n', '\n')
-            print(f"[WALLET DEBUG] Private key formatted, length: {len(private_key_pem)}")
+            # Key is already processed in __init__, use directly
+            private_key_pem = self.private_key
+            print(f"[WALLET DEBUG] Using private key, length: {len(private_key_pem)}")
             print(f"[WALLET DEBUG] Key starts with: {private_key_pem[:50]}")
 
             claims = {
