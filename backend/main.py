@@ -201,6 +201,23 @@ class Reward(Base):
 
     customer = relationship("Customer", back_populates="rewards")
 
+class Announcement(Base):
+    __tablename__ = "announcements"
+
+    id = Column(Integer, primary_key=True)
+    business_id = Column(Integer, ForeignKey("businesses.id"))
+    title = Column(String(255), nullable=False)
+    message = Column(Text, nullable=False)
+    type = Column(String(50), default="info")  # info, promo, event, alert
+    is_active = Column(Boolean, default=True)
+    start_date = Column(DateTime, default=datetime.utcnow)
+    end_date = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_by = Column(Integer, ForeignKey("staff.id"))
+
+    business = relationship("Business", backref="announcements")
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 
@@ -312,6 +329,24 @@ class VoidStampRequest(BaseModel):
     stamp_public_id: str
     reason: str = Field(..., min_length=5)
     manager_pin: str
+
+class AnnouncementRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=255)
+    message: str = Field(..., min_length=1)
+    type: str = "info"
+    is_active: bool = True
+    end_date: Optional[str] = None
+
+class AnnouncementResponse(BaseModel):
+    id: int
+    title: str
+    message: str
+    type: str
+    is_active: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
 
 # ============================================================
 # FASTAPI APP
@@ -953,6 +988,82 @@ def customer_signup_page(business_public_id: str, db: Session = Depends(get_db))
     </html>
     """
     return HTMLResponse(content=html_content)
+
+
+@app.post("/api/v1/business/{public_id}/announcements")
+def create_announcement(public_id: str, request: AnnouncementRequest, db: Session = Depends(get_db)):
+    business = db.query(Business).filter(Business.public_id == public_id).first()
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    announcement = Announcement(
+        business_id=business.id,
+        title=request.title,
+        message=request.message,
+        type=request.type,
+        is_active=request.is_active,
+        end_date=datetime.fromisoformat(request.end_date) if request.end_date else None
+    )
+    db.add(announcement)
+    db.commit()
+    db.refresh(announcement)
+    return announcement
+
+@app.get("/api/v1/business/{public_id}/announcements")
+def list_announcements(public_id: str, db: Session = Depends(get_db)):
+    business = db.query(Business).filter(Business.public_id == public_id).first()
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    announcements = db.query(Announcement).filter(
+        Announcement.business_id == business.id,
+        Announcement.is_active == True
+    ).order_by(Announcement.created_at.desc()).all()
+
+    return announcements
+
+@app.put("/api/v1/business/{public_id}/announcements/{announcement_id}")
+def update_announcement(public_id: str, announcement_id: int, request: AnnouncementRequest, db: Session = Depends(get_db)):
+    business = db.query(Business).filter(Business.public_id == public_id).first()
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    announcement = db.query(Announcement).filter(
+        Announcement.id == announcement_id,
+        Announcement.business_id == business.id
+    ).first()
+
+    if not announcement:
+        raise HTTPException(status_code=404, detail="Announcement not found")
+
+    announcement.title = request.title
+    announcement.message = request.message
+    announcement.type = request.type
+    announcement.is_active = request.is_active
+    announcement.end_date = datetime.fromisoformat(request.end_date) if request.end_date else None
+    announcement.updated_at = datetime.utcnow()
+
+    db.commit()
+    db.refresh(announcement)
+    return announcement
+
+@app.delete("/api/v1/business/{public_id}/announcements/{announcement_id}")
+def delete_announcement(public_id: str, announcement_id: int, db: Session = Depends(get_db)):
+    business = db.query(Business).filter(Business.public_id == public_id).first()
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    announcement = db.query(Announcement).filter(
+        Announcement.id == announcement_id,
+        Announcement.business_id == business.id
+    ).first()
+
+    if not announcement:
+        raise HTTPException(status_code=404, detail="Announcement not found")
+
+    db.delete(announcement)
+    db.commit()
+    return {"status": "deleted"}
 
 # ============================================================
 # RUN

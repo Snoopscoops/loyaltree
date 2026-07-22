@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import LoyaltySettings from './LoyaltySettings'
+import Announcements from './Announcements'
 import { QRCodeSVG } from 'qrcode.react'
 import { Link } from 'react-router-dom'
 
@@ -11,6 +12,7 @@ function OwnerDashboard({ API_BASE, user }) {
   const [newStaff, setNewStaff] = useState({ name: '', email: '' })
   const [loading, setLoading] = useState(true)
   const [showSettings, setShowSettings] = useState(false)
+  const [showAnnouncements, setShowAnnouncements] = useState(false)
 
   useEffect(() => {
     fetchData()
@@ -67,6 +69,7 @@ function OwnerDashboard({ API_BASE, user }) {
             <span style={styles.brandText}>LoyaltyTree</span>
           </div>
           <div style={styles.user}>
+            <button onClick={() => setShowAnnouncements(true)} style={styles.settingsBtn}>📢 Announce</button>
             <button onClick={() => setShowSettings(true)} style={styles.settingsBtn}>⚙️ Settings</button>
             <span style={styles.userName}>{user.business_name}</span>
             <Link to="/" style={styles.logout} onClick={() => localStorage.clear()}>Logout</Link>
@@ -184,6 +187,14 @@ function OwnerDashboard({ API_BASE, user }) {
           businessSlug={user.business_slug}
           onClose={() => setShowSettings(false)}
           onSave={() => fetchData()}
+        />
+      )}
+
+      {showAnnouncements && (
+        <Announcements
+          API_BASE={API_BASE}
+          businessSlug={user.business_slug}
+          onClose={() => setShowAnnouncements(false)}
         />
       )}
     </div>
