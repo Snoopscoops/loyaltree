@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useNavigate } from 'react-router-dom'
 
 function CustomerJoin({ API_BASE }) {
   const { businessSlug } = useParams()
@@ -7,6 +7,7 @@ function CustomerJoin({ API_BASE }) {
   const [submitted, setSubmitted] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const navigate = useNavigate()
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -41,9 +42,14 @@ function CustomerJoin({ API_BASE }) {
             <p style={styles.infoLabel}>Your Member ID</p>
             <p style={styles.infoValue}>Show this QR code on every visit</p>
           </div>
+          <button 
+            onClick={() => navigate(`/wallet/${businessSlug}`)}
+            style={styles.walletBtn}
+          >
+            📱 View My Digital Card
+          </button>
           <p style={styles.hint}>
-            📱 Save this page or screenshot your member ID.<br/>
-            Wallet pass coming soon!
+            Save this to your phone or add to Google Wallet
           </p>
         </div>
       </div>
@@ -226,6 +232,19 @@ const styles = {
     fontSize: 13,
     color: '#64748b',
     lineHeight: 1.6,
+    marginTop: 16,
+  },
+  walletBtn: {
+    width: '100%',
+    padding: '16px',
+    background: 'linear-gradient(135deg, #0d9488, #0f766e)',
+    color: 'white',
+    border: 'none',
+    borderRadius: 12,
+    fontSize: 16,
+    fontWeight: 700,
+    cursor: 'pointer',
+    marginTop: 20,
   },
 }
 

@@ -20,6 +20,9 @@ import qrcode.image.svg
 from io import BytesIO
 import base64
 import os
+import json
+import jwt
+from datetime import datetime, timedelta
 
 # ============================================================
 # DATABASE SETUP (SQLite for quick start)
@@ -1064,6 +1067,239 @@ def delete_announcement(public_id: str, announcement_id: int, db: Session = Depe
     db.delete(announcement)
     db.commit()
     return {"status": "deleted"}
+
+
+# ============================================================
+# GOOGLE WALLET PASS
+# ============================================================
+
+class GoogleWalletPass:
+    def __init__(self):
+        self.issuer_id = os.getenv("GOOGLE_WALLET_ISSUER_ID", "")
+        self.class_id = os.getenv("GOOGLE_WALLET_CLASS_ID", "")
+        self.service_account_email = os.getenv("GOOGLE_WALLET_SERVICE_ACCOUNT", "")
+        self.service_account_file = os.getenv("GOOGLE_WALLET_KEY_FILE", "")
+
+    def create_pass_class(self, business_name: str, program_name: str, primary_color: str = "#0d9488"):
+        """Create a loyalty pass class for a business"""
+        pass_class = {
+            "id": f"{self.issuer_id}.{self.class_id}",
+            "issuerName": "LoyaltyTree",
+            "reviewStatus": "UNDER_REVIEW",
+            "programName": program_name,
+            "programLogo": {
+                "sourceUri": {
+                    "uri": "https://loyaltree-btw1.onrender.com/static/logo.png"
+                }
+            },
+            "hexBackgroundColor": primary_color,
+            "hexForegroundColor": "#FFFFFF",
+            "heroImage": {
+                "sourceUri": {
+                    "uri": "https://loyaltree-btw1.onrender.com/static/hero.png"
+                }
+            },
+            "localizedIssuerName": {
+                "defaultValue": {"language": "en", "value": business_name}
+            },
+            "localizedProgramName": {
+                "defaultValue": {"language": "en", "value": program_name}
+            },
+            "linksModuleData": {
+                "uris": [
+                    {
+                        "uri": "https://loyaltree-five.vercel.app",
+                        "description": "LoyaltyTree Dashboard",
+                        "id": "dashboard"
+                    }
+                ]
+            },
+            "messages": [],
+            "textModulesData": [
+                {
+                    "header": "Terms",
+                    "body": "Show this pass to earn stamps. Rewards expire if not redeemed within 30 days.",
+                    "id": "terms"
+                }
+            ],
+            "imageModulesData": [],
+            "infoModuleData": {
+                "labelValueRows": [
+                    {
+                        "columns": [
+                            {
+                                "label": "Business",
+                                "value": business_name
+                            }
+                        ]
+                    }
+                ],
+                "showLastUpdateTime": True
+            }
+        }
+        return pass_class
+
+    def create_pass_object(self, customer_id: str, customer_name: str, business_name: str, 
+                          stamps: int = 0, goal: int = 8, reward_unlocked: bool = False):
+        """Create a loyalty pass object for a customer"""
+        pass_object = {
+            "id": f"{self.issuer_id}.{customer_id}",
+            "classId": f"{self.issuer_id}.{self.class_id}",
+            "state": "ACTIVE",
+            "barcode": {
+                "type": "QR_CODE",
+                "value": customer_id,
+                "alternateText": customer_name
+            },
+            "loyaltyPoints": {
+                "balance": {
+                    "string": f"{stamps}/{goal}"
+                },
+                "label": "Stamps"
+            },
+            "accountId": customer_id,
+            "accountName": customer_name,
+            "textModulesData": [
+                {
+                    "header": "Progress",
+                    "body": f"{stamps} of {goal} stamps earned",
+                    "id": "progress"
+                },
+                {
+                    "header": "Status",
+                    "body": "🎉 Reward Unlocked!" if reward_unlocked else f"{goal - stamps} more to go!",
+                    "id": "status"
+                }
+            ],
+            "linksModuleData": {
+                "uris": [
+                    {
+                        "uri": f"https://loyaltree-five.vercel.app/join/{customer_id}",
+                        "description": "View Card",
+                        "id": "view"
+                    }
+                ]
+            },
+            "infoModuleData": {
+                "labelValueRows": [
+                    {
+                        "columns": [
+                            {
+                                "label": "Business",
+                                "value": business_name
+                            },
+                            {
+                                "label": "Member Since",
+                                "value": datetime.utcnow().strftime("%b %d, %Y")
+                            }
+                        ]
+                    }
+                ],
+                "showLastUpdateTime": True
+            },
+            "messages": [
+                {
+                    "header": "Welcome!",
+                    "body": f"Thanks for joining {business_name}'s rewards program!",
+                    "displayInterval": {
+                        "start": {"date": datetime.utcnow().isoformat()}
+                    },
+                    "id": "welcome"
+                }
+            ] if stamps == 0 else []
+        }
+        return pass_object
+
+    def generate_add_to_wallet_link(self, customer_id: str) -> str:
+        """Generate the 'Add to Google Wallet' link"""
+        # For now, return a JWT-signed link
+        # In production, this would be a proper Google Wallet JWT
+        pass_data = {
+            "iss": self.service_account_email,
+            "aud": "google",
+            "typ": "savetowallet",
+            "iat": int(datetime.utcnow().timestamp()),
+            "payload": {
+                "loyaltyObjects": [
+                    {
+                        "id": f"{self.issuer_id}.{customer_id}",
+                        "classId": f"{self.issuer_id}.{self.class_id}"
+                    }
+                ]
+            }
+        }
+        # Note: In production, sign with service account key
+        return f"https://pay.google.com/gp/v/save/{jwt.encode(pass_data, 'dummy-key', algorithm='RS256')}" if self.service_account_email else None
+
+
+@app.post("/api/v1/business/{public_id}/wallet-pass")
+def generate_wallet_pass(public_id: str, customer_public_id: str, db: Session = Depends(get_db)):
+    business = db.query(Business).filter(Business.public_id == public_id).first()
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    customer = db.query(Customer).filter(Customer.public_id == customer_public_id, Customer.business_id == business.id).first()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    program = business.loyalty_program
+    confirmed_stamps = db.query(Stamp).filter(Stamp.customer_id == customer.id, Stamp.status == StampStatus.CONFIRMED).count()
+    unlocked = db.query(Reward).filter(Reward.customer_id == customer.id, Reward.status == RewardStatus.UNLOCKED).count() > 0
+
+    wallet = GoogleWalletPass()
+
+    # Generate pass object
+    pass_obj = wallet.create_pass_object(
+        customer_id=customer.public_id,
+        customer_name=customer.name,
+        business_name=business.name,
+        stamps=confirmed_stamps,
+        goal=program.stamp_goal if program else 8,
+        reward_unlocked=unlocked
+    )
+
+    # Generate add to wallet link
+    wallet_link = wallet.generate_add_to_wallet_link(customer.public_id)
+
+    return {
+        "pass_object": pass_obj,
+        "add_to_wallet_url": wallet_link or f"https://loyaltree-five.vercel.app/wallet/{customer.public_id}",
+        "qr_code_data": customer.public_id,
+        "preview": {
+            "business_name": business.name,
+            "customer_name": customer.name,
+            "stamps": confirmed_stamps,
+            "goal": program.stamp_goal if program else 8,
+            "reward_unlocked": unlocked
+        }
+    }
+
+@app.get("/api/v1/customer/{customer_public_id}/wallet-pass")
+def get_customer_wallet_pass(customer_public_id: str, db: Session = Depends(get_db)):
+    customer = db.query(Customer).filter(Customer.public_id == customer_public_id).first()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    business = customer.business
+    program = business.loyalty_program
+    confirmed_stamps = db.query(Stamp).filter(Stamp.customer_id == customer.id, Stamp.status == StampStatus.CONFIRMED).count()
+    unlocked = db.query(Reward).filter(Reward.customer_id == customer.id, Reward.status == RewardStatus.UNLOCKED).count() > 0
+
+    wallet = GoogleWalletPass()
+
+    return {
+        "pass_data": {
+            "business_name": business.name,
+            "customer_name": customer.name,
+            "customer_id": customer.public_id,
+            "stamps": confirmed_stamps,
+            "goal": program.stamp_goal if program else 8,
+            "reward_unlocked": unlocked,
+            "primary_color": program.primary_color if program else "#0d9488",
+        },
+        "add_to_wallet_url": wallet.generate_add_to_wallet_link(customer.public_id) or f"https://loyaltree-five.vercel.app/wallet/{customer.public_id}",
+        "qr_code": customer.public_id
+    }
 
 # ============================================================
 # RUN
