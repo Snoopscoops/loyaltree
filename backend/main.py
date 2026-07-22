@@ -1,4 +1,3 @@
-
 # ============================================================
 # LOYALTYTREE BACKEND - main.py
 # ============================================================
@@ -21,17 +20,6 @@ import qrcode.image.svg
 from io import BytesIO
 import base64
 import os
-
-from fastapi.middleware.cors import CORSMiddleware
-
-# Add this right after you create your FastAPI app (the `app = FastAPI()` line)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["https://loyaltree-five.vercel.app"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # ============================================================
 # DATABASE SETUP (SQLite for quick start)
@@ -335,6 +323,7 @@ app = FastAPI(title="LoyaltyTree API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        "https://loyaltree-five.vercel.app",
         "https://loyaltree.vercel.app",
         "https://loyaltree-git-main.vercel.app",
         "http://localhost:3000",
