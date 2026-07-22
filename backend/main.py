@@ -1386,7 +1386,7 @@ def get_customer_wallet_pass(customer_public_id: str, db: Session = Depends(get_
             "reward_unlocked": unlocked,
             "primary_color": program.primary_color if program else "#0d9488",
         },
-        "add_to_wallet_url": wallet.generate_add_to_wallet_link(customer.public_id) or f"https://loyaltree-five.vercel.app/wallet/{customer.public_id}",
+        "add_to_wallet_url": wallet.generate_add_to_wallet_link(customer.public_id),
         "qr_code": customer.public_id
     }
 
