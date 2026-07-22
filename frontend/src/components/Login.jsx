@@ -1,9 +1,11 @@
 import React, { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 function Login({ API_BASE, setUser }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
+  const navigate = useNavigate()
 
   const handleLogin = async (e) => {
     e.preventDefault()
@@ -16,6 +18,14 @@ function Login({ API_BASE, setUser }) {
       const data = await res.json()
       if (res.ok) {
         setUser(data)
+        // Navigate based on role
+        if (data.role === 'admin') {
+          navigate('/admin')
+        } else if (data.role === 'owner') {
+          navigate('/owner')
+        } else if (data.role === 'cashier') {
+          navigate('/cashier')
+        }
       } else {
         setError(data.detail || 'Login failed')
       }
