@@ -1136,17 +1136,20 @@ class GoogleWalletPass:
         self.service_account_json = os.getenv("GOOGLE_WALLET_KEY_JSON", "")
 
         # Load key from JSON string if provided
+        self.private_key = ""
         if self.service_account_json:
             try:
                 import json
                 key_data = json.loads(self.service_account_json)
-                self.private_key = key_data.get("private_key", "")
+                raw_key = key_data.get("private_key", "")
+                # Convert JSON escaped newlines to actual newlines
+                self.private_key = raw_key.replace('\\n', '\n')
                 if not self.service_account_email:
                     self.service_account_email = key_data.get("client_email", "")
-            except:
+                print(f"[WALLET DEBUG] Loaded key from JSON, length: {len(self.private_key)}")
+            except Exception as e:
+                print(f"[WALLET DEBUG] Error parsing JSON key: {e}")
                 self.private_key = ""
-        else:
-            self.private_key = ""
 
     def create_pass_class(self, business_name: str, program_name: str, primary_color: str = "#0d9488"):
         """Create a loyalty pass class for a business"""
@@ -1280,6 +1283,7 @@ class GoogleWalletPass:
 
     def generate_add_to_wallet_link(self, customer_id: str) -> str:
         """Generate the 'Add to Google Wallet' link"""
+        print(f"[WALLET DEBUG] Starting link generation for customer: {customer_id}")
         print(f"[WALLET DEBUG] issuer_id: {self.issuer_id}")
         print(f"[WALLET DEBUG] class_id: {self.class_id}")
         print(f"[WALLET DEBUG] service_account: {self.service_account_email}")
@@ -1290,35 +1294,42 @@ class GoogleWalletPass:
             print("[WALLET DEBUG] Missing email or issuer_id")
             return None
 
-        claims = {
-            "iss": self.service_account_email,
-            "aud": "google",
-            "typ": "savetowallet",
-            "iat": int(datetime.utcnow().timestamp()),
-            "origins": ["https://loyaltree-five.vercel.app"],
-            "payload": {
-                "loyaltyClasses": [
-                    {
-                        "id": f"{self.issuer_id}.{self.class_id}"
-                    }
-                ],
-                "loyaltyObjects": [
-                    {
-                        "id": f"{self.issuer_id}.{customer_id}",
-                        "classId": f"{self.issuer_id}.{self.class_id}"
-                    }
-                ]
-            }
-        }
-
         try:
-            if self.private_key:
-                print(f"[WALLET DEBUG] Attempting JWT sign with key length: {len(self.private_key)}")
-                token = jwt.encode(claims, self.private_key, algorithm="RS256")
-                print(f"[WALLET DEBUG] JWT signed successfully! Token length: {len(token)}")
-                return f"https://pay.google.com/gp/v/save/{token}"
-            else:
-                print("[WALLET DEBUG] No private key available")
+            # The private_key from JSON has \n which needs to be actual newlines
+            private_key_pem = self.private_key.replace('\\n', '\n')
+            print(f"[WALLET DEBUG] Private key formatted, length: {len(private_key_pem)}")
+            print(f"[WALLET DEBUG] Key starts with: {private_key_pem[:50]}")
+
+            claims = {
+                "iss": self.service_account_email,
+                "aud": "google",
+                "typ": "savetowallet",
+                "iat": int(datetime.utcnow().timestamp()),
+                "exp": int(datetime.utcnow().timestamp()) + 3600,
+                "origins": ["https://loyaltree-five.vercel.app"],
+                "payload": {
+                    "loyaltyClasses": [
+                        {
+                            "id": f"{self.issuer_id}.{self.class_id}"
+                        }
+                    ],
+                    "loyaltyObjects": [
+                        {
+                            "id": f"{self.issuer_id}.{customer_id}",
+                            "classId": f"{self.issuer_id}.{self.class_id}"
+                        }
+                    ]
+                }
+            }
+
+            print(f"[WALLET DEBUG] Claims built. Encoding JWT...")
+            token = jwt.encode(claims, private_key_pem, algorithm="RS256")
+            print(f"[WALLET DEBUG] JWT encoded successfully! Token length: {len(token)}")
+
+            wallet_url = f"https://pay.google.com/gp/v/save/{token}"
+            print(f"[WALLET DEBUG] Wallet URL generated: {wallet_url[:80]}...")
+            return wallet_url
+
         except Exception as e:
             print(f"[WALLET DEBUG] JWT signing error: {e}")
             import traceback
