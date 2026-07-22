@@ -5,3 +5,4 @@ pydantic[email]
 python-multipart
 qrcode
 pillow
+psycopg2-binary
