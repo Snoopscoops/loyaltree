@@ -1143,23 +1143,15 @@ class GoogleWalletPass:
                 key_data = json.loads(self.service_account_json)
                 raw_key = key_data.get("private_key", "")
 
-                # Handle different escaping scenarios
-                # Case 1: Already has actual newlines (rare in env vars)
-                # Case 2: Has double escaped backslash-n
-                # Case 3: Has single escaped backslash-n (most common in env vars)
-                if "\\n" in raw_key:
-                    self.private_key = raw_key.replace("\\n", "
-")
-                elif "\n" in raw_key:
-                    self.private_key = raw_key.replace("\n", "
-")
-                else:
-                    self.private_key = raw_key
+                # Convert escaped newlines to actual newlines using chr(10)
+                self.private_key = raw_key
+                if "\\n" in self.private_key:
+                    self.private_key = self.private_key.replace("\\n", chr(10))
+                elif "\n" in self.private_key:
+                    self.private_key = self.private_key.replace("\n", chr(10))
 
-                print(f"[WALLET DEBUG] Raw key first 100 chars: {repr(raw_key[:100])}")
-                print(f"[WALLET DEBUG] Processed key first 100 chars: {repr(self.private_key[:100])}")
-                print(f"[WALLET DEBUG] Key length: {len(self.private_key)}")
-                print(f"[WALLET DEBUG] Contains actual newlines: {'\n' in self.private_key}")
+                print(f"[WALLET DEBUG] Loaded key from JSON, length: {len(self.private_key)}")
+                print(f"[WALLET DEBUG] Key starts with: {self.private_key[:30]}")
 
                 if not self.service_account_email:
                     self.service_account_email = key_data.get("client_email", "")
