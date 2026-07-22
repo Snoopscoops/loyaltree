@@ -1313,10 +1313,16 @@ class GoogleWalletPass:
 
         try:
             if self.private_key:
+                print(f"[WALLET DEBUG] Attempting JWT sign with key length: {len(self.private_key)}")
                 token = jwt.encode(claims, self.private_key, algorithm="RS256")
+                print(f"[WALLET DEBUG] JWT signed successfully! Token length: {len(token)}")
                 return f"https://pay.google.com/gp/v/save/{token}"
+            else:
+                print("[WALLET DEBUG] No private key available")
         except Exception as e:
-            print(f"JWT signing error: {e}")
+            print(f"[WALLET DEBUG] JWT signing error: {e}")
+            import traceback
+            traceback.print_exc()
 
         return None
 
