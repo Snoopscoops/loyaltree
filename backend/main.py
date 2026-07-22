@@ -1145,11 +1145,10 @@ class GoogleWalletPass:
 
                 # Handle different escaping scenarios
                 # Case 1: Already has actual newlines (rare in env vars)
-                # Case 2: Has \n (double escaped from JSON string)
-                # Case 3: Has 
- (single escaped, most common in env vars)
-                if "\n" in raw_key:
-                    self.private_key = raw_key.replace("\n", "
+                # Case 2: Has double escaped backslash-n
+                # Case 3: Has single escaped backslash-n (most common in env vars)
+                if "\\n" in raw_key:
+                    self.private_key = raw_key.replace("\\n", "
 ")
                 elif "\n" in raw_key:
                     self.private_key = raw_key.replace("\n", "
