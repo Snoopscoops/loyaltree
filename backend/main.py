@@ -1280,7 +1280,14 @@ class GoogleWalletPass:
 
     def generate_add_to_wallet_link(self, customer_id: str) -> str:
         """Generate the 'Add to Google Wallet' link"""
+        print(f"[WALLET DEBUG] issuer_id: {self.issuer_id}")
+        print(f"[WALLET DEBUG] class_id: {self.class_id}")
+        print(f"[WALLET DEBUG] service_account: {self.service_account_email}")
+        print(f"[WALLET DEBUG] has private_key: {bool(self.private_key)}")
+        print(f"[WALLET DEBUG] has json: {bool(self.service_account_json)}")
+
         if not self.service_account_email or not self.issuer_id:
+            print("[WALLET DEBUG] Missing email or issuer_id")
             return None
 
         claims = {
