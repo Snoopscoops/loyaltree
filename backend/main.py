@@ -349,6 +349,43 @@ def verify_password(password: str, hash: str) -> bool:
 # API ENDPOINTS
 # ============================================================
 
+# ============================================================
+# AUTH ENDPOINTS
+# ============================================================
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+@app.post("/api/v1/auth/login")
+def login(request: LoginRequest, db: Session = Depends(get_db)):
+    # Check business owner
+    business = db.query(Business).filter(Business.email == request.email).first()
+    if business and verify_password(request.password, business.password_hash):
+        return {
+            "token": secrets.token_hex(32),
+            "role": "owner",
+            "business_id": business.id,
+            "business_name": business.name,
+            "business_slug": business.public_id,
+            "email": business.email
+        }
+
+    # Check staff
+    staff = db.query(Staff).filter(Staff.email == request.email).first()
+    if staff and verify_password(request.password, staff.pin_hash):
+        business = db.query(Business).filter(Business.id == staff.business_id).first()
+        return {
+            "token": secrets.token_hex(32),
+            "role": staff.role.value,
+            "business_id": business.id,
+            "business_name": business.name,
+            "business_slug": business.public_id,
+            "email": staff.email
+        }
+
+    raise HTTPException(status_code=401, detail="Invalid email or password")
+
 @app.get("/")
 def root():
     return {"message": "LoyaltyTree API is running", "version": "1.0.0"}
