@@ -1390,6 +1390,19 @@ def get_customer_wallet_pass(customer_public_id: str, db: Session = Depends(get_
         "qr_code": customer.public_id
     }
 
+@app.get("/api/v1/debug/wallet-config")
+def debug_wallet_config():
+    wallet = GoogleWalletPass()
+    return {
+        "issuer_id": wallet.issuer_id,
+        "class_id": wallet.class_id,
+        "service_account": wallet.service_account_email,
+        "has_private_key": bool(wallet.private_key),
+        "private_key_length": len(wallet.private_key) if wallet.private_key else 0,
+        "has_json": bool(wallet.service_account_json),
+        "json_length": len(wallet.service_account_json) if wallet.service_account_json else 0,
+    }
+
 # ============================================================
 # RUN
 # ============================================================
