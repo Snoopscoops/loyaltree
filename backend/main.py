@@ -138,7 +138,7 @@ class Staff(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     business = relationship("Business", back_populates="staff")
-    stamps_issued = relationship("Stamp", back_populates="issued_by_staff")
+    stamps_issued = relationship("Stamp", foreign_keys="Stamp.staff_id", back_populates="issued_by_staff")
 
 class Customer(Base):
     __tablename__ = "customers"
