@@ -1,43 +1,38 @@
 import React, { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 
 function Signup({ API_BASE }) {
-  const [name, setName] = useState('')
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [phone, setPhone] = useState('')
-  const [businessType, setBusinessType] = useState('spa')
-  const [plan, setPlan] = useState('starter')
+  const [form, setForm] = useState({
+    name: '',
+    email: '',
+    password: '',
+    phone: '',
+    business_type: 'spa',
+    plan: 'starter'
+  })
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
 
+  const handleChange = (e) => {
+    setForm({ ...form, [e.target.name]: e.target.value })
+  }
+
   const handleSignup = async (e) => {
     e.preventDefault()
     setError('')
-    setSuccess('')
     setLoading(true)
-
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/signup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name,
-          email,
-          password,
-          phone,
-          business_type: businessType,
-          plan
-        })
+        body: JSON.stringify(form)
       })
       const data = await res.json()
       if (res.ok) {
-        setSuccess('Business registered successfully! Redirecting to login...')
-        setTimeout(() => {
-          navigate('/')
-        }, 2000)
+        setSuccess('Account created! Redirecting...')
+        setTimeout(() => navigate('/'), 2000)
       } else {
         setError(data.detail || 'Signup failed')
       }
@@ -49,88 +44,187 @@ function Signup({ API_BASE }) {
 
   if (success) {
     return (
-      <div style={{ maxWidth: 400, margin: '100px auto', padding: 30, textAlign: 'center' }}>
-        <h1 style={{ color: '#2d6a4f' }}>🎉 Success!</h1>
-        <p>{success}</p>
+      <div style={styles.page}>
+        <div style={styles.card}>
+          <div style={{ fontSize: 56, textAlign: 'center', marginBottom: 16 }}>🎉</div>
+          <h1 style={styles.title}>Welcome Aboard!</h1>
+          <p style={styles.subtitle}>{success}</p>
+        </div>
       </div>
     )
   }
 
   return (
-    <div style={{ maxWidth: 400, margin: '100px auto', padding: 30, border: '1px solid #ddd', borderRadius: 10 }}>
-      <h1 style={{ textAlign: 'center', color: '#2d6a4f' }}>🌳 LoyaltyTree</h1>
-      <h2 style={{ textAlign: 'center', color: '#666', fontSize: 18, marginBottom: 20 }}>Register Your Business</h2>
-      
-      <form onSubmit={handleSignup}>
-        <input
-          type="text"
-          placeholder="Business Name"
-          value={name}
-          onChange={e => setName(e.target.value)}
-          style={{ width: '100%', padding: 12, marginBottom: 10, borderRadius: 5, border: '1px solid #ccc' }}
-          required
-        />
-        <input
-          type="email"
-          placeholder="Business Email"
-          value={email}
-          onChange={e => setEmail(e.target.value)}
-          style={{ width: '100%', padding: 12, marginBottom: 10, borderRadius: 5, border: '1px solid #ccc' }}
-          required
-        />
-        <input
-          type="password"
-          placeholder="Password (min 8 characters)"
-          value={password}
-          onChange={e => setPassword(e.target.value)}
-          style={{ width: '100%', padding: 12, marginBottom: 10, borderRadius: 5, border: '1px solid #ccc' }}
-          required
-          minLength={8}
-        />
-        <input
-          type="tel"
-          placeholder="Phone Number"
-          value={phone}
-          onChange={e => setPhone(e.target.value)}
-          style={{ width: '100%', padding: 12, marginBottom: 10, borderRadius: 5, border: '1px solid #ccc' }}
-        />
-        <select
-          value={businessType}
-          onChange={e => setBusinessType(e.target.value)}
-          style={{ width: '100%', padding: 12, marginBottom: 10, borderRadius: 5, border: '1px solid #ccc' }}
-        >
-          <option value="spa">Spa / Wellness</option>
-          <option value="salon">Salon / Barber</option>
-          <option value="fitness">Fitness / Gym</option>
-          <option value="restaurant">Restaurant / Cafe</option>
-          <option value="retail">Retail Shop</option>
-          <option value="other">Other Service</option>
-        </select>
-        <select
-          value={plan}
-          onChange={e => setPlan(e.target.value)}
-          style={{ width: '100%', padding: 12, marginBottom: 10, borderRadius: 5, border: '1px solid #ccc' }}
-        >
-          <option value="starter">Starter - $29/mo</option>
-          <option value="growth">Growth - $79/mo</option>
-          <option value="pro">Pro - $199/mo</option>
-        </select>
-        <button 
-          type="submit" 
-          disabled={loading}
-          style={{ width: '100%', padding: 12, background: '#2d6a4f', color: 'white', border: 'none', borderRadius: 5, cursor: 'pointer' }}
-        >
-          {loading ? 'Creating Account...' : 'Create Business Account'}
-        </button>
-      </form>
-      
-      {error && <p style={{ color: 'red', textAlign: 'center', marginTop: 10 }}>{error}</p>}
-      
-      <p style={{ textAlign: 'center', marginTop: 15 }}>
-        Already have an account? <a href="/" style={{ color: '#2d6a4f' }}>Log In</a>
-      </p>
+    <div style={styles.page}>
+      <div style={styles.card}>
+        <div style={styles.logoBox}>
+          <span style={styles.logoIcon}>🌳</span>
+        </div>
+        <h1 style={styles.title}>Get Started</h1>
+        <p style={styles.subtitle}>Create your business account</p>
+
+        <form onSubmit={handleSignup} style={styles.form}>
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>Business Name</label>
+            <input name="name" value={form.name} onChange={handleChange} style={styles.input} placeholder="Serenity Spa" required />
+          </div>
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>Email</label>
+            <input name="email" type="email" value={form.email} onChange={handleChange} style={styles.input} placeholder="you@business.com" required />
+          </div>
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>Password</label>
+            <input name="password" type="password" value={form.password} onChange={handleChange} style={styles.input} placeholder="Min 8 characters" required minLength={8} />
+          </div>
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>Phone</label>
+            <input name="phone" value={form.phone} onChange={handleChange} style={styles.input} placeholder="+1 234 567 8900" />
+          </div>
+          <div style={styles.row}>
+            <div style={{ ...styles.inputGroup, flex: 1 }}>
+              <label style={styles.label}>Type</label>
+              <select name="business_type" value={form.business_type} onChange={handleChange} style={styles.select}>
+                <option value="spa">Spa</option>
+                <option value="salon">Salon</option>
+                <option value="fitness">Fitness</option>
+                <option value="restaurant">Restaurant</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+            <div style={{ ...styles.inputGroup, flex: 1 }}>
+              <label style={styles.label}>Plan</label>
+              <select name="plan" value={form.plan} onChange={handleChange} style={styles.select}>
+                <option value="starter">Starter $29</option>
+                <option value="growth">Growth $79</option>
+                <option value="pro">Pro $199</option>
+              </select>
+            </div>
+          </div>
+          <button type="submit" disabled={loading} style={styles.button}>
+            {loading ? 'Creating...' : 'Create Account'}
+          </button>
+        </form>
+
+        {error && <div style={styles.error}>{error}</div>}
+
+        <p style={styles.footer}>
+          Already have an account? <Link to="/" style={styles.link}>Sign in</Link>
+        </p>
+      </div>
     </div>
   )
+}
+
+const styles = {
+  page: {
+    minHeight: '100vh',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'linear-gradient(135deg, #0f766e 0%, #134e4a 50%, #0f172a 100%)',
+    padding: 20,
+  },
+  card: {
+    background: 'white',
+    borderRadius: 20,
+    padding: '48px 40px',
+    width: '100%',
+    maxWidth: 440,
+    boxShadow: '0 25px 50px -12px rgba(0,0,0,0.25)',
+  },
+  logoBox: {
+    width: 64,
+    height: 64,
+    background: 'linear-gradient(135deg, #0d9488, #0f766e)',
+    borderRadius: 16,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    margin: '0 auto 24px',
+  },
+  logoIcon: {
+    fontSize: 32,
+  },
+  title: {
+    textAlign: 'center',
+    color: '#0f172a',
+    fontSize: 28,
+    fontWeight: 700,
+    margin: '0 0 8px',
+    letterSpacing: '-0.5px',
+  },
+  subtitle: {
+    textAlign: 'center',
+    color: '#64748b',
+    fontSize: 15,
+    margin: '0 0 32px',
+  },
+  form: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 16,
+  },
+  inputGroup: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+  },
+  label: {
+    fontSize: 14,
+    fontWeight: 500,
+    color: '#334155',
+  },
+  input: {
+    padding: '12px 16px',
+    borderRadius: 10,
+    border: '1.5px solid #e2e8f0',
+    fontSize: 15,
+    outline: 'none',
+    fontFamily: 'inherit',
+  },
+  select: {
+    padding: '12px 16px',
+    borderRadius: 10,
+    border: '1.5px solid #e2e8f0',
+    fontSize: 15,
+    outline: 'none',
+    background: 'white',
+    fontFamily: 'inherit',
+  },
+  row: {
+    display: 'flex',
+    gap: 12,
+  },
+  button: {
+    padding: '14px',
+    background: 'linear-gradient(135deg, #0d9488, #0f766e)',
+    color: 'white',
+    border: 'none',
+    borderRadius: 10,
+    fontSize: 16,
+    fontWeight: 600,
+    cursor: 'pointer',
+    marginTop: 8,
+  },
+  error: {
+    padding: '12px 16px',
+    background: '#fef2f2',
+    color: '#dc2626',
+    borderRadius: 10,
+    fontSize: 14,
+    marginTop: 12,
+  },
+  footer: {
+    textAlign: 'center',
+    color: '#64748b',
+    fontSize: 14,
+    marginTop: 24,
+  },
+  link: {
+    color: '#0d9488',
+    fontWeight: 600,
+    textDecoration: 'none',
+  },
 }
 
 export default Signup
