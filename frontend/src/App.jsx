@@ -7,7 +7,7 @@ import CashierApp from './components/CashierApp'
 import CustomerJoin from './components/CustomerJoin'
 import WalletPass from './components/WalletPass'
 
-const API_BASE = 'https://loyaltree-api.onrender.com'
+const API_BASE = 'https://loyaltree-btw1.onrender.com'
 
 function App() {
   const [user, setUser] = useState(null)
