@@ -10,19 +10,19 @@ function OwnerDashboard({ API_BASE, user }) {
   const [newStaffName, setNewStaffName] = useState('')
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/v1/business/${user.business_id}/customers`, {
+    fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers`, {
       headers: { 'Authorization': `Bearer ${user.token}` }
     })
     .then(r => r.json())
     .then(setCustomers)
 
-    fetch(`${API_BASE}/api/v1/business/${user.business_id}/stats`, {
+    fetch(`${API_BASE}/api/v1/business/${user.business_slug}/stats`, {
       headers: { 'Authorization': `Bearer ${user.token}` }
     })
     .then(r => r.json())
     .then(setStats)
 
-    fetch(`${API_BASE}/api/v1/business/${user.business_id}/staff`, {
+    fetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff`, {
       headers: { 'Authorization': `Bearer ${user.token}` }
     })
     .then(r => r.json())
