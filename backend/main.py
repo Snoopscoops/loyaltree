@@ -1079,6 +1079,20 @@ class GoogleWalletPass:
         self.class_id = os.getenv("GOOGLE_WALLET_CLASS_ID", "")
         self.service_account_email = os.getenv("GOOGLE_WALLET_SERVICE_ACCOUNT", "")
         self.service_account_file = os.getenv("GOOGLE_WALLET_KEY_FILE", "")
+        self.service_account_json = os.getenv("GOOGLE_WALLET_KEY_JSON", "")
+
+        # Load key from JSON string if provided
+        if self.service_account_json:
+            try:
+                import json
+                key_data = json.loads(self.service_account_json)
+                self.private_key = key_data.get("private_key", "")
+                if not self.service_account_email:
+                    self.service_account_email = key_data.get("client_email", "")
+            except:
+                self.private_key = ""
+        else:
+            self.private_key = ""
 
     def create_pass_class(self, business_name: str, program_name: str, primary_color: str = "#0d9488"):
         """Create a loyalty pass class for a business"""
@@ -1212,14 +1226,21 @@ class GoogleWalletPass:
 
     def generate_add_to_wallet_link(self, customer_id: str) -> str:
         """Generate the 'Add to Google Wallet' link"""
-        # For now, return a JWT-signed link
-        # In production, this would be a proper Google Wallet JWT
-        pass_data = {
+        if not self.service_account_email or not self.issuer_id:
+            return None
+
+        claims = {
             "iss": self.service_account_email,
             "aud": "google",
             "typ": "savetowallet",
             "iat": int(datetime.utcnow().timestamp()),
+            "origins": ["https://loyaltree-five.vercel.app"],
             "payload": {
+                "loyaltyClasses": [
+                    {
+                        "id": f"{self.issuer_id}.{self.class_id}"
+                    }
+                ],
                 "loyaltyObjects": [
                     {
                         "id": f"{self.issuer_id}.{customer_id}",
@@ -1228,8 +1249,15 @@ class GoogleWalletPass:
                 ]
             }
         }
-        # Note: In production, sign with service account key
-        return f"https://pay.google.com/gp/v/save/{jwt.encode(pass_data, 'dummy-key', algorithm='RS256')}" if self.service_account_email else None
+
+        try:
+            if self.private_key:
+                token = jwt.encode(claims, self.private_key, algorithm="RS256")
+                return f"https://pay.google.com/gp/v/save/{token}"
+        except Exception as e:
+            print(f"JWT signing error: {e}")
+
+        return None
 
 
 @app.post("/api/v1/business/{public_id}/wallet-pass")
