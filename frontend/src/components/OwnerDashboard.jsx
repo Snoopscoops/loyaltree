@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import LoyaltySettings from './LoyaltySettings'
 import { QRCodeSVG } from 'qrcode.react'
 import { Link } from 'react-router-dom'
 
@@ -9,6 +10,7 @@ function OwnerDashboard({ API_BASE, user }) {
   const [showAddStaff, setShowAddStaff] = useState(false)
   const [newStaff, setNewStaff] = useState({ name: '', email: '' })
   const [loading, setLoading] = useState(true)
+  const [showSettings, setShowSettings] = useState(false)
 
   useEffect(() => {
     fetchData()
@@ -65,6 +67,7 @@ function OwnerDashboard({ API_BASE, user }) {
             <span style={styles.brandText}>LoyaltyTree</span>
           </div>
           <div style={styles.user}>
+            <button onClick={() => setShowSettings(true)} style={styles.settingsBtn}>⚙️ Settings</button>
             <span style={styles.userName}>{user.business_name}</span>
             <Link to="/" style={styles.logout} onClick={() => localStorage.clear()}>Logout</Link>
           </div>
@@ -174,6 +177,15 @@ function OwnerDashboard({ API_BASE, user }) {
           </div>
         </div>
       </div>
+
+      {showSettings && (
+        <LoyaltySettings
+          API_BASE={API_BASE}
+          businessSlug={user.business_slug}
+          onClose={() => setShowSettings(false)}
+          onSave={() => fetchData()}
+        />
+      )}
     </div>
   )
 }
@@ -238,6 +250,19 @@ const styles = {
     fontSize: 14,
     fontWeight: 500,
     textDecoration: 'none',
+  },
+  settingsBtn: {
+    padding: '8px 16px',
+    background: '#f1f5f9',
+    color: '#475569',
+    border: 'none',
+    borderRadius: 10,
+    fontSize: 14,
+    fontWeight: 500,
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
   },
   container: {
     maxWidth: 1200,

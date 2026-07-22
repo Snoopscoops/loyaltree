@@ -462,6 +462,60 @@ def invite_staff(public_id: str, request: StaffInviteRequest, db: Session = Depe
     db.refresh(staff)
     return staff
 
+@app.get("/api/v1/business/{public_id}/loyalty-config")
+def get_loyalty_config(public_id: str, db: Session = Depends(get_db)):
+    business = db.query(Business).filter(Business.public_id == public_id).first()
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    program = db.query(LoyaltyProgram).filter(LoyaltyProgram.business_id == business.id).first()
+    if not program:
+        raise HTTPException(status_code=404, detail="No loyalty program configured")
+
+    return {
+        "stamp_goal": program.stamp_goal,
+        "reward_name": program.reward_name,
+        "reward_description": program.reward_description,
+        "reward_value_cents": program.reward_value_cents,
+        "stamp_expiry_days": program.stamp_expiry_days,
+        "reward_expiry_days": program.reward_expiry_days,
+        "primary_color": program.primary_color,
+        "secondary_color": program.secondary_color,
+        "milestone_push": program.milestone_push,
+        "reward_unlocked_push": program.reward_unlocked_push,
+        "geofence_push": program.geofence_push,
+        "winback_push": program.winback_push,
+        "winback_days": program.winback_days,
+        "plan": business.plan,
+    }
+
+@app.post("/api/v1/business/{public_id}/loyalty-config")
+def update_loyalty_config(public_id: str, request: dict, db: Session = Depends(get_db)):
+    business = db.query(Business).filter(Business.public_id == public_id).first()
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    program = db.query(LoyaltyProgram).filter(LoyaltyProgram.business_id == business.id).first()
+    if not program:
+        program = LoyaltyProgram(business_id=business.id)
+        db.add(program)
+
+    # Update program fields
+    for field in ['stamp_goal', 'reward_name', 'reward_description', 'reward_value_cents',
+                  'stamp_expiry_days', 'reward_expiry_days', 'primary_color', 'secondary_color',
+                  'milestone_push', 'reward_unlocked_push', 'geofence_push', 'winback_push', 'winback_days']:
+        if field in request:
+            setattr(program, field, request[field])
+
+    # Update business plan if provided
+    if 'plan' in request:
+        business.plan = request['plan']
+
+    db.commit()
+    db.refresh(program)
+
+    return {"status": "saved", "program_id": program.id}
+
 @app.post("/api/v1/business/{public_id}/go-live")
 def go_live(public_id: str, db: Session = Depends(get_db)):
     business = db.query(Business).filter(Business.public_id == public_id).first()
