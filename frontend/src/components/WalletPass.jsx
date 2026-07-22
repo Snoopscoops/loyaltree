@@ -16,7 +16,11 @@ function WalletPass({ API_BASE }) {
       const res = await fetch(`${API_BASE}/api/v1/customer/${customerId}/wallet-pass`)
       if (res.ok) {
         const data = await res.json()
-        setPassData(data.pass_data)
+        setPassData({
+          ...data.pass_data,
+          add_to_wallet_url: data.add_to_wallet_url,
+          qr_code: data.qr_code
+        })
       } else {
         setError('Could not load pass')
       }
@@ -27,9 +31,19 @@ function WalletPass({ API_BASE }) {
   }
 
   const addToGoogleWallet = () => {
-    // In production, this would redirect to Google Wallet
-    // For demo, we'll show a mock
-    alert('In production, this would open Google Wallet to add your pass!')
+    // Check if we have a real Google Wallet URL
+    if (passData?.add_to_wallet_url && passData.add_to_wallet_url.includes('pay.google.com')) {
+      window.open(passData.add_to_wallet_url, '_blank')
+    } else {
+      // Fallback: show instructions to save the page
+      alert('Google Wallet integration is being set up. For now, please:
+
+1. Screenshot this card
+2. Or bookmark this page
+3. Or add to your home screen
+
+Your loyalty card works the same way!')
+    }
   }
 
   if (loading) {
