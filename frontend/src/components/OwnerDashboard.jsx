@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import LoyaltySettings from './LoyaltySettings'
 import Announcements from './Announcements'
+import EditCustomerModal from './EditCustomerModal'
 import { QRCodeSVG } from 'qrcode.react'
 import { Link } from 'react-router-dom'
 
@@ -13,6 +14,7 @@ function OwnerDashboard({ API_BASE, user }) {
   const [loading, setLoading] = useState(true)
   const [showSettings, setShowSettings] = useState(false)
   const [showAnnouncements, setShowAnnouncements] = useState(false)
+  const [editingCustomer, setEditingCustomer] = useState(null)
 
   useEffect(() => {
     fetchData()
@@ -152,6 +154,13 @@ function OwnerDashboard({ API_BASE, user }) {
                       <div style={styles.customerCell}>
                         <div style={styles.customerAvatar}>{c.name?.[0] || '?'}</div>
                         <span style={styles.customerName}>{c.name}</span>
+                        <button 
+                          onClick={() => setEditingCustomer(c)}
+                          style={styles.editBtn}
+                          title="Edit customer"
+                        >
+                          ✏️
+                        </button>
                       </div>
                     </td>
                     <td style={styles.td}>{c.phone}</td>
@@ -195,6 +204,16 @@ function OwnerDashboard({ API_BASE, user }) {
           API_BASE={API_BASE}
           businessSlug={user.business_slug}
           onClose={() => setShowAnnouncements(false)}
+        />
+      )}
+
+      {editingCustomer && (
+        <EditCustomerModal
+          API_BASE={API_BASE}
+          businessSlug={user.business_slug}
+          customer={editingCustomer}
+          onClose={() => setEditingCustomer(null)}
+          onSave={() => { setEditingCustomer(null); fetchData(); }}
         />
       )}
     </div>
@@ -501,6 +520,17 @@ const styles = {
   customerName: {
     fontWeight: 500,
     color: '#0f172a',
+    flex: 1,
+  },
+  editBtn: {
+    padding: '4px 8px',
+    background: 'transparent',
+    border: 'none',
+    borderRadius: 6,
+    cursor: 'pointer',
+    fontSize: 14,
+    opacity: 0.6,
+    transition: 'opacity 0.2s',
   },
   stampBar: {
     display: 'flex',

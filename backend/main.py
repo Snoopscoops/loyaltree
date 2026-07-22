@@ -625,6 +625,60 @@ def list_customers(public_id: str, db: Session = Depends(get_db)):
         })
     return result
 
+@app.put("/api/v1/business/{public_id}/customers/{customer_public_id}")
+def update_customer(public_id: str, customer_public_id: str, request: dict, db: Session = Depends(get_db)):
+    business = db.query(Business).filter(Business.public_id == public_id).first()
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    customer = db.query(Customer).filter(
+        Customer.public_id == customer_public_id,
+        Customer.business_id == business.id
+    ).first()
+
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    if 'name' in request:
+        customer.name = request['name']
+    if 'phone' in request:
+        customer.phone = request['phone']
+    if 'email' in request:
+        customer.email = request['email']
+
+    db.commit()
+    db.refresh(customer)
+
+    return {
+        "public_id": customer.public_id,
+        "name": customer.name,
+        "phone": customer.phone,
+        "email": customer.email,
+    }
+
+@app.delete("/api/v1/business/{public_id}/customers/{customer_public_id}")
+def delete_customer(public_id: str, customer_public_id: str, db: Session = Depends(get_db)):
+    business = db.query(Business).filter(Business.public_id == public_id).first()
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    customer = db.query(Customer).filter(
+        Customer.public_id == customer_public_id,
+        Customer.business_id == business.id
+    ).first()
+
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    # Delete associated stamps and rewards first
+    db.query(Stamp).filter(Stamp.customer_id == customer.id).delete()
+    db.query(Reward).filter(Reward.customer_id == customer.id).delete()
+
+    db.delete(customer)
+    db.commit()
+
+    return {"status": "deleted"}
+
 @app.get("/api/v1/business/{public_id}/staff")
 def list_staff(public_id: str, db: Session = Depends(get_db)):
     business = db.query(Business).filter(Business.public_id == public_id).first()
