@@ -59,6 +59,9 @@ function Login({ API_BASE, setUser }) {
         </button>
       </form>
       {error && <p style={{ color: 'red', textAlign: 'center' }}>{error}</p>}
+      <p style={{ textAlign: 'center', marginTop: 15 }}>
+        <a href="/signup" style={{ color: '#2d6a4f', textDecoration: 'none' }}>Create a new business account</a>
+      </p>
       <p style={{ textAlign: 'center', color: '#666', marginTop: 20, fontSize: 12 }}>
         Demo accounts:<br/>
         admin@loyaltree.com / admin123<br/>
