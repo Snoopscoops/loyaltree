@@ -117,11 +117,11 @@ function CashierApp({ API_BASE, user }) {
 
           <form onSubmit={addStamp}>
             <input
-              placeholder="Transaction ID (required)"
+              placeholder="Transaction ID"
               value={transactionId}
               onChange={e => setTransactionId(e.target.value)}
               style={{ width: '100%', padding: 12, marginBottom: 10, borderRadius: 5, border: '1px solid #ccc' }}
-              required
+            
             />
             <input
               placeholder="Amount ($)"
