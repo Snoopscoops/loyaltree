@@ -73,6 +73,9 @@ function OwnerDashboard({ API_BASE, user }) {
           <div style={styles.user}>
             <button onClick={() => setShowAnnouncements(true)} style={styles.settingsBtn}>📢 Announce</button>
             <button onClick={() => setShowSettings(true)} style={styles.settingsBtn}>⚙️ Settings</button>
+<button onClick={() => navigate('/analytics')} style={styles.navBtn}>
+  📊 Analytics
+</button>
             <span style={styles.userName}>{user.business_name}</span>
             <Link to="/" style={styles.logout} onClick={() => localStorage.clear()}>Logout</Link>
           </div>
