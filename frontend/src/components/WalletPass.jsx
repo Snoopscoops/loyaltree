@@ -44,7 +44,6 @@ function WalletPass({ API_BASE }) {
         // User cancelled
       }
     } else {
-      // Fallback: copy to clipboard
       navigator.clipboard.writeText(window.location.href)
       alert('Card link copied to clipboard!')
     }
@@ -103,7 +102,20 @@ function WalletPass({ API_BASE }) {
 
         <div style={styles.qrSection}>
           <p style={styles.qrLabel}>Show this QR code to cashier</p>
-          <div style={styles.qrCode}>{pass_data.qr_code}</div>
+          <div style={styles.qrWrapper}>
+            <img 
+              src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(pass_data.qr_code)}`}
+              alt="QR Code"
+              style={styles.qrImage}
+              onError={(e) => {
+                e.target.style.display = 'none'
+                e.target.nextSibling.style.display = 'flex'
+              }}
+            />
+            <div style={{...styles.qrFallback, display: 'none'}}>
+              <p style={{margin: 0, fontSize: 11}}>QR: {pass_data.qr_code}</p>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -253,14 +265,29 @@ const styles = {
     fontSize: 14,
     opacity: 0.9,
   },
-  qrCode: {
-    fontFamily: 'monospace',
-    fontSize: 12,
-    wordBreak: 'break-all',
+  qrWrapper: {
     background: 'white',
-    color: '#333',
-    padding: 10,
     borderRadius: 8,
+    padding: 10,
+    display: 'inline-block',
+  },
+  qrImage: {
+    width: 200,
+    height: 200,
+    display: 'block',
+  },
+  qrFallback: {
+    width: 200,
+    height: 200,
+    background: '#f0f0f0',
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    textAlign: 'center',
+    color: '#333',
+    wordBreak: 'break-all',
+    padding: 10,
+    boxSizing: 'border-box',
   },
   actions: {
     width: '100%',
