@@ -28,8 +28,25 @@ function WalletPass({ API_BASE }) {
     if (passData?.add_to_wallet_url && passData.add_to_wallet_url.includes('pay.google.com')) {
       window.open(passData.add_to_wallet_url, '_blank')
     } else {
-      // Fallback: show instructions to save the page
-      alert('Google Wallet integration is being set up. For now, please screenshot this card or bookmark this page for quick access!')
+      alert('Save this page to your home screen for quick access!')
+    }
+  }
+
+  const shareCard = async () => {
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: `${passData?.pass_data?.business_name} Loyalty Card`,
+          text: `My loyalty card for ${passData?.pass_data?.business_name}`,
+          url: window.location.href
+        })
+      } catch (err) {
+        // User cancelled
+      }
+    } else {
+      // Fallback: copy to clipboard
+      navigator.clipboard.writeText(window.location.href)
+      alert('Card link copied to clipboard!')
     }
   }
 
@@ -95,10 +112,13 @@ function WalletPass({ API_BASE }) {
           <span style={styles.googleIcon}>G</span>
           Add to Google Wallet
         </button>
-        <button style={{ ...styles.googleBtn, background: '#000', marginTop: 10 }}>
-          <span style={styles.googleIcon}>🍎</span>
-          Add to Apple Wallet
+        <button onClick={shareCard} style={{ ...styles.googleBtn, background: '#0d9488', marginTop: 10 }}>
+          <span style={styles.googleIcon}>🔗</span>
+          Share Card
         </button>
+        <p style={styles.note}>
+          💡 <strong>Tip:</strong> Screenshot this card or save this page to your home screen for quick access!
+        </p>
       </div>
     </div>
   )
@@ -263,6 +283,15 @@ const styles = {
   },
   googleIcon: {
     fontSize: 20,
+  },
+  note: {
+    marginTop: 15,
+    padding: 12,
+    background: '#e0f2fe',
+    borderRadius: 8,
+    fontSize: 13,
+    color: '#0369a1',
+    textAlign: 'center',
   },
 }
 
