@@ -21,7 +21,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [message, setMessage] = useState('')
 
   // Frontend URL for customer-facing pages
-  const FRONTEND_URL = 'https://loyaltree-app.onrender.com'
+  const FRONTEND_URL = 'https://loyaltree-btw1.onrender.com'
 
   useEffect(() => {
     if (!user?.business_slug) return
