@@ -183,7 +183,6 @@ def build_loyalty_class(business: dict, config: dict) -> dict:
         "id": class_id,
         "issuerName": business.get("name", "LoyaltyTree"),
         "programName": f"{business.get('name', 'Loyalty')} Rewards",
-        "reviewStatus": "UNDER_REVIEW",
         "hexBackgroundColor": primary_color.replace("#", ""),
         "heroImage": {
             "sourceUri": {
@@ -1097,6 +1096,35 @@ async def customer_wallet_page(customer_public_id: str):
 # ═════════════════════════════════════════════════════════════════════════════
 # GOOGLE WALLET PASS
 # ═════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/v1/wallet-diagnostic")
+async def wallet_diagnostic():
+    """Show current Google Wallet configuration status"""
+    creds = get_google_wallet_credentials()
+    class_id = f"{GOOGLE_WALLET_ISSUER_ID}.{GOOGLE_WALLET_CLASS_SUFFIX}" if GOOGLE_WALLET_ISSUER_ID and GOOGLE_WALLET_CLASS_SUFFIX else "NOT_SET"
+
+    return {
+        "configuration": {
+            "issuer_id_set": bool(GOOGLE_WALLET_ISSUER_ID),
+            "issuer_id": GOOGLE_WALLET_ISSUER_ID[:10] + "..." if GOOGLE_WALLET_ISSUER_ID else None,
+            "class_suffix_set": bool(GOOGLE_WALLET_CLASS_SUFFIX),
+            "class_suffix": GOOGLE_WALLET_CLASS_SUFFIX,
+            "full_class_id": class_id,
+            "credentials_loaded": bool(creds),
+            "credentials_has_private_key": bool(creds.get("private_key")) if creds else False,
+            "credentials_has_client_email": bool(creds.get("client_email")) if creds else False,
+            "project_id": creds.get("project_id") if creds else None,
+        },
+        "instructions": [
+            "1. Go to https://pay.google.com/business/console",
+            "2. Sign in with the Google account that owns your project",
+            "3. Click 'Loyalty' in the left sidebar",
+            "4. Create a new Loyalty program if none exists",
+            "5. The Class ID should match the 'full_class_id' above",
+            "6. If IDs don't match, update GOOGLE_WALLET_CLASS_SUFFIX in Render env vars",
+        ],
+        "expected_class_id_format": "{ISSUER_ID}.{CLASS_SUFFIX} (e.g., 3388000000022...abc.loyaltree)",
+    }
 
 @app.get("/api/v1/customer/{customer_public_id}/wallet-pass")
 async def get_wallet_pass(customer_public_id: str):
