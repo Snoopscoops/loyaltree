@@ -189,9 +189,18 @@ async def login(req: LoginRequest):
             if matched:
                 return {
                     "success": True,
+                    "token": "owner-token-" + business["public_id"],
                     "business_slug": business["public_id"],
                     "business_name": business["name"],
-                    "token": "owner-token-" + business["public_id"],
+                    "name": business["name"],
+                    "role": "owner",
+                    "user": {
+                        "business_slug": business["public_id"],
+                        "business_name": business["name"],
+                        "name": business["name"],
+                        "email": business["email"],
+                        "role": "owner",
+                    }
                 }
             else:
                 print(f"Login: password mismatch. Stored len={len(stored_pw)}, input hash={input_hash[:20]}...")
@@ -208,11 +217,19 @@ async def login(req: LoginRequest):
             if stored_pin == req.password or stored_pin == hash_password(req.password):
                 return {
                     "success": True,
+                    "token": "staff-token-" + staff["public_id"],
                     "business_slug": staff["businesses"]["public_id"] if staff.get("businesses") else "",
                     "business_name": staff["businesses"]["name"] if staff.get("businesses") else "",
+                    "name": staff["name"],
                     "staff_name": staff["name"],
                     "role": staff["role"],
-                    "token": "staff-token-" + staff["public_id"],
+                    "user": {
+                        "business_slug": staff["businesses"]["public_id"] if staff.get("businesses") else "",
+                        "business_name": staff["businesses"]["name"] if staff.get("businesses") else "",
+                        "name": staff["name"],
+                        "email": staff["email"],
+                        "role": staff["role"],
+                    }
                 }
     except Exception as e:
         print(f"Staff login error: {e}")
@@ -222,6 +239,50 @@ async def login(req: LoginRequest):
 # ═════════════════════════════════════════════════════════════════════════════
 # DEBUG ROUTE - Remove after fixing login
 # ═════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/v1/me")
+@app.get("/api/v1/auth/me")
+async def get_current_user(request: Request):
+    """Get current user from token header"""
+    auth_header = request.headers.get("authorization", "")
+    token = auth_header.replace("Bearer ", "").replace("bearer ", "") if auth_header else ""
+
+    if not token or not supabase:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    # Check if it's an owner token
+    if token.startswith("owner-token-"):
+        public_id = token.replace("owner-token-", "")
+        business = safe_get_business(public_id)
+        if business:
+            return {
+                "business_slug": business["public_id"],
+                "business_name": business["name"],
+                "name": business["name"],
+                "email": business["email"],
+                "role": "owner",
+            }
+
+    # Check if it's a staff token
+    if token.startswith("staff-token-"):
+        public_id = token.replace("staff-token-", "")
+        staff = safe_get_customer(public_id)  # This might not work - staff uses different table
+        # Actually staff public_id is in staff table, let's query properly
+        try:
+            res = supabase.table("staff").select("*,businesses(public_id,name)").eq("public_id", public_id).maybe_single().execute()
+            staff_data = res.data
+            if staff_data:
+                return {
+                    "business_slug": staff_data["businesses"]["public_id"] if staff_data.get("businesses") else "",
+                    "business_name": staff_data["businesses"]["name"] if staff_data.get("businesses") else "",
+                    "name": staff_data["name"],
+                    "email": staff_data["email"],
+                    "role": staff_data["role"],
+                }
+        except Exception:
+            pass
+
+    raise HTTPException(status_code=401, detail="Invalid token")
 
 @app.post("/api/v1/debug/login")
 async def debug_login(req: LoginRequest):
