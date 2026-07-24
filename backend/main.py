@@ -802,9 +802,19 @@ async def customer_join_page(business_public_id: str):
                                 🎫 Add to Google Wallet
                             </a>
 
-                            <button onclick="navigator.share({{title: 'My Loyalty Card', text: 'My card for ${business["name"]}', url: '${walletUrl}'}})" class="share-btn">
+                            <button onclick="shareCard()" class="share-btn">
                                 🔗 Share Card
                             </button>
+                            <script>
+                                function shareCard() {{
+                                    const walletUrl = `{BASE_URL}/wallet/` + data.public_id;
+                                    navigator.share({{
+                                        title: 'My Loyalty Card',
+                                        text: 'My card for {business["name"]}',
+                                        url: walletUrl
+                                    }});
+                                }}
+                            </script>
 
                             <p style="font-size: 12px; color: #94a3b8; margin-top: 16px;">
                                 Show this QR to your cashier on every visit to earn stamps.
@@ -997,7 +1007,7 @@ async def customer_wallet_page(customer_public_id: str):
                 🎫 Add to Google Wallet
             </a>
 
-            <button onclick="navigator.share({{title: 'My Loyalty Card', text: 'My card for {business["name"]}', url: window.location.href}})" class="share-btn">
+            <button onclick="navigator.share({title: 'My Loyalty Card', text: 'My card for {business["name"]}', url: window.location.href})" class="share-btn">
                 🔗 Share Card
             </button>
         </div>
