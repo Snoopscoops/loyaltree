@@ -12,6 +12,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [loading, setLoading] = useState(true)
   const [showInviteModal, setShowInviteModal] = useState(false)
   const [showConfigModal, setShowConfigModal] = useState(false)
+  const [showQRModal, setShowQRModal] = useState(false)
+  const [qrImageUrl, setQrImageUrl] = useState(null)
   const [inviteForm, setInviteForm] = useState({ name: '', email: '', phone: '', role: 'cashier' })
   const [configForm, setConfigForm] = useState({})
   const [message, setMessage] = useState('')
@@ -105,6 +107,95 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     } catch (err) {
       setMessage('Network error')
     }
+  }
+
+  // Convert SVG QR code to PNG for sharing
+  const fetchQRImage = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/qr-code`)
+      const data = await res.json()
+      if (data.qr_code) {
+        // Convert base64 SVG to a blob URL
+        const svgBase64 = data.qr_code.replace('data:image/svg+xml;base64,', '')
+        const svgString = atob(svgBase64)
+        const blob = new Blob([svgString], { type: 'image/svg+xml' })
+        const url = URL.createObjectURL(blob)
+        setQrImageUrl(url)
+        setShowQRModal(true)
+      }
+    } catch (err) {
+      setMessage('Could not load QR code')
+    }
+  }
+
+  // Share QR code image + text
+  const shareQR = async () => {
+    const joinUrl = `https://loyaltree-five.vercel.app/join/${user.business_slug}`
+    const shareText = `Join ${user?.business_name || 'our'} loyalty program! Scan the QR code or visit: ${joinUrl}`
+
+    try {
+      // Try to fetch the QR as a file for sharing
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/qr-code`)
+      const data = await res.json()
+
+      if (data.qr_code && navigator.canShare && navigator.canShare({ files: [] })) {
+        // Convert base64 to file
+        const svgBase64 = data.qr_code.replace('data:image/svg+xml;base64,', '')
+        const byteCharacters = atob(svgBase64)
+        const byteNumbers = new Array(byteCharacters.length)
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i)
+        }
+        const byteArray = new Uint8Array(byteNumbers)
+        const file = new File([byteArray], 'loyaltree-qr.svg', { type: 'image/svg+xml' })
+
+        await navigator.share({
+          title: `Join ${user?.business_name || 'Us'} Rewards`,
+          text: shareText,
+          url: joinUrl,
+          files: [file]
+        })
+      } else if (navigator.share) {
+        // Fallback: share text + URL only
+        await navigator.share({
+          title: `Join ${user?.business_name || 'Us'} Rewards`,
+          text: shareText,
+          url: joinUrl,
+        })
+      } else {
+        // Final fallback: copy to clipboard
+        await navigator.clipboard.writeText(`${shareText} ${joinUrl}`)
+        setMessage('Link copied to clipboard!')
+      }
+    } catch (err) {
+      console.error('Share error:', err)
+      // If user cancelled, don't show error
+      if (err.name !== 'AbortError') {
+        // Try simple share without files
+        try {
+          const joinUrl = `https://loyaltree-five.vercel.app/join/${user.business_slug}`
+          await navigator.share({
+            title: `Join ${user?.business_name || 'Us'} Rewards`,
+            text: `Get stamps and earn rewards!`,
+            url: joinUrl,
+          })
+        } catch (e2) {
+          await navigator.clipboard.writeText(joinUrl)
+          setMessage('Join link copied!')
+        }
+      }
+    }
+  }
+
+  // Download QR code
+  const downloadQR = () => {
+    if (!qrImageUrl) return
+    const link = document.createElement('a')
+    link.href = qrImageUrl
+    link.download = `${user?.business_name || 'business'}-qr-code.svg`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
   }
 
   if (loading) return (
@@ -228,7 +319,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 <h3>Grow Team</h3>
                 <p>Invite staff members</p>
               </div>
-              <div style={styles.actionCard} onClick={() => window.open(`${API_BASE}/api/v1/business/${user.business_slug}/qr-code`, '_blank')}>
+              <div style={styles.actionCard} onClick={fetchQRImage}>
                 <div style={styles.actionIcon}>🔗</div>
                 <h3>Share Tree</h3>
                 <p>Get join QR code</p>
@@ -342,6 +433,42 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           </div>
         )}
       </div>
+
+      {/* QR Code Modal */}
+      {showQRModal && (
+        <div style={styles.modalOverlay} onClick={() => setShowQRModal(false)}>
+          <div style={{...styles.modal, textAlign: 'center'}} onClick={e => e.stopPropagation()}>
+            <h3>🔗 Share Your Tree</h3>
+            <p style={{color: '#64748b', fontSize: 14, marginBottom: 16}}>
+              Customers scan this QR code to join your loyalty program
+            </p>
+            {qrImageUrl && (
+              <img 
+                src={qrImageUrl} 
+                alt="QR Code" 
+                style={{width: 200, height: 200, marginBottom: 16}} 
+              />
+            )}
+            <p style={{fontSize: 12, color: '#94a3b8', wordBreak: 'break-all', marginBottom: 16}}>
+              https://loyaltree-five.vercel.app/join/{user.business_slug}
+            </p>
+            <div style={{display: 'flex', gap: 12, justifyContent: 'center'}}>
+              <button onClick={shareQR} style={styles.submitBtn}>
+                📤 Share
+              </button>
+              <button onClick={downloadQR} style={{...styles.submitBtn, background: '#64748b'}}>
+                ⬇️ Download
+              </button>
+            </div>
+            <button 
+              onClick={() => setShowQRModal(false)} 
+              style={{...styles.submitBtn, background: 'transparent', color: '#64748b', marginTop: 8}}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Invite Modal */}
       {showInviteModal && (
