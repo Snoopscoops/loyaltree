@@ -614,7 +614,6 @@ async def customer_join_page(business_public_id: str):
         </div>
         """)
 
-    # ✅ FIXED: Case-insensitive status check for enum "ACTIVE"
     if business.get("status", "").upper() != "ACTIVE":
         return HTMLResponse("""
         <div style="text-align:center;padding:40px;font-family:sans-serif;">
@@ -628,209 +627,150 @@ async def customer_join_page(business_public_id: str):
     reward_name = program.get("reward_name", "Free Service") if program else "Free Service"
     stamp_goal = program.get("stamp_goal", 8) if program else 8
 
-    return HTMLResponse(f"""
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Join {business["name"]} Rewards</title>
-        <style>
-            * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-            body {{
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                background: linear-gradient(135deg, {primary_color} 0%, #1e293b 100%);
-                min-height: 100vh;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                padding: 20px;
-            }}
-            .card {{
-                background: white;
-                border-radius: 24px;
-                padding: 32px;
-                max-width: 400px;
-                width: 100%;
-                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-                text-align: center;
-            }}
-            .logo {{
-                width: 80px;
-                height: 80px;
-                border-radius: 20px;
-                background: linear-gradient(135deg, {primary_color} 0%, #14b8a6 100%);
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                margin: 0 auto 20px;
-                font-size: 36px;
-            }}
-            h1 {{ font-size: 24px; color: #1e293b; margin-bottom: 8px; }}
-            .subtitle {{ color: #64748b; margin-bottom: 24px; font-size: 14px; }}
-            .reward-preview {{
-                background: #f8fafc;
-                border-radius: 12px;
-                padding: 16px;
-                margin-bottom: 24px;
-            }}
-            .reward-preview h3 {{ color: {primary_color}; font-size: 16px; margin-bottom: 4px; }}
-            .reward-preview p {{ color: #64748b; font-size: 13px; }}
-            input {{
-                width: 100%;
-                padding: 14px 16px;
-                border: 2px solid #e2e8f0;
-                border-radius: 12px;
-                font-size: 16px;
-                margin-bottom: 12px;
-                outline: none;
-            }}
-            input:focus {{ border-color: {primary_color}; }}
-            button {{
-                width: 100%;
-                padding: 16px;
-                background: linear-gradient(135deg, {primary_color} 0%, #14b8a6 100%);
-                color: white;
-                border: none;
-                border-radius: 12px;
-                font-size: 16px;
-                font-weight: 700;
-                cursor: pointer;
-                margin-top: 8px;
-            }}
-            .success-qr {{
-                background: #f8fafc;
-                border-radius: 12px;
-                padding: 16px;
-                margin: 16px 0;
-            }}
-            .success-qr img {{
-                width: 160px;
-                height: 160px;
-                border-radius: 12px;
-            }}
-            .member-id {{
-                background: #f8fafc;
-                border-radius: 12px;
-                padding: 16px;
-                margin-bottom: 16px;
-            }}
-            .member-id p {{ margin: 0; font-weight: 600; color: #1e293b; }}
-            .member-id code {{
-                display: block;
-                margin-top: 8px;
-                font-family: monospace;
-                font-size: 14px;
-                color: #64748b;
-                word-break: break-all;
-            }}
-            .wallet-btn {{
-                display: block;
-                width: 100%;
-                padding: 14px;
-                background: #1a73e8;
-                color: white;
-                text-decoration: none;
-                border-radius: 10px;
-                font-weight: 600;
-                margin-bottom: 12px;
-                text-align: center;
-            }}
-            .share-btn {{
-                width: 100%;
-                padding: 14px;
-                background: #f0fdf4;
-                color: #0d9488;
-                border: 1px solid #a7f3d0;
-                border-radius: 10px;
-                font-weight: 600;
-                cursor: pointer;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="card" id="card">
-            <div class="logo">🌳</div>
-            <h1>{business["name"]}</h1>
-            <p class="subtitle">Join our loyalty program</p>
+    join_api_url = f"{BASE_URL}/api/v1/join/{business_public_id}"
+    wallet_base_url = f"{BASE_URL}/wallet/"
+    business_name_escaped = business["name"].replace("'", "\'")
 
-            <div class="reward-preview">
-                <h3>🎁 {reward_name}</h3>
-                <p>Collect {stamp_goal} stamps to unlock your reward</p>
-            </div>
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Join {business["name"]} Rewards</title>
+<style>
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+body {{
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: linear-gradient(135deg, {primary_color} 0%, #1e293b 100%);
+    min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    padding: 20px;
+}}
+.card {{
+    background: white; border-radius: 24px; padding: 32px; max-width: 400px; width: 100%;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.3); text-align: center;
+}}
+.logo {{
+    width: 80px; height: 80px; border-radius: 20px;
+    background: linear-gradient(135deg, {primary_color} 0%, #14b8a6 100%);
+    display: flex; align-items: center; justify-content: center;
+    margin: 0 auto 20px; font-size: 36px;
+}}
+h1 {{ font-size: 24px; color: #1e293b; margin-bottom: 8px; }}
+.subtitle {{ color: #64748b; margin-bottom: 24px; font-size: 14px; }}
+.reward-preview {{ background: #f8fafc; border-radius: 12px; padding: 16px; margin-bottom: 24px; }}
+.reward-preview h3 {{ color: {primary_color}; font-size: 16px; margin-bottom: 4px; }}
+.reward-preview p {{ color: #64748b; font-size: 13px; }}
+input {{
+    width: 100%; padding: 14px 16px; border: 2px solid #e2e8f0;
+    border-radius: 12px; font-size: 16px; margin-bottom: 12px; outline: none;
+}}
+input:focus {{ border-color: {primary_color}; }}
+button {{
+    width: 100%; padding: 16px;
+    background: linear-gradient(135deg, {primary_color} 0%, #14b8a6 100%);
+    color: white; border: none; border-radius: 12px;
+    font-size: 16px; font-weight: 700; cursor: pointer; margin-top: 8px;
+}}
+.success-qr {{ background: #f8fafc; border-radius: 12px; padding: 16px; margin: 16px 0; }}
+.success-qr img {{ width: 160px; height: 160px; border-radius: 12px; }}
+.member-id {{ background: #f8fafc; border-radius: 12px; padding: 16px; margin-bottom: 16px; }}
+.member-id p {{ margin: 0; font-weight: 600; color: #1e293b; }}
+.member-id code {{
+    display: block; margin-top: 8px; font-family: monospace;
+    font-size: 14px; color: #64748b; word-break: break-all;
+}}
+.wallet-btn {{
+    display: block; width: 100%; padding: 14px; background: #1a73e8;
+    color: white; text-decoration: none; border-radius: 10px;
+    font-weight: 600; margin-bottom: 12px; text-align: center;
+}}
+.share-btn {{
+    width: 100%; padding: 14px; background: #f0fdf4; color: #0d9488;
+    border: 1px solid #a7f3d0; border-radius: 10px;
+    font-weight: 600; cursor: pointer;
+}}
+</style>
+</head>
+<body>
+<div class="card" id="card">
+    <div class="logo">🌳</div>
+    <h1>{business["name"]}</h1>
+    <p class="subtitle">Join our loyalty program</p>
+    <div class="reward-preview">
+        <h3>🎁 {reward_name}</h3>
+        <p>Collect {stamp_goal} stamps to unlock your reward</p>
+    </div>
+    <form id="signupForm">
+        <input type="text" id="name" placeholder="Your name" required>
+        <input type="tel" id="phone" placeholder="Phone number" required>
+        <button type="submit">Join & Get Your Card 🌱</button>
+    </form>
+</div>
+<script>
+    const JOIN_API_URL = "{join_api_url}";
+    const WALLET_BASE_URL = "{wallet_base_url}";
+    const BUSINESS_NAME = "{business_name_escaped}";
 
-            <form id="signupForm">
-                <input type="text" id="name" placeholder="Your name" required>
-                <input type="tel" id="phone" placeholder="Phone number" required>
-                <button type="submit">Join & Get Your Card 🌱</button>
-            </form>
-        </div>
+    document.getElementById("signupForm").addEventListener("submit", async function(e) {{
+        e.preventDefault();
+        const name = document.getElementById("name").value;
+        const phone = document.getElementById("phone").value;
 
-        <script>
-            document.getElementById("signupForm").addEventListener("submit", async (e) => {{
-                e.preventDefault();
-                const name = document.getElementById("name").value;
-                const phone = document.getElementById("phone").value;
-
-                try {{
-                    const res = await fetch("{BASE_URL}/api/v1/join/{business_public_id}", {{
-                        method: "POST",
-                        headers: {{"Content-Type": "application/json"}},
-                        body: JSON.stringify({{name, phone}})
-                    }});
-                    const data = await res.json();
-
-                    if (res.ok) {{
-                        const walletUrl = `{BASE_URL}/wallet/${{data.public_id}}`;
-
-                        document.getElementById("card").innerHTML = `
-                            <div style="font-size: 48px; margin-bottom: 16px;">🎉</div>
-                            <h1>Welcome, ${{data.name}}!</h1>
-                            <p style="color: #64748b; margin-bottom: 24px;">Your loyalty card is ready</p>
-
-                            <div class="success-qr">
-                                <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${{data.public_id}}" alt="Your QR Code"/>
-                                <p style="font-size: 12px; color: #94a3b8; margin-top: 8px;">Scan at checkout</p>
-                            </div>
-
-                            <div class="member-id">
-                                <p>Your Member ID</p>
-                                <code>${{data.public_id}}</code>
-                            </div>
-
-                            <a href="https://pay.google.com/gp/v/save/${{data.public_id}}" class="wallet-btn">
-                                🎫 Add to Google Wallet
-                            </a>
-
-                            <button onclick="shareCard()" class="share-btn">
-                                🔗 Share Card
-                            </button>
-                            <script>
-                                function shareCard() {{
-                                    const walletUrl = `{BASE_URL}/wallet/` + data.public_id;
-                                    navigator.share({{
-                                        title: 'My Loyalty Card',
-                                        text: 'My card for {business["name"]}',
-                                        url: walletUrl
-                                    }});
-                                }}
-                            </script>
-
-                            <p style="font-size: 12px; color: #94a3b8; margin-top: 16px;">
-                                Show this QR to your cashier on every visit to earn stamps.
-                            </p>
-                        `;
-                    }} else {{
-                        alert(data.detail || "Signup failed");
-                    }}
-                }} catch (err) {{
-                    alert("Network error. Please try again.");
-                }}
+        try {{
+            const res = await fetch(JOIN_API_URL, {{
+                method: "POST",
+                headers: {{"Content-Type": "application/json"}},
+                body: JSON.stringify({{name: name, phone: phone}})
             }});
-        </script>
-    </body>
-    </html>
-    """)
+            const data = await res.json();
+
+            if (res.ok) {{
+                const walletUrl = WALLET_BASE_URL + data.public_id;
+                const card = document.getElementById("card");
+                card.innerHTML =
+                    '<div style="font-size: 48px; margin-bottom: 16px;">🎉</div>' +
+                    '<h1>Welcome, ' + escapeHtml(data.name) + '!</h1>' +
+                    '<p style="color: #64748b; margin-bottom: 24px;">Your loyalty card is ready</p>' +
+                    '<div class="success-qr">' +
+                    '<img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + data.public_id + '" alt="Your QR Code"/>' +
+                    '<p style="font-size: 12px; color: #94a3b8; margin-top: 8px;">Scan at checkout</p>' +
+                    '</div>' +
+                    '<div class="member-id">' +
+                    '<p>Your Member ID</p>' +
+                    '<code>' + data.public_id + '</code>' +
+                    '</div>' +
+                    '<a href="https://pay.google.com/gp/v/save/' + data.public_id + '" class="wallet-btn">🎫 Add to Google Wallet</a>' +
+                    '<button onclick="shareCard()" class="share-btn">🔗 Share Card</button>' +
+                    '<p style="font-size: 12px; color: #94a3b8; margin-top: 16px;">Show this QR to your cashier on every visit to earn stamps.</p>';
+
+                window._shareData = {{title: "My Loyalty Card", text: "My card for " + BUSINESS_NAME, url: walletUrl}};
+            }} else {{
+                alert(data.detail || "Signup failed");
+            }}
+        }} catch (err) {{
+            console.error(err);
+            alert("Network error. Please try again.");
+        }}
+    }});
+
+    function escapeHtml(text) {{
+        const div = document.createElement("div");
+        div.textContent = text;
+        return div.innerHTML;
+    }}
+
+    function shareCard() {{
+        if (navigator.share && window._shareData) {{
+            navigator.share(window._shareData);
+        }} else if (window._shareData) {{
+            navigator.clipboard.writeText(window._shareData.url);
+            alert("Link copied!");
+        }}
+    }}
+</script>
+</body>
+</html>"""
+    return HTMLResponse(html)
 
 @app.post("/api/v1/join/{business_public_id}")
 async def customer_signup(business_public_id: str, signup: CustomerSignup):
