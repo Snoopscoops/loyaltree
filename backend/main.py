@@ -5,9 +5,8 @@ import json
 import hashlib
 from datetime import datetime, timedelta
 from typing import Optional, List
-from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -41,6 +40,7 @@ class BusinessCreate(BaseModel):
     email: str
     phone: Optional[str] = None
     password: str
+    logo_url: Optional[str] = None
 
 class LoginRequest(BaseModel):
     email: str
@@ -59,6 +59,7 @@ class LoyaltyConfig(BaseModel):
     reward_expiry_days: int = Field(default=30, ge=1)
     program_logo_url: Optional[str] = None
     hero_image_url: Optional[str] = None
+    card_name: Optional[str] = None
 
 class CustomerSignup(BaseModel):
     name: str
@@ -207,15 +208,17 @@ def build_loyalty_class(business: dict, program: dict, review_status: str = "UND
     """Build the LoyaltyClass for a specific business"""
     class_id = program.get("google_wallet_class_id") if program else None
     if not class_id:
-        class_id = f"{GOOGLE_WALLET_ISSUER_ID}.{business['public_id']}"
+        class_id = f"{GOOGLE_WALLET_ISSUER_ID}.{business[chr(39)+'public_id'+chr(39)]}"
 
     primary_color = program.get("primary_color", "#3b82f6") if program else "#3b82f6"
     reward_name = program.get("reward_name", "Free Reward") if program else "Free Reward"
+    card_name = program.get("card_name") if program else None
+    program_name = card_name if card_name else f"{business.get(chr(39)+'name'+chr(39), 'Loyalty')} Rewards"
 
     loyalty_class = {
         "id": class_id,
         "issuerName": business.get("name", "LoyaltyTree"),
-        "programName": f"{business.get('name', 'Loyalty')} Rewards",
+        "programName": program_name,
         "reviewStatus": review_status,
         "hexBackgroundColor": primary_color.replace("#", ""),
         "textModulesData": [
@@ -224,7 +227,10 @@ def build_loyalty_class(business: dict, program: dict, review_status: str = "UND
         ]
     }
 
-    logo_url = program.get("program_logo_url") if program else None
+    # Use business logo if available, else program logo
+    logo_url = business.get("logo_url") if business else None
+    if not logo_url and program:
+        logo_url = program.get("program_logo_url")
     if logo_url:
         loyalty_class["programLogo"] = {
             "sourceUri": {"uri": logo_url}
@@ -241,9 +247,10 @@ def build_loyalty_class(business: dict, program: dict, review_status: str = "UND
 def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     """Build the LoyaltyObject for a specific customer"""
     class_id = program.get("google_wallet_class_id") if program else f"{GOOGLE_WALLET_ISSUER_ID}.{GOOGLE_WALLET_CLASS_SUFFIX}"
-    object_id = f"{GOOGLE_WALLET_ISSUER_ID}.{customer['public_id']}"
+    object_id = f"{GOOGLE_WALLET_ISSUER_ID}.{customer[chr(39)+'public_id'+chr(39)]}"
     stamp_goal = program.get("stamp_goal", 8) if program else 8
     reward_name = program.get("reward_name", "Free Reward") if program else "Free Reward"
+    card_name = program.get("card_name") if program else None
     stamps = customer.get("stamp_count", 0)
 
     return {
@@ -271,7 +278,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         "linksModuleData": {
             "uris": [
                 {
-                    "uri": f"{BASE_URL}/wallet/{customer['public_id']}",
+                    "uri": f"{BASE_URL}/wallet/{customer[chr(39)+'public_id'+chr(39)]}",
                     "description": "View Card Online"
                 }
             ]
@@ -349,12 +356,14 @@ async def login(req: LoginRequest):
                     "business_name": business["name"],
                     "name": business["name"],
                     "role": "owner",
+                    "logo_url": business.get("logo_url"),
                     "user": {
                         "business_slug": business["public_id"],
                         "business_name": business["name"],
                         "name": business["name"],
                         "email": business["email"],
                         "role": "owner",
+                        "logo_url": business.get("logo_url"),
                     }
                 }
             else:
@@ -364,25 +373,28 @@ async def login(req: LoginRequest):
 
     # Try to find staff by email
     try:
-        res = supabase.table("staff").select("*,businesses(public_id,name)").eq("email", req.email).maybe_single().execute()
+        res = supabase.table("staff").select("*,businesses(public_id,name,logo_url)").eq("email", req.email).maybe_single().execute()
         staff = res.data
         if staff:
             stored_pin = staff.get("pin", "")
             if stored_pin == req.password or stored_pin == hash_password(req.password):
+                biz = staff.get("businesses", {}) or {}
                 return {
                     "success": True,
                     "token": "staff-token-" + staff["public_id"],
-                    "business_slug": staff["businesses"]["public_id"] if staff.get("businesses") else "",
-                    "business_name": staff["businesses"]["name"] if staff.get("businesses") else "",
+                    "business_slug": biz.get("public_id", ""),
+                    "business_name": biz.get("name", ""),
                     "name": staff["name"],
                     "staff_name": staff["name"],
                     "role": staff["role"],
+                    "logo_url": biz.get("logo_url"),
                     "user": {
-                        "business_slug": staff["businesses"]["public_id"] if staff.get("businesses") else "",
-                        "business_name": staff["businesses"]["name"] if staff.get("businesses") else "",
+                        "business_slug": biz.get("public_id", ""),
+                        "business_name": biz.get("name", ""),
                         "name": staff["name"],
                         "email": staff["email"],
                         "role": staff["role"],
+                        "logo_url": biz.get("logo_url"),
                     }
                 }
     except Exception as e:
@@ -403,6 +415,7 @@ async def register(biz: BusinessCreate):
         "email": biz.email,
         "phone": biz.phone,
         "password": hash_password(biz.password),
+        "logo_url": biz.logo_url,
         "status": "PENDING",
         "created_at": datetime.utcnow().isoformat(),
     }
@@ -417,6 +430,7 @@ async def register(biz: BusinessCreate):
         "business_slug": public_id,
         "business_name": biz.name,
         "token": "owner-token-" + public_id,
+        "logo_url": biz.logo_url,
     }
 
 @app.get("/api/v1/me")
@@ -439,20 +453,23 @@ async def get_current_user(request: Request):
                 "name": business["name"],
                 "email": business["email"],
                 "role": "owner",
+                "logo_url": business.get("logo_url"),
             }
 
     if token.startswith("staff-token-"):
         public_id = token.replace("staff-token-", "")
         try:
-            res = supabase.table("staff").select("*,businesses(public_id,name)").eq("public_id", public_id).maybe_single().execute()
+            res = supabase.table("staff").select("*,businesses(public_id,name,logo_url)").eq("public_id", public_id).maybe_single().execute()
             staff_data = res.data
             if staff_data:
+                biz = staff_data.get("businesses", {}) or {}
                 return {
-                    "business_slug": staff_data["businesses"]["public_id"] if staff_data.get("businesses") else "",
-                    "business_name": staff_data["businesses"]["name"] if staff_data.get("businesses") else "",
+                    "business_slug": biz.get("public_id", ""),
+                    "business_name": biz.get("name", ""),
                     "name": staff_data["name"],
                     "email": staff_data["email"],
                     "role": staff_data["role"],
+                    "logo_url": biz.get("logo_url"),
                 }
         except Exception:
             pass
@@ -469,6 +486,27 @@ async def get_business_api(public_id: str):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
     return business
+
+@app.get("/api/v1/customer/{public_id}")
+async def get_customer_api(public_id: str):
+    """Lookup customer by public_id (for scanner apps)"""
+    customer = safe_get_customer(public_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    business = safe_get_business_by_id(customer.get("business_id"))
+    program = safe_get_loyalty_program(customer.get("business_id")) if business else None
+
+    return {
+        "customer": customer,
+        "business": {
+            "id": business["id"] if business else None,
+            "public_id": business["public_id"] if business else None,
+            "name": business["name"] if business else None,
+            "logo_url": business.get("logo_url") if business else None,
+        },
+        "program": program,
+    }
 
 @app.get("/api/v1/business/{public_id}/customers")
 async def get_customers(public_id: str):
@@ -524,6 +562,7 @@ async def get_loyalty_config(public_id: str):
             "reward_expiry_days": 30,
             "program_logo_url": None,
             "hero_image_url": None,
+            "card_name": None,
             "google_wallet_class_id": None,
         }
     return program
@@ -548,6 +587,8 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
         data["program_logo_url"] = config.program_logo_url
     if config.hero_image_url is not None:
         data["hero_image_url"] = config.hero_image_url
+    if config.card_name is not None:
+        data["card_name"] = config.card_name
 
     try:
         existing = supabase.table("loyalty_programs").select("id").eq("business_id", business["id"]).maybe_single().execute()
@@ -646,7 +687,7 @@ async def add_stamp(public_id: str, req: StampRequest):
         raise HTTPException(status_code=404, detail="Customer not found")
 
     if customer.get("business_id") != business["id"]:
-        print(f"STAMP ERROR: Customer business_id={customer.get('business_id')} != business_id={business['id']}")
+        print(f"STAMP ERROR: Customer business_id={customer.get(chr(39)+'business_id'+chr(39))} != business_id={business[chr(39)+'id'+chr(39)]}")
         raise HTTPException(status_code=404, detail="Customer not found for this business")
 
     try:
@@ -654,7 +695,7 @@ async def add_stamp(public_id: str, req: StampRequest):
         if not staff_res.data:
             print("STAMP ERROR: Invalid staff PIN")
             raise HTTPException(status_code=403, detail="Invalid staff PIN")
-        print(f"STAMP: Staff verified: {staff_res.data[0]['name']}")
+        print(f"STAMP: Staff verified: {staff_res.data[0][chr(39)+'name'+chr(39)]}")
     except HTTPException:
         raise
     except Exception as e:
@@ -730,7 +771,7 @@ async def get_wallet_class(public_id: str):
     if program and program.get("google_wallet_class_id"):
         class_id = program["google_wallet_class_id"]
     else:
-        class_id = f"{GOOGLE_WALLET_ISSUER_ID}.{business['public_id']}"
+        class_id = f"{GOOGLE_WALLET_ISSUER_ID}.{business[chr(39)+'public_id'+chr(39)]}"
 
     # Try to fetch from Google API
     access_token = get_google_access_token()
@@ -771,7 +812,7 @@ async def create_or_update_wallet_class(public_id: str):
     if program and program.get("google_wallet_class_id"):
         class_id = program["google_wallet_class_id"]
     else:
-        class_id = f"{GOOGLE_WALLET_ISSUER_ID}.{business['public_id']}"
+        class_id = f"{GOOGLE_WALLET_ISSUER_ID}.{business[chr(39)+'public_id'+chr(39)]}"
 
     # Build class payload
     loyalty_class = build_loyalty_class(business, program, review_status=review_status)
@@ -854,7 +895,10 @@ async def customer_join_page(business_public_id: str):
     primary_color = program.get("primary_color", "#3b82f6") if program else "#3b82f6"
     reward_name = program.get("reward_name", "Free Service") if program else "Free Service"
     stamp_goal = program.get("stamp_goal", 8) if program else 8
-
+    card_name = program.get("card_name") if program else None
+    display_name = card_name if card_name else f"{business[chr(39)+'name'+chr(39)]} Rewards"
+    logo_url = business.get("logo_url")
+    logo_html = f'<img src="{logo_url}" style="width:80px;height:80px;border-radius:20px;object-fit:cover;margin:0 auto 20px;display:block;" alt="Logo"/>' if logo_url else '<div class="logo">🌳</div>'
     business_name_escaped = business["name"].replace("'", "\\'")
 
     return HTMLResponse(f"""
@@ -863,7 +907,7 @@ async def customer_join_page(business_public_id: str):
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Join {business["name"]} Rewards</title>
+        <title>Join {display_name}</title>
         <style>
             * {{ box-sizing: border-box; margin: 0; padding: 0; }}
             body {{
@@ -929,9 +973,9 @@ async def customer_join_page(business_public_id: str):
     </head>
     <body>
         <div class="card" id="card">
-            <div class="logo">🌳</div>
-            <h1>{business["name"]}</h1>
-            <p class="subtitle">Join our loyalty program</p>
+            {logo_html}
+            <h1>{display_name}</h1>
+            <p class="subtitle">{business["name"]}</p>
             <div class="reward-preview">
                 <h3>🎁 {reward_name}</h3>
                 <p>Collect {stamp_goal} stamps to unlock your reward</p>
@@ -948,6 +992,7 @@ async def customer_join_page(business_public_id: str):
                 const API_BASE = "{BASE_URL}";
                 const BIZ_ID = "{business_public_id}";
                 const BIZ_NAME = "{business_name_escaped}";
+                const CARD_NAME = "{display_name}";
 
                 document.getElementById("signupForm").addEventListener("submit", async function(e) {{
                     e.preventDefault();
@@ -969,7 +1014,7 @@ async def customer_join_page(business_public_id: str):
                             var cardHtml = 
                                 '<div style="font-size:48px;margin-bottom:16px;">🎉</div>' +
                                 '<h1>Welcome, ' + escapeHtml(data.name) + '!</h1>' +
-                                '<p style="color:#64748b;margin-bottom:24px;">Your loyalty card is ready</p>' +
+                                '<p style="color:#64748b;margin-bottom:24px;">Your ' + escapeHtml(CARD_NAME) + ' is ready</p>' +
                                 '<div class="success-qr">' +
                                     '<img src="' + qrUrl + '" alt="Your QR Code"/>' +
                                     '<p style="font-size:12px;color:#94a3b8;margin-top:8px;">Scan at checkout</p>' +
@@ -988,7 +1033,7 @@ async def customer_join_page(business_public_id: str):
 
                             window.doShare = function() {{
                                 navigator.share({{
-                                    title: "My Loyalty Card",
+                                    title: "My " + CARD_NAME,
                                     text: "My card for " + BIZ_NAME,
                                     url: walletUrl
                                 }});
@@ -1098,6 +1143,10 @@ async def customer_wallet_page(customer_public_id: str):
     primary_color = program.get("primary_color", "#3b82f6") if program else "#3b82f6"
     stamp_goal = program.get("stamp_goal", 8) if program else 8
     reward_name = program.get("reward_name", "Free Service") if program else "Free Service"
+    card_name = program.get("card_name") if program else None
+    display_name = card_name if card_name else f"{business[chr(39)+'name'+chr(39)]} Rewards"
+    logo_url = business.get("logo_url")
+    logo_html = f'<img src="{logo_url}" style="width:64px;height:64px;border-radius:16px;object-fit:cover;margin-bottom:12px;" alt="Logo"/>' if logo_url else ''
 
     stamps = customer.get("stamp_count", 0) % stamp_goal
     filled = stamps
@@ -1115,7 +1164,7 @@ async def customer_wallet_page(customer_public_id: str):
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>My {business["name"]} Card</title>
+        <title>My {display_name}</title>
         <style>
             * {{ box-sizing: border-box; margin: 0; padding: 0; }}
             body {{
@@ -1197,7 +1246,8 @@ async def customer_wallet_page(customer_public_id: str):
     <body>
         <div class="card">
             <div class="loyalty-card">
-                <h2>{business["name"]}</h2>
+                {logo_html}
+                <h2>{display_name}</h2>
                 <h3>{customer["name"]}</h3>
                 <p class="id">ID: {customer["public_id"][:12]}...</p>
                 <div class="stars">{stars_html}</div>
@@ -1214,7 +1264,7 @@ async def customer_wallet_page(customer_public_id: str):
                 🎫 Add to Google Wallet
             </a>
 
-            <button onclick="navigator.share({{title: 'My Loyalty Card', text: 'My card for {business["name"]}', url: window.location.href}})" class="share-btn">
+            <button onclick="navigator.share({{title: 'My {display_name}', text: 'My card for {business["name"]}', url: window.location.href}})" class="share-btn">
                 🔗 Share Card
             </button>
         </div>
