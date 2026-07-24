@@ -171,14 +171,30 @@ async def login(req: LoginRequest):
         business = res.data
         if business:
             stored_pw = business.get("password", "")
+            input_pw = req.password
+            input_hash = hash_password(input_pw)
+
             # Try multiple password formats
-            if stored_pw == hash_password(req.password) or stored_pw == req.password:
+            matched = False
+            if stored_pw == input_pw:
+                matched = True
+                print(f"Login: plain text match for {req.email}")
+            elif stored_pw == input_hash:
+                matched = True
+                print(f"Login: sha256 match for {req.email}")
+            elif stored_pw == input_hash[:len(stored_pw)]:
+                matched = True
+                print(f"Login: partial hash match for {req.email}")
+
+            if matched:
                 return {
                     "success": True,
                     "business_slug": business["public_id"],
                     "business_name": business["name"],
                     "token": "owner-token-" + business["public_id"],
                 }
+            else:
+                print(f"Login: password mismatch. Stored len={len(stored_pw)}, input hash={input_hash[:20]}...")
     except Exception as e:
         print(f"Business login error: {e}")
 
@@ -202,6 +218,59 @@ async def login(req: LoginRequest):
         print(f"Staff login error: {e}")
 
     raise HTTPException(status_code=401, detail="Invalid email or password")
+
+# ═════════════════════════════════════════════════════════════════════════════
+# DEBUG ROUTE - Remove after fixing login
+# ═════════════════════════════════════════════════════════════════════════════
+
+@app.post("/api/v1/debug/login")
+async def debug_login(req: LoginRequest):
+    """Debug endpoint to see why login fails"""
+    if not supabase:
+        return {"error": "No supabase connection"}
+
+    result = {"email_searched": req.email, "found": None}
+
+    # Check businesses
+    try:
+        res = supabase.table("businesses").select("id,public_id,name,email,status,password").eq("email", req.email).maybe_single().execute()
+        if res.data:
+            business = res.data
+            result["business_found"] = {
+                "id": business.get("id"),
+                "public_id": business.get("public_id"),
+                "name": business.get("name"),
+                "status": business.get("status"),
+                "password_length": len(business.get("password", "")) if business.get("password") else 0,
+                "password_starts_with": business.get("password", "")[:10] if business.get("password") else None,
+                "sha256_of_input": hash_password(req.password)[:20],
+            }
+            result["found"] = "business"
+    except Exception as e:
+        result["business_error"] = str(e)
+
+    # Check staff
+    try:
+        res = supabase.table("staff").select("id,public_id,name,email,role,pin,business_id").eq("email", req.email).maybe_single().execute()
+        if res.data:
+            staff = res.data
+            result["staff_found"] = {
+                "id": staff.get("id"),
+                "public_id": staff.get("public_id"),
+                "name": staff.get("name"),
+                "role": staff.get("role"),
+                "pin_length": len(staff.get("pin", "")) if staff.get("pin") else 0,
+                "pin_value": staff.get("pin", ""),
+            }
+            if not result["found"]:
+                result["found"] = "staff"
+    except Exception as e:
+        result["staff_error"] = str(e)
+
+    if not result.get("business_found") and not result.get("staff_found"):
+        result["error"] = "No user found with this email"
+
+    return result
 
 @app.post("/api/v1/register")
 @app.post("/api/v1/auth/register")  # ✅ Alias for frontend compatibility
