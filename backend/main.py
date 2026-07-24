@@ -407,7 +407,7 @@ async def get_stats(public_id: str):
         return {
             "total_customers": len(customers),
             "total_stamps": total_stamps,
-            "unlocked_rewards": sum(1 for c in customers if c.get("reward_unlocked")),
+            "unlocked_rewards": sum(1 for c in customers if c.get("reward_unlocked") or c.get("stamp_count", 0) >= 8),
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -572,15 +572,32 @@ async def add_stamp(public_id: str, req: StampRequest):
             "stamp_count": new_count,
             "updated_at": datetime.utcnow().isoformat(),
         }
-        # Only add reward_unlocked if column exists
-        if "reward_unlocked" in customer:
+        # Try to add reward_unlocked, but handle if column doesn't exist
+        try:
             update_data["reward_unlocked"] = reward_unlocked
+        except:
+            pass
 
         result = supabase.table("customers").update(update_data).eq("id", customer["id"]).execute()
         print(f"STAMP SUCCESS: new_count={new_count}, result={result}")
     except Exception as e:
         error_msg = str(e)
         print(f"STAMP UPDATE ERROR: {error_msg}")
+        if "reward_unlocked" in error_msg.lower():
+            # Try again without reward_unlocked
+            try:
+                supabase.table("customers").update({
+                    "stamp_count": new_count,
+                    "updated_at": datetime.utcnow().isoformat(),
+                }).eq("id", customer["id"]).execute()
+                print(f"STAMP SUCCESS (without reward_unlocked): new_count={new_count}")
+                return {
+                    "message": "Stamp added!",
+                    "stamp_count": new_count,
+                    "reward_unlocked": reward_unlocked,
+                }
+            except Exception as e2:
+                error_msg = str(e2)
         if "row-level security" in error_msg.lower() or "rls" in error_msg.lower():
             return JSONResponse(
                 status_code=200,
@@ -788,7 +805,6 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup):
         "name": signup.name,
         "phone": signup.phone,
         "stamp_count": 0,
-        "reward_unlocked": False,
         "created_at": datetime.utcnow().isoformat(),
         "updated_at": datetime.utcnow().isoformat(),
     }
@@ -796,7 +812,14 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup):
     try:
         supabase.table("customers").insert(customer_data).execute()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        error_msg = str(e)
+        print(f"CUSTOMER INSERT ERROR: {error_msg}")
+        # If reward_unlocked column is missing, try without it (already removed above)
+        # If other column missing, report it
+        if "column" in error_msg.lower() and "does not exist" in error_msg.lower():
+            # Extract column name from error
+            raise HTTPException(status_code=500, detail=f"Database schema mismatch: {error_msg}. Please check your Supabase table columns.")
+        raise HTTPException(status_code=500, detail=error_msg)
 
     return {
         "public_id": customer_public_id,
