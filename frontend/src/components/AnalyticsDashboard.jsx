@@ -159,7 +159,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           </div>
           <div style={styles.insightCard}>
             <h4 style={styles.insightTitle}>Churn Risk</h4>
-            <div style={styles.bigNumber} style={{color: '#ef4444'}}>{customers.churn_risk}</div>
+            <div style={{...styles.bigNumber, color: '#ef4444'}}>{customers.churn_risk}</div>
             <p style={styles.insightDesc}>customers haven't visited in 30+ days</p>
             <button style={styles.actionBtn}>Send Win-Back Offer</button>
           </div>
@@ -177,12 +177,12 @@ function AnalyticsDashboard({ API_BASE, user }) {
           </div>
           <div style={styles.revenueCard}>
             <h4 style={styles.insightTitle}>Reward Cost</h4>
-            <div style={styles.bigNumber} style={{color: '#ef4444'}}>${reward_cost}</div>
+            <div style={{...styles.bigNumber, color: '#ef4444'}}>${revenue.reward_cost}</div>
             <p style={styles.insightDesc}>Estimated cost of redeemed rewards</p>
           </div>
           <div style={styles.revenueCard}>
             <h4 style={styles.insightTitle}>Net Program Value</h4>
-            <div style={styles.bigNumber} style={{color: '#10b981'}}>${revenue.net_value}</div>
+            <div style={{...styles.bigNumber, color: '#10b981'}}>${revenue.net_value}</div>
             <p style={styles.insightDesc}>Revenue minus reward costs</p>
           </div>
           <div style={styles.revenueCard}>
