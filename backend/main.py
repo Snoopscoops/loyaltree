@@ -361,9 +361,8 @@ app = FastAPI(title="LoyaltyTree API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://loyaltree-five.vercel.app",
-        "https://loyaltree.vercel.app",
-        "https://loyaltree-git-main.vercel.app",
+        "https://loyaltree-btw1.onrender.com",
+        "https://loyaltree-app.onrender.com",
         "http://localhost:3000",
         "*"  # Remove this in production, use specific origins
     ],
@@ -947,7 +946,7 @@ def get_business_qr_code(public_id: str, format: str = "svg", db: Session = Depe
     if not business or business.status not in [BusinessStatus.ACTIVE, BusinessStatus.VERIFIED]:
         raise HTTPException(status_code=400, detail="Business not active")
 
-    base_url = os.getenv("BASE_URL", "https://loyaltree-api.onrender.com")
+    base_url = os.getenv("BASE_URL", "https://loyaltree-btw1.onrender.com")
     signup_url = f"{base_url}/join/{public_id}"
 
     qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_H, box_size=10, border=4)
@@ -1045,6 +1044,92 @@ def customer_signup_page(business_public_id: str, db: Session = Depends(get_db))
                 }}
             }});
         </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
+
+
+@app.get("/wallet/{customer_public_id}")
+def customer_wallet_page(customer_public_id: str, db: Session = Depends(get_db)):
+    from fastapi.responses import HTMLResponse
+
+    customer = db.query(Customer).filter(Customer.public_id == customer_public_id).first()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    business = customer.business
+    program = business.loyalty_program if business else None
+    confirmed_stamps = db.query(Stamp).filter(Stamp.customer_id == customer.id, Stamp.status == StampStatus.CONFIRMED).count()
+    stamp_goal = program.stamp_goal if program else 8
+    current_progress = confirmed_stamps % stamp_goal
+    unlocked_rewards = db.query(Reward).filter(Reward.customer_id == customer.id, Reward.status == RewardStatus.UNLOCKED).count()
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>My {business.name} Card</title>
+        <style>
+            body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; 
+                    background: linear-gradient(135deg, {program.primary_color if program else '#0d9488'} 0%, #1e293b 100%); 
+                    min-height: 100vh; display: flex; align-items: center; justify-content: center; }}
+            .card {{ background: white; border-radius: 20px; padding: 30px; max-width: 380px; 
+                     width: 100%; box-shadow: 0 20px 60px rgba(0,0,0,0.3); text-align: center; }}
+            .loyalty-card {{ background: linear-gradient(135deg, {program.primary_color if program else '#0d9488'} 0%, #14b8a6 100%); 
+                            border-radius: 16px; padding: 24px; color: white; margin-bottom: 20px; }}
+            .loyalty-card h2 {{ margin: 0 0 8px 0; font-size: 20px; }}
+            .loyalty-card h3 {{ margin: 0 0 12px 0; font-size: 24px; font-weight: 700; }}
+            .stamps {{ display: flex; justify-content: center; gap: 6px; margin: 16px 0; flex-wrap: wrap; }}
+            .stamp {{ width: 32px; height: 32px; border-radius: 16px; display: flex; align-items: center; justify-content: center; 
+                      font-size: 16px; font-weight: 700; }}
+            .stamp.filled {{ background: white; color: {program.primary_color if program else '#0d9488'}; }}
+            .stamp.empty {{ background: rgba(255,255,255,0.3); color: white; }}
+            .progress {{ margin: 8px 0 0 0; font-size: 14px; opacity: 0.9; }}
+            .reward-badge {{ padding: 8px 16px; background: rgba(255,255,255,0.2); border-radius: 20px; font-size: 13px; 
+                            font-weight: 600; display: inline-block; margin-top: 12px; }}
+            .qr-section {{ margin: 20px 0; }}
+            .qr-section img {{ border-radius: 12px; border: 2px solid #e2e8f0; }}
+            .qr-section p {{ font-size: 12px; color: #94a3b8; margin-top: 8px; }}
+            .btn {{ width: 100%; padding: 14px; border: none; border-radius: 10px; font-size: 15px; font-weight: 600; 
+                    cursor: pointer; margin-bottom: 12px; display: flex; align-items: center; justify-content: center; gap: 8px; }}
+            .btn-google {{ background: #1a73e8; color: white; }}
+            .btn-apple {{ background: #1c1c1e; color: white; }}
+            .btn-share {{ background: #f0fdf4; color: #0d9488; border: 1px solid #a7f3d0; }}
+            .footer {{ font-size: 12px; color: #94a3b8; margin-top: 16px; }}
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <div class="loyalty-card">
+                <h2>{business.name}</h2>
+                <h3>{customer.name}</h3>
+                <p style="font-size: 11px; opacity: 0.8; margin: 0;">ID: {customer.public_id[:12]}...</p>
+                <div class="stamps">
+                    {''.join(['<div class="stamp filled">★</div>' if i < current_progress else '<div class="stamp empty">☆</div>' for i in range(stamp_goal)])}
+                </div>
+                <p class="progress">{current_progress} / {stamp_goal} stamps</p>
+                {f'<div class="reward-badge">🎁 {program.reward_name} Unlocked!</div>' if unlocked_rewards > 0 else ''}
+            </div>
+
+            <div class="qr-section">
+                <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={customer.public_id}" 
+                     style="width: 180px; height: 180px;" alt="Your QR Code"/>
+                <p>Scan at checkout to earn stamps</p>
+            </div>
+
+            <a href="https://pay.google.com/gp/v/save/{customer.public_id}" class="btn btn-google">
+                🎫 Add to Google Wallet
+            </a>
+
+            <button onclick="navigator.share({{title: 'My {business.name} Card', text: 'My loyalty card', url: window.location.href}})" 
+                    class="btn btn-share">
+                🔗 Share Card
+            </button>
+
+            <p class="footer">Show this QR to your cashier on every visit</p>
+        </div>
     </body>
     </html>
     """
@@ -1727,7 +1812,7 @@ class GoogleWalletPass:
                 "typ": "savetowallet",
                 "iat": int(datetime.utcnow().timestamp()),
                 "exp": int(datetime.utcnow().timestamp()) + 3600,
-                "origins": ["https://loyaltree-five.vercel.app"],
+                "origins": ["https://loyaltree-btw1.onrender.com"],
                 "payload": {
                     "loyaltyClasses": [{"id": f"{self.issuer_id}.{self.class_id}"}],
                     "loyaltyObjects": [{"id": f"{self.issuer_id}.{customer_id}", "classId": f"{self.issuer_id}.{self.class_id}"}]
