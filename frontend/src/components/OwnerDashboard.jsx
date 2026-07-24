@@ -1,561 +1,913 @@
-import React, { useEffect, useState } from 'react'
-import LoyaltySettings from './LoyaltySettings'
-import Announcements from './Announcements'
-import EditCustomerModal from './EditCustomerModal'
-import { QRCodeSVG } from 'qrcode.react'
-import { Link } from 'react-router-dom'
+import React, { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 
-function OwnerDashboard({ API_BASE, user }) {
+function OwnerDashboard({ API_BASE, user, onLogout }) {
+  const navigate = useNavigate()
+  const [activeTab, setActiveTab] = useState('tree')
+  const [business, setBusiness] = useState(null)
   const [customers, setCustomers] = useState([])
-  const [stats, setStats] = useState({})
   const [staff, setStaff] = useState([])
-  const [showAddStaff, setShowAddStaff] = useState(false)
-  const [newStaff, setNewStaff] = useState({ name: '', email: '' })
+  const [stats, setStats] = useState(null)
+  const [program, setProgram] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [showSettings, setShowSettings] = useState(false)
-  const [showAnnouncements, setShowAnnouncements] = useState(false)
-  const [editingCustomer, setEditingCustomer] = useState(null)
+  const [showInviteModal, setShowInviteModal] = useState(false)
+  const [showConfigModal, setShowConfigModal] = useState(false)
+  const [inviteForm, setInviteForm] = useState({ name: '', email: '', phone: '', role: 'cashier' })
+  const [configForm, setConfigForm] = useState({})
+  const [message, setMessage] = useState('')
 
   useEffect(() => {
-    fetchData()
-  }, [])
+    if (!user?.business_slug) return
+    loadData()
+  }, [user])
 
-  const fetchData = async () => {
+  const loadData = async () => {
     try {
-      const [cRes, sRes, stRes] = await Promise.all([
+      const [bizRes, custRes, staffRes, statsRes, progRes] = await Promise.all([
+        fetch(`${API_BASE}/api/v1/business/${user.business_slug}`),
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers`),
-        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/stats`),
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff`),
+        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/stats`),
+        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config`),
       ])
-      const cData = await cRes.json()
-      const sData = await sRes.json()
-      const stData = await stRes.json()
-      setCustomers(Array.isArray(cData) ? cData : [])
-      setStats(sData || {})
-      setStaff(Array.isArray(stData) ? stData : [])
+
+      const bizData = await bizRes.json().catch(() => null)
+      const custData = await custRes.json().catch(() => [])
+      const staffData = await staffRes.json().catch(() => [])
+      const statsData = await statsRes.json().catch(() => null)
+      const progData = await progRes.json().catch(() => null)
+
+      setBusiness(bizData)
+      setCustomers(custData)
+      setStaff(staffData)
+      setStats(statsData)
+      setProgram(progData)
+      if (progData) setConfigForm(progData)
     } catch (err) {
-      console.error(err)
+      console.error('Load error:', err)
     }
     setLoading(false)
   }
 
-  const addStaff = async (e) => {
+  const inviteStaff = async (e) => {
     e.preventDefault()
-    await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff/invite`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...newStaff, role: 'cashier' })
-    })
-    setNewStaff({ name: '', email: '' })
-    setShowAddStaff(false)
-    fetchData()
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff/invite`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(inviteForm)
+      })
+      if (res.ok) {
+        setMessage('Staff invited! PIN: 0000')
+        setShowInviteModal(false)
+        setInviteForm({ name: '', email: '', phone: '', role: 'cashier' })
+        loadData()
+      } else {
+        const data = await res.json()
+        setMessage(data.detail || 'Invite failed')
+      }
+    } catch (err) {
+      setMessage('Network error')
+    }
   }
 
-  const joinUrl = `${window.location.origin}/join/${user.business_slug}`
-
-  if (loading) {
-    return (
-      <div style={styles.page}>
-        <div style={{ textAlign: 'center', padding: 100, color: '#64748b' }}>Loading...</div>
-      </div>
-    )
+  const saveConfig = async (e) => {
+    e.preventDefault()
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(configForm)
+      })
+      if (res.ok) {
+        setMessage('Program updated!')
+        setShowConfigModal(false)
+        loadData()
+      } else {
+        const data = await res.json()
+        setMessage(data.detail || 'Update failed')
+      }
+    } catch (err) {
+      setMessage('Network error')
+    }
   }
 
-  return (
-    <div style={styles.page}>
-      {/* Header */}
-      <div style={styles.header}>
-        <div style={styles.headerInner}>
-          <div style={styles.brand}>
-            <span style={styles.brandIcon}>🌳</span>
-            <span style={styles.brandText}>LoyaltyTree</span>
-          </div>
-          <div style={styles.user}>
-            <button onClick={() => setShowAnnouncements(true)} style={styles.settingsBtn}>📢 Announce</button>
-            <button onClick={() => setShowSettings(true)} style={styles.settingsBtn}>⚙️ Settings</button>
-<button onClick={() => navigate('/analytics')} style={styles.navBtn}>
-  📊 Analytics
-</button>
-            <span style={styles.userName}>{user.business_name}</span>
-            <Link to="/" style={styles.logout} onClick={() => localStorage.clear()}>Logout</Link>
-          </div>
-        </div>
+  const goLive = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/go-live`, { method: 'POST' })
+      const data = await res.json()
+      if (res.ok) {
+        setMessage(data.message)
+        loadData()
+      } else {
+        setMessage(data.detail || 'Go live failed')
+      }
+    } catch (err) {
+      setMessage('Network error')
+    }
+  }
+
+  if (loading) return (
+    <div style={styles.container}>
+      <div style={styles.loadingTree}>
+        <div style={styles.treeIcon}>🌳</div>
+        <p>Growing your digital forest...</p>
       </div>
-
-      <div style={styles.container}>
-        {/* Stats */}
-        <div style={styles.statsGrid}>
-          <StatCard icon="👥" label="Customers" value={stats.total_customers || 0} color="#0d9488" />
-          <StatCard icon="🎫" label="Active Cards" value={stats.active_cards || 0} color="#6366f1" />
-          <StatCard icon="⭐" label="Stamps Issued" value={stats.stamps_issued || 0} color="#f59e0b" />
-          <StatCard icon="🎁" label="Rewards Given" value={stats.rewards_redeemed || 0} color="#ec4899" />
-        </div>
-
-        {/* Two Column Layout */}
-        <div style={styles.twoCol}>
-          {/* QR Code */}
-          <div style={styles.card}>
-            <h3 style={styles.cardTitle}>📱 Customer QR Code</h3>
-            <p style={styles.cardDesc}>Place this at your counter for customers to scan and join</p>
-            <div style={styles.qrBox}>
-              <QRCodeSVG value={joinUrl} size={180} level="H" />
-            </div>
-            <div style={styles.urlBox}>
-              <code style={styles.urlText}>{joinUrl}</code>
-              <button onClick={() => navigator.clipboard.writeText(joinUrl)} style={styles.copyBtn}>Copy</button>
-            </div>
-          </div>
-
-          {/* Staff */}
-          <div style={styles.card}>
-            <div style={styles.cardHeader}>
-              <h3 style={styles.cardTitle}>👥 Staff</h3>
-              <button onClick={() => setShowAddStaff(!showAddStaff)} style={styles.addBtn}>+ Add</button>
-            </div>
-            {showAddStaff && (
-              <form onSubmit={addStaff} style={styles.inlineForm}>
-                <input placeholder="Name" value={newStaff.name} onChange={e => setNewStaff({...newStaff, name: e.target.value})} style={styles.smallInput} required />
-                <input placeholder="Email" value={newStaff.email} onChange={e => setNewStaff({...newStaff, email: e.target.value})} style={styles.smallInput} required />
-                <button type="submit" style={styles.smallBtn}>Add</button>
-              </form>
-            )}
-            <div style={styles.list}>
-              {staff.map(s => (
-                <div key={s.id} style={styles.listItem}>
-                  <div style={styles.listAvatar}>{s.name?.[0] || '?'}</div>
-                  <div style={styles.listInfo}>
-                    <div style={styles.listName}>{s.name}</div>
-                    <div style={styles.listMeta}>{s.email} · {s.role}</div>
-                  </div>
-                  <span style={{...styles.badge, background: s.is_active ? '#d1fae5' : '#fee2e2', color: s.is_active ? '#065f46' : '#991b1b'}}>
-                    {s.is_active ? 'Active' : 'Inactive'}
-                  </span>
-                </div>
-              ))}
-              {staff.length === 0 && <div style={styles.empty}>No staff yet</div>}
-            </div>
-          </div>
-        </div>
-
-        {/* Customers Table */}
-        <div style={styles.card}>
-          <h3 style={styles.cardTitle}>Recent Customers</h3>
-          <div style={styles.tableWrap}>
-            <table style={styles.table}>
-              <thead>
-                <tr style={styles.tableHead}>
-                  <th style={styles.th}>Customer</th>
-                  <th style={styles.th}>Phone</th>
-                  <th style={styles.th}>Stamps</th>
-                  <th style={styles.th}>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {customers.slice(0, 20).map(c => (
-                  <tr key={c.id} style={styles.tr}>
-                    <td style={styles.td}>
-                      <div style={styles.customerCell}>
-                        <div style={styles.customerAvatar}>{c.name?.[0] || '?'}</div>
-                        <span style={styles.customerName}>{c.name}</span>
-                        <button 
-                          onClick={() => setEditingCustomer(c)}
-                          style={styles.editBtn}
-                          title="Edit customer"
-                        >
-                          ✏️
-                        </button>
-                      </div>
-                    </td>
-                    <td style={styles.td}>{c.phone}</td>
-                    <td style={styles.td}>
-                      <div style={styles.stampBar}>
-                        <div style={styles.stampFill}>
-                          {Array.from({length: c.stamp_count || 0}).map((_, i) => (
-                            <span key={i} style={styles.stampDot}>⭐</span>
-                          ))}
-                        </div>
-                        <span style={styles.stampText}>{c.stamp_count || 0}/{c.reward_threshold || 8}</span>
-                      </div>
-                    </td>
-                    <td style={styles.td}>
-                      <span style={{...styles.badge, background: c.reward_unlocked ? '#d1fae5' : '#f1f5f9', color: c.reward_unlocked ? '#065f46' : '#475569'}}>
-                        {c.reward_unlocked ? '🎁 Ready!' : 'Active'}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-                {customers.length === 0 && (
-                  <tr><td colSpan={4} style={styles.emptyTd}>No customers yet. Share your QR code!</td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-
-      {showSettings && (
-        <LoyaltySettings
-          API_BASE={API_BASE}
-          businessSlug={user.business_slug}
-          onClose={() => setShowSettings(false)}
-          onSave={() => fetchData()}
-        />
-      )}
-
-      {showAnnouncements && (
-        <Announcements
-          API_BASE={API_BASE}
-          businessSlug={user.business_slug}
-          onClose={() => setShowAnnouncements(false)}
-        />
-      )}
-
-      {editingCustomer && (
-        <EditCustomerModal
-          API_BASE={API_BASE}
-          businessSlug={user.business_slug}
-          customer={editingCustomer}
-          onClose={() => setEditingCustomer(null)}
-          onSave={() => { setEditingCustomer(null); fetchData(); }}
-        />
-      )}
     </div>
   )
-}
 
-function StatCard({ icon, label, value, color }) {
+  const confirmedStamps = customers.reduce((sum, c) => sum + (c.stamp_count || 0), 0)
+  const unlockedRewards = customers.filter(c => c.reward_unlocked).length
+  const growthStage = customers.length < 10 ? 'seedling' : customers.length < 50 ? 'sapling' : customers.length < 200 ? 'growing' : 'mature'
+
   return (
-    <div style={{...styles.statCard, borderLeft: `4px solid ${color}`}}>
-      <div style={styles.statIcon}>{icon}</div>
-      <div style={styles.statValue}>{value}</div>
-      <div style={styles.statLabel}>{label}</div>
+    <div style={styles.container}>
+      {/* Header */}
+      <header style={styles.header}>
+        <div style={styles.brand}>
+          <span style={styles.logo}>🌳</span>
+          <div>
+            <h1 style={styles.brandName}>LoyaltyTree</h1>
+            <p style={styles.brandTagline}>Where businesses grow with customers</p>
+          </div>
+        </div>
+        <div style={styles.headerActions}>
+          <span style={styles.planBadge}>{user?.business_name}</span>
+          <button onClick={() => navigate('/analytics')} style={styles.navBtn}>📊 Analytics</button>
+          <button onClick={onLogout} style={styles.logoutBtn}>Logout</button>
+        </div>
+      </header>
+
+      {message && (
+        <div style={styles.toast} onClick={() => setMessage('')}>
+          {message}
+        </div>
+      )}
+
+      {/* Tree Visualization */}
+      <div style={styles.treeSection}>
+        <div style={styles.treeVisual}>
+          <div style={{...styles.treeCanopy, transform: `scale(${Math.min(1 + customers.length * 0.01, 1.5)})`}}>
+            {Array.from({length: Math.min(customers.length, 20)}).map((_, i) => (
+              <div key={i} style={{
+                ...styles.leaf,
+                left: `${30 + Math.random() * 40}%`,
+                top: `${20 + Math.random() * 30}%`,
+                animationDelay: `${i * 0.1}s`,
+              }}>🍃</div>
+            ))}
+            <div style={styles.treeTop}>🌳</div>
+          </div>
+          <div style={styles.treeTrunk}>
+            <div style={styles.roots}>
+              <div style={styles.root}>🏪 {user?.business_name}</div>
+            </div>
+            <div style={styles.statsRing}>
+              <div style={styles.statOrb}>
+                <span style={styles.orbNumber}>{customers.length}</span>
+                <span style={styles.orbLabel}>Leaves</span>
+              </div>
+              <div style={styles.statOrb}>
+                <span style={styles.orbNumber}>{confirmedStamps}</span>
+                <span style={styles.orbLabel}>Rings</span>
+              </div>
+              <div style={styles.statOrb}>
+                <span style={styles.orbNumber}>{unlockedRewards}</span>
+                <span style={styles.orbLabel}>Fruits</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style={styles.growthBadge}>
+          <span style={styles.growthIcon}>
+            {growthStage === 'seedling' ? '🌱' : growthStage === 'sapling' ? '🌿' : growthStage === 'growing' ? '🌳' : '🌲'}
+          </span>
+          <span style={styles.growthText}>{growthStage.charAt(0).toUpperCase() + growthStage.slice(1)} Stage</span>
+        </div>
+      </div>
+
+      {/* Navigation Tabs */}
+      <div style={styles.tabs}>
+        {[
+          { id: 'tree', label: '🌳 My Tree', icon: '🌳' },
+          { id: 'customers', label: '🍃 Leaves', icon: '🍃' },
+          { id: 'staff', label: '🌿 Team', icon: '🌿' },
+          { id: 'program', label: '⚙️ Roots', icon: '⚙️' },
+        ].map(tab => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            style={{
+              ...styles.tab,
+              background: activeTab === tab.id ? '#0d9488' : 'transparent',
+              color: activeTab === tab.id ? 'white' : '#64748b',
+            }}
+          >
+            {tab.icon} {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab Content */}
+      <div style={styles.content}>
+        {activeTab === 'tree' && (
+          <div style={styles.treeTab}>
+            <div style={styles.actionCards}>
+              <div style={styles.actionCard} onClick={() => setActiveTab('customers')}>
+                <div style={styles.actionIcon}>🍃</div>
+                <h3>View All Leaves</h3>
+                <p>{customers.length} customers connected</p>
+              </div>
+              <div style={styles.actionCard} onClick={() => navigate('/scanner')}>
+                <div style={styles.actionIcon}>📷</div>
+                <h3>Scan Leaf</h3>
+                <p>Add stamp via QR scan</p>
+              </div>
+              <div style={styles.actionCard} onClick={() => setShowInviteModal(true)}>
+                <div style={styles.actionIcon}>🌿</div>
+                <h3>Grow Team</h3>
+                <p>Invite staff members</p>
+              </div>
+              <div style={styles.actionCard} onClick={() => window.open(`${API_BASE}/api/v1/business/${user.business_slug}/qr-code`, '_blank')}>
+                <div style={styles.actionIcon}>🔗</div>
+                <h3>Share Tree</h3>
+                <p>Get join QR code</p>
+              </div>
+            </div>
+
+            {business?.status !== 'active' && (
+              <div style={styles.goLiveCard}>
+                <h3>🚀 Ready to Plant?</h3>
+                <p>Your loyalty program is configured. Go live to start growing!</p>
+                <button onClick={goLive} style={styles.goLiveBtn}>Go Live 🌱</button>
+              </div>
+            )}
+
+            <div style={styles.recentActivity}>
+              <h3 style={styles.sectionTitle}>🌊 Recent Sap Flow</h3>
+              {customers.slice(0, 5).map(c => (
+                <div key={c.public_id} style={styles.activityRow}>
+                  <span style={styles.activityLeaf}>🍃</span>
+                  <span style={styles.activityName}>{c.name}</span>
+                  <span style={styles.activityStamps}>{c.stamp_count} rings</span>
+                  {c.reward_unlocked && <span style={styles.activityFruit}>🍎</span>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'customers' && (
+          <div>
+            <div style={styles.sectionHeader}>
+              <h2 style={styles.sectionTitle}>🍃 Your Leaves ({customers.length})</h2>
+              <button onClick={() => navigate('/analytics')} style={styles.viewAnalyticsBtn}>📊 View Analytics</button>
+            </div>
+            <div style={styles.customerGrid}>
+              {customers.map(c => (
+                <div key={c.public_id} style={styles.customerCard}>
+                  <div style={styles.customerAvatar}>{c.name?.[0]?.toUpperCase() || '?'}</div>
+                  <div style={styles.customerInfo}>
+                    <h4 style={styles.customerName}>{c.name}</h4>
+                    <p style={styles.customerPhone}>{c.phone}</p>
+                    <div style={styles.stampRings}>
+                      {Array.from({length: c.reward_threshold || 8}).map((_, i) => (
+                        <span key={i} style={{
+                          ...styles.stampRing,
+                          background: i < (c.stamp_count % (c.reward_threshold || 8)) ? '#0d9488' : '#e2e8f0'
+                        }}></span>
+                      ))}
+                    </div>
+                    <p style={styles.stampText}>{c.stamp_count % (c.reward_threshold || 8)} / {c.reward_threshold || 8} rings</p>
+                    {c.reward_unlocked && <span style={styles.fruitBadge}>🍎 Reward Ready!</span>}
+                  </div>
+                  <button 
+                    onClick={() => navigate(`/wallet/${c.public_id}`)}
+                    style={styles.viewCardBtn}
+                  >
+                    View Card
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'staff' && (
+          <div>
+            <div style={styles.sectionHeader}>
+              <h2 style={styles.sectionTitle}>🌿 Your Team ({staff.length})</h2>
+              <button onClick={() => setShowInviteModal(true)} style={styles.addBtn}>+ Grow Team</button>
+            </div>
+            <div style={styles.staffGrid}>
+              {staff.map(s => (
+                <div key={s.public_id} style={styles.staffCard}>
+                  <div style={styles.staffAvatar}>{s.name?.[0]?.toUpperCase()}</div>
+                  <div style={styles.staffInfo}>
+                    <h4>{s.name}</h4>
+                    <p style={styles.staffRole}>{s.role}</p>
+                    <p style={styles.staffEmail}>{s.email}</p>
+                    <span style={{...styles.statusBadge, background: s.is_active ? '#dcfce7' : '#fee2e2', color: s.is_active ? '#166534' : '#991b1b'}}>
+                      {s.is_active ? 'Active' : 'Inactive'}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'program' && (
+          <div style={styles.programTab}>
+            <h2 style={styles.sectionTitle}>⚙️ Root System</h2>
+            <div style={styles.programCard}>
+              <div style={styles.programRow}>
+                <span style={styles.programLabel}>🎯 Stamp Goal</span>
+                <span style={styles.programValue}>{program?.stamp_goal || 8} stamps</span>
+              </div>
+              <div style={styles.programRow}>
+                <span style={styles.programLabel}>🎁 Reward</span>
+                <span style={styles.programValue}>{program?.reward_name || 'Free Service'}</span>
+              </div>
+              <div style={styles.programRow}>
+                <span style={styles.programLabel}>🎨 Primary Color</span>
+                <span style={{...styles.programValue, color: program?.primary_color || '#3b82f6'}}>{program?.primary_color || '#3b82f6'}</span>
+              </div>
+              <div style={styles.programRow}>
+                <span style={styles.programLabel}>📅 Reward Expiry</span>
+                <span style={styles.programValue}>{program?.reward_expiry_days || 30} days</span>
+              </div>
+              <button onClick={() => setShowConfigModal(true)} style={styles.editBtn}>🌱 Configure Roots</button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Invite Modal */}
+      {showInviteModal && (
+        <div style={styles.modalOverlay} onClick={() => setShowInviteModal(false)}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+            <h3>🌿 Grow Your Team</h3>
+            <form onSubmit={inviteStaff}>
+              <input style={styles.input} placeholder="Name" value={inviteForm.name} onChange={e => setInviteForm({...inviteForm, name: e.target.value})} required />
+              <input style={styles.input} placeholder="Email" type="email" value={inviteForm.email} onChange={e => setInviteForm({...inviteForm, email: e.target.value})} required />
+              <input style={styles.input} placeholder="Phone" value={inviteForm.phone} onChange={e => setInviteForm({...inviteForm, phone: e.target.value})} />
+              <select style={styles.input} value={inviteForm.role} onChange={e => setInviteForm({...inviteForm, role: e.target.value})}>
+                <option value="cashier">Cashier</option>
+                <option value="manager">Manager</option>
+              </select>
+              <button type="submit" style={styles.submitBtn}>Send Invite</button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Config Modal */}
+      {showConfigModal && (
+        <div style={styles.modalOverlay} onClick={() => setShowConfigModal(false)}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+            <h3>🌱 Configure Root System</h3>
+            <form onSubmit={saveConfig}>
+              <label style={styles.label}>Stamp Goal</label>
+              <input style={styles.input} type="number" min="3" max="20" value={configForm.stamp_goal || 8} onChange={e => setConfigForm({...configForm, stamp_goal: parseInt(e.target.value)})} />
+              <label style={styles.label}>Reward Name</label>
+              <input style={styles.input} value={configForm.reward_name || ''} onChange={e => setConfigForm({...configForm, reward_name: e.target.value})} />
+              <label style={styles.label}>Primary Color</label>
+              <input style={styles.input} type="color" value={configForm.primary_color || '#3b82f6'} onChange={e => setConfigForm({...configForm, primary_color: e.target.value})} />
+              <label style={styles.label}>Reward Expiry (days)</label>
+              <input style={styles.input} type="number" min="1" value={configForm.reward_expiry_days || 30} onChange={e => setConfigForm({...configForm, reward_expiry_days: parseInt(e.target.value)})} />
+              <button type="submit" style={styles.submitBtn}>Save Configuration</button>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
 const styles = {
-  page: {
+  container: {
     minHeight: '100vh',
-    background: '#f8fafc',
+    background: 'linear-gradient(180deg, #f0fdf4 0%, #ecfdf5 50%, #d1fae5 100%)',
     fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
   },
+  loadingTree: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: '100vh',
+    fontSize: 18,
+    color: '#0d9488',
+  },
+  treeIcon: {
+    fontSize: 64,
+    animation: 'sway 2s ease-in-out infinite',
+    marginBottom: 16,
+  },
   header: {
-    background: 'white',
-    borderBottom: '1px solid #e2e8f0',
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '16px 24px',
+    background: 'rgba(255,255,255,0.9)',
+    backdropFilter: 'blur(10px)',
+    borderBottom: '1px solid rgba(13,148,136,0.1)',
     position: 'sticky',
     top: 0,
     zIndex: 100,
   },
-  headerInner: {
-    maxWidth: 1200,
-    margin: '0 auto',
-    padding: '16px 24px',
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
   brand: {
     display: 'flex',
     alignItems: 'center',
-    gap: 10,
+    gap: 12,
   },
-  brandIcon: {
-    fontSize: 24,
+  logo: {
+    fontSize: 36,
   },
-  brandText: {
+  brandName: {
+    margin: 0,
     fontSize: 20,
     fontWeight: 700,
-    color: '#0f172a',
-    letterSpacing: '-0.5px',
+    color: '#0f766e',
   },
-  user: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 16,
-  },
-  userName: {
-    color: '#475569',
-    fontSize: 14,
-    fontWeight: 500,
-  },
-  logout: {
+  brandTagline: {
+    margin: 0,
+    fontSize: 12,
     color: '#0d9488',
-    fontSize: 14,
-    fontWeight: 500,
-    textDecoration: 'none',
   },
-  settingsBtn: {
-    padding: '8px 16px',
-    background: '#f1f5f9',
-    color: '#475569',
-    border: 'none',
-    borderRadius: 10,
-    fontSize: 14,
-    fontWeight: 500,
-    cursor: 'pointer',
+  headerActions: {
     display: 'flex',
+    gap: 12,
     alignItems: 'center',
-    gap: 6,
   },
-  container: {
-    maxWidth: 1200,
+  planBadge: {
+    padding: '6px 12px',
+    background: '#ccfbf1',
+    color: '#0f766e',
+    borderRadius: 20,
+    fontSize: 13,
+    fontWeight: 600,
+  },
+  navBtn: {
+    padding: '8px 16px',
+    background: '#0d9488',
+    color: 'white',
+    border: 'none',
+    borderRadius: 8,
+    fontSize: 13,
+    fontWeight: 600,
+    cursor: 'pointer',
+  },
+  logoutBtn: {
+    padding: '8px 16px',
+    background: 'transparent',
+    color: '#64748b',
+    border: '1px solid #e2e8f0',
+    borderRadius: 8,
+    fontSize: 13,
+    cursor: 'pointer',
+  },
+  toast: {
+    position: 'fixed',
+    top: 80,
+    right: 24,
+    padding: '12px 20px',
+    background: '#0d9488',
+    color: 'white',
+    borderRadius: 12,
+    fontSize: 14,
+    fontWeight: 500,
+    boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+    zIndex: 200,
+    cursor: 'pointer',
+  },
+  treeSection: {
+    padding: '40px 24px',
+    textAlign: 'center',
+    position: 'relative',
+  },
+  treeVisual: {
+    position: 'relative',
+    width: 300,
+    height: 350,
     margin: '0 auto',
-    padding: '24px',
+  },
+  treeCanopy: {
+    position: 'relative',
+    width: 250,
+    height: 200,
+    margin: '0 auto',
+    transition: 'transform 0.5s ease',
+  },
+  treeTop: {
+    fontSize: 120,
+    position: 'absolute',
+    bottom: 0,
+    left: '50%',
+    transform: 'translateX(-50%)',
+    filter: 'drop-shadow(0 4px 8px rgba(0,0,0,0.1))',
+  },
+  leaf: {
+    position: 'absolute',
+    fontSize: 20,
+    animation: 'float 3s ease-in-out infinite',
+  },
+  treeTrunk: {
+    position: 'relative',
+    width: 200,
+    margin: '0 auto',
+  },
+  roots: {
+    display: 'flex',
+    justifyContent: 'center',
+    marginTop: 8,
+  },
+  root: {
+    padding: '8px 16px',
+    background: 'rgba(13,148,136,0.1)',
+    borderRadius: 20,
+    fontSize: 13,
+    color: '#0f766e',
+    fontWeight: 600,
+  },
+  statsRing: {
+    display: 'flex',
+    justifyContent: 'center',
+    gap: 20,
+    marginTop: 20,
+  },
+  statOrb: {
     display: 'flex',
     flexDirection: 'column',
-    gap: 24,
-  },
-  statsGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-    gap: 16,
-  },
-  statCard: {
+    alignItems: 'center',
+    padding: '12px 20px',
     background: 'white',
     borderRadius: 16,
-    padding: '20px 24px',
-    boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+    boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
+    minWidth: 80,
   },
-  statIcon: {
+  orbNumber: {
     fontSize: 24,
-    marginBottom: 8,
-  },
-  statValue: {
-    fontSize: 32,
     fontWeight: 700,
-    color: '#0f172a',
-    lineHeight: 1,
+    color: '#0f766e',
   },
-  statLabel: {
-    fontSize: 13,
+  orbLabel: {
+    fontSize: 11,
     color: '#64748b',
-    marginTop: 4,
-    fontWeight: 500,
+    marginTop: 2,
   },
-  twoCol: {
+  growthBadge: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 20,
+    padding: '8px 20px',
+    background: 'white',
+    borderRadius: 20,
+    boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
+  },
+  growthIcon: {
+    fontSize: 24,
+  },
+  growthText: {
+    fontSize: 14,
+    fontWeight: 600,
+    color: '#0f766e',
+  },
+  tabs: {
+    display: 'flex',
+    justifyContent: 'center',
+    gap: 8,
+    padding: '0 24px 16px',
+    borderBottom: '1px solid rgba(13,148,136,0.1)',
+  },
+  tab: {
+    padding: '10px 20px',
+    border: 'none',
+    borderRadius: 12,
+    fontSize: 14,
+    fontWeight: 600,
+    cursor: 'pointer',
+    transition: 'all 0.2s',
+  },
+  content: {
+    padding: 24,
+    maxWidth: 900,
+    margin: '0 auto',
+  },
+  treeTab: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 20,
+  },
+  actionCards: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
-    gap: 24,
+    gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+    gap: 16,
   },
-  card: {
+  actionCard: {
     background: 'white',
     borderRadius: 16,
     padding: 24,
-    boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+    textAlign: 'center',
+    cursor: 'pointer',
+    boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+    transition: 'transform 0.2s, box-shadow 0.2s',
+    border: '1px solid rgba(13,148,136,0.08)',
   },
-  cardTitle: {
+  actionIcon: {
+    fontSize: 36,
+    marginBottom: 8,
+  },
+  goLiveCard: {
+    background: 'linear-gradient(135deg, #0d9488 0%, #14b8a6 100%)',
+    borderRadius: 16,
+    padding: 24,
+    color: 'white',
+    textAlign: 'center',
+  },
+  goLiveBtn: {
+    padding: '12px 32px',
+    background: 'white',
+    color: '#0d9488',
+    border: 'none',
+    borderRadius: 12,
     fontSize: 16,
-    fontWeight: 600,
-    color: '#0f172a',
-    margin: '0 0 4px',
+    fontWeight: 700,
+    cursor: 'pointer',
+    marginTop: 12,
   },
-  cardDesc: {
+  recentActivity: {
+    background: 'white',
+    borderRadius: 16,
+    padding: 20,
+    boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+  },
+  sectionTitle: {
+    margin: '0 0 16px 0',
+    fontSize: 18,
+    fontWeight: 700,
+    color: '#0f766e',
+  },
+  activityRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 12,
+    padding: '10px 0',
+    borderBottom: '1px solid #f1f5f9',
+  },
+  activityLeaf: {
+    fontSize: 16,
+  },
+  activityName: {
+    flex: 1,
+    fontSize: 14,
+    color: '#1e293b',
+  },
+  activityStamps: {
     fontSize: 13,
     color: '#64748b',
-    margin: '0 0 20px',
   },
-  cardHeader: {
+  activityFruit: {
+    fontSize: 16,
+  },
+  sectionHeader: {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 16,
   },
-  qrBox: {
-    display: 'flex',
-    justifyContent: 'center',
-    padding: 24,
-    background: '#f8fafc',
-    borderRadius: 12,
-    marginBottom: 16,
-  },
-  urlBox: {
-    display: 'flex',
-    gap: 8,
-    alignItems: 'center',
-  },
-  urlText: {
-    flex: 1,
-    fontSize: 12,
-    color: '#64748b',
-    background: '#f1f5f9',
-    padding: '8px 12px',
-    borderRadius: 8,
-    wordBreak: 'break-all',
-  },
-  copyBtn: {
+  viewAnalyticsBtn: {
     padding: '8px 16px',
     background: '#0d9488',
     color: 'white',
     border: 'none',
     borderRadius: 8,
     fontSize: 13,
-    fontWeight: 500,
-    cursor: 'pointer',
-    whiteSpace: 'nowrap',
-  },
-  addBtn: {
-    padding: '6px 14px',
-    background: '#0d9488',
-    color: 'white',
-    border: 'none',
-    borderRadius: 8,
-    fontSize: 13,
-    fontWeight: 500,
+    fontWeight: 600,
     cursor: 'pointer',
   },
-  inlineForm: {
-    display: 'flex',
-    gap: 8,
-    marginBottom: 16,
+  customerGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
+    gap: 16,
   },
-  smallInput: {
-    flex: 1,
-    padding: '8px 12px',
-    borderRadius: 8,
-    border: '1.5px solid #e2e8f0',
-    fontSize: 14,
-    fontFamily: 'inherit',
-  },
-  smallBtn: {
-    padding: '8px 16px',
-    background: '#0d9488',
-    color: 'white',
-    border: 'none',
-    borderRadius: 8,
-    fontSize: 13,
-    fontWeight: 500,
-    cursor: 'pointer',
-  },
-  list: {
+  customerCard: {
+    background: 'white',
+    borderRadius: 16,
+    padding: 20,
+    boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
     display: 'flex',
     flexDirection: 'column',
-    gap: 8,
-  },
-  listItem: {
-    display: 'flex',
-    alignItems: 'center',
     gap: 12,
-    padding: '12px',
-    background: '#f8fafc',
-    borderRadius: 10,
-  },
-  listAvatar: {
-    width: 36,
-    height: 36,
-    borderRadius: '50%',
-    background: 'linear-gradient(135deg, #0d9488, #0f766e)',
-    color: 'white',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: 14,
-    fontWeight: 600,
-  },
-  listInfo: {
-    flex: 1,
-  },
-  listName: {
-    fontSize: 14,
-    fontWeight: 600,
-    color: '#0f172a',
-  },
-  listMeta: {
-    fontSize: 12,
-    color: '#64748b',
-  },
-  badge: {
-    padding: '4px 10px',
-    borderRadius: 20,
-    fontSize: 12,
-    fontWeight: 500,
-  },
-  empty: {
-    textAlign: 'center',
-    color: '#94a3b8',
-    padding: 24,
-    fontSize: 14,
-  },
-  tableWrap: {
-    overflowX: 'auto',
-    marginTop: 16,
-  },
-  table: {
-    width: '100%',
-    borderCollapse: 'collapse',
-    fontSize: 14,
-  },
-  tableHead: {
-    background: '#f8fafc',
-  },
-  th: {
-    padding: '12px 16px',
-    textAlign: 'left',
-    fontWeight: 600,
-    color: '#475569',
-    fontSize: 13,
-    textTransform: 'uppercase',
-    letterSpacing: '0.5px',
-  },
-  tr: {
-    borderBottom: '1px solid #f1f5f9',
-  },
-  td: {
-    padding: '14px 16px',
-    color: '#334155',
-  },
-  customerCell: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 10,
   },
   customerAvatar: {
-    width: 32,
-    height: 32,
-    borderRadius: '50%',
-    background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
-    color: 'white',
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    background: 'linear-gradient(135deg, #0d9488, #14b8a6)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    fontSize: 12,
-    fontWeight: 600,
+    color: 'white',
+    fontSize: 20,
+    fontWeight: 700,
   },
-  customerName: {
-    fontWeight: 500,
-    color: '#0f172a',
+  customerInfo: {
     flex: 1,
   },
-  editBtn: {
-    padding: '4px 8px',
-    background: 'transparent',
-    border: 'none',
+  customerName: {
+    margin: '0 0 4px 0',
+    fontSize: 16,
+    color: '#1e293b',
+  },
+  customerPhone: {
+    margin: '0 0 8px 0',
+    fontSize: 12,
+    color: '#94a3b8',
+  },
+  stampRings: {
+    display: 'flex',
+    gap: 4,
+    marginBottom: 4,
+  },
+  stampRing: {
+    width: 12,
+    height: 12,
     borderRadius: 6,
-    cursor: 'pointer',
-    fontSize: 14,
-    opacity: 0.6,
-    transition: 'opacity 0.2s',
-  },
-  stampBar: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-  },
-  stampFill: {
-    display: 'flex',
-    gap: 2,
-  },
-  stampDot: {
-    fontSize: 14,
+    transition: 'background 0.3s',
   },
   stampText: {
+    margin: 0,
     fontSize: 12,
     color: '#64748b',
-    fontWeight: 500,
   },
-  emptyTd: {
-    padding: 40,
-    textAlign: 'center',
+  fruitBadge: {
+    display: 'inline-block',
+    padding: '4px 10px',
+    background: '#fef3c7',
+    color: '#92400e',
+    borderRadius: 12,
+    fontSize: 11,
+    fontWeight: 600,
+    marginTop: 4,
+  },
+  viewCardBtn: {
+    padding: '8px 16px',
+    background: '#f0fdf4',
+    color: '#0d9488',
+    border: '1px solid #a7f3d0',
+    borderRadius: 8,
+    fontSize: 13,
+    fontWeight: 600,
+    cursor: 'pointer',
+    alignSelf: 'flex-start',
+  },
+  addBtn: {
+    padding: '8px 16px',
+    background: '#0d9488',
+    color: 'white',
+    border: 'none',
+    borderRadius: 8,
+    fontSize: 13,
+    fontWeight: 600,
+    cursor: 'pointer',
+  },
+  staffGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
+    gap: 16,
+  },
+  staffCard: {
+    background: 'white',
+    borderRadius: 16,
+    padding: 20,
+    boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+    display: 'flex',
+    gap: 16,
+    alignItems: 'center',
+  },
+  staffAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    background: '#e0f2fe',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    color: '#0369a1',
+    fontSize: 20,
+    fontWeight: 700,
+  },
+  staffInfo: {
+    flex: 1,
+  },
+  staffRole: {
+    margin: '2px 0',
+    fontSize: 12,
+    color: '#64748b',
+    textTransform: 'capitalize',
+  },
+  staffEmail: {
+    margin: '2px 0',
+    fontSize: 12,
     color: '#94a3b8',
+  },
+  statusBadge: {
+    display: 'inline-block',
+    padding: '2px 8px',
+    borderRadius: 10,
+    fontSize: 11,
+    fontWeight: 600,
+    marginTop: 4,
+  },
+  programTab: {
+    maxWidth: 500,
+    margin: '0 auto',
+  },
+  programCard: {
+    background: 'white',
+    borderRadius: 16,
+    padding: 24,
+    boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+  },
+  programRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    padding: '12px 0',
+    borderBottom: '1px solid #f1f5f9',
+  },
+  programLabel: {
+    fontSize: 14,
+    color: '#64748b',
+  },
+  programValue: {
+    fontSize: 14,
+    fontWeight: 600,
+    color: '#1e293b',
+  },
+  editBtn: {
+    width: '100%',
+    padding: '12px',
+    background: '#0d9488',
+    color: 'white',
+    border: 'none',
+    borderRadius: 10,
+    fontSize: 14,
+    fontWeight: 600,
+    cursor: 'pointer',
+    marginTop: 16,
+  },
+  modalOverlay: {
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    background: 'rgba(0,0,0,0.5)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 300,
+    padding: 20,
+  },
+  modal: {
+    background: 'white',
+    borderRadius: 20,
+    padding: 28,
+    width: '100%',
+    maxWidth: 400,
+    boxShadow: '0 20px 40px rgba(0,0,0,0.2)',
+  },
+  input: {
+    width: '100%',
+    padding: '12px 16px',
+    marginBottom: 12,
+    border: '2px solid #e2e8f0',
+    borderRadius: 10,
+    fontSize: 14,
+    boxSizing: 'border-box',
+  },
+  label: {
+    display: 'block',
+    fontSize: 13,
+    fontWeight: 600,
+    color: '#64748b',
+    marginBottom: 4,
+    marginTop: 8,
+  },
+  submitBtn: {
+    width: '100%',
+    padding: '14px',
+    background: '#0d9488',
+    color: 'white',
+    border: 'none',
+    borderRadius: 10,
+    fontSize: 15,
+    fontWeight: 600,
+    cursor: 'pointer',
+    marginTop: 8,
   },
 }
 

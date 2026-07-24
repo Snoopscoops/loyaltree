@@ -311,8 +311,8 @@ class CustomerResponse(BaseModel):
 
 class StampRequest(BaseModel):
     customer_public_id: str
-    transaction_id: str
-    transaction_amount_cents: int
+    transaction_id: Optional[str] = "manual"
+    transaction_amount_cents: Optional[int] = 0
     payment_method: str = "cash"
     staff_pin: str
 
@@ -901,8 +901,8 @@ def add_stamp(public_id: str, request: StampRequest, db: Session = Depends(get_d
         staff_id=staff.id,
         stamp_number=stamp_number,
         status=StampStatus.CONFIRMED,
-        transaction_id=request.transaction_id,
-        transaction_amount_cents=request.transaction_amount_cents,
+        transaction_id=request.transaction_id or f"manual_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+        transaction_amount_cents=request.transaction_amount_cents or 0,
         payment_method=request.payment_method,
         can_void_until=datetime.utcnow() + timedelta(hours=24)
     )
@@ -1127,6 +1127,409 @@ def delete_announcement(public_id: str, announcement_id: int, db: Session = Depe
 # GOOGLE WALLET PASS
 # ============================================================
 
+
+@app.get("/api/v1/business/{public_id}/analytics")
+def get_business_analytics(public_id: str, range: str = "7d", db: Session = Depends(get_db)):
+    business = db.query(Business).filter(Business.public_id == public_id).first()
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    # Calculate date range
+    now = datetime.utcnow()
+    if range == "7d":
+        start_date = now - timedelta(days=7)
+    elif range == "30d":
+        start_date = now - timedelta(days=30)
+    elif range == "90d":
+        start_date = now - timedelta(days=90)
+    else:
+        start_date = datetime.min
+
+    # Get all customers
+    customers = db.query(Customer).filter(Customer.business_id == business.id).all()
+    total_customers = len(customers)
+
+    # Get stamps in range
+    stamps = db.query(Stamp).filter(
+        Stamp.business_id == business.id,
+        Stamp.status == StampStatus.CONFIRMED,
+        Stamp.created_at >= start_date
+    ).all()
+    total_stamps = len(stamps)
+
+    # Get rewards in range
+    rewards = db.query(Reward).filter(
+        Reward.business_id == business.id,
+        Reward.status == RewardStatus.REDEEMED,
+        Reward.redeemed_at >= start_date
+    ).all()
+    rewards_redeemed = len(rewards)
+
+    # Active members (have stamps in the last 30 days)
+    active_threshold = now - timedelta(days=30)
+    active_member_ids = set()
+    for stamp in db.query(Stamp).filter(
+        Stamp.business_id == business.id,
+        Stamp.status == StampStatus.CONFIRMED,
+        Stamp.created_at >= active_threshold
+    ).all():
+        active_member_ids.add(stamp.customer_id)
+    active_members = len(active_member_ids)
+
+    # Average transaction value
+    avg_transaction = 0
+    if stamps:
+        total_amount = sum(s.transaction_amount_cents or 0 for s in stamps)
+        avg_transaction = (total_amount / len(stamps)) / 100
+
+    # Retention rate (customers with 2+ visits / total customers)
+    retention_rate = 0
+    if total_customers > 0:
+        repeat_customers = 0
+        for c in customers:
+            visit_count = db.query(Stamp).filter(
+                Stamp.customer_id == c.id,
+                Stamp.status == StampStatus.CONFIRMED
+            ).count()
+            if visit_count >= 2:
+                repeat_customers += 1
+        retention_rate = (repeat_customers / total_customers) * 100
+
+    # Daily data for charts
+    daily_customers = []
+    daily_stamps = []
+    days = 7 if range == "7d" else 30 if range == "30d" else 90 if range == "90d" else min(365, (now - business.created_at).days or 1)
+
+    for i in range(days - 1, -1, -1):
+        day = now - timedelta(days=i)
+        day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day_start + timedelta(days=1)
+
+        day_customers = db.query(Customer).filter(
+            Customer.business_id == business.id,
+            Customer.created_at >= day_start,
+            Customer.created_at < day_end
+        ).count()
+
+        day_stamps = db.query(Stamp).filter(
+            Stamp.business_id == business.id,
+            Stamp.status == StampStatus.CONFIRMED,
+            Stamp.created_at >= day_start,
+            Stamp.created_at < day_end
+        ).count()
+
+        label = day.strftime("%a") if days <= 7 else day.strftime("%d") if days <= 30 else day.strftime("%b %d")
+        daily_customers.append({"label": label, "value": day_customers})
+        daily_stamps.append({"label": label, "value": day_stamps})
+
+    # Top customers
+    top_customers = []
+    for c in customers:
+        c_stamps = db.query(Stamp).filter(Stamp.customer_id == c.id, Stamp.status == StampStatus.CONFIRMED).count()
+        c_rewards = db.query(Reward).filter(Reward.customer_id == c.id, Reward.status == RewardStatus.REDEEMED).count()
+        last_stamp = db.query(Stamp).filter(Stamp.customer_id == c.id).order_by(Stamp.created_at.desc()).first()
+        top_customers.append({
+            "id": c.id,
+            "name": c.name,
+            "stamps": c_stamps,
+            "rewards": c_rewards,
+            "last_visit": last_stamp.created_at.strftime("%b %d") if last_stamp else "Never"
+        })
+    top_customers.sort(key=lambda x: x["stamps"], reverse=True)
+    top_customers = top_customers[:10]
+
+    # Peak hours
+    hour_counts = {}
+    for stamp in db.query(Stamp).filter(
+        Stamp.business_id == business.id,
+        Stamp.status == StampStatus.CONFIRMED,
+        Stamp.created_at >= start_date
+    ).all():
+        hour = stamp.created_at.hour
+        hour_counts[hour] = hour_counts.get(hour, 0) + 1
+
+    peak_hours = []
+    for hour in range(24):
+        label = f"{hour:02d}:00"
+        peak_hours.append({"hour": label, "count": hour_counts.get(hour, 0)})
+    peak_hours.sort(key=lambda x: x["count"], reverse=True)
+    peak_hours = peak_hours[:8]
+
+    # Conversion rate (stamps that led to rewards)
+    conversion_rate = 0
+    program = business.loyalty_program
+    if program and program.stamp_goal > 0:
+        total_confirmed = db.query(Stamp).filter(
+            Stamp.business_id == business.id,
+            Stamp.status == StampStatus.CONFIRMED
+        ).count()
+        if total_confirmed > 0:
+            expected_rewards = total_confirmed // program.stamp_goal
+            actual_rewards = db.query(Reward).filter(
+                Reward.business_id == business.id,
+                Reward.status.in_([RewardStatus.REDEEMED, RewardStatus.UNLOCKED])
+            ).count()
+            conversion_rate = min((actual_rewards / max(expected_rewards, 1)) * 100, 100)
+
+    # Redemption rate
+    redemption_rate = 0
+    unlocked_rewards = db.query(Reward).filter(
+        Reward.business_id == business.id,
+        Reward.status == RewardStatus.UNLOCKED
+    ).count()
+    redeemed_rewards = db.query(Reward).filter(
+        Reward.business_id == business.id,
+        Reward.status == RewardStatus.REDEEMED
+    ).count()
+    total_unlocked = unlocked_rewards + redeemed_rewards
+    if total_unlocked > 0:
+        redemption_rate = (redeemed_rewards / total_unlocked) * 100
+
+    # Repeat visit rate
+    repeat_rate = 0
+    if total_customers > 0:
+        multi_visit = 0
+        for c in customers:
+            visits = db.query(Stamp).filter(Stamp.customer_id == c.id, Stamp.status == StampStatus.CONFIRMED).count()
+            if visits >= 2:
+                multi_visit += 1
+        repeat_rate = (multi_visit / total_customers) * 100
+
+    return {
+        "total_customers": total_customers,
+        "active_members": active_members,
+        "total_stamps": total_stamps,
+        "rewards_redeemed": rewards_redeemed,
+        "avg_transaction": avg_transaction,
+        "retention_rate": retention_rate,
+        "customer_growth": 12.5,  # Placeholder - calculate from previous period
+        "active_growth": 8.3,
+        "stamp_growth": 15.2,
+        "reward_growth": 5.7,
+        "value_growth": 3.2,
+        "retention_growth": 2.1,
+        "daily_customers": daily_customers,
+        "daily_stamps": daily_stamps,
+        "top_customers": top_customers,
+        "peak_hours": peak_hours,
+        "conversion_rate": conversion_rate,
+        "redemption_rate": redemption_rate,
+        "repeat_rate": repeat_rate,
+    }
+
+
+@app.get("/api/v1/business/{public_id}/analytics")
+def get_business_analytics(public_id: str, range: str = "7d", db: Session = Depends(get_db)):
+    business = db.query(Business).filter(Business.public_id == public_id).first()
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    # Calculate date range
+    now = datetime.utcnow()
+    if range == "7d":
+        start_date = now - timedelta(days=7)
+    elif range == "30d":
+        start_date = now - timedelta(days=30)
+    elif range == "90d":
+        start_date = now - timedelta(days=90)
+    else:
+        start_date = datetime(2000, 1, 1)
+
+    # Get all customers for this business
+    customers = db.query(Customer).filter(Customer.business_id == business.id).all()
+    total_customers = len(customers)
+
+    # Get stamps in range
+    stamps_in_range = db.query(Stamp).filter(
+        Stamp.business_id == business.id,
+        Stamp.created_at >= start_date,
+        Stamp.status == StampStatus.CONFIRMED
+    ).all()
+
+    # Get rewards in range
+    rewards_in_range = db.query(Reward).filter(
+        Reward.business_id == business.id,
+        Reward.created_at >= start_date
+    ).all()
+
+    # Calculate active members (visited in last 30 days)
+    thirty_days_ago = now - timedelta(days=30)
+    active_members = db.query(Customer).filter(
+        Customer.business_id == business.id,
+        Customer.last_visit_at >= thirty_days_ago
+    ).count()
+
+    # Calculate retention rate
+    retained_customers = db.query(Customer).filter(
+        Customer.business_id == business.id,
+        Customer.last_visit_at >= thirty_days_ago
+    ).count()
+    retention_rate = round((retained_customers / total_customers * 100), 1) if total_customers > 0 else 0
+
+    # Calculate churn risk (no visit in 30+ days)
+    churn_risk = db.query(Customer).filter(
+        Customer.business_id == business.id,
+        Customer.last_visit_at < thirty_days_ago
+    ).count()
+
+    # Calculate average stamps per customer
+    total_stamps_all_time = db.query(Stamp).filter(
+        Stamp.business_id == business.id,
+        Stamp.status == StampStatus.CONFIRMED
+    ).count()
+    avg_stamps = round(total_stamps_all_time / total_customers, 1) if total_customers > 0 else 0
+
+    # Calculate completion rate
+    program = business.loyalty_program
+    stamp_goal = program.stamp_goal if program else 8
+    completed_cards = sum(1 for c in customers if c.total_stamps >= stamp_goal)
+    completion_rate = round((completed_cards / total_customers * 100), 1) if total_customers > 0 else 0
+
+    # Calculate reward redemption rate
+    total_rewards_earned = sum(c.total_rewards_earned for c in customers)
+    total_rewards_redeemed = sum(c.total_rewards_redeemed for c in customers)
+    redemption_rate = round((total_rewards_redeemed / total_rewards_earned * 100), 1) if total_rewards_earned > 0 else 0
+
+    # Calculate engagement rate (customers with 2+ visits)
+    engaged_customers = db.query(Customer).filter(
+        Customer.business_id == business.id,
+        Customer.total_stamps >= 2
+    ).count()
+    engagement_rate = round((engaged_customers / total_customers * 100), 1) if total_customers > 0 else 0
+
+    # Calculate adoption rate (customers who joined vs total potential - using total_customers as proxy)
+    adoption_rate = 100  # All enrolled are "adopted"
+
+    # Generate trend data (daily for 7d, weekly for 30d/90d)
+    trends = {"customers": [], "stamps": [], "rewards": [], "peak_hours": []}
+
+    if range == "7d":
+        for i in range(7):
+            day = now - timedelta(days=6-i)
+            day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+            day_end = day_start + timedelta(days=1)
+
+            new_customers = db.query(Customer).filter(
+                Customer.business_id == business.id,
+                Customer.created_at >= day_start,
+                Customer.created_at < day_end
+            ).count()
+
+            day_stamps = db.query(Stamp).filter(
+                Stamp.business_id == business.id,
+                Stamp.created_at >= day_start,
+                Stamp.created_at < day_end,
+                Stamp.status == StampStatus.CONFIRMED
+            ).count()
+
+            day_rewards = db.query(Reward).filter(
+                Reward.business_id == business.id,
+                Reward.created_at >= day_start,
+                Reward.created_at < day_end,
+                Reward.status == RewardStatus.REDEEMED
+            ).count()
+
+            trends["customers"].append({"label": day.strftime("%a"), "value": new_customers})
+            trends["stamps"].append({"label": day.strftime("%a"), "value": day_stamps})
+            trends["rewards"].append({"label": day.strftime("%a"), "value": day_rewards})
+    else:
+        # Weekly data for longer ranges
+        weeks = 4 if range == "30d" else 12
+        for i in range(weeks):
+            week_end = now - timedelta(weeks=weeks-1-i)
+            week_start = week_end - timedelta(weeks=1)
+
+            new_customers = db.query(Customer).filter(
+                Customer.business_id == business.id,
+                Customer.created_at >= week_start,
+                Customer.created_at < week_end
+            ).count()
+
+            week_stamps = db.query(Stamp).filter(
+                Stamp.business_id == business.id,
+                Stamp.created_at >= week_start,
+                Stamp.created_at < week_end,
+                Stamp.status == StampStatus.CONFIRMED
+            ).count()
+
+            week_rewards = db.query(Reward).filter(
+                Reward.business_id == business.id,
+                Reward.created_at >= week_start,
+                Reward.created_at < week_end,
+                Reward.status == RewardStatus.REDEEMED
+            ).count()
+
+            trends["customers"].append({"label": f"W{i+1}", "value": new_customers})
+            trends["stamps"].append({"label": f"W{i+1}", "value": week_stamps})
+            trends["rewards"].append({"label": f"W{i+1}", "value": week_rewards})
+
+    # Peak hours data
+    for hour in range(8, 22, 2):
+        hour_visits = db.query(Stamp).filter(
+            Stamp.business_id == business.id,
+            Stamp.status == StampStatus.CONFIRMED,
+            Stamp.created_at >= start_date
+        ).filter(
+            Stamp.created_at.hour >= hour,
+            Stamp.created_at.hour < hour + 2
+        ).count()
+        trends["peak_hours"].append({"label": f"{hour}-{hour+2}", "value": hour_visits})
+
+    # Top customers
+    top_customers = sorted(customers, key=lambda c: c.total_stamps, reverse=True)[:5]
+    top_customers_data = [{"name": c.name, "stamps": c.total_stamps} for c in top_customers]
+
+    # Revenue estimates (placeholder - integrate with payment system later)
+    avg_transaction = 25  # $25 average
+    stamp_revenue = total_stamps_all_time * avg_transaction
+    reward_cost = total_rewards_redeemed * 15  # $15 average reward cost
+    net_value = stamp_revenue - reward_cost
+
+    # Calculate changes (mock for now - compare with previous period)
+    customer_change = 12.5
+    active_change = 8.3
+    stamp_change = 15.2
+    reward_change = -5.1
+    avg_change = 3.7
+    roi_change = 10.2
+
+    return {
+        "overview": {
+            "total_customers": total_customers,
+            "active_members": active_members,
+            "total_stamps": total_stamps_all_time,
+            "total_rewards": total_rewards_redeemed,
+            "avg_stamps_per_customer": avg_stamps,
+            "roi": round((net_value / max(stamp_revenue, 1) * 100), 1),
+            "adoption_rate": adoption_rate,
+            "customer_change": customer_change,
+            "active_change": active_change,
+            "stamp_change": stamp_change,
+            "reward_change": reward_change,
+            "avg_change": avg_change,
+            "roi_change": roi_change,
+        },
+        "trends": trends,
+        "customers": {
+            "top_customers": top_customers_data,
+            "retention_rate": retention_rate,
+            "churn_risk": churn_risk,
+            "engagement_rate": engagement_rate,
+        },
+        "stamps": {
+            "completion_rate": completion_rate,
+        },
+        "rewards": {
+            "redemption_rate": redemption_rate,
+        },
+        "revenue": {
+            "stamp_revenue": stamp_revenue,
+            "reward_cost": reward_cost,
+            "net_value": net_value,
+            "avg_transaction": avg_transaction,
+        }
+    }
+
 class GoogleWalletPass:
     def __init__(self):
         self.issuer_id = os.getenv("GOOGLE_WALLET_ISSUER_ID", "")
@@ -1136,30 +1539,17 @@ class GoogleWalletPass:
         self.service_account_json = os.getenv("GOOGLE_WALLET_KEY_JSON", "")
 
         # Load key from JSON string if provided
-        self.private_key = ""
         if self.service_account_json:
             try:
                 import json
                 key_data = json.loads(self.service_account_json)
-                raw_key = key_data.get("private_key", "")
-
-                # Convert escaped newlines to actual newlines using chr(10)
-                self.private_key = raw_key
-                if "\\n" in self.private_key:
-                    self.private_key = self.private_key.replace("\\n", chr(10))
-                elif "\n" in self.private_key:
-                    self.private_key = self.private_key.replace("\n", chr(10))
-
-                print(f"[WALLET DEBUG] Loaded key from JSON, length: {len(self.private_key)}")
-                print(f"[WALLET DEBUG] Key starts with: {self.private_key[:30]}")
-
+                self.private_key = key_data.get("private_key", "")
                 if not self.service_account_email:
                     self.service_account_email = key_data.get("client_email", "")
-            except Exception as e:
-                print(f"[WALLET DEBUG] Error parsing JSON key: {e}")
-                import traceback
-                traceback.print_exc()
+            except:
                 self.private_key = ""
+        else:
+            self.private_key = ""
 
     def create_pass_class(self, business_name: str, program_name: str, primary_color: str = "#0d9488"):
         """Create a loyalty pass class for a business"""
@@ -1293,7 +1683,6 @@ class GoogleWalletPass:
 
     def generate_add_to_wallet_link(self, customer_id: str) -> str:
         """Generate the 'Add to Google Wallet' link"""
-        print(f"[WALLET DEBUG] Starting link generation for customer: {customer_id}")
         print(f"[WALLET DEBUG] issuer_id: {self.issuer_id}")
         print(f"[WALLET DEBUG] class_id: {self.class_id}")
         print(f"[WALLET DEBUG] service_account: {self.service_account_email}")
@@ -1304,42 +1693,35 @@ class GoogleWalletPass:
             print("[WALLET DEBUG] Missing email or issuer_id")
             return None
 
-        try:
-            # Key is already processed in __init__, use directly
-            private_key_pem = self.private_key
-            print(f"[WALLET DEBUG] Using private key, length: {len(private_key_pem)}")
-            print(f"[WALLET DEBUG] Key starts with: {private_key_pem[:50]}")
-
-            claims = {
-                "iss": self.service_account_email,
-                "aud": "google",
-                "typ": "savetowallet",
-                "iat": int(datetime.utcnow().timestamp()),
-                "exp": int(datetime.utcnow().timestamp()) + 3600,
-                "origins": ["https://loyaltree-five.vercel.app"],
-                "payload": {
-                    "loyaltyClasses": [
-                        {
-                            "id": f"{self.issuer_id}.{self.class_id}"
-                        }
-                    ],
-                    "loyaltyObjects": [
-                        {
-                            "id": f"{self.issuer_id}.{customer_id}",
-                            "classId": f"{self.issuer_id}.{self.class_id}"
-                        }
-                    ]
-                }
+        claims = {
+            "iss": self.service_account_email,
+            "aud": "google",
+            "typ": "savetowallet",
+            "iat": int(datetime.utcnow().timestamp()),
+            "origins": ["https://loyaltree-five.vercel.app"],
+            "payload": {
+                "loyaltyClasses": [
+                    {
+                        "id": f"{self.issuer_id}.{self.class_id}"
+                    }
+                ],
+                "loyaltyObjects": [
+                    {
+                        "id": f"{self.issuer_id}.{customer_id}",
+                        "classId": f"{self.issuer_id}.{self.class_id}"
+                    }
+                ]
             }
+        }
 
-            print(f"[WALLET DEBUG] Claims built. Encoding JWT...")
-            token = jwt.encode(claims, private_key_pem, algorithm="RS256")
-            print(f"[WALLET DEBUG] JWT encoded successfully! Token length: {len(token)}")
-
-            wallet_url = f"https://pay.google.com/gp/v/save/{token}"
-            print(f"[WALLET DEBUG] Wallet URL generated: {wallet_url[:80]}...")
-            return wallet_url
-
+        try:
+            if self.private_key:
+                print(f"[WALLET DEBUG] Attempting JWT sign with key length: {len(self.private_key)}")
+                token = jwt.encode(claims, self.private_key, algorithm="RS256")
+                print(f"[WALLET DEBUG] JWT signed successfully! Token length: {len(token)}")
+                return f"https://pay.google.com/gp/v/save/{token}"
+            else:
+                print("[WALLET DEBUG] No private key available")
         except Exception as e:
             print(f"[WALLET DEBUG] JWT signing error: {e}")
             import traceback
