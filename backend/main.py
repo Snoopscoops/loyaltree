@@ -16,6 +16,15 @@ import qrcode
 from qrcode.image.svg import SvgImage
 from io import BytesIO
 
+# ─── Google Wallet ──────────────────────────────────────────────────────────
+try:
+    from google.auth.crypt import RSASigner
+    from google.auth import jwt as google_jwt
+    GOOGLE_WALLET_AVAILABLE = True
+except ImportError:
+    GOOGLE_WALLET_AVAILABLE = False
+    print("WARNING: google-auth not installed. Google Wallet will not work.")
+
 # ─── Environment ────────────────────────────────────────────────────────────
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
@@ -118,6 +127,106 @@ def generate_qr_svg(data: str) -> str:
     buffer = BytesIO()
     qr.save(buffer)
     return buffer.getvalue().decode("utf-8")
+
+# ─── Google Wallet Helpers ──────────────────────────────────────────────────
+
+def get_google_wallet_credentials():
+    """Load service account credentials from env var"""
+    creds_json = os.getenv("GOOGLE_WALLET_CREDENTIALS", "")
+    if not creds_json:
+        return None
+    try:
+        return json.loads(creds_json)
+    except:
+        return None
+
+def create_google_wallet_jwt(loyalty_object: dict) -> str:
+    """Generate a signed JWT for Google Wallet save link"""
+    if not GOOGLE_WALLET_AVAILABLE:
+        return ""
+
+    creds = get_google_wallet_credentials()
+    if not creds:
+        return ""
+
+    signer = RSASigner.from_service_account_info(creds)
+
+    payload = {
+        "iss": creds.get("client_email"),
+        "aud": "google",
+        "origins": [BASE_URL],
+        "typ": "savetowallet",
+        "payload": {
+            "loyaltyObjects": [loyalty_object]
+        }
+    }
+
+    token = google_jwt.encode(signer, payload)
+    return token.decode("utf-8") if isinstance(token, bytes) else token
+
+def build_loyalty_class(business: dict, config: dict) -> dict:
+    """Build the LoyaltyClass template for a business"""
+    class_id = f"{GOOGLE_WALLET_ISSUER_ID}.{GOOGLE_WALLET_CLASS_SUFFIX}"
+    primary_color = config.get("primary_color", "#3b82f6") if config else "#3b82f6"
+
+    return {
+        "id": class_id,
+        "issuerName": business.get("name", "LoyaltyTree"),
+        "programName": f"{business.get('name', 'Loyalty')} Rewards",
+        "programLogo": {
+            "sourceUri": {
+                "uri": "https://loyaltree-btw1.onrender.com/static/logo.png"
+            }
+        },
+        "hexBackgroundColor": primary_color.replace("#", ""),
+        "heroImage": {
+            "sourceUri": {
+                "uri": "https://loyaltree-btw1.onrender.com/static/hero.png"
+            }
+        },
+        "reviewStatus": "UNDER_REVIEW",
+    }
+
+def build_loyalty_object(customer: dict, business: dict, config: dict) -> dict:
+    """Build the LoyaltyObject for a specific customer"""
+    class_id = f"{GOOGLE_WALLET_ISSUER_ID}.{GOOGLE_WALLET_CLASS_SUFFIX}"
+    object_id = f"{GOOGLE_WALLET_ISSUER_ID}.{customer['public_id']}"
+    primary_color = config.get("primary_color", "#3b82f6") if config else "#3b82f6"
+    stamp_goal = config.get("stamp_goal", 8) if config else 8
+    reward_name = config.get("reward_name", "Free Reward") if config else "Free Reward"
+    stamps = customer.get("stamp_count", 0)
+
+    return {
+        "id": object_id,
+        "classId": class_id,
+        "state": "active",
+        "barcode": {
+            "type": "QR_CODE",
+            "value": customer["public_id"],
+            "alternateText": customer.get("name", "Member")
+        },
+        "accountId": customer["public_id"],
+        "accountName": customer.get("name", "Member"),
+        "loyaltyPoints": {
+            "label": "Stamps",
+            "balance": {
+                "string": f"{stamps}/{stamp_goal}"
+            }
+        },
+        "textModulesData": [
+            {"header": "Business", "body": business.get("name", "")},
+            {"header": "Reward", "body": reward_name},
+            {"header": "Member Since", "body": customer.get("created_at", "")[:10]}
+        ],
+        "linksModuleData": {
+            "uris": [
+                {
+                    "uri": f"{BASE_URL}/wallet/{customer['public_id']}",
+                    "description": "View Card Online"
+                }
+            ]
+        }
+    }
 
 # ─── FastAPI App ─────────────────────────────────────────────────────────────
 app = FastAPI(title="LoyaltyTree API")
