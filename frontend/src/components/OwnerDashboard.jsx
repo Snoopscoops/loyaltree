@@ -13,10 +13,15 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [showInviteModal, setShowInviteModal] = useState(false)
   const [showConfigModal, setShowConfigModal] = useState(false)
   const [showQRModal, setShowQRModal] = useState(false)
+  const [showCardModal, setShowCardModal] = useState(false)
+  const [selectedCustomer, setSelectedCustomer] = useState(null)
   const [qrImageUrl, setQrImageUrl] = useState(null)
   const [inviteForm, setInviteForm] = useState({ name: '', email: '', phone: '', role: 'cashier' })
   const [configForm, setConfigForm] = useState({})
   const [message, setMessage] = useState('')
+
+  // Frontend URL for customer-facing pages
+  const FRONTEND_URL = 'https://loyaltree-app.onrender.com'
 
   useEffect(() => {
     if (!user?.business_slug) return
@@ -109,13 +114,11 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     }
   }
 
-  // Convert SVG QR code to PNG for sharing
   const fetchQRImage = async () => {
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/qr-code`)
       const data = await res.json()
       if (data.qr_code) {
-        // Convert base64 SVG to a blob URL
         const svgBase64 = data.qr_code.replace('data:image/svg+xml;base64,', '')
         const svgString = atob(svgBase64)
         const blob = new Blob([svgString], { type: 'image/svg+xml' })
@@ -128,18 +131,15 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     }
   }
 
-  // Share QR code image + text
   const shareQR = async () => {
-    const joinUrl = `${API_BASE}/join/${user.business_slug}`
+    const joinUrl = `${FRONTEND_URL}/join/${user.business_slug}`
     const shareText = `Join ${user?.business_name || 'our'} loyalty program! Scan the QR code or visit: ${joinUrl}`
 
     try {
-      // Try to fetch the QR as a file for sharing
       const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/qr-code`)
       const data = await res.json()
 
       if (data.qr_code && navigator.canShare && navigator.canShare({ files: [] })) {
-        // Convert base64 to file
         const svgBase64 = data.qr_code.replace('data:image/svg+xml;base64,', '')
         const byteCharacters = atob(svgBase64)
         const byteNumbers = new Array(byteCharacters.length)
@@ -156,38 +156,32 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           files: [file]
         })
       } else if (navigator.share) {
-        // Fallback: share text + URL only
         await navigator.share({
           title: `Join ${user?.business_name || 'Us'} Rewards`,
           text: shareText,
           url: joinUrl,
         })
       } else {
-        // Final fallback: copy to clipboard
         await navigator.clipboard.writeText(`${shareText} ${joinUrl}`)
         setMessage('Link copied to clipboard!')
       }
     } catch (err) {
-      console.error('Share error:', err)
-      // If user cancelled, don't show error
       if (err.name !== 'AbortError') {
-        // Try simple share without files
         try {
-          const joinUrl = `${API_BASE}/join/${user.business_slug}`
+          const joinUrl = `${FRONTEND_URL}/join/${user.business_slug}`
           await navigator.share({
             title: `Join ${user?.business_name || 'Us'} Rewards`,
             text: `Get stamps and earn rewards!`,
             url: joinUrl,
           })
         } catch (e2) {
-          await navigator.clipboard.writeText(joinUrl)
+          await navigator.clipboard.writeText(`${FRONTEND_URL}/join/${user.business_slug}`)
           setMessage('Join link copied!')
         }
       }
     }
   }
 
-  // Download QR code
   const downloadQR = () => {
     if (!qrImageUrl) return
     const link = document.createElement('a')
@@ -196,6 +190,29 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
+  }
+
+  const viewCustomerCard = (customer) => {
+    setSelectedCustomer(customer)
+    setShowCardModal(true)
+  }
+
+  const addToGoogleWallet = (customer) => {
+    const walletUrl = `${API_BASE}/api/v1/customer/${customer.public_id}/wallet-pass`
+    fetch(walletUrl)
+      .then(res => res.json())
+      .then(data => {
+        if (data.add_to_wallet_url) {
+          window.open(data.add_to_wallet_url, '_blank')
+        } else {
+          setMessage('Google Wallet link not available yet')
+        }
+      })
+      .catch(() => setMessage('Could not get wallet link'))
+  }
+
+  const addToAppleWallet = (customer) => {
+    setMessage('Apple Wallet coming soon!')
   }
 
   if (loading) return (
@@ -373,7 +390,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     {c.reward_unlocked && <span style={styles.fruitBadge}>🍎 Reward Ready!</span>}
                   </div>
                   <button 
-                    onClick={() => navigate(`/wallet/${c.public_id}`)}
+                    onClick={() => viewCustomerCard(c)}
                     style={styles.viewCardBtn}
                   >
                     View Card
@@ -450,7 +467,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               />
             )}
             <p style={{fontSize: 12, color: '#94a3b8', wordBreak: 'break-all', marginBottom: 16}}>
-              ${API_BASE}/join/{user.business_slug}
+              {FRONTEND_URL}/join/{user.business_slug}
             </p>
             <div style={{display: 'flex', gap: 12, justifyContent: 'center'}}>
               <button onClick={shareQR} style={styles.submitBtn}>
@@ -463,6 +480,93 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             <button 
               onClick={() => setShowQRModal(false)} 
               style={{...styles.submitBtn, background: 'transparent', color: '#64748b', marginTop: 8}}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Customer Loyalty Card Modal */}
+      {showCardModal && selectedCustomer && (
+        <div style={styles.modalOverlay} onClick={() => setShowCardModal(false)}>
+          <div style={{...styles.modal, maxWidth: 380}} onClick={e => e.stopPropagation()}>
+            {/* Digital Card Preview */}
+            <div style={{
+              ...styles.loyaltyCard,
+              background: `linear-gradient(135deg, ${program?.primary_color || '#0d9488'} 0%, ${program?.primary_color || '#14b8a6'} 100%)`,
+            }}>
+              <div style={styles.cardHeader}>
+                <span style={styles.cardLogo}>🌳</span>
+                <span style={styles.cardBusiness}>{user?.business_name}</span>
+              </div>
+              <div style={styles.cardBody}>
+                <h3 style={styles.cardName}>{selectedCustomer.name}</h3>
+                <p style={styles.cardId}>ID: {selectedCustomer.public_id?.slice(0, 8)}...</p>
+                <div style={styles.cardStamps}>
+                  {Array.from({length: program?.stamp_goal || 8}).map((_, i) => (
+                    <span key={i} style={{
+                      ...styles.cardStamp,
+                      background: i < (selectedCustomer.stamp_count % (program?.stamp_goal || 8)) ? 'white' : 'rgba(255,255,255,0.3)',
+                    }}>★</span>
+                  ))}
+                </div>
+                <p style={styles.cardProgress}>
+                  {selectedCustomer.stamp_count % (program?.stamp_goal || 8)} / {program?.stamp_goal || 8} stamps
+                </p>
+                {selectedCustomer.reward_unlocked && (
+                  <div style={styles.cardReward}>🎁 {program?.reward_name || 'Free Reward'} Unlocked!</div>
+                )}
+              </div>
+            </div>
+
+            {/* QR Code */}
+            <div style={{textAlign: 'center', margin: '20px 0'}}>
+              <img 
+                src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${selectedCustomer.public_id}`}
+                alt="Customer QR"
+                style={{borderRadius: 12, border: '2px solid #e2e8f0'}}
+              />
+              <p style={{fontSize: 11, color: '#94a3b8', marginTop: 8}}>Scan at checkout</p>
+            </div>
+
+            {/* Wallet Buttons */}
+            <div style={{display: 'flex', gap: 10, flexDirection: 'column'}}>
+              <button 
+                onClick={() => addToGoogleWallet(selectedCustomer)}
+                style={styles.googleWalletBtn}
+              >
+                <span style={{fontSize: 20}}>🎫</span> Add to Google Wallet
+              </button>
+              <button 
+                onClick={() => addToAppleWallet(selectedCustomer)}
+                style={styles.appleWalletBtn}
+              >
+                <span style={{fontSize: 20}}>🍎</span> Add to Apple Wallet
+              </button>
+              <button 
+                onClick={() => {
+                  const cardUrl = `${FRONTEND_URL}/wallet/${selectedCustomer.public_id}`
+                  if (navigator.share) {
+                    navigator.share({
+                      title: `${user?.business_name} Loyalty Card`,
+                      text: `My loyalty card for ${user?.business_name}`,
+                      url: cardUrl
+                    })
+                  } else {
+                    navigator.clipboard.writeText(cardUrl)
+                    setMessage('Card link copied!')
+                  }
+                }}
+                style={{...styles.submitBtn, background: '#f0fdf4', color: '#0d9488'}}
+              >
+                🔗 Share Card Link
+              </button>
+            </div>
+
+            <button 
+              onClick={() => setShowCardModal(false)} 
+              style={{...styles.submitBtn, background: 'transparent', color: '#64748b', marginTop: 12}}
             >
               Close
             </button>
@@ -1006,6 +1110,100 @@ const styles = {
     width: '100%',
     maxWidth: 400,
     boxShadow: '0 20px 40px rgba(0,0,0,0.2)',
+  },
+  loyaltyCard: {
+    borderRadius: 16,
+    padding: 24,
+    color: 'white',
+    boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
+  },
+  cardHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 16,
+    borderBottom: '1px solid rgba(255,255,255,0.2)',
+    paddingBottom: 12,
+  },
+  cardLogo: {
+    fontSize: 28,
+  },
+  cardBusiness: {
+    fontSize: 16,
+    fontWeight: 700,
+  },
+  cardBody: {
+    textAlign: 'center',
+  },
+  cardName: {
+    margin: '0 0 4px 0',
+    fontSize: 20,
+    fontWeight: 700,
+  },
+  cardId: {
+    margin: '0 0 16px 0',
+    fontSize: 11,
+    opacity: 0.8,
+  },
+  cardStamps: {
+    display: 'flex',
+    justifyContent: 'center',
+    gap: 6,
+    marginBottom: 12,
+  },
+  cardStamp: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: 14,
+    color: '#0d9488',
+    fontWeight: 700,
+  },
+  cardProgress: {
+    margin: '0 0 12px 0',
+    fontSize: 13,
+    opacity: 0.9,
+  },
+  cardReward: {
+    padding: '8px 16px',
+    background: 'rgba(255,255,255,0.2)',
+    borderRadius: 20,
+    fontSize: 13,
+    fontWeight: 600,
+    display: 'inline-block',
+  },
+  googleWalletBtn: {
+    width: '100%',
+    padding: '14px',
+    background: '#1a73e8',
+    color: 'white',
+    border: 'none',
+    borderRadius: 10,
+    fontSize: 15,
+    fontWeight: 600,
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  appleWalletBtn: {
+    width: '100%',
+    padding: '14px',
+    background: '#1c1c1e',
+    color: 'white',
+    border: 'none',
+    borderRadius: 10,
+    fontSize: 15,
+    fontWeight: 600,
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
   },
   input: {
     width: '100%',
