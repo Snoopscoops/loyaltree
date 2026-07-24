@@ -124,13 +124,7 @@ app = FastAPI(title="LoyaltyTree API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://loyaltree-btw1.onrender.com",
-        "https://loyaltree-five.vercel.app",
-        "https://loyaltree-app.onrender.com",
-        "http://localhost:3000",
-        "http://localhost:5173",
-    ],
+    allow_origins=["*"],  # ✅ Allow all origins temporarily
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -175,31 +169,37 @@ async def login(req: LoginRequest):
     try:
         res = supabase.table("businesses").select("*").eq("email", req.email).maybe_single().execute()
         business = res.data
-        if business and business.get("password") == hash_password(req.password):
-            return {
-                "success": True,
-                "business_slug": business["public_id"],
-                "business_name": business["name"],
-                "token": "owner-token-" + business["public_id"],
-            }
-    except Exception:
-        pass
+        if business:
+            stored_pw = business.get("password", "")
+            # Try multiple password formats
+            if stored_pw == hash_password(req.password) or stored_pw == req.password:
+                return {
+                    "success": True,
+                    "business_slug": business["public_id"],
+                    "business_name": business["name"],
+                    "token": "owner-token-" + business["public_id"],
+                }
+    except Exception as e:
+        print(f"Business login error: {e}")
 
     # Try to find staff by email
     try:
         res = supabase.table("staff").select("*,businesses(public_id,name)").eq("email", req.email).maybe_single().execute()
         staff = res.data
-        if staff and staff.get("pin") == req.password:
-            return {
-                "success": True,
-                "business_slug": staff["businesses"]["public_id"] if staff.get("businesses") else "",
-                "business_name": staff["businesses"]["name"] if staff.get("businesses") else "",
-                "staff_name": staff["name"],
-                "role": staff["role"],
-                "token": "staff-token-" + staff["public_id"],
-            }
-    except Exception:
-        pass
+        if staff:
+            stored_pin = staff.get("pin", "")
+            # Try multiple pin formats
+            if stored_pin == req.password or stored_pin == hash_password(req.password):
+                return {
+                    "success": True,
+                    "business_slug": staff["businesses"]["public_id"] if staff.get("businesses") else "",
+                    "business_name": staff["businesses"]["name"] if staff.get("businesses") else "",
+                    "staff_name": staff["name"],
+                    "role": staff["role"],
+                    "token": "staff-token-" + staff["public_id"],
+                }
+    except Exception as e:
+        print(f"Staff login error: {e}")
 
     raise HTTPException(status_code=401, detail="Invalid email or password")
 
