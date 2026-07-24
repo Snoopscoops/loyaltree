@@ -15,17 +15,16 @@ import qrcode
 from qrcode.image.svg import SvgImage
 from io import BytesIO
 
-# ─── Environment ────────────────────────────────────────────────────────────
-
-SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
-BASE_URL = os.getenv("BASE_URL", "https://loyaltree-btw1.onrender.com")
-GOOGLE_WALLET_ISSUER_ID = os.getenv("GOOGLE_WALLET_ISSUER_ID", "")
-GOOGLE_WALLET_CLASS_SUFFIX = os.getenv("GOOGLE_WALLET_CLASS_SUFFIX", "")
+# Environment
+SUPABASE_URL = os.getenv('SUPABASE_URL', '')
+SUPABASE_KEY = os.getenv('SUPABASE_KEY', '')
+BASE_URL = os.getenv('BASE_URL', 'https://loyaltree-btw1.onrender.com')
+GOOGLE_WALLET_ISSUER_ID = os.getenv('GOOGLE_WALLET_ISSUER_ID', '')
+GOOGLE_WALLET_CLASS_SUFFIX = os.getenv('GOOGLE_WALLET_CLASS_SUFFIX', '')
 
 ENV_ERROR = None
 if not SUPABASE_URL or not SUPABASE_KEY:
-    ENV_ERROR = "SUPABASE_URL or SUPABASE_KEY not set in environment variables."
+    ENV_ERROR = 'SUPABASE_URL or SUPABASE_KEY not set in environment variables.'
     supabase = None
 else:
     try:
@@ -34,8 +33,7 @@ else:
         ENV_ERROR = str(e)
         supabase = None
 
-# ─── Pydantic Models ──────────────────────────────────────────────────────────
-
+# Pydantic Models
 class BusinessCreate(BaseModel):
     name: str
     email: str
@@ -51,12 +49,12 @@ class StaffInvite(BaseModel):
     name: str
     email: str
     phone: Optional[str] = None
-    role: str = "cashier"
+    role: str = 'cashier'
 
 class LoyaltyConfig(BaseModel):
     stamp_goal: int = Field(default=8, ge=3, le=20)
-    reward_name: str = "Free Service"
-    primary_color: str = "#3b82f6"
+    reward_name: str = 'Free Service'
+    primary_color: str = '#3b82f6'
     reward_expiry_days: int = Field(default=30, ge=1)
     program_logo_url: Optional[str] = None
     hero_image_url: Optional[str] = None
@@ -70,8 +68,7 @@ class StampRequest(BaseModel):
     customer_public_id: str
     staff_pin: str
 
-# ─── Helpers ─────────────────────────────────────────────────────────────────
-
+# Helpers
 def generate_public_id() -> str:
     return uuid.uuid4().hex
 
@@ -120,10 +117,9 @@ def generate_qr_svg(data: str) -> str:
     qr.save(buffer)
     return buffer.getvalue().decode("utf-8")
 
-# ─── Google Wallet Helpers ──────────────────────────────────────────────────
-
+# Google Wallet Helpers
 def get_google_wallet_credentials():
-    creds_json = os.getenv("GOOGLE_WALLET_CREDENTIALS", "")
+    creds_json = os.getenv('GOOGLE_WALLET_CREDENTIALS', '')
     if not creds_json:
         return None
     try:
@@ -134,160 +130,158 @@ def get_google_wallet_credentials():
 def create_google_wallet_jwt(loyalty_object: dict) -> str:
     creds = get_google_wallet_credentials()
     if not creds:
-        return ""
+        return ''
     try:
         import jwt as pyjwt
-        private_key = creds.get("private_key", "")
-        client_email = creds.get("client_email", "")
+        private_key = creds.get('private_key', '')
+        client_email = creds.get('client_email', '')
         if not private_key or not client_email:
-            return ""
+            return ''
         now = datetime.utcnow()
         payload = {
-            "iss": client_email,
-            "aud": "google",
-            "iat": now,
-            "exp": now + timedelta(hours=1),
-            "origins": [BASE_URL, "https://loyaltree-five.vercel.app"],
-            "typ": "savetowallet",
-            "payload": {"loyaltyObjects": [loyalty_object]}
+            'iss': client_email,
+            'aud': 'google',
+            'iat': now,
+            'exp': now + timedelta(hours=1),
+            'origins': [BASE_URL, 'https://loyaltree-five.vercel.app'],
+            'typ': 'savetowallet',
+            'payload': {'loyaltyObjects': [loyalty_object]}
         }
-        token = pyjwt.encode(payload, private_key, algorithm="RS256")
-        return token if isinstance(token, str) else token.decode("utf-8")
+        token = pyjwt.encode(payload, private_key, algorithm='RS256')
+        return token if isinstance(token, str) else token.decode('utf-8')
     except Exception as e:
         print(f"JWT generation error: {e}")
-        return ""
+        return ''
 
 def get_google_access_token() -> str:
     creds = get_google_wallet_credentials()
     if not creds:
-        return ""
+        return ''
     try:
         import jwt as pyjwt
         import httpx
-        private_key = creds.get("private_key", "")
-        client_email = creds.get("client_email", "")
+        private_key = creds.get('private_key', '')
+        client_email = creds.get('client_email', '')
         now = int(datetime.utcnow().timestamp())
         auth_payload = {
-            "iss": client_email,
-            "sub": client_email,
-            "scope": "https://www.googleapis.com/auth/wallet_object.issuer",
-            "aud": "https://oauth2.googleapis.com/token",
-            "iat": now,
-            "exp": now + 3600,
+            'iss': client_email,
+            'sub': client_email,
+            'scope': 'https://www.googleapis.com/auth/wallet_object.issuer',
+            'aud': 'https://oauth2.googleapis.com/token',
+            'iat': now,
+            'exp': now + 3600,
         }
-        jwt_assertion = pyjwt.encode(auth_payload, private_key, algorithm="RS256")
+        jwt_assertion = pyjwt.encode(auth_payload, private_key, algorithm='RS256')
         if isinstance(jwt_assertion, bytes):
-            jwt_assertion = jwt_assertion.decode("utf-8")
+            jwt_assertion = jwt_assertion.decode('utf-8')
         with httpx.Client() as client:
             resp = client.post(
-                "https://oauth2.googleapis.com/token",
+                'https://oauth2.googleapis.com/token',
                 data={
-                    "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-                    "assertion": jwt_assertion,
+                    'grant_type': 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+                    'assertion': jwt_assertion,
                 }
             )
-            return resp.json().get("access_token", "")
+            return resp.json().get('access_token', '')
     except Exception as e:
         print(f"Access token error: {e}")
-        return ""
+        return ''
 
-def build_loyalty_class(business: dict, program: dict, review_status: str = "UNDER_REVIEW") -> dict:
-    biz_public_id = business.get("public_id", "")
-    class_id = program.get("google_wallet_class_id") if program else None
+def build_loyalty_class(business: dict, program: dict, review_status: str = 'UNDER_REVIEW') -> dict:
+    biz_public_id = business.get('public_id', '')
+    class_id = program.get('google_wallet_class_id') if program else None
     if not class_id:
-        class_id = f"{GOOGLE_WALLET_ISSUER_ID}.{biz_public_id}"
+        class_id = f'{GOOGLE_WALLET_ISSUER_ID}.{biz_public_id}'
 
-    primary_color = program.get("primary_color", "#3b82f6") if program else "#3b82f6"
-    reward_name = program.get("reward_name", "Free Reward") if program else "Free Reward"
-    card_name = program.get("card_name") if program else None
-    biz_name = business.get("name", "Loyalty")
-    program_name = card_name if card_name else f"{biz_name} Rewards"
+    primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
+    reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
+    card_name = program.get('card_name') if program else None
+    biz_name = business.get('name', 'Loyalty')
+    program_name = card_name if card_name else f'{biz_name} Rewards'
 
     loyalty_class = {
-        "id": class_id,
-        "issuerName": biz_name,
-        "programName": program_name,
-        "reviewStatus": review_status,
-        "hexBackgroundColor": primary_color.replace("#", ""),
-        "textModulesData": [
-            {"header": "Reward", "body": reward_name},
-            {"header": "About", "body": "Collect stamps, earn rewards"}
+        'id': class_id,
+        'issuerName': biz_name,
+        'programName': program_name,
+        'reviewStatus': review_status,
+        'hexBackgroundColor': primary_color.replace('#', ''),
+        'textModulesData': [
+            {'header': 'Reward', 'body': reward_name},
+            {'header': 'About', 'body': 'Collect stamps, earn rewards'}
         ]
     }
 
-    logo_url = business.get("logo_url")
+    logo_url = business.get('logo_url')
     if not logo_url and program:
-        logo_url = program.get("program_logo_url")
+        logo_url = program.get('program_logo_url')
     if logo_url:
-        loyalty_class["programLogo"] = {"sourceUri": {"uri": logo_url}}
+        loyalty_class['programLogo'] = {'sourceUri': {'uri': logo_url}}
 
-    hero_url = program.get("hero_image_url") if program else None
+    hero_url = program.get('hero_image_url') if program else None
     if hero_url:
-        loyalty_class["heroImage"] = {"sourceUri": {"uri": hero_url}}
+        loyalty_class['heroImage'] = {'sourceUri': {'uri': hero_url}}
 
     return loyalty_class
 
 def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
-    cust_public_id = customer.get("public_id", "")
-    class_id = program.get("google_wallet_class_id") if program else f"{GOOGLE_WALLET_ISSUER_ID}.{GOOGLE_WALLET_CLASS_SUFFIX}"
-    object_id = f"{GOOGLE_WALLET_ISSUER_ID}.{cust_public_id}"
-    stamp_goal = program.get("stamp_goal", 8) if program else 8
-    reward_name = program.get("reward_name", "Free Reward") if program else "Free Reward"
-    stamps = customer.get("stamp_count", 0)
-    cust_name = customer.get("name", "Member")
-    biz_name = business.get("name", "")
+    cust_public_id = customer.get('public_id', '')
+    class_id = program.get('google_wallet_class_id') if program else f'{GOOGLE_WALLET_ISSUER_ID}.{GOOGLE_WALLET_CLASS_SUFFIX}'
+    object_id = f'{GOOGLE_WALLET_ISSUER_ID}.{cust_public_id}'
+    stamp_goal = program.get('stamp_goal', 8) if program else 8
+    reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
+    stamps = customer.get('stamp_count', 0)
+    cust_name = customer.get('name', 'Member')
+    biz_name = business.get('name', '')
 
     return {
-        "id": object_id,
-        "classId": class_id,
-        "state": "active",
-        "barcode": {
-            "type": "QR_CODE",
-            "value": cust_public_id,
-            "alternateText": cust_name
+        'id': object_id,
+        'classId': class_id,
+        'state': 'active',
+        'barcode': {
+            'type': 'QR_CODE',
+            'value': cust_public_id,
+            'alternateText': cust_name
         },
-        "accountId": cust_public_id,
-        "accountName": cust_name,
-        "loyaltyPoints": {
-            "label": "Stamps",
-            "balance": {"string": f"{stamps}/{stamp_goal}"}
+        'accountId': cust_public_id,
+        'accountName': cust_name,
+        'loyaltyPoints': {
+            'label': 'Stamps',
+            'balance': {'string': f'{stamps}/{stamp_goal}'}
         },
-        "textModulesData": [
-            {"header": "Business", "body": biz_name},
-            {"header": "Reward", "body": reward_name},
-            {"header": "Progress", "body": f"{stamps} of {stamp_goal} stamps"}
+        'textModulesData': [
+            {'header': 'Business', 'body': biz_name},
+            {'header': 'Reward', 'body': reward_name},
+            {'header': 'Progress', 'body': f'{stamps} of {stamp_goal} stamps'}
         ],
-        "linksModuleData": {
-            "uris": [{"uri": f"{BASE_URL}/wallet/{cust_public_id}", "description": "View Card Online"}]
+        'linksModuleData': {
+            'uris': [{'uri': f'{BASE_URL}/wallet/{cust_public_id}', 'description': 'View Card Online'}]
         }
     }
 
-# ─── FastAPI App ─────────────────────────────────────────────────────────────
-
-app = FastAPI(title="LoyaltyTree API")
+# FastAPI App
+app = FastAPI(title='LoyaltyTree API')
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=['*'],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=['*'],
+    allow_headers=['*'],
 )
 
 @app.middleware("http")
 async def check_env(request: Request, call_next):
     if ENV_ERROR:
         return HTMLResponse(f"""
-        <h1 style="color:#dc2626;font-size:48px;margin-bottom:16px;">⚠️</h1>
+        <div style="text-align:center;padding:40px;font-family:sans-serif;">
+        <h1 style="color:#dc2626;font-size:48px;margin-bottom:16px;">&#9888;</h1>
         <h2 style="color:#1e293b;margin-bottom:16px;">Configuration Error</h2>
         <p style="color:#64748b;font-size:16px;line-height:1.6;margin-bottom:24px;">{ENV_ERROR}</p>
-    </div>
-    """)
+        </div>
+        """)
     return await call_next(request)
 
-# ═════════════════════════════════════════════════════════════════════════════
 # AUTH ROUTES
-# ═════════════════════════════════════════════════════════════════════════════
 
 @app.post("/api/v1/login")
 @app.post("/api/v1/auth/login")
@@ -299,7 +293,7 @@ async def login(req: LoginRequest):
         res = supabase.table("businesses").select("*").eq("email", req.email).maybe_single().execute()
         business = res.data
         if business:
-            stored_pw = business.get("password", "")
+            stored_pw = business.get('password', '')
             input_hash = hash_password(req.password)
             matched = (stored_pw == req.password) or (stored_pw == input_hash)
             if matched:
@@ -327,9 +321,9 @@ async def login(req: LoginRequest):
         res = supabase.table("staff").select("*,businesses(public_id,name,logo_url)").eq("email", req.email).maybe_single().execute()
         staff = res.data
         if staff:
-            stored_pin = staff.get("pin", "")
+            stored_pin = staff.get('pin', '')
             if stored_pin == req.password or stored_pin == hash_password(req.password):
-                biz = staff.get("businesses", {}) or {}
+                biz = staff.get('businesses', {}) or {}
                 return {
                     "success": True,
                     "token": "staff-token-" + staff.get("public_id", ""),
@@ -361,14 +355,14 @@ async def register(biz: BusinessCreate):
 
     public_id = generate_public_id()
     business_data = {
-        "public_id": public_id,
-        "name": biz.name,
-        "email": biz.email,
-        "phone": biz.phone,
-        "password": hash_password(biz.password),
-        "logo_url": biz.logo_url,
-        "status": "PENDING",
-        "created_at": datetime.utcnow().isoformat(),
+        'public_id': public_id,
+        'name': biz.name,
+        'email': biz.email,
+        'phone': biz.phone,
+        'password': hash_password(biz.password),
+        'logo_url': biz.logo_url,
+        'status': 'PENDING',
+        'created_at': datetime.utcnow().isoformat(),
     }
 
     try:
@@ -412,7 +406,7 @@ async def get_current_user(request: Request):
             res = supabase.table("staff").select("*,businesses(public_id,name,logo_url)").eq("public_id", public_id).maybe_single().execute()
             staff_data = res.data
             if staff_data:
-                biz = staff_data.get("businesses", {}) or {}
+                biz = staff_data.get('businesses', {}) or {}
                 return {
                     "business_slug": biz.get("public_id", ""),
                     "business_name": biz.get("name", ""),
@@ -426,9 +420,7 @@ async def get_current_user(request: Request):
 
     raise HTTPException(status_code=401, detail="Invalid token")
 
-# ═════════════════════════════════════════════════════════════════════════════
 # API ROUTES
-# ═════════════════════════════════════════════════════════════════════════════
 
 @app.get("/api/v1/business/{public_id}")
 async def get_business_api(public_id: str):
@@ -439,13 +431,12 @@ async def get_business_api(public_id: str):
 
 @app.get("/api/v1/customer/{public_id}")
 async def get_customer_api(public_id: str):
-    """Lookup customer by public_id (for scanner apps)"""
     customer = safe_get_customer(public_id)
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
 
-    business = safe_get_business_by_id(customer.get("business_id"))
-    program = safe_get_loyalty_program(customer.get("business_id")) if business else None
+    business = safe_get_business_by_id(customer.get('business_id'))
+    program = safe_get_loyalty_program(customer.get('business_id')) if business else None
 
     return {
         "customer": customer,
@@ -488,7 +479,7 @@ async def get_stats(public_id: str):
     try:
         res = supabase.table("customers").select("*").eq("business_id", business.get("id")).execute()
         customers = res.data or []
-        total_stamps = sum(c.get("stamp_count", 0) for c in customers)
+        total_stamps = sum(c.get('stamp_count', 0) for c in customers)
         return {
             "total_customers": len(customers),
             "total_stamps": total_stamps,
@@ -503,7 +494,7 @@ async def get_loyalty_config(public_id: str):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
-    program = safe_get_loyalty_program(business.get("id"))
+    program = safe_get_loyalty_program(business.get('id'))
     if not program:
         return {
             "stamp_goal": 8,
@@ -524,27 +515,27 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
         raise HTTPException(status_code=404, detail="Business not found")
 
     data = {
-        "business_id": business.get("id"),
-        "stamp_goal": config.stamp_goal,
-        "reward_name": config.reward_name,
-        "primary_color": config.primary_color,
-        "reward_expiry_days": config.reward_expiry_days,
-        "updated_at": datetime.utcnow().isoformat(),
+        'business_id': business.get('id'),
+        'stamp_goal': config.stamp_goal,
+        'reward_name': config.reward_name,
+        'primary_color': config.primary_color,
+        'reward_expiry_days': config.reward_expiry_days,
+        'updated_at': datetime.utcnow().isoformat(),
     }
 
     if config.program_logo_url is not None:
-        data["program_logo_url"] = config.program_logo_url
+        data['program_logo_url'] = config.program_logo_url
     if config.hero_image_url is not None:
-        data["hero_image_url"] = config.hero_image_url
+        data['hero_image_url'] = config.hero_image_url
     if config.card_name is not None:
-        data["card_name"] = config.card_name
+        data['card_name'] = config.card_name
 
     try:
         existing = supabase.table("loyalty_programs").select("id").eq("business_id", business.get("id")).maybe_single().execute()
         if existing.data:
             supabase.table("loyalty_programs").update(data).eq("business_id", business.get("id")).execute()
         else:
-            data["created_at"] = datetime.utcnow().isoformat()
+            data['created_at'] = datetime.utcnow().isoformat()
             supabase.table("loyalty_programs").insert(data).execute()
         return {"message": "Configuration saved"}
     except Exception as e:
@@ -563,15 +554,15 @@ async def invite_staff(public_id: str, invite: StaffInvite):
         raise HTTPException(status_code=404, detail="Business not found")
 
     staff_data = {
-        "business_id": business.get("id"),
-        "public_id": generate_public_id(),
-        "name": invite.name,
-        "email": invite.email,
-        "phone": invite.phone,
-        "role": invite.role,
-        "pin": "0000",
-        "is_active": True,
-        "created_at": datetime.utcnow().isoformat(),
+        'business_id': business.get('id'),
+        'public_id': generate_public_id(),
+        'name': invite.name,
+        'email': invite.email,
+        'phone': invite.phone,
+        'role': invite.role,
+        'pin': '0000',
+        'is_active': True,
+        'created_at': datetime.utcnow().isoformat(),
     }
 
     try:
@@ -586,13 +577,13 @@ async def go_live(public_id: str):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
-    if business.get("status", "").upper() == "ACTIVE":
+    if business.get('status', '').upper() == 'ACTIVE':
         return {"message": "Business is already live!", "status": business.get("status")}
 
     try:
         supabase.table("businesses").update({
-            "status": "ACTIVE",
-            "updated_at": datetime.utcnow().isoformat(),
+            'status': 'ACTIVE',
+            'updated_at': datetime.utcnow().isoformat(),
         }).eq("id", business.get("id")).execute()
         return {"message": "Business is now live!"}
     except Exception as e:
@@ -608,7 +599,7 @@ async def get_qr_code(public_id: str):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
-    join_url = f"{BASE_URL}/join/{public_id}"
+    join_url = f'{BASE_URL}/join/{public_id}'
     svg = generate_qr_svg(join_url)
     return JSONResponse({
         "svg": svg,
@@ -628,7 +619,7 @@ async def add_stamp(public_id: str, req: StampRequest):
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
 
-    if customer.get("business_id") != business.get("id"):
+    if customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
 
     try:
@@ -640,28 +631,28 @@ async def add_stamp(public_id: str, req: StampRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
 
-    program = safe_get_loyalty_program(business.get("id"))
-    goal = program.get("stamp_goal", 8) if program else 8
-    new_count = customer.get("stamp_count", 0) + 1
+    program = safe_get_loyalty_program(business.get('id'))
+    goal = program.get('stamp_goal', 8) if program else 8
+    new_count = customer.get('stamp_count', 0) + 1
     reward_unlocked = new_count >= goal
 
     try:
         update_data = {
-            "stamp_count": new_count,
-            "updated_at": datetime.utcnow().isoformat(),
+            'stamp_count': new_count,
+            'updated_at': datetime.utcnow().isoformat(),
         }
         try:
-            update_data["reward_unlocked"] = reward_unlocked
+            update_data['reward_unlocked'] = reward_unlocked
         except:
             pass
         supabase.table("customers").update(update_data).eq("id", customer.get("id")).execute()
     except Exception as e:
         error_msg = str(e)
-        if "reward_unlocked" in error_msg.lower():
+        if 'reward_unlocked' in error_msg.lower():
             try:
                 supabase.table("customers").update({
-                    "stamp_count": new_count,
-                    "updated_at": datetime.utcnow().isoformat(),
+                    'stamp_count': new_count,
+                    'updated_at': datetime.utcnow().isoformat(),
                 }).eq("id", customer.get("id")).execute()
                 return {
                     "message": "Stamp added!",
@@ -688,9 +679,7 @@ async def add_stamp(public_id: str, req: StampRequest):
         "reward_unlocked": reward_unlocked,
     }
 
-# ═════════════════════════════════════════════════════════════════════════════
 # GOOGLE WALLET CLASS MANAGEMENT
-# ═════════════════════════════════════════════════════════════════════════════
 
 @app.get("/api/v1/business/{public_id}/wallet-class")
 async def get_wallet_class(public_id: str):
@@ -698,12 +687,12 @@ async def get_wallet_class(public_id: str):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
-    program = safe_get_loyalty_program(business.get("id"))
+    program = safe_get_loyalty_program(business.get('id'))
     class_id = None
-    if program and program.get("google_wallet_class_id"):
-        class_id = program.get("google_wallet_class_id")
+    if program and program.get('google_wallet_class_id'):
+        class_id = program.get('google_wallet_class_id')
     else:
-        class_id = f"{GOOGLE_WALLET_ISSUER_ID}.{business.get('public_id', '')}"
+        class_id = f'{GOOGLE_WALLET_ISSUER_ID}.{business.get("public_id", "")}'
 
     access_token = get_google_access_token()
     google_data = None
@@ -712,7 +701,7 @@ async def get_wallet_class(public_id: str):
             import httpx
             with httpx.Client() as client:
                 resp = client.get(
-                    f"https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}",
+                    f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}',
                     headers={"Authorization": f"Bearer {access_token}"}
                 )
                 if resp.status_code == 200:
@@ -734,14 +723,14 @@ async def create_or_update_wallet_class(public_id: str):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
-    program = safe_get_loyalty_program(business.get("id"))
+    program = safe_get_loyalty_program(business.get('id'))
 
     class_id = None
-    review_status = "UNDER_REVIEW"
-    if program and program.get("google_wallet_class_id"):
-        class_id = program.get("google_wallet_class_id")
+    review_status = 'UNDER_REVIEW'
+    if program and program.get('google_wallet_class_id'):
+        class_id = program.get('google_wallet_class_id')
     else:
-        class_id = f"{GOOGLE_WALLET_ISSUER_ID}.{business.get('public_id', '')}"
+        class_id = f'{GOOGLE_WALLET_ISSUER_ID}.{business.get("public_id", "")}'
 
     loyalty_class = build_loyalty_class(business, program, review_status=review_status)
 
@@ -753,29 +742,29 @@ async def create_or_update_wallet_class(public_id: str):
         import httpx
         with httpx.Client() as client:
             resp = client.put(
-                f"https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}",
+                f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}',
                 headers={"Authorization": f"Bearer {access_token}"},
                 json=loyalty_class
             )
             result = resp.json()
             print(f"Google Wallet class API response: {resp.status_code} - {result}")
-
+            
             if resp.status_code in (200, 201):
                 db_data = {
-                    "google_wallet_class_id": class_id,
-                    "updated_at": datetime.utcnow().isoformat(),
+                    'google_wallet_class_id': class_id,
+                    'updated_at': datetime.utcnow().isoformat(),
                 }
                 if program:
                     supabase.table("loyalty_programs").update(db_data).eq("business_id", business.get("id")).execute()
                 else:
-                    db_data["business_id"] = business.get("id")
-                    db_data["stamp_goal"] = 8
-                    db_data["reward_name"] = "Free Service"
-                    db_data["primary_color"] = "#3b82f6"
-                    db_data["reward_expiry_days"] = 30
-                    db_data["created_at"] = datetime.utcnow().isoformat()
+                    db_data['business_id'] = business.get('id')
+                    db_data['stamp_goal'] = 8
+                    db_data['reward_name'] = 'Free Service'
+                    db_data['primary_color'] = '#3b82f6'
+                    db_data['reward_expiry_days'] = 30
+                    db_data['created_at'] = datetime.utcnow().isoformat()
                     supabase.table("loyalty_programs").insert(db_data).execute()
-
+                
                 return {
                     "success": True,
                     "message": "Wallet class created/updated successfully",
@@ -793,9 +782,7 @@ async def create_or_update_wallet_class(public_id: str):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-# ═════════════════════════════════════════════════════════════════════════════
 # CUSTOMER JOIN PAGE
-# ═════════════════════════════════════════════════════════════════════════════
 
 @app.get("/join/{business_public_id}", response_class=HTMLResponse)
 async def customer_join_page(business_public_id: str):
@@ -804,27 +791,27 @@ async def customer_join_page(business_public_id: str):
         if not business:
             return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Business not found</h1><p>This link is invalid.</p></div>")
 
-        if business.get("status", "").upper() != "ACTIVE":
+        if business.get('status', '').upper() != 'ACTIVE':
             return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Business not active</h1><p>This business is not accepting new members yet.</p></div>")
 
-        program = safe_get_loyalty_program(business.get("id"))
-
-        primary_color = program.get("primary_color", "#3b82f6") if program else "#3b82f6"
-        reward_name = program.get("reward_name", "Free Service") if program else "Free Service"
-        stamp_goal = program.get("stamp_goal", 8) if program else 8
-        card_name = program.get("card_name") if program else None
-        biz_name = business.get("name", "")
-        display_name = card_name if card_name else (biz_name + " Rewards")
-        logo_url = business.get("logo_url")
-
+        program = safe_get_loyalty_program(business.get('id'))
+        
+        primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
+        reward_name = program.get('reward_name', 'Free Service') if program else 'Free Service'
+        stamp_goal = program.get('stamp_goal', 8) if program else 8
+        card_name = program.get('card_name') if program else None
+        biz_name = business.get('name', '')
+        display_name = card_name if card_name else (biz_name + ' Rewards')
+        logo_url = business.get('logo_url')
+        
         if logo_url:
             logo_html = '<img src="' + logo_url + '" style="width:80px;height:80px;border-radius:20px;object-fit:cover;margin:0 auto 20px;display:block;" alt="Logo"/>'
         else:
             logo_html = '<div style="width:80px;height:80px;border-radius:20px;background:linear-gradient(135deg,' + primary_color + ' 0%,#14b8a6 100%);display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:36px;">&#127795;</div>'
-
-        biz_name_js = biz_name.replace("\", "\\").replace("'", "\'").replace('"', '\"')
-        display_name_js = display_name.replace("\", "\\").replace("'", "\'").replace('"', '\"')
-
+        
+        biz_name_json = json.dumps(biz_name)
+        display_name_json = json.dumps(display_name)
+        
         html = (
             '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
@@ -871,10 +858,10 @@ async def customer_join_page(business_public_id: str):
             '</form></div>'
             '<script>'
             '(function(){'
-            'const API_BASE="' + BASE_URL + '"'
-            'const BIZ_ID="' + business_public_id + '"'
-            'const BIZ_NAME="' + biz_name_js + '"'
-            'const CARD_NAME="' + display_name_js + '"'
+            'const API_BASE=' + json.dumps(BASE_URL) + ';'
+            'const BIZ_ID=' + json.dumps(business_public_id) + ';'
+            'const BIZ_NAME=' + biz_name_json + ';'
+            'const CARD_NAME=' + display_name_json + ';'
             'document.getElementById("signupForm").addEventListener("submit",async function(e){'
             'e.preventDefault();'
             'const name=document.getElementById("name").value;'
@@ -890,17 +877,17 @@ async def customer_join_page(business_public_id: str):
             'const walletUrl=API_BASE+"/wallet/"+data.public_id;'
             'const qrUrl="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data="+encodeURIComponent(data.public_id);'
             'var cardHtml='
-            '"<div style='font-size:48px;margin-bottom:16px;'>&#127881;</div>"+'
+            '"<div style=\'font-size:48px;margin-bottom:16px;\'>&#127881;</div>"+'
             '"<h1>Welcome, "+escapeHtml(data.name)+"!</h1>"+'
-            '"<p style='color:#64748b;margin-bottom:24px;'>Your "+escapeHtml(CARD_NAME)+" is ready</p>"+'
-            '"<div class='success-qr'><img src='"+qrUrl+"' alt='Your QR Code'/>"+'
-            '"<p style='font-size:12px;color:#94a3b8;margin-top:8px;'>Scan at checkout</p></div>"+'
-            '"<div class='member-id'><p>Your Member ID</p>"+'
+            '"<p style=\'color:#64748b;margin-bottom:24px;\'>Your "+escapeHtml(CARD_NAME)+" is ready</p>"+'
+            '"<div class=\'success-qr\'><img src=\'"+qrUrl+"\' alt=\'Your QR Code\'/>"+'
+            '"<p style=\'font-size:12px;color:#94a3b8;margin-top:8px;\'>Scan at checkout</p></div>"+'
+            '"<div class=\'member-id\'><p>Your Member ID</p>"+'
             '"<code>"+escapeHtml(data.public_id)+"</code></div>"+'
-            '"<div id='wallet-btn-container' style='margin-bottom:12px;'>"+'
-            '"<p style='color:#94a3b8;font-size:13px;'>Loading Google Wallet...</p></div>"+'
-            '"<button onclick='doShare()' class='share-btn'>&#128279; Share Card</button>"+'
-            '"<p style='font-size:12px;color:#94a3b8;margin-top:16px;'>Show this QR to your cashier on every visit to earn stamps.</p>";'
+            '"<div id=\'wallet-btn-container\' style=\'margin-bottom:12px;\'>"+'
+            '"<p style=\'color:#94a3b8;font-size:13px;\'>Loading Google Wallet...</p></div>"+'
+            '"<button onclick=\'doShare()\' class=\'share-btn\'>&#128279; Share Card</button>"+'
+            '"<p style=\'font-size:12px;color:#94a3b8;margin-top:16px;\'>Show this QR to your cashier on every visit to earn stamps.</p>";'
             'document.getElementById("card").innerHTML=cardHtml;'
             'window.doShare=function(){'
             'navigator.share({title:"My "+CARD_NAME,text:"My card for "+BIZ_NAME,url:walletUrl});'
@@ -912,17 +899,17 @@ async def customer_join_page(business_public_id: str):
             'console.log("Wallet data:",walletData);'
             'var container=document.getElementById("wallet-btn-container");'
             'if(walletData.save_url){'
-            'container.innerHTML="<a href='"+escapeHtml(walletData.save_url)+"' class='wallet-btn' target='_blank'>&#127903; Add to Google Wallet</a>";'
+            'container.innerHTML="<a href=\'"+escapeHtml(walletData.save_url)+"\' class=\'wallet-btn\' target=\'_blank\'>&#127903; Add to Google Wallet</a>";'
             '}else if(walletData.error){'
-            'container.innerHTML="<div style='background:#fef3c7;color:#92400e;padding:12px;border-radius:10px;font-size:13px;'>&#9888; "+escapeHtml(walletData.error)+"</div>";'
+            'container.innerHTML="<div style=\'background:#fef3c7;color:#92400e;padding:12px;border-radius:10px;font-size:13px;\'>&#9888; "+escapeHtml(walletData.error)+"</div>";'
             '}else{'
-            'container.innerHTML="<div style='background:#fef3c7;color:#92400e;padding:12px;border-radius:10px;font-size:13px;'>&#9888; Could not generate wallet link</div>";'
+            'container.innerHTML="<div style=\'background:#fef3c7;color:#92400e;padding:12px;border-radius:10px;font-size:13px;\'>&#9888; Could not generate wallet link</div>";'
             '}'
             '})'
             '.catch(function(err){'
             'console.error("Wallet fetch error:",err);'
             'var container=document.getElementById("wallet-btn-container");'
-            'container.innerHTML="<div style='background:#fef3c7;color:#92400e;padding:12px;border-radius:10px;font-size:13px;'>&#9888; Google Wallet error: "+escapeHtml(err.message||"Network error")+"</div>";'
+            'container.innerHTML="<div style=\'background:#fef3c7;color:#92400e;padding:12px;border-radius:10px;font-size:13px;\'>&#9888; Google Wallet error: "+escapeHtml(err.message||"Network error")+"</div>";'
             '});'
             '}else{'
             'alert(data.detail||"Signup failed");'
@@ -940,7 +927,7 @@ async def customer_join_page(business_public_id: str):
             '})();'
             '</script></body></html>'
         )
-
+        
         return HTMLResponse(html)
     except Exception as e:
         import traceback
@@ -953,18 +940,18 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
-    if business.get("status", "").upper() != "ACTIVE":
+    if business.get('status', '').upper() != 'ACTIVE':
         raise HTTPException(status_code=400, detail="Business not active")
 
     customer_public_id = generate_public_id()
     customer_data = {
-        "business_id": business.get("id"),
-        "public_id": customer_public_id,
-        "name": signup.name,
-        "phone": signup.phone,
-        "stamp_count": 0,
-        "created_at": datetime.utcnow().isoformat(),
-        "updated_at": datetime.utcnow().isoformat(),
+        'business_id': business.get('id'),
+        'public_id': customer_public_id,
+        'name': signup.name,
+        'phone': signup.phone,
+        'stamp_count': 0,
+        'created_at': datetime.utcnow().isoformat(),
+        'updated_at': datetime.utcnow().isoformat(),
     }
 
     try:
@@ -972,7 +959,7 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup):
     except Exception as e:
         error_msg = str(e)
         print(f"CUSTOMER INSERT ERROR: {error_msg}")
-        if "column" in error_msg.lower() and "does not exist" in error_msg.lower():
+        if 'column' in error_msg.lower() and 'does not exist' in error_msg.lower():
             raise HTTPException(status_code=500, detail=f"Database schema mismatch: {error_msg}. Please check your Supabase table columns.")
         raise HTTPException(status_code=500, detail=error_msg)
 
@@ -982,9 +969,7 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup):
         "message": "Welcome to the loyalty program!",
     }
 
-# ═════════════════════════════════════════════════════════════════════════════
 # WALLET PAGE
-# ═════════════════════════════════════════════════════════════════════════════
 
 @app.get("/wallet/{customer_public_id}", response_class=HTMLResponse)
 async def customer_wallet_page(customer_public_id: str):
@@ -992,35 +977,38 @@ async def customer_wallet_page(customer_public_id: str):
     if not customer:
         return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Card not found</h1><p>This loyalty card does not exist.</p></div>")
 
-    business = safe_get_business_by_id(customer.get("business_id"))
+    business = safe_get_business_by_id(customer.get('business_id'))
     if not business:
         return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Business not found</h1></div>")
 
-    program = safe_get_loyalty_program(business.get("id"))
-    primary_color = program.get("primary_color", "#3b82f6") if program else "#3b82f6"
-    stamp_goal = program.get("stamp_goal", 8) if program else 8
-    reward_name = program.get("reward_name", "Free Service") if program else "Free Service"
-    card_name = program.get("card_name") if program else None
-    display_name = card_name if card_name else (business.get("name", "") + " Rewards")
-    logo_url = business.get("logo_url")
+    program = safe_get_loyalty_program(business.get('id'))
+    primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
+    stamp_goal = program.get('stamp_goal', 8) if program else 8
+    reward_name = program.get('reward_name', 'Free Service') if program else 'Free Service'
+    card_name = program.get('card_name') if program else None
+    display_name = card_name if card_name else (business.get('name', '') + ' Rewards')
+    logo_url = business.get('logo_url')
 
-    stamps = customer.get("stamp_count", 0) % stamp_goal
+    stamps = customer.get('stamp_count', 0) % stamp_goal
     filled = stamps
 
-    stars_html = ""
+    stars_html = ''
     for i in range(stamp_goal):
         if i < filled:
             stars_html += '<span style="width:32px;height:32px;border-radius:16px;background:' + primary_color + ';color:white;display:inline-flex;align-items:center;justify-content:center;font-size:14px;margin:3px;">&#9733;</span>'
         else:
             stars_html += '<span style="width:32px;height:32px;border-radius:16px;background:rgba(255,255,255,0.25);color:white;display:inline-flex;align-items:center;justify-content:center;font-size:14px;margin:3px;">&#9733;</span>'
 
-    logo_html = ""
+    logo_html = ''
     if logo_url:
         logo_html = '<img src="' + logo_url + '" style="width:64px;height:64px;border-radius:16px;object-fit:cover;margin-bottom:12px;" alt="Logo"/>'
 
-    reward_badge = ""
-    if customer.get("reward_unlocked"):
+    reward_badge = ''
+    if customer.get('reward_unlocked'):
         reward_badge = '<span style="display:inline-block;padding:6px 14px;background:#fef3c7;color:#92400e;border-radius:20px;font-size:13px;font-weight:600;margin-top:12px;">&#127873; ' + reward_name + ' Ready!</span>'
+
+    display_name_json = json.dumps(display_name)
+    biz_name_json = json.dumps(business.get('name', ''))
 
     html = (
         '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
@@ -1065,17 +1053,24 @@ async def customer_wallet_page(customer_public_id: str):
         '<a href="https://pay.google.com/gp/v/save/' + customer.get("public_id", "") + '" class="wallet-btn">'
         '&#127903; Add to Google Wallet'
         '</a>'
-        '<button onclick="navigator.share({title:'My ' + display_name.replace("'", "\'") + '',text:'My card for ' + business.get("name", "").replace("'", "\'") + '',url:window.location.href})" class="share-btn">'
+        '<button id="shareBtn" class="share-btn">'
         '&#128279; Share Card'
         '</button>'
+        '<script>'
+        '(function(){'
+        'const dName=' + display_name_json + ';'
+        'const bName=' + biz_name_json + ';'
+        'document.getElementById("shareBtn").addEventListener("click",function(){'
+        'navigator.share({title:"My "+dName,text:"My card for "+bName,url:window.location.href});'
+        '});'
+        '})();'
+        '</script>'
         '</div></body></html>'
     )
 
     return HTMLResponse(html)
 
-# ═════════════════════════════════════════════════════════════════════════════
 # GOOGLE WALLET PASS
-# ═════════════════════════════════════════════════════════════════════════════
 
 @app.get("/api/v1/customer/{customer_public_id}/wallet-pass")
 async def get_wallet_pass(customer_public_id: str):
@@ -1086,17 +1081,15 @@ async def get_wallet_pass(customer_public_id: str):
         print("WALLET-PASS: Customer not found")
         raise HTTPException(status_code=404, detail="Customer not found")
 
-    business = safe_get_business_by_id(customer.get("business_id"))
+    business = safe_get_business_by_id(customer.get('business_id'))
     if not business:
         print("WALLET-PASS: Business not found")
         raise HTTPException(status_code=404, detail="Business not found")
 
-    program = safe_get_loyalty_program(business.get("id"))
+    program = safe_get_loyalty_program(business.get('id'))
 
-    # Build the loyalty object for Google Wallet
     loyalty_object = build_loyalty_object(customer, business, program)
 
-    # Generate the JWT "Save to Wallet" link
     jwt_token = create_google_wallet_jwt(loyalty_object)
     if not jwt_token:
         print("WALLET-PASS: JWT generation failed")
@@ -1113,8 +1106,9 @@ async def get_wallet_pass(customer_public_id: str):
         "loyalty_object": loyalty_object,
     }
 
-# ─── Run ────────────────────────────────────────────────────────────────────
+# Run
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+
