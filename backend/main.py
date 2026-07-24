@@ -126,6 +126,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://loyaltree-btw1.onrender.com",
+        "https://loyaltree-five.vercel.app",
+        "https://loyaltree-app.onrender.com",
         "http://localhost:3000",
         "http://localhost:5173",
     ],
@@ -164,6 +166,7 @@ async def check_env(request: Request, call_next):
 # ═════════════════════════════════════════════════════════════════════════════
 
 @app.post("/api/v1/login")
+@app.post("/api/v1/auth/login")  # ✅ Alias for frontend compatibility
 async def login(req: LoginRequest):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database not connected")
@@ -201,6 +204,7 @@ async def login(req: LoginRequest):
     raise HTTPException(status_code=401, detail="Invalid email or password")
 
 @app.post("/api/v1/register")
+@app.post("/api/v1/auth/register")  # ✅ Alias for frontend compatibility
 async def register(biz: BusinessCreate):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database not connected")
