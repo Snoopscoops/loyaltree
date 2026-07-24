@@ -57,6 +57,8 @@ class LoyaltyConfig(BaseModel):
     reward_name: str = "Free Service"
     primary_color: str = "#3b82f6"
     reward_expiry_days: int = Field(default=30, ge=1)
+    program_logo_url: Optional[str] = None
+    hero_image_url: Optional[str] = None
 
 class CustomerSignup(BaseModel):
     name: str
@@ -136,17 +138,13 @@ def create_google_wallet_jwt(loyalty_object: dict) -> str:
     if not creds:
         print("JWT: No credentials found")
         return ""
-    
     try:
         import jwt as pyjwt
-        
         private_key = creds.get("private_key", "")
         client_email = creds.get("client_email", "")
-        
         if not private_key or not client_email:
             print("JWT: Missing private_key or client_email")
             return ""
-        
         now = datetime.utcnow()
         payload = {
             "iss": client_email,
@@ -159,7 +157,6 @@ def create_google_wallet_jwt(loyalty_object: dict) -> str:
                 "loyaltyObjects": [loyalty_object]
             }
         }
-        
         token = pyjwt.encode(payload, private_key, algorithm="RS256")
         result = token if isinstance(token, str) else token.decode("utf-8")
         print(f"JWT: Generated successfully ({len(result)} chars)")
@@ -170,14 +167,85 @@ def create_google_wallet_jwt(loyalty_object: dict) -> str:
         traceback.print_exc()
         return ""
 
-def build_loyalty_object(customer: dict, business: dict, config: dict) -> dict:
+def get_google_access_token() -> str:
+    """Get OAuth2 access token for Google Wallet REST API"""
+    creds = get_google_wallet_credentials()
+    if not creds:
+        return ""
+    try:
+        import jwt as pyjwt
+        import httpx
+        private_key = creds.get("private_key", "")
+        client_email = creds.get("client_email", "")
+        now = int(datetime.utcnow().timestamp())
+        auth_payload = {
+            "iss": client_email,
+            "sub": client_email,
+            "scope": "https://www.googleapis.com/auth/wallet_object.issuer",
+            "aud": "https://oauth2.googleapis.com/token",
+            "iat": now,
+            "exp": now + 3600,
+        }
+        jwt_assertion = pyjwt.encode(auth_payload, private_key, algorithm="RS256")
+        if isinstance(jwt_assertion, bytes):
+            jwt_assertion = jwt_assertion.decode("utf-8")
+        with httpx.Client() as client:
+            resp = client.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                    "assertion": jwt_assertion,
+                }
+            )
+            data = resp.json()
+            return data.get("access_token", "")
+    except Exception as e:
+        print(f"Access token error: {e}")
+        return ""
+
+def build_loyalty_class(business: dict, program: dict, review_status: str = "UNDER_REVIEW") -> dict:
+    """Build the LoyaltyClass for a specific business"""
+    class_id = program.get("google_wallet_class_id") if program else None
+    if not class_id:
+        class_id = f"{GOOGLE_WALLET_ISSUER_ID}.{business['public_id']}"
+
+    primary_color = program.get("primary_color", "#3b82f6") if program else "#3b82f6"
+    reward_name = program.get("reward_name", "Free Reward") if program else "Free Reward"
+
+    loyalty_class = {
+        "id": class_id,
+        "issuerName": business.get("name", "LoyaltyTree"),
+        "programName": f"{business.get('name', 'Loyalty')} Rewards",
+        "reviewStatus": review_status,
+        "hexBackgroundColor": primary_color.replace("#", ""),
+        "textModulesData": [
+            {"header": "Reward", "body": reward_name},
+            {"header": "About", "body": "Collect stamps, earn rewards"}
+        ]
+    }
+
+    logo_url = program.get("program_logo_url") if program else None
+    if logo_url:
+        loyalty_class["programLogo"] = {
+            "sourceUri": {"uri": logo_url}
+        }
+
+    hero_url = program.get("hero_image_url") if program else None
+    if hero_url:
+        loyalty_class["heroImage"] = {
+            "sourceUri": {"uri": hero_url}
+        }
+
+    return loyalty_class
+
+def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     """Build the LoyaltyObject for a specific customer"""
-    class_id = f"{GOOGLE_WALLET_ISSUER_ID}.{GOOGLE_WALLET_CLASS_SUFFIX}"
+    class_id = program.get("google_wallet_class_id") if program else f"{GOOGLE_WALLET_ISSUER_ID}.{GOOGLE_WALLET_CLASS_SUFFIX}"
     object_id = f"{GOOGLE_WALLET_ISSUER_ID}.{customer['public_id']}"
-    stamp_goal = config.get("stamp_goal", 8) if config else 8
-    reward_name = config.get("reward_name", "Free Reward") if config else "Free Reward"
+    stamp_goal = program.get("stamp_goal", 8) if program else 8
+    reward_name = program.get("reward_name", "Free Reward") if program else "Free Reward"
     stamps = customer.get("stamp_count", 0)
-    
+
     return {
         "id": object_id,
         "classId": class_id,
@@ -255,7 +323,7 @@ async def check_env(request: Request, call_next):
 async def login(req: LoginRequest):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database not connected")
-    
+
     # Try to find business owner by email
     try:
         res = supabase.table("businesses").select("*").eq("email", req.email).maybe_single().execute()
@@ -264,7 +332,7 @@ async def login(req: LoginRequest):
             stored_pw = business.get("password", "")
             input_pw = req.password
             input_hash = hash_password(input_pw)
-            
+
             matched = False
             if stored_pw == input_pw:
                 matched = True
@@ -272,7 +340,7 @@ async def login(req: LoginRequest):
             elif stored_pw == input_hash:
                 matched = True
                 print(f"Login: sha256 match for {req.email}")
-            
+
             if matched:
                 return {
                     "success": True,
@@ -293,7 +361,7 @@ async def login(req: LoginRequest):
                 print(f"Login: password mismatch. Stored len={len(stored_pw)}, input hash={input_hash[:20]}...")
     except Exception as e:
         print(f"Business login error: {e}")
-    
+
     # Try to find staff by email
     try:
         res = supabase.table("staff").select("*,businesses(public_id,name)").eq("email", req.email).maybe_single().execute()
@@ -319,7 +387,7 @@ async def login(req: LoginRequest):
                 }
     except Exception as e:
         print(f"Staff login error: {e}")
-    
+
     raise HTTPException(status_code=401, detail="Invalid email or password")
 
 @app.post("/api/v1/register")
@@ -327,7 +395,7 @@ async def login(req: LoginRequest):
 async def register(biz: BusinessCreate):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database not connected")
-    
+
     public_id = generate_public_id()
     business_data = {
         "public_id": public_id,
@@ -338,12 +406,12 @@ async def register(biz: BusinessCreate):
         "status": "PENDING",
         "created_at": datetime.utcnow().isoformat(),
     }
-    
+
     try:
         supabase.table("businesses").insert(business_data).execute()
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Registration failed: {str(e)}")
-    
+
     return {
         "success": True,
         "business_slug": public_id,
@@ -357,10 +425,10 @@ async def get_current_user(request: Request):
     """Get current user from token header"""
     auth_header = request.headers.get("authorization", "")
     token = auth_header.replace("Bearer ", "").replace("bearer ", "") if auth_header else ""
-    
+
     if not token or not supabase:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    
+
     if token.startswith("owner-token-"):
         public_id = token.replace("owner-token-", "")
         business = safe_get_business(public_id)
@@ -372,7 +440,7 @@ async def get_current_user(request: Request):
                 "email": business["email"],
                 "role": "owner",
             }
-    
+
     if token.startswith("staff-token-"):
         public_id = token.replace("staff-token-", "")
         try:
@@ -388,7 +456,7 @@ async def get_current_user(request: Request):
                 }
         except Exception:
             pass
-    
+
     raise HTTPException(status_code=401, detail="Invalid token")
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -446,7 +514,7 @@ async def get_loyalty_config(public_id: str):
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
-    
+
     program = safe_get_loyalty_program(business["id"])
     if not program:
         return {
@@ -454,6 +522,9 @@ async def get_loyalty_config(public_id: str):
             "reward_name": "Free Service",
             "primary_color": "#3b82f6",
             "reward_expiry_days": 30,
+            "program_logo_url": None,
+            "hero_image_url": None,
+            "google_wallet_class_id": None,
         }
     return program
 
@@ -462,7 +533,7 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
-    
+
     data = {
         "business_id": business["id"],
         "stamp_goal": config.stamp_goal,
@@ -471,7 +542,13 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
         "reward_expiry_days": config.reward_expiry_days,
         "updated_at": datetime.utcnow().isoformat(),
     }
-    
+
+    # Only update optional fields if provided (do not wipe existing values)
+    if config.program_logo_url is not None:
+        data["program_logo_url"] = config.program_logo_url
+    if config.hero_image_url is not None:
+        data["hero_image_url"] = config.hero_image_url
+
     try:
         existing = supabase.table("loyalty_programs").select("id").eq("business_id", business["id"]).maybe_single().execute()
         if existing.data:
@@ -497,7 +574,7 @@ async def invite_staff(public_id: str, invite: StaffInvite):
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
-    
+
     staff_data = {
         "business_id": business["id"],
         "public_id": generate_public_id(),
@@ -509,7 +586,7 @@ async def invite_staff(public_id: str, invite: StaffInvite):
         "is_active": True,
         "created_at": datetime.utcnow().isoformat(),
     }
-    
+
     try:
         supabase.table("staff").insert(staff_data).execute()
         return {"message": "Staff invited", "pin": "0000"}
@@ -521,10 +598,10 @@ async def go_live(public_id: str):
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
-    
+
     if business.get("status", "").upper() == "ACTIVE":
         return {"message": "Business is already live!", "status": business["status"]}
-    
+
     try:
         result = supabase.table("businesses").update({
             "status": "ACTIVE",
@@ -545,7 +622,7 @@ async def get_qr_code(public_id: str):
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
-    
+
     join_url = f"{BASE_URL}/join/{public_id}"
     svg = generate_qr_svg(join_url)
     return JSONResponse({
@@ -557,7 +634,7 @@ async def get_qr_code(public_id: str):
 @app.post("/api/v1/business/{public_id}/stamp")
 async def add_stamp(public_id: str, req: StampRequest):
     print(f"STAMP REQUEST: business={public_id}, customer={req.customer_public_id}, pin={req.staff_pin}")
-    
+
     business = safe_get_business(public_id)
     if not business:
         print("STAMP ERROR: Business not found")
@@ -567,7 +644,7 @@ async def add_stamp(public_id: str, req: StampRequest):
     if not customer:
         print(f"STAMP ERROR: Customer {req.customer_public_id} not found")
         raise HTTPException(status_code=404, detail="Customer not found")
-    
+
     if customer.get("business_id") != business["id"]:
         print(f"STAMP ERROR: Customer business_id={customer.get('business_id')} != business_id={business['id']}")
         raise HTTPException(status_code=404, detail="Customer not found for this business")
@@ -599,7 +676,7 @@ async def add_stamp(public_id: str, req: StampRequest):
             update_data["reward_unlocked"] = reward_unlocked
         except:
             pass
-        
+
         result = supabase.table("customers").update(update_data).eq("id", customer["id"]).execute()
         print(f"STAMP SUCCESS: new_count={new_count}, result={result}")
     except Exception as e:
@@ -638,6 +715,119 @@ async def add_stamp(public_id: str, req: StampRequest):
     }
 
 # ═════════════════════════════════════════════════════════════════════════════
+# GOOGLE WALLET CLASS MANAGEMENT (B2B Customization)
+# ═════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/v1/business/{public_id}/wallet-class")
+async def get_wallet_class(public_id: str):
+    """Get the current Google Wallet class config for a business"""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    program = safe_get_loyalty_program(business["id"])
+    class_id = None
+    if program and program.get("google_wallet_class_id"):
+        class_id = program["google_wallet_class_id"]
+    else:
+        class_id = f"{GOOGLE_WALLET_ISSUER_ID}.{business['public_id']}"
+
+    # Try to fetch from Google API
+    access_token = get_google_access_token()
+    google_data = None
+    if access_token:
+        try:
+            import httpx
+            with httpx.Client() as client:
+                resp = client.get(
+                    f"https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}",
+                    headers={"Authorization": f"Bearer {access_token}"}
+                )
+                if resp.status_code == 200:
+                    google_data = resp.json()
+        except Exception as e:
+            print(f"Google class fetch error: {e}")
+
+    return {
+        "class_id": class_id,
+        "business_name": business["name"],
+        "program": program,
+        "google_class_exists": google_data is not None,
+        "google_class_data": google_data,
+    }
+
+@app.post("/api/v1/business/{public_id}/wallet-class")
+async def create_or_update_wallet_class(public_id: str):
+    """Create or update a business-specific Google Wallet LoyaltyClass"""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    program = safe_get_loyalty_program(business["id"])
+
+    # Determine class ID and review status
+    class_id = None
+    review_status = "UNDER_REVIEW"
+    if program and program.get("google_wallet_class_id"):
+        class_id = program["google_wallet_class_id"]
+    else:
+        class_id = f"{GOOGLE_WALLET_ISSUER_ID}.{business['public_id']}"
+
+    # Build class payload
+    loyalty_class = build_loyalty_class(business, program, review_status=review_status)
+
+    # Get access token
+    access_token = get_google_access_token()
+    if not access_token:
+        raise HTTPException(status_code=500, detail="Could not get Google access token. Check GOOGLE_WALLET_CREDENTIALS.")
+
+    # Create/update class via Google REST API
+    try:
+        import httpx
+        with httpx.Client() as client:
+            resp = client.put(
+                f"https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}",
+                headers={"Authorization": f"Bearer {access_token}"},
+                json=loyalty_class
+            )
+            result = resp.json()
+            print(f"Google Wallet class API response: {resp.status_code} - {result}")
+
+            if resp.status_code in (200, 201):
+                # Save class ID to DB
+                db_data = {
+                    "google_wallet_class_id": class_id,
+                    "updated_at": datetime.utcnow().isoformat(),
+                }
+                if program:
+                    supabase.table("loyalty_programs").update(db_data).eq("business_id", business["id"]).execute()
+                else:
+                    db_data["business_id"] = business["id"]
+                    db_data["stamp_goal"] = 8
+                    db_data["reward_name"] = "Free Service"
+                    db_data["primary_color"] = "#3b82f6"
+                    db_data["reward_expiry_days"] = 30
+                    db_data["created_at"] = datetime.utcnow().isoformat()
+                    supabase.table("loyalty_programs").insert(db_data).execute()
+
+                return {
+                    "success": True,
+                    "message": "Wallet class created/updated successfully",
+                    "class_id": class_id,
+                    "review_status": review_status,
+                    "google_response": result
+                }
+            else:
+                raise HTTPException(status_code=500, detail=f"Google API error: {result}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Wallet class creation error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ═════════════════════════════════════════════════════════════════════════════
 # CUSTOMER JOIN PAGE
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -666,7 +856,7 @@ async def customer_join_page(business_public_id: str):
     stamp_goal = program.get("stamp_goal", 8) if program else 8
 
     business_name_escaped = business["name"].replace("'", "\\'")
-    
+
     return HTMLResponse(f"""
     <!DOCTYPE html>
     <html lang="en">
@@ -758,12 +948,12 @@ async def customer_join_page(business_public_id: str):
                 const API_BASE = "{BASE_URL}";
                 const BIZ_ID = "{business_public_id}";
                 const BIZ_NAME = "{business_name_escaped}";
-                
+
                 document.getElementById("signupForm").addEventListener("submit", async function(e) {{
                     e.preventDefault();
                     const name = document.getElementById("name").value;
                     const phone = document.getElementById("phone").value;
-                    
+
                     try {{
                         const res = await fetch(API_BASE + "/api/v1/join/" + BIZ_ID, {{
                             method: "POST",
@@ -771,11 +961,11 @@ async def customer_join_page(business_public_id: str):
                             body: JSON.stringify({{name: name, phone: phone}})
                         }});
                         const data = await res.json();
-                        
+
                         if (res.ok) {{
                             const walletUrl = API_BASE + "/wallet/" + data.public_id;
                             const qrUrl = "https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=" + encodeURIComponent(data.public_id);
-                            
+
                             var cardHtml = 
                                 '<div style="font-size:48px;margin-bottom:16px;">🎉</div>' +
                                 '<h1>Welcome, ' + escapeHtml(data.name) + '!</h1>' +
@@ -793,9 +983,9 @@ async def customer_join_page(business_public_id: str):
                                 '</div>' +
                                 '<button onclick="doShare()" class="share-btn">🔗 Share Card</button>' +
                                 '<p style="font-size:12px;color:#94a3b8;margin-top:16px;">Show this QR to your cashier on every visit to earn stamps.</p>';
-                            
+
                             document.getElementById("card").innerHTML = cardHtml;
-                            
+
                             window.doShare = function() {{
                                 navigator.share({{
                                     title: "My Loyalty Card",
@@ -803,7 +993,7 @@ async def customer_join_page(business_public_id: str):
                                     url: walletUrl
                                 }});
                             }};
-                            
+
                             console.log("Fetching wallet pass for: " + data.public_id);
                             fetch(API_BASE + "/api/v1/customer/" + data.public_id + "/wallet-pass")
                                 .then(function(r) {{
@@ -834,7 +1024,7 @@ async def customer_join_page(business_public_id: str):
                         alert("Network error. Please try again.");
                     }}
                 }});
-                
+
                 function escapeHtml(text) {{
                     const div = document.createElement("div");
                     div.textContent = text;
@@ -1024,7 +1214,7 @@ async def customer_wallet_page(customer_public_id: str):
                 🎫 Add to Google Wallet
             </a>
 
-            <button onclick="navigator.share({title: 'My Loyalty Card', text: 'My card for {business["name"]}', url: window.location.href})" class="share-btn">
+            <button onclick="navigator.share({{title: 'My Loyalty Card', text: 'My card for {business["name"]}', url: window.location.href}})" class="share-btn">
                 🔗 Share Card
             </button>
         </div>
@@ -1040,7 +1230,7 @@ async def customer_wallet_page(customer_public_id: str):
 async def get_wallet_pass(customer_public_id: str):
     """Generate a Google Wallet save link for a customer"""
     print(f"WALLET-PASS: Requested for customer {customer_public_id}")
-    
+
     customer = safe_get_customer(customer_public_id)
     if not customer:
         print("WALLET-PASS: Customer not found")
@@ -1052,22 +1242,22 @@ async def get_wallet_pass(customer_public_id: str):
         raise HTTPException(status_code=404, detail="Business not found")
 
     program = safe_get_loyalty_program(business["id"])
-    
+
     # Check env vars
     creds = get_google_wallet_credentials()
     print(f"WALLET-PASS: Creds loaded: {bool(creds)}")
     print(f"WALLET-PASS: Issuer ID set: {bool(GOOGLE_WALLET_ISSUER_ID)}")
     print(f"WALLET-PASS: Class suffix set: {bool(GOOGLE_WALLET_CLASS_SUFFIX)}")
-    
-    # Build the loyalty object (class already exists in Google Wallet UI)
+
+    # Build the loyalty object (class already exists in Google Wallet UI or via API)
     loyalty_object = build_loyalty_object(customer, business, program)
     print(f"WALLET-PASS: Object ID: {loyalty_object['id']}")
     print(f"WALLET-PASS: Class ID ref: {loyalty_object['classId']}")
-    
-    # Generate JWT with OBJECT only (class already exists via UI)
+
+    # Generate JWT with OBJECT only (class already exists via UI or API)
     jwt_token = create_google_wallet_jwt(loyalty_object)
     print(f"WALLET-PASS: JWT generated: {bool(jwt_token)}")
-    
+
     if not jwt_token:
         print("WALLET-PASS: JWT generation failed")
         return JSONResponse({
@@ -1079,10 +1269,10 @@ async def get_wallet_pass(customer_public_id: str):
             },
             "loyalty_object_preview": loyalty_object
         })
-    
+
     save_url = f"https://pay.google.com/gp/v/save/{jwt_token}"
     print(f"WALLET-PASS: Save URL generated successfully")
-    
+
     return JSONResponse({
         "save_url": save_url,
         "jwt_preview": jwt_token[:50] + "...",
