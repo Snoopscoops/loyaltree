@@ -134,8 +134,13 @@ def get_google_wallet_credentials():
     except:
         return None
 
-def create_google_wallet_jwt(loyalty_class: dict, loyalty_object: dict) -> str:
-    """Generate a signed JWT for Google Wallet save link using PyJWT"""
+def create_google_wallet_jwt(loyalty_object: dict) -> str:
+    """Generate a signed JWT for Google Wallet save link using PyJWT.
+
+    NOTE: We only include the loyaltyObject, NOT the loyaltyClass.
+    The class was already created via Google Wallet UI console,
+    so we just reference it by classId in the object.
+    """
     creds = get_google_wallet_credentials()
     if not creds:
         print("JWT: No credentials found")
@@ -157,9 +162,9 @@ def create_google_wallet_jwt(loyalty_class: dict, loyalty_object: dict) -> str:
             "aud": "google",
             "iat": now,
             "exp": now + timedelta(hours=1),
+            "origins": [BASE_URL, "https://loyaltree-five.vercel.app"],
             "typ": "savetowallet",
             "payload": {
-                "loyaltyClasses": [loyalty_class],
                 "loyaltyObjects": [loyalty_object]
             }
         }
