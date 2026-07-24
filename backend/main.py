@@ -2,6 +2,7 @@ import os
 import uuid
 import base64
 import json
+import hashlib
 from datetime import datetime, timedelta
 from typing import Optional, List
 from contextlib import asynccontextmanager
@@ -22,26 +23,27 @@ BASE_URL = os.getenv("BASE_URL", "https://loyaltree-btw1.onrender.com")
 GOOGLE_WALLET_ISSUER_ID = os.getenv("GOOGLE_WALLET_ISSUER_ID", "")
 GOOGLE_WALLET_CLASS_SUFFIX = os.getenv("GOOGLE_WALLET_CLASS_SUFFIX", "")
 
-# ✅ ROBUST: Clear error if env vars missing
-if not SUPABASE_URL:
-    raise RuntimeError(
-        "❌ SUPABASE_URL environment variable is not set!\n"
-        "Set it in your Render dashboard: Environment → Add Environment Variable\n"
-        "Value: https://xmzrzrslggrbyojkojsy.supabase.co"
-    )
-if not SUPABASE_KEY:
-    raise RuntimeError(
-        "❌ SUPABASE_KEY environment variable is not set!\n"
-        "Set it in your Render dashboard: Environment → Add Environment Variable"
-    )
-
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Graceful startup - show error page instead of crashing
+ENV_ERROR = None
+if not SUPABASE_URL or not SUPABASE_KEY:
+    ENV_ERROR = "SUPABASE_URL or SUPABASE_KEY not set in environment variables."
+    supabase = None
+else:
+    try:
+        supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception as e:
+        ENV_ERROR = str(e)
+        supabase = None
 
 # ─── Pydantic Models ──────────────────────────────────────────────────────────
 class BusinessCreate(BaseModel):
     name: str
     email: str
     phone: Optional[str] = None
+    password: str
+
+class LoginRequest(BaseModel):
+    email: str
     password: str
 
 class StaffInvite(BaseModel):
@@ -71,17 +73,45 @@ class GoLiveResponse(BaseModel):
 def generate_public_id() -> str:
     return uuid.uuid4().hex
 
-def get_business(public_id: str):
-    res = supabase.table("businesses").select("*").eq("public_id", public_id).single().execute()
-    return res.data
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
 
-def get_customer(public_id: str):
-    res = supabase.table("customers").select("*").eq("public_id", public_id).single().execute()
-    return res.data
+def safe_get_business(public_id: str):
+    if not supabase:
+        return None
+    try:
+        res = supabase.table("businesses").select("*").eq("public_id", public_id).maybe_single().execute()
+        return res.data
+    except Exception:
+        return None
 
-def get_business_by_id(business_id: int):
-    res = supabase.table("businesses").select("*").eq("id", business_id).single().execute()
-    return res.data
+def safe_get_customer(public_id: str):
+    if not supabase:
+        return None
+    try:
+        res = supabase.table("customers").select("*").eq("public_id", public_id).maybe_single().execute()
+        return res.data
+    except Exception:
+        return None
+
+def safe_get_business_by_id(business_id: int):
+    if not supabase:
+        return None
+    try:
+        res = supabase.table("businesses").select("*").eq("id", business_id).maybe_single().execute()
+        return res.data
+    except Exception:
+        return None
+
+def safe_get_loyalty_program(business_id: int):
+    if not supabase:
+        return None
+    try:
+        # ✅ FIXED: table name is loyalty_programs, not loyalty_configs
+        res = supabase.table("loyalty_programs").select("*").eq("business_id", business_id).maybe_single().execute()
+        return res.data
+    except Exception:
+        return None
 
 def generate_qr_svg(data: str) -> str:
     qr = qrcode.make(data, image_factory=SvgImage)
@@ -104,60 +134,173 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Error page if env vars missing
+@app.middleware("http")
+async def check_env(request: Request, call_next):
+    if ENV_ERROR:
+        return HTMLResponse(f"""
+        <div style="text-align:center;padding:60px;font-family:sans-serif;max-width:600px;margin:0 auto;">
+            <h1 style="color:#dc2626;font-size:48px;margin-bottom:16px;">⚠️</h1>
+            <h2 style="color:#1e293b;margin-bottom:16px;">Configuration Error</h2>
+            <p style="color:#64748b;font-size:16px;line-height:1.6;margin-bottom:24px;">
+                {ENV_ERROR}
+            </p>
+            <div style="background:#f8fafc;border-radius:12px;padding:20px;text-align:left;">
+                <p style="margin:0 0 8px 0;font-weight:600;">Fix this in your Render dashboard:</p>
+                <ol style="margin:0;padding-left:20px;color:#64748b;">
+                    <li>Go to dashboard.render.com</li>
+                    <li>Click your service → Environment tab</li>
+                    <li>Add: SUPABASE_URL = https://xmzrzrslggrbyojkojsy.supabase.co</li>
+                    <li>Add: SUPABASE_KEY = (your key)</li>
+                    <li>Click Save Changes → Manual Deploy</li>
+                </ol>
+            </div>
+        </div>
+        """)
+    return await call_next(request)
+
+# ═════════════════════════════════════════════════════════════════════════════
+# AUTH ROUTES
+# ═════════════════════════════════════════════════════════════════════════════
+
+@app.post("/api/v1/login")
+async def login(req: LoginRequest):
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Database not connected")
+
+    # Try to find business owner by email
+    try:
+        res = supabase.table("businesses").select("*").eq("email", req.email).maybe_single().execute()
+        business = res.data
+        if business and business.get("password") == hash_password(req.password):
+            return {
+                "success": True,
+                "business_slug": business["public_id"],
+                "business_name": business["name"],
+                "token": "owner-token-" + business["public_id"],
+            }
+    except Exception:
+        pass
+
+    # Try to find staff by email
+    try:
+        res = supabase.table("staff").select("*,businesses(public_id,name)").eq("email", req.email).maybe_single().execute()
+        staff = res.data
+        if staff and staff.get("pin") == req.password:
+            return {
+                "success": True,
+                "business_slug": staff["businesses"]["public_id"] if staff.get("businesses") else "",
+                "business_name": staff["businesses"]["name"] if staff.get("businesses") else "",
+                "staff_name": staff["name"],
+                "role": staff["role"],
+                "token": "staff-token-" + staff["public_id"],
+            }
+    except Exception:
+        pass
+
+    raise HTTPException(status_code=401, detail="Invalid email or password")
+
+@app.post("/api/v1/register")
+async def register(biz: BusinessCreate):
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Database not connected")
+
+    public_id = generate_public_id()
+    business_data = {
+        "public_id": public_id,
+        "name": biz.name,
+        "email": biz.email,
+        "phone": biz.phone,
+        "password": hash_password(biz.password),
+        "status": "PENDING",
+        "created_at": datetime.utcnow().isoformat(),
+    }
+
+    try:
+        supabase.table("businesses").insert(business_data).execute()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Registration failed: {str(e)}")
+
+    return {
+        "success": True,
+        "business_slug": public_id,
+        "business_name": biz.name,
+        "token": "owner-token-" + public_id,
+    }
+
 # ═════════════════════════════════════════════════════════════════════════════
 # API ROUTES
 # ═════════════════════════════════════════════════════════════════════════════
 
 @app.get("/api/v1/business/{public_id}")
 async def get_business_api(public_id: str):
-    business = get_business(public_id)
+    business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
     return business
 
 @app.get("/api/v1/business/{public_id}/customers")
 async def get_customers(public_id: str):
-    business = get_business(public_id)
+    business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
-    res = supabase.table("customers").select("*").eq("business_id", business["id"]).execute()
-    return res.data or []
+    try:
+        res = supabase.table("customers").select("*").eq("business_id", business["id"]).execute()
+        return res.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/v1/business/{public_id}/staff")
 async def get_staff(public_id: str):
-    business = get_business(public_id)
+    business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
-    res = supabase.table("staff").select("*").eq("business_id", business["id"]).execute()
-    return res.data or []
+    try:
+        res = supabase.table("staff").select("*").eq("business_id", business["id"]).execute()
+        return res.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/v1/business/{public_id}/stats")
 async def get_stats(public_id: str):
-    business = get_business(public_id)
+    business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
-    customers_res = supabase.table("customers").select("*").eq("business_id", business["id"]).execute()
-    customers = customers_res.data or []
-    total_stamps = sum(c.get("stamp_count", 0) for c in customers)
-    return {
-        "total_customers": len(customers),
-        "total_stamps": total_stamps,
-        "unlocked_rewards": sum(1 for c in customers if c.get("reward_unlocked")),
-    }
+    try:
+        res = supabase.table("customers").select("*").eq("business_id", business["id"]).execute()
+        customers = res.data or []
+        total_stamps = sum(c.get("stamp_count", 0) for c in customers)
+        return {
+            "total_customers": len(customers),
+            "total_stamps": total_stamps,
+            "unlocked_rewards": sum(1 for c in customers if c.get("reward_unlocked")),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/v1/business/{public_id}/loyalty-config")
 async def get_loyalty_config(public_id: str):
-    business = get_business(public_id)
+    business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
-    res = supabase.table("loyalty_configs").select("*").eq("business_id", business["id"]).single().execute()
-    return res.data or {}
+
+    program = safe_get_loyalty_program(business["id"])
+    if not program:
+        # Return defaults if no program configured yet
+        return {
+            "stamp_goal": 8,
+            "reward_name": "Free Service",
+            "primary_color": "#3b82f6",
+            "reward_expiry_days": 30,
+        }
+    return program
 
 @app.post("/api/v1/business/{public_id}/loyalty-config")
 async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
-    business = get_business(public_id)
+    business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
+
     data = {
         "business_id": business["id"],
         "stamp_goal": config.stamp_goal,
@@ -166,19 +309,24 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
         "reward_expiry_days": config.reward_expiry_days,
         "updated_at": datetime.utcnow().isoformat(),
     }
-    existing = supabase.table("loyalty_configs").select("id").eq("business_id", business["id"]).execute()
-    if existing.data:
-        supabase.table("loyalty_configs").update(data).eq("business_id", business["id"]).execute()
-    else:
-        data["created_at"] = datetime.utcnow().isoformat()
-        supabase.table("loyalty_configs").insert(data).execute()
-    return {"message": "Configuration saved"}
+
+    try:
+        existing = supabase.table("loyalty_programs").select("id").eq("business_id", business["id"]).maybe_single().execute()
+        if existing.data:
+            supabase.table("loyalty_programs").update(data).eq("business_id", business["id"]).execute()
+        else:
+            data["created_at"] = datetime.utcnow().isoformat()
+            supabase.table("loyalty_programs").insert(data).execute()
+        return {"message": "Configuration saved"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/business/{public_id}/staff/invite")
 async def invite_staff(public_id: str, invite: StaffInvite):
-    business = get_business(public_id)
+    business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
+
     staff_data = {
         "business_id": business["id"],
         "public_id": generate_public_id(),
@@ -190,25 +338,34 @@ async def invite_staff(public_id: str, invite: StaffInvite):
         "is_active": True,
         "created_at": datetime.utcnow().isoformat(),
     }
-    supabase.table("staff").insert(staff_data).execute()
-    return {"message": "Staff invited", "pin": "0000"}
+
+    try:
+        supabase.table("staff").insert(staff_data).execute()
+        return {"message": "Staff invited", "pin": "0000"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/business/{public_id}/go-live")
 async def go_live(public_id: str):
-    business = get_business(public_id)
+    business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
-    supabase.table("businesses").update({
-        "status": "ACTIVE",
-        "updated_at": datetime.utcnow().isoformat(),
-    }).eq("id", business["id"]).execute()
-    return {"message": "Business is now live!"}
+
+    try:
+        supabase.table("businesses").update({
+            "status": "ACTIVE",
+            "updated_at": datetime.utcnow().isoformat(),
+        }).eq("id", business["id"]).execute()
+        return {"message": "Business is now live!"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/v1/business/{public_id}/qr-code")
 async def get_qr_code(public_id: str):
-    business = get_business(public_id)
+    business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
+
     join_url = f"{BASE_URL}/join/{public_id}"
     svg = generate_qr_svg(join_url)
     return JSONResponse({
@@ -219,30 +376,37 @@ async def get_qr_code(public_id: str):
 
 @app.post("/api/v1/business/{public_id}/stamp")
 async def add_stamp(public_id: str, req: StampRequest):
-    business = get_business(public_id)
+    business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
-    customer = get_customer(req.customer_public_id)
+    customer = safe_get_customer(req.customer_public_id)
     if not customer or customer["business_id"] != business["id"]:
         raise HTTPException(status_code=404, detail="Customer not found")
 
-    staff_res = supabase.table("staff").select("*").eq("business_id", business["id"]).eq("pin", req.staff_pin).execute()
-    if not staff_res.data:
-        raise HTTPException(status_code=403, detail="Invalid staff PIN")
+    try:
+        staff_res = supabase.table("staff").select("*").eq("business_id", business["id"]).eq("pin", req.staff_pin).execute()
+        if not staff_res.data:
+            raise HTTPException(status_code=403, detail="Invalid staff PIN")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-    config_res = supabase.table("loyalty_configs").select("*").eq("business_id", business["id"]).single().execute()
-    config = config_res.data or {"stamp_goal": 8}
-    goal = config.get("stamp_goal", 8)
+    program = safe_get_loyalty_program(business["id"])
+    goal = program.get("stamp_goal", 8) if program else 8
 
     new_count = customer.get("stamp_count", 0) + 1
     reward_unlocked = new_count >= goal
 
-    supabase.table("customers").update({
-        "stamp_count": new_count,
-        "reward_unlocked": reward_unlocked,
-        "updated_at": datetime.utcnow().isoformat(),
-    }).eq("id", customer["id"]).execute()
+    try:
+        supabase.table("customers").update({
+            "stamp_count": new_count,
+            "reward_unlocked": reward_unlocked,
+            "updated_at": datetime.utcnow().isoformat(),
+        }).eq("id", customer["id"]).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
     return {
         "message": "Stamp added!",
@@ -256,7 +420,7 @@ async def add_stamp(public_id: str, req: StampRequest):
 
 @app.get("/join/{business_public_id}", response_class=HTMLResponse)
 async def customer_join_page(business_public_id: str):
-    business = get_business(business_public_id)
+    business = safe_get_business(business_public_id)
     if not business:
         return HTMLResponse("""
         <div style="text-align:center;padding:40px;font-family:sans-serif;">
@@ -266,7 +430,7 @@ async def customer_join_page(business_public_id: str):
         """)
 
     # ✅ FIXED: Case-insensitive status check for enum "ACTIVE"
-    if business["status"].upper() != "ACTIVE":
+    if business.get("status", "").upper() != "ACTIVE":
         return HTMLResponse("""
         <div style="text-align:center;padding:40px;font-family:sans-serif;">
             <h1>Business not active</h1>
@@ -274,11 +438,10 @@ async def customer_join_page(business_public_id: str):
         </div>
         """)
 
-    config_res = supabase.table("loyalty_configs").select("*").eq("business_id", business["id"]).single().execute()
-    config = config_res.data or {}
-    primary_color = config.get("primary_color", "#3b82f6")
-    reward_name = config.get("reward_name", "Free Service")
-    stamp_goal = config.get("stamp_goal", 8)
+    program = safe_get_loyalty_program(business["id"])
+    primary_color = program.get("primary_color", "#3b82f6") if program else "#3b82f6"
+    reward_name = program.get("reward_name", "Free Service") if program else "Free Service"
+    stamp_goal = program.get("stamp_goal", 8) if program else 8
 
     return HTMLResponse(f"""
     <!DOCTYPE html>
@@ -476,12 +639,11 @@ async def customer_join_page(business_public_id: str):
 
 @app.post("/api/v1/join/{business_public_id}")
 async def customer_signup(business_public_id: str, signup: CustomerSignup):
-    business = get_business(business_public_id)
+    business = safe_get_business(business_public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
-    # ✅ FIXED: Case-insensitive status check for enum "ACTIVE"
-    if business["status"].upper() != "ACTIVE":
+    if business.get("status", "").upper() != "ACTIVE":
         raise HTTPException(status_code=400, detail="Business not active")
 
     customer_public_id = generate_public_id()
@@ -496,7 +658,10 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup):
         "updated_at": datetime.utcnow().isoformat(),
     }
 
-    supabase.table("customers").insert(customer_data).execute()
+    try:
+        supabase.table("customers").insert(customer_data).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
     return {
         "public_id": customer_public_id,
@@ -510,7 +675,7 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup):
 
 @app.get("/wallet/{customer_public_id}", response_class=HTMLResponse)
 async def customer_wallet_page(customer_public_id: str):
-    customer = get_customer(customer_public_id)
+    customer = safe_get_customer(customer_public_id)
     if not customer:
         return HTMLResponse("""
         <div style="text-align:center;padding:40px;font-family:sans-serif;">
@@ -519,7 +684,7 @@ async def customer_wallet_page(customer_public_id: str):
         </div>
         """)
 
-    business = get_business_by_id(customer["business_id"])
+    business = safe_get_business_by_id(customer["business_id"])
     if not business:
         return HTMLResponse("""
         <div style="text-align:center;padding:40px;font-family:sans-serif;">
@@ -527,11 +692,10 @@ async def customer_wallet_page(customer_public_id: str):
         </div>
         """)
 
-    config_res = supabase.table("loyalty_configs").select("*").eq("business_id", business["id"]).single().execute()
-    config = config_res.data or {}
-    primary_color = config.get("primary_color", "#3b82f6")
-    stamp_goal = config.get("stamp_goal", 8)
-    reward_name = config.get("reward_name", "Free Service")
+    program = safe_get_loyalty_program(business["id"])
+    primary_color = program.get("primary_color", "#3b82f6") if program else "#3b82f6"
+    stamp_goal = program.get("stamp_goal", 8) if program else 8
+    reward_name = program.get("reward_name", "Free Service") if program else "Free Service"
 
     stamps = customer.get("stamp_count", 0) % stamp_goal
     filled = stamps
@@ -662,16 +826,15 @@ async def customer_wallet_page(customer_public_id: str):
 
 @app.get("/api/v1/customer/{customer_public_id}/wallet-pass")
 async def get_wallet_pass(customer_public_id: str):
-    customer = get_customer(customer_public_id)
+    customer = safe_get_customer(customer_public_id)
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
 
-    business = get_business_by_id(customer["business_id"])
+    business = safe_get_business_by_id(customer["business_id"])
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
-    config_res = supabase.table("loyalty_configs").select("*").eq("business_id", business["id"]).single().execute()
-    config = config_res.data or {}
+    program = safe_get_loyalty_program(business["id"])
 
     pass_object = {
         "issuers": [{
@@ -697,7 +860,7 @@ async def get_wallet_pass(customer_public_id: str):
             },
             "textModulesData": [
                 {"header": "Business", "body": business["name"]},
-                {"header": "Reward", "body": config.get("reward_name", "Free Service")},
+                {"header": "Reward", "body": program.get("reward_name", "Free Service") if program else "Free Service"},
             ],
         }]
     }
@@ -710,7 +873,7 @@ async def get_wallet_pass(customer_public_id: str):
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "ok", "timestamp": datetime.utcnow().isoformat(), "env_ok": not bool(ENV_ERROR)}
 
 # ═════════════════════════════════════════════════════════════════════════════
 # ROOT
@@ -718,4 +881,4 @@ async def health_check():
 
 @app.get("/")
 async def root():
-    return {"message": "LoyaltyTree API is running", "base_url": BASE_URL}
+    return {"message": "LoyaltyTree API is running", "base_url": BASE_URL, "env_ok": not bool(ENV_ERROR)}
