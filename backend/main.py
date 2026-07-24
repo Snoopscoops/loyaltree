@@ -974,6 +974,7 @@ def customer_signup_page(business_public_id: str, db: Session = Depends(get_db))
         raise HTTPException(status_code=404, detail="Business not found or inactive")
 
     program = db.query(LoyaltyProgram).filter(LoyaltyProgram.business_id == business.id).first()
+    base_url = os.getenv("BASE_URL", "https://loyaltree-btw1.onrender.com")
 
     html_content = f"""
     <!DOCTYPE html>
@@ -994,6 +995,12 @@ def customer_signup_page(business_public_id: str, db: Session = Depends(get_db))
             input {{ width: 100%; padding: 14px; margin-bottom: 12px; border: 2px solid #e2e8f0; border-radius: 10px; font-size: 16px; box-sizing: border-box; }}
             input:focus {{ outline: none; border-color: {program.primary_color if program else '#3b82f6'}; }}
             button {{ width: 100%; padding: 16px; background: {program.primary_color if program else '#3b82f6'}; color: white; border: none; border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer; }}
+            .btn {{ display: block; width: 100%; padding: 14px; border: none; border-radius: 10px; font-size: 15px; font-weight: 600; cursor: pointer; margin-bottom: 12px; text-decoration: none; box-sizing: border-box; }}
+            .btn-google {{ background: #1a73e8; color: white; }}
+            .btn-share {{ background: #f0fdf4; color: #0d9488; border: 1px solid #a7f3d0; }}
+            .qr-section {{ background: #f8fafc; border-radius: 12px; padding: 16px; margin-bottom: 16px; }}
+            .qr-section img {{ width: 160px; height: 160px; border-radius: 12px; }}
+            .member-id {{ background: #f8fafc; border-radius: 12px; padding: 16px; margin-bottom: 16px; }}
             .terms {{ font-size: 11px; color: #94a3b8; margin-top: 16px; }}
         </style>
     </head>
@@ -1011,7 +1018,7 @@ def customer_signup_page(business_public_id: str, db: Session = Depends(get_db))
                 <input type="text" id="name" placeholder="Your Name" required>
                 <input type="tel" id="phone" placeholder="Phone Number" required>
                 <input type="email" id="email" placeholder="Email (optional)">
-                <button type="submit">Join & Add to Wallet</button>
+                <button type="submit">Join & Get Your Card</button>
             </form>
             <p class="terms">By joining, you agree to receive push notifications and SMS.<br>Unsubscribe anytime.</p>
         </div>
@@ -1033,16 +1040,43 @@ def customer_signup_page(business_public_id: str, db: Session = Depends(get_db))
                         <div style="font-size: 48px; margin-bottom: 16px;">🎉</div>
                         <h1>Welcome, ${{data.name}}!</h1>
                         <p style="color: #64748b; margin-bottom: 24px;">Your loyalty card is ready</p>
-                        <div style="background: #f8fafc; border-radius: 12px; padding: 16px; margin-bottom: 16px;">
+
+                        <div class="qr-section">
+                            <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${{data.public_id}}" alt="Your QR Code"/>
+                            <p style="font-size: 12px; color: #94a3b8; margin-top: 8px;">Scan at checkout</p>
+                        </div>
+
+                        <div class="member-id">
                             <p style="margin: 0; font-weight: 600;">Your Member ID</p>
                             <p style="margin: 4px 0 0 0; font-family: monospace; font-size: 14px; color: #64748b;">${{data.public_id}}</p>
                         </div>
-                        <p style="font-size: 12px; color: #94a3b8;">Show this to your cashier on every visit to earn stamps.</p>
+
+                        <a href="https://pay.google.com/gp/v/save/${{data.public_id}}" class="btn btn-google" target="_blank">
+                            🎫 Add to Google Wallet
+                        </a>
+
+                        <button onclick="shareCard()" class="btn btn-share">
+                            🔗 Share Card
+                        </button>
+
+                        <p style="font-size: 12px; color: #94a3b8; margin-top: 16px;">Show this QR to your cashier on every visit to earn stamps.</p>
                     `;
                 }} else {{
                     alert('Error: ' + data.detail);
                 }}
             }});
+
+            function shareCard() {{
+                if (navigator.share) {{
+                    navigator.share({{
+                        title: 'My {business.name} Card',
+                        text: 'My loyalty card for {business.name}',
+                        url: '{base_url}/wallet/' + document.querySelector('.member-id p:last-child').textContent.trim()
+                    }});
+                }} else {{
+                    alert('Copy your member ID and visit: {base_url}/wallet/[YOUR_ID]');
+                }}
+            }}
         </script>
     </body>
     </html>
@@ -1064,6 +1098,7 @@ def customer_wallet_page(customer_public_id: str, db: Session = Depends(get_db))
     stamp_goal = program.stamp_goal if program else 8
     current_progress = confirmed_stamps % stamp_goal
     unlocked_rewards = db.query(Reward).filter(Reward.customer_id == customer.id, Reward.status == RewardStatus.UNLOCKED).count()
+    base_url = os.getenv("BASE_URL", "https://loyaltree-btw1.onrender.com")
 
     html_content = f"""
     <!DOCTYPE html>
@@ -1093,9 +1128,9 @@ def customer_wallet_page(customer_public_id: str, db: Session = Depends(get_db))
             .qr-section img {{ border-radius: 12px; border: 2px solid #e2e8f0; }}
             .qr-section p {{ font-size: 12px; color: #94a3b8; margin-top: 8px; }}
             .btn {{ width: 100%; padding: 14px; border: none; border-radius: 10px; font-size: 15px; font-weight: 600; 
-                    cursor: pointer; margin-bottom: 12px; display: flex; align-items: center; justify-content: center; gap: 8px; }}
+                    cursor: pointer; margin-bottom: 12px; display: flex; align-items: center; justify-content: center; gap: 8px; 
+                    text-decoration: none; box-sizing: border-box; }}
             .btn-google {{ background: #1a73e8; color: white; }}
-            .btn-apple {{ background: #1c1c1e; color: white; }}
             .btn-share {{ background: #f0fdf4; color: #0d9488; border: 1px solid #a7f3d0; }}
             .footer {{ font-size: 12px; color: #94a3b8; margin-top: 16px; }}
         </style>
@@ -1119,97 +1154,35 @@ def customer_wallet_page(customer_public_id: str, db: Session = Depends(get_db))
                 <p>Scan at checkout to earn stamps</p>
             </div>
 
-            <a href="https://pay.google.com/gp/v/save/{customer.public_id}" class="btn btn-google">
+            <a href="https://pay.google.com/gp/v/save/{customer.public_id}" class="btn btn-google" target="_blank">
                 🎫 Add to Google Wallet
             </a>
 
-            <button onclick="navigator.share({{title: 'My {business.name} Card', text: 'My loyalty card', url: window.location.href}})" 
-                    class="btn btn-share">
+            <button onclick="shareCard()" class="btn btn-share">
                 🔗 Share Card
             </button>
 
             <p class="footer">Show this QR to your cashier on every visit</p>
         </div>
+        <script>
+            function shareCard() {{
+                if (navigator.share) {{
+                    navigator.share({{
+                        title: 'My {business.name} Card',
+                        text: 'My loyalty card for {business.name}',
+                        url: window.location.href
+                    }});
+                }} else {{
+                    alert('Copy this link: ' + window.location.href);
+                }}
+            }}
+        </script>
     </body>
     </html>
     """
     return HTMLResponse(content=html_content)
 
 
-@app.post("/api/v1/business/{public_id}/announcements")
-def create_announcement(public_id: str, request: AnnouncementRequest, db: Session = Depends(get_db)):
-    business = db.query(Business).filter(Business.public_id == public_id).first()
-    if not business:
-        raise HTTPException(status_code=404, detail="Business not found")
-
-    announcement = Announcement(
-        business_id=business.id,
-        title=request.title,
-        message=request.message,
-        type=request.type,
-        is_active=request.is_active,
-        end_date=datetime.fromisoformat(request.end_date) if request.end_date else None
-    )
-    db.add(announcement)
-    db.commit()
-    db.refresh(announcement)
-    return announcement
-
-@app.get("/api/v1/business/{public_id}/announcements")
-def list_announcements(public_id: str, db: Session = Depends(get_db)):
-    business = db.query(Business).filter(Business.public_id == public_id).first()
-    if not business:
-        raise HTTPException(status_code=404, detail="Business not found")
-
-    announcements = db.query(Announcement).filter(
-        Announcement.business_id == business.id,
-        Announcement.is_active == True
-    ).order_by(Announcement.created_at.desc()).all()
-
-    return announcements
-
-@app.put("/api/v1/business/{public_id}/announcements/{announcement_id}")
-def update_announcement(public_id: str, announcement_id: int, request: AnnouncementRequest, db: Session = Depends(get_db)):
-    business = db.query(Business).filter(Business.public_id == public_id).first()
-    if not business:
-        raise HTTPException(status_code=404, detail="Business not found")
-
-    announcement = db.query(Announcement).filter(
-        Announcement.id == announcement_id,
-        Announcement.business_id == business.id
-    ).first()
-
-    if not announcement:
-        raise HTTPException(status_code=404, detail="Announcement not found")
-
-    announcement.title = request.title
-    announcement.message = request.message
-    announcement.type = request.type
-    announcement.is_active = request.is_active
-    announcement.end_date = datetime.fromisoformat(request.end_date) if request.end_date else None
-    announcement.updated_at = datetime.utcnow()
-
-    db.commit()
-    db.refresh(announcement)
-    return announcement
-
-@app.delete("/api/v1/business/{public_id}/announcements/{announcement_id}")
-def delete_announcement(public_id: str, announcement_id: int, db: Session = Depends(get_db)):
-    business = db.query(Business).filter(Business.public_id == public_id).first()
-    if not business:
-        raise HTTPException(status_code=404, detail="Business not found")
-
-    announcement = db.query(Announcement).filter(
-        Announcement.id == announcement_id,
-        Announcement.business_id == business.id
-    ).first()
-
-    if not announcement:
-        raise HTTPException(status_code=404, detail="Announcement not found")
-
-    db.delete(announcement)
-    db.commit()
-    return {"status": "deleted"}
 
 
 # ============================================================
