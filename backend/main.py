@@ -1,1800 +1,710 @@
-# ============================================================
-# LOYALTYTREE BACKEND - main.py
-# ============================================================
-# FastAPI + SQLAlchemy + SQLite (for quick start)
-# Switch to PostgreSQL later by changing DATABASE_URL
-# ============================================================
-
-from fastapi import FastAPI, Depends, HTTPException, status
-from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Enum, Text, JSON
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session, relationship
-from pydantic import BaseModel, EmailStr, Field
-from datetime import datetime, timedelta
-from enum import Enum as PyEnum
-from typing import Optional, List
-import secrets
-import qrcode
-import qrcode.image.svg
-from io import BytesIO
-import base64
 import os
+import uuid
+import base64
 import json
-import jwt
 from datetime import datetime, timedelta
+from typing import Optional, List
+from contextlib import asynccontextmanager
 
-# ============================================================
-# DATABASE SETUP (SQLite for quick start)
-# ============================================================
+from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from supabase import create_client, Client
+import qrcode
+from qrcode.image.svg import SvgImage
+from io import BytesIO
 
-# For PostgreSQL later, change this to:
-# DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./loyaltree.db")
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./loyaltree.db")
+# ─── Environment ────────────────────────────────────────────────────────────
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
+BASE_URL = os.getenv("BASE_URL", "https://loyaltree-btw1.onrender.com")
+GOOGLE_WALLET_ISSUER_ID = os.getenv("GOOGLE_WALLET_ISSUER_ID", "")
+GOOGLE_WALLET_CLASS_SUFFIX = os.getenv("GOOGLE_WALLET_CLASS_SUFFIX", "")
 
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {},
-    echo=False
-)
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-Base = declarative_base()
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-# ============================================================
-# ENUMS
-# ============================================================
-
-class BusinessStatus(str, PyEnum):
-    CREATED = "created"
-    PENDING_REVIEW = "pending_review"
-    VERIFIED = "verified"
-    ACTIVE = "active"
-    SUSPENDED = "suspended"
-    CANCELLED = "cancelled"
-
-class StaffRole(str, PyEnum):
-    OWNER = "owner"
-    MANAGER = "manager"
-    CASHIER = "cashier"
-
-class StampStatus(str, PyEnum):
-    PENDING = "pending"
-    CONFIRMED = "confirmed"
-    VOIDED = "voided"
-
-class RewardStatus(str, PyEnum):
-    LOCKED = "locked"
-    UNLOCKED = "unlocked"
-    REDEEMED = "redeemed"
-    EXPIRED = "expired"
-
-# ============================================================
-# DATABASE MODELS
-# ============================================================
-
-class Business(Base):
-    __tablename__ = "businesses"
-
-    id = Column(Integer, primary_key=True, index=True)
-    public_id = Column(String(32), unique=True, index=True, default=lambda: secrets.token_hex(16))
-    name = Column(String(255), nullable=False)
-    email = Column(String(255), unique=True, nullable=False, index=True)
-    password_hash = Column(String(255), nullable=False)
-    phone = Column(String(50))
-    business_type = Column(String(50))
-    status = Column(Enum(BusinessStatus), default=BusinessStatus.CREATED)
-    plan = Column(String(20), default="starter")
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    loyalty_program = relationship("LoyaltyProgram", back_populates="business", uselist=False)
-    staff = relationship("Staff", back_populates="business")
-    customers = relationship("Customer", back_populates="business")
-    stamps = relationship("Stamp", back_populates="business")
-
-class LoyaltyProgram(Base):
-    __tablename__ = "loyalty_programs"
-
-    id = Column(Integer, primary_key=True)
-    business_id = Column(Integer, ForeignKey("businesses.id"), unique=True)
-    stamp_goal = Column(Integer, default=8)
-    reward_name = Column(String(255), default="Free Service")
-    reward_description = Column(Text)
-    reward_value_cents = Column(Integer, default=0)
-    stamp_expiry_days = Column(Integer, default=0)
-    reward_expiry_days = Column(Integer, default=30)
-    logo_url = Column(String(500))
-    primary_color = Column(String(7), default="#3b82f6")
-    secondary_color = Column(String(7), default="#1e293b")
-    push_enabled = Column(Boolean, default=True)
-    milestone_push = Column(Boolean, default=True)
-    reward_unlocked_push = Column(Boolean, default=True)
-    geofence_push = Column(Boolean, default=False)
-    winback_push = Column(Boolean, default=True)
-    winback_days = Column(Integer, default=30)
-    is_active = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    business = relationship("Business", back_populates="loyalty_program")
-
-class Staff(Base):
-    __tablename__ = "staff"
-
-    id = Column(Integer, primary_key=True)
-    business_id = Column(Integer, ForeignKey("businesses.id"))
-    public_id = Column(String(32), unique=True, default=lambda: secrets.token_hex(16))
-    name = Column(String(255), nullable=False)
-    email = Column(String(255), nullable=False)
-    phone = Column(String(50))
-    role = Column(Enum(StaffRole), default=StaffRole.CASHIER)
-    pin_hash = Column(String(255))
-    invite_code = Column(String(32), unique=True, default=lambda: secrets.token_hex(16))
-    invite_used = Column(Boolean, default=False)
-    is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    business = relationship("Business", back_populates="staff")
-    stamps_issued = relationship("Stamp", foreign_keys="Stamp.staff_id", back_populates="issued_by_staff")
-
-class Customer(Base):
-    __tablename__ = "customers"
-
-    id = Column(Integer, primary_key=True)
-    business_id = Column(Integer, ForeignKey("businesses.id"))
-    public_id = Column(String(32), unique=True, default=lambda: secrets.token_hex(16))
-    name = Column(String(255))
-    phone = Column(String(50), index=True)
-    email = Column(String(255))
-    birthday = Column(DateTime)
-    pass_serial_number = Column(String(100), unique=True)
-    total_stamps = Column(Integer, default=0)
-    total_rewards_earned = Column(Integer, default=0)
-    total_rewards_redeemed = Column(Integer, default=0)
-    last_visit_at = Column(DateTime)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    business = relationship("Business", back_populates="customers")
-    stamps = relationship("Stamp", back_populates="customer")
-    rewards = relationship("Reward", back_populates="customer")
-
-class Stamp(Base):
-    __tablename__ = "stamps"
-
-    id = Column(Integer, primary_key=True)
-    public_id = Column(String(32), unique=True, default=lambda: secrets.token_hex(16))
-    business_id = Column(Integer, ForeignKey("businesses.id"))
-    customer_id = Column(Integer, ForeignKey("customers.id"))
-    staff_id = Column(Integer, ForeignKey("staff.id"))
-    stamp_number = Column(Integer)
-    status = Column(Enum(StampStatus), default=StampStatus.CONFIRMED)
-    transaction_id = Column(String(255))
-    transaction_amount_cents = Column(Integer)
-    payment_method = Column(String(50))
-    can_void_until = Column(DateTime)
-    voided_at = Column(DateTime)
-    voided_by_staff_id = Column(Integer, ForeignKey("staff.id"))
-    void_reason = Column(Text)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    business = relationship("Business", back_populates="stamps")
-    customer = relationship("Customer", back_populates="stamps")
-    issued_by_staff = relationship("Staff", foreign_keys=[staff_id], back_populates="stamps_issued")
-
-class Reward(Base):
-    __tablename__ = "rewards"
-
-    id = Column(Integer, primary_key=True)
-    public_id = Column(String(32), unique=True, default=lambda: secrets.token_hex(16))
-    business_id = Column(Integer, ForeignKey("businesses.id"))
-    customer_id = Column(Integer, ForeignKey("customers.id"))
-    unlocked_by_stamp_ids = Column(JSON)
-    status = Column(Enum(RewardStatus), default=RewardStatus.LOCKED)
-    redeemed_at = Column(DateTime)
-    redeemed_by_staff_id = Column(Integer, ForeignKey("staff.id"))
-    redemption_transaction_id = Column(String(255))
-    expires_at = Column(DateTime)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    customer = relationship("Customer", back_populates="rewards")
-
-class Announcement(Base):
-    __tablename__ = "announcements"
-
-    id = Column(Integer, primary_key=True)
-    business_id = Column(Integer, ForeignKey("businesses.id"))
-    title = Column(String(255), nullable=False)
-    message = Column(Text, nullable=False)
-    type = Column(String(50), default="info")  # info, promo, event, alert
-    is_active = Column(Boolean, default=True)
-    start_date = Column(DateTime, default=datetime.utcnow)
-    end_date = Column(DateTime)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    created_by = Column(Integer, ForeignKey("staff.id"))
-
-    business = relationship("Business", backref="announcements")
-
-class AuditLog(Base):
-    __tablename__ = "audit_logs"
-
-    id = Column(Integer, primary_key=True)
-    business_id = Column(Integer, ForeignKey("businesses.id"))
-    action = Column(String(50))
-    entity_type = Column(String(50))
-    entity_id = Column(Integer)
-    performed_by_staff_id = Column(Integer, ForeignKey("staff.id"))
-    details = Column(JSON)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-# ============================================================
-# CREATE TABLES
-# ============================================================
-
-Base.metadata.create_all(bind=engine)
-
-# ============================================================
-# PYDANTIC SCHEMAS
-# ============================================================
-
-class BusinessSignupRequest(BaseModel):
-    name: str = Field(..., min_length=2, max_length=255)
-    email: EmailStr
-    password: str = Field(..., min_length=8)
-    phone: Optional[str] = None
-    business_type: str
-    plan: str = "starter"
-
-class BusinessResponse(BaseModel):
-    public_id: str
+# ─── Pydantic Models ──────────────────────────────────────────────────────────
+class BusinessCreate(BaseModel):
     name: str
     email: str
-    status: BusinessStatus
-    plan: str
-    created_at: datetime
+    phone: Optional[str] = None
+    password: str
 
-    class Config:
-        from_attributes = True
+class StaffInvite(BaseModel):
+    name: str
+    email: str
+    phone: Optional[str] = None
+    role: str = "cashier"
 
-class LoyaltyProgramConfigRequest(BaseModel):
-    stamp_goal: int = Field(..., ge=3, le=20)
-    reward_name: str = Field(..., min_length=1, max_length=255)
-    reward_description: Optional[str] = None
-    reward_value_cents: Optional[int] = Field(None, ge=0)
-    stamp_expiry_days: int = Field(0, ge=0)
-    reward_expiry_days: int = Field(30, ge=1)
+class LoyaltyConfig(BaseModel):
+    stamp_goal: int = Field(default=8, ge=3, le=20)
+    reward_name: str = "Free Service"
     primary_color: str = "#3b82f6"
-    secondary_color: str = "#1e293b"
-    milestone_push: bool = True
-    reward_unlocked_push: bool = True
+    reward_expiry_days: int = Field(default=30, ge=1)
 
-class StaffInviteRequest(BaseModel):
-    name: str
-    email: EmailStr
-    phone: Optional[str] = None
-    role: StaffRole = StaffRole.CASHIER
-
-class StaffResponse(BaseModel):
-    public_id: str
-    name: str
-    email: str
-    role: StaffRole
-    invite_code: str
-    is_active: bool
-
-    class Config:
-        from_attributes = True
-
-class CustomerSignupRequest(BaseModel):
+class CustomerSignup(BaseModel):
     name: str
     phone: str
-    email: Optional[str] = None
-    birthday: Optional[str] = None
-
-class CustomerResponse(BaseModel):
-    public_id: str
-    name: str
-    phone: str
-    total_stamps: int
-    total_rewards_earned: int
-    total_rewards_redeemed: int
-    last_visit_at: Optional[datetime]
-
-    class Config:
-        from_attributes = True
 
 class StampRequest(BaseModel):
     customer_public_id: str
-    transaction_id: Optional[str] = "manual"
-    transaction_amount_cents: Optional[int] = 0
-    payment_method: str = "cash"
     staff_pin: str
 
-class StampResponse(BaseModel):
-    stamp_public_id: str
-    stamp_number: int
-    status: StampStatus
-    customer_name: str
-    total_stamps_now: int
-    stamps_until_reward: int
-    reward_unlocked: bool
-
-    class Config:
-        from_attributes = True
-
-class VoidStampRequest(BaseModel):
-    stamp_public_id: str
-    reason: str = Field(..., min_length=5)
-    manager_pin: str
-
-class AnnouncementRequest(BaseModel):
-    title: str = Field(..., min_length=1, max_length=255)
-    message: str = Field(..., min_length=1)
-    type: str = "info"
-    is_active: bool = True
-    end_date: Optional[str] = None
-
-class AnnouncementResponse(BaseModel):
-    id: int
-    title: str
+class GoLiveResponse(BaseModel):
     message: str
-    type: str
-    is_active: bool
-    created_at: datetime
 
-    class Config:
-        from_attributes = True
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+def generate_public_id() -> str:
+    return uuid.uuid4().hex
 
-# ============================================================
-# FASTAPI APP
-# ============================================================
+def get_business(public_id: str):
+    res = supabase.table("businesses").select("*").eq("public_id", public_id).single().execute()
+    return res.data
 
-app = FastAPI(title="LoyaltyTree API", version="1.0.0")
+def get_customer(public_id: str):
+    res = supabase.table("customers").select("*").eq("public_id", public_id).single().execute()
+    return res.data
 
-# CORS - Update this with your actual Vercel URL after deploy
+def generate_qr_svg(data: str) -> str:
+    qr = qrcode.make(data, image_factory=SvgImage)
+    buffer = BytesIO()
+    qr.save(buffer)
+    return buffer.getvalue().decode("utf-8")
+
+# ─── FastAPI App ─────────────────────────────────────────────────────────────
+app = FastAPI(title="LoyaltyTree API")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://loyaltree-btw1.onrender.com",
-        "https://loyaltree-app.onrender.com",
         "http://localhost:3000",
-        "*"  # Remove this in production, use specific origins
+        "http://localhost:5173",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ============================================================
-# AUTH HELPERS
-# ============================================================
+# ═════════════════════════════════════════════════════════════════════════════
+# API ROUTES
+# ═════════════════════════════════════════════════════════════════════════════
 
-def hash_password(password: str) -> str:
-    import hashlib
-    return hashlib.sha256(password.encode()).hexdigest()
-
-def verify_password(password: str, hash: str) -> bool:
-    return hash_password(password) == hash
-
-# ============================================================
-# API ENDPOINTS
-# ============================================================
-
-# ============================================================
-# AUTH ENDPOINTS
-# ============================================================
-
-class LoginRequest(BaseModel):
-    email: str
-    password: str
-
-@app.post("/api/v1/auth/login")
-def login(request: LoginRequest, db: Session = Depends(get_db)):
-    # Check business owner
-    business = db.query(Business).filter(Business.email == request.email).first()
-    if business and verify_password(request.password, business.password_hash):
-        return {
-            "token": secrets.token_hex(32),
-            "role": "owner",
-            "business_id": business.id,
-            "business_name": business.name,
-            "business_slug": business.public_id,
-            "email": business.email
-        }
-
-    # Check staff
-    staff = db.query(Staff).filter(Staff.email == request.email).first()
-    if staff and verify_password(request.password, staff.pin_hash):
-        business = db.query(Business).filter(Business.id == staff.business_id).first()
-        return {
-            "token": secrets.token_hex(32),
-            "role": staff.role.value,
-            "business_id": business.id,
-            "business_name": business.name,
-            "business_slug": business.public_id,
-            "email": staff.email
-        }
-
-    raise HTTPException(status_code=401, detail="Invalid email or password")
-
-@app.get("/")
-def root():
-    return {"message": "LoyaltyTree API is running", "version": "1.0.0"}
-
-@app.get("/health")
-def health_check():
-    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
-
-@app.post("/api/v1/business/signup", response_model=BusinessResponse, status_code=status.HTTP_201_CREATED)
-def business_signup(request: BusinessSignupRequest, db: Session = Depends(get_db)):
-    if db.query(Business).filter(Business.email == request.email).first():
-        raise HTTPException(status_code=400, detail="Email already registered")
-
-    business = Business(
-        name=request.name,
-        email=request.email,
-        password_hash=hash_password(request.password),
-        phone=request.phone,
-        business_type=request.business_type,
-        plan=request.plan,
-        status=BusinessStatus.CREATED
-    )
-    db.add(business)
-    db.commit()
-    db.refresh(business)
+@app.get("/api/v1/business/{public_id}")
+async def get_business_api(public_id: str):
+    business = get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
     return business
 
-@app.post("/api/v1/business/{public_id}/verify")
-def submit_verification(public_id: str, documents: dict, db: Session = Depends(get_db)):
-    business = db.query(Business).filter(Business.public_id == public_id).first()
-    if not business:
-        raise HTTPException(status_code=404, detail="Business not found")
-
-    business.status = BusinessStatus.PENDING_REVIEW
-    db.commit()
-    return {"status": "pending_review", "message": "Documents submitted. Review within 24-48 hours."}
-
-@app.post("/api/v1/business/{public_id}/loyalty-program")
-def configure_loyalty_program(public_id: str, config: LoyaltyProgramConfigRequest, db: Session = Depends(get_db)):
-    business = db.query(Business).filter(Business.public_id == public_id).first()
-    if not business or business.status != BusinessStatus.VERIFIED:
-        raise HTTPException(status_code=400, detail="Business not verified")
-
-    program = db.query(LoyaltyProgram).filter(LoyaltyProgram.business_id == business.id).first()
-    if not program:
-        program = LoyaltyProgram(business_id=business.id)
-        db.add(program)
-
-    for field, value in config.dict().items():
-        setattr(program, field, value)
-
-    program.is_active = True
-    db.commit()
-    db.refresh(program)
-
-    return {"program_id": program.id, "stamp_goal": program.stamp_goal, "reward_name": program.reward_name, "status": "configured", "is_active": program.is_active}
-
-@app.post("/api/v1/business/{public_id}/staff/invite", response_model=StaffResponse)
-def invite_staff(public_id: str, request: StaffInviteRequest, db: Session = Depends(get_db)):
-    business = db.query(Business).filter(Business.public_id == public_id).first()
-    if not business:
-        raise HTTPException(status_code=404, detail="Business not found")
-
-    staff = Staff(
-        business_id=business.id,
-        name=request.name,
-        email=request.email,
-        phone=request.phone,
-        role=request.role,
-        pin_hash=hash_password("0000")
-    )
-    db.add(staff)
-    db.commit()
-    db.refresh(staff)
-    return staff
-
-@app.get("/api/v1/business/{public_id}/loyalty-config")
-def get_loyalty_config(public_id: str, db: Session = Depends(get_db)):
-    business = db.query(Business).filter(Business.public_id == public_id).first()
-    if not business:
-        raise HTTPException(status_code=404, detail="Business not found")
-
-    program = db.query(LoyaltyProgram).filter(LoyaltyProgram.business_id == business.id).first()
-    if not program:
-        raise HTTPException(status_code=404, detail="No loyalty program configured")
-
-    return {
-        "stamp_goal": program.stamp_goal,
-        "reward_name": program.reward_name,
-        "reward_description": program.reward_description,
-        "reward_value_cents": program.reward_value_cents,
-        "stamp_expiry_days": program.stamp_expiry_days,
-        "reward_expiry_days": program.reward_expiry_days,
-        "primary_color": program.primary_color,
-        "secondary_color": program.secondary_color,
-        "milestone_push": program.milestone_push,
-        "reward_unlocked_push": program.reward_unlocked_push,
-        "geofence_push": program.geofence_push,
-        "winback_push": program.winback_push,
-        "winback_days": program.winback_days,
-        "plan": business.plan,
-    }
-
-@app.post("/api/v1/business/{public_id}/loyalty-config")
-def update_loyalty_config(public_id: str, request: dict, db: Session = Depends(get_db)):
-    business = db.query(Business).filter(Business.public_id == public_id).first()
-    if not business:
-        raise HTTPException(status_code=404, detail="Business not found")
-
-    program = db.query(LoyaltyProgram).filter(LoyaltyProgram.business_id == business.id).first()
-    if not program:
-        program = LoyaltyProgram(business_id=business.id)
-        db.add(program)
-
-    # Update program fields
-    for field in ['stamp_goal', 'reward_name', 'reward_description', 'reward_value_cents',
-                  'stamp_expiry_days', 'reward_expiry_days', 'primary_color', 'secondary_color',
-                  'milestone_push', 'reward_unlocked_push', 'geofence_push', 'winback_push', 'winback_days']:
-        if field in request:
-            setattr(program, field, request[field])
-
-    # Update business plan if provided
-    if 'plan' in request:
-        business.plan = request['plan']
-
-    # Activate program if not already active
-    if not program.is_active:
-        program.is_active = True
-
-    db.commit()
-    db.refresh(program)
-
-    return {"status": "saved", "program_id": program.id, "is_active": program.is_active}
-
-@app.post("/api/v1/business/{public_id}/go-live")
-def go_live(public_id: str, db: Session = Depends(get_db)):
-    business = db.query(Business).filter(Business.public_id == public_id).first()
-    if not business:
-        raise HTTPException(status_code=404, detail="Business not found")
-
-    program = db.query(LoyaltyProgram).filter(LoyaltyProgram.business_id == business.id).first()
-    if not program or not program.is_active:
-        raise HTTPException(status_code=400, detail="Loyalty program not configured")
-
-    staff_count = db.query(Staff).filter(Staff.business_id == business.id, Staff.is_active == True).count()
-    if staff_count == 0:
-        raise HTTPException(status_code=400, detail="Add at least one staff member first")
-
-    business.status = BusinessStatus.ACTIVE
-    db.commit()
-
-    return {
-        "status": "active",
-        "message": "Program is live!",
-        "signup_qr_url": f"/api/v1/business/{public_id}/qr-code",
-        "wallet_pass_url": f"/api/v1/business/{public_id}/wallet-pass"
-    }
-
-@app.post("/api/v1/business/{public_id}/customers", response_model=CustomerResponse)
-def create_customer(public_id: str, request: CustomerSignupRequest, db: Session = Depends(get_db)):
-    business = db.query(Business).filter(Business.public_id == public_id).first()
-    if not business or business.status not in [BusinessStatus.ACTIVE, BusinessStatus.VERIFIED]:
-        raise HTTPException(status_code=400, detail="Business not active")
-
-    existing = db.query(Customer).filter(Customer.business_id == business.id, Customer.phone == request.phone).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Customer already enrolled")
-
-    customer = Customer(
-        business_id=business.id,
-        name=request.name,
-        phone=request.phone,
-        email=request.email,
-        pass_serial_number=secrets.token_hex(16)
-    )
-    db.add(customer)
-    db.commit()
-    db.refresh(customer)
-    return customer
-
 @app.get("/api/v1/business/{public_id}/customers")
-def list_customers(public_id: str, db: Session = Depends(get_db)):
-    business = db.query(Business).filter(Business.public_id == public_id).first()
+async def get_customers(public_id: str):
+    business = get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
-
-    customers = db.query(Customer).filter(Customer.business_id == business.id).all()
-    program = business.loyalty_program
-
-    result = []
-    for c in customers:
-        confirmed_stamps = db.query(Stamp).filter(Stamp.customer_id == c.id, Stamp.status == StampStatus.CONFIRMED).count()
-        unlocked_rewards = db.query(Reward).filter(Reward.customer_id == c.id, Reward.status == RewardStatus.UNLOCKED).count()
-        result.append({
-            "id": c.id,
-            "public_id": c.public_id,
-            "name": c.name,
-            "phone": c.phone,
-            "stamp_count": confirmed_stamps,
-            "reward_threshold": program.stamp_goal if program else 8,
-            "reward_unlocked": unlocked_rewards > 0,
-            "created_at": c.created_at
-        })
-    return result
-
-@app.put("/api/v1/business/{public_id}/customers/{customer_public_id}")
-def update_customer(public_id: str, customer_public_id: str, request: dict, db: Session = Depends(get_db)):
-    business = db.query(Business).filter(Business.public_id == public_id).first()
-    if not business:
-        raise HTTPException(status_code=404, detail="Business not found")
-
-    customer = db.query(Customer).filter(
-        Customer.public_id == customer_public_id,
-        Customer.business_id == business.id
-    ).first()
-
-    if not customer:
-        raise HTTPException(status_code=404, detail="Customer not found")
-
-    if 'name' in request:
-        customer.name = request['name']
-    if 'phone' in request:
-        customer.phone = request['phone']
-    if 'email' in request:
-        customer.email = request['email']
-
-    db.commit()
-    db.refresh(customer)
-
-    return {
-        "public_id": customer.public_id,
-        "name": customer.name,
-        "phone": customer.phone,
-        "email": customer.email,
-    }
-
-@app.delete("/api/v1/business/{public_id}/customers/{customer_public_id}")
-def delete_customer(public_id: str, customer_public_id: str, db: Session = Depends(get_db)):
-    business = db.query(Business).filter(Business.public_id == public_id).first()
-    if not business:
-        raise HTTPException(status_code=404, detail="Business not found")
-
-    customer = db.query(Customer).filter(
-        Customer.public_id == customer_public_id,
-        Customer.business_id == business.id
-    ).first()
-
-    if not customer:
-        raise HTTPException(status_code=404, detail="Customer not found")
-
-    # Delete associated stamps and rewards first
-    db.query(Stamp).filter(Stamp.customer_id == customer.id).delete()
-    db.query(Reward).filter(Reward.customer_id == customer.id).delete()
-
-    db.delete(customer)
-    db.commit()
-
-    return {"status": "deleted"}
+    res = supabase.table("customers").select("*").eq("business_id", business["id"]).execute()
+    return res.data or []
 
 @app.get("/api/v1/business/{public_id}/staff")
-def list_staff(public_id: str, db: Session = Depends(get_db)):
-    business = db.query(Business).filter(Business.public_id == public_id).first()
+async def get_staff(public_id: str):
+    business = get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
-
-    staff = db.query(Staff).filter(Staff.business_id == business.id).all()
-    return [{"id": s.id, "public_id": s.public_id, "name": s.name, "email": s.email, "role": s.role.value, "is_active": s.is_active} for s in staff]
+    res = supabase.table("staff").select("*").eq("business_id", business["id"]).execute()
+    return res.data or []
 
 @app.get("/api/v1/business/{public_id}/stats")
-def get_business_stats(public_id: str, db: Session = Depends(get_db)):
-    business = db.query(Business).filter(Business.public_id == public_id).first()
+async def get_stats(public_id: str):
+    business = get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
-
-    total_customers = db.query(Customer).filter(Customer.business_id == business.id).count()
-    active_cards = total_customers  # All enrolled customers have active cards
-    stamps_issued = db.query(Stamp).filter(Stamp.business_id == business.id, Stamp.status == StampStatus.CONFIRMED).count()
-    rewards_redeemed = db.query(Reward).filter(Reward.business_id == business.id, Reward.status == RewardStatus.REDEEMED).count()
-
+    customers_res = supabase.table("customers").select("*").eq("business_id", business["id"]).execute()
+    customers = customers_res.data or []
+    total_stamps = sum(c.get("stamp_count", 0) for c in customers)
     return {
-        "total_customers": total_customers,
-        "active_cards": active_cards,
-        "stamps_issued": stamps_issued,
-        "rewards_redeemed": rewards_redeemed
-    }
-
-@app.get("/api/v1/admin/businesses")
-def list_all_businesses(db: Session = Depends(get_db)):
-    businesses = db.query(Business).all()
-    result = []
-    for b in businesses:
-        customer_count = db.query(Customer).filter(Customer.business_id == b.id).count()
-        result.append({
-            "id": b.id,
-            "name": b.name,
-            "status": b.status.value,
-            "plan": b.plan,
-            "customer_count": customer_count
-        })
-    return result
-
-@app.get("/api/v1/admin/stats")
-def get_admin_stats(db: Session = Depends(get_db)):
-    total_businesses = db.query(Business).count()
-    total_customers = db.query(Customer).count()
-    total_stamps = db.query(Stamp).filter(Stamp.status == StampStatus.CONFIRMED).count()
-
-    return {
-        "total_businesses": total_businesses,
-        "total_customers": total_customers,
+        "total_customers": len(customers),
         "total_stamps": total_stamps,
-        "revenue": 0  # Placeholder - implement billing later
+        "unlocked_rewards": sum(1 for c in customers if c.get("reward_unlocked")),
     }
 
-@app.get("/api/v1/customer/{customer_public_id}/profile")
-def get_customer_profile(customer_public_id: str, db: Session = Depends(get_db)):
-    customer = db.query(Customer).filter(Customer.public_id == customer_public_id).first()
-    if not customer:
-        raise HTTPException(status_code=404, detail="Customer not found")
-
-    business = customer.business
-    program = business.loyalty_program if business else None
-    confirmed_stamps = db.query(Stamp).filter(Stamp.customer_id == customer.id, Stamp.status == StampStatus.CONFIRMED).count()
-    unlocked_rewards = db.query(Reward).filter(Reward.customer_id == customer.id, Reward.status == RewardStatus.UNLOCKED).count()
-
-    return {
-        "id": customer.id,
-        "public_id": customer.public_id,
-        "name": customer.name,
-        "phone": customer.phone,
-        "stamp_count": confirmed_stamps,
-        "reward_threshold": program.stamp_goal if program else 8,
-        "reward_unlocked": unlocked_rewards > 0
-    }
-
-@app.post("/api/v1/stamp/add")
-def add_stamp_api(request: dict, db: Session = Depends(get_db)):
-    customer = db.query(Customer).filter(Customer.id == request.get("customer_id")).first()
-    if not customer:
-        raise HTTPException(status_code=404, detail="Customer not found")
-
-    business = customer.business
-    program = business.loyalty_program if business else None
-
-    existing_stamps = db.query(Stamp).filter(Stamp.customer_id == customer.id, Stamp.status == StampStatus.CONFIRMED).count()
-    stamp_number = existing_stamps + 1
-
-    stamp = Stamp(
-        business_id=business.id,
-        customer_id=customer.id,
-        stamp_number=stamp_number,
-        status=StampStatus.CONFIRMED,
-        transaction_id=request.get("transaction_id", ""),
-        transaction_amount_cents=int(request.get("amount", 0) * 100),
-        can_void_until=datetime.utcnow() + timedelta(hours=24)
-    )
-    db.add(stamp)
-    customer.total_stamps += 1
-    customer.last_visit_at = datetime.utcnow()
-
-    reward_unlocked = False
-    if program and stamp_number % program.stamp_goal == 0:
-        reward = Reward(
-            business_id=business.id,
-            customer_id=customer.id,
-            unlocked_by_stamp_ids=[stamp.id],
-            status=RewardStatus.UNLOCKED,
-            expires_at=datetime.utcnow() + timedelta(days=program.reward_expiry_days)
-        )
-        db.add(reward)
-        customer.total_rewards_earned += 1
-        reward_unlocked = True
-
-    db.commit()
-
-    return {
-        "stamp_public_id": stamp.public_id,
-        "stamps_current": customer.total_stamps,
-        "stamps_needed": program.stamp_goal if program else 8,
-        "reward_unlocked": reward_unlocked
-    }
-
-@app.post("/api/v1/reward/redeem")
-def redeem_reward_api(request: dict, db: Session = Depends(get_db)):
-    customer = db.query(Customer).filter(Customer.id == request.get("customer_id")).first()
-    if not customer:
-        raise HTTPException(status_code=404, detail="Customer not found")
-
-    reward = db.query(Reward).filter(
-        Reward.customer_id == customer.id,
-        Reward.status == RewardStatus.UNLOCKED
-    ).first()
-
-    if not reward:
-        raise HTTPException(status_code=400, detail="No unlocked reward found")
-
-    reward.status = RewardStatus.REDEEMED
-    reward.redeemed_at = datetime.utcnow()
-    customer.total_rewards_redeemed += 1
-    db.commit()
-
-    return {
-        "stamps_remaining": customer.total_stamps,
-        "reward_redeemed": True
-    }
-
-@app.post("/api/v1/customer/join")
-def customer_join(request: dict, db: Session = Depends(get_db)):
-    business_slug = request.get("business_slug")
-    business = db.query(Business).filter(Business.public_id == business_slug).first()
+@app.get("/api/v1/business/{public_id}/loyalty-config")
+async def get_loyalty_config(public_id: str):
+    business = get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
+    res = supabase.table("loyalty_configs").select("*").eq("business_id", business["id"]).single().execute()
+    return res.data or {}
 
-    existing = db.query(Customer).filter(Customer.business_id == business.id, Customer.phone == request.get("phone")).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Customer already enrolled")
-
-    customer = Customer(
-        business_id=business.id,
-        name=request.get("name"),
-        phone=request.get("phone"),
-        email=request.get("email"),
-        pass_serial_number=secrets.token_hex(16)
-    )
-    db.add(customer)
-    db.commit()
-    db.refresh(customer)
-
-    return {
-        "public_id": customer.public_id,
-        "name": customer.name,
-        "phone": customer.phone
-    }
-
-@app.get("/api/v1/business/{public_id}/customers/{customer_public_id}")
-def get_customer_card(public_id: str, customer_public_id: str, db: Session = Depends(get_db)):
-    business = db.query(Business).filter(Business.public_id == public_id).first()
+@app.post("/api/v1/business/{public_id}/loyalty-config")
+async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
+    business = get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
-
-    customer = db.query(Customer).filter(Customer.business_id == business.id, Customer.public_id == customer_public_id).first()
-    if not customer:
-        raise HTTPException(status_code=404, detail="Customer not found")
-
-    confirmed_stamps = db.query(Stamp).filter(Stamp.customer_id == customer.id, Stamp.status == StampStatus.CONFIRMED).count()
-    program = business.loyalty_program
-    stamps_until_reward = program.stamp_goal - (confirmed_stamps % program.stamp_goal) if program else 8
-
-    unlocked_rewards = db.query(Reward).filter(Reward.customer_id == customer.id, Reward.status == RewardStatus.UNLOCKED).all()
-
-    return {
-        "customer": {"name": customer.name, "phone": customer.phone, "member_since": customer.created_at},
-        "program": {"business_name": business.name, "stamp_goal": program.stamp_goal if program else 8, "reward_name": program.reward_name if program else "Free Service", "primary_color": program.primary_color if program else "#3b82f6"},
-        "stamps": {"total_confirmed": confirmed_stamps, "current_progress": confirmed_stamps % (program.stamp_goal if program else 8), "stamps_until_reward": stamps_until_reward, "reward_unlocked": len(unlocked_rewards) > 0},
-        "unlocked_rewards": [{"public_id": r.public_id, "expires_at": r.expires_at} for r in unlocked_rewards]
+    data = {
+        "business_id": business["id"],
+        "stamp_goal": config.stamp_goal,
+        "reward_name": config.reward_name,
+        "primary_color": config.primary_color,
+        "reward_expiry_days": config.reward_expiry_days,
+        "updated_at": datetime.utcnow().isoformat(),
     }
+    existing = supabase.table("loyalty_configs").select("id").eq("business_id", business["id"]).execute()
+    if existing.data:
+        supabase.table("loyalty_configs").update(data).eq("business_id", business["id"]).execute()
+    else:
+        data["created_at"] = datetime.utcnow().isoformat()
+        supabase.table("loyalty_configs").insert(data).execute()
+    return {"message": "Configuration saved"}
 
-@app.post("/api/v1/business/{public_id}/stamps", response_model=StampResponse)
-def add_stamp(public_id: str, request: StampRequest, db: Session = Depends(get_db)):
-    business = db.query(Business).filter(Business.public_id == public_id).first()
-    if not business or business.status not in [BusinessStatus.ACTIVE, BusinessStatus.VERIFIED]:
-        raise HTTPException(status_code=400, detail="Business not active")
+@app.post("/api/v1/business/{public_id}/staff/invite")
+async def invite_staff(public_id: str, invite: StaffInvite):
+    business = get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    staff_data = {
+        "business_id": business["id"],
+        "public_id": generate_public_id(),
+        "name": invite.name,
+        "email": invite.email,
+        "phone": invite.phone,
+        "role": invite.role,
+        "pin": "0000",
+        "is_active": True,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    supabase.table("staff").insert(staff_data).execute()
+    return {"message": "Staff invited", "pin": "0000"}
 
-    staff = db.query(Staff).filter(Staff.business_id == business.id, Staff.pin_hash == hash_password(request.staff_pin), Staff.is_active == True).first()
-    if not staff:
-        raise HTTPException(status_code=401, detail="Invalid staff PIN")
-
-    customer = db.query(Customer).filter(Customer.business_id == business.id, Customer.public_id == request.customer_public_id).first()
-    if not customer:
-        raise HTTPException(status_code=404, detail="Customer not found")
-
-    existing_stamps = db.query(Stamp).filter(Stamp.customer_id == customer.id, Stamp.status == StampStatus.CONFIRMED).count()
-    stamp_number = existing_stamps + 1
-    program = business.loyalty_program
-
-    stamp = Stamp(
-        business_id=business.id,
-        customer_id=customer.id,
-        staff_id=staff.id,
-        stamp_number=stamp_number,
-        status=StampStatus.CONFIRMED,
-        transaction_id=request.transaction_id or f"manual_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
-        transaction_amount_cents=request.transaction_amount_cents or 0,
-        payment_method=request.payment_method,
-        can_void_until=datetime.utcnow() + timedelta(hours=24)
-    )
-    db.add(stamp)
-
-    customer.total_stamps += 1
-    customer.last_visit_at = datetime.utcnow()
-
-    reward_unlocked = False
-    if program and stamp_number % program.stamp_goal == 0:
-        reward = Reward(
-            business_id=business.id,
-            customer_id=customer.id,
-            unlocked_by_stamp_ids=[stamp.id],
-            status=RewardStatus.UNLOCKED,
-            expires_at=datetime.utcnow() + timedelta(days=program.reward_expiry_days)
-        )
-        db.add(reward)
-        customer.total_rewards_earned += 1
-        reward_unlocked = True
-
-    db.commit()
-    db.refresh(stamp)
-
-    return StampResponse(
-        stamp_public_id=stamp.public_id,
-        stamp_number=stamp_number,
-        status=stamp.status,
-        customer_name=customer.name,
-        total_stamps_now=customer.total_stamps,
-        stamps_until_reward=program.stamp_goal - (stamp_number % program.stamp_goal) if program and not reward_unlocked else (program.stamp_goal if program else 8),
-        reward_unlocked=reward_unlocked
-    )
+@app.post("/api/v1/business/{public_id}/go-live")
+async def go_live(public_id: str):
+    business = get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    supabase.table("businesses").update({
+        "status": "ACTIVE",
+        "updated_at": datetime.utcnow().isoformat(),
+    }).eq("id", business["id"]).execute()
+    return {"message": "Business is now live!"}
 
 @app.get("/api/v1/business/{public_id}/qr-code")
-def get_business_qr_code(public_id: str, format: str = "svg", db: Session = Depends(get_db)):
-    business = db.query(Business).filter(Business.public_id == public_id).first()
-    if not business or business.status not in [BusinessStatus.ACTIVE, BusinessStatus.VERIFIED]:
-        raise HTTPException(status_code=400, detail="Business not active")
+async def get_qr_code(public_id: str):
+    business = get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    join_url = f"{BASE_URL}/join/{public_id}"
+    svg = generate_qr_svg(join_url)
+    return JSONResponse({
+        "svg": svg,
+        "join_url": join_url,
+        "business_name": business["name"],
+    })
 
-    base_url = os.getenv("BASE_URL", "https://loyaltree-btw1.onrender.com")
-    signup_url = f"{base_url}/join/{public_id}"
+@app.post("/api/v1/business/{public_id}/stamp")
+async def add_stamp(public_id: str, req: StampRequest):
+    business = get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
 
-    qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_H, box_size=10, border=4)
-    qr.add_data(signup_url)
-    qr.make(fit=True)
+    customer = get_customer(req.customer_public_id)
+    if not customer or customer["business_id"] != business["id"]:
+        raise HTTPException(status_code=404, detail="Customer not found")
 
-    factory = qrcode.image.svg.SvgImage
-    img = qr.make_image(image_factory=factory)
-    buffer = BytesIO()
-    img.save(buffer)
-    svg_base64 = base64.b64encode(buffer.getvalue()).decode()
+    staff_res = supabase.table("staff").select("*").eq("business_id", business["id"]).eq("pin", req.staff_pin).execute()
+    if not staff_res.data:
+        raise HTTPException(status_code=403, detail="Invalid staff PIN")
+
+    config_res = supabase.table("loyalty_configs").select("*").eq("business_id", business["id"]).single().execute()
+    config = config_res.data or {"stamp_goal": 8}
+    goal = config.get("stamp_goal", 8)
+
+    new_count = customer.get("stamp_count", 0) + 1
+    reward_unlocked = new_count >= goal
+
+    supabase.table("customers").update({
+        "stamp_count": new_count,
+        "reward_unlocked": reward_unlocked,
+        "updated_at": datetime.utcnow().isoformat(),
+    }).eq("id", customer["id"]).execute()
 
     return {
-        "qr_code": f"data:image/svg+xml;base64,{svg_base64}",
-        "signup_url": signup_url,
-        "print_instructions": {"recommended_size": "3x3 inches", "placement": "Counter, receipt, table tent, window sticker", "call_to_action": "Scan to join our rewards program!"}
+        "message": "Stamp added!",
+        "stamp_count": new_count,
+        "reward_unlocked": reward_unlocked,
     }
 
-@app.get("/join/{business_public_id}")
-def customer_signup_page(business_public_id: str, db: Session = Depends(get_db)):
-    from fastapi.responses import HTMLResponse
+# ═════════════════════════════════════════════════════════════════════════════
+# CUSTOMER JOIN PAGE
+# ═════════════════════════════════════════════════════════════════════════════
 
-    business = db.query(Business).filter(Business.public_id == business_public_id).first()
-    if not business or business.status not in [BusinessStatus.ACTIVE, BusinessStatus.VERIFIED]:
-        raise HTTPException(status_code=404, detail="Business not found or inactive")
+@app.get("/join/{business_public_id}", response_class=HTMLResponse)
+async def customer_join_page(business_public_id: str):
+    business = get_business(business_public_id)
+    if not business:
+        return HTMLResponse("""
+        <div style="text-align:center;padding:40px;font-family:sans-serif;">
+            <h1>Business not found</h1>
+            <p>This link is invalid.</p>
+        </div>
+        """)
 
-    program = db.query(LoyaltyProgram).filter(LoyaltyProgram.business_id == business.id).first()
-    base_url = os.getenv("BASE_URL", "https://loyaltree-btw1.onrender.com")
+    # ✅ FIXED: Case-insensitive status check
+    if business["status"].upper() != "ACTIVE":
+        return HTMLResponse("""
+        <div style="text-align:center;padding:40px;font-family:sans-serif;">
+            <h1>Business not active</h1>
+            <p>This business is not accepting new members yet.</p>
+        </div>
+        """)
 
-    html_content = f"""
+    config_res = supabase.table("loyalty_configs").select("*").eq("business_id", business["id"]).single().execute()
+    config = config_res.data or {}
+    primary_color = config.get("primary_color", "#3b82f6")
+    reward_name = config.get("reward_name", "Free Service")
+    stamp_goal = config.get("stamp_goal", 8)
+
+    return HTMLResponse(f"""
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
+        <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Join {business.name} Rewards</title>
+        <title>Join {business["name"]} Rewards</title>
         <style>
-            body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; background: linear-gradient(135deg, {program.primary_color if program else '#3b82f6'} 0%, #1e293b 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; }}
-            .card {{ background: white; border-radius: 20px; padding: 40px 30px; max-width: 380px; width: 100%; box-shadow: 0 20px 60px rgba(0,0,0,0.3); text-align: center; }}
-            .logo {{ width: 80px; height: 80px; background: {program.primary_color if program else '#3b82f6'}; border-radius: 20px; margin: 0 auto 20px; display: flex; align-items: center; justify-content: center; color: white; font-size: 32px; }}
-            h1 {{ margin: 0 0 8px 0; font-size: 24px; color: #1e293b; }}
-            .subtitle {{ color: #64748b; margin-bottom: 30px; font-size: 15px; }}
-            .reward-preview {{ background: #f8fafc; border-radius: 12px; padding: 16px; margin-bottom: 24px; border: 2px dashed #e2e8f0; }}
-            .reward-preview .emoji {{ font-size: 32px; margin-bottom: 8px; }}
-            .reward-preview .text {{ font-weight: 600; color: #1e293b; }}
-            .reward-preview .sub {{ font-size: 13px; color: #64748b; margin-top: 4px; }}
-            input {{ width: 100%; padding: 14px; margin-bottom: 12px; border: 2px solid #e2e8f0; border-radius: 10px; font-size: 16px; box-sizing: border-box; }}
-            input:focus {{ outline: none; border-color: {program.primary_color if program else '#3b82f6'}; }}
-            button {{ width: 100%; padding: 16px; background: {program.primary_color if program else '#3b82f6'}; color: white; border: none; border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer; }}
-            .btn {{ display: block; width: 100%; padding: 14px; border: none; border-radius: 10px; font-size: 15px; font-weight: 600; cursor: pointer; margin-bottom: 12px; text-decoration: none; box-sizing: border-box; }}
-            .btn-google {{ background: #1a73e8; color: white; }}
-            .btn-share {{ background: #f0fdf4; color: #0d9488; border: 1px solid #a7f3d0; }}
-            .qr-section {{ background: #f8fafc; border-radius: 12px; padding: 16px; margin-bottom: 16px; }}
-            .qr-section img {{ width: 160px; height: 160px; border-radius: 12px; }}
-            .member-id {{ background: #f8fafc; border-radius: 12px; padding: 16px; margin-bottom: 16px; }}
-            .terms {{ font-size: 11px; color: #94a3b8; margin-top: 16px; }}
+            * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                background: linear-gradient(135deg, {primary_color} 0%, #1e293b 100%);
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 20px;
+            }}
+            .card {{
+                background: white;
+                border-radius: 24px;
+                padding: 32px;
+                max-width: 400px;
+                width: 100%;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                text-align: center;
+            }}
+            .logo {{
+                width: 80px;
+                height: 80px;
+                border-radius: 20px;
+                background: linear-gradient(135deg, {primary_color} 0%, #14b8a6 100%);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                margin: 0 auto 20px;
+                font-size: 36px;
+            }}
+            h1 {{ font-size: 24px; color: #1e293b; margin-bottom: 8px; }}
+            .subtitle {{ color: #64748b; margin-bottom: 24px; font-size: 14px; }}
+            .reward-preview {{
+                background: #f8fafc;
+                border-radius: 12px;
+                padding: 16px;
+                margin-bottom: 24px;
+            }}
+            .reward-preview h3 {{ color: {primary_color}; font-size: 16px; margin-bottom: 4px; }}
+            .reward-preview p {{ color: #64748b; font-size: 13px; }}
+            input {{
+                width: 100%;
+                padding: 14px 16px;
+                border: 2px solid #e2e8f0;
+                border-radius: 12px;
+                font-size: 16px;
+                margin-bottom: 12px;
+                outline: none;
+            }}
+            input:focus {{ border-color: {primary_color}; }}
+            button {{
+                width: 100%;
+                padding: 16px;
+                background: linear-gradient(135deg, {primary_color} 0%, #14b8a6 100%);
+                color: white;
+                border: none;
+                border-radius: 12px;
+                font-size: 16px;
+                font-weight: 700;
+                cursor: pointer;
+                margin-top: 8px;
+            }}
+            .success-qr {{
+                background: #f8fafc;
+                border-radius: 12px;
+                padding: 16px;
+                margin: 16px 0;
+            }}
+            .success-qr img {{
+                width: 160px;
+                height: 160px;
+                border-radius: 12px;
+            }}
+            .member-id {{
+                background: #f8fafc;
+                border-radius: 12px;
+                padding: 16px;
+                margin-bottom: 16px;
+            }}
+            .member-id p {{ margin: 0; font-weight: 600; color: #1e293b; }}
+            .member-id code {{
+                display: block;
+                margin-top: 8px;
+                font-family: monospace;
+                font-size: 14px;
+                color: #64748b;
+                word-break: break-all;
+            }}
+            .wallet-btn {{
+                display: block;
+                width: 100%;
+                padding: 14px;
+                background: #1a73e8;
+                color: white;
+                text-decoration: none;
+                border-radius: 10px;
+                font-weight: 600;
+                margin-bottom: 12px;
+                text-align: center;
+            }}
+            .share-btn {{
+                width: 100%;
+                padding: 14px;
+                background: #f0fdf4;
+                color: #0d9488;
+                border: 1px solid #a7f3d0;
+                border-radius: 10px;
+                font-weight: 600;
+                cursor: pointer;
+            }}
         </style>
     </head>
     <body>
-        <div class="card">
-            <div class="logo">⭐</div>
-            <h1>{business.name}</h1>
-            <p class="subtitle">Join our rewards program</p>
+        <div class="card" id="card">
+            <div class="logo">🌳</div>
+            <h1>{business["name"]}</h1>
+            <p class="subtitle">Join our loyalty program</p>
+
             <div class="reward-preview">
-                <div class="emoji">🎁</div>
-                <div class="text">{program.reward_name if program else 'Free Reward'}</div>
-                <div class="sub">After {program.stamp_goal if program else '8'} visits</div>
+                <h3>🎁 {reward_name}</h3>
+                <p>Collect {stamp_goal} stamps to unlock your reward</p>
             </div>
+
             <form id="signupForm">
-                <input type="text" id="name" placeholder="Your Name" required>
-                <input type="tel" id="phone" placeholder="Phone Number" required>
-                <input type="email" id="email" placeholder="Email (optional)">
-                <button type="submit">Join & Get Your Card</button>
+                <input type="text" id="name" placeholder="Your name" required>
+                <input type="tel" id="phone" placeholder="Phone number" required>
+                <button type="submit">Join & Get Your Card 🌱</button>
             </form>
-            <p class="terms">By joining, you agree to receive push notifications and SMS.<br>Unsubscribe anytime.</p>
         </div>
+
         <script>
-            document.getElementById('signupForm').addEventListener('submit', async (e) => {{
+            document.getElementById("signupForm").addEventListener("submit", async (e) => {{
                 e.preventDefault();
-                const response = await fetch('/api/v1/business/{business_public_id}/customers', {{
-                    method: 'POST',
-                    headers: {{'Content-Type': 'application/json'}},
-                    body: JSON.stringify({{
-                        name: document.getElementById('name').value,
-                        phone: document.getElementById('phone').value,
-                        email: document.getElementById('email').value || null
-                    }})
-                }});
-                const data = await response.json();
-                if (response.ok) {{
-                    document.querySelector('.card').innerHTML = `
-                        <div style="font-size: 48px; margin-bottom: 16px;">🎉</div>
-                        <h1>Welcome, ${{data.name}}!</h1>
-                        <p style="color: #64748b; margin-bottom: 24px;">Your loyalty card is ready</p>
+                const name = document.getElementById("name").value;
+                const phone = document.getElementById("phone").value;
 
-                        <div class="qr-section">
-                            <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${{data.public_id}}" alt="Your QR Code"/>
-                            <p style="font-size: 12px; color: #94a3b8; margin-top: 8px;">Scan at checkout</p>
-                        </div>
+                try {{
+                    const res = await fetch("{BASE_URL}/api/v1/join/{business_public_id}", {{
+                        method: "POST",
+                        headers: {{"Content-Type": "application/json"}},
+                        body: JSON.stringify({{name, phone}})
+                    }});
+                    const data = await res.json();
 
-                        <div class="member-id">
-                            <p style="margin: 0; font-weight: 600;">Your Member ID</p>
-                            <p style="margin: 4px 0 0 0; font-family: monospace; font-size: 14px; color: #64748b;">${{data.public_id}}</p>
-                        </div>
+                    if (res.ok) {{
+                        const joinUrl = `{BASE_URL}/join/{business_public_id}`;
+                        const walletUrl = `{BASE_URL}/wallet/${{data.public_id}}`;
 
-                        <a href="https://pay.google.com/gp/v/save/${{data.public_id}}" class="btn btn-google" target="_blank">
-                            🎫 Add to Google Wallet
-                        </a>
+                        document.getElementById("card").innerHTML = `
+                            <div style="font-size: 48px; margin-bottom: 16px;">🎉</div>
+                            <h1>Welcome, ${{data.name}}!</h1>
+                            <p style="color: #64748b; margin-bottom: 24px;">Your loyalty card is ready</p>
 
-                        <button onclick="shareCard()" class="btn btn-share">
-                            🔗 Share Card
-                        </button>
+                            <div class="success-qr">
+                                <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${{data.public_id}}" alt="Your QR Code"/>
+                                <p style="font-size: 12px; color: #94a3b8; margin-top: 8px;">Scan at checkout</p>
+                            </div>
 
-                        <p style="font-size: 12px; color: #94a3b8; margin-top: 16px;">Show this QR to your cashier on every visit to earn stamps.</p>
-                    `;
-                }} else {{
-                    alert('Error: ' + data.detail);
+                            <div class="member-id">
+                                <p>Your Member ID</p>
+                                <code>${{data.public_id}}</code>
+                            </div>
+
+                            <a href="https://pay.google.com/gp/v/save/${{data.public_id}}" class="wallet-btn">
+                                🎫 Add to Google Wallet
+                            </a>
+
+                            <button onclick="navigator.share({{title: 'My Loyalty Card', text: 'My card for ${business["name"]}', url: '${walletUrl}'}})" class="share-btn">
+                                🔗 Share Card
+                            </button>
+
+                            <p style="font-size: 12px; color: #94a3b8; margin-top: 16px;">
+                                Show this QR to your cashier on every visit to earn stamps.
+                            </p>
+                        `;
+                    }} else {{
+                        alert(data.detail || "Signup failed");
+                    }}
+                }} catch (err) {{
+                    alert("Network error. Please try again.");
                 }}
             }});
-
-            function shareCard() {{
-                if (navigator.share) {{
-                    navigator.share({{
-                        title: 'My {business.name} Card',
-                        text: 'My loyalty card for {business.name}',
-                        url: '{base_url}/wallet/' + document.querySelector('.member-id p:last-child').textContent.trim()
-                    }});
-                }} else {{
-                    alert('Copy your member ID and visit: {base_url}/wallet/[YOUR_ID]');
-                }}
-            }}
         </script>
     </body>
     </html>
-    """
-    return HTMLResponse(content=html_content)
+    """)
 
+@app.post("/api/v1/join/{business_public_id}")
+async def customer_signup(business_public_id: str, signup: CustomerSignup):
+    business = get_business(business_public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
 
-@app.get("/wallet/{customer_public_id}")
-def customer_wallet_page(customer_public_id: str, db: Session = Depends(get_db)):
-    from fastapi.responses import HTMLResponse
+    # ✅ FIXED: Case-insensitive status check
+    if business["status"].upper() != "ACTIVE":
+        raise HTTPException(status_code=400, detail="Business not active")
 
-    customer = db.query(Customer).filter(Customer.public_id == customer_public_id).first()
+    customer_public_id = generate_public_id()
+    customer_data = {
+        "business_id": business["id"],
+        "public_id": customer_public_id,
+        "name": signup.name,
+        "phone": signup.phone,
+        "stamp_count": 0,
+        "reward_unlocked": False,
+        "created_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+
+    supabase.table("customers").insert(customer_data).execute()
+
+    return {
+        "public_id": customer_public_id,
+        "name": signup.name,
+        "message": "Welcome to the loyalty program!",
+    }
+
+# ═════════════════════════════════════════════════════════════════════════════
+# WALLET PAGE
+# ═════════════════════════════════════════════════════════════════════════════
+
+@app.get("/wallet/{customer_public_id}", response_class=HTMLResponse)
+async def customer_wallet_page(customer_public_id: str):
+    customer = get_customer(customer_public_id)
     if not customer:
-        raise HTTPException(status_code=404, detail="Customer not found")
+        return HTMLResponse("""
+        <div style="text-align:center;padding:40px;font-family:sans-serif;">
+            <h1>Card not found</h1>
+            <p>This loyalty card does not exist.</p>
+        </div>
+        """)
 
-    business = customer.business
-    program = business.loyalty_program if business else None
-    confirmed_stamps = db.query(Stamp).filter(Stamp.customer_id == customer.id, Stamp.status == StampStatus.CONFIRMED).count()
-    stamp_goal = program.stamp_goal if program else 8
-    current_progress = confirmed_stamps % stamp_goal
-    unlocked_rewards = db.query(Reward).filter(Reward.customer_id == customer.id, Reward.status == RewardStatus.UNLOCKED).count()
-    base_url = os.getenv("BASE_URL", "https://loyaltree-btw1.onrender.com")
+    business = get_business_by_id(customer["business_id"])
+    if not business:
+        return HTMLResponse("""
+        <div style="text-align:center;padding:40px;font-family:sans-serif;">
+            <h1>Business not found</h1>
+        </div>
+        """)
 
-    html_content = f"""
+    config_res = supabase.table("loyalty_configs").select("*").eq("business_id", business["id"]).single().execute()
+    config = config_res.data or {}
+    primary_color = config.get("primary_color", "#3b82f6")
+    stamp_goal = config.get("stamp_goal", 8)
+    reward_name = config.get("reward_name", "Free Service")
+
+    stamps = customer.get("stamp_count", 0) % stamp_goal
+    filled = stamps
+    empty = stamp_goal - filled
+
+    stars_html = ""
+    for i in range(stamp_goal):
+        if i < filled:
+            stars_html += f'<span style="width:32px;height:32px;border-radius:16px;background:{primary_color};color:white;display:inline-flex;align-items:center;justify-content:center;font-size:14px;margin:3px;">★</span>'
+        else:
+            stars_html += f'<span style="width:32px;height:32px;border-radius:16px;background:rgba(255,255,255,0.25);color:white;display:inline-flex;align-items:center;justify-content:center;font-size:14px;margin:3px;">★</span>'
+
+    return HTMLResponse(f"""
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
+        <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>My {business.name} Card</title>
+        <title>My {business["name"]} Card</title>
         <style>
-            body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; 
-                    background: linear-gradient(135deg, {program.primary_color if program else '#0d9488'} 0%, #1e293b 100%); 
-                    min-height: 100vh; display: flex; align-items: center; justify-content: center; }}
-            .card {{ background: white; border-radius: 20px; padding: 30px; max-width: 380px; 
-                     width: 100%; box-shadow: 0 20px 60px rgba(0,0,0,0.3); text-align: center; }}
-            .loyalty-card {{ background: linear-gradient(135deg, {program.primary_color if program else '#0d9488'} 0%, #14b8a6 100%); 
-                            border-radius: 16px; padding: 24px; color: white; margin-bottom: 20px; }}
-            .loyalty-card h2 {{ margin: 0 0 8px 0; font-size: 20px; }}
-            .loyalty-card h3 {{ margin: 0 0 12px 0; font-size: 24px; font-weight: 700; }}
-            .stamps {{ display: flex; justify-content: center; gap: 6px; margin: 16px 0; flex-wrap: wrap; }}
-            .stamp {{ width: 32px; height: 32px; border-radius: 16px; display: flex; align-items: center; justify-content: center; 
-                      font-size: 16px; font-weight: 700; }}
-            .stamp.filled {{ background: white; color: {program.primary_color if program else '#0d9488'}; }}
-            .stamp.empty {{ background: rgba(255,255,255,0.3); color: white; }}
-            .progress {{ margin: 8px 0 0 0; font-size: 14px; opacity: 0.9; }}
-            .reward-badge {{ padding: 8px 16px; background: rgba(255,255,255,0.2); border-radius: 20px; font-size: 13px; 
-                            font-weight: 600; display: inline-block; margin-top: 12px; }}
-            .qr-section {{ margin: 20px 0; }}
-            .qr-section img {{ border-radius: 12px; border: 2px solid #e2e8f0; }}
+            * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                background: linear-gradient(135deg, {primary_color} 0%, #1e293b 100%);
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 20px;
+            }}
+            .card {{
+                background: white;
+                border-radius: 24px;
+                padding: 32px;
+                max-width: 400px;
+                width: 100%;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                text-align: center;
+            }}
+            .loyalty-card {{
+                background: linear-gradient(135deg, {primary_color} 0%, #14b8a6 100%);
+                border-radius: 16px;
+                padding: 24px;
+                color: white;
+                margin-bottom: 20px;
+            }}
+            .loyalty-card h2 {{ font-size: 20px; margin-bottom: 4px; }}
+            .loyalty-card h3 {{ font-size: 16px; opacity: 0.9; margin-bottom: 8px; }}
+            .loyalty-card .id {{ font-size: 12px; opacity: 0.7; font-family: monospace; }}
+            .stars {{ margin: 16px 0; }}
+            .stamp-count {{ font-size: 14px; margin-top: 8px; opacity: 0.9; }}
+            .qr-section {{
+                background: #f8fafc;
+                border-radius: 12px;
+                padding: 16px;
+                margin-bottom: 16px;
+            }}
+            .qr-section img {{
+                width: 160px;
+                height: 160px;
+                border-radius: 12px;
+            }}
             .qr-section p {{ font-size: 12px; color: #94a3b8; margin-top: 8px; }}
-            .btn {{ width: 100%; padding: 14px; border: none; border-radius: 10px; font-size: 15px; font-weight: 600; 
-                    cursor: pointer; margin-bottom: 12px; display: flex; align-items: center; justify-content: center; gap: 8px; 
-                    text-decoration: none; box-sizing: border-box; }}
-            .btn-google {{ background: #1a73e8; color: white; }}
-            .btn-share {{ background: #f0fdf4; color: #0d9488; border: 1px solid #a7f3d0; }}
-            .footer {{ font-size: 12px; color: #94a3b8; margin-top: 16px; }}
+            .wallet-btn {{
+                display: block;
+                width: 100%;
+                padding: 14px;
+                background: #1a73e8;
+                color: white;
+                text-decoration: none;
+                border-radius: 10px;
+                font-weight: 600;
+                margin-bottom: 12px;
+                text-align: center;
+            }}
+            .share-btn {{
+                width: 100%;
+                padding: 14px;
+                background: #f0fdf4;
+                color: #0d9488;
+                border: 1px solid #a7f3d0;
+                border-radius: 10px;
+                font-weight: 600;
+                cursor: pointer;
+            }}
+            .reward-badge {{
+                display: inline-block;
+                padding: 6px 14px;
+                background: #fef3c7;
+                color: #92400e;
+                border-radius: 20px;
+                font-size: 13px;
+                font-weight: 600;
+                margin-top: 12px;
+            }}
         </style>
     </head>
     <body>
         <div class="card">
             <div class="loyalty-card">
-                <h2>{business.name}</h2>
-                <h3>{customer.name}</h3>
-                <p style="font-size: 11px; opacity: 0.8; margin: 0;">ID: {customer.public_id[:12]}...</p>
-                <div class="stamps">
-                    {''.join(['<div class="stamp filled">★</div>' if i < current_progress else '<div class="stamp empty">☆</div>' for i in range(stamp_goal)])}
-                </div>
-                <p class="progress">{current_progress} / {stamp_goal} stamps</p>
-                {f'<div class="reward-badge">🎁 {program.reward_name} Unlocked!</div>' if unlocked_rewards > 0 else ''}
+                <h2>{business["name"]}</h2>
+                <h3>{customer["name"]}</h3>
+                <p class="id">ID: {customer["public_id"][:12]}...</p>
+                <div class="stars">{stars_html}</div>
+                <p class="stamp-count">{stamps} / {stamp_goal} stamps</p>
+                {f'<span class="reward-badge">🎁 {reward_name} Ready!</span>' if customer.get("reward_unlocked") else ''}
             </div>
 
             <div class="qr-section">
-                <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={customer.public_id}" 
-                     style="width: 180px; height: 180px;" alt="Your QR Code"/>
+                <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={customer["public_id"]}" alt="Your QR Code"/>
                 <p>Scan at checkout to earn stamps</p>
             </div>
 
-            <a href="https://pay.google.com/gp/v/save/{customer.public_id}" class="btn btn-google" target="_blank">
+            <a href="https://pay.google.com/gp/v/save/{customer["public_id"]}" class="wallet-btn">
                 🎫 Add to Google Wallet
             </a>
 
-            <button onclick="shareCard()" class="btn btn-share">
+            <button onclick="navigator.share({{title: 'My Loyalty Card', text: 'My card for {business["name"]}', url: window.location.href}})" class="share-btn">
                 🔗 Share Card
             </button>
-
-            <p class="footer">Show this QR to your cashier on every visit</p>
         </div>
-        <script>
-            function shareCard() {{
-                if (navigator.share) {{
-                    navigator.share({{
-                        title: 'My {business.name} Card',
-                        text: 'My loyalty card for {business.name}',
-                        url: window.location.href
-                    }});
-                }} else {{
-                    alert('Copy this link: ' + window.location.href);
-                }}
-            }}
-        </script>
     </body>
     </html>
-    """
-    return HTMLResponse(content=html_content)
+    """)
 
+def get_business_by_id(business_id: int):
+    res = supabase.table("businesses").select("*").eq("id", business_id).single().execute()
+    return res.data
 
-
-
-# ============================================================
+# ═════════════════════════════════════════════════════════════════════════════
 # GOOGLE WALLET PASS
-# ============================================================
+# ═════════════════════════════════════════════════════════════════════════════
 
+@app.get("/api/v1/customer/{customer_public_id}/wallet-pass")
+async def get_wallet_pass(customer_public_id: str):
+    customer = get_customer(customer_public_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
 
-@app.get("/api/v1/business/{public_id}/analytics")
-def get_business_analytics(public_id: str, range: str = "7d", db: Session = Depends(get_db)):
-    business = db.query(Business).filter(Business.public_id == public_id).first()
+    business = get_business_by_id(customer["business_id"])
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
-    # Calculate date range
-    now = datetime.utcnow()
-    if range == "7d":
-        start_date = now - timedelta(days=7)
-    elif range == "30d":
-        start_date = now - timedelta(days=30)
-    elif range == "90d":
-        start_date = now - timedelta(days=90)
-    else:
-        start_date = datetime.min
-
-    # Get all customers
-    customers = db.query(Customer).filter(Customer.business_id == business.id).all()
-    total_customers = len(customers)
-
-    # Get stamps in range
-    stamps = db.query(Stamp).filter(
-        Stamp.business_id == business.id,
-        Stamp.status == StampStatus.CONFIRMED,
-        Stamp.created_at >= start_date
-    ).all()
-    total_stamps = len(stamps)
-
-    # Get rewards in range
-    rewards = db.query(Reward).filter(
-        Reward.business_id == business.id,
-        Reward.status == RewardStatus.REDEEMED,
-        Reward.redeemed_at >= start_date
-    ).all()
-    rewards_redeemed = len(rewards)
-
-    # Active members (have stamps in the last 30 days)
-    active_threshold = now - timedelta(days=30)
-    active_member_ids = set()
-    for stamp in db.query(Stamp).filter(
-        Stamp.business_id == business.id,
-        Stamp.status == StampStatus.CONFIRMED,
-        Stamp.created_at >= active_threshold
-    ).all():
-        active_member_ids.add(stamp.customer_id)
-    active_members = len(active_member_ids)
-
-    # Average transaction value
-    avg_transaction = 0
-    if stamps:
-        total_amount = sum(s.transaction_amount_cents or 0 for s in stamps)
-        avg_transaction = (total_amount / len(stamps)) / 100
-
-    # Retention rate (customers with 2+ visits / total customers)
-    retention_rate = 0
-    if total_customers > 0:
-        repeat_customers = 0
-        for c in customers:
-            visit_count = db.query(Stamp).filter(
-                Stamp.customer_id == c.id,
-                Stamp.status == StampStatus.CONFIRMED
-            ).count()
-            if visit_count >= 2:
-                repeat_customers += 1
-        retention_rate = (repeat_customers / total_customers) * 100
-
-    # Daily data for charts
-    daily_customers = []
-    daily_stamps = []
-    days = 7 if range == "7d" else 30 if range == "30d" else 90 if range == "90d" else min(365, (now - business.created_at).days or 1)
-
-    for i in range(days - 1, -1, -1):
-        day = now - timedelta(days=i)
-        day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
-        day_end = day_start + timedelta(days=1)
-
-        day_customers = db.query(Customer).filter(
-            Customer.business_id == business.id,
-            Customer.created_at >= day_start,
-            Customer.created_at < day_end
-        ).count()
-
-        day_stamps = db.query(Stamp).filter(
-            Stamp.business_id == business.id,
-            Stamp.status == StampStatus.CONFIRMED,
-            Stamp.created_at >= day_start,
-            Stamp.created_at < day_end
-        ).count()
-
-        label = day.strftime("%a") if days <= 7 else day.strftime("%d") if days <= 30 else day.strftime("%b %d")
-        daily_customers.append({"label": label, "value": day_customers})
-        daily_stamps.append({"label": label, "value": day_stamps})
-
-    # Top customers
-    top_customers = []
-    for c in customers:
-        c_stamps = db.query(Stamp).filter(Stamp.customer_id == c.id, Stamp.status == StampStatus.CONFIRMED).count()
-        c_rewards = db.query(Reward).filter(Reward.customer_id == c.id, Reward.status == RewardStatus.REDEEMED).count()
-        last_stamp = db.query(Stamp).filter(Stamp.customer_id == c.id).order_by(Stamp.created_at.desc()).first()
-        top_customers.append({
-            "id": c.id,
-            "name": c.name,
-            "stamps": c_stamps,
-            "rewards": c_rewards,
-            "last_visit": last_stamp.created_at.strftime("%b %d") if last_stamp else "Never"
-        })
-    top_customers.sort(key=lambda x: x["stamps"], reverse=True)
-    top_customers = top_customers[:10]
-
-    # Peak hours
-    hour_counts = {}
-    for stamp in db.query(Stamp).filter(
-        Stamp.business_id == business.id,
-        Stamp.status == StampStatus.CONFIRMED,
-        Stamp.created_at >= start_date
-    ).all():
-        hour = stamp.created_at.hour
-        hour_counts[hour] = hour_counts.get(hour, 0) + 1
-
-    peak_hours = []
-    for hour in range(24):
-        label = f"{hour:02d}:00"
-        peak_hours.append({"hour": label, "count": hour_counts.get(hour, 0)})
-    peak_hours.sort(key=lambda x: x["count"], reverse=True)
-    peak_hours = peak_hours[:8]
-
-    # Conversion rate (stamps that led to rewards)
-    conversion_rate = 0
-    program = business.loyalty_program
-    if program and program.stamp_goal > 0:
-        total_confirmed = db.query(Stamp).filter(
-            Stamp.business_id == business.id,
-            Stamp.status == StampStatus.CONFIRMED
-        ).count()
-        if total_confirmed > 0:
-            expected_rewards = total_confirmed // program.stamp_goal
-            actual_rewards = db.query(Reward).filter(
-                Reward.business_id == business.id,
-                Reward.status.in_([RewardStatus.REDEEMED, RewardStatus.UNLOCKED])
-            ).count()
-            conversion_rate = min((actual_rewards / max(expected_rewards, 1)) * 100, 100)
-
-    # Redemption rate
-    redemption_rate = 0
-    unlocked_rewards = db.query(Reward).filter(
-        Reward.business_id == business.id,
-        Reward.status == RewardStatus.UNLOCKED
-    ).count()
-    redeemed_rewards = db.query(Reward).filter(
-        Reward.business_id == business.id,
-        Reward.status == RewardStatus.REDEEMED
-    ).count()
-    total_unlocked = unlocked_rewards + redeemed_rewards
-    if total_unlocked > 0:
-        redemption_rate = (redeemed_rewards / total_unlocked) * 100
-
-    # Repeat visit rate
-    repeat_rate = 0
-    if total_customers > 0:
-        multi_visit = 0
-        for c in customers:
-            visits = db.query(Stamp).filter(Stamp.customer_id == c.id, Stamp.status == StampStatus.CONFIRMED).count()
-            if visits >= 2:
-                multi_visit += 1
-        repeat_rate = (multi_visit / total_customers) * 100
-
-    return {
-        "total_customers": total_customers,
-        "active_members": active_members,
-        "total_stamps": total_stamps,
-        "rewards_redeemed": rewards_redeemed,
-        "avg_transaction": avg_transaction,
-        "retention_rate": retention_rate,
-        "customer_growth": 12.5,  # Placeholder - calculate from previous period
-        "active_growth": 8.3,
-        "stamp_growth": 15.2,
-        "reward_growth": 5.7,
-        "value_growth": 3.2,
-        "retention_growth": 2.1,
-        "daily_customers": daily_customers,
-        "daily_stamps": daily_stamps,
-        "top_customers": top_customers,
-        "peak_hours": peak_hours,
-        "conversion_rate": conversion_rate,
-        "redemption_rate": redemption_rate,
-        "repeat_rate": repeat_rate,
-    }
-
-
-@app.get("/api/v1/business/{public_id}/analytics")
-def get_business_analytics(public_id: str, range: str = "7d", db: Session = Depends(get_db)):
-    business = db.query(Business).filter(Business.public_id == public_id).first()
-    if not business:
-        raise HTTPException(status_code=404, detail="Business not found")
-
-    # Calculate date range
-    now = datetime.utcnow()
-    if range == "7d":
-        start_date = now - timedelta(days=7)
-    elif range == "30d":
-        start_date = now - timedelta(days=30)
-    elif range == "90d":
-        start_date = now - timedelta(days=90)
-    else:
-        start_date = datetime(2000, 1, 1)
-
-    # Get all customers for this business
-    customers = db.query(Customer).filter(Customer.business_id == business.id).all()
-    total_customers = len(customers)
-
-    # Get stamps in range
-    stamps_in_range = db.query(Stamp).filter(
-        Stamp.business_id == business.id,
-        Stamp.created_at >= start_date,
-        Stamp.status == StampStatus.CONFIRMED
-    ).all()
-
-    # Get rewards in range
-    rewards_in_range = db.query(Reward).filter(
-        Reward.business_id == business.id,
-        Reward.created_at >= start_date
-    ).all()
-
-    # Calculate active members (visited in last 30 days)
-    thirty_days_ago = now - timedelta(days=30)
-    active_members = db.query(Customer).filter(
-        Customer.business_id == business.id,
-        Customer.last_visit_at >= thirty_days_ago
-    ).count()
-
-    # Calculate retention rate
-    retained_customers = db.query(Customer).filter(
-        Customer.business_id == business.id,
-        Customer.last_visit_at >= thirty_days_ago
-    ).count()
-    retention_rate = round((retained_customers / total_customers * 100), 1) if total_customers > 0 else 0
-
-    # Calculate churn risk (no visit in 30+ days)
-    churn_risk = db.query(Customer).filter(
-        Customer.business_id == business.id,
-        Customer.last_visit_at < thirty_days_ago
-    ).count()
-
-    # Calculate average stamps per customer
-    total_stamps_all_time = db.query(Stamp).filter(
-        Stamp.business_id == business.id,
-        Stamp.status == StampStatus.CONFIRMED
-    ).count()
-    avg_stamps = round(total_stamps_all_time / total_customers, 1) if total_customers > 0 else 0
-
-    # Calculate completion rate
-    program = business.loyalty_program
-    stamp_goal = program.stamp_goal if program else 8
-    completed_cards = sum(1 for c in customers if c.total_stamps >= stamp_goal)
-    completion_rate = round((completed_cards / total_customers * 100), 1) if total_customers > 0 else 0
-
-    # Calculate reward redemption rate
-    total_rewards_earned = sum(c.total_rewards_earned for c in customers)
-    total_rewards_redeemed = sum(c.total_rewards_redeemed for c in customers)
-    redemption_rate = round((total_rewards_redeemed / total_rewards_earned * 100), 1) if total_rewards_earned > 0 else 0
-
-    # Calculate engagement rate (customers with 2+ visits)
-    engaged_customers = db.query(Customer).filter(
-        Customer.business_id == business.id,
-        Customer.total_stamps >= 2
-    ).count()
-    engagement_rate = round((engaged_customers / total_customers * 100), 1) if total_customers > 0 else 0
-
-    # Calculate adoption rate (customers who joined vs total potential - using total_customers as proxy)
-    adoption_rate = 100  # All enrolled are "adopted"
-
-    # Generate trend data (daily for 7d, weekly for 30d/90d)
-    trends = {"customers": [], "stamps": [], "rewards": [], "peak_hours": []}
-
-    if range == "7d":
-        for i in range(7):
-            day = now - timedelta(days=6-i)
-            day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
-            day_end = day_start + timedelta(days=1)
-
-            new_customers = db.query(Customer).filter(
-                Customer.business_id == business.id,
-                Customer.created_at >= day_start,
-                Customer.created_at < day_end
-            ).count()
-
-            day_stamps = db.query(Stamp).filter(
-                Stamp.business_id == business.id,
-                Stamp.created_at >= day_start,
-                Stamp.created_at < day_end,
-                Stamp.status == StampStatus.CONFIRMED
-            ).count()
-
-            day_rewards = db.query(Reward).filter(
-                Reward.business_id == business.id,
-                Reward.created_at >= day_start,
-                Reward.created_at < day_end,
-                Reward.status == RewardStatus.REDEEMED
-            ).count()
-
-            trends["customers"].append({"label": day.strftime("%a"), "value": new_customers})
-            trends["stamps"].append({"label": day.strftime("%a"), "value": day_stamps})
-            trends["rewards"].append({"label": day.strftime("%a"), "value": day_rewards})
-    else:
-        # Weekly data for longer ranges
-        weeks = 4 if range == "30d" else 12
-        for i in range(weeks):
-            week_end = now - timedelta(weeks=weeks-1-i)
-            week_start = week_end - timedelta(weeks=1)
-
-            new_customers = db.query(Customer).filter(
-                Customer.business_id == business.id,
-                Customer.created_at >= week_start,
-                Customer.created_at < week_end
-            ).count()
-
-            week_stamps = db.query(Stamp).filter(
-                Stamp.business_id == business.id,
-                Stamp.created_at >= week_start,
-                Stamp.created_at < week_end,
-                Stamp.status == StampStatus.CONFIRMED
-            ).count()
-
-            week_rewards = db.query(Reward).filter(
-                Reward.business_id == business.id,
-                Reward.created_at >= week_start,
-                Reward.created_at < week_end,
-                Reward.status == RewardStatus.REDEEMED
-            ).count()
-
-            trends["customers"].append({"label": f"W{i+1}", "value": new_customers})
-            trends["stamps"].append({"label": f"W{i+1}", "value": week_stamps})
-            trends["rewards"].append({"label": f"W{i+1}", "value": week_rewards})
-
-    # Peak hours data
-    for hour in range(8, 22, 2):
-        hour_visits = db.query(Stamp).filter(
-            Stamp.business_id == business.id,
-            Stamp.status == StampStatus.CONFIRMED,
-            Stamp.created_at >= start_date
-        ).filter(
-            Stamp.created_at.hour >= hour,
-            Stamp.created_at.hour < hour + 2
-        ).count()
-        trends["peak_hours"].append({"label": f"{hour}-{hour+2}", "value": hour_visits})
-
-    # Top customers
-    top_customers = sorted(customers, key=lambda c: c.total_stamps, reverse=True)[:5]
-    top_customers_data = [{"name": c.name, "stamps": c.total_stamps} for c in top_customers]
-
-    # Revenue estimates (placeholder - integrate with payment system later)
-    avg_transaction = 25  # $25 average
-    stamp_revenue = total_stamps_all_time * avg_transaction
-    reward_cost = total_rewards_redeemed * 15  # $15 average reward cost
-    net_value = stamp_revenue - reward_cost
-
-    # Calculate changes (mock for now - compare with previous period)
-    customer_change = 12.5
-    active_change = 8.3
-    stamp_change = 15.2
-    reward_change = -5.1
-    avg_change = 3.7
-    roi_change = 10.2
-
-    return {
-        "overview": {
-            "total_customers": total_customers,
-            "active_members": active_members,
-            "total_stamps": total_stamps_all_time,
-            "total_rewards": total_rewards_redeemed,
-            "avg_stamps_per_customer": avg_stamps,
-            "roi": round((net_value / max(stamp_revenue, 1) * 100), 1),
-            "adoption_rate": adoption_rate,
-            "customer_change": customer_change,
-            "active_change": active_change,
-            "stamp_change": stamp_change,
-            "reward_change": reward_change,
-            "avg_change": avg_change,
-            "roi_change": roi_change,
-        },
-        "trends": trends,
-        "customers": {
-            "top_customers": top_customers_data,
-            "retention_rate": retention_rate,
-            "churn_risk": churn_risk,
-            "engagement_rate": engagement_rate,
-        },
-        "stamps": {
-            "completion_rate": completion_rate,
-        },
-        "rewards": {
-            "redemption_rate": redemption_rate,
-        },
-        "revenue": {
-            "stamp_revenue": stamp_revenue,
-            "reward_cost": reward_cost,
-            "net_value": net_value,
-            "avg_transaction": avg_transaction,
-        }
-    }
-
-
-@app.get("/api/v1/business/{public_id}/status")
-def get_business_status(public_id: str, db: Session = Depends(get_db)):
-    """Check business status and provide next steps"""
-    business = db.query(Business).filter(Business.public_id == public_id).first()
-    if not business:
-        raise HTTPException(status_code=404, detail="Business not found")
-
-    program = db.query(LoyaltyProgram).filter(LoyaltyProgram.business_id == business.id).first()
-    staff_count = db.query(Staff).filter(Staff.business_id == business.id, Staff.is_active == True).count()
-    customer_count = db.query(Customer).filter(Customer.business_id == business.id).count()
-
-    return {
-        "business_id": business.id,
-        "public_id": business.public_id,
-        "name": business.name,
-        "status": business.status.value,
-        "plan": business.plan,
-        "has_program": program is not None and program.is_active,
-        "staff_count": staff_count,
-        "customer_count": customer_count,
-        "can_go_live": business.status == BusinessStatus.VERIFIED and program is not None and program.is_active and staff_count > 0,
-        "next_steps": []
-            + (["Configure loyalty program"] if not program or not program.is_active else [])
-            + (["Add at least 1 staff member"] if staff_count == 0 else [])
-            + (["Submit verification documents"] if business.status == BusinessStatus.CREATED else [])
-            + (["Click 'Go Live' to activate"] if business.status == BusinessStatus.VERIFIED else [])
-    }
-
-@app.post("/api/v1/business/{public_id}/force-activate")
-def force_activate_business(public_id: str, db: Session = Depends(get_db)):
-    """Emergency: Force activate a business for testing"""
-    business = db.query(Business).filter(Business.public_id == public_id).first()
-    if not business:
-        raise HTTPException(status_code=404, detail="Business not found")
-
-    # Create or fix program
-    program = db.query(LoyaltyProgram).filter(LoyaltyProgram.business_id == business.id).first()
-    if not program:
-        program = LoyaltyProgram(
-            business_id=business.id,
-            stamp_goal=8,
-            reward_name="Free Service",
-            primary_color="#0d9488",
-            is_active=True
-        )
-        db.add(program)
-    else:
-        program.is_active = True
-        if not program.stamp_goal:
-            program.stamp_goal = 8
-        if not program.reward_name:
-            program.reward_name = "Free Service"
-
-    # Create a default staff if none exists
-    staff_count = db.query(Staff).filter(Staff.business_id == business.id, Staff.is_active == True).count()
-    if staff_count == 0:
-        staff = Staff(
-            business_id=business.id,
-            name="Default Cashier",
-            email=f"cashier_{business.public_id[:8]}@loyaltree.local",
-            role=StaffRole.CASHIER,
-            pin_hash=hash_password("0000"),
-            is_active=True
-        )
-        db.add(staff)
-
-    business.status = BusinessStatus.ACTIVE
-    db.commit()
-
-    return {
-        "status": "active",
-        "message": "Business activated! You can now share QR codes and add stamps.",
-        "staff_pin": "0000"
-    }
-
-class GoogleWalletPass:
-    def __init__(self):
-        self.issuer_id = os.getenv("GOOGLE_WALLET_ISSUER_ID", "")
-        self.class_id = os.getenv("GOOGLE_WALLET_CLASS_ID", "")
-        self.service_account_email = os.getenv("GOOGLE_WALLET_SERVICE_ACCOUNT", "")
-        self.service_account_json = os.getenv("GOOGLE_WALLET_KEY_JSON", "")
-        self.private_key = ""
-        self.credentials = None
-
-        if self.service_account_json:
-            try:
-                import json
-                key_data = json.loads(self.service_account_json)
-                raw_key = key_data.get("private_key", "")
-                self.private_key = raw_key
-                if "\\n" in self.private_key:
-                    self.private_key = self.private_key.replace("\\n", chr(10))
-                elif "\n" in self.private_key:
-                    self.private_key = self.private_key.replace("\n", chr(10))
-
-                from google.oauth2 import service_account
-                self.credentials = service_account.Credentials.from_service_account_info(
-                    key_data,
-                    scopes=['https://www.googleapis.com/auth/wallet_object.issuer']
-                )
-            except Exception as e:
-                print(f"[WALLET] Error: {e}")
-
-    def _get_auth_token(self):
-        if not self.credentials:
-            return None
-        from google.auth.transport import requests as google_requests
-        self.credentials.refresh(google_requests.Request())
-        return self.credentials.token
-
-    def create_pass_class(self, business_name, program_name, primary_color="#0d9488"):
-        if not self.issuer_id or not self.class_id:
-            return False
-        token = self._get_auth_token()
-        if not token:
-            return False
-
-        import requests
-        url = f"https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{self.issuer_id}.{self.class_id}"
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-
-        payload = {
-            "id": f"{self.issuer_id}.{self.class_id}",
-            "issuerName": business_name,
-            "reviewStatus": "UNDER_REVIEW",
-            "programName": program_name,
-            "hexBackgroundColor": primary_color,
-            "hexForegroundColor": "#FFFFFF",
-            "localizedIssuerName": {"defaultValue": {"language": "en", "value": business_name}},
-            "localizedProgramName": {"defaultValue": {"language": "en", "value": program_name}}
-        }
-
-        try:
-            get_res = requests.get(url, headers=headers)
-            if get_res.status_code == 200:
-                return True
-            post_res = requests.post("https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass", headers=headers, json=payload)
-            return post_res.status_code in [200, 201]
-        except Exception as e:
-            print(f"[WALLET] Class error: {e}")
-            return False
-
-    def create_pass_object(self, customer_id, customer_name, business_name, stamps=0, goal=8, reward_unlocked=False):
-        if not self.issuer_id or not self.class_id:
-            return None
-
-        token = self._get_auth_token()
-        if not token:
-            return None
-
-        import requests
-        object_id = f"{self.issuer_id}.{customer_id}"
-        url = f"https://walletobjects.googleapis.com/walletobjects/v1/loyaltyObject/{object_id}"
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-
-        payload = {
-            "id": object_id,
-            "classId": f"{self.issuer_id}.{self.class_id}",
-            "state": "ACTIVE",
-            "barcode": {"type": "QR_CODE", "value": customer_id, "alternateText": customer_name},
-            "loyaltyPoints": {"balance": {"string": f"{stamps}/{goal}"}, "label": "Stamps"},
-            "accountId": customer_id,
-            "accountName": customer_name,
-            "textModulesData": [
-                {"header": "Progress", "body": f"{stamps} of {goal} stamps", "id": "progress"},
-                {"header": "Status", "body": "Reward Unlocked!" if reward_unlocked else f"{goal - stamps} more to go!", "id": "status"}
-            ]
-        }
-
-        try:
-            put_res = requests.put(url, headers=headers, json=payload)
-            if put_res.status_code in [200, 201]:
-                return put_res.json()
-            if put_res.status_code == 404:
-                post_res = requests.post("https://walletobjects.googleapis.com/walletobjects/v1/loyaltyObject", headers=headers, json=payload)
-                if post_res.status_code in [200, 201]:
-                    return post_res.json()
-            return None
-        except Exception as e:
-            print(f"[WALLET] Object error: {e}")
-            return None
-
-    def generate_add_to_wallet_link(self, customer_id):
-        if not self.service_account_email or not self.issuer_id or not self.private_key:
-            return None
-        try:
-            claims = {
-                "iss": self.service_account_email,
-                "aud": "google",
-                "typ": "savetowallet",
-                "iat": int(datetime.utcnow().timestamp()),
-                "exp": int(datetime.utcnow().timestamp()) + 3600,
-                "origins": ["https://loyaltree-btw1.onrender.com"],
-                "payload": {
-                    "loyaltyClasses": [{"id": f"{self.issuer_id}.{self.class_id}"}],
-                    "loyaltyObjects": [{"id": f"{self.issuer_id}.{customer_id}", "classId": f"{self.issuer_id}.{self.class_id}"}]
+    config_res = supabase.table("loyalty_configs").select("*").eq("business_id", business["id"]).single().execute()
+    config = config_res.data or {}
+
+    pass_object = {
+        "issuers": [{
+            "issuerId": GOOGLE_WALLET_ISSUER_ID,
+            "classSuffix": GOOGLE_WALLET_CLASS_SUFFIX,
+        }],
+        "loyaltyObjects": [{
+            "id": f"{GOOGLE_WALLET_ISSUER_ID}.{customer_public_id}",
+            "classId": f"{GOOGLE_WALLET_ISSUER_ID}.{GOOGLE_WALLET_CLASS_SUFFIX}",
+            "state": "active",
+            "barcode": {
+                "type": "QR_CODE",
+                "value": customer_public_id,
+                "alternateText": customer["name"],
+            },
+            "accountId": customer_public_id,
+            "accountName": customer["name"],
+            "loyaltyPoints": {
+                "label": "Stamps",
+                "balance": {
+                    "int": str(customer.get("stamp_count", 0)),
                 }
-            }
-            token = jwt.encode(claims, self.private_key, algorithm="RS256")
-            return f"https://pay.google.com/gp/v/save/{token}"
-        except Exception as e:
-            print(f"[WALLET] JWT error: {e}")
-            return None
+            },
+            "textModulesData": [
+                {"header": "Business", "body": business["name"]},
+                {"header": "Reward", "body": config.get("reward_name", "Free Service")},
+            ],
+        }]
+    }
 
+    return JSONResponse(pass_object)
 
+# ═════════════════════════════════════════════════════════════════════════════
+# HEALTH CHECK
+# ═════════════════════════════════════════════════════════════════════════════
+
+@app.get("/health")
+async def health_check():
+    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ROOT
+# ═════════════════════════════════════════════════════════════════════════════
+
+@app.get("/")
+async def root():
+    return {"message": "LoyaltyTree API is running", "base_url": BASE_URL}
