@@ -141,93 +141,42 @@ def get_google_wallet_credentials():
         return None
 
 def create_google_wallet_jwt(loyalty_object: dict) -> str:
-    """Generate a signed JWT for Google Wallet save link using cryptography"""
+    """Generate a signed JWT for Google Wallet save link using PyJWT"""
     creds = get_google_wallet_credentials()
     if not creds:
         return ""
 
     try:
-        from cryptography.hazmat.primitives import serialization
-        from cryptography.hazmat.primitives.asymmetric import padding
-        import base64
+        import jwt as pyjwt
 
-        private_key_pem = creds.get("private_key", "")
+        private_key = creds.get("private_key", "")
         client_email = creds.get("client_email", "")
 
-        if not private_key_pem or not client_email:
+        if not private_key or not client_email:
             return ""
 
-        # Build JWT header and payload
-        header = {"alg": "RS256", "typ": "JWT"}
-        now = int(datetime.utcnow().timestamp())
+        now = datetime.utcnow()
         payload = {
             "iss": client_email,
-            "sub": client_email,
             "aud": "google",
             "iat": now,
-            "exp": now + 3600,
-            "origins": [BASE_URL],
+            "exp": now + timedelta(hours=1),
             "typ": "savetowallet",
             "payload": {
                 "loyaltyObjects": [loyalty_object]
             }
         }
 
-        # Encode header and payload
-        import base64
-        def b64encode(data):
-            return base64.urlsafe_b64encode(data).rstrip(b'=').decode('utf-8')
-
-        header_b64 = b64encode(json.dumps(header).encode())
-        payload_b64 = b64encode(json.dumps(payload).encode())
-        message = f"{header_b64}.{payload_b64}"
-
-        # Sign with private key
-        private_key = serialization.load_pem_private_key(
-            private_key_pem.encode(),
-            password=None,
-        )
-        signature = private_key.sign(
-            message.encode(),
-            padding.PKCS1v15(),
-            hashes.SHA256()
-        )
-
-        from cryptography.hazmat.primitives import hashes
-        signature = private_key.sign(message.encode(), padding.PKCS1v15(), hashes.SHA256())
-        sig_b64 = b64encode(signature)
-
-        return f"{message}.{sig_b64}"
+        token = pyjwt.encode(payload, private_key, algorithm="RS256")
+        return token if isinstance(token, str) else token.decode("utf-8")
     except Exception as e:
         print(f"JWT generation error: {e}")
         return ""
-
-def build_loyalty_class(business: dict, config: dict) -> dict:
-    """Build the LoyaltyClass template for a business"""
-    class_id = f"{GOOGLE_WALLET_ISSUER_ID}.{GOOGLE_WALLET_CLASS_SUFFIX}"
-    primary_color = config.get("primary_color", "#3b82f6") if config else "#3b82f6"
-
-    return {
-        "id": class_id,
-        "issuerName": business.get("name", "LoyaltyTree"),
-        "programName": f"{business.get('name', 'Loyalty')} Rewards",
-        "reviewStatus": "UNDER_REVIEW",
-        "hexBackgroundColor": primary_color.replace("#", ""),
-        "heroImage": {
-            "sourceUri": {
-                "uri": "https://images.unsplash.com/photo-1557683316-973673baf926?w=800"
-            }
-        },
-        "textModulesData": [
-            {"header": "Program", "body": "Collect stamps, earn rewards"}
-        ]
-    }
 
 def build_loyalty_object(customer: dict, business: dict, config: dict) -> dict:
     """Build the LoyaltyObject for a specific customer"""
     class_id = f"{GOOGLE_WALLET_ISSUER_ID}.{GOOGLE_WALLET_CLASS_SUFFIX}"
     object_id = f"{GOOGLE_WALLET_ISSUER_ID}.{customer['public_id']}"
-    primary_color = config.get("primary_color", "#3b82f6") if config else "#3b82f6"
     stamp_goal = config.get("stamp_goal", 8) if config else 8
     reward_name = config.get("reward_name", "Free Reward") if config else "Free Reward"
     stamps = customer.get("stamp_count", 0)
@@ -263,81 +212,6 @@ def build_loyalty_object(customer: dict, business: dict, config: dict) -> dict:
             ]
         }
     }
-
-async def create_wallet_class(business: dict, program: dict) -> dict:
-    """Create or update the LoyaltyClass in Google Wallet via REST API"""
-    creds = get_google_wallet_credentials()
-    if not creds:
-        return {"error": "No credentials"}
-
-    try:
-        import httpx
-
-        class_id = f"{GOOGLE_WALLET_ISSUER_ID}.{GOOGLE_WALLET_CLASS_SUFFIX}"
-        loyalty_class = build_loyalty_class(business, program)
-
-        # Get access token
-        client_email = creds.get("client_email")
-        private_key = creds.get("private_key")
-
-        # Create JWT for auth
-        now = int(datetime.utcnow().timestamp())
-        auth_payload = {
-            "iss": client_email,
-            "sub": client_email,
-            "scope": "https://www.googleapis.com/auth/wallet_object.issuer",
-            "aud": "https://oauth2.googleapis.com/token",
-            "iat": now,
-            "exp": now + 3600,
-        }
-
-        from cryptography.hazmat.primitives import serialization, hashes
-        from cryptography.hazmat.primitives.asymmetric import padding
-        import base64
-
-        def b64e(data):
-            return base64.urlsafe_b64encode(data).rstrip(b'=').decode('utf-8')
-
-        key = serialization.load_pem_private_key(private_key.encode(), password=None)
-        msg = f"{b64e(json.dumps({'alg':'RS256','typ':'JWT'}).encode())}.{b64e(json.dumps(auth_payload).encode())}"
-        sig = key.sign(msg.encode(), padding.PKCS1v15(), hashes.SHA256())
-        jwt_assertion = f"{msg}.{b64e(sig)}"
-
-        async with httpx.AsyncClient() as client:
-            # Exchange JWT for access token
-            token_resp = await client.post(
-                "https://oauth2.googleapis.com/token",
-                data={
-                    "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-                    "assertion": jwt_assertion,
-                }
-            )
-            token_data = token_resp.json()
-            access_token = token_data.get("access_token")
-
-            if not access_token:
-                return {"error": "Failed to get access token", "details": token_data}
-
-            # Try to create class
-            create_resp = await client.post(
-                f"https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass",
-                headers={"Authorization": f"Bearer {access_token}"},
-                json=loyalty_class
-            )
-
-            if create_resp.status_code == 409:  # Already exists
-                # Update existing class
-                update_resp = await client.put(
-                    f"https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}",
-                    headers={"Authorization": f"Bearer {access_token}"},
-                    json=loyalty_class
-                )
-                return {"status": "updated", "response": update_resp.json()}
-
-            return {"status": "created", "response": create_resp.json()}
-
-    except Exception as e:
-        return {"error": str(e)}
 
 # ─── FastAPI App ─────────────────────────────────────────────────────────────
 app = FastAPI(title="LoyaltyTree API")
@@ -1201,17 +1075,6 @@ async def customer_wallet_page(customer_public_id: str):
 # ═════════════════════════════════════════════════════════════════════════════
 # GOOGLE WALLET PASS
 # ═════════════════════════════════════════════════════════════════════════════
-
-@app.post("/api/v1/business/{public_id}/wallet-class")
-async def setup_wallet_class(public_id: str):
-    """Create the LoyaltyClass in Google Wallet (run once per business)"""
-    business = safe_get_business(public_id)
-    if not business:
-        raise HTTPException(status_code=404, detail="Business not found")
-
-    program = safe_get_loyalty_program(business["id"])
-    result = await create_wallet_class(business, program)
-    return result
 
 @app.get("/api/v1/customer/{customer_public_id}/wallet-pass")
 async def get_wallet_pass(customer_public_id: str):
