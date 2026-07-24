@@ -23,8 +23,27 @@ function CashierApp({ API_BASE }) {
 
     function onScanSuccess(decodedText) {
       scanner.clear()
-      setScanResult(decodedText)
-      fetchCustomer(decodedText)
+      console.log('[SCAN] Raw decoded text:', decodedText)
+
+      // Extract customer ID from URL if needed
+      // Handles: "37427c36cba87571a2da5c20572bbc68" 
+      // or "https://loyaltree-five.vercel.app/wallet/37427c36cba87571a2da5c20572bbc68"
+      let customerId = decodedText.trim()
+
+      // If it's a URL, extract the last path segment
+      if (customerId.includes('/')) {
+        const parts = customerId.split('/')
+        customerId = parts[parts.length - 1]
+      }
+
+      // Remove any query params
+      if (customerId.includes('?')) {
+        customerId = customerId.split('?')[0]
+      }
+
+      console.log('[SCAN] Extracted customer ID:', customerId)
+      setScanResult(customerId)
+      fetchCustomer(customerId)
     }
 
     function onScanError(err) {
@@ -38,15 +57,22 @@ function CashierApp({ API_BASE }) {
 
   const fetchCustomer = async (customerId) => {
     setLoading(true)
+    const url = `${API_BASE}/api/v1/customer/${customerId}/profile`
+    console.log('[SCAN] Fetching:', url)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/customer/${customerId}/profile`)
+      const res = await fetch(url)
+      console.log('[SCAN] Response status:', res.status)
       if (res.ok) {
         const data = await res.json()
+        console.log('[SCAN] Customer data:', data)
         setCustomerData(data)
       } else {
-        setMessage('Customer not found')
+        const errorData = await res.json().catch(() => ({}))
+        console.log('[SCAN] Error:', errorData)
+        setMessage(`Customer not found: ${customerId.slice(0, 8)}...`)
       }
     } catch (err) {
+      console.log('[SCAN] Network error:', err)
       setMessage('Network error')
     }
     setLoading(false)
