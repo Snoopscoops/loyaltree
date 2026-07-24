@@ -134,10 +134,11 @@ def get_google_wallet_credentials():
     except:
         return None
 
-def create_google_wallet_jwt(loyalty_object: dict) -> str:
+def create_google_wallet_jwt(loyalty_class: dict, loyalty_object: dict) -> str:
     """Generate a signed JWT for Google Wallet save link using PyJWT"""
     creds = get_google_wallet_credentials()
     if not creds:
+        print("JWT: No credentials found")
         return ""
 
     try:
@@ -147,6 +148,7 @@ def create_google_wallet_jwt(loyalty_object: dict) -> str:
         client_email = creds.get("client_email", "")
 
         if not private_key or not client_email:
+            print("JWT: Missing private_key or client_email")
             return ""
 
         now = datetime.utcnow()
@@ -157,15 +159,41 @@ def create_google_wallet_jwt(loyalty_object: dict) -> str:
             "exp": now + timedelta(hours=1),
             "typ": "savetowallet",
             "payload": {
+                "loyaltyClasses": [loyalty_class],
                 "loyaltyObjects": [loyalty_object]
             }
         }
 
         token = pyjwt.encode(payload, private_key, algorithm="RS256")
-        return token if isinstance(token, str) else token.decode("utf-8")
+        result = token if isinstance(token, str) else token.decode("utf-8")
+        print(f"JWT: Generated successfully ({len(result)} chars)")
+        return result
     except Exception as e:
         print(f"JWT generation error: {e}")
+        import traceback
+        traceback.print_exc()
         return ""
+
+def build_loyalty_class(business: dict, config: dict) -> dict:
+    """Build the LoyaltyClass template"""
+    class_id = f"{GOOGLE_WALLET_ISSUER_ID}.{GOOGLE_WALLET_CLASS_SUFFIX}"
+    primary_color = config.get("primary_color", "#3b82f6") if config else "#3b82f6"
+
+    return {
+        "id": class_id,
+        "issuerName": business.get("name", "LoyaltyTree"),
+        "programName": f"{business.get('name', 'Loyalty')} Rewards",
+        "reviewStatus": "UNDER_REVIEW",
+        "hexBackgroundColor": primary_color.replace("#", ""),
+        "heroImage": {
+            "sourceUri": {
+                "uri": "https://images.unsplash.com/photo-1557683316-973673baf926?w=800"
+            }
+        },
+        "textModulesData": [
+            {"header": "About", "body": "Collect stamps, earn rewards"}
+        ]
+    }
 
 def build_loyalty_object(customer: dict, business: dict, config: dict) -> dict:
     """Build the LoyaltyObject for a specific customer"""
