@@ -130,7 +130,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   // Share QR code image + text
   const shareQR = async () => {
-    const joinUrl = `https://loyaltree-five.vercel.app/join/${user.business_slug}`
+    const joinUrl = `${API_BASE}/join/${user.business_slug}`
     const shareText = `Join ${user?.business_name || 'our'} loyalty program! Scan the QR code or visit: ${joinUrl}`
 
     try {
@@ -173,7 +173,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       if (err.name !== 'AbortError') {
         // Try simple share without files
         try {
-          const joinUrl = `https://loyaltree-five.vercel.app/join/${user.business_slug}`
+          const joinUrl = `${API_BASE}/join/${user.business_slug}`
           await navigator.share({
             title: `Join ${user?.business_name || 'Us'} Rewards`,
             text: `Get stamps and earn rewards!`,
@@ -450,7 +450,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               />
             )}
             <p style={{fontSize: 12, color: '#94a3b8', wordBreak: 'break-all', marginBottom: 16}}>
-              https://loyaltree-five.vercel.app/join/{user.business_slug}
+              ${API_BASE}/join/{user.business_slug}
             </p>
             <div style={{display: 'flex', gap: 12, justifyContent: 'center'}}>
               <button onClick={shareQR} style={styles.submitBtn}>
