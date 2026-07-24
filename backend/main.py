@@ -479,7 +479,7 @@ def configure_loyalty_program(public_id: str, config: LoyaltyProgramConfigReques
     db.commit()
     db.refresh(program)
 
-    return {"program_id": program.id, "stamp_goal": program.stamp_goal, "reward_name": program.reward_name, "status": "configured"}
+    return {"program_id": program.id, "stamp_goal": program.stamp_goal, "reward_name": program.reward_name, "status": "configured", "is_active": program.is_active}
 
 @app.post("/api/v1/business/{public_id}/staff/invite", response_model=StaffResponse)
 def invite_staff(public_id: str, request: StaffInviteRequest, db: Session = Depends(get_db)):
@@ -549,10 +549,14 @@ def update_loyalty_config(public_id: str, request: dict, db: Session = Depends(g
     if 'plan' in request:
         business.plan = request['plan']
 
+    # Activate program if not already active
+    if not program.is_active:
+        program.is_active = True
+
     db.commit()
     db.refresh(program)
 
-    return {"status": "saved", "program_id": program.id}
+    return {"status": "saved", "program_id": program.id, "is_active": program.is_active}
 
 @app.post("/api/v1/business/{public_id}/go-live")
 def go_live(public_id: str, db: Session = Depends(get_db)):
@@ -1566,18 +1570,23 @@ def force_activate_business(public_id: str, db: Session = Depends(get_db)):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
-    # Create a default program if none exists
+    # Create or fix program
     program = db.query(LoyaltyProgram).filter(LoyaltyProgram.business_id == business.id).first()
     if not program:
         program = LoyaltyProgram(
             business_id=business.id,
             stamp_goal=8,
             reward_name="Free Service",
+            primary_color="#0d9488",
             is_active=True
         )
         db.add(program)
-    elif not program.is_active:
+    else:
         program.is_active = True
+        if not program.stamp_goal:
+            program.stamp_goal = 8
+        if not program.reward_name:
+            program.reward_name = "Free Service"
 
     # Create a default staff if none exists
     staff_count = db.query(Staff).filter(Staff.business_id == business.id, Staff.is_active == True).count()
