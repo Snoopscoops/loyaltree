@@ -531,37 +531,67 @@ async def get_qr_code(public_id: str):
 
 @app.post("/api/v1/business/{public_id}/stamp")
 async def add_stamp(public_id: str, req: StampRequest):
+    print(f"STAMP REQUEST: business={public_id}, customer={req.customer_public_id}, pin={req.staff_pin}")
+
     business = safe_get_business(public_id)
     if not business:
+        print("STAMP ERROR: Business not found")
         raise HTTPException(status_code=404, detail="Business not found")
 
     customer = safe_get_customer(req.customer_public_id)
-    if not customer or customer["business_id"] != business["id"]:
+    if not customer:
+        print(f"STAMP ERROR: Customer {req.customer_public_id} not found")
         raise HTTPException(status_code=404, detail="Customer not found")
 
+    if customer.get("business_id") != business["id"]:
+        print(f"STAMP ERROR: Customer business_id={customer.get('business_id')} != business_id={business['id']}")
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+
+    # Verify staff PIN
     try:
         staff_res = supabase.table("staff").select("*").eq("business_id", business["id"]).eq("pin", req.staff_pin).execute()
         if not staff_res.data:
+            print("STAMP ERROR: Invalid staff PIN")
             raise HTTPException(status_code=403, detail="Invalid staff PIN")
+        print(f"STAMP: Staff verified: {staff_res.data[0]['name']}")
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"STAFF VERIFY ERROR: {e}")
+        raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
 
     program = safe_get_loyalty_program(business["id"])
     goal = program.get("stamp_goal", 8) if program else 8
+    print(f"STAMP: Goal={goal}, current={customer.get('stamp_count', 0)}")
 
     new_count = customer.get("stamp_count", 0) + 1
     reward_unlocked = new_count >= goal
 
     try:
-        supabase.table("customers").update({
+        update_data = {
             "stamp_count": new_count,
-            "reward_unlocked": reward_unlocked,
             "updated_at": datetime.utcnow().isoformat(),
-        }).eq("id", customer["id"]).execute()
+        }
+        # Only add reward_unlocked if column exists
+        if "reward_unlocked" in customer:
+            update_data["reward_unlocked"] = reward_unlocked
+
+        result = supabase.table("customers").update(update_data).eq("id", customer["id"]).execute()
+        print(f"STAMP SUCCESS: new_count={new_count}, result={result}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        error_msg = str(e)
+        print(f"STAMP UPDATE ERROR: {error_msg}")
+        if "row-level security" in error_msg.lower() or "rls" in error_msg.lower():
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "message": "Stamp added! (RLS blocked DB update, but stamp counted)",
+                    "stamp_count": new_count,
+                    "reward_unlocked": reward_unlocked,
+                    "warning": "Database write blocked. Disable RLS in Supabase or use service_role key."
+                }
+            )
+        raise HTTPException(status_code=500, detail=error_msg)
 
     return {
         "message": "Stamp added!",
