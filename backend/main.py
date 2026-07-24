@@ -17,13 +17,7 @@ from qrcode.image.svg import SvgImage
 from io import BytesIO
 
 # ─── Google Wallet ──────────────────────────────────────────────────────────
-try:
-    from google.auth.crypt import RSASigner
-    from google.auth import jwt as google_jwt
-    GOOGLE_WALLET_AVAILABLE = True
-except ImportError:
-    GOOGLE_WALLET_AVAILABLE = False
-    print("WARNING: google-auth not installed. Google Wallet will not work.")
+# Google Wallet uses PyJWT for JWT signing
 
 # ─── Environment ────────────────────────────────────────────────────────────
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
