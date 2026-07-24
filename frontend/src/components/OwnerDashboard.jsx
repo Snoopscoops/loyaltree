@@ -115,20 +115,11 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   }
 
   const fetchQRImage = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/qr-code`)
-      const data = await res.json()
-      if (data.qr_code) {
-        const svgBase64 = data.qr_code.replace('data:image/svg+xml;base64,', '')
-        const svgString = atob(svgBase64)
-        const blob = new Blob([svgString], { type: 'image/svg+xml' })
-        const url = URL.createObjectURL(blob)
-        setQrImageUrl(url)
-        setShowQRModal(true)
-      }
-    } catch (err) {
-      setMessage('Could not load QR code')
-    }
+    // Generate QR code with correct frontend URL (bypass backend wrong URL)
+    const joinUrl = `${FRONTEND_URL}/join/${user.business_slug}`
+    const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(joinUrl)}`
+    setQrImageUrl(qrApiUrl)
+    setShowQRModal(true)
   }
 
   const shareQR = async () => {
@@ -136,24 +127,18 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     const shareText = `Join ${user?.business_name || 'our'} loyalty program! Scan the QR code or visit: ${joinUrl}`
 
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/qr-code`)
-      const data = await res.json()
+      // Fetch the QR image as a blob for sharing
+      const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(joinUrl)}`
+      const qrRes = await fetch(qrApiUrl)
+      const qrBlob = await qrRes.blob()
+      const qrFile = new File([qrBlob], 'loyaltree-qr.png', { type: 'image/png' })
 
-      if (data.qr_code && navigator.canShare && navigator.canShare({ files: [] })) {
-        const svgBase64 = data.qr_code.replace('data:image/svg+xml;base64,', '')
-        const byteCharacters = atob(svgBase64)
-        const byteNumbers = new Array(byteCharacters.length)
-        for (let i = 0; i < byteCharacters.length; i++) {
-          byteNumbers[i] = byteCharacters.charCodeAt(i)
-        }
-        const byteArray = new Uint8Array(byteNumbers)
-        const file = new File([byteArray], 'loyaltree-qr.svg', { type: 'image/svg+xml' })
-
+      if (navigator.canShare && navigator.canShare({ files: [qrFile] })) {
         await navigator.share({
           title: `Join ${user?.business_name || 'Us'} Rewards`,
           text: shareText,
           url: joinUrl,
-          files: [file]
+          files: [qrFile]
         })
       } else if (navigator.share) {
         await navigator.share({
@@ -168,14 +153,13 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     } catch (err) {
       if (err.name !== 'AbortError') {
         try {
-          const joinUrl = `${FRONTEND_URL}/join/${user.business_slug}`
           await navigator.share({
             title: `Join ${user?.business_name || 'Us'} Rewards`,
             text: `Get stamps and earn rewards!`,
             url: joinUrl,
           })
         } catch (e2) {
-          await navigator.clipboard.writeText(`${FRONTEND_URL}/join/${user.business_slug}`)
+          await navigator.clipboard.writeText(joinUrl)
           setMessage('Join link copied!')
         }
       }
@@ -186,7 +170,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     if (!qrImageUrl) return
     const link = document.createElement('a')
     link.href = qrImageUrl
-    link.download = `${user?.business_name || 'business'}-qr-code.svg`
+    link.download = `${user?.business_name || 'business'}-qr-code.png`
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
