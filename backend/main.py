@@ -22,6 +22,19 @@ BASE_URL = os.getenv("BASE_URL", "https://loyaltree-btw1.onrender.com")
 GOOGLE_WALLET_ISSUER_ID = os.getenv("GOOGLE_WALLET_ISSUER_ID", "")
 GOOGLE_WALLET_CLASS_SUFFIX = os.getenv("GOOGLE_WALLET_CLASS_SUFFIX", "")
 
+# ✅ ROBUST: Clear error if env vars missing
+if not SUPABASE_URL:
+    raise RuntimeError(
+        "❌ SUPABASE_URL environment variable is not set!\n"
+        "Set it in your Render dashboard: Environment → Add Environment Variable\n"
+        "Value: https://xmzrzrslggrbyojkojsy.supabase.co"
+    )
+if not SUPABASE_KEY:
+    raise RuntimeError(
+        "❌ SUPABASE_KEY environment variable is not set!\n"
+        "Set it in your Render dashboard: Environment → Add Environment Variable"
+    )
+
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ─── Pydantic Models ──────────────────────────────────────────────────────────
@@ -64,6 +77,10 @@ def get_business(public_id: str):
 
 def get_customer(public_id: str):
     res = supabase.table("customers").select("*").eq("public_id", public_id).single().execute()
+    return res.data
+
+def get_business_by_id(business_id: int):
+    res = supabase.table("businesses").select("*").eq("id", business_id).single().execute()
     return res.data
 
 def generate_qr_svg(data: str) -> str:
@@ -248,7 +265,7 @@ async def customer_join_page(business_public_id: str):
         </div>
         """)
 
-    # ✅ FIXED: Case-insensitive status check
+    # ✅ FIXED: Case-insensitive status check for enum "ACTIVE"
     if business["status"].upper() != "ACTIVE":
         return HTMLResponse("""
         <div style="text-align:center;padding:40px;font-family:sans-serif;">
@@ -416,7 +433,6 @@ async def customer_join_page(business_public_id: str):
                     const data = await res.json();
 
                     if (res.ok) {{
-                        const joinUrl = `{BASE_URL}/join/{business_public_id}`;
                         const walletUrl = `{BASE_URL}/wallet/${{data.public_id}}`;
 
                         document.getElementById("card").innerHTML = `
@@ -464,7 +480,7 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
-    # ✅ FIXED: Case-insensitive status check
+    # ✅ FIXED: Case-insensitive status check for enum "ACTIVE"
     if business["status"].upper() != "ACTIVE":
         raise HTTPException(status_code=400, detail="Business not active")
 
@@ -519,7 +535,6 @@ async def customer_wallet_page(customer_public_id: str):
 
     stamps = customer.get("stamp_count", 0) % stamp_goal
     filled = stamps
-    empty = stamp_goal - filled
 
     stars_html = ""
     for i in range(stamp_goal):
@@ -640,10 +655,6 @@ async def customer_wallet_page(customer_public_id: str):
     </body>
     </html>
     """)
-
-def get_business_by_id(business_id: int):
-    res = supabase.table("businesses").select("*").eq("id", business_id).single().execute()
-    return res.data
 
 # ═════════════════════════════════════════════════════════════════════════════
 # GOOGLE WALLET PASS
