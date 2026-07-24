@@ -581,7 +581,7 @@ def go_live(public_id: str, db: Session = Depends(get_db)):
 @app.post("/api/v1/business/{public_id}/customers", response_model=CustomerResponse)
 def create_customer(public_id: str, request: CustomerSignupRequest, db: Session = Depends(get_db)):
     business = db.query(Business).filter(Business.public_id == public_id).first()
-    if not business or business.status != BusinessStatus.ACTIVE:
+    if not business or business.status not in [BusinessStatus.ACTIVE, BusinessStatus.VERIFIED]:
         raise HTTPException(status_code=400, detail="Business not active")
 
     existing = db.query(Customer).filter(Customer.business_id == business.id, Customer.phone == request.phone).first()
@@ -880,7 +880,7 @@ def get_customer_card(public_id: str, customer_public_id: str, db: Session = Dep
 @app.post("/api/v1/business/{public_id}/stamps", response_model=StampResponse)
 def add_stamp(public_id: str, request: StampRequest, db: Session = Depends(get_db)):
     business = db.query(Business).filter(Business.public_id == public_id).first()
-    if not business or business.status != BusinessStatus.ACTIVE:
+    if not business or business.status not in [BusinessStatus.ACTIVE, BusinessStatus.VERIFIED]:
         raise HTTPException(status_code=400, detail="Business not active")
 
     staff = db.query(Staff).filter(Staff.business_id == business.id, Staff.pin_hash == hash_password(request.staff_pin), Staff.is_active == True).first()
@@ -940,7 +940,7 @@ def add_stamp(public_id: str, request: StampRequest, db: Session = Depends(get_d
 @app.get("/api/v1/business/{public_id}/qr-code")
 def get_business_qr_code(public_id: str, format: str = "svg", db: Session = Depends(get_db)):
     business = db.query(Business).filter(Business.public_id == public_id).first()
-    if not business or business.status != BusinessStatus.ACTIVE:
+    if not business or business.status not in [BusinessStatus.ACTIVE, BusinessStatus.VERIFIED]:
         raise HTTPException(status_code=400, detail="Business not active")
 
     base_url = os.getenv("BASE_URL", "https://loyaltree-api.onrender.com")
@@ -967,7 +967,7 @@ def customer_signup_page(business_public_id: str, db: Session = Depends(get_db))
     from fastapi.responses import HTMLResponse
 
     business = db.query(Business).filter(Business.public_id == business_public_id).first()
-    if not business or business.status != BusinessStatus.ACTIVE:
+    if not business or business.status not in [BusinessStatus.ACTIVE, BusinessStatus.VERIFIED]:
         raise HTTPException(status_code=404, detail="Business not found or inactive")
 
     program = db.query(LoyaltyProgram).filter(LoyaltyProgram.business_id == business.id).first()
@@ -1530,292 +1530,204 @@ def get_business_analytics(public_id: str, range: str = "7d", db: Session = Depe
         }
     }
 
+
+@app.get("/api/v1/business/{public_id}/status")
+def get_business_status(public_id: str, db: Session = Depends(get_db)):
+    """Check business status and provide next steps"""
+    business = db.query(Business).filter(Business.public_id == public_id).first()
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    program = db.query(LoyaltyProgram).filter(LoyaltyProgram.business_id == business.id).first()
+    staff_count = db.query(Staff).filter(Staff.business_id == business.id, Staff.is_active == True).count()
+    customer_count = db.query(Customer).filter(Customer.business_id == business.id).count()
+
+    return {
+        "business_id": business.id,
+        "public_id": business.public_id,
+        "name": business.name,
+        "status": business.status.value,
+        "plan": business.plan,
+        "has_program": program is not None and program.is_active,
+        "staff_count": staff_count,
+        "customer_count": customer_count,
+        "can_go_live": business.status == BusinessStatus.VERIFIED and program is not None and program.is_active and staff_count > 0,
+        "next_steps": []
+            + (["Configure loyalty program"] if not program or not program.is_active else [])
+            + (["Add at least 1 staff member"] if staff_count == 0 else [])
+            + (["Submit verification documents"] if business.status == BusinessStatus.CREATED else [])
+            + (["Click 'Go Live' to activate"] if business.status == BusinessStatus.VERIFIED else [])
+    }
+
+@app.post("/api/v1/business/{public_id}/force-activate")
+def force_activate_business(public_id: str, db: Session = Depends(get_db)):
+    """Emergency: Force activate a business for testing"""
+    business = db.query(Business).filter(Business.public_id == public_id).first()
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    # Create a default program if none exists
+    program = db.query(LoyaltyProgram).filter(LoyaltyProgram.business_id == business.id).first()
+    if not program:
+        program = LoyaltyProgram(
+            business_id=business.id,
+            stamp_goal=8,
+            reward_name="Free Service",
+            is_active=True
+        )
+        db.add(program)
+    elif not program.is_active:
+        program.is_active = True
+
+    # Create a default staff if none exists
+    staff_count = db.query(Staff).filter(Staff.business_id == business.id, Staff.is_active == True).count()
+    if staff_count == 0:
+        staff = Staff(
+            business_id=business.id,
+            name="Default Cashier",
+            email=f"cashier_{business.public_id[:8]}@loyaltree.local",
+            role=StaffRole.CASHIER,
+            pin_hash=hash_password("0000"),
+            is_active=True
+        )
+        db.add(staff)
+
+    business.status = BusinessStatus.ACTIVE
+    db.commit()
+
+    return {
+        "status": "active",
+        "message": "Business activated! You can now share QR codes and add stamps.",
+        "staff_pin": "0000"
+    }
+
 class GoogleWalletPass:
     def __init__(self):
         self.issuer_id = os.getenv("GOOGLE_WALLET_ISSUER_ID", "")
         self.class_id = os.getenv("GOOGLE_WALLET_CLASS_ID", "")
         self.service_account_email = os.getenv("GOOGLE_WALLET_SERVICE_ACCOUNT", "")
-        self.service_account_file = os.getenv("GOOGLE_WALLET_KEY_FILE", "")
         self.service_account_json = os.getenv("GOOGLE_WALLET_KEY_JSON", "")
+        self.private_key = ""
+        self.credentials = None
 
-        # Load key from JSON string if provided
         if self.service_account_json:
             try:
                 import json
                 key_data = json.loads(self.service_account_json)
-                self.private_key = key_data.get("private_key", "")
-                if not self.service_account_email:
-                    self.service_account_email = key_data.get("client_email", "")
-            except:
-                self.private_key = ""
-        else:
-            self.private_key = ""
+                raw_key = key_data.get("private_key", "")
+                self.private_key = raw_key
+                if "\\n" in self.private_key:
+                    self.private_key = self.private_key.replace("\\n", chr(10))
+                elif "\n" in self.private_key:
+                    self.private_key = self.private_key.replace("\n", chr(10))
 
-    def create_pass_class(self, business_name: str, program_name: str, primary_color: str = "#0d9488"):
-        """Create a loyalty pass class for a business"""
-        pass_class = {
+                from google.oauth2 import service_account
+                self.credentials = service_account.Credentials.from_service_account_info(
+                    key_data,
+                    scopes=['https://www.googleapis.com/auth/wallet_object.issuer']
+                )
+            except Exception as e:
+                print(f"[WALLET] Error: {e}")
+
+    def _get_auth_token(self):
+        if not self.credentials:
+            return None
+        from google.auth.transport import requests as google_requests
+        self.credentials.refresh(google_requests.Request())
+        return self.credentials.token
+
+    def create_pass_class(self, business_name, program_name, primary_color="#0d9488"):
+        if not self.issuer_id or not self.class_id:
+            return False
+        token = self._get_auth_token()
+        if not token:
+            return False
+
+        import requests
+        url = f"https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{self.issuer_id}.{self.class_id}"
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+        payload = {
             "id": f"{self.issuer_id}.{self.class_id}",
-            "issuerName": "LoyaltyTree",
+            "issuerName": business_name,
             "reviewStatus": "UNDER_REVIEW",
             "programName": program_name,
-            "programLogo": {
-                "sourceUri": {
-                    "uri": "https://loyaltree-btw1.onrender.com/static/logo.png"
-                }
-            },
             "hexBackgroundColor": primary_color,
             "hexForegroundColor": "#FFFFFF",
-            "heroImage": {
-                "sourceUri": {
-                    "uri": "https://loyaltree-btw1.onrender.com/static/hero.png"
-                }
-            },
-            "localizedIssuerName": {
-                "defaultValue": {"language": "en", "value": business_name}
-            },
-            "localizedProgramName": {
-                "defaultValue": {"language": "en", "value": program_name}
-            },
-            "linksModuleData": {
-                "uris": [
-                    {
-                        "uri": "https://loyaltree-five.vercel.app",
-                        "description": "LoyaltyTree Dashboard",
-                        "id": "dashboard"
-                    }
-                ]
-            },
-            "messages": [],
-            "textModulesData": [
-                {
-                    "header": "Terms",
-                    "body": "Show this pass to earn stamps. Rewards expire if not redeemed within 30 days.",
-                    "id": "terms"
-                }
-            ],
-            "imageModulesData": [],
-            "infoModuleData": {
-                "labelValueRows": [
-                    {
-                        "columns": [
-                            {
-                                "label": "Business",
-                                "value": business_name
-                            }
-                        ]
-                    }
-                ],
-                "showLastUpdateTime": True
-            }
-        }
-        return pass_class
-
-    def create_pass_object(self, customer_id: str, customer_name: str, business_name: str, 
-                          stamps: int = 0, goal: int = 8, reward_unlocked: bool = False):
-        """Create a loyalty pass object for a customer"""
-        pass_object = {
-            "id": f"{self.issuer_id}.{customer_id}",
-            "classId": f"{self.issuer_id}.{self.class_id}",
-            "state": "ACTIVE",
-            "barcode": {
-                "type": "QR_CODE",
-                "value": customer_id,
-                "alternateText": customer_name
-            },
-            "loyaltyPoints": {
-                "balance": {
-                    "string": f"{stamps}/{goal}"
-                },
-                "label": "Stamps"
-            },
-            "accountId": customer_id,
-            "accountName": customer_name,
-            "textModulesData": [
-                {
-                    "header": "Progress",
-                    "body": f"{stamps} of {goal} stamps earned",
-                    "id": "progress"
-                },
-                {
-                    "header": "Status",
-                    "body": "🎉 Reward Unlocked!" if reward_unlocked else f"{goal - stamps} more to go!",
-                    "id": "status"
-                }
-            ],
-            "linksModuleData": {
-                "uris": [
-                    {
-                        "uri": f"https://loyaltree-five.vercel.app/join/{customer_id}",
-                        "description": "View Card",
-                        "id": "view"
-                    }
-                ]
-            },
-            "infoModuleData": {
-                "labelValueRows": [
-                    {
-                        "columns": [
-                            {
-                                "label": "Business",
-                                "value": business_name
-                            },
-                            {
-                                "label": "Member Since",
-                                "value": datetime.utcnow().strftime("%b %d, %Y")
-                            }
-                        ]
-                    }
-                ],
-                "showLastUpdateTime": True
-            },
-            "messages": [
-                {
-                    "header": "Welcome!",
-                    "body": f"Thanks for joining {business_name}'s rewards program!",
-                    "displayInterval": {
-                        "start": {"date": datetime.utcnow().isoformat()}
-                    },
-                    "id": "welcome"
-                }
-            ] if stamps == 0 else []
-        }
-        return pass_object
-
-    def generate_add_to_wallet_link(self, customer_id: str) -> str:
-        """Generate the 'Add to Google Wallet' link"""
-        print(f"[WALLET DEBUG] issuer_id: {self.issuer_id}")
-        print(f"[WALLET DEBUG] class_id: {self.class_id}")
-        print(f"[WALLET DEBUG] service_account: {self.service_account_email}")
-        print(f"[WALLET DEBUG] has private_key: {bool(self.private_key)}")
-        print(f"[WALLET DEBUG] has json: {bool(self.service_account_json)}")
-
-        if not self.service_account_email or not self.issuer_id:
-            print("[WALLET DEBUG] Missing email or issuer_id")
-            return None
-
-        claims = {
-            "iss": self.service_account_email,
-            "aud": "google",
-            "typ": "savetowallet",
-            "iat": int(datetime.utcnow().timestamp()),
-            "origins": ["https://loyaltree-five.vercel.app"],
-            "payload": {
-                "loyaltyClasses": [
-                    {
-                        "id": f"{self.issuer_id}.{self.class_id}"
-                    }
-                ],
-                "loyaltyObjects": [
-                    {
-                        "id": f"{self.issuer_id}.{customer_id}",
-                        "classId": f"{self.issuer_id}.{self.class_id}"
-                    }
-                ]
-            }
+            "localizedIssuerName": {"defaultValue": {"language": "en", "value": business_name}},
+            "localizedProgramName": {"defaultValue": {"language": "en", "value": program_name}}
         }
 
         try:
-            if self.private_key:
-                print(f"[WALLET DEBUG] Attempting JWT sign with key length: {len(self.private_key)}")
-                token = jwt.encode(claims, self.private_key, algorithm="RS256")
-                print(f"[WALLET DEBUG] JWT signed successfully! Token length: {len(token)}")
-                return f"https://pay.google.com/gp/v/save/{token}"
-            else:
-                print("[WALLET DEBUG] No private key available")
+            get_res = requests.get(url, headers=headers)
+            if get_res.status_code == 200:
+                return True
+            post_res = requests.post("https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass", headers=headers, json=payload)
+            return post_res.status_code in [200, 201]
         except Exception as e:
-            print(f"[WALLET DEBUG] JWT signing error: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"[WALLET] Class error: {e}")
+            return False
 
-        return None
+    def create_pass_object(self, customer_id, customer_name, business_name, stamps=0, goal=8, reward_unlocked=False):
+        if not self.issuer_id or not self.class_id:
+            return None
 
+        token = self._get_auth_token()
+        if not token:
+            return None
 
-@app.post("/api/v1/business/{public_id}/wallet-pass")
-def generate_wallet_pass(public_id: str, customer_public_id: str, db: Session = Depends(get_db)):
-    business = db.query(Business).filter(Business.public_id == public_id).first()
-    if not business:
-        raise HTTPException(status_code=404, detail="Business not found")
+        import requests
+        object_id = f"{self.issuer_id}.{customer_id}"
+        url = f"https://walletobjects.googleapis.com/walletobjects/v1/loyaltyObject/{object_id}"
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-    customer = db.query(Customer).filter(Customer.public_id == customer_public_id, Customer.business_id == business.id).first()
-    if not customer:
-        raise HTTPException(status_code=404, detail="Customer not found")
-
-    program = business.loyalty_program
-    confirmed_stamps = db.query(Stamp).filter(Stamp.customer_id == customer.id, Stamp.status == StampStatus.CONFIRMED).count()
-    unlocked = db.query(Reward).filter(Reward.customer_id == customer.id, Reward.status == RewardStatus.UNLOCKED).count() > 0
-
-    wallet = GoogleWalletPass()
-
-    # Generate pass object
-    pass_obj = wallet.create_pass_object(
-        customer_id=customer.public_id,
-        customer_name=customer.name,
-        business_name=business.name,
-        stamps=confirmed_stamps,
-        goal=program.stamp_goal if program else 8,
-        reward_unlocked=unlocked
-    )
-
-    # Generate add to wallet link
-    wallet_link = wallet.generate_add_to_wallet_link(customer.public_id)
-
-    return {
-        "pass_object": pass_obj,
-        "add_to_wallet_url": wallet_link or f"https://loyaltree-five.vercel.app/wallet/{customer.public_id}",
-        "qr_code_data": customer.public_id,
-        "preview": {
-            "business_name": business.name,
-            "customer_name": customer.name,
-            "stamps": confirmed_stamps,
-            "goal": program.stamp_goal if program else 8,
-            "reward_unlocked": unlocked
+        payload = {
+            "id": object_id,
+            "classId": f"{self.issuer_id}.{self.class_id}",
+            "state": "ACTIVE",
+            "barcode": {"type": "QR_CODE", "value": customer_id, "alternateText": customer_name},
+            "loyaltyPoints": {"balance": {"string": f"{stamps}/{goal}"}, "label": "Stamps"},
+            "accountId": customer_id,
+            "accountName": customer_name,
+            "textModulesData": [
+                {"header": "Progress", "body": f"{stamps} of {goal} stamps", "id": "progress"},
+                {"header": "Status", "body": "Reward Unlocked!" if reward_unlocked else f"{goal - stamps} more to go!", "id": "status"}
+            ]
         }
-    }
 
-@app.get("/api/v1/customer/{customer_public_id}/wallet-pass")
-def get_customer_wallet_pass(customer_public_id: str, db: Session = Depends(get_db)):
-    customer = db.query(Customer).filter(Customer.public_id == customer_public_id).first()
-    if not customer:
-        raise HTTPException(status_code=404, detail="Customer not found")
+        try:
+            put_res = requests.put(url, headers=headers, json=payload)
+            if put_res.status_code in [200, 201]:
+                return put_res.json()
+            if put_res.status_code == 404:
+                post_res = requests.post("https://walletobjects.googleapis.com/walletobjects/v1/loyaltyObject", headers=headers, json=payload)
+                if post_res.status_code in [200, 201]:
+                    return post_res.json()
+            return None
+        except Exception as e:
+            print(f"[WALLET] Object error: {e}")
+            return None
 
-    business = customer.business
-    program = business.loyalty_program
-    confirmed_stamps = db.query(Stamp).filter(Stamp.customer_id == customer.id, Stamp.status == StampStatus.CONFIRMED).count()
-    unlocked = db.query(Reward).filter(Reward.customer_id == customer.id, Reward.status == RewardStatus.UNLOCKED).count() > 0
+    def generate_add_to_wallet_link(self, customer_id):
+        if not self.service_account_email or not self.issuer_id or not self.private_key:
+            return None
+        try:
+            claims = {
+                "iss": self.service_account_email,
+                "aud": "google",
+                "typ": "savetowallet",
+                "iat": int(datetime.utcnow().timestamp()),
+                "exp": int(datetime.utcnow().timestamp()) + 3600,
+                "origins": ["https://loyaltree-five.vercel.app"],
+                "payload": {
+                    "loyaltyClasses": [{"id": f"{self.issuer_id}.{self.class_id}"}],
+                    "loyaltyObjects": [{"id": f"{self.issuer_id}.{customer_id}", "classId": f"{self.issuer_id}.{self.class_id}"}]
+                }
+            }
+            token = jwt.encode(claims, self.private_key, algorithm="RS256")
+            return f"https://pay.google.com/gp/v/save/{token}"
+        except Exception as e:
+            print(f"[WALLET] JWT error: {e}")
+            return None
 
-    wallet = GoogleWalletPass()
 
-    return {
-        "pass_data": {
-            "business_name": business.name,
-            "customer_name": customer.name,
-            "customer_id": customer.public_id,
-            "stamps": confirmed_stamps,
-            "goal": program.stamp_goal if program else 8,
-            "reward_unlocked": unlocked,
-            "primary_color": program.primary_color if program else "#0d9488",
-        },
-        "add_to_wallet_url": wallet.generate_add_to_wallet_link(customer.public_id),
-        "qr_code": customer.public_id
-    }
-
-@app.get("/api/v1/debug/wallet-config")
-def debug_wallet_config():
-    wallet = GoogleWalletPass()
-    return {
-        "issuer_id": wallet.issuer_id,
-        "class_id": wallet.class_id,
-        "service_account": wallet.service_account_email,
-        "has_private_key": bool(wallet.private_key),
-        "private_key_length": len(wallet.private_key) if wallet.private_key else 0,
-        "has_json": bool(wallet.service_account_json),
-        "json_length": len(wallet.service_account_json) if wallet.service_account_json else 0,
-    }
-
-# ============================================================
-# RUN
-# ============================================================
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
