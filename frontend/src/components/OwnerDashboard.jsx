@@ -18,6 +18,10 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [showEditModal, setShowEditModal] = useState(false)
   const [editForm, setEditForm] = useState({})
   const [savingCustomer, setSavingCustomer] = useState(false)
+  const [showStaffEditModal, setShowStaffEditModal] = useState(false)
+  const [staffEditForm, setStaffEditForm] = useState({})
+  const [savingStaff, setSavingStaff] = useState(false)
+  const [deletingStaff, setDeletingStaff] = useState(false)
   const [qrImageUrl, setQrImageUrl] = useState(null)
   const [inviteForm, setInviteForm] = useState({ name: '', email: '', phone: '', role: 'cashier' })
   const [configForm, setConfigForm] = useState({})
@@ -127,6 +131,63 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       setMessage('Network error')
     }
     setSavingCustomer(false)
+  }
+
+  const openEditStaff = (s) => {
+    setStaffEditForm({
+      public_id: s.public_id,
+      name: s.name || '',
+      email: s.email || '',
+      phone: s.phone || '',
+      role: s.role || 'cashier',
+      pin: s.pin || '0000',
+      is_active: s.is_active !== false,
+    })
+    setShowStaffEditModal(true)
+  }
+
+  const saveStaff = async (e) => {
+    e.preventDefault()
+    setSavingStaff(true)
+    try {
+      const { public_id, ...fields } = staffEditForm
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff/${public_id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(fields)
+      })
+      if (res.ok) {
+        setShowStaffEditModal(false)
+        loadData()
+      } else {
+        const data = await res.json().catch(() => ({}))
+        setMessage(data.detail || 'Could not save cashier')
+      }
+    } catch (err) {
+      setMessage('Network error')
+    }
+    setSavingStaff(false)
+  }
+
+  const deleteStaff = async () => {
+    if (!staffEditForm.public_id) return
+    if (!window.confirm(`Remove ${staffEditForm.name || 'this cashier'} from your team? This can't be undone.`)) return
+    setDeletingStaff(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff/${staffEditForm.public_id}`, {
+        method: 'DELETE',
+      })
+      if (res.ok) {
+        setShowStaffEditModal(false)
+        loadData()
+      } else {
+        const data = await res.json().catch(() => ({}))
+        setMessage(data.detail || 'Could not remove cashier')
+      }
+    } catch (err) {
+      setMessage('Network error')
+    }
+    setDeletingStaff(false)
   }
 
   const saveConfig = async (e) => {
@@ -510,6 +571,12 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                       {s.is_active ? 'Active' : 'Inactive'}
                     </span>
                   </div>
+                  <button
+                    onClick={() => openEditStaff(s)}
+                    style={{...styles.viewCardBtn, background: 'transparent', color: '#0d9488', border: '1px solid #a7f3d0', alignSelf: 'flex-start'}}
+                  >
+                    ✏️ Edit
+                  </button>
                 </div>
               ))}
             </div>
@@ -717,6 +784,55 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               <input style={styles.input} type="date" value={editForm.last_order_date || ''} onChange={e => setEditForm({...editForm, last_order_date: e.target.value})} />
               <button type="submit" style={styles.submitBtn} disabled={savingCustomer}>
                 {savingCustomer ? 'Saving...' : 'Save Changes'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Staff Modal */}
+      {showStaffEditModal && (
+        <div style={styles.modalOverlay} onClick={() => setShowStaffEditModal(false)}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+            <h3>✏️ Edit Cashier</h3>
+            <form onSubmit={saveStaff}>
+              <label style={styles.label}>Name</label>
+              <input style={styles.input} value={staffEditForm.name || ''} onChange={e => setStaffEditForm({...staffEditForm, name: e.target.value})} required />
+              <label style={styles.label}>Email</label>
+              <input style={styles.input} type="email" value={staffEditForm.email || ''} onChange={e => setStaffEditForm({...staffEditForm, email: e.target.value})} required />
+              <label style={styles.label}>Phone</label>
+              <input style={styles.input} value={staffEditForm.phone || ''} onChange={e => setStaffEditForm({...staffEditForm, phone: e.target.value})} />
+              <label style={styles.label}>Role</label>
+              <select style={styles.input} value={staffEditForm.role || 'cashier'} onChange={e => setStaffEditForm({...staffEditForm, role: e.target.value})}>
+                <option value="cashier">Cashier</option>
+                <option value="manager">Manager</option>
+              </select>
+              <label style={styles.label}>PIN</label>
+              <input
+                style={styles.input}
+                value={staffEditForm.pin || ''}
+                onChange={e => setStaffEditForm({...staffEditForm, pin: e.target.value.replace(/\D/g, '').slice(0, 6)})}
+                inputMode="numeric"
+                placeholder="0000"
+              />
+              <label style={{...styles.label, display: 'flex', alignItems: 'center', gap: 8}}>
+                <input
+                  type="checkbox"
+                  checked={staffEditForm.is_active !== false}
+                  onChange={e => setStaffEditForm({...staffEditForm, is_active: e.target.checked})}
+                />
+                Active (can clock in / stamp cards)
+              </label>
+              <button type="submit" style={styles.submitBtn} disabled={savingStaff}>
+                {savingStaff ? 'Saving...' : 'Save Changes'}
+              </button>
+              <button
+                type="button"
+                onClick={deleteStaff}
+                disabled={deletingStaff}
+                style={{...styles.submitBtn, background: 'transparent', color: '#dc2626', border: '1px solid #fecaca', marginTop: 8}}
+              >
+                {deletingStaff ? 'Removing...' : '🗑️ Remove Cashier'}
               </button>
             </form>
           </div>

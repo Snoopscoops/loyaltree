@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 import base64
 import json
@@ -54,6 +55,14 @@ class StaffInvite(BaseModel):
     phone: Optional[str] = None
     role: str = 'cashier'
 
+class StaffUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    role: Optional[str] = None
+    pin: Optional[str] = None
+    is_active: Optional[bool] = None
+
 class LoyaltyConfig(BaseModel):
     stamp_goal: int = Field(default=8, ge=3, le=20)
     reward_name: str = 'Free Service'
@@ -98,6 +107,27 @@ class RedeemRequest(BaseModel):
 def generate_public_id() -> str:
     return uuid.uuid4().hex
 
+def slugify(text: str) -> str:
+    slug = re.sub(r'[^a-z0-9]+', '-', (text or '').lower()).strip('-')
+    return slug[:30] or 'biz'
+
+def generate_business_public_id(name: str) -> str:
+    """Human-readable business ID: 'businessname-xxxx' instead of a raw UUID,
+    so cashiers can read/type it more easily when logging in."""
+    slug = slugify(name)
+    if not supabase:
+        return f"{slug}-{uuid.uuid4().hex[:4]}"
+    for _ in range(5):
+        candidate = f"{slug}-{uuid.uuid4().hex[:4]}"
+        try:
+            existing = supabase.table("businesses").select("id").eq("public_id", candidate).maybe_single().execute()
+        except Exception:
+            existing = None
+        if not existing or not existing.data:
+            return candidate
+    # Extremely unlikely fallback if 5 collisions happen in a row
+    return f"{slug}-{uuid.uuid4().hex[:8]}"
+
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
@@ -115,6 +145,15 @@ def safe_get_customer(public_id: str):
         return None
     try:
         res = supabase.table("customers").select("*").eq("public_id", public_id).maybe_single().execute()
+        return res.data
+    except Exception:
+        return None
+
+def safe_get_staff(public_id: str):
+    if not supabase:
+        return None
+    try:
+        res = supabase.table("staff").select("*").eq("public_id", public_id).maybe_single().execute()
         return res.data
     except Exception:
         return None
@@ -412,7 +451,7 @@ async def register(biz: BusinessCreate):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database not connected")
 
-    public_id = generate_public_id()
+    public_id = generate_business_public_id(biz.name)
     business_data = {
         'public_id': public_id,
         'name': biz.name,
@@ -553,6 +592,46 @@ async def get_staff(public_id: str):
     try:
         res = supabase.table("staff").select("*").eq("business_id", business.get("id")).execute()
         return res.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.patch("/api/v1/business/{public_id}/staff/{staff_public_id}")
+async def update_staff(public_id: str, staff_public_id: str, update: StaffUpdate):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    staff = safe_get_staff(staff_public_id)
+    if not staff:
+        raise HTTPException(status_code=404, detail="Staff not found")
+    if staff.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Staff not found for this business")
+
+    update_data = {k: v for k, v in update.dict(exclude_unset=True).items() if v is not None}
+    if not update_data:
+        return staff
+
+    try:
+        res = supabase.table("staff").update(update_data).eq("id", staff.get("id")).execute()
+        return res.data[0] if res.data else {**staff, **update_data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/v1/business/{public_id}/staff/{staff_public_id}")
+async def delete_staff(public_id: str, staff_public_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    staff = safe_get_staff(staff_public_id)
+    if not staff:
+        raise HTTPException(status_code=404, detail="Staff not found")
+    if staff.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Staff not found for this business")
+
+    try:
+        supabase.table("staff").delete().eq("id", staff.get("id")).execute()
+        return {"message": "Staff removed"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
