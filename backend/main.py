@@ -21,6 +21,7 @@ SUPABASE_KEY = os.getenv('SUPABASE_KEY', '')
 BASE_URL = os.getenv('BASE_URL', 'https://loyaltree-btw1.onrender.com')
 GOOGLE_WALLET_ISSUER_ID = os.getenv('GOOGLE_WALLET_ISSUER_ID', '')
 GOOGLE_WALLET_CLASS_SUFFIX = os.getenv('GOOGLE_WALLET_CLASS_SUFFIX', '')
+DEFAULT_LOGO_URL = os.getenv('DEFAULT_LOGO_URL', 'https://placehold.co/300x300/0d9488/ffffff.png?text=LoyaltyTree')
 
 ENV_ERROR = None
 if not SUPABASE_URL or not SUPABASE_KEY:
@@ -216,8 +217,13 @@ def build_loyalty_class(business: dict, program: dict, review_status: str = 'UND
     logo_url = business.get('logo_url')
     if not logo_url and program:
         logo_url = program.get('program_logo_url')
-    if logo_url:
-        loyalty_class['programLogo'] = {'sourceUri': {'uri': logo_url}}
+    if not logo_url:
+        # Google Wallet requires a programLogo to create a class - fall back to a
+        # generic placeholder so publishing never hard-fails when a business hasn't
+        # uploaded their own logo yet. Businesses should still be encouraged to set
+        # a real logo_url via signup or loyalty-config for a branded look.
+        logo_url = DEFAULT_LOGO_URL
+    loyalty_class['programLogo'] = {'sourceUri': {'uri': logo_url}}
 
     hero_url = program.get('hero_image_url') if program else None
     if hero_url:
