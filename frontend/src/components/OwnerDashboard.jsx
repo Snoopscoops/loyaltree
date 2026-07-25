@@ -19,6 +19,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [inviteForm, setInviteForm] = useState({ name: '', email: '', phone: '', role: 'cashier' })
   const [configForm, setConfigForm] = useState({})
   const [message, setMessage] = useState('')
+  const [publishing, setPublishing] = useState(false)
+  const [walletClassId, setWalletClassId] = useState(null)
 
   // Frontend URL for customer-facing pages
   const FRONTEND_URL = 'https://loyaltree-btw1.onrender.com'
@@ -50,6 +52,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       setStats(statsData)
       setProgram(progData)
       if (progData) setConfigForm(progData)
+      if (progData?.google_wallet_class_id) setWalletClassId(progData.google_wallet_class_id)
     } catch (err) {
       console.error('Load error:', err)
     }
@@ -87,7 +90,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         body: JSON.stringify(configForm)
       })
       if (res.ok) {
-        setMessage('Program updated!')
+        setMessage('Program updated! Publish your card design below to push these changes to Google Wallet.')
         setShowConfigModal(false)
         loadData()
       } else {
@@ -97,6 +100,27 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     } catch (err) {
       setMessage('Network error')
     }
+  }
+
+  const publishWalletClass = async () => {
+    setPublishing(true)
+    setMessage('')
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/wallet-class`, {
+        method: 'POST',
+      })
+      const data = await res.json()
+      if (res.ok && data.success) {
+        setWalletClassId(data.class_id)
+        setMessage('🎉 Card design published! New members will now see your branded card.')
+        loadData()
+      } else {
+        setMessage(data.detail ? `Publish failed: ${JSON.stringify(data.detail)}` : 'Publish failed')
+      }
+    } catch (err) {
+      setMessage('Network error publishing card design')
+    }
+    setPublishing(false)
   }
 
   const goLive = async () => {
@@ -414,6 +438,10 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             <h2 style={styles.sectionTitle}>⚙️ Root System</h2>
             <div style={styles.programCard}>
               <div style={styles.programRow}>
+                <span style={styles.programLabel}>🏷️ Card Name</span>
+                <span style={styles.programValue}>{program?.card_name || `${user?.business_name || 'Your Business'} Rewards`}</span>
+              </div>
+              <div style={styles.programRow}>
                 <span style={styles.programLabel}>🎯 Stamp Goal</span>
                 <span style={styles.programValue}>{program?.stamp_goal || 8} stamps</span>
               </div>
@@ -430,6 +458,24 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 <span style={styles.programValue}>{program?.reward_expiry_days || 30} days</span>
               </div>
               <button onClick={() => setShowConfigModal(true)} style={styles.editBtn}>🌱 Configure Roots</button>
+            </div>
+
+            <div style={{...styles.programCard, marginTop: 16}}>
+              <div style={styles.programRow}>
+                <span style={styles.programLabel}>🎫 Google Wallet Card</span>
+                <span style={{
+                  ...styles.programValue,
+                  color: walletClassId ? '#0d9488' : '#94a3b8',
+                }}>
+                  {walletClassId ? 'Published' : 'Not published yet'}
+                </span>
+              </div>
+              <p style={{fontSize: 13, color: '#64748b', margin: '8px 0 16px'}}>
+                Publish your card design so new members see "{configForm.card_name || program?.card_name || `${user?.business_name || 'Your Business'} Rewards`}" instead of the default name when they add their card to Google Wallet. Re-publish any time you change the card name, color, or logo.
+              </p>
+              <button onClick={publishWalletClass} disabled={publishing} style={{...styles.editBtn, background: '#1a73e8'}}>
+                {publishing ? 'Publishing...' : (walletClassId ? '🔄 Re-publish Card Design' : '🎨 Publish Card Design')}
+              </button>
             </div>
           </div>
         )}
@@ -583,6 +629,16 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           <div style={styles.modal} onClick={e => e.stopPropagation()}>
             <h3>🌱 Configure Root System</h3>
             <form onSubmit={saveConfig}>
+              <label style={styles.label}>Card Name</label>
+              <input
+                style={styles.input}
+                placeholder={`${user?.business_name || 'Your Business'} Rewards`}
+                value={configForm.card_name || ''}
+                onChange={e => setConfigForm({...configForm, card_name: e.target.value})}
+              />
+              <p style={{fontSize: 12, color: '#94a3b8', margin: '-8px 0 12px'}}>
+                Shown as the title on customers' Google Wallet cards. Leave blank to use "{user?.business_name || 'Your Business'} Rewards".
+              </p>
               <label style={styles.label}>Stamp Goal</label>
               <input style={styles.input} type="number" min="3" max="20" value={configForm.stamp_goal || 8} onChange={e => setConfigForm({...configForm, stamp_goal: parseInt(e.target.value)})} />
               <label style={styles.label}>Reward Name</label>
