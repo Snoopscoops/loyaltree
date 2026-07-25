@@ -45,13 +45,44 @@ function AnalyticsDashboard({ API_BASE, user }) {
   const { overview, trends, customers, stamps, rewards, revenue } = analytics
 
   return (
-    <div style={styles.container}>
-      <div style={styles.header}>
-        <h1 style={styles.title}>📊 Analytics Dashboard</h1>
-        <div style={styles.timeRange}>
+    <div className="an-container" style={styles.container}>
+      <style>{`
+        @media (max-width: 768px) {
+          .an-container { padding: 16px !important; }
+          .an-header { flex-direction: column; align-items: stretch !important; gap: 12px !important; margin-bottom: 20px !important; }
+          .an-title { font-size: 21px !important; }
+          .an-timerange {
+            display: flex; flex-wrap: nowrap !important; overflow-x: auto;
+            -webkit-overflow-scrolling: touch; padding-bottom: 4px;
+            margin: 0 -16px !important; padding-left: 16px; padding-right: 16px;
+          }
+          .an-timerange::-webkit-scrollbar { display: none; }
+          .an-rangebtn { white-space: nowrap; flex-shrink: 0; padding: 9px 14px !important; font-size: 13px !important; }
+          .an-overview-grid { grid-template-columns: repeat(2, 1fr) !important; gap: 10px !important; }
+          .an-statcard { padding: 14px !important; }
+          .an-stat-icon { font-size: 20px !important; }
+          .an-statvalue { font-size: 22px !important; }
+          .an-charts-row { grid-template-columns: 1fr !important; gap: 12px !important; }
+          .an-chart-card { padding: 16px !important; }
+          .an-insights-grid { grid-template-columns: 1fr !important; }
+          .an-revenue-grid { grid-template-columns: 1fr !important; }
+          .an-health-grid { grid-template-columns: 1fr !important; }
+          .an-bignumber { font-size: 26px !important; }
+          .an-section-title { font-size: 17px !important; margin-bottom: 12px !important; }
+          .an-actionbtn { width: 100% !important; padding: 11px 16px !important; }
+        }
+        @media (max-width: 420px) {
+          .an-overview-grid { grid-template-columns: 1fr 1fr !important; }
+          .an-title { font-size: 19px !important; }
+        }
+      `}</style>
+      <div className="an-header" style={styles.header}>
+        <h1 className="an-title" style={styles.title}>📊 Analytics Dashboard</h1>
+        <div className="an-timerange" style={styles.timeRange}>
           {['7d', '30d', '90d', 'all'].map(range => (
             <button
               key={range}
+              className="an-rangebtn"
               onClick={() => setTimeRange(range)}
               style={{
                 ...styles.rangeBtn,
@@ -66,7 +97,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
       </div>
 
       {/* Overview Cards */}
-      <div style={styles.overviewGrid}>
+      <div className="an-overview-grid" style={styles.overviewGrid}>
         <StatCard 
           title="Total Customers" 
           value={overview.total_customers} 
@@ -112,24 +143,24 @@ function AnalyticsDashboard({ API_BASE, user }) {
       </div>
 
       {/* Charts Row */}
-      <div style={styles.chartsRow}>
-        <div style={styles.chartCard}>
+      <div className="an-charts-row" style={styles.chartsRow}>
+        <div className="an-chart-card" style={styles.chartCard}>
           <h3 style={styles.chartTitle}>📈 Customer Growth</h3>
           <LineChart data={trends.customers} color="#0d9488" />
         </div>
-        <div style={styles.chartCard}>
+        <div className="an-chart-card" style={styles.chartCard}>
           <h3 style={styles.chartTitle}>🎯 Stamp Activity</h3>
           <LineChart data={trends.stamps} color="#f59e0b" />
         </div>
       </div>
 
       {/* Second Charts Row */}
-      <div style={styles.chartsRow}>
-        <div style={styles.chartCard}>
+      <div className="an-charts-row" style={styles.chartsRow}>
+        <div className="an-chart-card" style={styles.chartCard}>
           <h3 style={styles.chartTitle}>🎁 Reward Redemptions</h3>
           <BarChart data={trends.rewards} color="#ec4899" />
         </div>
-        <div style={styles.chartCard}>
+        <div className="an-chart-card" style={styles.chartCard}>
           <h3 style={styles.chartTitle}>📅 Activity by Day of Week</h3>
           <Heatmap data={trends.peak_hours} />
         </div>
@@ -137,8 +168,8 @@ function AnalyticsDashboard({ API_BASE, user }) {
 
       {/* Customer Insights */}
       <div style={styles.section}>
-        <h2 style={styles.sectionTitle}>👥 Customer Insights</h2>
-        <div style={styles.insightsGrid}>
+        <h2 className="an-section-title" style={styles.sectionTitle}>👥 Customer Insights</h2>
+        <div className="an-insights-grid" style={styles.insightsGrid}>
           <div style={styles.insightCard}>
             <h4 style={styles.insightTitle}>Top Customers</h4>
             {customers.top_customers?.map((c, i) => (
@@ -151,7 +182,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           </div>
           <div style={styles.insightCard}>
             <h4 style={styles.insightTitle}>Retention Rate</h4>
-            <div style={styles.bigNumber}>{customers.retention_rate}%</div>
+            <div className="an-bignumber" style={styles.bigNumber}>{customers.retention_rate}%</div>
             <p style={styles.insightDesc}>of customers returned within 30 days</p>
             <div style={styles.retentionBar}>
               <div style={{...styles.retentionFill, width: `${customers.retention_rate}%`}}></div>
@@ -159,36 +190,36 @@ function AnalyticsDashboard({ API_BASE, user }) {
           </div>
           <div style={styles.insightCard}>
             <h4 style={styles.insightTitle}>Churn Risk</h4>
-            <div style={{...styles.bigNumber, color: '#ef4444'}}>{customers.churn_risk}</div>
+            <div className="an-bignumber" style={{...styles.bigNumber, color: '#ef4444'}}>{customers.churn_risk}</div>
             <p style={styles.insightDesc}>customers haven't visited in 30+ days</p>
-            <button style={styles.actionBtn}>Send Win-Back Offer</button>
+            <button className="an-actionbtn" style={styles.actionBtn}>Send Win-Back Offer</button>
           </div>
         </div>
       </div>
 
       {/* Revenue Insights */}
       <div style={styles.section}>
-        <h2 style={styles.sectionTitle}>💰 Revenue Impact</h2>
+        <h2 className="an-section-title" style={styles.sectionTitle}>💰 Revenue Impact</h2>
         {revenue.tracked ? (
-          <div style={styles.revenueGrid}>
+          <div className="an-revenue-grid" style={styles.revenueGrid}>
             <div style={styles.revenueCard}>
               <h4 style={styles.insightTitle}>Stamp-Driven Revenue</h4>
-              <div style={styles.bigNumber}>${revenue.stamp_revenue}</div>
+              <div className="an-bignumber" style={styles.bigNumber}>${revenue.stamp_revenue}</div>
               <p style={styles.insightDesc}>Revenue from stamp-earning transactions</p>
             </div>
             <div style={styles.revenueCard}>
               <h4 style={styles.insightTitle}>Reward Cost</h4>
-              <div style={{...styles.bigNumber, color: '#ef4444'}}>${revenue.reward_cost}</div>
+              <div className="an-bignumber" style={{...styles.bigNumber, color: '#ef4444'}}>${revenue.reward_cost}</div>
               <p style={styles.insightDesc}>Estimated cost of redeemed rewards</p>
             </div>
             <div style={styles.revenueCard}>
               <h4 style={styles.insightTitle}>Net Program Value</h4>
-              <div style={{...styles.bigNumber, color: '#10b981'}}>${revenue.net_value}</div>
+              <div className="an-bignumber" style={{...styles.bigNumber, color: '#10b981'}}>${revenue.net_value}</div>
               <p style={styles.insightDesc}>Revenue minus reward costs</p>
             </div>
             <div style={styles.revenueCard}>
               <h4 style={styles.insightTitle}>Avg. Transaction</h4>
-              <div style={styles.bigNumber}>${revenue.avg_transaction}</div>
+              <div className="an-bignumber" style={styles.bigNumber}>${revenue.avg_transaction}</div>
               <p style={styles.insightDesc}>Average spend per stamp transaction</p>
             </div>
           </div>
@@ -205,8 +236,8 @@ function AnalyticsDashboard({ API_BASE, user }) {
 
       {/* Program Health */}
       <div style={styles.section}>
-        <h2 style={styles.sectionTitle}>🏥 Program Health</h2>
-        <div style={styles.healthGrid}>
+        <h2 className="an-section-title" style={styles.sectionTitle}>🏥 Program Health</h2>
+        <div className="an-health-grid" style={styles.healthGrid}>
           <HealthMetric 
             label="Stamp Completion Rate" 
             value={stamps.completion_rate} 
@@ -241,14 +272,14 @@ function AnalyticsDashboard({ API_BASE, user }) {
 function StatCard({ title, value, change, icon, color }) {
   const isPositive = change >= 0
   return (
-    <div style={{...styles.statCard, borderTop: `4px solid ${color}`}}>
+    <div className="an-statcard" style={{...styles.statCard, borderTop: `4px solid ${color}`}}>
       <div style={styles.statHeader}>
-        <span style={styles.statIcon}>{icon}</span>
+        <span className="an-stat-icon" style={styles.statIcon}>{icon}</span>
         <span style={{...styles.change, color: isPositive ? '#10b981' : '#ef4444'}}>
           {isPositive ? '↑' : '↓'} {Math.abs(change)}%
         </span>
       </div>
-      <div style={styles.statValue}>{value}</div>
+      <div className="an-statvalue" style={styles.statValue}>{value}</div>
       <div style={styles.statTitle}>{title}</div>
     </div>
   )
@@ -390,7 +421,7 @@ const styles = {
   },
   overviewGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
     gap: 16,
     marginBottom: 24,
   },
@@ -425,7 +456,7 @@ const styles = {
   },
   chartsRow: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
     gap: 16,
     marginBottom: 24,
   },
