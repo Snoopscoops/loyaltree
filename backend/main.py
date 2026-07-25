@@ -99,6 +99,20 @@ class StampRequest(BaseModel):
 class PinVerify(BaseModel):
     pin: str
 
+class AnnouncementCreate(BaseModel):
+    title: str
+    message: str
+    type: Optional[str] = 'info'
+    is_active: Optional[bool] = True
+    end_date: Optional[str] = None  # 'YYYY-MM-DD'
+
+class AnnouncementUpdate(BaseModel):
+    title: Optional[str] = None
+    message: Optional[str] = None
+    type: Optional[str] = None
+    is_active: Optional[bool] = None
+    end_date: Optional[str] = None
+
 class RedeemRequest(BaseModel):
     customer_public_id: str
     staff_pin: str
@@ -355,6 +369,41 @@ def sync_wallet_object(customer: dict, business: dict, program: dict):
                 print(f"WALLET SYNC: failed {resp.status_code} - {resp.text}")
     except Exception as e:
         print(f"WALLET SYNC error: {e}")
+
+def send_wallet_class_message(class_id: str, header: str, body: str, message_id: str) -> bool:
+    """Push a notification to every customer who has saved a loyalty card
+    under this business's Wallet class. Google Wallet's addMessage endpoint on
+    the *class* (not each individual object) fans the message out to every
+    saved card in one call, which is what powers the phone notification.
+    message_id should be stable per-announcement-send so re-calling this with
+    the same id doesn't spam a duplicate notification."""
+    access_token = get_google_access_token()
+    if not access_token or not class_id:
+        return False
+    try:
+        import httpx
+        payload = {
+            'message': {
+                'header': (header or '')[:150],
+                'body': (body or '')[:500],
+                'id': message_id,
+                'messageType': 'TEXT',
+            }
+        }
+        with httpx.Client() as client:
+            resp = client.post(
+                f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}/addMessage',
+                headers={"Authorization": f"Bearer {access_token}"},
+                json=payload
+            )
+            if resp.status_code in (200, 201):
+                print(f"WALLET PUSH: sent to class {class_id}")
+                return True
+            print(f"WALLET PUSH failed: {resp.status_code} - {resp.text}")
+            return False
+    except Exception as e:
+        print(f"WALLET PUSH error: {e}")
+        return False
 
 # FastAPI App
 app = FastAPI(title='LoyaltyTree API')
@@ -710,6 +759,163 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
                 content={"detail": "Write blocked by Row Level Security. Use service_role key or disable RLS in Supabase.", "error": error_msg}
             )
         raise HTTPException(status_code=500, detail=error_msg)
+
+# ANNOUNCEMENTS
+
+@app.get("/api/v1/business/{public_id}/announcements")
+async def get_announcements(public_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    try:
+        res = (
+            supabase.table("announcements")
+            .select("*")
+            .eq("business_id", business.get("id"))
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return res.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/business/{public_id}/announcements")
+async def create_announcement(public_id: str, ann: AnnouncementCreate):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    is_active = ann.is_active if ann.is_active is not None else True
+    data = {
+        'business_id': business.get('id'),
+        'title': ann.title,
+        'message': ann.message,
+        'type': ann.type or 'info',
+        'is_active': is_active,
+        'end_date': ann.end_date,
+        'created_at': datetime.utcnow().isoformat(),
+        'updated_at': datetime.utcnow().isoformat(),
+    }
+
+    try:
+        res = supabase.table("announcements").insert(data).execute()
+        created = res.data[0] if res.data else data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # Auto-push on creation of a new, active announcement. Editing an existing
+    # one later does NOT re-push automatically - use the Notify button for that,
+    # so fixing a typo doesn't re-spam everyone's phone.
+    push_sent = False
+    push_error = None
+    if is_active:
+        program = safe_get_loyalty_program(business.get('id'))
+        class_id = program.get('google_wallet_class_id') if program else None
+        if class_id:
+            message_id = f"ann-{created.get('id')}"
+            push_sent = send_wallet_class_message(class_id, ann.title, ann.message, message_id)
+            if push_sent:
+                try:
+                    supabase.table("announcements").update(
+                        {'notified_at': datetime.utcnow().isoformat()}
+                    ).eq("id", created.get("id")).execute()
+                    created['notified_at'] = datetime.utcnow().isoformat()
+                except Exception:
+                    pass
+            else:
+                push_error = "Notification could not be sent. Check Google Wallet credentials."
+        else:
+            push_error = "Publish your card design to Google Wallet (Program tab) first, then customers can be notified."
+
+    created['_push_sent'] = push_sent
+    if push_error:
+        created['_push_error'] = push_error
+    return created
+
+@app.put("/api/v1/business/{public_id}/announcements/{announcement_id}")
+async def update_announcement(public_id: str, announcement_id: str, ann: AnnouncementUpdate):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    try:
+        existing = (
+            supabase.table("announcements")
+            .select("*")
+            .eq("id", announcement_id)
+            .eq("business_id", business.get("id"))
+            .maybe_single()
+            .execute()
+        )
+    except Exception:
+        existing = None
+    if not existing or not existing.data:
+        raise HTTPException(status_code=404, detail="Announcement not found")
+
+    update_data = {k: v for k, v in ann.dict(exclude_unset=True).items() if v is not None}
+    if not update_data:
+        return existing.data
+    update_data['updated_at'] = datetime.utcnow().isoformat()
+
+    try:
+        res = supabase.table("announcements").update(update_data).eq("id", announcement_id).execute()
+        return res.data[0] if res.data else {**existing.data, **update_data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/v1/business/{public_id}/announcements/{announcement_id}")
+async def delete_announcement(public_id: str, announcement_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    try:
+        supabase.table("announcements").delete().eq("id", announcement_id).eq("business_id", business.get("id")).execute()
+        return {"message": "Announcement deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/business/{public_id}/announcements/{announcement_id}/notify")
+async def notify_announcement(public_id: str, announcement_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    try:
+        res = (
+            supabase.table("announcements")
+            .select("*")
+            .eq("id", announcement_id)
+            .eq("business_id", business.get("id"))
+            .maybe_single()
+            .execute()
+        )
+        ann = res.data
+    except Exception:
+        ann = None
+    if not ann:
+        raise HTTPException(status_code=404, detail="Announcement not found")
+
+    program = safe_get_loyalty_program(business.get('id'))
+    class_id = program.get('google_wallet_class_id') if program else None
+    if not class_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Publish your card design to Google Wallet (Program tab) before sending notifications."
+        )
+
+    message_id = f"ann-{ann.get('id')}-{int(datetime.utcnow().timestamp())}"
+    sent = send_wallet_class_message(class_id, ann.get('title', ''), ann.get('message', ''), message_id)
+    if not sent:
+        raise HTTPException(status_code=500, detail="Could not send notification. Check Google Wallet credentials.")
+
+    try:
+        supabase.table("announcements").update(
+            {'notified_at': datetime.utcnow().isoformat()}
+        ).eq("id", announcement_id).execute()
+    except Exception:
+        pass
+
+    return {"message": "Notification sent to everyone who saved this business's card."}
 
 @app.post("/api/v1/business/{public_id}/staff/invite")
 async def invite_staff(public_id: str, invite: StaffInvite):

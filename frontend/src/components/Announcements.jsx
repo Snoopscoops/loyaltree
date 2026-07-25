@@ -12,6 +12,8 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
   })
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [banner, setBanner] = useState(null)
+  const [notifyingId, setNotifyingId] = useState(null)
 
   useEffect(() => {
     fetchAnnouncements()
@@ -34,6 +36,7 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
   const handleSubmit = async (e) => {
     e.preventDefault()
     setSaving(true)
+    setBanner(null)
     try {
       const url = editing
         ? `${API_BASE}/api/v1/business/${businessSlug}/announcements/${editing}`
@@ -46,6 +49,14 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
       })
 
       if (res.ok) {
+        const data = await res.json().catch(() => ({}))
+        if (!editing) {
+          if (data._push_sent) {
+            setBanner({ type: 'success', text: '📣 Posted and pushed to everyone who saved their card.' })
+          } else if (data._push_error) {
+            setBanner({ type: 'warn', text: `Posted, but not pushed: ${data._push_error}` })
+          }
+        }
         setForm({ title: '', message: '', type: 'info', is_active: true, end_date: '' })
         setEditing(null)
         fetchAnnouncements()
@@ -79,6 +90,27 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
     }
   }
 
+  const handleNotify = async (id) => {
+    setNotifyingId(id)
+    setBanner(null)
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/announcements/${id}/notify`, {
+        method: 'POST'
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok) {
+        setBanner({ type: 'success', text: '📣 Sent to everyone who saved their card.' })
+        fetchAnnouncements()
+      } else {
+        setBanner({ type: 'warn', text: data.detail || 'Could not send notification.' })
+      }
+    } catch (err) {
+      console.error(err)
+      setBanner({ type: 'warn', text: 'Network error sending notification.' })
+    }
+    setNotifyingId(null)
+  }
+
   const handleNew = () => {
     setEditing(null)
     setForm({ title: '', message: '', type: 'info', is_active: true, end_date: '' })
@@ -100,6 +132,16 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
         </div>
 
         <div style={styles.body}>
+          {banner && (
+            <div style={{
+              ...styles.banner,
+              background: banner.type === 'success' ? '#f0fdf4' : '#fffbeb',
+              color: banner.type === 'success' ? '#166534' : '#92400e',
+              border: `1px solid ${banner.type === 'success' ? '#bbf7d0' : '#fde68a'}`,
+            }}>
+              {banner.text}
+            </div>
+          )}
           {/* Editor */}
           <div style={styles.editor}>
             <h3 style={styles.editorTitle}>{editing ? 'Edit Announcement' : 'New Announcement'}</h3>
@@ -184,8 +226,18 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
                         <span style={styles.annDate}>
                           {new Date(ann.created_at).toLocaleDateString()}
                           {ann.end_date && ` → ${new Date(ann.end_date).toLocaleDateString()}`}
+                          {ann.notified_at && (
+                            <span style={styles.sentTag}> · 🔔 sent {new Date(ann.notified_at).toLocaleDateString()}</span>
+                          )}
                         </span>
                         <div style={styles.annActions}>
+                          <button
+                            onClick={() => handleNotify(ann.id)}
+                            disabled={notifyingId === ann.id}
+                            style={styles.actionBtn}
+                          >
+                            {notifyingId === ann.id ? 'Sending...' : (ann.notified_at ? '🔔 Resend' : '🔔 Notify')}
+                          </button>
                           <button onClick={() => handleEdit(ann)} style={styles.actionBtn}>✏️ Edit</button>
                           <button onClick={() => handleDelete(ann.id)} style={styles.actionBtn}>🗑️</button>
                         </div>
@@ -254,6 +306,17 @@ const styles = {
     display: 'flex',
     flexDirection: 'column',
     gap: 24,
+  },
+  banner: {
+    padding: '12px 16px',
+    borderRadius: 12,
+    fontSize: 13,
+    fontWeight: 500,
+    lineHeight: 1.5,
+  },
+  sentTag: {
+    color: '#0d9488',
+    fontWeight: 600,
   },
   editor: {
     background: '#f8fafc',
