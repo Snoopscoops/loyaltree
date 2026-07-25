@@ -10,4 +10,4 @@ PyJWT
 cryptography
 supabase
 httpx
-pillow
+pillow>=10.1.0

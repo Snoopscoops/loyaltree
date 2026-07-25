@@ -388,6 +388,11 @@ def _hex_to_rgb(hex_color: Optional[str]) -> tuple:
         return (13, 148, 136)  # fallback teal if primary_color is malformed
 
 def generate_hero_image_bytes(primary_color: str) -> bytes:
+    """Plain gradient, no text - used as the class-level fallback banner
+    (shared by every customer before any personalized object image exists)."""
+    return _hero_to_png(_render_hero(primary_color))
+
+def _render_hero(primary_color: str) -> "Image.Image":
     start = _hex_to_rgb(primary_color)
     end = HERO_GRADIENT_END
     scale = 4
@@ -403,10 +408,88 @@ def generate_hero_image_bytes(primary_color: str) -> bytes:
                 int(start[1] + (end[1] - start[1]) * t),
                 int(start[2] + (end[2] - start[2]) * t),
             )
-    img = small.resize(HERO_SIZE, Image.LANCZOS)
+    return small.resize(HERO_SIZE, Image.LANCZOS)
+
+def _hero_to_png(img: "Image.Image") -> bytes:
     buffer = BytesIO()
     img.save(buffer, format='PNG')
     return buffer.getvalue()
+
+def _wrap_text(draw, text: str, font, max_width: int, max_lines: int) -> List[str]:
+    """Greedy word-wrap using actual glyph widths, truncating with an
+    ellipsis if the text still doesn't fit in max_lines."""
+    words = (text or '').split()
+    lines, current = [], ''
+    for word in words:
+        trial = f'{current} {word}'.strip()
+        if draw.textbbox((0, 0), trial, font=font)[2] <= max_width:
+            current = trial
+        else:
+            if current:
+                lines.append(current)
+            current = word
+            if len(lines) == max_lines:
+                break
+    if current and len(lines) < max_lines:
+        lines.append(current)
+    if len(lines) == max_lines and words:
+        # last line may still overflow after wrapping - truncate with ellipsis
+        last = lines[-1]
+        while last and draw.textbbox((0, 0), last + '…', font=font)[2] > max_width:
+            last = last[:-1]
+        lines[-1] = last + '…' if last != lines[-1] else last
+    return lines
+
+def generate_personalized_hero_image_bytes(
+    primary_color: str,
+    reward_name: str,
+    stamps: int,
+    stamp_goal: int,
+    description: Optional[str] = None,
+) -> bytes:
+    """Same gradient as generate_hero_image_bytes, but with a bottom banner
+    burned in showing the reward, live stamp progress, and short description
+    - the per-customer Wallet equivalent of the reward/progress rows shown
+    on the web card. This is set as the *object*-level heroImage (per
+    customer), not the class-level one, since progress differs per person."""
+    img = _render_hero(primary_color).convert('RGBA')
+    from PIL import ImageDraw, ImageFont
+
+    scrim_height = 150
+    scrim = Image.new('RGBA', (HERO_SIZE[0], scrim_height), (0, 0, 0, 0))
+    scrim_px = scrim.load()
+    for y in range(scrim_height):
+        alpha = int(150 * (y / scrim_height))  # fades in from transparent to dark
+        for x in range(HERO_SIZE[0]):
+            scrim_px[x, y] = (0, 0, 0, alpha)
+    img.alpha_composite(scrim, (0, HERO_SIZE[1] - scrim_height))
+
+    draw = ImageDraw.Draw(img)
+    pad = 40
+    max_w = HERO_SIZE[0] - pad * 2
+    font_reward = ImageFont.load_default(size=34)
+    font_progress = ImageFont.load_default(size=24)
+    font_desc = ImageFont.load_default(size=19)
+
+    reward_line = (reward_name or 'Reward')[:60]
+    progress_line = f'{stamps} of {stamp_goal} stamps'
+    desc_lines = _wrap_text(draw, description or '', font_desc, max_w, max_lines=2) if description else []
+
+    y = HERO_SIZE[1] - 24
+    for line in reversed(desc_lines):
+        h = draw.textbbox((0, 0), line, font=font_desc)[3]
+        y -= h + 4
+        draw.text((pad, y), line, font=font_desc, fill=(255, 255, 255, 235))
+    y -= 8
+    h = draw.textbbox((0, 0), progress_line, font=font_progress)[3]
+    y -= h
+    draw.text((pad, y), progress_line, font=font_progress, fill=(255, 255, 255, 255))
+    y -= 6
+    h = draw.textbbox((0, 0), reward_line, font=font_reward)[3]
+    y -= h
+    draw.text((pad, y), reward_line, font=font_reward, fill=(255, 255, 255, 255))
+
+    return _hero_to_png(img.convert('RGB'))
 
 # Google Wallet Helpers
 def get_google_wallet_credentials():
@@ -537,7 +620,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     cust_name = customer.get('name', 'Member')
     biz_name = business.get('name', '')
 
-    return {
+    loyalty_object = {
         'id': object_id,
         'classId': class_id,
         'state': 'active',
@@ -561,6 +644,24 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
             'uris': [{'uri': f'{BASE_URL}/wallet/{cust_public_id}', 'description': 'View Card Online'}]
         }
     }
+
+    # Object-level heroImage overrides the class-level one for just this
+    # customer - used to burn their live reward/progress/description onto
+    # the gradient banner. Skipped when the business uploaded their own
+    # hero photo, since baking text onto someone else's image would look
+    # wrong; that photo is left to show as-is (inherited from the class).
+    if not (program and program.get('hero_image_url')):
+        primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
+        description = program.get('description') if program else None
+        color_key = primary_color.lstrip('#')
+        hero_url = (
+            f'{BASE_URL}/api/v1/customer/{cust_public_id}/hero-image.png'
+            f'?s={stamps}&g={stamp_goal}&c={color_key}'
+        )
+        loyalty_object['heroImage'] = {'sourceUri': {'uri': hero_url}}
+
+    return loyalty_object
+
 
 def sync_wallet_object(customer: dict, business: dict, program: dict):
     """Push the customer's latest stamp count to Google Wallet.
@@ -2007,6 +2108,39 @@ async def get_hero_image(public_id: str, c: Optional[str] = None):
         content=png_bytes,
         media_type="image/png",
         headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+@app.get("/api/v1/customer/{customer_public_id}/hero-image.png")
+async def get_customer_hero_image(customer_public_id: str, s: Optional[str] = None, g: Optional[str] = None, c: Optional[str] = None):
+    """Serves the personalized hero image build_loyalty_object() points a
+    customer's object-level heroImage at - the gradient plus their live
+    reward name, stamp progress, and short description burned in. s/g/c
+    are just cache-busting values read off the URL Google requested; the
+    real numbers are always re-read fresh from the DB below, so a stale or
+    tampered query string can't show a wrong stamp count - it can only
+    cause an unnecessary (harmless) regeneration."""
+    customer = safe_get_customer(customer_public_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    business = safe_get_business_by_id(customer.get('business_id'))
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    program = safe_get_loyalty_program(business.get('id'))
+    primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
+    reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
+    stamp_goal = program.get('stamp_goal', 8) if program else 8
+    description = program.get('description') if program else None
+    stamps = customer.get('stamp_count', 0)
+
+    png_bytes = generate_personalized_hero_image_bytes(
+        primary_color, reward_name, stamps, stamp_goal, description
+    )
+    return Response(
+        content=png_bytes,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=3600"},
     )
 
 # GOOGLE WALLET CLASS MANAGEMENT
