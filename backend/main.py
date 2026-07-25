@@ -374,9 +374,19 @@ def send_wallet_class_message(class_id: str, header: str, body: str, message_id:
     """Push a notification to every customer who has saved a loyalty card
     under this business's Wallet class. Google Wallet's addMessage endpoint on
     the *class* (not each individual object) fans the message out to every
-    saved card in one call, which is what powers the phone notification.
+    saved card in one call, which is what powers the phone notification -
+    but only if messageType is TEXT_AND_NOTIFY. Plain TEXT silently adds the
+    message to the back of the pass without ever firing a push/lock-screen
+    notification, which looks identical to success in the API response.
     message_id should be stable per-announcement-send so re-calling this with
-    the same id doesn't spam a duplicate notification."""
+    the same id doesn't spam a duplicate notification.
+    Google-side limits to know about (not enforced by this app):
+    - Max 3 notification-triggering messages per pass per rolling 24h; extra
+      calls beyond that raise a quota error on Google's side.
+    - The customer must have notifications enabled for the pass in their
+      Google Wallet app, or nothing will show even though the API call
+      succeeds.
+    - Delivery isn't always instant; a short delay is normal."""
     access_token = get_google_access_token()
     if not access_token or not class_id:
         return False
@@ -387,7 +397,7 @@ def send_wallet_class_message(class_id: str, header: str, body: str, message_id:
                 'header': (header or '')[:150],
                 'body': (body or '')[:500],
                 'id': message_id,
-                'messageType': 'TEXT',
+                'messageType': 'TEXT_AND_NOTIFY',
             }
         }
         with httpx.Client() as client:
@@ -760,6 +770,15 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
             )
         raise HTTPException(status_code=500, detail=error_msg)
 
+def friendly_db_error(e: Exception) -> str:
+    """Supabase's 'relation does not exist' errors are the #1 cause of blind
+    500s right after shipping a new feature - the migration just hasn't been
+    run against the live DB yet. Make that obvious instead of a raw PG error."""
+    msg = str(e)
+    if 'does not exist' in msg.lower() or 'could not find the table' in msg.lower():
+        return f"{msg} — has the matching Supabase migration (SQL script) been run yet?"
+    return msg
+
 # ANNOUNCEMENTS
 
 @app.get("/api/v1/business/{public_id}/announcements")
@@ -777,7 +796,7 @@ async def get_announcements(public_id: str):
         )
         return res.data or []
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
 @app.post("/api/v1/business/{public_id}/announcements")
 async def create_announcement(public_id: str, ann: AnnouncementCreate):
@@ -801,7 +820,7 @@ async def create_announcement(public_id: str, ann: AnnouncementCreate):
         res = supabase.table("announcements").insert(data).execute()
         created = res.data[0] if res.data else data
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
     # Auto-push on creation of a new, active announcement. Editing an existing
     # one later does NOT re-push automatically - use the Notify button for that,
@@ -861,7 +880,7 @@ async def update_announcement(public_id: str, announcement_id: str, ann: Announc
         res = supabase.table("announcements").update(update_data).eq("id", announcement_id).execute()
         return res.data[0] if res.data else {**existing.data, **update_data}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
 @app.delete("/api/v1/business/{public_id}/announcements/{announcement_id}")
 async def delete_announcement(public_id: str, announcement_id: str):
@@ -872,7 +891,7 @@ async def delete_announcement(public_id: str, announcement_id: str):
         supabase.table("announcements").delete().eq("id", announcement_id).eq("business_id", business.get("id")).execute()
         return {"message": "Announcement deleted"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
 @app.post("/api/v1/business/{public_id}/announcements/{announcement_id}/notify")
 async def notify_announcement(public_id: str, announcement_id: str):
