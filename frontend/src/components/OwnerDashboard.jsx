@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Announcements from './Announcements'
+import LoyaltyCardCustomizer from './LoyaltyCardCustomizer'
 
 function OwnerDashboard({ API_BASE, user, onLogout }) {
   const navigate = useNavigate()
@@ -12,7 +13,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [program, setProgram] = useState(null)
   const [loading, setLoading] = useState(true)
   const [showInviteModal, setShowInviteModal] = useState(false)
-  const [showConfigModal, setShowConfigModal] = useState(false)
   const [showQRModal, setShowQRModal] = useState(false)
   const [showCardModal, setShowCardModal] = useState(false)
   const [showAnnouncements, setShowAnnouncements] = useState(false)
@@ -26,10 +26,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [deletingStaff, setDeletingStaff] = useState(false)
   const [qrImageUrl, setQrImageUrl] = useState(null)
   const [inviteForm, setInviteForm] = useState({ name: '', email: '', phone: '', role: 'cashier' })
-  const [configForm, setConfigForm] = useState({})
   const [message, setMessage] = useState('')
-  const [publishing, setPublishing] = useState(false)
-  const [walletClassId, setWalletClassId] = useState(null)
   const [stampCounts, setStampCounts] = useState({}) // staff public_id -> stamps added
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [onboardingStep, setOnboardingStep] = useState(0)
@@ -90,8 +87,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       setStaff(staffData)
       setStats(statsData)
       setProgram(progData)
-      if (progData) setConfigForm(progData)
-      if (progData?.google_wallet_class_id) setWalletClassId(progData.google_wallet_class_id)
 
       if (Array.isArray(stampCountData)) {
         const map = {}
@@ -220,59 +215,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       setMessage('Network error')
     }
     setDeletingStaff(false)
-  }
-
-  const saveConfig = async (e) => {
-    e.preventDefault()
-    try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(configForm)
-      })
-      if (res.ok) {
-        setMessage('Program updated! Publish your card design below to push these changes to Google Wallet.')
-        setShowConfigModal(false)
-        loadData()
-      } else {
-        const data = await res.json()
-        setMessage(data.detail || 'Update failed')
-      }
-    } catch (err) {
-      setMessage('Network error')
-    }
-  }
-
-  const saveConfigAndPublish = async () => {
-    setPublishing(true)
-    setMessage('')
-    try {
-      const configRes = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(configForm)
-      })
-      if (!configRes.ok) {
-        const data = await configRes.json().catch(() => ({}))
-        setMessage(data.detail || 'Could not save changes')
-        setPublishing(false)
-        return
-      }
-      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/wallet-class`, {
-        method: 'POST',
-      })
-      const data = await res.json()
-      if (res.ok && data.success) {
-        setWalletClassId(data.class_id)
-        setMessage('🎉 Card design published! New members will now see your branded card.')
-        loadData()
-      } else {
-        setMessage(data.detail ? `Publish failed: ${JSON.stringify(data.detail)}` : 'Publish failed')
-      }
-    } catch (err) {
-      setMessage('Network error publishing card design')
-    }
-    setPublishing(false)
   }
 
   const goLive = async () => {
@@ -624,81 +566,10 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
         {activeTab === 'program' && (
           <div style={styles.programTab}>
-            <h2 style={styles.sectionTitle}>⚙️ Root System</h2>
-            <div style={styles.programCard}>
-              <div style={styles.programRow}>
-                <span style={styles.programLabel}>🏷️ Card Name</span>
-                <span style={styles.programValue}>{program?.card_name || `${user?.business_name || 'Your Business'} Rewards`}</span>
-              </div>
-              <div style={styles.programRow}>
-                <span style={styles.programLabel}>🎯 Stamp Goal</span>
-                <span style={styles.programValue}>{program?.stamp_goal || 8} stamps</span>
-              </div>
-              <div style={styles.programRow}>
-                <span style={styles.programLabel}>🎁 Reward</span>
-                <span style={styles.programValue}>{program?.reward_name || 'Free Service'}</span>
-              </div>
-              <div style={styles.programRow}>
-                <span style={styles.programLabel}>🎨 Primary Color</span>
-                <span style={{...styles.programValue, color: program?.primary_color || '#3b82f6'}}>{program?.primary_color || '#3b82f6'}</span>
-              </div>
-              <div style={styles.programRow}>
-                <span style={styles.programLabel}>📅 Reward Expiry</span>
-                <span style={styles.programValue}>{program?.reward_expiry_days || 30} days</span>
-              </div>
-              <button onClick={() => setShowConfigModal(true)} style={styles.editBtn}>🌱 Configure Roots</button>
-            </div>
-
-            <div style={{...styles.programCard, marginTop: 16}}>
-              <div style={styles.programRow}>
-                <span style={styles.programLabel}>🎫 Google Wallet Card</span>
-                <span style={{
-                  ...styles.programValue,
-                  color: walletClassId ? '#0d9488' : '#94a3b8',
-                }}>
-                  {walletClassId ? 'Published' : 'Not published yet'}
-                </span>
-              </div>
-              <p style={{fontSize: 13, color: '#64748b', margin: '8px 0 16px'}}>
-                Publish your card design so new members see "{configForm.card_name || program?.card_name || `${user?.business_name || 'Your Business'} Rewards`}" instead of the default name when they add their card to Google Wallet. Re-publish any time you change the stamp goal, logo, color, or card name.
-              </p>
-
-              <label style={styles.label}>🎯 Stamp Goal</label>
-              <input
-                style={styles.input}
-                type="number"
-                min="3"
-                max="20"
-                value={configForm.stamp_goal ?? 8}
-                onChange={e => setConfigForm({...configForm, stamp_goal: e.target.value === '' ? '' : parseInt(e.target.value, 10)})}
-              />
-
-              <label style={styles.label}>🖼️ Card Logo URL</label>
-              <input
-                style={styles.input}
-                placeholder="https://example.com/your-logo.png"
-                value={configForm.program_logo_url || ''}
-                onChange={e => setConfigForm({...configForm, program_logo_url: e.target.value})}
-              />
-              <p style={{fontSize: 12, color: '#94a3b8', margin: '-8px 0 12px'}}>
-                Link to a square image. Shown on customers' Google Wallet card. Leave blank to use your business logo, or a default icon if you haven't set one.
-              </p>
-              {configForm.program_logo_url && (
-                <img
-                  src={configForm.program_logo_url}
-                  alt="Logo preview"
-                  style={{width: 56, height: 56, borderRadius: 12, objectFit: 'cover', marginBottom: 12, border: '1px solid #e2e8f0'}}
-                  onError={e => { e.target.style.display = 'none' }}
-                />
-              )}
-
-              <button onClick={saveConfigAndPublish} disabled={publishing} style={{...styles.editBtn, background: '#1a73e8'}}>
-                {publishing ? 'Publishing...' : (walletClassId ? '🔄 Save & Re-publish Card Design' : '🎨 Save & Publish Card Design')}
-              </button>
-            </div>
+            <LoyaltyCardCustomizer API_BASE={API_BASE} user={user} onSaved={loadData} />
 
             {business?.status !== 'active' && (
-              <div style={{...styles.goLiveCard, marginTop: 16}}>
+              <div style={{...styles.goLiveCard, marginTop: 16, maxWidth: 500, marginLeft: 'auto', marginRight: 'auto'}}>
                 <h3>🚀 Ready to Plant?</h3>
                 <p>Your loyalty program is configured. Go live to start growing!</p>
                 <button onClick={goLive} style={styles.goLiveBtn}>Go Live 🌱</button>
@@ -929,36 +800,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 <option value="manager">Manager</option>
               </select>
               <button type="submit" style={styles.submitBtn}>Send Invite</button>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Config Modal */}
-      {showConfigModal && (
-        <div style={styles.modalOverlay} onClick={() => setShowConfigModal(false)}>
-          <div style={styles.modal} onClick={e => e.stopPropagation()}>
-            <h3>🌱 Configure Root System</h3>
-            <form onSubmit={saveConfig}>
-              <label style={styles.label}>Card Name</label>
-              <input
-                style={styles.input}
-                placeholder={`${user?.business_name || 'Your Business'} Rewards`}
-                value={configForm.card_name || ''}
-                onChange={e => setConfigForm({...configForm, card_name: e.target.value})}
-              />
-              <p style={{fontSize: 12, color: '#94a3b8', margin: '-8px 0 12px'}}>
-                Shown as the title on customers' Google Wallet cards. Leave blank to use "{user?.business_name || 'Your Business'} Rewards".
-              </p>
-              <label style={styles.label}>Stamp Goal</label>
-              <input style={styles.input} type="number" min="3" max="20" value={configForm.stamp_goal || 8} onChange={e => setConfigForm({...configForm, stamp_goal: parseInt(e.target.value)})} />
-              <label style={styles.label}>Reward Name</label>
-              <input style={styles.input} value={configForm.reward_name || ''} onChange={e => setConfigForm({...configForm, reward_name: e.target.value})} />
-              <label style={styles.label}>Primary Color</label>
-              <input style={styles.input} type="color" value={configForm.primary_color || '#3b82f6'} onChange={e => setConfigForm({...configForm, primary_color: e.target.value})} />
-              <label style={styles.label}>Reward Expiry (days)</label>
-              <input style={styles.input} type="number" min="1" value={configForm.reward_expiry_days || 30} onChange={e => setConfigForm({...configForm, reward_expiry_days: parseInt(e.target.value)})} />
-              <button type="submit" style={styles.submitBtn}>Save Configuration</button>
             </form>
           </div>
         </div>
@@ -1497,7 +1338,7 @@ const styles = {
     marginTop: 4,
   },
   programTab: {
-    maxWidth: 500,
+    maxWidth: 1000,
     margin: '0 auto',
   },
   programCard: {

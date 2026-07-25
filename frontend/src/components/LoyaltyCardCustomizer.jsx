@@ -4,9 +4,13 @@ const DESCRIPTION_LIMIT = 140
 
 // Drop this into OwnerDashboard, e.g.:
 //   import LoyaltyCardCustomizer from './LoyaltyCardCustomizer'
-//   <LoyaltyCardCustomizer API_BASE={API_BASE} user={user} />
-// It reads/writes the same /loyalty-config endpoint main.py already exposes.
-function LoyaltyCardCustomizer({ API_BASE, user }) {
+//   <LoyaltyCardCustomizer API_BASE={API_BASE} user={user} onSaved={loadData} />
+// It reads/writes the same /loyalty-config endpoint main.py already exposes,
+// and the "publish" button also hits /wallet-class, same as before.
+// onSaved is optional - call it (e.g. your existing loadData) to refresh any
+// parent state that depends on the program, such as OwnerDashboard's
+// `program` used for the customer card preview modal.
+function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
   const [form, setForm] = useState({
     card_name: '',
     primary_color: '#0d9488',
@@ -20,6 +24,8 @@ function LoyaltyCardCustomizer({ API_BASE, user }) {
   })
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [publishing, setPublishing] = useState(false)
+  const [walletClassId, setWalletClassId] = useState(null)
   const [error, setError] = useState('')
   const [saved, setSaved] = useState(false)
 
@@ -47,6 +53,7 @@ function LoyaltyCardCustomizer({ API_BASE, user }) {
           description: data.description || '',
           google_review_url: data.google_review_url || '',
         }))
+        setWalletClassId(data.google_wallet_class_id || null)
       } else {
         setError(data.detail || 'Failed to load your card settings')
       }
@@ -61,41 +68,71 @@ function LoyaltyCardCustomizer({ API_BASE, user }) {
     setSaved(false)
   }
 
+  const buildPayload = () => ({
+    card_name: form.card_name || null,
+    primary_color: form.primary_color,
+    reward_name: form.reward_name || 'Free Service',
+    stamp_goal: Number(form.stamp_goal) || 8,
+    reward_expiry_days: Number(form.reward_expiry_days) || 30,
+    program_logo_url: form.program_logo_url || null,
+    hero_image_url: form.hero_image_url || null,
+    description: form.description || '',
+    google_review_url: form.google_review_url || null,
+  })
+
+  const postConfig = async () => {
+    const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(user?.token ? { 'Authorization': `Bearer ${user.token}` } : {}),
+      },
+      body: JSON.stringify(buildPayload())
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.detail || 'Failed to save changes')
+    return data
+  }
+
   const handleSave = async (e) => {
     e.preventDefault()
     setSaving(true)
     setError('')
     setSaved(false)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(user?.token ? { 'Authorization': `Bearer ${user.token}` } : {}),
-        },
-        body: JSON.stringify({
-          card_name: form.card_name || null,
-          primary_color: form.primary_color,
-          reward_name: form.reward_name || 'Free Service',
-          stamp_goal: Number(form.stamp_goal) || 8,
-          reward_expiry_days: Number(form.reward_expiry_days) || 30,
-          program_logo_url: form.program_logo_url || null,
-          hero_image_url: form.hero_image_url || null,
-          description: form.description || '',
-          google_review_url: form.google_review_url || null,
-        })
-      })
-      const data = await res.json()
-      if (res.ok) {
-        setSaved(true)
-        setTimeout(() => setSaved(false), 3000)
-      } else {
-        setError(data.detail || 'Failed to save changes')
-      }
+      await postConfig()
+      setSaved(true)
+      if (onSaved) onSaved()
+      setTimeout(() => setSaved(false), 3000)
     } catch (err) {
-      setError('Network error')
+      setError(err.message || 'Network error')
     }
     setSaving(false)
+  }
+
+  const handlePublish = async () => {
+    setPublishing(true)
+    setError('')
+    setSaved(false)
+    try {
+      await postConfig()
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/wallet-class`, {
+        method: 'POST',
+        headers: (user?.token ? { 'Authorization': `Bearer ${user.token}` } : {}),
+      })
+      const data = await res.json()
+      if (res.ok && data.success) {
+        setWalletClassId(data.class_id)
+        setSaved(true)
+        if (onSaved) onSaved()
+        setTimeout(() => setSaved(false), 3000)
+      } else {
+        setError(data.detail ? `Publish failed: ${JSON.stringify(data.detail)}` : 'Publish failed')
+      }
+    } catch (err) {
+      setError(err.message || 'Network error publishing card design')
+    }
+    setPublishing(false)
   }
 
   if (loading) {
@@ -284,9 +321,26 @@ function LoyaltyCardCustomizer({ API_BASE, user }) {
             <p style={styles.hint}>Growth &amp; Pro plans only &mdash; prompted right after a customer redeems a reward.</p>
           </div>
 
-          <button type="submit" style={styles.saveBtn} disabled={saving}>
-            {saving ? 'Saving...' : 'Save changes'}
-          </button>
+          <div style={styles.walletStatus}>
+            <span>🎫 Google Wallet card</span>
+            <span style={{ color: walletClassId ? '#0d9488' : '#94a3b8', fontWeight: 700 }}>
+              {walletClassId ? 'Published' : 'Not published yet'}
+            </span>
+          </div>
+
+          <div style={styles.btnRow}>
+            <button type="submit" style={styles.saveBtn} disabled={saving || publishing}>
+              {saving ? 'Saving...' : 'Save changes'}
+            </button>
+            <button
+              type="button"
+              onClick={handlePublish}
+              style={styles.publishBtn}
+              disabled={saving || publishing}
+            >
+              {publishing ? 'Publishing...' : (walletClassId ? '🔄 Save & re-publish to Wallet' : '🎨 Save & publish to Wallet')}
+            </button>
+          </div>
         </form>
       </div>
     </div>
@@ -482,6 +536,21 @@ const styles = {
     fontSize: 13,
     color: '#64748b',
   },
+  walletStatus: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    fontSize: 13,
+    color: '#475569',
+    background: '#f8fafc',
+    borderRadius: 10,
+    padding: '10px 14px',
+  },
+  btnRow: {
+    display: 'flex',
+    gap: 10,
+    flexWrap: 'wrap',
+  },
   saveBtn: {
     padding: '13px 20px',
     background: '#0d9488',
@@ -491,7 +560,18 @@ const styles = {
     fontSize: 14,
     fontWeight: 700,
     cursor: 'pointer',
-    marginTop: 4,
+    flex: 1,
+  },
+  publishBtn: {
+    padding: '13px 20px',
+    background: '#1a73e8',
+    color: 'white',
+    border: 'none',
+    borderRadius: 10,
+    fontSize: 14,
+    fontWeight: 700,
+    cursor: 'pointer',
+    flex: 1,
   },
   error: {
     background: '#fee2e2',
