@@ -9,13 +9,14 @@ from datetime import datetime, timedelta
 from typing import Optional, List
 
 from fastapi import FastAPI, HTTPException, Request, Depends
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from supabase import create_client, Client
 import qrcode
 from qrcode.image.svg import SvgImage
 from io import BytesIO
+from PIL import Image
 
 # Environment
 SUPABASE_URL = os.getenv('SUPABASE_URL', '')
@@ -368,6 +369,45 @@ def generate_qr_svg(data: str) -> str:
     qr.save(buffer)
     return buffer.getvalue().decode("utf-8")
 
+# Wallet hero-image generation
+# Google Wallet's heroImage has to be a flat, static PNG - it can't render
+# CSS, so the diagonal gradient card look used on the web/join page
+# (linear-gradient(135deg, primary_color 0%, #14b8a6 100%)) is baked into a
+# real 1032x336 image here instead. Rendered at 1/4 scale then upscaled with
+# LANCZOS, which is both fast and smooth enough for a soft gradient.
+HERO_GRADIENT_END = (20, 184, 166)  # #14b8a6 - matches the web card's gradient end
+HERO_SIZE = (1032, 336)             # Google's recommended hero image size
+
+def _hex_to_rgb(hex_color: Optional[str]) -> tuple:
+    hex_color = (hex_color or '#3b82f6').lstrip('#')
+    if len(hex_color) == 3:
+        hex_color = ''.join(c * 2 for c in hex_color)
+    try:
+        return tuple(int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
+    except Exception:
+        return (13, 148, 136)  # fallback teal if primary_color is malformed
+
+def generate_hero_image_bytes(primary_color: str) -> bytes:
+    start = _hex_to_rgb(primary_color)
+    end = HERO_GRADIENT_END
+    scale = 4
+    w, h = HERO_SIZE[0] // scale, HERO_SIZE[1] // scale
+    small = Image.new('RGB', (w, h))
+    px = small.load()
+    max_d = w + h
+    for y in range(h):
+        for x in range(w):
+            t = (x + y) / max_d  # 135deg diagonal blend, matches CSS gradient direction
+            px[x, y] = (
+                int(start[0] + (end[0] - start[0]) * t),
+                int(start[1] + (end[1] - start[1]) * t),
+                int(start[2] + (end[2] - start[2]) * t),
+            )
+    img = small.resize(HERO_SIZE, Image.LANCZOS)
+    buffer = BytesIO()
+    img.save(buffer, format='PNG')
+    return buffer.getvalue()
+
 # Google Wallet Helpers
 def get_google_wallet_credentials():
     creds_json = os.getenv('GOOGLE_WALLET_CREDENTIALS', '')
@@ -475,8 +515,15 @@ def build_loyalty_class(business: dict, program: dict, review_status: str = 'UND
     loyalty_class['programLogo'] = {'sourceUri': {'uri': logo_url}}
 
     hero_url = program.get('hero_image_url') if program else None
-    if hero_url:
-        loyalty_class['heroImage'] = {'sourceUri': {'uri': hero_url}}
+    if not hero_url:
+        # No custom hero photo uploaded - generate the same diagonal gradient
+        # used on the web/join page so the Wallet pass matches it, instead of
+        # showing no banner at all. The color is baked into the URL itself:
+        # same primary_color -> same URL -> Google can keep using its cached
+        # copy; a color change produces a new URL, forcing Google to refetch.
+        color_key = primary_color.lstrip('#')
+        hero_url = f'{BASE_URL}/api/v1/business/{biz_public_id}/hero-image.png?c={color_key}'
+    loyalty_class['heroImage'] = {'sourceUri': {'uri': hero_url}}
 
     return loyalty_class
 
@@ -1940,6 +1987,27 @@ async def redeem_reward(public_id: str, req: RedeemRequest):
         review_url = program.get('google_review_url')
 
     return {"message": "Reward redeemed!", "success": True, "google_review_url": review_url}
+
+@app.get("/api/v1/business/{public_id}/hero-image.png")
+async def get_hero_image(public_id: str, c: Optional[str] = None):
+    """Serves the generated gradient hero image that build_loyalty_class()
+    points heroImage at when a business hasn't uploaded their own hero photo.
+    `c` is just the cache-busting color key from the URL - the color itself
+    always comes fresh from the business's saved program, so this can't be
+    used to render an arbitrary color."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    program = safe_get_loyalty_program(business.get('id'))
+    primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
+
+    png_bytes = generate_hero_image_bytes(primary_color)
+    return Response(
+        content=png_bytes,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 # GOOGLE WALLET CLASS MANAGEMENT
 
