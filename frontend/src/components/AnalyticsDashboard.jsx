@@ -103,10 +103,10 @@ function AnalyticsDashboard({ API_BASE, user }) {
           color="#8b5cf6"
         />
         <StatCard 
-          title="Program ROI" 
-          value={`${overview.roi}%`} 
-          change={overview.roi_change}
-          icon="💰" 
+          title="New Customers" 
+          value={overview.new_customers} 
+          change={overview.customer_change}
+          icon="🆕" 
           color="#10b981"
         />
       </div>
@@ -130,7 +130,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           <BarChart data={trends.rewards} color="#ec4899" />
         </div>
         <div style={styles.chartCard}>
-          <h3 style={styles.chartTitle}>⏰ Peak Hours</h3>
+          <h3 style={styles.chartTitle}>📅 Activity by Day of Week</h3>
           <Heatmap data={trends.peak_hours} />
         </div>
       </div>
@@ -169,28 +169,38 @@ function AnalyticsDashboard({ API_BASE, user }) {
       {/* Revenue Insights */}
       <div style={styles.section}>
         <h2 style={styles.sectionTitle}>💰 Revenue Impact</h2>
-        <div style={styles.revenueGrid}>
-          <div style={styles.revenueCard}>
-            <h4 style={styles.insightTitle}>Stamp-Driven Revenue</h4>
-            <div style={styles.bigNumber}>${revenue.stamp_revenue}</div>
-            <p style={styles.insightDesc}>Revenue from stamp-earning transactions</p>
+        {revenue.tracked ? (
+          <div style={styles.revenueGrid}>
+            <div style={styles.revenueCard}>
+              <h4 style={styles.insightTitle}>Stamp-Driven Revenue</h4>
+              <div style={styles.bigNumber}>${revenue.stamp_revenue}</div>
+              <p style={styles.insightDesc}>Revenue from stamp-earning transactions</p>
+            </div>
+            <div style={styles.revenueCard}>
+              <h4 style={styles.insightTitle}>Reward Cost</h4>
+              <div style={{...styles.bigNumber, color: '#ef4444'}}>${revenue.reward_cost}</div>
+              <p style={styles.insightDesc}>Estimated cost of redeemed rewards</p>
+            </div>
+            <div style={styles.revenueCard}>
+              <h4 style={styles.insightTitle}>Net Program Value</h4>
+              <div style={{...styles.bigNumber, color: '#10b981'}}>${revenue.net_value}</div>
+              <p style={styles.insightDesc}>Revenue minus reward costs</p>
+            </div>
+            <div style={styles.revenueCard}>
+              <h4 style={styles.insightTitle}>Avg. Transaction</h4>
+              <div style={styles.bigNumber}>${revenue.avg_transaction}</div>
+              <p style={styles.insightDesc}>Average spend per stamp transaction</p>
+            </div>
           </div>
-          <div style={styles.revenueCard}>
-            <h4 style={styles.insightTitle}>Reward Cost</h4>
-            <div style={{...styles.bigNumber, color: '#ef4444'}}>${revenue.reward_cost}</div>
-            <p style={styles.insightDesc}>Estimated cost of redeemed rewards</p>
+        ) : (
+          <div style={styles.insightCard}>
+            <p style={styles.insightDesc}>
+              Revenue isn't tracked yet — stamping and redeeming a reward doesn't currently record a dollar
+              amount anywhere, so this section can't show real numbers without guessing. Add a transaction
+              amount to the stamp flow to unlock this.
+            </p>
           </div>
-          <div style={styles.revenueCard}>
-            <h4 style={styles.insightTitle}>Net Program Value</h4>
-            <div style={{...styles.bigNumber, color: '#10b981'}}>${revenue.net_value}</div>
-            <p style={styles.insightDesc}>Revenue minus reward costs</p>
-          </div>
-          <div style={styles.revenueCard}>
-            <h4 style={styles.insightTitle}>Avg. Transaction</h4>
-            <div style={styles.bigNumber}>${revenue.avg_transaction}</div>
-            <p style={styles.insightDesc}>Average spend per stamp transaction</p>
-          </div>
-        </div>
+        )}
       </div>
 
       {/* Program Health */}

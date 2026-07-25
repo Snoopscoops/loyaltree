@@ -4,6 +4,7 @@ import uuid
 import base64
 import json
 import hashlib
+import html as html_lib
 from datetime import datetime, timedelta
 from typing import Optional, List
 
@@ -370,7 +371,7 @@ def sync_wallet_object(customer: dict, business: dict, program: dict):
     except Exception as e:
         print(f"WALLET SYNC error: {e}")
 
-def send_wallet_class_message(class_id: str, header: str, body: str, message_id: str) -> bool:
+def send_wallet_class_message(class_id: str, header: str, body: str, message_id: str, detail_url: str = None) -> bool:
     """Push a notification to every customer who has saved a loyalty card
     under this business's Wallet class. Google Wallet's addMessage endpoint on
     the *class* (not each individual object) fans the message out to every
@@ -380,6 +381,17 @@ def send_wallet_class_message(class_id: str, header: str, body: str, message_id:
     notification, which looks identical to success in the API response.
     message_id should be stable per-announcement-send so re-calling this with
     the same id doesn't spam a duplicate notification.
+
+    IMPORTANT - what the customer actually sees: the lock-screen notification
+    text itself is controlled entirely by Google Wallet, not by header/body
+    here - issuers can't customize it. Tapping the notification opens the
+    pass with a "Review update" / "View message" callout that reveals header
+    + body on the back of the pass. That back-of-pass view is the only place
+    this app's content is actually shown, so if detail_url is given, it's
+    appended to body as a hyperlink (Wallet supports basic <a> tags in
+    message bodies) pointing at a full HTML detail page - useful since body
+    is capped at 500 plain-text characters and can't hold images/formatting.
+
     Google-side limits to know about (not enforced by this app):
     - Max 3 notification-triggering messages per pass per rolling 24h; extra
       calls beyond that raise a quota error on Google's side.
@@ -392,10 +404,18 @@ def send_wallet_class_message(class_id: str, header: str, body: str, message_id:
         return False
     try:
         import httpx
+        body_text = (body or '').strip()
+        if detail_url:
+            link_html = f' <a href="{detail_url}">View full details</a>'
+            if len(body_text) + len(link_html) > 500:
+                body_text = body_text[:500 - len(link_html)].rstrip() + '…'
+            body_text = (body_text + link_html)[:500]
+        else:
+            body_text = body_text[:500]
         payload = {
             'message': {
                 'header': (header or '')[:150],
-                'body': (body or '')[:500],
+                'body': body_text,
                 'id': message_id,
                 'messageType': 'TEXT_AND_NOTIFY',
             }
@@ -414,6 +434,31 @@ def send_wallet_class_message(class_id: str, header: str, body: str, message_id:
     except Exception as e:
         print(f"WALLET PUSH error: {e}")
         return False
+
+def log_stamp_event(business_id: int, customer_id: int):
+    """Best-effort event log powering the Analytics dashboard's trend and
+    peak-activity charts. Never raises - a logging hiccup should never
+    block the stamp response to the cashier."""
+    try:
+        supabase.table("stamp_events").insert({
+            'business_id': business_id,
+            'customer_id': customer_id,
+            'created_at': datetime.utcnow().isoformat(),
+        }).execute()
+    except Exception as e:
+        print(f"STAMP EVENT LOG error: {e}")
+
+def log_redemption_event(business_id: int, customer_id: int):
+    """Best-effort event log powering the Analytics dashboard's reward
+    trend chart. Never raises."""
+    try:
+        supabase.table("redemption_events").insert({
+            'business_id': business_id,
+            'customer_id': customer_id,
+            'created_at': datetime.utcnow().isoformat(),
+        }).execute()
+    except Exception as e:
+        print(f"REDEMPTION EVENT LOG error: {e}")
 
 # FastAPI App
 app = FastAPI(title='LoyaltyTree API')
@@ -711,6 +756,226 @@ async def get_stats(public_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# ANALYTICS
+# Powers AnalyticsDashboard.jsx. Built from stamp_events / redemption_events
+# (see analytics_events_migration.sql) plus a snapshot of the customers
+# table. Anything this app doesn't actually capture - namely dollar amounts,
+# since no price field exists anywhere in the schema - is reported as
+# untracked rather than estimated. See the `revenue` block below.
+
+def _parse_ts(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace('Z', '+00:00')).replace(tzinfo=None)
+    except Exception:
+        return None
+
+def _range_to_days(range_key: str):
+    return {'7d': 7, '30d': 30, '90d': 90}.get(range_key)  # None -> all time
+
+def _pct_change(curr: float, prev: float) -> float:
+    if prev == 0:
+        return 100.0 if curr > 0 else 0.0
+    return round(((curr - prev) / prev) * 100, 1)
+
+def _filter_between(rows, field, start, end):
+    """Rows whose parsed `field` timestamp falls in [start, end)."""
+    out = []
+    for r in rows:
+        ts = _parse_ts(r.get(field))
+        if ts is None:
+            continue
+        if start and ts < start:
+            continue
+        if end and ts >= end:
+            continue
+        out.append(r)
+    return out
+
+def _bucketed_series(rows, field, start, end, max_buckets=30):
+    """[{label, value}] counting rows per day, switching to wider buckets
+    if the range is long enough that daily buckets would be unreadable."""
+    if not start or not end or end <= start:
+        return []
+    total_days = max((end.date() - start.date()).days, 1)
+    bucket_days = 1 if total_days <= max_buckets else -(-total_days // max_buckets)  # ceil div
+    buckets = []
+    cur = datetime(start.year, start.month, start.day)
+    while cur < end:
+        buckets.append(cur)
+        cur += timedelta(days=bucket_days)
+    if not buckets:
+        buckets = [datetime(start.year, start.month, start.day)]
+
+    counts = [0] * len(buckets)
+    for r in rows:
+        ts = _parse_ts(r.get(field))
+        if not ts or ts < start or ts >= end:
+            continue
+        idx = min(int((ts - buckets[0]).days // bucket_days), len(buckets) - 1)
+        counts[idx] += 1
+
+    return [{'label': b.strftime('%b %d'), 'value': c} for b, c in zip(buckets, counts)]
+
+def _day_of_week_series(rows, field, start, end):
+    """[{label, value}] - one bucket per weekday for the Peak Activity
+    heatmap (the UI grid is fixed at 7 columns)."""
+    names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+    counts = [0] * 7
+    for r in rows:
+        ts = _parse_ts(r.get(field))
+        if not ts:
+            continue
+        if start and ts < start:
+            continue
+        if end and ts >= end:
+            continue
+        counts[ts.weekday()] += 1
+    return [{'label': n, 'value': c} for n, c in zip(names, counts)]
+
+@app.get("/api/v1/business/{public_id}/analytics")
+async def get_analytics(public_id: str, range: str = '30d'):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    business_id = business.get('id')
+
+    try:
+        customers = supabase.table("customers").select("*").eq("business_id", business_id).execute().data or []
+        stamp_events = supabase.table("stamp_events").select("*").eq("business_id", business_id).execute().data or []
+        redemption_events = supabase.table("redemption_events").select("*").eq("business_id", business_id).execute().data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    now = datetime.utcnow()
+    days = _range_to_days(range)
+    if days:
+        period_start = now - timedelta(days=days)
+        prev_start = period_start - timedelta(days=days)
+        prev_end = period_start
+    else:
+        candidates = [t for t in (
+            [_parse_ts(business.get('created_at'))] +
+            [_parse_ts(c.get('created_at')) for c in customers]
+        ) if t]
+        period_start = min(candidates) if candidates else now - timedelta(days=90)
+        span = max((now - period_start).days, 1)
+        prev_start = period_start - timedelta(days=span)
+        prev_end = period_start
+
+    cust_period = _filter_between(customers, 'created_at', period_start, now)
+    cust_prev = _filter_between(customers, 'created_at', prev_start, prev_end)
+
+    stamps_period = _filter_between(stamp_events, 'created_at', period_start, now)
+    stamps_prev = _filter_between(stamp_events, 'created_at', prev_start, prev_end)
+
+    redeems_period = _filter_between(redemption_events, 'created_at', period_start, now)
+    redeems_prev = _filter_between(redemption_events, 'created_at', prev_start, prev_end)
+
+    active_ids_period = {e.get('customer_id') for e in stamps_period}
+    active_ids_prev = {e.get('customer_id') for e in stamps_prev}
+
+    total_customers = len(customers)
+    new_customers = len(cust_period)
+    new_customers_prev = len(cust_prev)
+
+    active_members = len(active_ids_period)
+    active_members_prev = len(active_ids_prev)
+
+    total_stamps = len(stamps_period)
+    total_stamps_prev = len(stamps_prev)
+
+    total_rewards = len(redeems_period)
+    total_rewards_prev = len(redeems_prev)
+
+    avg_stamps = round(total_stamps / active_members, 1) if active_members else 0
+    avg_stamps_prev = round(total_stamps_prev / active_members_prev, 1) if active_members_prev else 0
+
+    adoption_rate = round((active_members / total_customers) * 100, 1) if total_customers else 0
+
+    overview = {
+        "total_customers": total_customers,
+        "customer_change": _pct_change(new_customers, new_customers_prev),
+        "new_customers": new_customers,
+        "active_members": active_members,
+        "active_change": _pct_change(active_members, active_members_prev),
+        "total_stamps": total_stamps,
+        "stamp_change": _pct_change(total_stamps, total_stamps_prev),
+        "total_rewards": total_rewards,
+        "reward_change": _pct_change(total_rewards, total_rewards_prev),
+        "avg_stamps_per_customer": avg_stamps,
+        "avg_change": _pct_change(avg_stamps, avg_stamps_prev),
+        "adoption_rate": adoption_rate,
+    }
+
+    trends = {
+        "customers": _bucketed_series(customers, 'created_at', period_start, now),
+        "stamps": _bucketed_series(stamp_events, 'created_at', period_start, now),
+        "rewards": _bucketed_series(redemption_events, 'created_at', period_start, now),
+        "peak_hours": _day_of_week_series(stamp_events, 'created_at', period_start, now),
+    }
+
+    top_customers = sorted(customers, key=lambda c: c.get('stamp_count', 0), reverse=True)[:5]
+    top_customers_out = [
+        {"name": c.get("name") or "Customer", "stamps": c.get("stamp_count", 0)}
+        for c in top_customers if c.get('stamp_count', 0) > 0
+    ]
+
+    returning = active_ids_period & active_ids_prev
+    retention_rate = round((len(returning) / len(active_ids_prev)) * 100, 1) if active_ids_prev else 0
+
+    thirty_days_ago = now - timedelta(days=30)
+    churn_risk = sum(
+        1 for c in customers
+        if c.get('stamp_count', 0) > 0
+        and (_parse_ts(c.get('updated_at')) or _parse_ts(c.get('created_at')) or now) < thirty_days_ago
+    )
+
+    customers_block = {
+        "top_customers": top_customers_out,
+        "retention_rate": retention_rate,
+        "churn_risk": churn_risk,
+        "engagement_rate": adoption_rate,
+    }
+
+    # Proxy for "how many customers hit the stamp goal": customers currently
+    # sitting at reward_unlocked (goal reached, not yet redeemed) plus
+    # everyone who redeemed this period. There's no separate "goal reached"
+    # event logged today - only stamp and redemption events - so this is the
+    # closest honest approximation available without adding a new event type.
+    currently_unlocked = sum(1 for c in customers if c.get('reward_unlocked'))
+    reached_goal_period = currently_unlocked + total_rewards
+
+    stamps_block = {
+        "completion_rate": round((reached_goal_period / active_members) * 100, 1) if active_members else 0,
+    }
+    rewards_block = {
+        "redemption_rate": round((total_rewards / reached_goal_period) * 100, 1) if reached_goal_period else 0,
+    }
+
+    # No price/amount field exists anywhere in this schema (stamps and
+    # redemptions don't capture a dollar value), so revenue is reported as
+    # untracked rather than guessed at. To light this up for real, add an
+    # `amount` field to StampRequest and store it on stamp_events.
+    revenue = {
+        "tracked": False,
+        "stamp_revenue": None,
+        "reward_cost": None,
+        "net_value": None,
+        "avg_transaction": None,
+    }
+
+    return {
+        "range": range,
+        "overview": overview,
+        "trends": trends,
+        "customers": customers_block,
+        "stamps": stamps_block,
+        "rewards": rewards_block,
+        "revenue": revenue,
+    }
+
 @app.get("/api/v1/business/{public_id}/loyalty-config")
 async def get_loyalty_config(public_id: str):
     business = safe_get_business(public_id)
@@ -832,7 +1097,8 @@ async def create_announcement(public_id: str, ann: AnnouncementCreate):
         class_id = program.get('google_wallet_class_id') if program else None
         if class_id:
             message_id = f"ann-{created.get('id')}"
-            push_sent = send_wallet_class_message(class_id, ann.title, ann.message, message_id)
+            detail_url = f"{BASE_URL}/a/{public_id}/{created.get('id')}"
+            push_sent = send_wallet_class_message(class_id, ann.title, ann.message, message_id, detail_url)
             if push_sent:
                 try:
                     supabase.table("announcements").update(
@@ -923,7 +1189,8 @@ async def notify_announcement(public_id: str, announcement_id: str):
         )
 
     message_id = f"ann-{ann.get('id')}-{int(datetime.utcnow().timestamp())}"
-    sent = send_wallet_class_message(class_id, ann.get('title', ''), ann.get('message', ''), message_id)
+    detail_url = f"{BASE_URL}/a/{public_id}/{ann.get('id')}"
+    sent = send_wallet_class_message(class_id, ann.get('title', ''), ann.get('message', ''), message_id, detail_url)
     if not sent:
         raise HTTPException(status_code=500, detail="Could not send notification. Check Google Wallet credentials.")
 
@@ -1038,6 +1305,7 @@ async def add_stamp(public_id: str, req: StampRequest):
         customer['stamp_count'] = new_count
         customer['reward_unlocked'] = reward_unlocked
         sync_wallet_object(customer, business, program)
+        log_stamp_event(business.get('id'), customer.get('id'))
     except Exception as e:
         error_msg = str(e)
         if 'reward_unlocked' in error_msg.lower():
@@ -1046,6 +1314,7 @@ async def add_stamp(public_id: str, req: StampRequest):
                     'stamp_count': new_count,
                     'updated_at': datetime.utcnow().isoformat(),
                 }).eq("id", customer.get("id")).execute()
+                log_stamp_event(business.get('id'), customer.get('id'))
                 return {
                     "message": "Stamp added!",
                     "stamp_count": new_count,
@@ -1132,6 +1401,7 @@ async def redeem_reward(public_id: str, req: RedeemRequest):
         customer['stamp_count'] = new_count
         customer['reward_unlocked'] = False
         sync_wallet_object(customer, business, program)
+        log_redemption_event(business.get('id'), customer.get('id'))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1579,6 +1849,96 @@ async def customer_wallet_page(customer_public_id: str):
     )
 
     return HTMLResponse(html)
+
+# ANNOUNCEMENT DETAIL PAGE
+# Linked from the "View full details" link inside Google Wallet notification
+# messages (see send_wallet_class_message) - Wallet's message body is capped
+# at 500 plain-text characters with no images, so this page is where the
+# full announcement actually lives for customers who tap through.
+
+@app.get("/a/{business_public_id}/{announcement_id}", response_class=HTMLResponse)
+async def announcement_detail_page(business_public_id: str, announcement_id: str):
+    business = safe_get_business(business_public_id)
+    if not business:
+        return HTMLResponse(
+            "<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Not found</h1></div>",
+            status_code=404,
+        )
+
+    try:
+        res = (
+            supabase.table("announcements")
+            .select("*")
+            .eq("id", announcement_id)
+            .eq("business_id", business.get("id"))
+            .maybe_single()
+            .execute()
+        )
+        ann = res.data
+    except Exception:
+        ann = None
+    if not ann:
+        return HTMLResponse(
+            "<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Announcement not found</h1></div>",
+            status_code=404,
+        )
+
+    program = safe_get_loyalty_program(business.get('id'))
+    primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
+    logo_url = business.get('logo_url')
+    biz_name = business.get('name', '')
+
+    type_meta = {
+        'info':  {'bg': '#dbeafe', 'text': '#1e40af', 'icon': '&#8505;&#65039;', 'label': 'Info'},
+        'promo': {'bg': '#fce7f3', 'text': '#be185d', 'icon': '&#127991;&#65039;', 'label': 'Promotion'},
+        'event': {'bg': '#d1fae5', 'text': '#065f46', 'icon': '&#128197;', 'label': 'Event'},
+        'alert': {'bg': '#fee2e2', 'text': '#991b1b', 'icon': '&#9888;&#65039;', 'label': 'Alert'},
+    }
+    meta = type_meta.get(ann.get('type') or 'info', type_meta['info'])
+
+    logo_html = ''
+    if logo_url:
+        logo_html = (
+            '<img src="' + html_lib.escape(logo_url) + '" '
+            'style="width:56px;height:56px;border-radius:14px;object-fit:cover;margin-bottom:14px;" alt="Logo"/>'
+        )
+
+    end_date_html = ''
+    if ann.get('end_date'):
+        end_date_html = '<p class="meta">Valid until ' + html_lib.escape(str(ann.get('end_date'))) + '</p>'
+
+    title = html_lib.escape(ann.get('title') or '')
+    message = html_lib.escape(ann.get('message') or '').replace('\n', '<br>')
+
+    html_out = (
+        '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+        '<title>' + title + ' - ' + html_lib.escape(biz_name) + '</title>'
+        '<style>'
+        '*{box-sizing:border-box;margin:0;padding:0}'
+        'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;'
+        'background:linear-gradient(135deg,' + primary_color + ' 0%,#1e293b 100%);'
+        'min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}'
+        '.card{background:white;border-radius:24px;padding:32px;max-width:440px;width:100%;'
+        'box-shadow:0 20px 60px rgba(0,0,0,0.3)}'
+        '.badge{display:inline-block;padding:5px 12px;border-radius:20px;font-size:12px;font-weight:700;'
+        'text-transform:uppercase;letter-spacing:0.5px;margin-bottom:14px;'
+        'background:' + meta['bg'] + ';color:' + meta['text'] + '}'
+        'h1{font-size:22px;color:#0f172a;margin-bottom:12px;line-height:1.3}'
+        'p.message{font-size:15px;color:#334155;line-height:1.6;margin-bottom:16px}'
+        '.meta{font-size:13px;color:#94a3b8;margin-bottom:4px}'
+        '.biz{font-size:13px;color:#64748b;margin-top:20px;padding-top:16px;border-top:1px solid #e2e8f0}'
+        '</style></head><body>'
+        '<div class="card">'
+        + logo_html +
+        '<div class="badge">' + meta['icon'] + ' ' + meta['label'] + '</div>'
+        '<h1>' + title + '</h1>'
+        '<p class="message">' + message + '</p>'
+        + end_date_html +
+        '<div class="biz">From ' + html_lib.escape(biz_name) + '</div>'
+        '</div></body></html>'
+    )
+    return HTMLResponse(html_out)
 
 # GOOGLE WALLET PASS
 
