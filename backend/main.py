@@ -206,7 +206,7 @@ def build_loyalty_class(business: dict, program: dict, review_status: str = 'UND
         'issuerName': biz_name,
         'programName': program_name,
         'reviewStatus': review_status,
-        'hexBackgroundColor': primary_color.replace('#', ''),
+        'hexBackgroundColor': primary_color if primary_color.startswith('#') else f'#{primary_color}',
         'textModulesData': [
             {'header': 'Reward', 'body': reward_name},
             {'header': 'About', 'body': 'Collect stamps, earn rewards'}
@@ -536,7 +536,7 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
 
     try:
         existing = supabase.table("loyalty_programs").select("id").eq("business_id", business.get("id")).maybe_single().execute()
-        if existing.data:
+        if existing and existing.data:
             supabase.table("loyalty_programs").update(data).eq("business_id", business.get("id")).execute()
         else:
             data['created_at'] = datetime.utcnow().isoformat()
