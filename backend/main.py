@@ -111,7 +111,8 @@ class CustomerUpdate(BaseModel):
 
 class StampRequest(BaseModel):
     customer_public_id: str
-    staff_pin: str
+    staff_pin: Optional[str] = None
+    as_owner: Optional[bool] = False
 
 class PinVerify(BaseModel):
     pin: str
@@ -140,7 +141,8 @@ class AdminBusinessUpdate(BaseModel):
 
 class RedeemRequest(BaseModel):
     customer_public_id: str
-    staff_pin: str
+    staff_pin: Optional[str] = None
+    as_owner: Optional[bool] = False
 
 # Helpers
 def generate_public_id() -> str:
@@ -1522,14 +1524,22 @@ async def add_stamp(public_id: str, req: StampRequest):
     if customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
 
-    try:
-        staff_res = supabase.table("staff").select("*").eq("business_id", business.get("id")).eq("pin", req.staff_pin).execute()
-        if not staff_res.data:
-            raise HTTPException(status_code=403, detail="Invalid staff PIN")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
+    if req.as_owner:
+        # Owner is scanning from their own dashboard, where they've already
+        # authenticated with their business email/password - no separate
+        # cashier PIN to check.
+        pass
+    else:
+        if not req.staff_pin:
+            raise HTTPException(status_code=400, detail="Staff PIN required")
+        try:
+            staff_res = supabase.table("staff").select("*").eq("business_id", business.get("id")).eq("pin", req.staff_pin).execute()
+            if not staff_res.data:
+                raise HTTPException(status_code=403, detail="Invalid staff PIN")
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
 
     program = safe_get_loyalty_program(business.get('id'))
     goal = program.get('stamp_goal', 8) if program else 8
@@ -1620,14 +1630,19 @@ async def redeem_reward(public_id: str, req: RedeemRequest):
     if customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
 
-    try:
-        staff_res = supabase.table("staff").select("*").eq("business_id", business.get("id")).eq("pin", req.staff_pin).execute()
-        if not staff_res.data:
-            raise HTTPException(status_code=403, detail="Invalid staff PIN")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
+    if req.as_owner:
+        pass
+    else:
+        if not req.staff_pin:
+            raise HTTPException(status_code=400, detail="Staff PIN required")
+        try:
+            staff_res = supabase.table("staff").select("*").eq("business_id", business.get("id")).eq("pin", req.staff_pin).execute()
+            if not staff_res.data:
+                raise HTTPException(status_code=403, detail="Invalid staff PIN")
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
 
     if not customer.get('reward_unlocked'):
         raise HTTPException(status_code=400, detail="No reward available to redeem")

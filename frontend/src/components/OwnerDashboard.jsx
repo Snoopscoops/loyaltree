@@ -213,10 +213,21 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     }
   }
 
-  const publishWalletClass = async () => {
+  const saveConfigAndPublish = async () => {
     setPublishing(true)
     setMessage('')
     try {
+      const configRes = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(configForm)
+      })
+      if (!configRes.ok) {
+        const data = await configRes.json().catch(() => ({}))
+        setMessage(data.detail || 'Could not save changes')
+        setPublishing(false)
+        return
+      }
       const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/wallet-class`, {
         method: 'POST',
       })
@@ -447,7 +458,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 <h3>View All Leaves</h3>
                 <p>{customers.length} customers connected</p>
               </div>
-              <div style={styles.actionCard} onClick={() => navigate('/scanner')}>
+              <div style={styles.actionCard} onClick={() => navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name } })}>
                 <div style={styles.actionIcon}>📷</div>
                 <h3>Scan Leaf</h3>
                 <p>Add stamp via QR scan</p>
@@ -624,12 +635,50 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 </span>
               </div>
               <p style={{fontSize: 13, color: '#64748b', margin: '8px 0 16px'}}>
-                Publish your card design so new members see "{configForm.card_name || program?.card_name || `${user?.business_name || 'Your Business'} Rewards`}" instead of the default name when they add their card to Google Wallet. Re-publish any time you change the card name, color, or logo.
+                Publish your card design so new members see "{configForm.card_name || program?.card_name || `${user?.business_name || 'Your Business'} Rewards`}" instead of the default name when they add their card to Google Wallet. Re-publish any time you change the stamp goal, logo, color, or card name.
               </p>
-              <button onClick={publishWalletClass} disabled={publishing} style={{...styles.editBtn, background: '#1a73e8'}}>
-                {publishing ? 'Publishing...' : (walletClassId ? '🔄 Re-publish Card Design' : '🎨 Publish Card Design')}
+
+              <label style={styles.label}>🎯 Stamp Goal</label>
+              <input
+                style={styles.input}
+                type="number"
+                min="3"
+                max="20"
+                value={configForm.stamp_goal ?? 8}
+                onChange={e => setConfigForm({...configForm, stamp_goal: e.target.value === '' ? '' : parseInt(e.target.value, 10)})}
+              />
+
+              <label style={styles.label}>🖼️ Card Logo URL</label>
+              <input
+                style={styles.input}
+                placeholder="https://example.com/your-logo.png"
+                value={configForm.program_logo_url || ''}
+                onChange={e => setConfigForm({...configForm, program_logo_url: e.target.value})}
+              />
+              <p style={{fontSize: 12, color: '#94a3b8', margin: '-8px 0 12px'}}>
+                Link to a square image. Shown on customers' Google Wallet card. Leave blank to use your business logo, or a default icon if you haven't set one.
+              </p>
+              {configForm.program_logo_url && (
+                <img
+                  src={configForm.program_logo_url}
+                  alt="Logo preview"
+                  style={{width: 56, height: 56, borderRadius: 12, objectFit: 'cover', marginBottom: 12, border: '1px solid #e2e8f0'}}
+                  onError={e => { e.target.style.display = 'none' }}
+                />
+              )}
+
+              <button onClick={saveConfigAndPublish} disabled={publishing} style={{...styles.editBtn, background: '#1a73e8'}}>
+                {publishing ? 'Publishing...' : (walletClassId ? '🔄 Save & Re-publish Card Design' : '🎨 Save & Publish Card Design')}
               </button>
             </div>
+
+            {business?.status !== 'active' && (
+              <div style={{...styles.goLiveCard, marginTop: 16}}>
+                <h3>🚀 Ready to Plant?</h3>
+                <p>Your loyalty program is configured. Go live to start growing!</p>
+                <button onClick={goLive} style={styles.goLiveBtn}>Go Live 🌱</button>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -925,7 +974,9 @@ const styles = {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: '16px 24px',
+    flexWrap: 'wrap',
+    rowGap: 10,
+    padding: '12px 16px',
     background: 'rgba(255,255,255,0.9)',
     backdropFilter: 'blur(10px)',
     borderBottom: '1px solid rgba(13,148,136,0.1)',
@@ -954,8 +1005,9 @@ const styles = {
   },
   headerActions: {
     display: 'flex',
-    gap: 12,
+    gap: 8,
     alignItems: 'center',
+    flexWrap: 'wrap',
   },
   planBadge: {
     padding: '6px 12px',
@@ -999,13 +1051,14 @@ const styles = {
     cursor: 'pointer',
   },
   treeSection: {
-    padding: '40px 24px',
+    padding: '32px 16px',
     textAlign: 'center',
     position: 'relative',
   },
   treeVisual: {
     position: 'relative',
     width: 300,
+    maxWidth: '100%',
     height: 350,
     margin: '0 auto',
   },
@@ -1050,7 +1103,8 @@ const styles = {
   statsRing: {
     display: 'flex',
     justifyContent: 'center',
-    gap: 20,
+    flexWrap: 'wrap',
+    gap: 12,
     marginTop: 20,
   },
   statOrb: {
@@ -1094,21 +1148,23 @@ const styles = {
   tabs: {
     display: 'flex',
     justifyContent: 'center',
+    flexWrap: 'wrap',
     gap: 8,
-    padding: '0 24px 16px',
+    padding: '0 16px 16px',
     borderBottom: '1px solid rgba(13,148,136,0.1)',
   },
   tab: {
-    padding: '10px 20px',
+    padding: '10px 16px',
     border: 'none',
     borderRadius: 12,
     fontSize: 14,
     fontWeight: 600,
     cursor: 'pointer',
     transition: 'all 0.2s',
+    whiteSpace: 'nowrap',
   },
   content: {
-    padding: 24,
+    padding: '20px 16px',
     maxWidth: 900,
     margin: '0 auto',
   },
@@ -1192,6 +1248,8 @@ const styles = {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 12,
     marginBottom: 16,
   },
   viewAnalyticsBtn: {
@@ -1386,14 +1444,17 @@ const styles = {
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 300,
-    padding: 20,
+    padding: 16,
   },
   modal: {
     background: 'white',
     borderRadius: 20,
-    padding: 28,
+    padding: 24,
     width: '100%',
     maxWidth: 400,
+    maxHeight: '90vh',
+    overflowY: 'auto',
+    boxSizing: 'border-box',
     boxShadow: '0 20px 40px rgba(0,0,0,0.2)',
   },
   loyaltyCard: {
@@ -1496,7 +1557,7 @@ const styles = {
     marginBottom: 12,
     border: '2px solid #e2e8f0',
     borderRadius: 10,
-    fontSize: 14,
+    fontSize: 16,
     boxSizing: 'border-box',
   },
   label: {

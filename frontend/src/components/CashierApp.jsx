@@ -1,9 +1,19 @@
 import React, { useState, useEffect } from 'react'
 import { Html5QrcodeScanner } from 'html5-qrcode'
+import { useLocation, useNavigate } from 'react-router-dom'
 
 function CashierApp({ API_BASE }) {
+  const location = useLocation()
+  const navigate = useNavigate()
+  // When the owner taps "Scan Leaf" from their own dashboard, we're handed
+  // their business slug and name via router state - they've already
+  // authenticated as the business owner, so there's no reason to make them
+  // fill out a separate cashier PIN login screen too.
+  const ownerState = location.state?.ownerMode ? location.state : null
+  const isOwner = !!ownerState
+
   const [scanResult, setScanResult] = useState(null)
-  const [businessSlug, setBusinessSlug] = useState('')
+  const [businessSlug, setBusinessSlug] = useState(ownerState?.businessSlug || '')
   const [staffPin, setStaffPin] = useState('')
   const [customerData, setCustomerData] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -12,10 +22,10 @@ function CashierApp({ API_BASE }) {
   const [manualId, setManualId] = useState('')
   const [debugInfo, setDebugInfo] = useState('')
   const [verifying, setVerifying] = useState(false)
-  const [staffName, setStaffName] = useState('')
+  const [staffName, setStaffName] = useState(isOwner ? (ownerState?.ownerName || 'Owner') : '')
 
   useEffect(() => {
-    if (!businessSlug || !staffPin || !staffName) return
+    if (!businessSlug || !staffName || (!isOwner && !staffPin)) return
     if (customerData) return // #reader isn't mounted while the customer card is showing
 
     const scanner = new Html5QrcodeScanner('reader', {
@@ -60,7 +70,7 @@ function CashierApp({ API_BASE }) {
     return () => {
       scanner.clear().catch(() => {})
     }
-  }, [businessSlug, staffPin, staffName, customerData])
+  }, [businessSlug, staffPin, staffName, customerData, isOwner])
 
   const fetchCustomer = async (customerId) => {
     setLoading(true)
@@ -98,7 +108,7 @@ function CashierApp({ API_BASE }) {
   }
 
   const addStamp = async () => {
-    if (!customerData || !businessSlug || !staffPin) {
+    if (!customerData || !businessSlug || (!isOwner && !staffPin)) {
       setMessage('Missing info - scan again')
       return
     }
@@ -112,6 +122,7 @@ function CashierApp({ API_BASE }) {
         body: JSON.stringify({
           customer_public_id: customerData.public_id,
           staff_pin: staffPin,
+          as_owner: isOwner,
         })
       })
 
@@ -141,7 +152,7 @@ function CashierApp({ API_BASE }) {
   }
 
   const redeemReward = async () => {
-    if (!customerData || !businessSlug || !staffPin) return
+    if (!customerData || !businessSlug || (!isOwner && !staffPin)) return
     setLoading(true)
     setMessage('Redeeming...')
 
@@ -152,6 +163,7 @@ function CashierApp({ API_BASE }) {
         body: JSON.stringify({
           customer_public_id: customerData.public_id,
           staff_pin: staffPin,
+          as_owner: isOwner,
         })
       })
 
@@ -208,8 +220,9 @@ function CashierApp({ API_BASE }) {
     setVerifying(false)
   }
 
-  // Login screen
-  if (!businessSlug || !staffPin || !staffName) {
+  // Login screen (skipped entirely for the owner - they already authenticated
+  // on the dashboard, so there's no PIN to collect here)
+  if (!isOwner && (!businessSlug || !staffPin || !staffName)) {
     return (
       <div style={styles.container}>
         <div style={styles.loginCard}>
@@ -253,15 +266,19 @@ function CashierApp({ API_BASE }) {
       <header style={styles.header}>
         <div style={styles.headerBrand}>
           <span style={styles.headerLogo}>🌳</span>
-          <span style={styles.headerTitle}>Cashier{staffName ? ` · ${staffName}` : ''}</span>
+          <span style={styles.headerTitle}>{isOwner ? 'Scan Leaf' : 'Cashier'}{staffName ? ` · ${staffName}` : ''}</span>
         </div>
         <button style={styles.resetBtn} onClick={() => {
+          if (isOwner) {
+            navigate('/dashboard')
+            return
+          }
           setBusinessSlug('')
           setStaffPin('')
           setStaffName('')
           resetScan()
         }}>
-          Switch
+          {isOwner ? '← Dashboard' : 'Switch'}
         </button>
       </header>
 
@@ -441,6 +458,7 @@ const styles = {
     borderRadius: 12,
     fontSize: 16,
     boxSizing: 'border-box',
+    WebkitTextSizeAdjust: '100%',
   },
   btn: {
     width: '100%',

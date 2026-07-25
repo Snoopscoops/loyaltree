@@ -190,9 +190,10 @@ const styles = {
   card: {
     background: 'white',
     borderRadius: 24,
-    padding: 40,
+    padding: '32px 24px',
     width: '100%',
     maxWidth: 400,
+    boxSizing: 'border-box',
     boxShadow: '0 20px 60px rgba(0,0,0,0.1)',
   },
   brand: {
@@ -233,9 +234,11 @@ const styles = {
     padding: '14px 16px',
     border: '2px solid #e2e8f0',
     borderRadius: 12,
-    fontSize: 15,
+    fontSize: 16,
     outline: 'none',
     transition: 'border-color 0.2s',
+    boxSizing: 'border-box',
+    width: '100%',
   },
   btn: {
     padding: '16px',
