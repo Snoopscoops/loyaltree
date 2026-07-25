@@ -34,6 +34,33 @@ const FEATURES = [
   },
 ]
 
+const COMPARISON = [
+  {
+    traditional: 'Gets left at home, lost in a drawer, or thrown out with old receipts',
+    digital: 'Lives in the phone customers already carry everywhere \u2014 nothing to lose',
+  },
+  {
+    traditional: 'Easy to fake, over-stamp, or forget to punch at checkout',
+    digital: 'Every stamp is logged by staff PIN, so counts stay accurate and trustworthy',
+  },
+  {
+    traditional: "Owner has no idea how many cards are out there or who's close to a reward",
+    digital: 'Owner sees every customer, every stamp, and every trend in one dashboard',
+  },
+  {
+    traditional: 'No way to reach a customer once they walk out the door',
+    digital: 'Send announcements straight to the wallet pass \u2014 a new item, an offer, a thank you',
+  },
+  {
+    traditional: 'A generic paper card that looks like everyone else\u2019s',
+    digital: 'Branded with your logo, your colors, and your reward \u2014 looks like your business',
+  },
+  {
+    traditional: 'Printing, restocking, and replacing cards costs money every month',
+    digital: 'One-time setup, no printing, no restocking \u2014 the card never runs out',
+  },
+]
+
 const STEPS = [
   { n: '1', title: 'Set up your card', body: 'Pick your stamp goal, your reward, and your colors. Takes a few minutes.' },
   { n: '2', title: 'Share your QR code', body: 'Customers scan it once and their card saves straight to their phone.' },
@@ -170,6 +197,46 @@ function HomePage({ onNavigateLogin }) {
             </div>
             <div style={styles.heroCardFoot}>5 of 8 stamps &middot; 3 to go</div>
           </div>
+        </div>
+      </section>
+
+      <section style={{ ...styles.section, paddingTop: 0 }}>
+        <h2 style={styles.h2}>Why a digital loyalty card wins</h2>
+        <p style={styles.comparisonIntro}>
+          A loyalty program only works if customers actually keep coming back to use it.
+          Paper punch cards were never built for that &mdash; they get lost, forgotten, and thrown away
+          before the reward is ever earned. A digital card removes every one of those friction points
+          by living somewhere customers never lose: their phone.
+        </p>
+        <style>{`
+          @media (max-width: 640px) {
+            .lt-comparison-row { grid-template-columns: 1fr !important; }
+            .lt-comparison-cell-bad { border-right: none !important; border-bottom: 1px solid #f1f5f9; }
+          }
+        `}</style>
+        <div style={styles.comparisonTable}>
+          <div className="lt-comparison-row" style={styles.comparisonHeaderRow}>
+            <div style={styles.comparisonHeaderCell}>
+              <span style={styles.comparisonHeaderIcon}>🧾</span>
+              Traditional punch card
+            </div>
+            <div style={{ ...styles.comparisonHeaderCell, ...styles.comparisonHeaderCellGood }}>
+              <span style={styles.comparisonHeaderIcon}>📱</span>
+              LoyaltyTree digital card
+            </div>
+          </div>
+          {COMPARISON.map((row, i) => (
+            <div key={i} className="lt-comparison-row" style={styles.comparisonRow}>
+              <div className="lt-comparison-cell-bad" style={{ ...styles.comparisonCell, ...styles.comparisonCellBad }}>
+                <span style={{ ...styles.comparisonMark, ...styles.comparisonMarkBad }}>✕</span>
+                <span>{row.traditional}</span>
+              </div>
+              <div style={{ ...styles.comparisonCell, ...styles.comparisonCellGood }}>
+                <span style={{ ...styles.comparisonMark, ...styles.comparisonMarkGood }}>✓</span>
+                <span>{row.digital}</span>
+              </div>
+            </div>
+          ))}
         </div>
       </section>
 
@@ -401,6 +468,46 @@ const styles = {
     padding: '24px 32px', fontSize: 13, color: '#94a3b8', flexWrap: 'wrap', gap: 8,
   },
   footerNote: { fontSize: 12, color: '#cbd5e1' },
+
+  // Comparison section
+  comparisonIntro: {
+    textAlign: 'center', fontSize: 15, lineHeight: 1.7, color: '#475569',
+    maxWidth: 680, margin: '-16px auto 40px',
+  },
+  comparisonTable: {
+    display: 'flex', flexDirection: 'column', gap: 2, maxWidth: 900, margin: '0 auto',
+    border: '1px solid #e2e8f0', borderRadius: 16, overflow: 'hidden',
+  },
+  comparisonHeaderRow: {
+    display: 'grid', gridTemplateColumns: '1fr 1fr',
+  },
+  comparisonHeaderCell: {
+    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+    padding: '16px 12px', fontSize: 14, fontWeight: 700, color: '#64748b', background: '#f8fafc',
+    textAlign: 'center',
+  },
+  comparisonHeaderCellGood: {
+    background: '#0d9488', color: 'white',
+  },
+  comparisonHeaderIcon: { fontSize: 16 },
+  comparisonRow: {
+    display: 'grid', gridTemplateColumns: '1fr 1fr', borderTop: '1px solid #f1f5f9',
+  },
+  comparisonCell: {
+    display: 'flex', alignItems: 'flex-start', gap: 10, padding: '16px 18px',
+    fontSize: 13.5, lineHeight: 1.5,
+  },
+  comparisonCellBad: {
+    color: '#64748b', background: 'white', borderRight: '1px solid #f1f5f9',
+  },
+  comparisonCellGood: {
+    color: '#0f172a', background: '#f0fdfa', fontWeight: 500,
+  },
+  comparisonMark: {
+    fontWeight: 800, flexShrink: 0, marginTop: 1,
+  },
+  comparisonMarkBad: { color: '#f87171' },
+  comparisonMarkGood: { color: '#0d9488' },
 
   // Card types section
   cardTypesIntro: { textAlign: 'center', fontSize: 14, color: '#64748b', margin: '-24px 0 32px' },
