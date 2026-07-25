@@ -28,6 +28,12 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   useEffect(() => {
     if (!user?.business_slug) return
     loadData()
+
+    // Stamps and redemptions happen from the cashier's device, a separate
+    // session, so this dashboard has no way to know data changed unless it
+    // asks again. Poll periodically to keep Leaves/Rings/Fruits current.
+    const interval = setInterval(loadData, 15000)
+    return () => clearInterval(interval)
   }, [user])
 
   const loadData = async () => {
@@ -249,6 +255,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         </div>
         <div style={styles.headerActions}>
           <span style={styles.planBadge}>{user?.business_name}</span>
+          <button onClick={() => loadData()} style={styles.navBtn}>🔄 Refresh</button>
           <button onClick={() => navigate('/analytics')} style={styles.navBtn}>📊 Analytics</button>
           <button onClick={onLogout} style={styles.logoutBtn}>Logout</button>
         </div>
