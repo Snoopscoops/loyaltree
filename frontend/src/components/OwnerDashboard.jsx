@@ -30,9 +30,14 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [message, setMessage] = useState('')
   const [publishing, setPublishing] = useState(false)
   const [walletClassId, setWalletClassId] = useState(null)
+  const [stampCounts, setStampCounts] = useState({}) // staff public_id -> stamps added
+  const [showOnboarding, setShowOnboarding] = useState(false)
+  const [onboardingStep, setOnboardingStep] = useState(0)
 
   // Frontend URL for customer-facing pages
   const FRONTEND_URL = 'https://loyaltree-btw1.onrender.com'
+  const onboardingKey = user?.business_slug ? `loyaltree_onboarding_seen_${user.business_slug}` : null
+  const isActive = (business?.status || '').toUpperCase() === 'ACTIVE'
 
   useEffect(() => {
     if (!user?.business_slug) return
@@ -45,14 +50,32 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     return () => clearInterval(interval)
   }, [user])
 
+  // Auto-launch the setup tutorial the first time the business goes live,
+  // so the owner is walked through Roots -> Cashier -> Share Tree ->
+  // Analytics before they start using the dashboard on their own.
+  useEffect(() => {
+    if (!isActive || !onboardingKey) return
+    const seen = localStorage.getItem(onboardingKey)
+    if (!seen) {
+      setOnboardingStep(0)
+      setShowOnboarding(true)
+    }
+  }, [isActive, onboardingKey])
+
+  const closeOnboarding = () => {
+    if (onboardingKey) localStorage.setItem(onboardingKey, '1')
+    setShowOnboarding(false)
+  }
+
   const loadData = async () => {
     try {
-      const [bizRes, custRes, staffRes, statsRes, progRes] = await Promise.all([
+      const [bizRes, custRes, staffRes, statsRes, progRes, stampCountRes] = await Promise.all([
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}`),
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers`),
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff`),
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}/stats`),
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config`),
+        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff/stamp-counts`),
       ])
 
       const bizData = await bizRes.json().catch(() => null)
@@ -60,6 +83,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       const staffData = await staffRes.json().catch(() => [])
       const statsData = await statsRes.json().catch(() => null)
       const progData = await progRes.json().catch(() => null)
+      const stampCountData = await stampCountRes.json().catch(() => [])
 
       setBusiness(bizData)
       setCustomers(custData)
@@ -68,6 +92,12 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       setProgram(progData)
       if (progData) setConfigForm(progData)
       if (progData?.google_wallet_class_id) setWalletClassId(progData.google_wallet_class_id)
+
+      if (Array.isArray(stampCountData)) {
+        const map = {}
+        stampCountData.forEach(row => { map[row.staff_public_id] = row.stamp_count })
+        setStampCounts(map)
+      }
     } catch (err) {
       console.error('Load error:', err)
     }
@@ -371,6 +401,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         </div>
         <div style={styles.headerActions}>
           <span style={styles.planBadge}>{user?.business_name}</span>
+          <button onClick={() => { setOnboardingStep(0); setShowOnboarding(true) }} style={styles.navBtn}>🎓 Setup Guide</button>
           <button onClick={() => setShowAnnouncements(true)} style={styles.navBtn}>📢 Announcements</button>
           <button onClick={() => navigate('/analytics')} style={styles.navBtn}>📊 Analytics</button>
           <button onClick={onLogout} style={styles.logoutBtn}>Logout</button>
@@ -571,6 +602,9 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     <p style={styles.staffEmail}>{s.email}</p>
                     <p style={{margin: '4px 0 0 0', fontSize: 12, color: '#0f766e', fontWeight: 600}}>
                       PIN: <code style={{background: '#f0fdf4', padding: '2px 6px', borderRadius: 6}}>{s.pin || '0000'}</code>
+                    </p>
+                    <p style={{margin: '4px 0 0 0', fontSize: 12, color: '#64748b'}}>
+                      🏷️ {stampCounts[s.public_id] || 0} stamps added
                     </p>
                     <span style={{...styles.statusBadge, background: s.is_active ? '#dcfce7' : '#fee2e2', color: s.is_active ? '#166534' : '#991b1b'}}>
                       {s.is_active ? 'Active' : 'Inactive'}
@@ -937,6 +971,79 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           onClose={() => setShowAnnouncements(false)}
         />
       )}
+
+      {showOnboarding && (() => {
+        const steps = [
+          {
+            emoji: '⚙️',
+            title: '1. Set Up Your Roots',
+            body: "Now that you're live, configure your loyalty program: how many stamps until a reward, what the reward is, your card color, and your logo. Save & publish so customers see your branding when they add their card to Google Wallet.",
+            cta: 'Go to Roots',
+            action: () => { setActiveTab('program'); closeOnboarding() },
+          },
+          {
+            emoji: '🌿',
+            title: '2. Set Up Your Cashiers',
+            body: "Invite your staff and each one gets a 4-digit PIN. Important: cashiers also need your Business ID (shown on the Team tab) to log into the scanner - without it, their PIN alone won't work. Share both with them.",
+            cta: 'Go to Team',
+            action: () => { setActiveTab('staff'); closeOnboarding() },
+          },
+          {
+            emoji: '🔗',
+            title: '3. Share Your Tree',
+            body: "Get your join QR code and print it out. Keep it at the counter or entrance so customers can scan it themselves as they come in, sign up in seconds, and start earning stamps right away.",
+            cta: 'Get QR Code',
+            action: () => { setActiveTab('tree'); closeOnboarding(); fetchQRImage() },
+          },
+          {
+            emoji: '📊',
+            title: '4. Analytics & Announcements',
+            body: "Check Analytics to see visit trends, repeat customers, and redemption rates. Use Announcements to push a message straight to customers' Google Wallet cards - great for promos or reminders.",
+            cta: 'View Analytics',
+            action: () => { closeOnboarding(); navigate('/analytics') },
+          },
+        ]
+        const step = steps[onboardingStep]
+        const isLast = onboardingStep === steps.length - 1
+        return (
+          <div style={styles.modalOverlay} onClick={closeOnboarding}>
+            <div style={{...styles.modal, textAlign: 'center', maxWidth: 420}} onClick={e => e.stopPropagation()}>
+              <div style={{fontSize: 40, marginBottom: 8}}>{step.emoji}</div>
+              <h3 style={{marginBottom: 12}}>{step.title}</h3>
+              <p style={{color: '#64748b', fontSize: 14, marginBottom: 20, lineHeight: 1.5}}>{step.body}</p>
+
+              <div style={{display: 'flex', justifyContent: 'center', gap: 6, marginBottom: 20}}>
+                {steps.map((_, i) => (
+                  <span key={i} style={{
+                    width: 8, height: 8, borderRadius: 4,
+                    background: i === onboardingStep ? '#0d9488' : '#e2e8f0',
+                  }} />
+                ))}
+              </div>
+
+              <div style={{display: 'flex', gap: 10, justifyContent: 'center', marginBottom: 12}}>
+                {onboardingStep > 0 && (
+                  <button onClick={() => setOnboardingStep(s => s - 1)} style={{...styles.submitBtn, background: '#64748b'}}>
+                    Back
+                  </button>
+                )}
+                <button onClick={step.action} style={styles.submitBtn}>
+                  {step.cta}
+                </button>
+                {!isLast && (
+                  <button onClick={() => setOnboardingStep(s => s + 1)} style={{...styles.submitBtn, background: 'transparent', color: '#0d9488', border: '1px solid #a7f3d0'}}>
+                    Next
+                  </button>
+                )}
+              </div>
+
+              <button onClick={closeOnboarding} style={{background: 'none', border: 'none', color: '#94a3b8', fontSize: 13, cursor: 'pointer'}}>
+                Skip tutorial
+              </button>
+            </div>
+          </div>
+        )
+      })()}
     </div>
   )
 }

@@ -520,16 +520,21 @@ def send_wallet_class_message(class_id: str, header: str, body: str, message_id:
         print(f"WALLET PUSH error: {e}")
         return False
 
-def log_stamp_event(business_id: int, customer_id: int):
+def log_stamp_event(business_id: int, customer_id: int, staff_id: Optional[int] = None):
     """Best-effort event log powering the Analytics dashboard's trend and
-    peak-activity charts. Never raises - a logging hiccup should never
-    block the stamp response to the cashier."""
+    peak-activity charts, and the per-cashier stamp counter. Never raises -
+    a logging hiccup should never block the stamp response to the cashier.
+    staff_id is None when the owner stamps directly from their dashboard
+    (no staff PIN involved)."""
     try:
-        supabase.table("stamp_events").insert({
+        event = {
             'business_id': business_id,
             'customer_id': customer_id,
             'created_at': datetime.utcnow().isoformat(),
-        }).execute()
+        }
+        if staff_id is not None:
+            event['staff_id'] = staff_id
+        supabase.table("stamp_events").insert(event).execute()
     except Exception as e:
         print(f"STAMP EVENT LOG error: {e}")
 
@@ -968,6 +973,38 @@ async def get_staff(public_id: str):
     try:
         res = supabase.table("staff").select("*").eq("business_id", business.get("id")).execute()
         return res.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/business/{public_id}/staff/stamp-counts")
+async def get_staff_stamp_counts(public_id: str):
+    """How many stamps each cashier/staff member has personally added -
+    counted from stamp_events.staff_id, which is only populated for stamps
+    added via a staff PIN (not owner scans, which log staff_id=None)."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    try:
+        staff_res = supabase.table("staff").select("id,public_id,name").eq("business_id", business.get("id")).execute()
+        staff_rows = staff_res.data or []
+        id_to_staff = {s["id"]: s for s in staff_rows}
+
+        events_res = supabase.table("stamp_events").select("staff_id").eq("business_id", business.get("id")).execute()
+        counts = {}
+        for row in (events_res.data or []):
+            sid = row.get("staff_id")
+            if sid is None:
+                continue
+            counts[sid] = counts.get(sid, 0) + 1
+
+        return [
+            {
+                "staff_public_id": s["public_id"],
+                "name": s["name"],
+                "stamp_count": counts.get(s["id"], 0),
+            }
+            for s in staff_rows
+        ]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1505,21 +1542,19 @@ async def go_live(public_id: str):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
-    if business.get('status', '').upper() == 'ACTIVE':
-        return {"message": "Business is already live!", "status": business.get("status")}
+    status = (business.get('status') or 'PENDING').upper()
+    if status == 'ACTIVE':
+        return {"message": "Business is already live!", "status": status}
 
-    try:
-        supabase.table("businesses").update({
-            'status': 'ACTIVE',
-            'updated_at': datetime.utcnow().isoformat(),
-        }).eq("id", business.get("id")).execute()
-        return {"message": "Business is now live!"}
-    except Exception as e:
-        error_msg = str(e)
-        return JSONResponse(
-            status_code=200,
-            content={"message": "Business appears to be active", "warning": error_msg, "status": business.get("status")}
+    # Status is now controlled by admin approval (see /api/v1/admin/businesses)
+    # so a business can no longer flip itself to ACTIVE here - that would
+    # bypass admin review entirely. This just reports where things stand.
+    if status == 'PENDING':
+        raise HTTPException(
+            status_code=403,
+            detail="Your business is still pending admin approval. We'll notify you as soon as it's reviewed."
         )
+    raise HTTPException(status_code=403, detail="Your account is not active. Please contact support.")
 
 @app.get("/api/v1/business/{public_id}/qr-code")
 async def get_qr_code(public_id: str):
@@ -1550,6 +1585,7 @@ async def add_stamp(public_id: str, req: StampRequest):
     if customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
 
+    stamping_staff_id = None
     if req.as_owner:
         # Owner is scanning from their own dashboard, where they've already
         # authenticated with their business email/password - no separate
@@ -1562,6 +1598,7 @@ async def add_stamp(public_id: str, req: StampRequest):
             staff_res = supabase.table("staff").select("*").eq("business_id", business.get("id")).eq("pin", req.staff_pin).execute()
             if not staff_res.data:
                 raise HTTPException(status_code=403, detail="Invalid staff PIN")
+            stamping_staff_id = staff_res.data[0].get('id')
         except HTTPException:
             raise
         except Exception as e:
@@ -1585,7 +1622,7 @@ async def add_stamp(public_id: str, req: StampRequest):
         customer['stamp_count'] = new_count
         customer['reward_unlocked'] = reward_unlocked
         sync_wallet_object(customer, business, program)
-        log_stamp_event(business.get('id'), customer.get('id'))
+        log_stamp_event(business.get('id'), customer.get('id'), stamping_staff_id)
     except Exception as e:
         error_msg = str(e)
         if 'reward_unlocked' in error_msg.lower():
@@ -1594,7 +1631,7 @@ async def add_stamp(public_id: str, req: StampRequest):
                     'stamp_count': new_count,
                     'updated_at': datetime.utcnow().isoformat(),
                 }).eq("id", customer.get("id")).execute()
-                log_stamp_event(business.get('id'), customer.get('id'))
+                log_stamp_event(business.get('id'), customer.get('id'), stamping_staff_id)
                 return {
                     "message": "Stamp added!",
                     "stamp_count": new_count,
