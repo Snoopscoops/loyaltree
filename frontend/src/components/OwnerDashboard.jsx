@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
+import Announcements from './Announcements'
 
 function OwnerDashboard({ API_BASE, user, onLogout }) {
   const navigate = useNavigate()
@@ -14,6 +15,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [showConfigModal, setShowConfigModal] = useState(false)
   const [showQRModal, setShowQRModal] = useState(false)
   const [showCardModal, setShowCardModal] = useState(false)
+  const [showAnnouncements, setShowAnnouncements] = useState(false)
   const [selectedCustomer, setSelectedCustomer] = useState(null)
   const [showEditModal, setShowEditModal] = useState(false)
   const [editForm, setEditForm] = useState({})
@@ -359,6 +361,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         <div style={styles.headerActions}>
           <span style={styles.planBadge}>{user?.business_name}</span>
           <button onClick={() => loadData()} style={styles.navBtn}>🔄 Refresh</button>
+          <button onClick={() => setShowAnnouncements(true)} style={styles.navBtn}>📢 Announcements</button>
           <button onClick={() => navigate('/analytics')} style={styles.navBtn}>📊 Analytics</button>
           <button onClick={onLogout} style={styles.logoutBtn}>Logout</button>
         </div>
@@ -885,6 +888,14 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             </form>
           </div>
         </div>
+      )}
+
+      {showAnnouncements && (
+        <Announcements
+          API_BASE={API_BASE}
+          businessSlug={user.business_slug}
+          onClose={() => setShowAnnouncements(false)}
+        />
       )}
     </div>
   )
