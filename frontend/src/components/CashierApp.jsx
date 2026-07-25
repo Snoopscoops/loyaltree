@@ -59,7 +59,7 @@ function CashierApp({ API_BASE }) {
     return () => {
       scanner.clear().catch(() => {})
     }
-  }, [businessSlug, staffPin])
+  }, [businessSlug, staffPin, staffName])
 
   const fetchCustomer = async (customerId) => {
     setLoading(true)
