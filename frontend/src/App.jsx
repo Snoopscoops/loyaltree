@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import Login from './components/Login'
+import HomePage from './components/HomePage'
 import OwnerDashboard from './components/OwnerDashboard'
 import CashierApp from './components/CashierApp'
 import WalletPass from './components/WalletPass'
@@ -58,7 +59,7 @@ function App() {
             user.role === 'super_admin' ? <Navigate to="/admin" /> :
             ['manager', 'cashier'].includes(user.role) ? <Navigate to="/scanner" /> :
             <Navigate to="/login" />
-          ) : <Navigate to="/login" />
+          ) : <HomePage />
         } />
         <Route path="/login" element={<Login API_BASE={API_BASE} onLogin={setUser} />} />
         <Route path="/dashboard" element={
