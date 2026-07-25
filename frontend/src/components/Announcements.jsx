@@ -14,10 +14,23 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
   const [saving, setSaving] = useState(false)
   const [banner, setBanner] = useState(null)
   const [notifyingId, setNotifyingId] = useState(null)
+  const [planInfo, setPlanInfo] = useState(null)
 
   useEffect(() => {
     fetchAnnouncements()
+    fetchPlanInfo()
   }, [])
+
+  const fetchPlanInfo = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/plan`)
+      if (res.ok) {
+        setPlanInfo(await res.json())
+      }
+    } catch (err) {
+      console.error(err)
+    }
+  }
 
   const fetchAnnouncements = async () => {
     setLoading(true)
@@ -60,6 +73,10 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
         setForm({ title: '', message: '', type: 'info', is_active: true, end_date: '' })
         setEditing(null)
         fetchAnnouncements()
+        if (!editing) fetchPlanInfo()
+      } else {
+        const errData = await res.json().catch(() => ({}))
+        setBanner({ type: 'warn', text: errData.detail || 'Could not save announcement.' })
       }
     } catch (err) {
       console.error(err)
@@ -123,6 +140,9 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
     alert: { bg: '#fee2e2', text: '#991b1b', icon: '⚠️' },
   }
 
+  const quotaReached = !!(planInfo && planInfo.usage.announcements_limit !== null &&
+    planInfo.usage.announcements_used_this_month >= planInfo.usage.announcements_limit)
+
   return (
     <div style={styles.overlay}>
       <div style={styles.modal}>
@@ -140,6 +160,21 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
               border: `1px solid ${banner.type === 'success' ? '#bbf7d0' : '#fde68a'}`,
             }}>
               {banner.text}
+            </div>
+          )}
+          {planInfo && (
+            <div style={styles.quotaNote}>
+              <strong>{planInfo.plan_label} plan:</strong>{' '}
+              {planInfo.usage.announcements_limit === null
+                ? 'unlimited announcements this month'
+                : (() => {
+                    const left = Math.max(planInfo.usage.announcements_limit - planInfo.usage.announcements_used_this_month, 0)
+                    return `${left} of ${planInfo.usage.announcements_limit} announcements left this month`
+                  })()}
+              {planInfo.usage.announcements_limit !== null &&
+                planInfo.usage.announcements_used_this_month >= planInfo.usage.announcements_limit && (
+                  <span style={styles.quotaUpgrade}> · upgrade your plan for more</span>
+                )}
             </div>
           )}
           {/* Editor */}
@@ -197,8 +232,8 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
                     + New
                   </button>
                 )}
-                <button type="submit" disabled={saving} style={styles.saveBtn}>
-                  {saving ? 'Saving...' : (editing ? 'Update' : 'Post Announcement')}
+                <button type="submit" disabled={saving || (!editing && quotaReached)} style={styles.saveBtn}>
+                  {saving ? 'Saving...' : quotaReached && !editing ? 'Monthly limit reached' : (editing ? 'Update' : 'Post Announcement')}
                 </button>
               </div>
             </form>
@@ -313,6 +348,18 @@ const styles = {
     fontSize: 13,
     fontWeight: 500,
     lineHeight: 1.5,
+  },
+  quotaNote: {
+    padding: '10px 16px',
+    borderRadius: 12,
+    fontSize: 13,
+    color: '#0f766e',
+    background: '#f0fdf4',
+    border: '1px solid #a7f3d0',
+  },
+  quotaUpgrade: {
+    color: '#0d9488',
+    fontWeight: 600,
   },
   sentTag: {
     color: '#0d9488',
