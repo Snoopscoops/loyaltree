@@ -371,7 +371,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         </div>
         <div style={styles.headerActions}>
           <span style={styles.planBadge}>{user?.business_name}</span>
-          <button onClick={() => loadData()} style={styles.navBtn}>🔄 Refresh</button>
           <button onClick={() => setShowAnnouncements(true)} style={styles.navBtn}>📢 Announcements</button>
           <button onClick={() => navigate('/analytics')} style={styles.navBtn}>📊 Analytics</button>
           <button onClick={onLogout} style={styles.logoutBtn}>Logout</button>
@@ -402,20 +401,20 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             <div style={styles.roots}>
               <div style={styles.root}>🏪 {user?.business_name}</div>
             </div>
-            <div style={styles.statsRing}>
-              <div style={styles.statOrb}>
-                <span style={styles.orbNumber}>{customers.length}</span>
-                <span style={styles.orbLabel}>Leaves</span>
-              </div>
-              <div style={styles.statOrb}>
-                <span style={styles.orbNumber}>{confirmedStamps}</span>
-                <span style={styles.orbLabel}>Rings</span>
-              </div>
-              <div style={styles.statOrb}>
-                <span style={styles.orbNumber}>{unlockedRewards}</span>
-                <span style={styles.orbLabel}>Fruits</span>
-              </div>
-            </div>
+          </div>
+        </div>
+        <div style={styles.statsRing}>
+          <div style={styles.statOrb}>
+            <span style={styles.orbNumber}>{customers.length}</span>
+            <span style={styles.orbLabel}>Leaves</span>
+          </div>
+          <div style={styles.statOrb}>
+            <span style={styles.orbNumber}>{confirmedStamps}</span>
+            <span style={styles.orbLabel}>Rings</span>
+          </div>
+          <div style={styles.statOrb}>
+            <span style={styles.orbNumber}>{unlockedRewards}</span>
+            <span style={styles.orbLabel}>Fruits</span>
           </div>
         </div>
         <div style={styles.growthBadge}>
@@ -474,14 +473,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 <p>Get join QR code</p>
               </div>
             </div>
-
-            {business?.status !== 'active' && (
-              <div style={styles.goLiveCard}>
-                <h3>🚀 Ready to Plant?</h3>
-                <p>Your loyalty program is configured. Go live to start growing!</p>
-                <button onClick={goLive} style={styles.goLiveBtn}>Go Live 🌱</button>
-              </div>
-            )}
 
             <div style={styles.recentActivity}>
               <h3 style={styles.sectionTitle}>🌊 Recent Sap Flow</h3>
@@ -1105,7 +1096,8 @@ const styles = {
     justifyContent: 'center',
     flexWrap: 'wrap',
     gap: 12,
-    marginTop: 20,
+    maxWidth: 360,
+    margin: '20px auto 0',
   },
   statOrb: {
     display: 'flex',
@@ -1115,7 +1107,8 @@ const styles = {
     background: 'white',
     borderRadius: 16,
     boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
-    minWidth: 80,
+    minWidth: 90,
+    flex: '1 1 90px',
   },
   orbNumber: {
     fontSize: 24,
