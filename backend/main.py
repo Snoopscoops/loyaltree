@@ -71,6 +71,13 @@ class StampRequest(BaseModel):
     customer_public_id: str
     staff_pin: str
 
+class PinVerify(BaseModel):
+    pin: str
+
+class RedeemRequest(BaseModel):
+    customer_public_id: str
+    staff_pin: str
+
 # Helpers
 def generate_public_id() -> str:
     return uuid.uuid4().hex
@@ -688,6 +695,68 @@ async def add_stamp(public_id: str, req: StampRequest):
         "stamp_count": new_count,
         "reward_unlocked": reward_unlocked,
     }
+
+@app.post("/api/v1/business/{public_id}/staff/verify-pin")
+async def verify_staff_pin(public_id: str, req: PinVerify):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    try:
+        res = supabase.table("staff").select("*").eq("business_id", business.get("id")).eq("pin", req.pin).execute()
+        if not res.data:
+            raise HTTPException(status_code=403, detail="Invalid staff PIN")
+        staff = res.data[0]
+        if not staff.get('is_active', True):
+            raise HTTPException(status_code=403, detail="This staff account is inactive")
+        return {
+            "success": True,
+            "name": staff.get("name", ""),
+            "role": staff.get("role", "cashier"),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/business/{public_id}/reward/redeem")
+async def redeem_reward(public_id: str, req: RedeemRequest):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    customer = safe_get_customer(req.customer_public_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    if customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+
+    try:
+        staff_res = supabase.table("staff").select("*").eq("business_id", business.get("id")).eq("pin", req.staff_pin).execute()
+        if not staff_res.data:
+            raise HTTPException(status_code=403, detail="Invalid staff PIN")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
+
+    if not customer.get('reward_unlocked'):
+        raise HTTPException(status_code=400, detail="No reward available to redeem")
+
+    program = safe_get_loyalty_program(business.get('id'))
+    goal = program.get('stamp_goal', 8) if program else 8
+
+    try:
+        supabase.table("customers").update({
+            'stamp_count': max(customer.get('stamp_count', 0) - goal, 0),
+            'reward_unlocked': False,
+            'updated_at': datetime.utcnow().isoformat(),
+        }).eq("id", customer.get("id")).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"message": "Reward redeemed!", "success": True}
 
 # GOOGLE WALLET CLASS MANAGEMENT
 

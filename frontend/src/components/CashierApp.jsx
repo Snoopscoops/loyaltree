@@ -11,9 +11,11 @@ function CashierApp({ API_BASE }) {
   const [showManual, setShowManual] = useState(false)
   const [manualId, setManualId] = useState('')
   const [debugInfo, setDebugInfo] = useState('')
+  const [verifying, setVerifying] = useState(false)
+  const [staffName, setStaffName] = useState('')
 
   useEffect(() => {
-    if (!businessSlug || !staffPin) return
+    if (!businessSlug || !staffPin || !staffName) return
 
     const scanner = new Html5QrcodeScanner('reader', {
       qrbox: { width: 250, height: 250 },
@@ -62,7 +64,7 @@ function CashierApp({ API_BASE }) {
   const fetchCustomer = async (customerId) => {
     setLoading(true)
     setMessage('')
-    const url = `${API_BASE}/api/v1/customer/${customerId}/profile`
+    const url = `${API_BASE}/api/v1/customer/${customerId}`
     setDebugInfo(prev => prev + ' | URL: ' + url.replace(API_BASE, ''))
 
     try {
@@ -71,8 +73,17 @@ function CashierApp({ API_BASE }) {
 
       if (res.ok) {
         const data = await res.json()
-        setCustomerData(data)
-        setMessage(`Found: ${data.name}`)
+        const c = data.customer || {}
+        const goal = data.program?.stamp_goal || 8
+        setCustomerData({
+          public_id: c.public_id,
+          name: c.name,
+          phone: c.phone,
+          stamp_count: c.stamp_count || 0,
+          reward_unlocked: !!c.reward_unlocked,
+          reward_threshold: goal,
+        })
+        setMessage(`Found: ${c.name}`)
       } else {
         const errorData = await res.json().catch(() => ({}))
         setMessage(`Not found: ${customerId.substring(0, 12)}...`)
@@ -94,26 +105,31 @@ function CashierApp({ API_BASE }) {
     setMessage('Adding stamp...')
 
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/stamps`, {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/stamp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           customer_public_id: customerData.public_id,
           staff_pin: staffPin,
-          payment_method: 'cash'
         })
       })
 
       const data = await res.json()
 
       if (res.ok) {
-        let msg = `✅ Stamp added! ${data.customer_name} now has ${data.total_stamps_now} stamps`
+        let msg = `✅ Stamp added! ${customerData.name} now has ${data.stamp_count} stamps`
         if (data.reward_unlocked) {
           msg += ' 🎉 REWARD UNLOCKED!'
         }
+        if (data.warning) {
+          msg += ` (${data.warning})`
+        }
         setMessage(msg)
-        // Refresh customer data
-        fetchCustomer(customerData.public_id)
+        setCustomerData(prev => prev ? {
+          ...prev,
+          stamp_count: data.stamp_count,
+          reward_unlocked: !!data.reward_unlocked,
+        } : prev)
       } else {
         setMessage(`❌ Failed: ${data.detail || 'Unknown error'}`)
       }
@@ -124,15 +140,18 @@ function CashierApp({ API_BASE }) {
   }
 
   const redeemReward = async () => {
-    if (!customerData) return
+    if (!customerData || !businessSlug || !staffPin) return
     setLoading(true)
     setMessage('Redeeming...')
 
     try {
-      const res = await fetch(`${API_BASE}/api/v1/reward/redeem`, {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/reward/redeem`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ customer_id: customerData.id })
+        body: JSON.stringify({
+          customer_public_id: customerData.public_id,
+          staff_pin: staffPin,
+        })
       })
 
       const data = await res.json()
@@ -158,8 +177,34 @@ function CashierApp({ API_BASE }) {
     setDebugInfo('')
   }
 
+  const verifyPinAndStart = async () => {
+    if (!businessSlug || !staffPin) {
+      setMessage('Enter both Business ID and PIN')
+      return
+    }
+    setVerifying(true)
+    setMessage('')
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/staff/verify-pin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin: staffPin })
+      })
+      const data = await res.json()
+      if (res.ok && data.success) {
+        setStaffName(data.name || 'Staff')
+        setMessage('')
+      } else {
+        setMessage(data.detail || 'Invalid PIN for this business')
+      }
+    } catch (err) {
+      setMessage('Network error - could not verify PIN')
+    }
+    setVerifying(false)
+  }
+
   // Login screen
-  if (!businessSlug || !staffPin) {
+  if (!businessSlug || !staffPin || !staffName) {
     return (
       <div style={styles.container}>
         <div style={styles.loginCard}>
@@ -185,16 +230,10 @@ function CashierApp({ API_BASE }) {
 
           <button
             style={styles.btn}
-            onClick={() => {
-              if (!businessSlug || !staffPin) {
-                setMessage('Enter both Business ID and PIN')
-                return
-              }
-              setMessage('')
-            }}
-            disabled={!businessSlug || !staffPin}
+            onClick={verifyPinAndStart}
+            disabled={!businessSlug || !staffPin || verifying}
           >
-            Start Scanning 🍃
+            {verifying ? 'Checking PIN...' : 'Start Scanning 🍃'}
           </button>
 
           <p style={styles.hint}>Business ID is the last part of your dashboard URL</p>
@@ -209,11 +248,12 @@ function CashierApp({ API_BASE }) {
       <header style={styles.header}>
         <div style={styles.headerBrand}>
           <span style={styles.headerLogo}>🌳</span>
-          <span style={styles.headerTitle}>Cashier</span>
+          <span style={styles.headerTitle}>Cashier{staffName ? ` · ${staffName}` : ''}</span>
         </div>
         <button style={styles.resetBtn} onClick={() => {
           setBusinessSlug('')
           setStaffPin('')
+          setStaffName('')
           resetScan()
         }}>
           Switch
