@@ -227,7 +227,7 @@ def build_loyalty_class(business: dict, program: dict, review_status: str = 'UND
 
 def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     cust_public_id = customer.get('public_id', '')
-    class_id = program.get('google_wallet_class_id') if program else f'{GOOGLE_WALLET_ISSUER_ID}.{GOOGLE_WALLET_CLASS_SUFFIX}'
+    class_id = program.get('google_wallet_class_id') if program and program.get('google_wallet_class_id') else f'{GOOGLE_WALLET_ISSUER_ID}.{GOOGLE_WALLET_CLASS_SUFFIX}'
     object_id = f'{GOOGLE_WALLET_ISSUER_ID}.{cust_public_id}'
     stamp_goal = program.get('stamp_goal', 8) if program else 8
     reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
