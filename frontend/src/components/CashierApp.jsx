@@ -182,16 +182,20 @@ function CashierApp({ API_BASE }) {
       setMessage('Enter both Business ID and PIN')
       return
     }
+    const cleanSlug = businessSlug.trim()
+    const cleanPin = staffPin.trim()
     setVerifying(true)
     setMessage('')
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/staff/verify-pin`, {
+      const res = await fetch(`${API_BASE}/api/v1/business/${cleanSlug}/staff/verify-pin`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pin: staffPin })
+        body: JSON.stringify({ pin: cleanPin })
       })
       const data = await res.json()
       if (res.ok && data.success) {
+        setBusinessSlug(cleanSlug)
+        setStaffPin(cleanPin)
         setStaffName(data.name || 'Staff')
         setMessage('')
       } else {
@@ -236,7 +240,7 @@ function CashierApp({ API_BASE }) {
             {verifying ? 'Checking PIN...' : 'Start Scanning 🍃'}
           </button>
 
-          <p style={styles.hint}>Business ID is the last part of your dashboard URL</p>
+          <p style={styles.hint}>Ask the business owner for the Business ID and your PIN — both are shown on their "Your Team" tab</p>
         </div>
       </div>
     )

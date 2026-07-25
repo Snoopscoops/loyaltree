@@ -415,6 +415,24 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               <h2 style={styles.sectionTitle}>🌿 Your Team ({staff.length})</h2>
               <button onClick={() => setShowInviteModal(true)} style={styles.addBtn}>+ Grow Team</button>
             </div>
+
+            <div style={{background: '#f0fdf4', border: '1px solid #a7f3d0', borderRadius: 12, padding: '14px 16px', marginBottom: 16}}>
+              <p style={{margin: '0 0 4px 0', fontSize: 13, fontWeight: 600, color: '#0f766e'}}>
+                Business ID (cashiers need this to log in)
+              </p>
+              <div style={{display: 'flex', alignItems: 'center', gap: 8}}>
+                <code style={{fontSize: 13, color: '#1e293b', background: 'white', padding: '6px 10px', borderRadius: 8, wordBreak: 'break-all', flex: 1}}>
+                  {user.business_slug}
+                </code>
+                <button
+                  onClick={() => navigator.clipboard.writeText(user.business_slug)}
+                  style={{padding: '6px 12px', background: '#0d9488', color: 'white', border: 'none', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap'}}
+                >
+                  Copy
+                </button>
+              </div>
+            </div>
+
             <div style={styles.staffGrid}>
               {staff.map(s => (
                 <div key={s.public_id} style={styles.staffCard}>
@@ -423,6 +441,9 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     <h4>{s.name}</h4>
                     <p style={styles.staffRole}>{s.role}</p>
                     <p style={styles.staffEmail}>{s.email}</p>
+                    <p style={{margin: '4px 0 0 0', fontSize: 12, color: '#0f766e', fontWeight: 600}}>
+                      PIN: <code style={{background: '#f0fdf4', padding: '2px 6px', borderRadius: 6}}>{s.pin || '0000'}</code>
+                    </p>
                     <span style={{...styles.statusBadge, background: s.is_active ? '#dcfce7' : '#fee2e2', color: s.is_active ? '#166534' : '#991b1b'}}>
                       {s.is_active ? 'Active' : 'Inactive'}
                     </span>
