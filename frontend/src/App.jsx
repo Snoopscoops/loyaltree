@@ -5,6 +5,7 @@ import OwnerDashboard from './components/OwnerDashboard'
 import CashierApp from './components/CashierApp'
 import WalletPass from './components/WalletPass'
 import AnalyticsDashboard from './components/AnalyticsDashboard'
+import AdminDashboard from './components/AdminDashboard'
 
 const API_BASE = 'https://loyaltree-btw1.onrender.com'
 
@@ -70,6 +71,7 @@ function App() {
           user?.role === 'owner' ? <AnalyticsDashboard API_BASE={API_BASE} user={user} /> : <Navigate to="/login" />
         } />
         <Route path="/join/:businessSlug" element={<div>Join Page - Redirecting...</div>} />
+        <Route path="/admin" element={<AdminDashboard API_BASE={API_BASE} />} />
       </Routes>
     </BrowserRouter>
   )
