@@ -32,14 +32,75 @@ SUPER_ADMIN_EMAIL = os.getenv('SUPER_ADMIN_EMAIL', '')
 SUPER_ADMIN_PASSWORD = os.getenv('SUPER_ADMIN_PASSWORD', '')
 
 # Subscription tiers available to businesses. This is the single source of
-# truth the admin dashboard reads from to show plan options and limits.
-# Extend this dict when you're ready to add real billing/tier logic -
-# nothing else needs to change to introduce a new plan.
+# truth the admin dashboard AND the API's feature gates read from - nothing
+# else needs to change to introduce a new plan or adjust a limit.
+#
+# announcements_per_month: int limit, or None for unlimited
+# max_loyalty_cards: how many concurrent loyalty_programs rows a business
+#   may run at once (multi-card support itself is not implemented yet -
+#   this limit is reserved for that follow-up feature)
+# apple_wallet: reserved for when Apple Wallet (PassKit) support is built -
+#   not implemented yet, so this flag currently has no effect anywhere
 SUBSCRIPTION_PLANS = {
-    'starter': {'label': 'Starter', 'customer_limit': 100, 'price_month': 0},
-    'growth': {'label': 'Growth', 'customer_limit': 1000, 'price_month': 29},
-    'pro': {'label': 'Pro', 'customer_limit': None, 'price_month': 79},
+    'starter': {
+        'label': 'Starter',
+        'price_month': 0,
+        'customer_limit': 100,
+        'google_wallet': True,
+        'apple_wallet': True,
+        'announcements_per_month': 2,
+        'analytics': False,
+        'google_review_prompt': False,
+        'birthday_greetings': False,
+        'max_loyalty_cards': 1,
+        'win_back': False,
+    },
+    'growth': {
+        'label': 'Growth',
+        'price_month': 29,
+        'customer_limit': 1000,
+        'google_wallet': True,
+        'apple_wallet': True,
+        'announcements_per_month': 5,
+        'analytics': True,
+        'google_review_prompt': True,
+        'birthday_greetings': False,
+        'max_loyalty_cards': 1,
+        'win_back': False,
+    },
+    'pro': {
+        'label': 'Pro',
+        'price_month': 79,
+        'customer_limit': None,
+        'google_wallet': True,
+        'apple_wallet': True,
+        'announcements_per_month': 5,
+        'analytics': True,
+        'google_review_prompt': True,
+        'birthday_greetings': True,
+        'max_loyalty_cards': 3,
+        'win_back': True,
+    },
 }
+
+def get_plan_features(plan: Optional[str]) -> dict:
+    """Feature/limit config for a plan name, falling back to Starter for an
+    unrecognized or missing plan so a bad value never silently unlocks
+    Pro-only features."""
+    return SUBSCRIPTION_PLANS.get(plan or 'starter', SUBSCRIPTION_PLANS['starter'])
+
+# Shared secret for the /api/v1/cron/* endpoints (birthday greetings,
+# win-back messages). These are meant to be hit by an external scheduler
+# (Render Cron Job, cron-job.org, GitHub Actions, etc.) once a day, not by
+# the frontend - so they're gated by a header instead of a login.
+CRON_SECRET = os.getenv('CRON_SECRET', '')
+
+def require_cron(request: Request):
+    if not CRON_SECRET:
+        raise HTTPException(status_code=503, detail="CRON_SECRET is not configured on this server")
+    if request.headers.get("x-cron-secret", "") != CRON_SECRET:
+        raise HTTPException(status_code=401, detail="Invalid or missing cron secret")
+    return True
 
 ENV_ERROR = None
 if not SUPABASE_URL or not SUPABASE_KEY:
@@ -88,6 +149,7 @@ class LoyaltyConfig(BaseModel):
     program_logo_url: Optional[str] = None
     hero_image_url: Optional[str] = None
     card_name: Optional[str] = None
+    google_review_url: Optional[str] = None  # Growth/Pro only - link prompted after a redeemed reward
 
 class CustomerSignup(BaseModel):
     name: str
@@ -138,6 +200,8 @@ class AdminLoginRequest(BaseModel):
 class AdminBusinessUpdate(BaseModel):
     status: Optional[str] = None
     plan: Optional[str] = None
+    last_paid_at: Optional[str] = None          # 'YYYY-MM-DD' - when the business last paid
+    subscription_expires_at: Optional[str] = None  # 'YYYY-MM-DD' - when access should lapse
 
 class RedeemRequest(BaseModel):
     customer_public_id: str
@@ -260,6 +324,23 @@ def business_summary(biz: dict) -> dict:
     except Exception:
         pass
     plan = biz.get('plan', 'starter')
+
+    subscription_expires_at = biz.get('subscription_expires_at')
+    subscription_status = 'none'
+    if subscription_expires_at:
+        try:
+            expires = _parse_ts(subscription_expires_at)
+            if expires:
+                days_left = (expires - datetime.utcnow()).days
+                if days_left < 0:
+                    subscription_status = 'expired'
+                elif days_left <= 7:
+                    subscription_status = 'expiring_soon'
+                else:
+                    subscription_status = 'active'
+        except Exception:
+            subscription_status = 'none'
+
     return {
         "public_id": biz.get("public_id", ""),
         "name": biz.get("name", ""),
@@ -268,9 +349,13 @@ def business_summary(biz: dict) -> dict:
         "status": biz.get("status", "PENDING"),
         "plan": plan,
         "plan_label": SUBSCRIPTION_PLANS.get(plan, {}).get("label", plan),
+        "plan_features": get_plan_features(plan),
         "business_type": biz.get("business_type", "other"),
         "logo_url": biz.get("logo_url"),
         "created_at": biz.get("created_at"),
+        "last_paid_at": biz.get("last_paid_at"),
+        "subscription_expires_at": subscription_expires_at,
+        "subscription_status": subscription_status,
         "customer_count": customer_count,
         "staff_count": staff_count,
         "stamps_30d": stamps_30d,
@@ -518,6 +603,41 @@ def send_wallet_class_message(class_id: str, header: str, body: str, message_id:
             return False
     except Exception as e:
         print(f"WALLET PUSH error: {e}")
+        return False
+
+def send_wallet_object_message(object_id: str, header: str, body: str, message_id: str) -> bool:
+    """Push a notification to ONE customer's saved loyalty card, unlike
+    send_wallet_class_message above which fans out to everyone on the
+    business's card at once. Used for personalized messages - birthday
+    greetings, win-back nudges - where blasting every customer would be
+    wrong. Same TEXT_AND_NOTIFY / 500-char / 3-per-24h rules apply as the
+    class-level version; see that function's docstring for details."""
+    access_token = get_google_access_token()
+    if not access_token or not object_id:
+        return False
+    try:
+        import httpx
+        payload = {
+            'message': {
+                'header': (header or '')[:150],
+                'body': (body or '')[:500],
+                'id': message_id,
+                'messageType': 'TEXT_AND_NOTIFY',
+            }
+        }
+        with httpx.Client() as client:
+            resp = client.post(
+                f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyObject/{object_id}/addMessage',
+                headers={"Authorization": f"Bearer {access_token}"},
+                json=payload
+            )
+            if resp.status_code in (200, 201):
+                print(f"WALLET PUSH: sent to object {object_id}")
+                return True
+            print(f"WALLET PUSH (object) failed: {resp.status_code} - {resp.text}")
+            return False
+    except Exception as e:
+        print(f"WALLET PUSH (object) error: {e}")
         return False
 
 def log_stamp_event(business_id: int, customer_id: int, staff_id: Optional[int] = None):
@@ -876,6 +996,10 @@ async def admin_update_business(public_id: str, update: AdminBusinessUpdate, _: 
         if update.plan not in SUBSCRIPTION_PLANS:
             raise HTTPException(status_code=400, detail=f"Unknown plan '{update.plan}'. Valid plans: {list(SUBSCRIPTION_PLANS.keys())}")
         data['plan'] = update.plan
+    if update.last_paid_at is not None:
+        data['last_paid_at'] = update.last_paid_at
+    if update.subscription_expires_at is not None:
+        data['subscription_expires_at'] = update.subscription_expires_at
     if not data:
         raise HTTPException(status_code=400, detail="No fields to update")
     data['updated_at'] = datetime.utcnow().isoformat()
@@ -1065,6 +1189,47 @@ async def get_stats(public_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/v1/business/{public_id}/plan")
+async def get_plan_info(public_id: str):
+    """Plan name, feature flags/limits, and current usage against those
+    limits - lets the owner dashboard show/hide Pro-only UI and display
+    'X of Y announcements used this month' without duplicating the plan
+    matrix on the frontend."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    plan = business.get('plan', 'starter')
+    features = get_plan_features(plan)
+
+    announcements_used = 0
+    limit = features.get('announcements_per_month')
+    if limit is not None:
+        month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        try:
+            count_res = (
+                supabase.table("announcements")
+                .select("id", count="exact")
+                .eq("business_id", business.get("id"))
+                .gte("created_at", month_start.isoformat())
+                .execute()
+            )
+            announcements_used = count_res.count or 0
+        except Exception:
+            announcements_used = 0
+
+    return {
+        "plan": plan,
+        "plan_label": SUBSCRIPTION_PLANS.get(plan, {}).get("label", plan),
+        "features": features,
+        "usage": {
+            "announcements_used_this_month": announcements_used,
+            "announcements_limit": limit,
+        },
+        "last_paid_at": business.get("last_paid_at"),
+        "subscription_expires_at": business.get("subscription_expires_at"),
+    }
+
 # ANALYTICS
 # Powers AnalyticsDashboard.jsx. Built from stamp_events / redemption_events
 # (see analytics_events_migration.sql) plus a snapshot of the customers
@@ -1149,6 +1314,13 @@ async def get_analytics(public_id: str, range: str = '30d'):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
     business_id = business.get('id')
+
+    features = get_plan_features(business.get('plan'))
+    if not features.get('analytics'):
+        raise HTTPException(
+            status_code=403,
+            detail="Analytics is available on the Growth and Pro plans. Upgrade to unlock it."
+        )
 
     try:
         customers = supabase.table("customers").select("*").eq("business_id", business_id).execute().data or []
@@ -1326,6 +1498,14 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
         data['hero_image_url'] = config.hero_image_url
     if config.card_name is not None:
         data['card_name'] = config.card_name
+    if config.google_review_url is not None:
+        features = get_plan_features(business.get('plan'))
+        if not features.get('google_review_prompt'):
+            raise HTTPException(
+                status_code=403,
+                detail="The Google review prompt is available on the Growth and Pro plans. Upgrade to set a review link."
+            )
+        data['google_review_url'] = config.google_review_url
 
     try:
         existing = supabase.table("loyalty_programs").select("id").eq("business_id", business.get("id")).maybe_single().execute()
@@ -1377,6 +1557,28 @@ async def create_announcement(public_id: str, ann: AnnouncementCreate):
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
+
+    features = get_plan_features(business.get('plan'))
+    limit = features.get('announcements_per_month')
+    if limit is not None:
+        month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        try:
+            count_res = (
+                supabase.table("announcements")
+                .select("id", count="exact")
+                .eq("business_id", business.get("id"))
+                .gte("created_at", month_start.isoformat())
+                .execute()
+            )
+            used = count_res.count or 0
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=friendly_db_error(e))
+        if used >= limit:
+            plan_label = SUBSCRIPTION_PLANS.get(business.get('plan', 'starter'), {}).get('label', 'your plan')
+            raise HTTPException(
+                status_code=403,
+                detail=f"You've used all {limit} announcements included in {plan_label} this month. Upgrade your plan for more."
+            )
 
     is_active = ann.is_active if ann.is_active is not None else True
     data = {
@@ -1727,7 +1929,12 @@ async def redeem_reward(public_id: str, req: RedeemRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    return {"message": "Reward redeemed!", "success": True}
+    review_url = None
+    features = get_plan_features(business.get('plan'))
+    if features.get('google_review_prompt') and program:
+        review_url = program.get('google_review_url')
+
+    return {"message": "Reward redeemed!", "success": True, "google_review_url": review_url}
 
 # GOOGLE WALLET CLASS MANAGEMENT
 
@@ -2297,6 +2504,125 @@ async def get_wallet_pass(customer_public_id: str):
         "save_url": save_url,
         "loyalty_object": loyalty_object,
     }
+
+# SCHEDULED / CRON-TRIGGERED JOBS (Pro plan only)
+# Neither of these run on their own - this app has no built-in scheduler.
+# Point an external scheduler (Render Cron Job, cron-job.org, GitHub Actions
+# on a schedule, etc.) at each of these once a day, e.g.:
+#   POST {BASE_URL}/api/v1/cron/birthday-greetings   header: X-Cron-Secret: <CRON_SECRET>
+#   POST {BASE_URL}/api/v1/cron/win-back              header: X-Cron-Secret: <CRON_SECRET>
+# Both are safe to call more than once a day - each skips customers already
+# messaged (this year for birthdays, in the last 30 days for win-back).
+
+@app.post("/api/v1/cron/birthday-greetings")
+async def run_birthday_greetings(_: bool = Depends(require_cron)):
+    today = datetime.utcnow().date()
+    sent, skipped, errors = 0, 0, 0
+
+    try:
+        businesses = supabase.table("businesses").select("*").eq("plan", "pro").eq("status", "ACTIVE").execute().data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    for business in businesses:
+        try:
+            customers = supabase.table("customers").select("*").eq("business_id", business.get("id")).execute().data or []
+        except Exception:
+            continue
+        program = safe_get_loyalty_program(business.get('id'))
+        for customer in customers:
+            birthday = customer.get('birthday')
+            if not birthday:
+                continue
+            try:
+                bday = datetime.fromisoformat(str(birthday)).date()
+            except Exception:
+                continue
+            if (bday.month, bday.day) != (today.month, today.day):
+                continue
+            if customer.get('last_birthday_greeting_year') == today.year:
+                skipped += 1
+                continue
+
+            object_id = f"{GOOGLE_WALLET_ISSUER_ID}.{customer.get('public_id', '')}"
+            reward_name = program.get('reward_name', 'a treat') if program else 'a treat'
+            ok = send_wallet_object_message(
+                object_id,
+                header="Happy Birthday! 🎉",
+                body=f"Happy birthday from {business.get('name', 'us')}! Stop by soon to celebrate with {reward_name}.",
+                message_id=f"birthday-{customer.get('id')}-{today.year}",
+            )
+            if ok:
+                sent += 1
+                try:
+                    supabase.table("customers").update({'last_birthday_greeting_year': today.year}).eq("id", customer.get("id")).execute()
+                except Exception:
+                    pass
+            else:
+                errors += 1
+
+    return {"sent": sent, "skipped_already_sent": skipped, "errors": errors}
+
+@app.post("/api/v1/cron/win-back")
+async def run_win_back(_: bool = Depends(require_cron)):
+    now = datetime.utcnow()
+    inactivity_cutoff = now - timedelta(days=30)
+    resend_cutoff = now - timedelta(days=30)  # don't re-nudge more than once a month
+    sent, skipped, errors = 0, 0, 0
+
+    try:
+        businesses = supabase.table("businesses").select("*").eq("plan", "pro").eq("status", "ACTIVE").execute().data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    for business in businesses:
+        biz_id = business.get('id')
+        try:
+            customers = supabase.table("customers").select("*").eq("business_id", biz_id).execute().data or []
+            stamp_events = supabase.table("stamp_events").select("customer_id,created_at").eq("business_id", biz_id).execute().data or []
+        except Exception:
+            continue
+
+        last_stamp_by_customer = {}
+        for ev in stamp_events:
+            cid = ev.get('customer_id')
+            ts = _parse_ts(ev.get('created_at'))
+            if not ts:
+                continue
+            if cid not in last_stamp_by_customer or ts > last_stamp_by_customer[cid]:
+                last_stamp_by_customer[cid] = ts
+
+        for customer in customers:
+            if not customer.get('stamp_count'):
+                continue  # never stamped at all - not a "win back", they never started
+
+            last_stamp = last_stamp_by_customer.get(customer.get('id'))
+            reference_date = last_stamp or _parse_ts(customer.get('created_at'))
+            if not reference_date or reference_date > inactivity_cutoff:
+                continue  # still active within the last 30 days
+
+            last_sent = _parse_ts(customer.get('last_winback_sent_at'))
+            if last_sent and last_sent > resend_cutoff:
+                skipped += 1
+                continue
+
+            object_id = f"{GOOGLE_WALLET_ISSUER_ID}.{customer.get('public_id', '')}"
+            ok = send_wallet_object_message(
+                object_id,
+                header="We miss you! 🌱",
+                body=f"It's been a while since your last visit to {business.get('name', 'us')} - come back and pick up where you left off!",
+                message_id=f"winback-{customer.get('id')}-{now.strftime('%Y%m%d')}",
+            )
+            if ok:
+                sent += 1
+                try:
+                    supabase.table("customers").update({'last_winback_sent_at': now.isoformat()}).eq("id", customer.get("id")).execute()
+                except Exception:
+                    pass
+            else:
+                errors += 1
+
+    return {"sent": sent, "skipped_recently_sent": skipped, "errors": errors}
 
 # Run
 
