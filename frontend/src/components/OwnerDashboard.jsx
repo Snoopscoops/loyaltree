@@ -15,6 +15,9 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [showQRModal, setShowQRModal] = useState(false)
   const [showCardModal, setShowCardModal] = useState(false)
   const [selectedCustomer, setSelectedCustomer] = useState(null)
+  const [showEditModal, setShowEditModal] = useState(false)
+  const [editForm, setEditForm] = useState({})
+  const [savingCustomer, setSavingCustomer] = useState(false)
   const [qrImageUrl, setQrImageUrl] = useState(null)
   const [inviteForm, setInviteForm] = useState({ name: '', email: '', phone: '', role: 'cashier' })
   const [configForm, setConfigForm] = useState({})
@@ -85,6 +88,45 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     } catch (err) {
       setMessage('Network error')
     }
+  }
+
+  const openEditCustomer = (c) => {
+    setEditForm({
+      public_id: c.public_id,
+      name: c.name || '',
+      address: c.address || '',
+      age: c.age ?? '',
+      phone: c.phone || '',
+      email: c.email || '',
+      birthday: c.birthday || '',
+      occupation: c.occupation || '',
+      last_order_date: c.last_order_date || '',
+    })
+    setShowEditModal(true)
+  }
+
+  const saveCustomer = async (e) => {
+    e.preventDefault()
+    setSavingCustomer(true)
+    try {
+      const { public_id, ...fields } = editForm
+      const payload = { ...fields, age: fields.age === '' ? null : parseInt(fields.age, 10) }
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${public_id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      if (res.ok) {
+        setShowEditModal(false)
+        loadData()
+      } else {
+        const data = await res.json().catch(() => ({}))
+        setMessage(data.detail || 'Could not save customer')
+      }
+    } catch (err) {
+      setMessage('Network error')
+    }
+    setSavingCustomer(false)
   }
 
   const saveConfig = async (e) => {
@@ -393,6 +435,11 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                   <div style={styles.customerInfo}>
                     <h4 style={styles.customerName}>{c.name}</h4>
                     <p style={styles.customerPhone}>{c.phone}</p>
+                    {(c.age || c.occupation) && (
+                      <p style={{...styles.customerPhone, fontSize: 12, color: '#94a3b8'}}>
+                        {c.age ? `${c.age} yrs` : ''}{c.age && c.occupation ? ' · ' : ''}{c.occupation ? c.occupation.replace('_', ' ') : ''}
+                      </p>
+                    )}
                     <div style={styles.stampRings}>
                       {Array.from({length: c.reward_threshold || 8}).map((_, i) => (
                         <span key={i} style={{
@@ -404,12 +451,20 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     <p style={styles.stampText}>{c.stamp_count % (c.reward_threshold || 8)} / {c.reward_threshold || 8} rings</p>
                     {c.reward_unlocked && <span style={styles.fruitBadge}>🍎 Reward Ready!</span>}
                   </div>
-                  <button 
-                    onClick={() => viewCustomerCard(c)}
-                    style={styles.viewCardBtn}
-                  >
-                    View Card
-                  </button>
+                  <div style={{display: 'flex', flexDirection: 'column', gap: 6}}>
+                    <button
+                      onClick={() => viewCustomerCard(c)}
+                      style={styles.viewCardBtn}
+                    >
+                      View Card
+                    </button>
+                    <button
+                      onClick={() => openEditCustomer(c)}
+                      style={{...styles.viewCardBtn, background: 'transparent', color: '#0d9488', border: '1px solid #a7f3d0'}}
+                    >
+                      ✏️ Edit
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -633,6 +688,41 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       )}
 
       {/* Invite Modal */}
+      {/* Edit Customer Modal */}
+      {showEditModal && (
+        <div style={styles.modalOverlay} onClick={() => setShowEditModal(false)}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+            <h3>✏️ Edit Customer</h3>
+            <form onSubmit={saveCustomer}>
+              <label style={styles.label}>Full Name</label>
+              <input style={styles.input} value={editForm.name || ''} onChange={e => setEditForm({...editForm, name: e.target.value})} required />
+              <label style={styles.label}>Address</label>
+              <input style={styles.input} value={editForm.address || ''} onChange={e => setEditForm({...editForm, address: e.target.value})} />
+              <label style={styles.label}>Age</label>
+              <input style={styles.input} type="number" min="0" max="120" value={editForm.age} onChange={e => setEditForm({...editForm, age: e.target.value})} />
+              <label style={styles.label}>Number</label>
+              <input style={styles.input} value={editForm.phone || ''} onChange={e => setEditForm({...editForm, phone: e.target.value})} required />
+              <label style={styles.label}>Email</label>
+              <input style={styles.input} type="email" value={editForm.email || ''} onChange={e => setEditForm({...editForm, email: e.target.value})} />
+              <label style={styles.label}>Birthday</label>
+              <input style={styles.input} type="date" value={editForm.birthday || ''} onChange={e => setEditForm({...editForm, birthday: e.target.value})} />
+              <label style={styles.label}>Occupation</label>
+              <select style={styles.input} value={editForm.occupation || ''} onChange={e => setEditForm({...editForm, occupation: e.target.value})}>
+                <option value="">Not specified</option>
+                <option value="working">Working</option>
+                <option value="business_owner">Business Owner</option>
+                <option value="unemployed">Unemployed</option>
+              </select>
+              <label style={styles.label}>Since When Last Ordered</label>
+              <input style={styles.input} type="date" value={editForm.last_order_date || ''} onChange={e => setEditForm({...editForm, last_order_date: e.target.value})} />
+              <button type="submit" style={styles.submitBtn} disabled={savingCustomer}>
+                {savingCustomer ? 'Saving...' : 'Save Changes'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
       {showInviteModal && (
         <div style={styles.modalOverlay} onClick={() => setShowInviteModal(false)}>
           <div style={styles.modal} onClick={e => e.stopPropagation()}>

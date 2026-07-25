@@ -65,7 +65,23 @@ class LoyaltyConfig(BaseModel):
 
 class CustomerSignup(BaseModel):
     name: str
+    address: Optional[str] = None
+    age: Optional[int] = Field(default=None, ge=0, le=120)
     phone: str
+    email: Optional[str] = None
+    birthday: Optional[str] = None  # 'YYYY-MM-DD'
+    occupation: Optional[str] = None  # 'working' | 'business_owner' | 'unemployed'
+    last_order_date: Optional[str] = None  # 'YYYY-MM-DD'
+
+class CustomerUpdate(BaseModel):
+    name: Optional[str] = None
+    address: Optional[str] = None
+    age: Optional[int] = Field(default=None, ge=0, le=120)
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    birthday: Optional[str] = None  # 'YYYY-MM-DD'
+    occupation: Optional[str] = None  # 'working' | 'business_owner' | 'unemployed'
+    last_order_date: Optional[str] = None  # 'YYYY-MM-DD'
 
 class StampRequest(BaseModel):
     customer_public_id: str
@@ -502,6 +518,30 @@ async def get_customers(public_id: str):
     try:
         res = supabase.table("customers").select("*").eq("business_id", business.get("id")).execute()
         return res.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.patch("/api/v1/business/{public_id}/customers/{customer_public_id}")
+async def update_customer(public_id: str, customer_public_id: str, update: CustomerUpdate):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    customer = safe_get_customer(customer_public_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    if customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+
+    update_data = {k: v for k, v in update.dict(exclude_unset=True).items() if v is not None}
+    if not update_data:
+        return customer
+
+    update_data['updated_at'] = datetime.utcnow().isoformat()
+
+    try:
+        res = supabase.table("customers").update(update_data).eq("id", customer.get("id")).execute()
+        return res.data[0] if res.data else {**customer, **update_data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -955,6 +995,9 @@ async def customer_join_page(business_public_id: str):
             'input{width:100%;padding:14px 16px;border:2px solid #e2e8f0;border-radius:12px;'
             'font-size:16px;margin-bottom:12px;outline:none}'
             'input:focus{border-color:' + primary_color + '}'
+            'select{width:100%;padding:14px 16px;border:2px solid #e2e8f0;border-radius:12px;'
+            'font-size:16px;margin-bottom:12px;outline:none;background:white;color:#1e293b}'
+            'select:focus{border-color:' + primary_color + '}'
             'button{width:100%;padding:16px;background:linear-gradient(135deg,' + primary_color + ' 0%,#14b8a6 100%);'
             'color:white;border:none;border-radius:12px;font-size:16px;font-weight:700;cursor:pointer;margin-top:8px}'
             '.success-qr{background:#f8fafc;border-radius:12px;padding:16px;margin:16px 0}'
@@ -976,8 +1019,20 @@ async def customer_join_page(business_public_id: str):
             '<p>Collect ' + str(stamp_goal) + ' stamps to unlock your reward</p>'
             '</div>'
             '<form id="signupForm">'
-            '<input type="text" id="name" placeholder="Your name" required>'
+            '<input type="text" id="name" placeholder="Full name" required>'
+            '<input type="text" id="address" placeholder="Address">'
+            '<input type="number" id="age" placeholder="Age" min="0" max="120">'
             '<input type="tel" id="phone" placeholder="Phone number" required>'
+            '<input type="email" id="email" placeholder="Email (optional)">'
+            '<input type="date" id="birthday" placeholder="Birthday">'
+            '<select id="occupation">'
+            '<option value="">Occupation (optional)</option>'
+            '<option value="working">Working</option>'
+            '<option value="business_owner">Business Owner</option>'
+            '<option value="unemployed">Unemployed</option>'
+            '</select>'
+            '<label style="display:block;text-align:left;font-size:13px;color:#64748b;margin-bottom:6px;">Since when did you last order? (optional)</label>'
+            '<input type="date" id="last_order_date">'
             '<button type="submit">Join &amp; Get Your Card &#127793;</button>'
             '</form></div>'
             '<script>'
@@ -989,12 +1044,18 @@ async def customer_join_page(business_public_id: str):
             'document.getElementById("signupForm").addEventListener("submit",async function(e){'
             'e.preventDefault();'
             'const name=document.getElementById("name").value;'
+            'const address=document.getElementById("address").value;'
+            'const age=document.getElementById("age").value;'
             'const phone=document.getElementById("phone").value;'
+            'const email=document.getElementById("email").value;'
+            'const birthday=document.getElementById("birthday").value;'
+            'const occupation=document.getElementById("occupation").value;'
+            'const lastOrderDate=document.getElementById("last_order_date").value;'
             'try{'
             'const res=await fetch(API_BASE+"/api/v1/join/"+BIZ_ID,{'
             'method:"POST",'
             'headers:{"Content-Type":"application/json"},'
-            'body:JSON.stringify({name:name,phone:phone})'
+            'body:JSON.stringify({name:name,address:address||null,age:age?parseInt(age,10):null,phone:phone,email:email||null,birthday:birthday||null,occupation:occupation||null,last_order_date:lastOrderDate||null})'
             '});'
             'const data=await res.json();'
             'if(res.ok){'
@@ -1072,7 +1133,13 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup):
         'business_id': business.get('id'),
         'public_id': customer_public_id,
         'name': signup.name,
+        'address': signup.address,
+        'age': signup.age,
         'phone': signup.phone,
+        'email': signup.email,
+        'birthday': signup.birthday,
+        'occupation': signup.occupation,
+        'last_order_date': signup.last_order_date,
         'stamp_count': 0,
         'created_at': datetime.utcnow().isoformat(),
         'updated_at': datetime.utcnow().isoformat(),

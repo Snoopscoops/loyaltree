@@ -3,7 +3,16 @@ import { useParams, useNavigate } from 'react-router-dom'
 
 function CustomerJoin({ API_BASE }) {
   const { businessSlug } = useParams()
-  const [form, setForm] = useState({ name: '', phone: '', email: '' })
+  const [form, setForm] = useState({
+    name: '',
+    address: '',
+    age: '',
+    phone: '',
+    email: '',
+    birthday: '',
+    occupation: '',
+    last_order_date: '',
+  })
   const [submitted, setSubmitted] = useState(false)
   const [customerId, setCustomerId] = useState('')
   const [error, setError] = useState('')
@@ -15,10 +24,19 @@ function CustomerJoin({ API_BASE }) {
     setError('')
     setLoading(true)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/customer/join`, {
+      const res = await fetch(`${API_BASE}/api/v1/join/${businessSlug}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ business_slug: businessSlug, ...form })
+        body: JSON.stringify({
+          name: form.name,
+          address: form.address || null,
+          age: form.age ? parseInt(form.age, 10) : null,
+          phone: form.phone,
+          email: form.email || null,
+          birthday: form.birthday || null,
+          occupation: form.occupation || null,
+          last_order_date: form.last_order_date || null,
+        })
       })
       const data = await res.json()
       if (res.ok) {
@@ -79,13 +97,65 @@ function CustomerJoin({ API_BASE }) {
             />
           </div>
           <div style={styles.inputGroup}>
-            <label style={styles.label}>Phone Number</label>
+            <label style={styles.label}>Address <span style={styles.optional}>(optional)</span></label>
+            <input
+              placeholder="123 Main St"
+              value={form.address}
+              onChange={e => setForm({...form, address: e.target.value})}
+              style={styles.input}
+            />
+          </div>
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>Age <span style={styles.optional}>(optional)</span></label>
+            <input
+              placeholder="25"
+              value={form.age}
+              onChange={e => setForm({...form, age: e.target.value})}
+              style={styles.input}
+              type="number"
+              min="0"
+              max="120"
+            />
+          </div>
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>Number</label>
             <input
               placeholder="+1 234 567 8900"
               value={form.phone}
               onChange={e => setForm({...form, phone: e.target.value})}
               style={styles.input}
               required
+            />
+          </div>
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>Birthday <span style={styles.optional}>(optional)</span></label>
+            <input
+              value={form.birthday}
+              onChange={e => setForm({...form, birthday: e.target.value})}
+              style={styles.input}
+              type="date"
+            />
+          </div>
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>Occupation <span style={styles.optional}>(optional)</span></label>
+            <select
+              value={form.occupation}
+              onChange={e => setForm({...form, occupation: e.target.value})}
+              style={styles.input}
+            >
+              <option value="">Select one</option>
+              <option value="working">Working</option>
+              <option value="business_owner">Business Owner</option>
+              <option value="unemployed">Unemployed</option>
+            </select>
+          </div>
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>Since When Last Ordered <span style={styles.optional}>(optional)</span></label>
+            <input
+              value={form.last_order_date}
+              onChange={e => setForm({...form, last_order_date: e.target.value})}
+              style={styles.input}
+              type="date"
             />
           </div>
           <div style={styles.inputGroup}>
