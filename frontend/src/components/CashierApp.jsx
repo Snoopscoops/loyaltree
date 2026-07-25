@@ -16,6 +16,7 @@ function CashierApp({ API_BASE }) {
 
   useEffect(() => {
     if (!businessSlug || !staffPin || !staffName) return
+    if (customerData) return // #reader isn't mounted while the customer card is showing
 
     const scanner = new Html5QrcodeScanner('reader', {
       qrbox: { width: 250, height: 250 },
@@ -59,7 +60,7 @@ function CashierApp({ API_BASE }) {
     return () => {
       scanner.clear().catch(() => {})
     }
-  }, [businessSlug, staffPin, staffName])
+  }, [businessSlug, staffPin, staffName, customerData])
 
   const fetchCustomer = async (customerId) => {
     setLoading(true)

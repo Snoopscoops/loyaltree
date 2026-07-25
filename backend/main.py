@@ -273,6 +273,34 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         }
     }
 
+def sync_wallet_object(customer: dict, business: dict, program: dict):
+    """Push the customer's latest stamp count to Google Wallet.
+    Google only creates its own copy of the loyaltyObject when the customer taps
+    "Add to Google Wallet" - after that, changes in our DB never reach the saved
+    pass unless we PATCH it here. Best-effort: never raises, so a Wallet API hiccup
+    never blocks the stamp/redeem response to the cashier."""
+    access_token = get_google_access_token()
+    if not access_token:
+        return
+    try:
+        import httpx
+        loyalty_object = build_loyalty_object(customer, business, program)
+        object_id = loyalty_object['id']
+        with httpx.Client() as client:
+            resp = client.patch(
+                f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyObject/{object_id}',
+                headers={"Authorization": f"Bearer {access_token}"},
+                json=loyalty_object
+            )
+            if resp.status_code in (200, 201):
+                print(f"WALLET SYNC: updated {object_id}")
+            elif resp.status_code == 404:
+                print(f"WALLET SYNC: {object_id} not found - customer hasn't added it to their wallet yet")
+            else:
+                print(f"WALLET SYNC: failed {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"WALLET SYNC error: {e}")
+
 # FastAPI App
 app = FastAPI(title='LoyaltyTree API')
 
@@ -663,6 +691,9 @@ async def add_stamp(public_id: str, req: StampRequest):
         except:
             pass
         supabase.table("customers").update(update_data).eq("id", customer.get("id")).execute()
+        customer['stamp_count'] = new_count
+        customer['reward_unlocked'] = reward_unlocked
+        sync_wallet_object(customer, business, program)
     except Exception as e:
         error_msg = str(e)
         if 'reward_unlocked' in error_msg.lower():
@@ -748,11 +779,15 @@ async def redeem_reward(public_id: str, req: RedeemRequest):
     goal = program.get('stamp_goal', 8) if program else 8
 
     try:
+        new_count = max(customer.get('stamp_count', 0) - goal, 0)
         supabase.table("customers").update({
-            'stamp_count': max(customer.get('stamp_count', 0) - goal, 0),
+            'stamp_count': new_count,
             'reward_unlocked': False,
             'updated_at': datetime.utcnow().isoformat(),
         }).eq("id", customer.get("id")).execute()
+        customer['stamp_count'] = new_count
+        customer['reward_unlocked'] = False
+        sync_wallet_object(customer, business, program)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
