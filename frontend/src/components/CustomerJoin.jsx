@@ -11,7 +11,6 @@ function CustomerJoin({ API_BASE }) {
     email: '',
     birthday: '',
     occupation: '',
-    last_order_date: '',
   })
   const [submitted, setSubmitted] = useState(false)
   const [customerId, setCustomerId] = useState('')
@@ -35,7 +34,6 @@ function CustomerJoin({ API_BASE }) {
           email: form.email || null,
           birthday: form.birthday || null,
           occupation: form.occupation || null,
-          last_order_date: form.last_order_date || null,
         })
       })
       const data = await res.json()
@@ -128,7 +126,7 @@ function CustomerJoin({ API_BASE }) {
             />
           </div>
           <div style={styles.inputGroup}>
-            <label style={styles.label}>Birthday <span style={styles.optional}>(optional)</span></label>
+            <label style={styles.label}>Birthday <span style={styles.optional}>(optional, MM/DD/YYYY)</span></label>
             <input
               value={form.birthday}
               onChange={e => setForm({...form, birthday: e.target.value})}
@@ -148,15 +146,6 @@ function CustomerJoin({ API_BASE }) {
               <option value="business_owner">Business Owner</option>
               <option value="unemployed">Unemployed</option>
             </select>
-          </div>
-          <div style={styles.inputGroup}>
-            <label style={styles.label}>Since When Last Ordered <span style={styles.optional}>(optional)</span></label>
-            <input
-              value={form.last_order_date}
-              onChange={e => setForm({...form, last_order_date: e.target.value})}
-              style={styles.input}
-              type="date"
-            />
           </div>
           <div style={styles.inputGroup}>
             <label style={styles.label}>Email <span style={styles.optional}>(optional)</span></label>
