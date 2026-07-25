@@ -40,6 +40,8 @@ class BusinessCreate(BaseModel):
     phone: Optional[str] = None
     password: str
     logo_url: Optional[str] = None
+    business_type: Optional[str] = 'other'
+    plan: Optional[str] = 'starter'
 
 class LoginRequest(BaseModel):
     email: str
@@ -361,6 +363,8 @@ async def register(biz: BusinessCreate):
         'phone': biz.phone,
         'password': hash_password(biz.password),
         'logo_url': biz.logo_url,
+        'business_type': biz.business_type,
+        'plan': biz.plan,
         'status': 'PENDING',
         'created_at': datetime.utcnow().isoformat(),
     }

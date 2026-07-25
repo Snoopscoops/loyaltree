@@ -7,6 +7,7 @@ function Signup({ API_BASE }) {
     email: '',
     password: '',
     phone: '',
+    logo_url: '',
     business_type: 'spa',
     plan: 'starter'
   })
@@ -24,7 +25,7 @@ function Signup({ API_BASE }) {
     setError('')
     setLoading(true)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/signup`, {
+      const res = await fetch(`${API_BASE}/api/v1/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(form)
@@ -79,6 +80,10 @@ function Signup({ API_BASE }) {
           <div style={styles.inputGroup}>
             <label style={styles.label}>Phone</label>
             <input name="phone" value={form.phone} onChange={handleChange} style={styles.input} placeholder="+1 234 567 8900" />
+          </div>
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>Logo URL (optional)</label>
+            <input name="logo_url" value={form.logo_url} onChange={handleChange} style={styles.input} placeholder="https://your-cdn.com/logo.png" />
           </div>
           <div style={styles.row}>
             <div style={{ ...styles.inputGroup, flex: 1 }}>
