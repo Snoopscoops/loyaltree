@@ -295,7 +295,7 @@ async def login(req: LoginRequest):
         res = supabase.table("businesses").select("*").eq("email", req.email).maybe_single().execute()
         business = res.data
         if business:
-            stored_pw = business.get('password', '')
+            stored_pw = business.get('password_hash', '')
             input_hash = hash_password(req.password)
             matched = (stored_pw == req.password) or (stored_pw == input_hash)
             if matched:
@@ -361,7 +361,7 @@ async def register(biz: BusinessCreate):
         'name': biz.name,
         'email': biz.email,
         'phone': biz.phone,
-        'password': hash_password(biz.password),
+        'password_hash': hash_password(biz.password),
         'logo_url': biz.logo_url,
         'business_type': biz.business_type,
         'plan': biz.plan,
