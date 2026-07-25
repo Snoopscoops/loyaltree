@@ -751,8 +751,18 @@ async def create_or_update_wallet_class(public_id: str):
                 json=loyalty_class
             )
             result = resp.json()
-            print(f"Google Wallet class API response: {resp.status_code} - {result}")
-            
+            print(f"Google Wallet class PUT response: {resp.status_code} - {result}")
+
+            # Class doesn't exist yet - create it instead of updating it
+            if resp.status_code == 404:
+                resp = client.post(
+                    'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass',
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    json=loyalty_class
+                )
+                result = resp.json()
+                print(f"Google Wallet class POST (create) response: {resp.status_code} - {result}")
+
             if resp.status_code in (200, 201):
                 db_data = {
                     'google_wallet_class_id': class_id,
