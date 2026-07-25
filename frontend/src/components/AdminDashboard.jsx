@@ -190,6 +190,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                       <div>
                         <div style={styles.bizName}>{b.name}</div>
                         <div style={styles.bizEmail}>{b.email}</div>
+                        {b.phone && <div style={styles.bizPhone}>{b.phone}</div>}
                       </div>
                     </div>
                   </td>
@@ -395,6 +396,7 @@ const styles = {
   bizLogo: { width: 32, height: 32, borderRadius: 8, objectFit: 'cover' },
   bizName: { fontWeight: 600, fontSize: 13 },
   bizEmail: { fontSize: 12, color: '#94a3b8' },
+  bizPhone: { fontSize: 12, color: '#94a3b8' },
   statusSelect: {
     padding: '4px 8px', borderRadius: 8, fontSize: 12, fontWeight: 600,
     border: 'none', cursor: 'pointer',
