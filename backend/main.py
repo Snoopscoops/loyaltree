@@ -1162,6 +1162,12 @@ async def create_or_update_wallet_class(public_id: str):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
+    if not GOOGLE_WALLET_ISSUER_ID:
+        raise HTTPException(
+            status_code=500,
+            detail="GOOGLE_WALLET_ISSUER_ID is not set in environment variables. Set it to your Google Wallet Issuer ID and redeploy."
+        )
+
     program = safe_get_loyalty_program(business.get('id'))
 
     class_id = None
@@ -1177,6 +1183,16 @@ async def create_or_update_wallet_class(public_id: str):
     if not access_token:
         raise HTTPException(status_code=500, detail="Could not get Google access token. Check GOOGLE_WALLET_CREDENTIALS.")
 
+    def parse_response(resp):
+        """Google usually returns JSON, but on some errors (auth failures,
+        malformed requests) it can return plain text/HTML instead - calling
+        .json() on that raises and used to mask the real error behind a
+        bare 500. Fall back to raw text so the actual cause always surfaces."""
+        try:
+            return resp.json()
+        except Exception:
+            return {"raw_response": resp.text[:2000]}
+
     try:
         import httpx
         with httpx.Client() as client:
@@ -1185,7 +1201,7 @@ async def create_or_update_wallet_class(public_id: str):
                 headers={"Authorization": f"Bearer {access_token}"},
                 json=loyalty_class
             )
-            result = resp.json()
+            result = parse_response(resp)
             print(f"Google Wallet class PUT response: {resp.status_code} - {result}")
 
             # Class doesn't exist yet - create it instead of updating it
@@ -1195,7 +1211,7 @@ async def create_or_update_wallet_class(public_id: str):
                     headers={"Authorization": f"Bearer {access_token}"},
                     json=loyalty_class
                 )
-                result = resp.json()
+                result = parse_response(resp)
                 print(f"Google Wallet class POST (create) response: {resp.status_code} - {result}")
 
             if resp.status_code in (200, 201):
@@ -1222,7 +1238,8 @@ async def create_or_update_wallet_class(public_id: str):
                     "google_response": result
                 }
             else:
-                raise HTTPException(status_code=500, detail=f"Google API error: {result}")
+                error_detail = result.get('error', result) if isinstance(result, dict) else result
+                raise HTTPException(status_code=500, detail=f"Google API error ({resp.status_code}): {error_detail}")
     except HTTPException:
         raise
     except Exception as e:
