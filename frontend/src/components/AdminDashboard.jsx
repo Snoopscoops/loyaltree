@@ -1,271 +1,508 @@
-import React, { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import React, { useState, useEffect } from 'react'
 
-function AdminDashboard({ API_BASE, user }) {
+const TOKEN_KEY = 'loyaltree_admin_token'
+
+const STATUS_OPTIONS = ['PENDING', 'ACTIVE', 'SUSPENDED']
+
+function AdminDashboard({ API_BASE }) {
+  const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [loginError, setLoginError] = useState('')
+  const [loggingIn, setLoggingIn] = useState(false)
+
+  const [overview, setOverview] = useState(null)
+  const [plans, setPlans] = useState({})
   const [businesses, setBusinesses] = useState([])
-  const [stats, setStats] = useState({})
   const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
+  const [planFilter, setPlanFilter] = useState('')
+  const [selected, setSelected] = useState(null)
+  const [detail, setDetail] = useState(null)
+  const [message, setMessage] = useState('')
+  const [confirmDelete, setConfirmDelete] = useState(null)
 
-  useEffect(() => {
-    fetchData()
-  }, [])
+  const authedFetch = (path, opts = {}) => fetch(`${API_BASE}${path}`, {
+    ...opts,
+    headers: {
+      ...(opts.headers || {}),
+      'Authorization': `Bearer ${token}`,
+      ...(opts.body ? { 'Content-Type': 'application/json' } : {}),
+    },
+  })
 
-  const fetchData = async () => {
+  const login = async (e) => {
+    e.preventDefault()
+    setLoginError('')
+    setLoggingIn(true)
     try {
-      const [bRes, sRes] = await Promise.all([
-        fetch(`${API_BASE}/api/v1/admin/businesses`),
-        fetch(`${API_BASE}/api/v1/admin/stats`),
-      ])
-      setBusinesses(await bRes.json())
-      setStats(await sRes.json())
+      const res = await fetch(`${API_BASE}/api/v1/admin/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Login failed')
+      localStorage.setItem(TOKEN_KEY, data.token)
+      setToken(data.token)
     } catch (err) {
-      console.error(err)
+      setLoginError(err.message)
+    }
+    setLoggingIn(false)
+  }
+
+  const logout = () => {
+    localStorage.removeItem(TOKEN_KEY)
+    setToken('')
+    setOverview(null)
+    setBusinesses([])
+  }
+
+  const loadData = async () => {
+    try {
+      const params = new URLSearchParams()
+      if (search) params.set('search', search)
+      if (statusFilter) params.set('status', statusFilter)
+      if (planFilter) params.set('plan', planFilter)
+
+      const [ovRes, plansRes, bizRes] = await Promise.all([
+        authedFetch('/api/v1/admin/overview'),
+        authedFetch('/api/v1/admin/plans'),
+        authedFetch(`/api/v1/admin/businesses?${params.toString()}`),
+      ])
+      if (ovRes.status === 401 || bizRes.status === 401) { logout(); return }
+      setOverview(await ovRes.json().catch(() => null))
+      setPlans(await plansRes.json().catch(() => ({})))
+      setBusinesses(await bizRes.json().catch(() => []))
+    } catch (err) {
+      console.error('Admin load error:', err)
     }
     setLoading(false)
   }
 
-  if (loading) {
+  useEffect(() => {
+    if (!token) { setLoading(false); return }
+    setLoading(true)
+    loadData()
+  }, [token, statusFilter, planFilter])
+
+  // Debounce search so we're not firing a request per keystroke
+  useEffect(() => {
+    if (!token) return
+    const t = setTimeout(loadData, 350)
+    return () => clearTimeout(t)
+  }, [search])
+
+  const openDetail = async (biz) => {
+    setSelected(biz)
+    setDetail(null)
+    try {
+      const res = await authedFetch(`/api/v1/admin/businesses/${biz.public_id}`)
+      setDetail(await res.json())
+    } catch (err) {
+      console.error(err)
+    }
+  }
+
+  const updateBusiness = async (public_id, patch) => {
+    try {
+      const res = await authedFetch(`/api/v1/admin/businesses/${public_id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Update failed')
+      setMessage(`Updated ${public_id}`)
+      loadData()
+      if (selected?.public_id === public_id) openDetail(selected)
+    } catch (err) {
+      setMessage(err.message)
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  const deleteBusiness = async (public_id) => {
+    try {
+      const res = await authedFetch(`/api/v1/admin/businesses/${public_id}`, { method: 'DELETE' })
+      if (!res.ok) throw new Error('Delete failed')
+      setMessage(`Removed ${public_id}`)
+      setConfirmDelete(null)
+      setSelected(null)
+      setDetail(null)
+      loadData()
+    } catch (err) {
+      setMessage(err.message)
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  // ---------- Login screen ----------
+  if (!token) {
     return (
-      <div style={styles.page}>
-        <div style={{ textAlign: 'center', padding: 100, color: '#64748b' }}>Loading...</div>
+      <div style={styles.loginContainer}>
+        <div style={styles.loginCard}>
+          <div style={styles.loginBrand}>
+            <span style={{ fontSize: 40 }}>🌳</span>
+            <h1 style={styles.loginTitle}>LoyaltyTree Admin</h1>
+            <p style={styles.loginSubtitle}>Platform control panel — not for business owners</p>
+          </div>
+          <form onSubmit={login} style={styles.loginForm}>
+            <input
+              style={styles.input}
+              type="email"
+              placeholder="Admin email"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              required
+            />
+            <input
+              style={styles.input}
+              type="password"
+              placeholder="Password"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              required
+            />
+            {loginError && <p style={styles.errorText}>{loginError}</p>}
+            <button type="submit" disabled={loggingIn} style={styles.loginBtn}>
+              {loggingIn ? 'Signing in…' : 'Sign in'}
+            </button>
+          </form>
+        </div>
       </div>
     )
   }
 
+  if (loading) {
+    return <div style={styles.loadingScreen}>Loading platform data…</div>
+  }
+
+  const filteredCount = businesses.length
+
   return (
-    <div style={styles.page}>
-      <div style={styles.header}>
-        <div style={styles.headerInner}>
-          <div style={styles.brand}>
-            <span style={styles.brandIcon}>🌳</span>
-            <span style={styles.brandText}>LoyaltyTree Admin</span>
+    <div style={styles.container}>
+      <header style={styles.header}>
+        <div style={styles.brand}>
+          <span style={{ fontSize: 28 }}>🌳</span>
+          <div>
+            <h1 style={styles.brandName}>LoyaltyTree Admin</h1>
+            <p style={styles.brandTagline}>{overview?.total_businesses ?? 0} businesses on the platform</p>
           </div>
-          <Link to="/" style={styles.logout} onClick={() => localStorage.clear()}>Logout</Link>
         </div>
-      </div>
+        <button onClick={logout} style={styles.logoutBtn}>Log out</button>
+      </header>
 
-      <div style={styles.container}>
+      {message && <div style={styles.toast}>{message}</div>}
+
+      <div style={styles.body}>
+        {/* Overview cards */}
         <div style={styles.statsGrid}>
-          <StatCard icon="🏢" label="Businesses" value={stats.total_businesses || 0} color="#0d9488" />
-          <StatCard icon="👥" label="Customers" value={stats.total_customers || 0} color="#6366f1" />
-          <StatCard icon="⭐" label="Stamps" value={stats.total_stamps || 0} color="#f59e0b" />
-          <StatCard icon="💰" label="Revenue" value={`$${stats.revenue || 0}`} color="#ec4899" />
+          <StatCard label="Total businesses" value={overview?.total_businesses ?? '—'} />
+          <StatCard label="Active" value={overview?.status_breakdown?.ACTIVE ?? 0} accent="#0d9488" />
+          <StatCard label="Pending" value={overview?.status_breakdown?.PENDING ?? 0} accent="#d97706" />
+          <StatCard label="Suspended" value={overview?.status_breakdown?.SUSPENDED ?? 0} accent="#dc2626" />
+          <StatCard label="Total customers" value={overview?.total_customers ?? 0} />
+          <StatCard label="Stamps (30d)" value={overview?.stamps_30d ?? 0} />
+          <StatCard label="Redemptions (30d)" value={overview?.redemptions_30d ?? 0} />
         </div>
 
-        <div style={styles.card}>
-          <h3 style={styles.cardTitle}>All Businesses</h3>
-          <div style={styles.tableWrap}>
-            <table style={styles.table}>
-              <thead>
-                <tr style={styles.tableHead}>
-                  <th style={styles.th}>Business</th>
-                  <th style={styles.th}>Status</th>
-                  <th style={styles.th}>Plan</th>
-                  <th style={styles.th}>Customers</th>
-                </tr>
-              </thead>
-              <tbody>
-                {businesses.map(b => (
-                  <tr key={b.id} style={styles.tr}>
-                    <td style={styles.td}>
-                      <div style={styles.bizCell}>
-                        <div style={styles.bizAvatar}>{b.name?.[0] || '?'}</div>
-                        <span style={styles.bizName}>{b.name}</span>
-                      </div>
-                    </td>
-                    <td style={styles.td}>
-                      <span style={{...styles.badge, background: b.status === 'active' ? '#d1fae5' : '#fef3c7', color: b.status === 'active' ? '#065f46' : '#92400e'}}>
-                        {b.status}
-                      </span>
-                    </td>
-                    <td style={styles.td}>
-                      <span style={{...styles.planBadge, background: b.plan === 'pro' ? '#ede9fe' : b.plan === 'growth' ? '#dbeafe' : '#f1f5f9', color: b.plan === 'pro' ? '#5b21b6' : b.plan === 'growth' ? '#1e40af' : '#475569'}}>
-                        {b.plan}
-                      </span>
-                    </td>
-                    <td style={styles.td}>
-                      <span style={styles.count}>{b.customer_count}</span>
-                    </td>
-                  </tr>
-                ))}
-                {businesses.length === 0 && (
-                  <tr><td colSpan={4} style={styles.emptyTd}>No businesses yet</td></tr>
-                )}
-              </tbody>
-            </table>
+        {overview?.plan_breakdown && (
+          <div style={styles.planBar}>
+            {Object.entries(overview.plan_breakdown).map(([plan, count]) => (
+              <span key={plan} style={styles.planPill}>
+                {plans[plan]?.label || plan}: <strong>{count}</strong>
+              </span>
+            ))}
           </div>
+        )}
+
+        {/* Filters */}
+        <div style={styles.filterRow}>
+          <input
+            style={{ ...styles.input, maxWidth: 280 }}
+            placeholder="Search by name or email…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+          <select style={styles.select} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+            <option value="">All statuses</option>
+            {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <select style={styles.select} value={planFilter} onChange={e => setPlanFilter(e.target.value)}>
+            <option value="">All plans</option>
+            {Object.entries(plans).map(([key, p]) => <option key={key} value={key}>{p.label}</option>)}
+          </select>
+          <span style={styles.resultCount}>{filteredCount} shown</span>
+        </div>
+
+        {/* Businesses table */}
+        <div style={styles.tableWrap}>
+          <table style={styles.table}>
+            <thead>
+              <tr>
+                <th style={styles.th}>Business</th>
+                <th style={styles.th}>Status</th>
+                <th style={styles.th}>Plan</th>
+                <th style={styles.th}>Customers</th>
+                <th style={styles.th}>Staff</th>
+                <th style={styles.th}>Stamps (30d)</th>
+                <th style={styles.th}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {businesses.map(b => (
+                <tr key={b.public_id} style={styles.tr}>
+                  <td style={styles.td}>
+                    <div onClick={() => openDetail(b)} style={styles.bizCell}>
+                      {b.logo_url && <img src={b.logo_url} alt="" style={styles.bizLogo} />}
+                      <div>
+                        <div style={styles.bizName}>{b.name}</div>
+                        <div style={styles.bizEmail}>{b.email}</div>
+                      </div>
+                    </div>
+                  </td>
+                  <td style={styles.td}>
+                    <select
+                      value={b.status}
+                      onChange={e => updateBusiness(b.public_id, { status: e.target.value })}
+                      style={{ ...styles.statusSelect, ...statusStyle(b.status) }}
+                    >
+                      {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  </td>
+                  <td style={styles.td}>
+                    <select
+                      value={b.plan}
+                      onChange={e => updateBusiness(b.public_id, { plan: e.target.value })}
+                      style={styles.planSelect}
+                    >
+                      {Object.entries(plans).map(([key, p]) => <option key={key} value={key}>{p.label}</option>)}
+                    </select>
+                  </td>
+                  <td style={styles.td}>{b.customer_count}</td>
+                  <td style={styles.td}>{b.staff_count}</td>
+                  <td style={styles.td}>{b.stamps_30d}</td>
+                  <td style={styles.td}>
+                    <button onClick={() => openDetail(b)} style={styles.viewBtn}>View</button>
+                    <button onClick={() => setConfirmDelete(b)} style={styles.deleteBtn}>Remove</button>
+                  </td>
+                </tr>
+              ))}
+              {businesses.length === 0 && (
+                <tr><td style={styles.td} colSpan={7}>No businesses match these filters.</td></tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
+
+      {/* Detail modal */}
+      {selected && (
+        <div style={styles.modalOverlay} onClick={() => { setSelected(null); setDetail(null) }}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+            <h2 style={styles.modalTitle}>{selected.name}</h2>
+            {!detail ? (
+              <p>Loading…</p>
+            ) : (
+              <div style={styles.detailGrid}>
+                <DetailRow label="Public ID" value={detail.public_id} />
+                <DetailRow label="Email" value={detail.email} />
+                <DetailRow label="Phone" value={detail.phone || '—'} />
+                <DetailRow label="Business type" value={detail.business_type} />
+                <DetailRow label="Status" value={detail.status} />
+                <DetailRow label="Plan" value={detail.plan_label} />
+                <DetailRow label="Customers" value={detail.customer_count} />
+                <DetailRow label="Staff" value={detail.staff_count} />
+                <DetailRow label="Stamps (30d)" value={detail.stamps_30d} />
+                <DetailRow label="Redemptions (30d)" value={detail.redemptions_30d} />
+                <DetailRow label="Created" value={detail.created_at ? new Date(detail.created_at).toLocaleDateString() : '—'} />
+                {detail.loyalty_program && (
+                  <>
+                    <DetailRow label="Reward" value={detail.loyalty_program.reward_name} />
+                    <DetailRow label="Stamp goal" value={detail.loyalty_program.stamp_goal} />
+                  </>
+                )}
+              </div>
+            )}
+            <button onClick={() => { setSelected(null); setDetail(null) }} style={styles.closeBtn}>Close</button>
+          </div>
+        </div>
+      )}
+
+      {/* Delete confirmation */}
+      {confirmDelete && (
+        <div style={styles.modalOverlay} onClick={() => setConfirmDelete(null)}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+            <h2 style={styles.modalTitle}>Remove {confirmDelete.name}?</h2>
+            <p style={{ color: '#64748b', fontSize: 14 }}>
+              This permanently deletes the business along with its customers, staff, announcements, and stamp/redemption history. This can't be undone.
+            </p>
+            <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
+              <button onClick={() => deleteBusiness(confirmDelete.public_id)} style={styles.confirmDeleteBtn}>
+                Yes, delete permanently
+              </button>
+              <button onClick={() => setConfirmDelete(null)} style={styles.closeBtn}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
-function StatCard({ icon, label, value, color }) {
+function StatCard({ label, value, accent }) {
   return (
-    <div style={{...styles.statCard, borderLeft: `4px solid ${color}`}}>
-      <div style={styles.statIcon}>{icon}</div>
-      <div style={styles.statValue}>{value}</div>
+    <div style={styles.statCard}>
+      <div style={{ ...styles.statValue, color: accent || '#0f172a' }}>{value}</div>
       <div style={styles.statLabel}>{label}</div>
     </div>
   )
 }
 
+function DetailRow({ label, value }) {
+  return (
+    <div style={styles.detailRow}>
+      <span style={styles.detailLabel}>{label}</span>
+      <span style={styles.detailValue}>{value}</span>
+    </div>
+  )
+}
+
+function statusStyle(status) {
+  if (status === 'ACTIVE') return { background: '#dcfce7', color: '#166534' }
+  if (status === 'SUSPENDED') return { background: '#fee2e2', color: '#991b1b' }
+  return { background: '#fef3c7', color: '#92400e' }
+}
+
 const styles = {
-  page: {
+  loginContainer: {
+    minHeight: '100vh',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'linear-gradient(180deg, #0f172a 0%, #1e293b 100%)',
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+  },
+  loginCard: {
+    background: 'white',
+    borderRadius: 16,
+    padding: 40,
+    width: 360,
+    boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+  },
+  loginBrand: { textAlign: 'center', marginBottom: 24 },
+  loginTitle: { margin: '8px 0 4px', fontSize: 22, fontWeight: 700, color: '#0f172a' },
+  loginSubtitle: { margin: 0, fontSize: 13, color: '#64748b' },
+  loginForm: { display: 'flex', flexDirection: 'column', gap: 12 },
+  loginBtn: {
+    padding: '12px', background: '#0f172a', color: 'white', border: 'none',
+    borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: 'pointer', marginTop: 8,
+  },
+  errorText: { color: '#dc2626', fontSize: 13, margin: 0 },
+  loadingScreen: {
+    minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    color: '#64748b', fontSize: 16, fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+  },
+  container: {
     minHeight: '100vh',
     background: '#f8fafc',
     fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
   },
   header: {
-    background: 'white',
-    borderBottom: '1px solid #e2e8f0',
-    position: 'sticky',
-    top: 0,
-    zIndex: 100,
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    padding: '16px 24px', background: '#0f172a', color: 'white',
+    position: 'sticky', top: 0, zIndex: 100,
   },
-  headerInner: {
-    maxWidth: 1200,
-    margin: '0 auto',
-    padding: '16px 24px',
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+  brand: { display: 'flex', alignItems: 'center', gap: 12 },
+  brandName: { margin: 0, fontSize: 18, fontWeight: 700, color: 'white' },
+  brandTagline: { margin: 0, fontSize: 12, color: '#94a3b8' },
+  logoutBtn: {
+    padding: '8px 16px', background: 'transparent', color: '#cbd5e1',
+    border: '1px solid #334155', borderRadius: 8, fontSize: 13, cursor: 'pointer',
   },
-  brand: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 10,
+  toast: {
+    position: 'fixed', top: 80, right: 24, padding: '12px 20px', background: '#0d9488',
+    color: 'white', borderRadius: 12, fontSize: 14, fontWeight: 500,
+    boxShadow: '0 4px 12px rgba(0,0,0,0.15)', zIndex: 200,
   },
-  brandIcon: {
-    fontSize: 24,
-  },
-  brandText: {
-    fontSize: 20,
-    fontWeight: 700,
-    color: '#0f172a',
-    letterSpacing: '-0.5px',
-  },
-  logout: {
-    color: '#0d9488',
-    fontSize: 14,
-    fontWeight: 500,
-    textDecoration: 'none',
-  },
-  container: {
-    maxWidth: 1200,
-    margin: '0 auto',
-    padding: '24px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 24,
-  },
+  body: { padding: '24px', maxWidth: 1200, margin: '0 auto' },
   statsGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-    gap: 16,
+    display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+    gap: 12, marginBottom: 16,
   },
   statCard: {
-    background: 'white',
-    borderRadius: 16,
-    padding: '20px 24px',
-    boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+    background: 'white', borderRadius: 12, padding: '16px 18px',
+    border: '1px solid #e2e8f0',
   },
-  statIcon: {
-    fontSize: 24,
-    marginBottom: 8,
+  statValue: { fontSize: 24, fontWeight: 700 },
+  statLabel: { fontSize: 12, color: '#64748b', marginTop: 4 },
+  planBar: { display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' },
+  planPill: {
+    padding: '6px 12px', background: '#ccfbf1', color: '#0f766e',
+    borderRadius: 20, fontSize: 12, fontWeight: 600,
   },
-  statValue: {
-    fontSize: 32,
-    fontWeight: 700,
-    color: '#0f172a',
-    lineHeight: 1,
+  filterRow: { display: 'flex', gap: 12, marginBottom: 16, alignItems: 'center', flexWrap: 'wrap' },
+  resultCount: { fontSize: 12, color: '#94a3b8', marginLeft: 'auto' },
+  input: {
+    padding: '10px 14px', border: '1px solid #e2e8f0', borderRadius: 8,
+    fontSize: 14, outline: 'none', width: '100%', boxSizing: 'border-box',
   },
-  statLabel: {
-    fontSize: 13,
-    color: '#64748b',
-    marginTop: 4,
-    fontWeight: 500,
+  select: {
+    padding: '10px 12px', border: '1px solid #e2e8f0', borderRadius: 8,
+    fontSize: 13, background: 'white', cursor: 'pointer',
   },
-  card: {
-    background: 'white',
-    borderRadius: 16,
-    padding: 24,
-    boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
-  },
-  cardTitle: {
-    fontSize: 18,
-    fontWeight: 700,
-    color: '#0f172a',
-    margin: '0 0 16px',
-  },
-  tableWrap: {
-    overflowX: 'auto',
-  },
-  table: {
-    width: '100%',
-    borderCollapse: 'collapse',
-    fontSize: 14,
-  },
-  tableHead: {
-    background: '#f8fafc',
-  },
+  tableWrap: { background: 'white', borderRadius: 12, border: '1px solid #e2e8f0', overflow: 'auto' },
+  table: { width: '100%', borderCollapse: 'collapse' },
   th: {
-    padding: '12px 16px',
-    textAlign: 'left',
-    fontWeight: 600,
-    color: '#475569',
-    fontSize: 12,
-    textTransform: 'uppercase',
-    letterSpacing: '0.5px',
+    textAlign: 'left', padding: '12px 16px', fontSize: 12, fontWeight: 600,
+    color: '#64748b', borderBottom: '1px solid #e2e8f0', whiteSpace: 'nowrap',
   },
-  tr: {
-    borderBottom: '1px solid #f1f5f9',
+  tr: { borderBottom: '1px solid #f1f5f9' },
+  td: { padding: '12px 16px', fontSize: 13, color: '#0f172a', verticalAlign: 'middle' },
+  bizCell: { display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' },
+  bizLogo: { width: 32, height: 32, borderRadius: 8, objectFit: 'cover' },
+  bizName: { fontWeight: 600, fontSize: 13 },
+  bizEmail: { fontSize: 12, color: '#94a3b8' },
+  statusSelect: {
+    padding: '4px 8px', borderRadius: 8, fontSize: 12, fontWeight: 600,
+    border: 'none', cursor: 'pointer',
   },
-  td: {
-    padding: '14px 16px',
-    color: '#334155',
+  planSelect: {
+    padding: '4px 8px', borderRadius: 8, fontSize: 12, border: '1px solid #e2e8f0',
+    background: '#f8fafc', cursor: 'pointer',
   },
-  bizCell: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 10,
+  viewBtn: {
+    padding: '6px 10px', background: 'transparent', color: '#0d9488',
+    border: '1px solid #a7f3d0', borderRadius: 6, fontSize: 12, cursor: 'pointer', marginRight: 6,
   },
-  bizAvatar: {
-    width: 32,
-    height: 32,
-    borderRadius: '50%',
-    background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
-    color: 'white',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: 12,
-    fontWeight: 600,
+  deleteBtn: {
+    padding: '6px 10px', background: 'transparent', color: '#dc2626',
+    border: '1px solid #fecaca', borderRadius: 6, fontSize: 12, cursor: 'pointer',
   },
-  bizName: {
-    fontWeight: 600,
-    color: '#0f172a',
+  modalOverlay: {
+    position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300, padding: 16,
   },
-  badge: {
-    padding: '4px 12px',
-    borderRadius: 20,
-    fontSize: 12,
-    fontWeight: 600,
+  modal: {
+    background: 'white', borderRadius: 16, padding: 28, width: 440,
+    maxHeight: '85vh', overflow: 'auto',
   },
-  planBadge: {
-    padding: '4px 12px',
-    borderRadius: 20,
-    fontSize: 12,
-    fontWeight: 600,
+  modalTitle: { margin: '0 0 16px', fontSize: 18, fontWeight: 700, color: '#0f172a' },
+  detailGrid: { display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 20 },
+  detailRow: {
+    display: 'flex', justifyContent: 'space-between', fontSize: 13,
+    padding: '6px 0', borderBottom: '1px solid #f1f5f9',
   },
-  count: {
-    fontWeight: 700,
-    color: '#0f172a',
+  detailLabel: { color: '#64748b' },
+  detailValue: { color: '#0f172a', fontWeight: 600 },
+  closeBtn: {
+    padding: '10px 16px', background: '#f1f5f9', color: '#334155',
+    border: 'none', borderRadius: 8, fontSize: 13, cursor: 'pointer',
   },
-  emptyTd: {
-    padding: 40,
-    textAlign: 'center',
-    color: '#94a3b8',
+  confirmDeleteBtn: {
+    padding: '10px 16px', background: '#dc2626', color: 'white',
+    border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer', flex: 1,
   },
 }
 

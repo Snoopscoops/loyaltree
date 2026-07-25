@@ -8,7 +8,7 @@ import html as html_lib
 from datetime import datetime, timedelta
 from typing import Optional, List
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -24,6 +24,22 @@ BASE_URL = os.getenv('BASE_URL', 'https://loyaltree-btw1.onrender.com')
 GOOGLE_WALLET_ISSUER_ID = os.getenv('GOOGLE_WALLET_ISSUER_ID', '')
 GOOGLE_WALLET_CLASS_SUFFIX = os.getenv('GOOGLE_WALLET_CLASS_SUFFIX', '')
 DEFAULT_LOGO_URL = os.getenv('DEFAULT_LOGO_URL', 'https://placehold.co/300x300/0d9488/ffffff.png?text=LoyaltyTree')
+
+# Platform super-admin credentials (you, the LoyaltyTree operator - not a
+# business owner). Set these in your environment; there is no signup flow
+# for this role on purpose. If unset, the admin routes are disabled.
+SUPER_ADMIN_EMAIL = os.getenv('SUPER_ADMIN_EMAIL', '')
+SUPER_ADMIN_PASSWORD = os.getenv('SUPER_ADMIN_PASSWORD', '')
+
+# Subscription tiers available to businesses. This is the single source of
+# truth the admin dashboard reads from to show plan options and limits.
+# Extend this dict when you're ready to add real billing/tier logic -
+# nothing else needs to change to introduce a new plan.
+SUBSCRIPTION_PLANS = {
+    'starter': {'label': 'Starter', 'customer_limit': 100, 'price_month': 0},
+    'growth': {'label': 'Growth', 'customer_limit': 1000, 'price_month': 29},
+    'pro': {'label': 'Pro', 'customer_limit': None, 'price_month': 79},
+}
 
 ENV_ERROR = None
 if not SUPABASE_URL or not SUPABASE_KEY:
@@ -114,6 +130,14 @@ class AnnouncementUpdate(BaseModel):
     is_active: Optional[bool] = None
     end_date: Optional[str] = None
 
+class AdminLoginRequest(BaseModel):
+    email: str
+    password: str
+
+class AdminBusinessUpdate(BaseModel):
+    status: Optional[str] = None
+    plan: Optional[str] = None
+
 class RedeemRequest(BaseModel):
     customer_public_id: str
     staff_pin: str
@@ -190,6 +214,65 @@ def safe_get_loyalty_program(business_id: int):
         return res.data
     except Exception:
         return None
+
+def get_admin_token() -> Optional[str]:
+    """The one valid admin token, derived from the configured super-admin
+    password. Stateless by design (matches owner/staff tokens elsewhere in
+    this file) - no admin_sessions table to manage. Returns None if no
+    super-admin password is configured, which disables the admin routes."""
+    if not SUPER_ADMIN_PASSWORD:
+        return None
+    return "admin-token-" + hash_password(SUPER_ADMIN_PASSWORD)
+
+def require_admin(request: Request):
+    valid_token = get_admin_token()
+    if not valid_token:
+        raise HTTPException(status_code=503, detail="Admin access is not configured on this server")
+    auth_header = request.headers.get("authorization", "")
+    token = auth_header.replace("Bearer ", "").replace("bearer ", "") if auth_header else ""
+    if not token or token != valid_token:
+        raise HTTPException(status_code=401, detail="Admin authentication required")
+    return True
+
+def business_summary(biz: dict) -> dict:
+    """Lightweight per-business row for the admin businesses list - counts
+    only, no raw customer/staff records."""
+    biz_id = biz.get('id')
+    customer_count = 0
+    staff_count = 0
+    stamps_30d = 0
+    try:
+        cust_res = supabase.table("customers").select("id", count="exact").eq("business_id", biz_id).execute()
+        customer_count = cust_res.count or 0
+    except Exception:
+        pass
+    try:
+        staff_res = supabase.table("staff").select("id", count="exact").eq("business_id", biz_id).execute()
+        staff_count = staff_res.count or 0
+    except Exception:
+        pass
+    try:
+        since = (datetime.utcnow() - timedelta(days=30)).isoformat()
+        stamp_res = supabase.table("stamp_events").select("id", count="exact").eq("business_id", biz_id).gte("created_at", since).execute()
+        stamps_30d = stamp_res.count or 0
+    except Exception:
+        pass
+    plan = biz.get('plan', 'starter')
+    return {
+        "public_id": biz.get("public_id", ""),
+        "name": biz.get("name", ""),
+        "email": biz.get("email", ""),
+        "phone": biz.get("phone", ""),
+        "status": biz.get("status", "PENDING"),
+        "plan": plan,
+        "plan_label": SUBSCRIPTION_PLANS.get(plan, {}).get("label", plan),
+        "business_type": biz.get("business_type", "other"),
+        "logo_url": biz.get("logo_url"),
+        "created_at": biz.get("created_at"),
+        "customer_count": customer_count,
+        "staff_count": staff_count,
+        "stamps_30d": stamps_30d,
+    }
 
 def generate_qr_svg(data: str) -> str:
     qr = qrcode.make(data, image_factory=SvgImage)
@@ -623,6 +706,129 @@ async def get_current_user(request: Request):
             pass
 
     raise HTTPException(status_code=401, detail="Invalid token")
+
+# ADMIN ROUTES (platform owner only - not exposed to businesses)
+
+@app.post("/api/v1/admin/login")
+async def admin_login(req: AdminLoginRequest):
+    valid_token = get_admin_token()
+    if not valid_token:
+        raise HTTPException(status_code=503, detail="Admin access is not configured on this server")
+    if req.email != SUPER_ADMIN_EMAIL or req.password != SUPER_ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid admin credentials")
+    return {"success": True, "token": valid_token, "email": SUPER_ADMIN_EMAIL, "role": "super_admin"}
+
+@app.get("/api/v1/admin/me")
+async def admin_me(_: bool = Depends(require_admin)):
+    return {"email": SUPER_ADMIN_EMAIL, "role": "super_admin"}
+
+@app.get("/api/v1/admin/plans")
+async def admin_list_plans(_: bool = Depends(require_admin)):
+    return SUBSCRIPTION_PLANS
+
+@app.get("/api/v1/admin/overview")
+async def admin_overview(_: bool = Depends(require_admin)):
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Database not connected")
+    try:
+        businesses = supabase.table("businesses").select("*").execute().data or []
+        customers_res = supabase.table("customers").select("id", count="exact").execute()
+        staff_res = supabase.table("staff").select("id", count="exact").execute()
+        since = (datetime.utcnow() - timedelta(days=30)).isoformat()
+        stamps_30d_res = supabase.table("stamp_events").select("id", count="exact").gte("created_at", since).execute()
+        redemptions_30d_res = supabase.table("redemption_events").select("id", count="exact").gte("created_at", since).execute()
+
+        status_breakdown = {}
+        plan_breakdown = {}
+        for b in businesses:
+            status = (b.get('status') or 'PENDING').upper()
+            plan = b.get('plan') or 'starter'
+            status_breakdown[status] = status_breakdown.get(status, 0) + 1
+            plan_breakdown[plan] = plan_breakdown.get(plan, 0) + 1
+
+        return {
+            "total_businesses": len(businesses),
+            "total_customers": customers_res.count or 0,
+            "total_staff": staff_res.count or 0,
+            "stamps_30d": stamps_30d_res.count or 0,
+            "redemptions_30d": redemptions_30d_res.count or 0,
+            "status_breakdown": status_breakdown,
+            "plan_breakdown": plan_breakdown,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load overview: {str(e)}")
+
+@app.get("/api/v1/admin/businesses")
+async def admin_list_businesses(status: Optional[str] = None, plan: Optional[str] = None, search: Optional[str] = None, _: bool = Depends(require_admin)):
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Database not connected")
+    try:
+        query = supabase.table("businesses").select("*")
+        if status:
+            query = query.eq("status", status.upper())
+        if plan:
+            query = query.eq("plan", plan)
+        businesses = query.order("created_at", desc=True).execute().data or []
+        if search:
+            needle = search.lower()
+            businesses = [b for b in businesses if needle in (b.get('name') or '').lower() or needle in (b.get('email') or '').lower()]
+        return [business_summary(b) for b in businesses]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load businesses: {str(e)}")
+
+@app.get("/api/v1/admin/businesses/{public_id}")
+async def admin_get_business(public_id: str, _: bool = Depends(require_admin)):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    program = safe_get_loyalty_program(business.get('id'))
+    summary = business_summary(business)
+    try:
+        since = (datetime.utcnow() - timedelta(days=30)).isoformat()
+        redemptions_res = supabase.table("redemption_events").select("id", count="exact").eq("business_id", business.get('id')).gte("created_at", since).execute()
+        summary["redemptions_30d"] = redemptions_res.count or 0
+    except Exception:
+        summary["redemptions_30d"] = 0
+    summary["loyalty_program"] = program
+    return summary
+
+@app.patch("/api/v1/admin/businesses/{public_id}")
+async def admin_update_business(public_id: str, update: AdminBusinessUpdate, _: bool = Depends(require_admin)):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    data = {}
+    if update.status is not None:
+        data['status'] = update.status.upper()
+    if update.plan is not None:
+        if update.plan not in SUBSCRIPTION_PLANS:
+            raise HTTPException(status_code=400, detail=f"Unknown plan '{update.plan}'. Valid plans: {list(SUBSCRIPTION_PLANS.keys())}")
+        data['plan'] = update.plan
+    if not data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    data['updated_at'] = datetime.utcnow().isoformat()
+
+    try:
+        supabase.table("businesses").update(data).eq("id", business.get("id")).execute()
+        return {"success": True, **data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
+
+@app.delete("/api/v1/admin/businesses/{public_id}")
+async def admin_delete_business(public_id: str, _: bool = Depends(require_admin)):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    biz_id = business.get('id')
+    try:
+        # No cascading FKs on these tables, so children are removed first.
+        for table in ["stamp_events", "redemption_events", "announcements", "customers", "staff", "loyalty_programs"]:
+            supabase.table(table).delete().eq("business_id", biz_id).execute()
+        supabase.table("businesses").delete().eq("id", biz_id).execute()
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
 
 # API ROUTES
 
