@@ -608,6 +608,17 @@ async def login(req: LoginRequest):
             input_hash = hash_password(req.password)
             matched = (stored_pw == req.password) or (stored_pw == input_hash)
             if matched:
+                status = (business.get('status') or 'PENDING').upper()
+                if status == 'PENDING':
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Your business application is still pending approval. We'll email you as soon as it's reviewed."
+                    )
+                if status != 'ACTIVE':
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Your account is not active. Please contact support for details."
+                    )
                 return {
                     "success": True,
                     "token": "owner-token-" + business.get("public_id", ""),
@@ -625,16 +636,29 @@ async def login(req: LoginRequest):
                         "logo_url": business.get("logo_url"),
                     }
                 }
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Business login error: {e}")
 
     try:
-        res = supabase.table("staff").select("*,businesses(public_id,name,logo_url)").eq("email", req.email).maybe_single().execute()
+        res = supabase.table("staff").select("*,businesses(public_id,name,logo_url,status)").eq("email", req.email).maybe_single().execute()
         staff = res.data
         if staff:
             stored_pin = staff.get('pin', '')
             if stored_pin == req.password or stored_pin == hash_password(req.password):
                 biz = staff.get('businesses', {}) or {}
+                status = (biz.get('status') or 'PENDING').upper()
+                if status == 'PENDING':
+                    raise HTTPException(
+                        status_code=403,
+                        detail="This business's application is still pending approval. Please check back once it's reviewed."
+                    )
+                if status != 'ACTIVE':
+                    raise HTTPException(
+                        status_code=403,
+                        detail="This business's account is not active. Please contact support for details."
+                    )
                 return {
                     "success": True,
                     "token": "staff-token-" + staff.get("public_id", ""),
@@ -653,6 +677,8 @@ async def login(req: LoginRequest):
                         "logo_url": biz.get("logo_url"),
                     }
                 }
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Staff login error: {e}")
 

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 
-const STATUS_OPTIONS = ['PENDING', 'ACTIVE', 'SUSPENDED']
+const STATUS_OPTIONS = ['PENDING', 'ACTIVE', 'SUSPENDED', 'REJECTED']
 
 function AdminDashboard({ API_BASE, user, onLogout }) {
   const token = user?.token
@@ -8,6 +8,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const [overview, setOverview] = useState(null)
   const [plans, setPlans] = useState({})
   const [businesses, setBusinesses] = useState([])
+  const [pendingApps, setPendingApps] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
@@ -33,15 +34,17 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
       if (statusFilter) params.set('status', statusFilter)
       if (planFilter) params.set('plan', planFilter)
 
-      const [ovRes, plansRes, bizRes] = await Promise.all([
+      const [ovRes, plansRes, bizRes, pendingRes] = await Promise.all([
         authedFetch('/api/v1/admin/overview'),
         authedFetch('/api/v1/admin/plans'),
         authedFetch(`/api/v1/admin/businesses?${params.toString()}`),
+        authedFetch('/api/v1/admin/businesses?status=PENDING'),
       ])
       if (ovRes.status === 401 || bizRes.status === 401) { onLogout(); return }
       setOverview(await ovRes.json().catch(() => null))
       setPlans(await plansRes.json().catch(() => ({})))
       setBusinesses(await bizRes.json().catch(() => []))
+      setPendingApps(await pendingRes.json().catch(() => []))
     } catch (err) {
       console.error('Admin load error:', err)
     }
@@ -89,6 +92,9 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
     setTimeout(() => setMessage(''), 3000)
   }
 
+  const approveApplication = (public_id) => updateBusiness(public_id, { status: 'ACTIVE' })
+  const rejectApplication = (public_id) => updateBusiness(public_id, { status: 'REJECTED' })
+
   const deleteBusiness = async (public_id) => {
     try {
       const res = await authedFetch(`/api/v1/admin/businesses/${public_id}`, { method: 'DELETE' })
@@ -127,12 +133,42 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
       {message && <div style={styles.toast}>{message}</div>}
 
       <div style={styles.body}>
+        {/* Applications - pending business signups awaiting approval */}
+        {pendingApps.length > 0 && (
+          <div style={styles.applicationsSection}>
+            <h2 style={styles.sectionTitle}>
+              Applications <span style={styles.pendingCountBadge}>{pendingApps.length}</span>
+            </h2>
+            <p style={styles.sectionSubtitle}>New businesses waiting for approval before they can sign in.</p>
+            <div style={styles.applicationsList}>
+              {pendingApps.map(b => (
+                <div key={b.public_id} style={styles.applicationCard}>
+                  {b.logo_url && <img src={b.logo_url} alt="" style={styles.bizLogo} />}
+                  <div style={styles.applicationInfo}>
+                    <div style={styles.bizName}>{b.name}</div>
+                    <div style={styles.bizEmail}>{b.email}</div>
+                    <div style={styles.bizPhone}>
+                      {b.business_type} · {b.created_at ? new Date(b.created_at).toLocaleDateString() : ''}
+                    </div>
+                  </div>
+                  <div style={styles.applicationActions}>
+                    <button onClick={() => openDetail(b)} style={styles.viewBtn}>View</button>
+                    <button onClick={() => approveApplication(b.public_id)} style={styles.approveBtn}>Approve</button>
+                    <button onClick={() => rejectApplication(b.public_id)} style={styles.rejectBtn}>Reject</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Overview cards */}
         <div style={styles.statsGrid}>
           <StatCard label="Total businesses" value={overview?.total_businesses ?? '—'} />
           <StatCard label="Active" value={overview?.status_breakdown?.ACTIVE ?? 0} accent="#0d9488" />
           <StatCard label="Pending" value={overview?.status_breakdown?.PENDING ?? 0} accent="#d97706" />
           <StatCard label="Suspended" value={overview?.status_breakdown?.SUSPENDED ?? 0} accent="#dc2626" />
+          <StatCard label="Rejected" value={overview?.status_breakdown?.REJECTED ?? 0} accent="#64748b" />
           <StatCard label="Total customers" value={overview?.total_customers ?? 0} />
           <StatCard label="Stamps (30d)" value={overview?.stamps_30d ?? 0} />
           <StatCard label="Redemptions (30d)" value={overview?.redemptions_30d ?? 0} />
@@ -304,6 +340,7 @@ function DetailRow({ label, value }) {
 function statusStyle(status) {
   if (status === 'ACTIVE') return { background: '#dcfce7', color: '#166534' }
   if (status === 'SUSPENDED') return { background: '#fee2e2', color: '#991b1b' }
+  if (status === 'REJECTED') return { background: '#f1f5f9', color: '#475569' }
   return { background: '#fef3c7', color: '#92400e' }
 }
 
@@ -359,6 +396,35 @@ const styles = {
     boxShadow: '0 4px 12px rgba(0,0,0,0.15)', zIndex: 200,
   },
   body: { padding: '24px', maxWidth: 1200, margin: '0 auto' },
+  applicationsSection: {
+    background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 14,
+    padding: '18px 20px', marginBottom: 20,
+  },
+  sectionTitle: {
+    margin: 0, fontSize: 16, fontWeight: 700, color: '#92400e',
+    display: 'flex', alignItems: 'center', gap: 8,
+  },
+  pendingCountBadge: {
+    background: '#f59e0b', color: 'white', borderRadius: 999,
+    fontSize: 12, fontWeight: 700, padding: '2px 9px',
+  },
+  sectionSubtitle: { margin: '4px 0 14px', fontSize: 13, color: '#b45309' },
+  applicationsList: { display: 'flex', flexDirection: 'column', gap: 10 },
+  applicationCard: {
+    display: 'flex', alignItems: 'center', gap: 12, background: 'white',
+    border: '1px solid #fde68a', borderRadius: 10, padding: '10px 14px',
+    flexWrap: 'wrap',
+  },
+  applicationInfo: { flex: 1, minWidth: 180 },
+  applicationActions: { display: 'flex', gap: 8, flexShrink: 0 },
+  approveBtn: {
+    padding: '6px 14px', background: '#0d9488', color: 'white',
+    border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+  },
+  rejectBtn: {
+    padding: '6px 14px', background: 'transparent', color: '#dc2626',
+    border: '1px solid #fecaca', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+  },
   statsGrid: {
     display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
     gap: 12, marginBottom: 16,

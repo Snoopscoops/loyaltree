@@ -14,11 +14,13 @@ function LoginPage({ API_BASE, onLogin }) {
   })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [pendingNotice, setPendingNotice] = useState('')
 
   const handleLogin = async (e) => {
     e.preventDefault()
     setLoading(true)
     setError('')
+    setPendingNotice('')
     try {
       const res = await fetch(`${API_BASE}/api/v1/auth/login`, {
         method: 'POST',
@@ -34,6 +36,10 @@ function LoginPage({ API_BASE, onLogin }) {
         if (data.role === 'owner') navigate('/dashboard')
         else if (data.role === 'super_admin') navigate('/admin')
         else navigate('/scanner')
+      } else if (res.status === 403) {
+        // Account exists and password matched, but the business isn't
+        // approved/active yet - show a softer notice instead of a hard error.
+        setPendingNotice(data.detail || 'Your account is not active yet.')
       } else {
         setError(data.detail || 'Login failed')
       }
@@ -47,6 +53,7 @@ function LoginPage({ API_BASE, onLogin }) {
     e.preventDefault()
     setLoading(true)
     setError('')
+    setPendingNotice('')
     try {
       const res = await fetch(`${API_BASE}/api/v1/register`, {
         method: 'POST',
@@ -62,20 +69,11 @@ function LoginPage({ API_BASE, onLogin }) {
       })
       const data = await res.json()
       if (res.ok) {
-        // Auto-login after signup
-        const loginRes = await fetch(`${API_BASE}/api/v1/auth/login`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            email: form.email,
-            password: form.password
-          })
-        })
-        const loginData = await loginRes.json()
-        if (loginRes.ok) {
-          onLogin(loginData)
-          navigate('/dashboard')
-        }
+        // New businesses start out PENDING and can't log in until an admin
+        // approves them, so don't try to auto-login - just switch back to
+        // the login form and show a clear pending-approval notice.
+        setMode('login')
+        setPendingNotice("Application submitted! We'll email you once your account is approved.")
       } else {
         setError(data.detail || 'Signup failed')
       }
@@ -95,6 +93,7 @@ function LoginPage({ API_BASE, onLogin }) {
         </div>
 
         {error && <div style={styles.error}>{error}</div>}
+        {pendingNotice && <div style={styles.pendingNotice}>⏳ {pendingNotice}</div>}
 
         {mode === 'login' ? (
           <form onSubmit={handleLogin} style={styles.form}>
@@ -118,7 +117,7 @@ function LoginPage({ API_BASE, onLogin }) {
               {loading ? 'Growing...' : '🌱 Sign In'}
             </button>
             <p style={styles.switch}>
-              New here? <button type="button" style={styles.link} onClick={() => setMode('signup')}>Plant your tree</button>
+              New here? <button type="button" style={styles.link} onClick={() => { setMode('signup'); setError(''); setPendingNotice('') }}>Plant your tree</button>
             </p>
           </form>
         ) : (
@@ -168,7 +167,7 @@ function LoginPage({ API_BASE, onLogin }) {
               {loading ? 'Planting...' : '🌳 Create Account'}
             </button>
             <p style={styles.switch}>
-              Already growing? <button type="button" style={styles.link} onClick={() => setMode('login')}>Sign in</button>
+              Already growing? <button type="button" style={styles.link} onClick={() => { setMode('login'); setError(''); setPendingNotice('') }}>Sign in</button>
             </p>
           </form>
         )}
@@ -224,6 +223,16 @@ const styles = {
     fontSize: 13,
     marginBottom: 16,
     textAlign: 'center',
+  },
+  pendingNotice: {
+    background: '#fef3c7',
+    color: '#92400e',
+    padding: 12,
+    borderRadius: 10,
+    fontSize: 13,
+    marginBottom: 16,
+    textAlign: 'center',
+    lineHeight: 1.5,
   },
   form: {
     display: 'flex',

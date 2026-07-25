@@ -32,8 +32,8 @@ function Signup({ API_BASE }) {
       })
       const data = await res.json()
       if (res.ok) {
-        setSuccess('Account created! Redirecting...')
-        setTimeout(() => navigate('/'), 2000)
+        setSuccess("Account created! Your application is pending approval - we'll email you once it's reviewed. Redirecting to sign in...")
+        setTimeout(() => navigate('/'), 3000)
       } else {
         setError(data.detail || 'Signup failed')
       }
