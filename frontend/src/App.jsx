@@ -55,6 +55,7 @@ function App() {
         <Route path="/" element={
           user ? (
             user.role === 'owner' ? <Navigate to="/dashboard" /> :
+            user.role === 'super_admin' ? <Navigate to="/admin" /> :
             ['manager', 'cashier'].includes(user.role) ? <Navigate to="/scanner" /> :
             <Navigate to="/login" />
           ) : <Navigate to="/login" />
@@ -71,7 +72,9 @@ function App() {
           user?.role === 'owner' ? <AnalyticsDashboard API_BASE={API_BASE} user={user} /> : <Navigate to="/login" />
         } />
         <Route path="/join/:businessSlug" element={<div>Join Page - Redirecting...</div>} />
-        <Route path="/admin" element={<AdminDashboard API_BASE={API_BASE} />} />
+        <Route path="/admin" element={
+          user?.role === 'super_admin' ? <AdminDashboard API_BASE={API_BASE} user={user} onLogout={() => setUser(null)} /> : <Navigate to="/login" />
+        } />
       </Routes>
     </BrowserRouter>
   )

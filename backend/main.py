@@ -571,6 +571,30 @@ async def check_env(request: Request, call_next):
 @app.post("/api/v1/login")
 @app.post("/api/v1/auth/login")
 async def login(req: LoginRequest):
+    # Platform super-admin check happens first, and doesn't touch the
+    # database at all - it's an env-configured account, not a row in
+    # `businesses`. Checked before the DB call so it still works even if
+    # SUPABASE_URL/KEY are misconfigured.
+    admin_token = get_admin_token()
+    if admin_token and req.email == SUPER_ADMIN_EMAIL and req.password == SUPER_ADMIN_PASSWORD:
+        return {
+            "success": True,
+            "token": admin_token,
+            "business_slug": "",
+            "business_name": "LoyaltyTree Admin",
+            "name": "Admin",
+            "role": "super_admin",
+            "logo_url": None,
+            "user": {
+                "business_slug": "",
+                "business_name": "LoyaltyTree Admin",
+                "name": "Admin",
+                "email": SUPER_ADMIN_EMAIL,
+                "role": "super_admin",
+                "logo_url": None,
+            }
+        }
+
     if not supabase:
         raise HTTPException(status_code=503, detail="Database not connected")
 
@@ -671,7 +695,21 @@ async def get_current_user(request: Request):
     auth_header = request.headers.get("authorization", "")
     token = auth_header.replace("Bearer ","").replace("bearer ","") if auth_header else ""
 
-    if not token or not supabase:
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    admin_token = get_admin_token()
+    if admin_token and token == admin_token:
+        return {
+            "business_slug": "",
+            "business_name": "LoyaltyTree Admin",
+            "name": "Admin",
+            "email": SUPER_ADMIN_EMAIL,
+            "role": "super_admin",
+            "logo_url": None,
+        }
+
+    if not supabase:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     if token.startswith("owner-token-"):

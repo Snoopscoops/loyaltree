@@ -1,15 +1,9 @@
 import React, { useState, useEffect } from 'react'
 
-const TOKEN_KEY = 'loyaltree_admin_token'
-
 const STATUS_OPTIONS = ['PENDING', 'ACTIVE', 'SUSPENDED']
 
-function AdminDashboard({ API_BASE }) {
-  const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '')
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [loginError, setLoginError] = useState('')
-  const [loggingIn, setLoggingIn] = useState(false)
+function AdminDashboard({ API_BASE, user, onLogout }) {
+  const token = user?.token
 
   const [overview, setOverview] = useState(null)
   const [plans, setPlans] = useState({})
@@ -32,33 +26,6 @@ function AdminDashboard({ API_BASE }) {
     },
   })
 
-  const login = async (e) => {
-    e.preventDefault()
-    setLoginError('')
-    setLoggingIn(true)
-    try {
-      const res = await fetch(`${API_BASE}/api/v1/admin/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.detail || 'Login failed')
-      localStorage.setItem(TOKEN_KEY, data.token)
-      setToken(data.token)
-    } catch (err) {
-      setLoginError(err.message)
-    }
-    setLoggingIn(false)
-  }
-
-  const logout = () => {
-    localStorage.removeItem(TOKEN_KEY)
-    setToken('')
-    setOverview(null)
-    setBusinesses([])
-  }
-
   const loadData = async () => {
     try {
       const params = new URLSearchParams()
@@ -71,7 +38,7 @@ function AdminDashboard({ API_BASE }) {
         authedFetch('/api/v1/admin/plans'),
         authedFetch(`/api/v1/admin/businesses?${params.toString()}`),
       ])
-      if (ovRes.status === 401 || bizRes.status === 401) { logout(); return }
+      if (ovRes.status === 401 || bizRes.status === 401) { onLogout(); return }
       setOverview(await ovRes.json().catch(() => null))
       setPlans(await plansRes.json().catch(() => ({})))
       setBusinesses(await bizRes.json().catch(() => []))
@@ -82,7 +49,7 @@ function AdminDashboard({ API_BASE }) {
   }
 
   useEffect(() => {
-    if (!token) { setLoading(false); return }
+    if (!token) return
     setLoading(true)
     loadData()
   }, [token, statusFilter, planFilter])
@@ -137,43 +104,7 @@ function AdminDashboard({ API_BASE }) {
     setTimeout(() => setMessage(''), 3000)
   }
 
-  // ---------- Login screen ----------
-  if (!token) {
-    return (
-      <div style={styles.loginContainer}>
-        <div style={styles.loginCard}>
-          <div style={styles.loginBrand}>
-            <span style={{ fontSize: 40 }}>🌳</span>
-            <h1 style={styles.loginTitle}>LoyaltyTree Admin</h1>
-            <p style={styles.loginSubtitle}>Platform control panel — not for business owners</p>
-          </div>
-          <form onSubmit={login} style={styles.loginForm}>
-            <input
-              style={styles.input}
-              type="email"
-              placeholder="Admin email"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              required
-            />
-            <input
-              style={styles.input}
-              type="password"
-              placeholder="Password"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              required
-            />
-            {loginError && <p style={styles.errorText}>{loginError}</p>}
-            <button type="submit" disabled={loggingIn} style={styles.loginBtn}>
-              {loggingIn ? 'Signing in…' : 'Sign in'}
-            </button>
-          </form>
-        </div>
-      </div>
-    )
-  }
-
+  // ---------- Loading ----------
   if (loading) {
     return <div style={styles.loadingScreen}>Loading platform data…</div>
   }
@@ -190,7 +121,7 @@ function AdminDashboard({ API_BASE }) {
             <p style={styles.brandTagline}>{overview?.total_businesses ?? 0} businesses on the platform</p>
           </div>
         </div>
-        <button onClick={logout} style={styles.logoutBtn}>Log out</button>
+        <button onClick={onLogout} style={styles.logoutBtn}>Log out</button>
       </header>
 
       {message && <div style={styles.toast}>{message}</div>}
