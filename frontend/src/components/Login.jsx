@@ -32,6 +32,7 @@ function LoginPage({ API_BASE, onLogin }) {
       if (res.ok) {
         onLogin(data)
         if (data.role === 'owner') navigate('/dashboard')
+        else if (data.role === 'super_admin') navigate('/admin')
         else navigate('/scanner')
       } else {
         setError(data.detail || 'Login failed')
