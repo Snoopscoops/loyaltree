@@ -10,4 +10,4 @@ PyJWT
 cryptography
 supabase
 httpx
-pip install pillow
+pillow
