@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 const FEATURES = [
@@ -40,9 +40,103 @@ const STEPS = [
   { n: '3', title: 'Stamp at checkout', body: 'Your staff adds a stamp with their PIN. The reward unlocks itself.' },
 ]
 
+const CARD_TYPES = [
+  { key: 'stamps', icon: '🎟️', title: 'Stamps', available: true },
+  { key: 'cashback', icon: '💵', title: 'Cashback', available: false },
+  { key: 'discount', icon: '🏷️', title: 'Discount', available: false },
+  { key: 'multipass', icon: '🎫', title: 'Multipass', available: false },
+  { key: 'membership', icon: '🪪', title: 'Membership', available: false },
+  { key: 'giftcard', icon: '🎁', title: 'Gift Card', available: false },
+  { key: 'vip', icon: '👑', title: 'VIP Cards', available: false },
+  { key: 'nfc', icon: '📡', title: 'NFC Enabled Cards', available: false },
+]
+
+const BRANCH_TIERS = [
+  { key: '1', label: '1 branch' },
+  { key: '2-3', label: '2\u20133 branches' },
+  { key: '5', label: 'Up to 5 branches' },
+]
+
+const PLANS = [
+  {
+    key: 'starter',
+    name: 'Starter',
+    prices: { '1': 600, '2-3': 1000, '5': 2000 },
+    features: [
+      'Google Wallet & Apple Wallet',
+      '2 announcements per month',
+      'Full digital system',
+      'Customer service',
+    ],
+  },
+  {
+    key: 'growth',
+    name: 'Growth',
+    prices: { '1': 800, '2-3': 1400, '5': 2800 },
+    features: [
+      'Google Wallet & Apple Wallet',
+      '5 announcements per month',
+      'Full digital system',
+      'Analytics',
+      'Google review prompt',
+      'Customer service',
+    ],
+  },
+  {
+    key: 'pro',
+    name: 'Pro',
+    highlight: true,
+    prices: { '1': 1000, '2-3': 1800, '5': 3600 },
+    features: [
+      'Google Wallet & Apple Wallet',
+      '5 announcements per month',
+      'Full digital system',
+      'Analytics',
+      'Google review prompt',
+      'Birthday automated greetings',
+      'Up to 3 different loyalty cards in circulation',
+      "Win-back system (message if 30 days pass without a stamp)",
+      'Customer service',
+    ],
+  },
+  {
+    key: 'ultra',
+    name: 'Ultra',
+    comingSoon: true,
+    features: [
+      'Google Wallet & Apple Wallet',
+      '5 announcements per month',
+      'Full digital system',
+      'Analytics',
+      'Google review prompt',
+      'Birthday automated greetings',
+      'Up to 3 different loyalty cards in circulation',
+      "Win-back system (message if 30 days pass without a stamp)",
+      'Customer service',
+      'Geo-based notifications',
+      'Early order',
+    ],
+  },
+]
+
 function HomePage({ onNavigateLogin }) {
   const navigate = useNavigate()
   const goToLogin = onNavigateLogin || (() => navigate('/login'))
+
+  const [activeCard, setActiveCard] = useState(null) // e.g. 'stamps'
+  const [modalView, setModalView] = useState('sample') // 'sample' | 'pricing'
+  const [branchTier, setBranchTier] = useState('1')
+
+  const openCard = (card) => {
+    if (!card.available) return
+    setActiveCard(card.key)
+    setModalView('sample')
+  }
+
+  const closeModal = () => {
+    setActiveCard(null)
+    setModalView('sample')
+  }
 
   return (
     <div style={styles.page}>
@@ -58,7 +152,7 @@ function HomePage({ onNavigateLogin }) {
         <div style={styles.heroInner}>
           <h1 style={styles.h1}>Turn regulars into a growing tree of loyal customers</h1>
           <p style={styles.heroSub}>
-            A digital stamp card for your business that lives in your customers' phone wallet \u2014
+            A digital stamp card for your business that lives in your customers' phone wallet &mdash;
             no app to download, no punch cards to lose.
           </p>
           <button onClick={goToLogin} style={styles.heroBtn}>🌱 Business Login</button>
@@ -92,6 +186,32 @@ function HomePage({ onNavigateLogin }) {
         </div>
       </section>
 
+      <section style={styles.section}>
+        <h2 style={styles.h2}>Choose your card type</h2>
+        <p style={styles.cardTypesIntro}>Stamps is live today. Everything else is on its way.</p>
+        <div style={styles.cardTypesGrid}>
+          {CARD_TYPES.map(c => (
+            <button
+              key={c.key}
+              onClick={() => openCard(c)}
+              style={{
+                ...styles.cardTypeItem,
+                ...(c.available ? styles.cardTypeItemAvailable : styles.cardTypeItemDisabled),
+              }}
+              disabled={!c.available}
+            >
+              <span style={styles.cardTypeIcon}>{c.icon}</span>
+              <span style={styles.cardTypeTitle}>{c.title}</span>
+              {c.available ? (
+                <span style={styles.availableBadge}>Available</span>
+              ) : (
+                <span style={styles.comingSoonBadge}>Coming soon</span>
+              )}
+            </button>
+          ))}
+        </div>
+      </section>
+
       <section style={{ ...styles.section, background: '#f0fdf4' }}>
         <h2 style={styles.h2}>How it works</h2>
         <div style={styles.stepsRow}>
@@ -115,6 +235,91 @@ function HomePage({ onNavigateLogin }) {
         <span>🌳 LoyaltyTree</span>
         <span style={styles.footerNote}>Where businesses grow with customers</span>
       </footer>
+
+      {activeCard === 'stamps' && (
+        <div style={styles.modalOverlay} onClick={closeModal}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+            <button onClick={closeModal} style={styles.modalCloseBtn} aria-label="Close">✕</button>
+
+            {modalView === 'sample' ? (
+              <>
+                <h2 style={styles.modalTitle}>Sample: Stamps card</h2>
+                <p style={styles.modalSubtitle}>This is what your customers see on their phone.</p>
+                <div style={styles.sampleWrap}>
+                  <div style={styles.heroCard}>
+                    <div style={styles.heroCardHeader}>
+                      <span>Free Coffee</span>
+                      <span style={{ fontSize: 12, opacity: 0.85 }}>Corner Cafe</span>
+                    </div>
+                    <div style={styles.heroStampRow}>
+                      {Array.from({ length: 8 }).map((_, i) => (
+                        <div key={i} style={{ ...styles.heroStamp, background: i < 5 ? '#0d9488' : '#e2e8f0' }} />
+                      ))}
+                    </div>
+                    <div style={styles.heroCardFoot}>5 of 8 stamps &middot; 3 to go</div>
+                  </div>
+                </div>
+                <button onClick={() => setModalView('pricing')} style={styles.pricingBtn}>
+                  See pricing
+                </button>
+              </>
+            ) : (
+              <>
+                <h2 style={styles.modalTitle}>Stamps pricing</h2>
+                <p style={styles.modalSubtitle}>Pick the plan and branch count that fits your business.</p>
+
+                <div style={styles.branchTierRow}>
+                  {BRANCH_TIERS.map(t => (
+                    <button
+                      key={t.key}
+                      onClick={() => setBranchTier(t.key)}
+                      style={{
+                        ...styles.branchTierBtn,
+                        ...(branchTier === t.key ? styles.branchTierBtnActive : {}),
+                      }}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div style={styles.pricingGrid}>
+                  {PLANS.map(p => (
+                    <div key={p.key} style={{ ...styles.planCard, ...(p.highlight ? styles.planCardHighlight : {}) }}>
+                      {p.highlight && <div style={styles.planBadge}>Most popular</div>}
+                      <div style={styles.planName}>{p.name}</div>
+                      {p.comingSoon ? (
+                        <div style={styles.planPriceComingSoon}>Coming soon</div>
+                      ) : (
+                        <div style={styles.planPrice}>
+                          ₱{p.prices[branchTier].toLocaleString()}
+                          <span style={styles.planPriceUnit}>/mo</span>
+                        </div>
+                      )}
+                      <ul style={styles.planFeatureList}>
+                        {p.features.map(f => (
+                          <li key={f} style={styles.planFeatureItem}>
+                            <span style={styles.planFeatureCheck}>✓</span> {f}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                </div>
+
+                <p style={styles.contactNote}>
+                  6 branches or more? Let's talk it through together &mdash; email{' '}
+                  <a href="mailto:theloyaltytree@gmail.com" style={styles.contactLink}>theloyaltytree@gmail.com</a>
+                </p>
+
+                <button onClick={() => setModalView('sample')} style={styles.backBtn}>
+                  &larr; Back to sample
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -196,6 +401,100 @@ const styles = {
     padding: '24px 32px', fontSize: 13, color: '#94a3b8', flexWrap: 'wrap', gap: 8,
   },
   footerNote: { fontSize: 12, color: '#cbd5e1' },
+
+  // Card types section
+  cardTypesIntro: { textAlign: 'center', fontSize: 14, color: '#64748b', margin: '-24px 0 32px' },
+  cardTypesGrid: {
+    display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 16,
+  },
+  cardTypeItem: {
+    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
+    borderRadius: 16, padding: '24px 16px', fontFamily: 'inherit',
+    border: '1.5px solid #e2e8f0', background: 'white', position: 'relative',
+  },
+  cardTypeItemAvailable: {
+    cursor: 'pointer', borderColor: '#0d9488', boxShadow: '0 4px 14px rgba(13,148,136,0.12)',
+  },
+  cardTypeItemDisabled: {
+    cursor: 'not-allowed', opacity: 0.55,
+  },
+  cardTypeIcon: { fontSize: 30 },
+  cardTypeTitle: { fontSize: 14, fontWeight: 700, color: '#0f172a', textAlign: 'center' },
+  availableBadge: {
+    fontSize: 11, fontWeight: 700, color: '#0d9488', background: '#ccfbf1',
+    borderRadius: 20, padding: '3px 10px', marginTop: 2,
+  },
+  comingSoonBadge: {
+    fontSize: 11, fontWeight: 600, color: '#94a3b8', background: '#f1f5f9',
+    borderRadius: 20, padding: '3px 10px', marginTop: 2,
+  },
+
+  // Modal
+  modalOverlay: {
+    position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300, padding: 16,
+  },
+  modal: {
+    position: 'relative', background: 'white', borderRadius: 20, padding: '36px 28px',
+    width: '100%', maxWidth: 880, maxHeight: '88vh', overflow: 'auto',
+    boxShadow: '0 25px 60px rgba(0,0,0,0.3)',
+  },
+  modalCloseBtn: {
+    position: 'absolute', top: 18, right: 18, width: 32, height: 32, borderRadius: '50%',
+    border: 'none', background: '#f1f5f9', color: '#475569', fontSize: 15, cursor: 'pointer',
+  },
+  modalTitle: { fontSize: 24, fontWeight: 800, margin: '0 0 6px', color: '#0f172a', textAlign: 'center' },
+  modalSubtitle: { fontSize: 14, color: '#64748b', margin: '0 0 28px', textAlign: 'center' },
+  sampleWrap: { display: 'flex', justifyContent: 'center', margin: '0 0 28px' },
+  pricingBtn: {
+    display: 'block', margin: '0 auto', padding: '14px 32px', background: '#0d9488',
+    color: 'white', border: 'none', borderRadius: 12, fontSize: 15, fontWeight: 700,
+    cursor: 'pointer', boxShadow: '0 8px 20px rgba(13,148,136,0.25)',
+  },
+  branchTierRow: {
+    display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap', marginBottom: 28,
+  },
+  branchTierBtn: {
+    padding: '9px 16px', borderRadius: 999, border: '1.5px solid #e2e8f0', background: 'white',
+    color: '#475569', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+  },
+  branchTierBtnActive: {
+    borderColor: '#0d9488', background: '#0d9488', color: 'white',
+  },
+  pricingGrid: {
+    display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16,
+    marginBottom: 24,
+  },
+  planCard: {
+    position: 'relative', border: '1.5px solid #e2e8f0', borderRadius: 16, padding: '20px 18px',
+    display: 'flex', flexDirection: 'column', gap: 12,
+  },
+  planCardHighlight: {
+    borderColor: '#0d9488', boxShadow: '0 10px 28px rgba(13,148,136,0.18)',
+  },
+  planBadge: {
+    position: 'absolute', top: -12, left: '50%', transform: 'translateX(-50%)',
+    background: '#0d9488', color: 'white', fontSize: 11, fontWeight: 700,
+    padding: '4px 12px', borderRadius: 999, whiteSpace: 'nowrap',
+  },
+  planName: { fontSize: 16, fontWeight: 800, color: '#0f172a', textAlign: 'center' },
+  planPrice: { fontSize: 26, fontWeight: 800, color: '#0d9488', textAlign: 'center' },
+  planPriceUnit: { fontSize: 13, fontWeight: 600, color: '#94a3b8' },
+  planPriceComingSoon: {
+    fontSize: 15, fontWeight: 700, color: '#94a3b8', textAlign: 'center', padding: '4px 0',
+  },
+  planFeatureList: { margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 8 },
+  planFeatureItem: { fontSize: 12.5, color: '#475569', lineHeight: 1.4 },
+  planFeatureCheck: { color: '#0d9488', fontWeight: 700 },
+  contactNote: {
+    textAlign: 'center', fontSize: 13, color: '#64748b', background: '#f8fafc',
+    borderRadius: 10, padding: '14px 16px', margin: '0 0 20px',
+  },
+  contactLink: { color: '#0d9488', fontWeight: 700, textDecoration: 'none' },
+  backBtn: {
+    display: 'block', margin: '0 auto', background: 'transparent', border: 'none',
+    color: '#0d9488', fontWeight: 600, fontSize: 13, cursor: 'pointer',
+  },
 }
 
 export default HomePage
