@@ -149,6 +149,7 @@ class LoyaltyConfig(BaseModel):
     program_logo_url: Optional[str] = None
     hero_image_url: Optional[str] = None
     card_name: Optional[str] = None
+    description: Optional[str] = Field(default=None, max_length=140)  # short blurb shown below the card on the join page / wallet pass
     google_review_url: Optional[str] = None  # Growth/Pro only - link prompted after a redeemed reward
 
 class CustomerSignup(BaseModel):
@@ -446,6 +447,7 @@ def build_loyalty_class(business: dict, program: dict, review_status: str = 'UND
     primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
     reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
     card_name = program.get('card_name') if program else None
+    description = program.get('description') if program else None
     biz_name = business.get('name', 'Loyalty')
     program_name = card_name if card_name else f'{biz_name} Rewards'
 
@@ -457,7 +459,7 @@ def build_loyalty_class(business: dict, program: dict, review_status: str = 'UND
         'hexBackgroundColor': primary_color if primary_color.startswith('#') else f'#{primary_color}',
         'textModulesData': [
             {'header': 'Reward', 'body': reward_name},
-            {'header': 'About', 'body': 'Collect stamps, earn rewards'}
+            {'header': 'About', 'body': description if description else 'Collect stamps, earn rewards'}
         ]
     }
 
@@ -1473,6 +1475,7 @@ async def get_loyalty_config(public_id: str):
             "program_logo_url": None,
             "hero_image_url": None,
             "card_name": None,
+            "description": None,
             "google_wallet_class_id": None,
         }
     return program
@@ -1498,6 +1501,8 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
         data['hero_image_url'] = config.hero_image_url
     if config.card_name is not None:
         data['card_name'] = config.card_name
+    if config.description is not None:
+        data['description'] = config.description
     if config.google_review_url is not None:
         features = get_plan_features(business.get('plan'))
         if not features.get('google_review_prompt'):
@@ -2084,6 +2089,7 @@ async def customer_join_page(business_public_id: str):
         reward_name = program.get('reward_name', 'Free Service') if program else 'Free Service'
         stamp_goal = program.get('stamp_goal', 8) if program else 8
         card_name = program.get('card_name') if program else None
+        description = program.get('description') if program else None
         biz_name = business.get('name', '')
         display_name = card_name if card_name else (biz_name + ' Rewards')
         logo_url = business.get('logo_url')
@@ -2112,6 +2118,7 @@ async def customer_join_page(business_public_id: str):
             '.reward-preview{background:#f8fafc;border-radius:12px;padding:16px;margin-bottom:24px}'
             '.reward-preview h3{color:' + primary_color + ';font-size:16px;margin-bottom:4px}'
             '.reward-preview p{color:#64748b;font-size:13px}'
+            '.program-description{color:#64748b;font-size:13px;line-height:1.6;margin-bottom:24px;text-align:center}'
             'input{width:100%;padding:14px 16px;border:2px solid #e2e8f0;border-radius:12px;'
             'font-size:16px;margin-bottom:12px;outline:none}'
             'input:focus{border-color:' + primary_color + '}'
@@ -2138,6 +2145,7 @@ async def customer_join_page(business_public_id: str):
             '<h3>&#127873; ' + reward_name + '</h3>'
             '<p>Collect ' + str(stamp_goal) + ' stamps to unlock your reward</p>'
             '</div>'
+            + ('<p class="program-description">' + html_lib.escape(description) + '</p>' if description else '') +
             '<form id="signupForm">'
             '<input type="text" id="name" placeholder="Full name" required>'
             '<input type="text" id="address" placeholder="Address">'
