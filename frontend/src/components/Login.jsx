@@ -47,7 +47,7 @@ function LoginPage({ API_BASE, onLogin }) {
     setLoading(true)
     setError('')
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/signup`, {
+      const res = await fetch(`${API_BASE}/api/v1/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
