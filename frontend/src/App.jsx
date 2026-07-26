@@ -1,15 +1,27 @@
 import React, { useState, useEffect } from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom'
 import Login from './components/Login'
 import Signup from './components/Signup'
 import HomePage from './components/HomePage'
 import OwnerDashboard from './components/OwnerDashboard'
 import CashierApp from './components/CashierApp'
-import WalletPass from './components/WalletPass'
 import AnalyticsDashboard from './components/AnalyticsDashboard'
 import AdminDashboard from './components/AdminDashboard'
 
 const API_BASE = 'https://loyaltree-btw1.onrender.com'
+
+// /wallet/:id (and similar) are pages rendered by the FastAPI backend, not
+// React routes - if someone lands here on the frontend domain (old bookmark,
+// stray link, etc.) send them straight to the real page instead of a blank
+// or missing component.
+function RedirectToBackend({ base, sub }) {
+  const params = useParams()
+  const id = Object.values(params)[0]
+  useEffect(() => {
+    window.location.replace(`${base}/${sub}/${id}`)
+  }, [base, sub, id])
+  return null
+}
 
 function App() {
   const [user, setUser] = useState(() => {
@@ -70,11 +82,11 @@ function App() {
         <Route path="/scanner" element={
           ['owner', 'manager', 'cashier'].includes(user?.role) ? <CashierApp API_BASE={API_BASE} /> : <Navigate to="/login" />
         } />
-        <Route path="/wallet/:customerId" element={<WalletPass API_BASE={API_BASE} />} />
+        <Route path="/wallet/:customerId" element={<RedirectToBackend base={API_BASE} sub="wallet" />} />
         <Route path="/analytics" element={
           user?.role === 'owner' ? <AnalyticsDashboard API_BASE={API_BASE} user={user} /> : <Navigate to="/login" />
         } />
-        <Route path="/join/:businessSlug" element={<div>Join Page - Redirecting...</div>} />
+        <Route path="/join/:businessSlug" element={<RedirectToBackend base={API_BASE} sub="join" />} />
         <Route path="/admin" element={
           user?.role === 'super_admin' ? <AdminDashboard API_BASE={API_BASE} user={user} onLogout={() => setUser(null)} /> : <Navigate to="/login" />
         } />

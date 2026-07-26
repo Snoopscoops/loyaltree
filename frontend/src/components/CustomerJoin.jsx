@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
 
 function CustomerJoin({ API_BASE }) {
   const { businessSlug } = useParams()
@@ -16,7 +16,6 @@ function CustomerJoin({ API_BASE }) {
   const [customerId, setCustomerId] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  const navigate = useNavigate()
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -61,7 +60,7 @@ function CustomerJoin({ API_BASE }) {
             <p style={styles.infoValue}>Show this QR code on every visit</p>
           </div>
           <button 
-            onClick={() => navigate(`/wallet/${customerId}`)}
+            onClick={() => { window.location.href = `${API_BASE}/wallet/${customerId}` }}
             style={styles.walletBtn}
           >
             📱 View My Digital Card
