@@ -10,7 +10,7 @@ const FEATURES = [
   {
     icon: '👛',
     title: 'Lives in their wallet',
-    body: 'Cards push straight to Google Wallet, so customers don\u2019t need to install an app to start collecting.',
+    body: 'Cards push straight to Google Wallet and Apple Wallet \u2014 no app to install, no account to create.',
   },
   {
     icon: '🔑',
@@ -58,6 +58,21 @@ const COMPARISON = [
   {
     traditional: 'Printing, restocking, and replacing cards costs money every month',
     digital: 'One-time setup, no printing, no restocking \u2014 the card never runs out',
+  },
+]
+
+const SCAN_STEPS = [
+  {
+    n: '1',
+    icon: '📲',
+    title: 'Scan to Join',
+    body: 'Customers scan your QR code once and their card saves straight to their phone \u2014 no app to download, no form to fill out.',
+  },
+  {
+    n: '2',
+    icon: '✅',
+    title: 'Scan to Stamp',
+    body: 'At checkout, staff scan the same code to add a stamp. It updates instantly on the card already sitting in their wallet.',
   },
 ]
 
@@ -197,6 +212,32 @@ function HomePage({ onNavigateLogin }) {
             </div>
             <div style={styles.heroCardFoot}>5 of 8 stamps &middot; 3 to go</div>
           </div>
+        </div>
+      </section>
+
+      <section style={styles.scanSection}>
+        <span style={styles.scanEyebrow}>No app needed</span>
+        <h2 style={styles.h2}>Scan to Join. Scan to Stamp.</h2>
+        <p style={styles.scanIntro}>
+          That's the whole system. No applications needed &mdash; the card goes straight to your
+          customer's Google Wallet or Apple Wallet, and stays there.
+        </p>
+        <div style={styles.scanRow}>
+          {SCAN_STEPS.map((s, i) => (
+            <React.Fragment key={s.n}>
+              <div style={styles.scanCard}>
+                <div style={styles.scanCardIcon}>{s.icon}</div>
+                <div style={styles.scanCardBadge}>Step {s.n}</div>
+                <h3 style={styles.scanCardTitle}>{s.title}</h3>
+                <p style={styles.scanCardBody}>{s.body}</p>
+              </div>
+              {i === 0 && <div style={styles.scanArrow} aria-hidden="true">&rarr;</div>}
+            </React.Fragment>
+          ))}
+        </div>
+        <div style={styles.walletRow}>
+          <span style={styles.walletPill}>📱 Google Wallet</span>
+          <span style={styles.walletPill}>🍎 Apple Wallet</span>
         </div>
       </section>
 
@@ -434,6 +475,41 @@ const styles = {
   heroStamp: { width: '100%', aspectRatio: '1', borderRadius: '50%' },
   heroCardFoot: { fontSize: 12, color: '#64748b', textAlign: 'center' },
   section: { padding: '64px 32px', maxWidth: 1100, margin: '0 auto' },
+
+  // Scan to Join / Scan to Stamp section
+  scanSection: {
+    padding: '56px 32px 64px', maxWidth: 1000, margin: '0 auto', textAlign: 'center',
+  },
+  scanEyebrow: {
+    display: 'inline-block', fontSize: 12.5, fontWeight: 700, letterSpacing: '0.06em',
+    textTransform: 'uppercase', color: '#0d9488', background: '#ccfbf1',
+    borderRadius: 999, padding: '6px 14px', marginBottom: 14,
+  },
+  scanIntro: {
+    fontSize: 15, lineHeight: 1.7, color: '#475569', maxWidth: 560, margin: '-16px auto 40px',
+  },
+  scanRow: {
+    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 20,
+    flexWrap: 'wrap', marginBottom: 32,
+  },
+  scanCard: {
+    flex: '1 1 260px', maxWidth: 300, background: 'white', border: '1.5px solid #e2e8f0',
+    borderRadius: 20, padding: '32px 24px', boxShadow: '0 10px 30px rgba(15,23,42,0.06)',
+  },
+  scanCardIcon: { fontSize: 36, marginBottom: 10 },
+  scanCardBadge: {
+    display: 'inline-block', fontSize: 11, fontWeight: 700, color: '#0d9488',
+    background: '#f0fdfa', borderRadius: 999, padding: '3px 12px', marginBottom: 10,
+  },
+  scanCardTitle: { fontSize: 19, fontWeight: 800, margin: '0 0 8px', color: '#0f172a' },
+  scanCardBody: { fontSize: 13.5, lineHeight: 1.6, color: '#64748b', margin: 0 },
+  scanArrow: { fontSize: 26, color: '#0d9488', fontWeight: 700 },
+  walletRow: { display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' },
+  walletPill: {
+    fontSize: 13.5, fontWeight: 600, color: '#0f172a', background: '#f8fafc',
+    border: '1px solid #e2e8f0', borderRadius: 999, padding: '8px 16px',
+  },
+
   h2: { fontSize: 28, fontWeight: 800, textAlign: 'center', margin: '0 0 40px', color: '#0f172a' },
   featureGrid: {
     display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 24,
