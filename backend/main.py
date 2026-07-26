@@ -1,5 +1,6 @@
 import os
 import re
+from urllib.parse import quote
 import uuid
 import base64
 import json
@@ -2692,7 +2693,7 @@ async def customer_join_page(business_public_id: str):
             'const data=await res.json();'
             'if(res.ok){'
             'const walletUrl=API_BASE+"/wallet/"+data.public_id;'
-            'const qrUrl="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data="+encodeURIComponent(data.public_id);'
+            'const qrUrl="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data="+encodeURIComponent(API_BASE+"/stamp/"+data.public_id);'
             'var cardHtml='
             '"<div style=\'font-size:48px;margin-bottom:16px;\'>&#127881;</div>"+'
             '"<h1>Welcome, "+escapeHtml(data.name)+"!</h1>"+'
@@ -2870,7 +2871,7 @@ async def customer_wallet_page(customer_public_id: str):
         + reward_badge +
         '</div>'
         '<div class="qr-section">'
-        '<img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + customer.get("public_id", "") + '" alt="Your QR Code"/>'
+        '<img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + quote(f'{BASE_URL}/stamp/{customer.get("public_id", "")}', safe="") + '" alt="Your QR Code"/>'
         '<p>Scan at checkout to earn stamps</p>'
         '</div>'
         '<a href="https://pay.google.com/gp/v/save/' + customer.get("public_id", "") + '" class="wallet-btn">'
@@ -2892,6 +2893,216 @@ async def customer_wallet_page(customer_public_id: str):
     )
 
     return HTMLResponse(html)
+
+# CASHIER STAMP PAGE - opened when a cashier scans a customer's QR with
+# their phone's native Camera app (rather than the in-app scanner in
+# CashierApp.jsx). Handles cashier login itself: first scan of a shift
+# asks for the staff PIN, trades it for a session token, and remembers
+# that token in localStorage (keyed per business) so later scans on the
+# same phone skip straight to the Add Stamp button.
+@app.get("/stamp/{customer_public_id}", response_class=HTMLResponse)
+async def cashier_stamp_page(customer_public_id: str):
+    customer = safe_get_customer(customer_public_id)
+    if not customer:
+        return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Card not found</h1><p>This loyalty card does not exist.</p></div>")
+
+    business = safe_get_business_by_id(customer.get('business_id'))
+    if not business:
+        return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Business not found</h1></div>")
+
+    program = safe_get_loyalty_program(business.get('id'))
+    primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
+    stamp_goal = program.get('stamp_goal', 8) if program else 8
+    reward_name = program.get('reward_name', 'Free Service') if program else 'Free Service'
+
+    data = {
+        'customer_public_id': customer.get('public_id', ''),
+        'customer_name': customer.get('name', 'Member'),
+        'business_public_id': business.get('public_id', ''),
+        'business_name': business.get('name', ''),
+        'stamp_count': customer.get('stamp_count', 0),
+        'stamp_goal': stamp_goal,
+        'reward_name': reward_name,
+        'reward_unlocked': bool(customer.get('reward_unlocked')),
+    }
+    data_json = json.dumps(data)
+
+    head = (
+        '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+        '<title>Add Stamp - ' + html_lib.escape(business.get('name', '')) + '</title>'
+        '<style>'
+        '*{box-sizing:border-box;margin:0;padding:0}'
+        'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;'
+        'background:linear-gradient(135deg,' + primary_color + ' 0%,#1e293b 100%);'
+        'min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}'
+        '.card{background:white;border-radius:24px;padding:32px;max-width:400px;width:100%;'
+        'box-shadow:0 20px 60px rgba(0,0,0,0.3)}'
+        'h1{font-size:20px;color:#0f172a;margin-bottom:4px;text-align:center}'
+        '.sub{font-size:13px;color:#94a3b8;text-align:center;margin-bottom:20px}'
+        'input{width:100%;padding:14px;margin-bottom:12px;border:2px solid #e2e8f0;'
+        'border-radius:10px;font-size:16px;box-sizing:border-box}'
+        'button{width:100%;padding:14px;border:none;border-radius:10px;font-size:15px;'
+        'font-weight:700;cursor:pointer;color:white;margin-bottom:10px}'
+        'button:disabled{opacity:0.6;cursor:default}'
+        '.btn-primary{background:' + primary_color + '}'
+        '.btn-reward{background:#f59e0b}'
+        '.btn-secondary{background:#f1f5f9;color:#475569;font-weight:600}'
+        '.customer-box{background:#f8fafc;border-radius:14px;padding:18px;margin-bottom:16px;text-align:center}'
+        '.customer-box .name{font-size:18px;font-weight:700;color:#0f172a}'
+        '.customer-box .stamps{font-size:14px;color:#64748b;margin-top:4px}'
+        '.reward{background:#fef3c7;color:#92400e;border-radius:10px;padding:10px;'
+        'text-align:center;font-weight:700;font-size:14px;margin-bottom:14px}'
+        '.msg{margin-bottom:14px;padding:12px;border-radius:10px;font-size:14px;text-align:center}'
+        '.msg-ok{background:#dcfce7;color:#166534}'
+        '.msg-err{background:#fee2e2;color:#991b1b}'
+        '.hint{font-size:12px;color:#94a3b8;text-align:center;margin-top:8px}'
+        '</style></head><body>'
+        '<div class="card" id="app"></div>'
+    )
+
+    script = (
+        '<script>'
+        'const DATA=' + data_json + ';'
+        'let stampCount=DATA.stamp_count;'
+        'let rewardUnlocked=DATA.reward_unlocked;'
+        'const app=document.getElementById("app");'
+        'const sessionKey="loyaltree_cashier_"+DATA.business_public_id;'
+
+        'function escapeHtml(t){const d=document.createElement("div");d.textContent=t;return d.innerHTML;}'
+
+        'function getSession(){'
+        'try{'
+        'const raw=localStorage.getItem(sessionKey);'
+        'if(!raw)return null;'
+        'const s=JSON.parse(raw);'
+        'if(!s.token||!s.expires_at||Date.now()>s.expires_at)return null;'
+        'return s;'
+        '}catch(e){return null;}'
+        '}'
+
+        'function saveSession(token,name,expiresInHours){'
+        'localStorage.setItem(sessionKey,JSON.stringify({'
+        'token:token,name:name,expires_at:Date.now()+(expiresInHours||12)*3600*1000'
+        '}));'
+        '}'
+
+        'function clearSession(){localStorage.removeItem(sessionKey);}'
+
+        'function authHeaders(){'
+        'const s=getSession();'
+        'const h={"Content-Type":"application/json"};'
+        'if(s&&s.token)h["Authorization"]="Bearer "+s.token;'
+        'return h;'
+        '}'
+
+        'function renderLogin(msg){'
+        'app.innerHTML='
+        '"<h1>Cashier Login</h1>"+'
+        '"<p class=\'sub\'>"+escapeHtml(DATA.business_name)+"</p>"+'
+        '(msg?"<div class=\'msg msg-err\'>"+escapeHtml(msg)+"</div>":"")+'
+        '"<input id=\'pin\' type=\'password\' inputmode=\'numeric\' placeholder=\'Staff PIN\'>"+'
+        '"<button class=\'btn-primary\' id=\'loginBtn\'>Log In</button>"+'
+        '"<p class=\'hint\'>Stays signed in on this phone for your shift.</p>";'
+        'document.getElementById("loginBtn").addEventListener("click",doLogin);'
+        'document.getElementById("pin").addEventListener("keydown",function(e){if(e.key==="Enter")doLogin();});'
+        'document.getElementById("pin").focus();'
+        '}'
+
+        'async function doLogin(){'
+        'const pinEl=document.getElementById("pin");'
+        'const pin=pinEl.value.trim();'
+        'if(!pin){renderLogin("Enter your PIN");return;}'
+        'const btn=document.getElementById("loginBtn");'
+        'btn.disabled=true;btn.textContent="Checking...";'
+        'try{'
+        'const res=await fetch("/api/v1/business/"+DATA.business_public_id+"/staff/verify-pin",{'
+        'method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pin:pin})'
+        '});'
+        'const d=await res.json();'
+        'if(res.ok&&d.success){'
+        'if(d.session_token)saveSession(d.session_token,d.name,d.expires_in_hours);'
+        'renderCard(d.name,null);'
+        '}else{'
+        'renderLogin(d.detail||"Invalid PIN");'
+        '}'
+        '}catch(e){'
+        'renderLogin("Network error - try again");'
+        '}'
+        '}'
+
+        'function renderCard(staffName,msg){'
+        'const rewardHtml=rewardUnlocked?"<div class=\'reward\'>&#127873; "+escapeHtml(DATA.reward_name)+" unlocked!</div>":"";'
+        'app.innerHTML='
+        '(msg?"<div class=\'msg "+(msg.ok?"msg-ok":"msg-err")+"\'>"+escapeHtml(msg.text)+"</div>":"")+'
+        '"<div class=\'customer-box\'>"+'
+        '"<div class=\'name\'>"+escapeHtml(DATA.customer_name)+"</div>"+'
+        '"<div class=\'stamps\'>"+stampCount+" / "+DATA.stamp_goal+" stamps</div>"+'
+        '"</div>"+'
+        'rewardHtml+'
+        '"<button class=\'btn-primary\' id=\'stampBtn\'>Add Stamp</button>"+'
+        '(rewardUnlocked?"<button class=\'btn-reward\' id=\'redeemBtn\'>Redeem Reward</button>":"")+'
+        '"<button class=\'btn-secondary\' id=\'switchBtn\'>Not "+escapeHtml(staffName||"you")+"? Switch</button>";'
+        'document.getElementById("stampBtn").addEventListener("click",doStamp);'
+        'const redeemBtn=document.getElementById("redeemBtn");'
+        'if(redeemBtn)redeemBtn.addEventListener("click",doRedeem);'
+        'document.getElementById("switchBtn").addEventListener("click",function(){clearSession();renderLogin();});'
+        '}'
+
+        'async function doStamp(){'
+        'const btn=document.getElementById("stampBtn");'
+        'btn.disabled=true;btn.textContent="Adding...";'
+        'const s=getSession();'
+        'try{'
+        'const res=await fetch("/api/v1/business/"+DATA.business_public_id+"/stamp",{'
+        'method:"POST",headers:authHeaders(),'
+        'body:JSON.stringify({customer_public_id:DATA.customer_public_id})'
+        '});'
+        'const d=await res.json();'
+        'if(res.ok){'
+        'stampCount=d.stamp_count;rewardUnlocked=!!d.reward_unlocked;'
+        'renderCard(s?s.name:"",{ok:true,text:rewardUnlocked?"Stamp added! Reward unlocked!":("Stamp added! "+stampCount+" total.")});'
+        '}else if(res.status===401){'
+        'clearSession();renderLogin(d.detail||"Session expired - log in again");'
+        '}else{'
+        'renderCard(s?s.name:"",{ok:false,text:d.detail||"Could not add stamp"});'
+        '}'
+        '}catch(e){'
+        'renderCard(s?s.name:"",{ok:false,text:"Network error - stamp not added"});'
+        '}'
+        '}'
+
+        'async function doRedeem(){'
+        'const btn=document.getElementById("redeemBtn");'
+        'btn.disabled=true;btn.textContent="Redeeming...";'
+        'const s=getSession();'
+        'try{'
+        'const res=await fetch("/api/v1/business/"+DATA.business_public_id+"/reward/redeem",{'
+        'method:"POST",headers:authHeaders(),'
+        'body:JSON.stringify({customer_public_id:DATA.customer_public_id})'
+        '});'
+        'const d=await res.json();'
+        'if(res.ok){'
+        'stampCount=0;rewardUnlocked=false;'
+        'renderCard(s?s.name:"",{ok:true,text:"Reward redeemed!"});'
+        '}else if(res.status===401){'
+        'clearSession();renderLogin(d.detail||"Session expired - log in again");'
+        '}else{'
+        'renderCard(s?s.name:"",{ok:false,text:d.detail||"Could not redeem"});'
+        '}'
+        '}catch(e){'
+        'renderCard(s?s.name:"",{ok:false,text:"Network error"});'
+        '}'
+        '}'
+
+        '(function init(){'
+        'const s=getSession();'
+        'if(s){renderCard(s.name,null);}else{renderLogin();}'
+        '})();'
+        '</script>'
+    )
+
+    return HTMLResponse(head + script + '</body></html>')
 
 # ANNOUNCEMENT DETAIL PAGE
 # Linked from the "View full details" link inside Google Wallet notification
