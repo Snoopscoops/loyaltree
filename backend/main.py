@@ -269,6 +269,7 @@ class StampRequest(BaseModel):
     as_owner: Optional[bool] = False
 
 class PinVerify(BaseModel):
+    email: str
     pin: str
 
 class AnnouncementCreate(BaseModel):
@@ -2301,10 +2302,14 @@ async def verify_staff_pin(public_id: str, req: PinVerify):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
+    email = req.email.strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="Email required")
+
     try:
-        res = supabase.table("staff").select("*").eq("business_id", business.get("id")).eq("pin", req.pin).execute()
+        res = supabase.table("staff").select("*").eq("business_id", business.get("id")).ilike("email", email).eq("pin", req.pin).execute()
         if not res.data:
-            raise HTTPException(status_code=403, detail="Invalid staff PIN")
+            raise HTTPException(status_code=403, detail="Invalid email or PIN")
         staff = res.data[0]
         if not staff.get('is_active', True):
             raise HTTPException(status_code=403, detail="This staff account is inactive")
@@ -3001,23 +3006,26 @@ async def cashier_stamp_page(customer_public_id: str):
         '"<h1>Cashier Login</h1>"+'
         '"<p class=\'sub\'>"+escapeHtml(DATA.business_name)+"</p>"+'
         '(msg?"<div class=\'msg msg-err\'>"+escapeHtml(msg)+"</div>":"")+'
-        '"<input id=\'pin\' type=\'password\' inputmode=\'numeric\' placeholder=\'Staff PIN\'>"+'
+        '"<input id=\'email\' type=\'email\' inputmode=\'email\' placeholder=\'Your Email\' autocomplete=\'username\'>"+'
+        '"<input id=\'pin\' type=\'password\' inputmode=\'numeric\' placeholder=\'Staff PIN\' autocomplete=\'current-password\'>"+'
         '"<button class=\'btn-primary\' id=\'loginBtn\'>Log In</button>"+'
         '"<p class=\'hint\'>Stays signed in on this phone for your shift.</p>";'
         'document.getElementById("loginBtn").addEventListener("click",doLogin);'
         'document.getElementById("pin").addEventListener("keydown",function(e){if(e.key==="Enter")doLogin();});'
-        'document.getElementById("pin").focus();'
+        'document.getElementById("email").focus();'
         '}'
 
         'async function doLogin(){'
+        'const emailEl=document.getElementById("email");'
         'const pinEl=document.getElementById("pin");'
+        'const email=emailEl.value.trim();'
         'const pin=pinEl.value.trim();'
-        'if(!pin){renderLogin("Enter your PIN");return;}'
+        'if(!email||!pin){renderLogin("Enter your email and PIN");return;}'
         'const btn=document.getElementById("loginBtn");'
         'btn.disabled=true;btn.textContent="Checking...";'
         'try{'
         'const res=await fetch("/api/v1/business/"+DATA.business_public_id+"/staff/verify-pin",{'
-        'method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pin:pin})'
+        'method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:email,pin:pin})'
         '});'
         'const d=await res.json();'
         'if(res.ok&&d.success){'

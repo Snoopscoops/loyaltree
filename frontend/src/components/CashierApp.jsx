@@ -19,6 +19,7 @@ function CashierApp({ API_BASE }) {
   const [scanResult, setScanResult] = useState(null)
   const [businessSlug, setBusinessSlug] = useState(ownerState?.businessSlug || '')
   const [staffPin, setStaffPin] = useState('')
+  const [staffEmail, setStaffEmail] = useState('')
   // Session token from /staff/verify-pin - sent instead of the raw PIN on
   // every scan, so the PIN itself only crosses the wire once per shift.
   const [sessionToken, setSessionToken] = useState('')
@@ -216,11 +217,12 @@ function CashierApp({ API_BASE }) {
   }
 
   const verifyPinAndStart = async () => {
-    if (!businessSlug || !staffPin) {
-      setMessage('Enter both Business ID and PIN')
+    if (!businessSlug || !staffEmail || !staffPin) {
+      setMessage('Enter Business ID, email, and PIN')
       return
     }
     const cleanSlug = businessSlug.trim()
+    const cleanEmail = staffEmail.trim()
     const cleanPin = staffPin.trim()
     setVerifying(true)
     setMessage('')
@@ -228,7 +230,7 @@ function CashierApp({ API_BASE }) {
       const res = await fetch(`${API_BASE}/api/v1/business/${cleanSlug}/staff/verify-pin`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pin: cleanPin })
+        body: JSON.stringify({ email: cleanEmail, pin: cleanPin })
       })
       const data = await res.json()
       if (res.ok && data.success) {
@@ -244,7 +246,7 @@ function CashierApp({ API_BASE }) {
         setStaffName(data.name || 'Staff')
         setMessage('')
       } else {
-        setMessage(data.detail || 'Invalid PIN for this business')
+        setMessage(data.detail || 'Invalid email or PIN for this business')
       }
     } catch (err) {
       setMessage('Network error - could not verify PIN')
@@ -270,8 +272,17 @@ function CashierApp({ API_BASE }) {
           />
           <input
             style={styles.input}
+            placeholder="Your Email"
+            type="email"
+            autoComplete="username"
+            value={staffEmail}
+            onChange={e => setStaffEmail(e.target.value)}
+          />
+          <input
+            style={styles.input}
             placeholder="Staff PIN"
             type="password"
+            autoComplete="current-password"
             value={staffPin}
             onChange={e => setStaffPin(e.target.value)}
           />
@@ -281,12 +292,12 @@ function CashierApp({ API_BASE }) {
           <button
             style={styles.btn}
             onClick={verifyPinAndStart}
-            disabled={!businessSlug || !staffPin || verifying}
+            disabled={!businessSlug || !staffEmail || !staffPin || verifying}
           >
-            {verifying ? 'Checking PIN...' : 'Start Scanning 🍃'}
+            {verifying ? 'Checking...' : 'Start Scanning 🍃'}
           </button>
 
-          <p style={styles.hint}>Ask the business owner for the Business ID and your PIN — both are shown on their "Your Team" tab</p>
+          <p style={styles.hint}>Ask the business owner for the Business ID, your email, and your PIN — shown on their "Your Team" tab</p>
         </div>
       </div>
     )
