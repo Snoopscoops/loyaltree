@@ -734,7 +734,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         'state': 'active',
         'barcode': {
             'type': 'QR_CODE',
-            'value': cust_public_id,
+            'value': f'{BASE_URL}/stamp/{cust_public_id}',
             'alternateText': cust_name
         },
         'accountId': cust_public_id,
