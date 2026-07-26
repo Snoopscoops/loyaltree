@@ -132,7 +132,7 @@ function Signup({ API_BASE }) {
             <div style={styles.tierRow}>
               <span style={styles.tierName}>{planInfo?.label || '...'} plan</span>
               <span style={styles.tierPrice}>
-                {planInfo ? (planInfo.price_month === 0 ? 'Free' : `$${planInfo.price_month}/mo`) : ''}
+                {planInfo ? `₱${planInfo.price_month.toLocaleString()}/mo` : ''}
               </span>
             </div>
             <div style={styles.tierHint}>

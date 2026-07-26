@@ -178,7 +178,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
           <div style={styles.planBar}>
             {Object.entries(overview.plan_breakdown).map(([plan, count]) => (
               <span key={plan} style={styles.planPill}>
-                {plans[plan]?.label || plan}: <strong>{count}</strong>
+                {plans[plan]?.label || plan}{plans[plan]?.price_month != null ? ` · ₱${plans[plan].price_month.toLocaleString()}/mo` : ''}: <strong>{count}</strong>
               </span>
             ))}
           </div>
@@ -198,7 +198,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
           </select>
           <select style={styles.select} value={planFilter} onChange={e => setPlanFilter(e.target.value)}>
             <option value="">All plans</option>
-            {Object.entries(plans).map(([key, p]) => <option key={key} value={key}>{p.label}</option>)}
+            {Object.entries(plans).map(([key, p]) => <option key={key} value={key}>{p.label}{p.price_month != null ? ` (₱${p.price_month.toLocaleString()}/mo)` : ''}</option>)}
           </select>
           <span style={styles.resultCount}>{filteredCount} shown</span>
         </div>
@@ -211,6 +211,8 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 <th style={styles.th}>Business</th>
                 <th style={styles.th}>Status</th>
                 <th style={styles.th}>Plan</th>
+                <th style={styles.th}>Paid</th>
+                <th style={styles.th}>Expires</th>
                 <th style={styles.th}>Customers</th>
                 <th style={styles.th}>Staff</th>
                 <th style={styles.th}>Stamps (30d)</th>
@@ -245,8 +247,16 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                       onChange={e => updateBusiness(b.public_id, { plan: e.target.value })}
                       style={styles.planSelect}
                     >
-                      {Object.entries(plans).map(([key, p]) => <option key={key} value={key}>{p.label}</option>)}
+                      {Object.entries(plans).map(([key, p]) => <option key={key} value={key}>{p.label}{p.price_month != null ? ` (₱${p.price_month.toLocaleString()}/mo)` : ''}</option>)}
                     </select>
+                  </td>
+                  <td style={styles.td}>{b.last_paid_at ? new Date(b.last_paid_at).toLocaleDateString() : '—'}</td>
+                  <td style={styles.td}>
+                    {b.subscription_expires_at ? (
+                      <span style={{ fontWeight: 600, ...subscriptionStatusStyle(b.subscription_status) }}>
+                        {new Date(b.subscription_expires_at).toLocaleDateString()}
+                      </span>
+                    ) : '—'}
                   </td>
                   <td style={styles.td}>{b.customer_count}</td>
                   <td style={styles.td}>{b.staff_count}</td>
@@ -258,7 +268,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 </tr>
               ))}
               {businesses.length === 0 && (
-                <tr><td style={styles.td} colSpan={7}>No businesses match these filters.</td></tr>
+                <tr><td style={styles.td} colSpan={9}>No businesses match these filters.</td></tr>
               )}
             </tbody>
           </table>
@@ -280,6 +290,31 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 <DetailRow label="Business type" value={detail.business_type} />
                 <DetailRow label="Status" value={detail.status} />
                 <DetailRow label="Plan" value={detail.plan_label} />
+                <DetailRow label="Price" value={detail.plan_features?.price_month != null ? `₱${detail.plan_features.price_month.toLocaleString()}/mo` : '—'} />
+                <div style={styles.detailRow}>
+                  <span style={styles.detailLabel}>Last paid</span>
+                  <input
+                    type="date"
+                    value={detail.last_paid_at ? detail.last_paid_at.slice(0, 10) : ''}
+                    onChange={e => updateBusiness(selected.public_id, { last_paid_at: e.target.value })}
+                    style={styles.dateInput}
+                  />
+                </div>
+                <div style={styles.detailRow}>
+                  <span style={styles.detailLabel}>Subscription expires</span>
+                  <input
+                    type="date"
+                    value={detail.subscription_expires_at ? detail.subscription_expires_at.slice(0, 10) : ''}
+                    onChange={e => updateBusiness(selected.public_id, { subscription_expires_at: e.target.value })}
+                    style={styles.dateInput}
+                  />
+                </div>
+                {detail.subscription_expires_at && (
+                  <DetailRow
+                    label="Subscription status"
+                    value={<span style={subscriptionStatusStyle(detail.subscription_status)}>{subscriptionStatusLabel(detail.subscription_status)}</span>}
+                  />
+                )}
                 <DetailRow label="Customers" value={detail.customer_count} />
                 <DetailRow label="Staff" value={detail.staff_count} />
                 <DetailRow label="Stamps (30d)" value={detail.stamps_30d} />
@@ -342,6 +377,20 @@ function statusStyle(status) {
   if (status === 'SUSPENDED') return { background: '#fee2e2', color: '#991b1b' }
   if (status === 'REJECTED') return { background: '#f1f5f9', color: '#475569' }
   return { background: '#fef3c7', color: '#92400e' }
+}
+
+function subscriptionStatusStyle(status) {
+  if (status === 'expired') return { color: '#dc2626' }
+  if (status === 'expiring_soon') return { color: '#d97706' }
+  if (status === 'active') return { color: '#0d9488' }
+  return { color: '#94a3b8' }
+}
+
+function subscriptionStatusLabel(status) {
+  if (status === 'expired') return 'Expired'
+  if (status === 'expiring_soon') return 'Expiring soon'
+  if (status === 'active') return 'Active'
+  return 'No expiry set'
 }
 
 const styles = {
@@ -495,6 +544,10 @@ const styles = {
   },
   detailLabel: { color: '#64748b' },
   detailValue: { color: '#0f172a', fontWeight: 600 },
+  dateInput: {
+    padding: '4px 8px', border: '1px solid #e2e8f0', borderRadius: 6,
+    fontSize: 12, color: '#0f172a', cursor: 'pointer',
+  },
   closeBtn: {
     padding: '10px 16px', background: '#f1f5f9', color: '#334155',
     border: 'none', borderRadius: 8, fontSize: 13, cursor: 'pointer',

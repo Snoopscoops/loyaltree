@@ -45,7 +45,7 @@ SUPER_ADMIN_PASSWORD = os.getenv('SUPER_ADMIN_PASSWORD', '')
 SUBSCRIPTION_PLANS = {
     'starter': {
         'label': 'Starter',
-        'price_month': 0,
+        'price_month': 600,
         'customer_limit': 100,
         'google_wallet': True,
         'apple_wallet': True,
@@ -59,7 +59,7 @@ SUBSCRIPTION_PLANS = {
     },
     'growth': {
         'label': 'Growth',
-        'price_month': 29,
+        'price_month': 800,
         'customer_limit': 1000,
         'google_wallet': True,
         'apple_wallet': True,
@@ -73,7 +73,7 @@ SUBSCRIPTION_PLANS = {
     },
     'pro': {
         'label': 'Pro',
-        'price_month': 79,
+        'price_month': 1000,
         'customer_limit': None,
         'google_wallet': True,
         'apple_wallet': True,
