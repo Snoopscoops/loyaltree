@@ -46,6 +46,7 @@ SUBSCRIPTION_PLANS = {
     'starter': {
         'label': 'Starter',
         'price_month': 600,
+        'price_tiers': {'1': 600, '2-3': 1000, '5': 2000},
         'customer_limit': 100,
         'google_wallet': True,
         'apple_wallet': True,
@@ -60,6 +61,7 @@ SUBSCRIPTION_PLANS = {
     'growth': {
         'label': 'Growth',
         'price_month': 800,
+        'price_tiers': {'1': 800, '2-3': 1400, '5': 2800},
         'customer_limit': 1000,
         'google_wallet': True,
         'apple_wallet': True,
@@ -74,6 +76,7 @@ SUBSCRIPTION_PLANS = {
     'pro': {
         'label': 'Pro',
         'price_month': 1000,
+        'price_tiers': {'1': 1000, '2-3': 1800, '5': 3600},
         'customer_limit': None,
         'google_wallet': True,
         'apple_wallet': True,
@@ -93,10 +96,30 @@ def get_plan_features(plan: Optional[str]) -> dict:
     Pro-only features."""
     return SUBSCRIPTION_PLANS.get(plan or 'starter', SUBSCRIPTION_PLANS['starter'])
 
+def branch_price_bracket(branch_count: int) -> str:
+    """Maps an actual branch count to one of the pricing brackets shown on
+    the marketing page. Same bracket used regardless of which plan (feature
+    tier) is chosen - price scales with branch count independently of plan."""
+    if branch_count <= 1:
+        return '1'
+    if branch_count <= 3:
+        return '2-3'
+    return '5'
+
+def get_price_for_plan(plan: Optional[str], branch_count: int) -> int:
+    """The actual monthly price for a plan at a given branch count, per the
+    price_tiers table. Falls back to the plan's flat price_month if a plan
+    has no price_tiers configured (shouldn't happen for the built-in plans)."""
+    features = get_plan_features(plan)
+    tiers = features.get('price_tiers') or {}
+    bracket = branch_price_bracket(branch_count)
+    return tiers.get(bracket, features.get('price_month', 0))
+
 def determine_plan_from_branch_count(branch_count: int) -> str:
-    """The tier is derived from how many branches the business signs up
-    with, not chosen by the client directly - plan/pricing should never be
-    client-trusted input. 1 branch -> Starter, 2-3 -> Growth, 4+ -> Pro."""
+    """Default plan suggestion when the signup form doesn't specify one
+    explicitly - 1 branch -> Starter, 2-3 -> Growth, 4+ -> Pro. A business
+    can still explicitly choose a different plan; branch count then only
+    affects price within that plan, not which plan they're on."""
     if branch_count <= 1:
         return 'starter'
     if branch_count <= 3:
@@ -136,6 +159,7 @@ class BusinessCreate(BaseModel):
     logo_url: Optional[str] = None
     business_type: Optional[str] = 'other'
     branch_count: int = Field(default=1, ge=1, le=50)
+    plan: Optional[str] = None  # explicit plan choice; if omitted, derived from branch_count
 
 class LoginRequest(BaseModel):
     email: str
@@ -361,6 +385,13 @@ def business_summary(biz: dict) -> dict:
         pass
     plan = biz.get('plan', 'starter')
 
+    branch_count = 1
+    try:
+        branch_res = supabase.table("branches").select("id", count="exact").eq("business_id", biz_id).execute()
+        branch_count = branch_res.count or 1
+    except Exception:
+        pass
+
     subscription_expires_at = biz.get('subscription_expires_at')
     subscription_status = 'none'
     if subscription_expires_at:
@@ -386,6 +417,8 @@ def business_summary(biz: dict) -> dict:
         "plan": plan,
         "plan_label": SUBSCRIPTION_PLANS.get(plan, {}).get("label", plan),
         "plan_features": get_plan_features(plan),
+        "branch_count": branch_count,
+        "price_month": get_price_for_plan(plan, branch_count),
         "business_type": biz.get("business_type", "other"),
         "logo_url": biz.get("logo_url"),
         "created_at": biz.get("created_at"),
@@ -1007,7 +1040,19 @@ async def register(biz: BusinessCreate):
         raise HTTPException(status_code=503, detail="Database not connected")
 
     public_id = generate_business_public_id(biz.name)
-    plan = determine_plan_from_branch_count(biz.branch_count)
+    if biz.plan:
+        if biz.plan not in SUBSCRIPTION_PLANS:
+            raise HTTPException(status_code=400, detail=f"Unknown plan '{biz.plan}'. Valid plans: {list(SUBSCRIPTION_PLANS.keys())}")
+        max_branches = SUBSCRIPTION_PLANS[biz.plan].get('max_branches')
+        if max_branches is not None and biz.branch_count > max_branches:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{SUBSCRIPTION_PLANS[biz.plan]['label']} supports up to {max_branches} branch{'es' if max_branches != 1 else ''}. Choose a higher plan or reduce your branch count."
+            )
+        plan = biz.plan
+    else:
+        plan = determine_plan_from_branch_count(biz.branch_count)
+    price_month = get_price_for_plan(plan, biz.branch_count)
     business_data = {
         'public_id': public_id,
         'name': biz.name,
@@ -1058,6 +1103,7 @@ async def register(biz: BusinessCreate):
         "logo_url": biz.logo_url,
         "plan": plan,
         "branch_count": biz.branch_count,
+        "price_month": price_month,
     }
 
 @app.get("/api/v1/me")

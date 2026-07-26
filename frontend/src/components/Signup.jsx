@@ -1,11 +1,19 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 
-function determinePlanKey(branchCount) {
+// Mirrors the backend's branch_price_bracket() - price scales with branch
+// count independently of which plan (feature tier) is chosen.
+function branchBracket(branchCount) {
   const n = Number(branchCount) || 1
-  if (n <= 1) return 'starter'
-  if (n <= 3) return 'growth'
-  return 'pro'
+  if (n <= 1) return '1'
+  if (n <= 3) return '2-3'
+  return '5'
+}
+
+function priceFor(planData, branchCount) {
+  if (!planData) return null
+  const bracket = branchBracket(branchCount)
+  return planData.price_tiers?.[bracket] ?? planData.price_month
 }
 
 function Signup({ API_BASE }) {
@@ -17,6 +25,7 @@ function Signup({ API_BASE }) {
     logo_url: '',
     business_type: 'spa',
     branch_count: 1,
+    plan: 'starter',
   })
   const [plans, setPlans] = useState(null)
   const [error, setError] = useState('')
@@ -35,8 +44,9 @@ function Signup({ API_BASE }) {
     setForm({ ...form, [e.target.name]: e.target.value })
   }
 
-  const planKey = determinePlanKey(form.branch_count)
-  const planInfo = plans?.[planKey]
+  const branchCount = Number(form.branch_count) || 1
+  const selectedPlanData = plans?.[form.plan]
+  const selectedExceedsCap = selectedPlanData?.max_branches != null && branchCount > selectedPlanData.max_branches
 
   const handleSignup = async (e) => {
     e.preventDefault()
@@ -46,7 +56,7 @@ function Signup({ API_BASE }) {
       const res = await fetch(`${API_BASE}/api/v1/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...form, branch_count: Number(form.branch_count) || 1 })
+        body: JSON.stringify({ ...form, branch_count: branchCount })
       })
       const data = await res.json()
       if (res.ok) {
@@ -128,21 +138,40 @@ function Signup({ API_BASE }) {
             </div>
           </div>
 
-          <div style={styles.tierCard}>
-            <div style={styles.tierRow}>
-              <span style={styles.tierName}>{planInfo?.label || '...'} plan</span>
-              <span style={styles.tierPrice}>
-                {planInfo ? `₱${planInfo.price_month.toLocaleString()}/mo` : ''}
-              </span>
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>Plan</label>
+            <div style={styles.planOptions}>
+              {plans && Object.entries(plans).map(([key, p]) => {
+                const price = priceFor(p, branchCount)
+                const exceedsCap = p.max_branches != null && branchCount > p.max_branches
+                const selected = form.plan === key
+                return (
+                  <button
+                    type="button"
+                    key={key}
+                    onClick={() => setForm({ ...form, plan: key })}
+                    style={{
+                      ...styles.planOption,
+                      ...(selected ? styles.planOptionSelected : {}),
+                    }}
+                  >
+                    <span style={styles.planOptionName}>{p.label}</span>
+                    <span style={styles.planOptionPrice}>₱{price?.toLocaleString()}/mo</span>
+                    {exceedsCap && (
+                      <span style={styles.planOptionWarning}>Supports up to {p.max_branches} branch{p.max_branches !== 1 ? 'es' : ''}</span>
+                    )}
+                  </button>
+                )
+              })}
             </div>
-            <div style={styles.tierHint}>
-              {planKey === 'starter' && 'Covers 1 branch. Add more later to move up a tier.'}
-              {planKey === 'growth' && 'Covers up to 3 branches.'}
-              {planKey === 'pro' && 'Covers unlimited branches.'}
-            </div>
+            {selectedExceedsCap && (
+              <div style={styles.planCapNotice}>
+                {selectedPlanData.label} supports up to {selectedPlanData.max_branches} branch{selectedPlanData.max_branches !== 1 ? 'es' : ''} - reduce your branch count or choose a higher plan.
+              </div>
+            )}
           </div>
 
-          <button type="submit" disabled={loading} style={styles.button}>
+          <button type="submit" disabled={loading || selectedExceedsCap} style={styles.button}>
             {loading ? 'Creating...' : 'Create Account'}
           </button>
         </form>
@@ -237,33 +266,46 @@ const styles = {
     display: 'flex',
     gap: 12,
   },
-  tierCard: {
-    background: '#f0fdfa',
-    border: '1.5px solid #99f6e4',
-    borderRadius: 10,
-    padding: '12px 16px',
+  planOptions: {
+    display: 'flex',
+    gap: 8,
+  },
+  planOption: {
+    flex: 1,
     display: 'flex',
     flexDirection: 'column',
+    alignItems: 'center',
     gap: 4,
+    padding: '10px 8px',
+    borderRadius: 10,
+    border: '1.5px solid #e2e8f0',
+    background: 'white',
+    cursor: 'pointer',
+    fontFamily: 'inherit',
   },
-  tierRow: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'baseline',
+  planOptionSelected: {
+    border: '1.5px solid #0d9488',
+    background: '#f0fdfa',
   },
-  tierName: {
-    fontSize: 15,
+  planOptionName: {
+    fontSize: 13,
     fontWeight: 700,
     color: '#0f766e',
   },
-  tierPrice: {
-    fontSize: 14,
+  planOptionPrice: {
+    fontSize: 12.5,
     fontWeight: 600,
     color: '#0d9488',
   },
-  tierHint: {
+  planOptionWarning: {
+    fontSize: 10.5,
+    color: '#d97706',
+    textAlign: 'center',
+  },
+  planCapNotice: {
     fontSize: 12.5,
-    color: '#64748b',
+    color: '#d97706',
+    marginTop: 6,
   },
   button: {
     padding: '14px',

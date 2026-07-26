@@ -249,6 +249,9 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                     >
                       {Object.entries(plans).map(([key, p]) => <option key={key} value={key}>{p.label}{p.price_month != null ? ` (₱${p.price_month.toLocaleString()}/mo)` : ''}</option>)}
                     </select>
+                    {b.price_month != null && (
+                      <div style={styles.rowPriceHint}>₱{b.price_month.toLocaleString()}/mo · {b.branch_count} branch{b.branch_count !== 1 ? 'es' : ''}</div>
+                    )}
                   </td>
                   <td style={styles.td}>{b.last_paid_at ? new Date(b.last_paid_at).toLocaleDateString() : '—'}</td>
                   <td style={styles.td}>
@@ -290,7 +293,8 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 <DetailRow label="Business type" value={detail.business_type} />
                 <DetailRow label="Status" value={detail.status} />
                 <DetailRow label="Plan" value={detail.plan_label} />
-                <DetailRow label="Price" value={detail.plan_features?.price_month != null ? `₱${detail.plan_features.price_month.toLocaleString()}/mo` : '—'} />
+                <DetailRow label="Branches" value={detail.branch_count} />
+                <DetailRow label="Price" value={detail.price_month != null ? `₱${detail.price_month.toLocaleString()}/mo` : '—'} />
                 <div style={styles.detailRow}>
                   <span style={styles.detailLabel}>Last paid</span>
                   <input
@@ -519,6 +523,9 @@ const styles = {
   planSelect: {
     padding: '4px 8px', borderRadius: 8, fontSize: 12, border: '1px solid #e2e8f0',
     background: '#f8fafc', cursor: 'pointer',
+  },
+  rowPriceHint: {
+    fontSize: 11, color: '#94a3b8', marginTop: 4,
   },
   viewBtn: {
     padding: '6px 10px', background: 'transparent', color: '#0d9488',
