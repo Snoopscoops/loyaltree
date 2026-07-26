@@ -103,24 +103,26 @@ const PLANS = [
   {
     key: 'starter',
     name: 'Starter',
-    prices: { '1': 600, '2-3': 1000, '5': 2000 },
+    prices: { '1': 350, '2-3': 550, '5': 750 },
     features: [
       'Google Wallet & Apple Wallet',
       '2 announcements per month',
       'Full digital system',
+      'Analytics',
       'Customer service',
     ],
   },
   {
     key: 'growth',
     name: 'Growth',
-    prices: { '1': 800, '2-3': 1400, '5': 2800 },
+    prices: { '1': 550, '2-3': 750, '5': 950 },
     features: [
       'Google Wallet & Apple Wallet',
       '5 announcements per month',
       'Full digital system',
       'Analytics',
       'Google review prompt',
+      'Birthday automated greetings',
       'Customer service',
     ],
   },
@@ -128,7 +130,7 @@ const PLANS = [
     key: 'pro',
     name: 'Pro',
     highlight: true,
-    prices: { '1': 1000, '2-3': 1800, '5': 3600 },
+    prices: { '1': 750, '2-3': 950, '5': 1150 },
     features: [
       'Google Wallet & Apple Wallet',
       '5 announcements per month',
@@ -138,6 +140,7 @@ const PLANS = [
       'Birthday automated greetings',
       'Up to 3 different loyalty cards in circulation',
       "Win-back system (message if 30 days pass without a stamp)",
+      'Geo-based notifications (alert customers when they enter your geotag)',
       'Customer service',
     ],
   },
@@ -417,7 +420,7 @@ function HomePage({ onNavigateLogin }) {
 
                 <p style={styles.contactNote}>
                   6 branches or more? Let's talk it through together &mdash; email{' '}
-                  <a href="mailto:theloyaltytree@gmail.com" style={styles.contactLink}>theloyaltytree@gmail.com</a>
+                  <a href="mailto:connect.aliciabrewery@gmail.com" style={styles.contactLink}>connect.aliciabrewery@gmail.com</a>
                 </p>
 
                 <button onClick={() => setModalView('sample')} style={styles.backBtn}>

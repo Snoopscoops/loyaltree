@@ -46,38 +46,40 @@ SUPER_ADMIN_PASSWORD = os.getenv('SUPER_ADMIN_PASSWORD', '')
 SUBSCRIPTION_PLANS = {
     'starter': {
         'label': 'Starter',
-        'price_month': 600,
-        'price_tiers': {'1': 600, '2-3': 1000, '5': 2000},
+        'price_month': 350,
+        'price_tiers': {'1': 350, '2-3': 550, '5': 750},
         'customer_limit': 100,
         'google_wallet': True,
         'apple_wallet': True,
         'announcements_per_month': 2,
-        'analytics': False,
+        'analytics': True,
         'google_review_prompt': False,
         'birthday_greetings': False,
         'max_loyalty_cards': 1,
         'win_back': False,
         'max_branches': 1,
+        'geofence_notifications': False,
     },
     'growth': {
         'label': 'Growth',
-        'price_month': 800,
-        'price_tiers': {'1': 800, '2-3': 1400, '5': 2800},
+        'price_month': 550,
+        'price_tiers': {'1': 550, '2-3': 750, '5': 950},
         'customer_limit': 1000,
         'google_wallet': True,
         'apple_wallet': True,
         'announcements_per_month': 5,
         'analytics': True,
         'google_review_prompt': True,
-        'birthday_greetings': False,
+        'birthday_greetings': True,
         'max_loyalty_cards': 1,
         'win_back': False,
         'max_branches': 3,
+        'geofence_notifications': False,
     },
     'pro': {
         'label': 'Pro',
-        'price_month': 1000,
-        'price_tiers': {'1': 1000, '2-3': 1800, '5': 3600},
+        'price_month': 750,
+        'price_tiers': {'1': 750, '2-3': 950, '5': 1150},
         'customer_limit': None,
         'google_wallet': True,
         'apple_wallet': True,
@@ -88,6 +90,11 @@ SUBSCRIPTION_PLANS = {
         'max_loyalty_cards': 3,
         'win_back': True,
         'max_branches': None,  # unlimited
+        # Reserved for the geotag/geofence notification feature (push a
+        # notification when a customer's device enters the business's
+        # geofence) - not implemented yet; this flag just marks it as a
+        # Pro entitlement so the gate is ready once that feature is built.
+        'geofence_notifications': True,
     },
 }
 
@@ -3284,11 +3291,13 @@ async def run_birthday_greetings(_: bool = Depends(require_cron)):
     sent, skipped, errors = 0, 0, 0
 
     try:
-        businesses = supabase.table("businesses").select("*").eq("plan", "pro").eq("status", "ACTIVE").execute().data or []
+        businesses = supabase.table("businesses").select("*").eq("status", "ACTIVE").execute().data or []
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
     for business in businesses:
+        if not get_plan_features(business.get('plan')).get('birthday_greetings'):
+            continue  # not entitled on this plan (Growth and Pro currently)
         try:
             customers = supabase.table("customers").select("*").eq("business_id", business.get("id")).execute().data or []
         except Exception:
