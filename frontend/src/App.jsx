@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import Login from './components/Login'
+import Signup from './components/Signup'
 import HomePage from './components/HomePage'
 import OwnerDashboard from './components/OwnerDashboard'
 import CashierApp from './components/CashierApp'
@@ -62,6 +63,7 @@ function App() {
           ) : <HomePage />
         } />
         <Route path="/login" element={<Login API_BASE={API_BASE} onLogin={setUser} />} />
+        <Route path="/signup" element={<Signup API_BASE={API_BASE} />} />
         <Route path="/dashboard" element={
           user?.role === 'owner' ? <OwnerDashboard API_BASE={API_BASE} user={user} onLogout={() => setUser(null)} /> : <Navigate to="/login" />
         } />

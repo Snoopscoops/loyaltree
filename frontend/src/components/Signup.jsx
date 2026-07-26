@@ -51,7 +51,7 @@ function Signup({ API_BASE }) {
       const data = await res.json()
       if (res.ok) {
         setSuccess("Account created! Your application is pending approval - we'll email you once it's reviewed. Redirecting to sign in...")
-        setTimeout(() => navigate('/'), 3000)
+        setTimeout(() => navigate('/login'), 3000)
       } else {
         setError(data.detail || 'Signup failed')
       }
@@ -150,7 +150,7 @@ function Signup({ API_BASE }) {
         {error && <div style={styles.error}>{error}</div>}
 
         <p style={styles.footer}>
-          Already have an account? <Link to="/" style={styles.link}>Sign in</Link>
+          Already have an account? <Link to="/login" style={styles.link}>Sign in</Link>
         </p>
       </div>
     </div>

@@ -1,16 +1,11 @@
 import React, { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 
 function LoginPage({ API_BASE, onLogin }) {
   const navigate = useNavigate()
-  const [mode, setMode] = useState('login') // login, signup
   const [form, setForm] = useState({
     email: '',
     password: '',
-    name: '',
-    phone: '',
-    business_type: 'restaurant',
-    plan: 'starter'
   })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -49,40 +44,6 @@ function LoginPage({ API_BASE, onLogin }) {
     setLoading(false)
   }
 
-  const handleSignup = async (e) => {
-    e.preventDefault()
-    setLoading(true)
-    setError('')
-    setPendingNotice('')
-    try {
-      const res = await fetch(`${API_BASE}/api/v1/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: form.name,
-          email: form.email,
-          password: form.password,
-          phone: form.phone,
-          business_type: form.business_type,
-          plan: form.plan
-        })
-      })
-      const data = await res.json()
-      if (res.ok) {
-        // New businesses start out PENDING and can't log in until an admin
-        // approves them, so don't try to auto-login - just switch back to
-        // the login form and show a clear pending-approval notice.
-        setMode('login')
-        setPendingNotice("Application submitted! We'll email you once your account is approved.")
-      } else {
-        setError(data.detail || 'Signup failed')
-      }
-    } catch (err) {
-      setError('Network error')
-    }
-    setLoading(false)
-  }
-
   return (
     <div style={styles.container}>
       <div style={styles.card}>
@@ -95,82 +56,30 @@ function LoginPage({ API_BASE, onLogin }) {
         {error && <div style={styles.error}>{error}</div>}
         {pendingNotice && <div style={styles.pendingNotice}>⏳ {pendingNotice}</div>}
 
-        {mode === 'login' ? (
-          <form onSubmit={handleLogin} style={styles.form}>
-            <input
-              style={styles.input}
-              type="email"
-              placeholder="Email"
-              value={form.email}
-              onChange={e => setForm({...form, email: e.target.value})}
-              required
-            />
-            <input
-              style={styles.input}
-              type="password"
-              placeholder="Password"
-              value={form.password}
-              onChange={e => setForm({...form, password: e.target.value})}
-              required
-            />
-            <button type="submit" style={styles.btn} disabled={loading}>
-              {loading ? 'Growing...' : '🌱 Sign In'}
-            </button>
-            <p style={styles.switch}>
-              New here? <button type="button" style={styles.link} onClick={() => { setMode('signup'); setError(''); setPendingNotice('') }}>Plant your tree</button>
-            </p>
-          </form>
-        ) : (
-          <form onSubmit={handleSignup} style={styles.form}>
-            <input
-              style={styles.input}
-              placeholder="Business Name"
-              value={form.name}
-              onChange={e => setForm({...form, name: e.target.value})}
-              required
-            />
-            <input
-              style={styles.input}
-              type="email"
-              placeholder="Email"
-              value={form.email}
-              onChange={e => setForm({...form, email: e.target.value})}
-              required
-            />
-            <input
-              style={styles.input}
-              type="password"
-              placeholder="Password (min 8 chars)"
-              value={form.password}
-              onChange={e => setForm({...form, password: e.target.value})}
-              required
-            />
-            <input
-              style={styles.input}
-              placeholder="Phone"
-              value={form.phone}
-              onChange={e => setForm({...form, phone: e.target.value})}
-            />
-            <select
-              style={styles.input}
-              value={form.business_type}
-              onChange={e => setForm({...form, business_type: e.target.value})}
-            >
-              <option value="restaurant">Restaurant</option>
-              <option value="cafe">Cafe</option>
-              <option value="retail">Retail</option>
-              <option value="salon">Salon</option>
-              <option value="gym">Gym</option>
-              <option value="other">Other</option>
-            </select>
-            <button type="submit" style={styles.btn} disabled={loading}>
-              {loading ? 'Planting...' : '🌳 Create Account'}
-            </button>
-            <p style={styles.switch}>
-              Already growing? <button type="button" style={styles.link} onClick={() => { setMode('login'); setError(''); setPendingNotice('') }}>Sign in</button>
-            </p>
-          </form>
-        )}
+        <form onSubmit={handleLogin} style={styles.form}>
+          <input
+            style={styles.input}
+            type="email"
+            placeholder="Email"
+            value={form.email}
+            onChange={e => setForm({...form, email: e.target.value})}
+            required
+          />
+          <input
+            style={styles.input}
+            type="password"
+            placeholder="Password"
+            value={form.password}
+            onChange={e => setForm({...form, password: e.target.value})}
+            required
+          />
+          <button type="submit" style={styles.btn} disabled={loading}>
+            {loading ? 'Growing...' : '🌱 Sign In'}
+          </button>
+          <p style={styles.switch}>
+            New here? <Link to="/signup" style={styles.link}>Plant your tree</Link>
+          </p>
+        </form>
       </div>
     </div>
   )
@@ -274,6 +183,7 @@ const styles = {
     cursor: 'pointer',
     fontSize: 14,
     padding: 0,
+    textDecoration: 'none',
   },
 }
 
