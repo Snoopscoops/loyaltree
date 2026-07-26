@@ -1,5 +1,12 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
+
+function determinePlanKey(branchCount) {
+  const n = Number(branchCount) || 1
+  if (n <= 1) return 'starter'
+  if (n <= 3) return 'growth'
+  return 'pro'
+}
 
 function Signup({ API_BASE }) {
   const [form, setForm] = useState({
@@ -9,16 +16,27 @@ function Signup({ API_BASE }) {
     phone: '',
     logo_url: '',
     business_type: 'spa',
-    plan: 'starter'
+    branch_count: 1,
   })
+  const [plans, setPlans] = useState(null)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
 
+  useEffect(() => {
+    fetch(`${API_BASE}/api/v1/plans`)
+      .then(res => res.json())
+      .then(setPlans)
+      .catch(() => {}) // tier hint just won't show a price if this fails - signup still works
+  }, [API_BASE])
+
   const handleChange = (e) => {
     setForm({ ...form, [e.target.name]: e.target.value })
   }
+
+  const planKey = determinePlanKey(form.branch_count)
+  const planInfo = plans?.[planKey]
 
   const handleSignup = async (e) => {
     e.preventDefault()
@@ -28,7 +46,7 @@ function Signup({ API_BASE }) {
       const res = await fetch(`${API_BASE}/api/v1/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form)
+        body: JSON.stringify({ ...form, branch_count: Number(form.branch_count) || 1 })
       })
       const data = await res.json()
       if (res.ok) {
@@ -97,14 +115,33 @@ function Signup({ API_BASE }) {
               </select>
             </div>
             <div style={{ ...styles.inputGroup, flex: 1 }}>
-              <label style={styles.label}>Plan</label>
-              <select name="plan" value={form.plan} onChange={handleChange} style={styles.select}>
-                <option value="starter">Starter $29</option>
-                <option value="growth">Growth $79</option>
-                <option value="pro">Pro $199</option>
-              </select>
+              <label style={styles.label}>Number of Branches</label>
+              <input
+                name="branch_count"
+                type="number"
+                min={1}
+                max={50}
+                value={form.branch_count}
+                onChange={handleChange}
+                style={styles.input}
+              />
             </div>
           </div>
+
+          <div style={styles.tierCard}>
+            <div style={styles.tierRow}>
+              <span style={styles.tierName}>{planInfo?.label || '...'} plan</span>
+              <span style={styles.tierPrice}>
+                {planInfo ? (planInfo.price_month === 0 ? 'Free' : `$${planInfo.price_month}/mo`) : ''}
+              </span>
+            </div>
+            <div style={styles.tierHint}>
+              {planKey === 'starter' && 'Covers 1 branch. Add more later to move up a tier.'}
+              {planKey === 'growth' && 'Covers up to 3 branches.'}
+              {planKey === 'pro' && 'Covers unlimited branches.'}
+            </div>
+          </div>
+
           <button type="submit" disabled={loading} style={styles.button}>
             {loading ? 'Creating...' : 'Create Account'}
           </button>
@@ -199,6 +236,34 @@ const styles = {
   row: {
     display: 'flex',
     gap: 12,
+  },
+  tierCard: {
+    background: '#f0fdfa',
+    border: '1.5px solid #99f6e4',
+    borderRadius: 10,
+    padding: '12px 16px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+  },
+  tierRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'baseline',
+  },
+  tierName: {
+    fontSize: 15,
+    fontWeight: 700,
+    color: '#0f766e',
+  },
+  tierPrice: {
+    fontSize: 14,
+    fontWeight: 600,
+    color: '#0d9488',
+  },
+  tierHint: {
+    fontSize: 12.5,
+    color: '#64748b',
   },
   button: {
     padding: '14px',

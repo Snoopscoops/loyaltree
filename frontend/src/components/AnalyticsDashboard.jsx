@@ -5,10 +5,20 @@ function AnalyticsDashboard({ API_BASE, user }) {
   const [analytics, setAnalytics] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [branchStats, setBranchStats] = useState([])
 
   useEffect(() => {
     fetchAnalytics()
   }, [timeRange])
+
+  useEffect(() => {
+    // All-time, not scoped to timeRange - this is "which branch is driving
+    // activity overall", a separate question from the trend charts above.
+    fetch(`${API_BASE}/api/v1/business/${user.business_slug}/branches/stamp-counts`)
+      .then(res => res.json())
+      .then(data => setBranchStats(Array.isArray(data) ? data : []))
+      .catch(() => {})
+  }, [user.business_slug])
 
   const fetchAnalytics = async () => {
     setLoading(true)
@@ -264,6 +274,36 @@ function AnalyticsDashboard({ API_BASE, user }) {
           />
         </div>
       </div>
+
+      {/* Branch Performance - separate from the aggregate Overview above;
+          only worth showing once there's more than one branch to compare */}
+      {branchStats.length > 1 && (
+        <div style={styles.section}>
+          <h2 className="an-section-title" style={styles.sectionTitle}>🏢 Branch Performance</h2>
+          <div className="an-insights-grid" style={styles.insightsGrid}>
+            <div style={styles.insightCard}>
+              <h4 style={styles.insightTitle}>Stamps by Branch</h4>
+              {[...branchStats].sort((a, b) => b.stamp_count - a.stamp_count).map((b, i) => (
+                <div key={b.branch_public_id} style={styles.customerRow}>
+                  <span style={styles.rank}>#{i + 1}</span>
+                  <span style={styles.customerName}>{b.name}</span>
+                  <span style={styles.customerStamps}>{b.stamp_count} stamps</span>
+                </div>
+              ))}
+            </div>
+            <div style={styles.insightCard}>
+              <h4 style={styles.insightTitle}>Redemptions by Branch</h4>
+              {[...branchStats].sort((a, b) => b.redemption_count - a.redemption_count).map((b, i) => (
+                <div key={b.branch_public_id} style={styles.customerRow}>
+                  <span style={styles.rank}>#{i + 1}</span>
+                  <span style={styles.customerName}>{b.name}</span>
+                  <span style={styles.customerStamps}>{b.redemption_count} redeemed</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

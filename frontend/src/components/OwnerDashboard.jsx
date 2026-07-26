@@ -9,6 +9,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [business, setBusiness] = useState(null)
   const [customers, setCustomers] = useState([])
   const [staff, setStaff] = useState([])
+  const [branches, setBranches] = useState([])
   const [stats, setStats] = useState(null)
   const [program, setProgram] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -25,7 +26,9 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [savingStaff, setSavingStaff] = useState(false)
   const [deletingStaff, setDeletingStaff] = useState(false)
   const [qrImageUrl, setQrImageUrl] = useState(null)
-  const [inviteForm, setInviteForm] = useState({ name: '', email: '', phone: '', role: 'cashier' })
+  const [inviteForm, setInviteForm] = useState({ name: '', email: '', phone: '', role: 'cashier', branch_public_id: '' })
+  const [newBranchName, setNewBranchName] = useState('')
+  const [savingBranch, setSavingBranch] = useState(false)
   const [message, setMessage] = useState('')
   const [stampCounts, setStampCounts] = useState({}) // staff public_id -> stamps added
   const [showOnboarding, setShowOnboarding] = useState(false)
@@ -66,13 +69,14 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   const loadData = async () => {
     try {
-      const [bizRes, custRes, staffRes, statsRes, progRes, stampCountRes] = await Promise.all([
+      const [bizRes, custRes, staffRes, statsRes, progRes, stampCountRes, branchRes] = await Promise.all([
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}`),
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers`),
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff`),
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}/stats`),
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config`),
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff/stamp-counts`),
+        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/branches`),
       ])
 
       const bizData = await bizRes.json().catch(() => null)
@@ -81,12 +85,14 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       const statsData = await statsRes.json().catch(() => null)
       const progData = await progRes.json().catch(() => null)
       const stampCountData = await stampCountRes.json().catch(() => [])
+      const branchData = await branchRes.json().catch(() => [])
 
       setBusiness(bizData)
       setCustomers(custData)
       setStaff(staffData)
       setStats(statsData)
       setProgram(progData)
+      setBranches(Array.isArray(branchData) ? branchData : [])
 
       if (Array.isArray(stampCountData)) {
         const map = {}
@@ -110,12 +116,49 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       if (res.ok) {
         setMessage('Staff invited! PIN: 0000')
         setShowInviteModal(false)
-        setInviteForm({ name: '', email: '', phone: '', role: 'cashier' })
+        setInviteForm({ name: '', email: '', phone: '', role: 'cashier', branch_public_id: '' })
         loadData()
       } else {
         const data = await res.json()
         setMessage(data.detail || 'Invite failed')
       }
+    } catch (err) {
+      setMessage('Network error')
+    }
+  }
+
+  const addBranch = async (e) => {
+    e.preventDefault()
+    if (!newBranchName.trim()) return
+    setSavingBranch(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/branches`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newBranchName.trim() })
+      })
+      if (res.ok) {
+        setNewBranchName('')
+        loadData()
+      } else {
+        const data = await res.json().catch(() => ({}))
+        setMessage(data.detail || 'Could not add branch')
+      }
+    } catch (err) {
+      setMessage('Network error')
+    }
+    setSavingBranch(false)
+  }
+
+  const renameBranch = async (branch, name) => {
+    if (!name.trim() || name === branch.name) return
+    try {
+      await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/branches/${branch.public_id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name.trim() })
+      })
+      loadData()
     } catch (err) {
       setMessage('Network error')
     }
@@ -161,6 +204,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   }
 
   const openEditStaff = (s) => {
+    const currentBranch = branches.find(b => b.id === s.branch_id)
     setStaffEditForm({
       public_id: s.public_id,
       name: s.name || '',
@@ -169,6 +213,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       role: s.role || 'cashier',
       pin: s.pin || '0000',
       is_active: s.is_active !== false,
+      branch_public_id: currentBranch?.public_id || '',
     })
     setShowStaffEditModal(true)
   }
@@ -518,6 +563,32 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             </div>
 
             <div style={{background: '#f0fdf4', border: '1px solid #a7f3d0', borderRadius: 12, padding: '14px 16px', marginBottom: 16}}>
+              <p style={{margin: '0 0 8px 0', fontSize: 13, fontWeight: 600, color: '#0f766e'}}>
+                🏢 Branches
+              </p>
+              {branches.map(b => (
+                <div key={b.public_id} style={{display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6}}>
+                  <input
+                    defaultValue={b.name}
+                    onBlur={e => renameBranch(b, e.target.value)}
+                    style={{...styles.input, margin: 0, flex: 1, fontSize: 13, padding: '6px 10px'}}
+                  />
+                </div>
+              ))}
+              <form onSubmit={addBranch} style={{display: 'flex', gap: 8, marginTop: 8}}>
+                <input
+                  placeholder="New branch name"
+                  value={newBranchName}
+                  onChange={e => setNewBranchName(e.target.value)}
+                  style={{...styles.input, margin: 0, flex: 1, fontSize: 13, padding: '6px 10px'}}
+                />
+                <button type="submit" disabled={savingBranch} style={{padding: '6px 12px', background: '#0d9488', color: 'white', border: 'none', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap'}}>
+                  + Add
+                </button>
+              </form>
+            </div>
+
+            <div style={{background: '#f0fdf4', border: '1px solid #a7f3d0', borderRadius: 12, padding: '14px 16px', marginBottom: 16}}>
               <p style={{margin: '0 0 4px 0', fontSize: 13, fontWeight: 600, color: '#0f766e'}}>
                 Business ID (cashiers need this to log in)
               </p>
@@ -542,6 +613,11 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     <h4>{s.name}</h4>
                     <p style={styles.staffRole}>{s.role}</p>
                     <p style={styles.staffEmail}>{s.email}</p>
+                    {branches.find(b => b.id === s.branch_id) && (
+                      <p style={{margin: '4px 0 0 0', fontSize: 12, color: '#0f766e'}}>
+                        🏢 {branches.find(b => b.id === s.branch_id).name}
+                      </p>
+                    )}
                     <p style={{margin: '4px 0 0 0', fontSize: 12, color: '#0f766e', fontWeight: 600}}>
                       PIN: <code style={{background: '#f0fdf4', padding: '2px 6px', borderRadius: 6}}>{s.pin || '0000'}</code>
                     </p>
@@ -755,6 +831,13 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 <option value="cashier">Cashier</option>
                 <option value="manager">Manager</option>
               </select>
+              <label style={styles.label}>Branch</label>
+              <select style={styles.input} value={staffEditForm.branch_public_id || ''} onChange={e => setStaffEditForm({...staffEditForm, branch_public_id: e.target.value})}>
+                <option value="">No branch assigned</option>
+                {branches.map(b => (
+                  <option key={b.public_id} value={b.public_id}>{b.name}</option>
+                ))}
+              </select>
               <label style={styles.label}>PIN</label>
               <input
                 style={styles.input}
@@ -798,6 +881,12 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               <select style={styles.input} value={inviteForm.role} onChange={e => setInviteForm({...inviteForm, role: e.target.value})}>
                 <option value="cashier">Cashier</option>
                 <option value="manager">Manager</option>
+              </select>
+              <select style={styles.input} value={inviteForm.branch_public_id} onChange={e => setInviteForm({...inviteForm, branch_public_id: e.target.value})}>
+                <option value="">No branch assigned</option>
+                {branches.map(b => (
+                  <option key={b.public_id} value={b.public_id}>{b.name}</option>
+                ))}
               </select>
               <button type="submit" style={styles.submitBtn}>Send Invite</button>
             </form>

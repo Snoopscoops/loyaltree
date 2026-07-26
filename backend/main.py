@@ -55,6 +55,7 @@ SUBSCRIPTION_PLANS = {
         'birthday_greetings': False,
         'max_loyalty_cards': 1,
         'win_back': False,
+        'max_branches': 1,
     },
     'growth': {
         'label': 'Growth',
@@ -68,6 +69,7 @@ SUBSCRIPTION_PLANS = {
         'birthday_greetings': False,
         'max_loyalty_cards': 1,
         'win_back': False,
+        'max_branches': 3,
     },
     'pro': {
         'label': 'Pro',
@@ -81,6 +83,7 @@ SUBSCRIPTION_PLANS = {
         'birthday_greetings': True,
         'max_loyalty_cards': 3,
         'win_back': True,
+        'max_branches': None,  # unlimited
     },
 }
 
@@ -89,6 +92,16 @@ def get_plan_features(plan: Optional[str]) -> dict:
     unrecognized or missing plan so a bad value never silently unlocks
     Pro-only features."""
     return SUBSCRIPTION_PLANS.get(plan or 'starter', SUBSCRIPTION_PLANS['starter'])
+
+def determine_plan_from_branch_count(branch_count: int) -> str:
+    """The tier is derived from how many branches the business signs up
+    with, not chosen by the client directly - plan/pricing should never be
+    client-trusted input. 1 branch -> Starter, 2-3 -> Growth, 4+ -> Pro."""
+    if branch_count <= 1:
+        return 'starter'
+    if branch_count <= 3:
+        return 'growth'
+    return 'pro'
 
 # Shared secret for the /api/v1/cron/* endpoints (birthday greetings,
 # win-back messages). These are meant to be hit by an external scheduler
@@ -122,7 +135,7 @@ class BusinessCreate(BaseModel):
     password: str
     logo_url: Optional[str] = None
     business_type: Optional[str] = 'other'
-    plan: Optional[str] = 'starter'
+    branch_count: int = Field(default=1, ge=1, le=50)
 
 class LoginRequest(BaseModel):
     email: str
@@ -133,6 +146,7 @@ class StaffInvite(BaseModel):
     email: str
     phone: Optional[str] = None
     role: str = 'cashier'
+    branch_public_id: Optional[str] = None  # which location this cashier is assigned to
 
 class StaffUpdate(BaseModel):
     name: Optional[str] = None
@@ -141,6 +155,17 @@ class StaffUpdate(BaseModel):
     role: Optional[str] = None
     pin: Optional[str] = None
     is_active: Optional[bool] = None
+    branch_public_id: Optional[str] = None  # reassign to a different location
+
+class BranchCreate(BaseModel):
+    name: str
+    address: Optional[str] = None
+
+class BranchUpdate(BaseModel):
+    name: Optional[str] = None
+    address: Optional[str] = None
+    is_active: Optional[bool] = None
+
 
 class LoyaltyConfig(BaseModel):
     stamp_goal: int = Field(default=8, ge=3, le=20)
@@ -261,6 +286,15 @@ def safe_get_staff(public_id: str):
         return None
     try:
         res = supabase.table("staff").select("*").eq("public_id", public_id).maybe_single().execute()
+        return res.data
+    except Exception:
+        return None
+
+def safe_get_branch(public_id: str):
+    if not supabase:
+        return None
+    try:
+        res = supabase.table("branches").select("*").eq("public_id", public_id).maybe_single().execute()
         return res.data
     except Exception:
         return None
@@ -790,12 +824,12 @@ def send_wallet_object_message(object_id: str, header: str, body: str, message_i
         print(f"WALLET PUSH (object) error: {e}")
         return False
 
-def log_stamp_event(business_id: int, customer_id: int, staff_id: Optional[int] = None):
+def log_stamp_event(business_id: int, customer_id: int, staff_id: Optional[int] = None, branch_id: Optional[int] = None):
     """Best-effort event log powering the Analytics dashboard's trend and
-    peak-activity charts, and the per-cashier stamp counter. Never raises -
-    a logging hiccup should never block the stamp response to the cashier.
-    staff_id is None when the owner stamps directly from their dashboard
-    (no staff PIN involved)."""
+    peak-activity charts, and the per-cashier/per-branch stamp counters.
+    Never raises - a logging hiccup should never block the stamp response
+    to the cashier. staff_id/branch_id are None when the owner stamps
+    directly from their dashboard (no staff PIN involved)."""
     try:
         event = {
             'business_id': business_id,
@@ -804,19 +838,26 @@ def log_stamp_event(business_id: int, customer_id: int, staff_id: Optional[int] 
         }
         if staff_id is not None:
             event['staff_id'] = staff_id
+        if branch_id is not None:
+            event['branch_id'] = branch_id
         supabase.table("stamp_events").insert(event).execute()
     except Exception as e:
         print(f"STAMP EVENT LOG error: {e}")
 
-def log_redemption_event(business_id: int, customer_id: int):
+def log_redemption_event(business_id: int, customer_id: int, staff_id: Optional[int] = None, branch_id: Optional[int] = None):
     """Best-effort event log powering the Analytics dashboard's reward
     trend chart. Never raises."""
     try:
-        supabase.table("redemption_events").insert({
+        event = {
             'business_id': business_id,
             'customer_id': customer_id,
             'created_at': datetime.utcnow().isoformat(),
-        }).execute()
+        }
+        if staff_id is not None:
+            event['staff_id'] = staff_id
+        if branch_id is not None:
+            event['branch_id'] = branch_id
+        supabase.table("redemption_events").insert(event).execute()
     except Exception as e:
         print(f"REDEMPTION EVENT LOG error: {e}")
 
@@ -966,6 +1007,7 @@ async def register(biz: BusinessCreate):
         raise HTTPException(status_code=503, detail="Database not connected")
 
     public_id = generate_business_public_id(biz.name)
+    plan = determine_plan_from_branch_count(biz.branch_count)
     business_data = {
         'public_id': public_id,
         'name': biz.name,
@@ -974,15 +1016,39 @@ async def register(biz: BusinessCreate):
         'password_hash': hash_password(biz.password),
         'logo_url': biz.logo_url,
         'business_type': biz.business_type,
-        'plan': biz.plan,
+        'plan': plan,
         'status': 'PENDING',
         'created_at': datetime.utcnow().isoformat(),
     }
 
     try:
-        supabase.table("businesses").insert(business_data).execute()
+        insert_res = supabase.table("businesses").insert(business_data).execute()
+        business_id = insert_res.data[0]['id'] if insert_res.data else None
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Registration failed: {str(e)}")
+
+    # One placeholder branch per unit they signed up with, named so the
+    # owner can tell them apart immediately and rename later from the
+    # dashboard. "Main Branch" instead of "Branch 1" when there's only one.
+    if business_id:
+        try:
+            if biz.branch_count <= 1:
+                branch_names = ['Main Branch']
+            else:
+                branch_names = [f'Branch {i + 1}' for i in range(biz.branch_count)]
+            branch_rows = [
+                {
+                    'business_id': business_id,
+                    'public_id': generate_public_id(),
+                    'name': name,
+                    'is_active': True,
+                    'created_at': datetime.utcnow().isoformat(),
+                }
+                for name in branch_names
+            ]
+            supabase.table("branches").insert(branch_rows).execute()
+        except Exception as e:
+            print(f"BRANCH SEED error: {e}")  # best-effort - owner can add branches manually if this fails
 
     return {
         "success": True,
@@ -990,6 +1056,8 @@ async def register(biz: BusinessCreate):
         "business_name": biz.name,
         "token": "owner-token-" + public_id,
         "logo_url": biz.logo_url,
+        "plan": plan,
+        "branch_count": biz.branch_count,
     }
 
 @app.get("/api/v1/me")
@@ -1062,6 +1130,13 @@ async def admin_login(req: AdminLoginRequest):
 @app.get("/api/v1/admin/me")
 async def admin_me(_: bool = Depends(require_admin)):
     return {"email": SUPER_ADMIN_EMAIL, "role": "super_admin"}
+
+@app.get("/api/v1/plans")
+async def list_plans():
+    """Public (no auth) - lets the signup page show accurate tier names,
+    prices, and branch limits without hardcoding a copy that can drift
+    from SUBSCRIPTION_PLANS."""
+    return SUBSCRIPTION_PLANS
 
 @app.get("/api/v1/admin/plans")
 async def admin_list_plans(_: bool = Depends(require_admin)):
@@ -1259,9 +1334,11 @@ async def get_staff_stamp_counts(public_id: str):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
     try:
-        staff_res = supabase.table("staff").select("id,public_id,name").eq("business_id", business.get("id")).execute()
+        staff_res = supabase.table("staff").select("id,public_id,name,branch_id").eq("business_id", business.get("id")).execute()
         staff_rows = staff_res.data or []
-        id_to_staff = {s["id"]: s for s in staff_rows}
+
+        branches_res = supabase.table("branches").select("id,name").eq("business_id", business.get("id")).execute()
+        branch_name_by_id = {b["id"]: b["name"] for b in (branches_res.data or [])}
 
         events_res = supabase.table("stamp_events").select("staff_id").eq("business_id", business.get("id")).execute()
         counts = {}
@@ -1275,12 +1352,99 @@ async def get_staff_stamp_counts(public_id: str):
             {
                 "staff_public_id": s["public_id"],
                 "name": s["name"],
+                "branch_name": branch_name_by_id.get(s.get("branch_id")),
                 "stamp_count": counts.get(s["id"], 0),
             }
             for s in staff_rows
         ]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/business/{public_id}/branches/stamp-counts")
+async def get_branch_stamp_counts(public_id: str):
+    """Stamps and redemptions per branch, so an owner with multiple
+    locations can see which one is actually driving activity - this is
+    the per-location equivalent of the per-cashier counter above."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    try:
+        branches_res = supabase.table("branches").select("id,public_id,name").eq("business_id", business.get("id")).execute()
+        branch_rows = branches_res.data or []
+
+        stamp_events = supabase.table("stamp_events").select("branch_id").eq("business_id", business.get("id")).execute().data or []
+        redemption_events = supabase.table("redemption_events").select("branch_id").eq("business_id", business.get("id")).execute().data or []
+
+        stamp_counts, redemption_counts = {}, {}
+        for row in stamp_events:
+            bid = row.get("branch_id")
+            if bid is not None:
+                stamp_counts[bid] = stamp_counts.get(bid, 0) + 1
+        for row in redemption_events:
+            bid = row.get("branch_id")
+            if bid is not None:
+                redemption_counts[bid] = redemption_counts.get(bid, 0) + 1
+
+        return [
+            {
+                "branch_public_id": b["public_id"],
+                "name": b["name"],
+                "stamp_count": stamp_counts.get(b["id"], 0),
+                "redemption_count": redemption_counts.get(b["id"], 0),
+            }
+            for b in branch_rows
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/business/{public_id}/branches")
+async def list_branches(public_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    try:
+        res = supabase.table("branches").select("*").eq("business_id", business.get("id")).order("created_at").execute()
+        return res.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/business/{public_id}/branches")
+async def create_branch(public_id: str, branch: BranchCreate):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    branch_data = {
+        'business_id': business.get('id'),
+        'public_id': generate_public_id(),
+        'name': branch.name,
+        'address': branch.address,
+        'is_active': True,
+        'created_at': datetime.utcnow().isoformat(),
+    }
+    try:
+        res = supabase.table("branches").insert(branch_data).execute()
+        return res.data[0] if res.data else branch_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.patch("/api/v1/business/{public_id}/branches/{branch_public_id}")
+async def update_branch(public_id: str, branch_public_id: str, update: BranchUpdate):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    branch = safe_get_branch(branch_public_id)
+    if not branch or branch.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Branch not found for this business")
+
+    update_data = {k: v for k, v in update.dict(exclude_unset=True).items() if v is not None}
+    if not update_data:
+        return branch
+    try:
+        res = supabase.table("branches").update(update_data).eq("id", branch.get("id")).execute()
+        return res.data[0] if res.data else {**branch, **update_data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.patch("/api/v1/business/{public_id}/staff/{staff_public_id}")
 async def update_staff(public_id: str, staff_public_id: str, update: StaffUpdate):
@@ -1295,6 +1459,18 @@ async def update_staff(public_id: str, staff_public_id: str, update: StaffUpdate
         raise HTTPException(status_code=404, detail="Staff not found for this business")
 
     update_data = {k: v for k, v in update.dict(exclude_unset=True).items() if v is not None}
+    if not update_data:
+        return staff
+
+    if 'branch_public_id' in update_data:
+        branch_public_id = update_data.pop('branch_public_id')
+        if not branch_public_id:
+            update_data['branch_id'] = None  # explicitly unassigned from any branch
+        else:
+            branch = safe_get_branch(branch_public_id)
+            if not branch or branch.get('business_id') != business.get('id'):
+                raise HTTPException(status_code=404, detail="Branch not found for this business")
+            update_data['branch_id'] = branch.get('id')
     if not update_data:
         return staff
 
@@ -1873,6 +2049,13 @@ async def invite_staff(public_id: str, invite: StaffInvite):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
+    branch_id = None
+    if invite.branch_public_id:
+        branch = safe_get_branch(invite.branch_public_id)
+        if not branch or branch.get('business_id') != business.get('id'):
+            raise HTTPException(status_code=404, detail="Branch not found for this business")
+        branch_id = branch.get('id')
+
     staff_data = {
         'business_id': business.get('id'),
         'public_id': generate_public_id(),
@@ -1880,6 +2063,7 @@ async def invite_staff(public_id: str, invite: StaffInvite):
         'email': invite.email,
         'phone': invite.phone,
         'role': invite.role,
+        'branch_id': branch_id,
         'pin': '0000',
         'is_active': True,
         'created_at': datetime.utcnow().isoformat(),
@@ -1941,6 +2125,7 @@ async def add_stamp(public_id: str, req: StampRequest):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
 
     stamping_staff_id = None
+    stamping_branch_id = None
     if req.as_owner:
         # Owner is scanning from their own dashboard, where they've already
         # authenticated with their business email/password - no separate
@@ -1954,6 +2139,7 @@ async def add_stamp(public_id: str, req: StampRequest):
             if not staff_res.data:
                 raise HTTPException(status_code=403, detail="Invalid staff PIN")
             stamping_staff_id = staff_res.data[0].get('id')
+            stamping_branch_id = staff_res.data[0].get('branch_id')
         except HTTPException:
             raise
         except Exception as e:
@@ -1977,7 +2163,7 @@ async def add_stamp(public_id: str, req: StampRequest):
         customer['stamp_count'] = new_count
         customer['reward_unlocked'] = reward_unlocked
         sync_wallet_object(customer, business, program)
-        log_stamp_event(business.get('id'), customer.get('id'), stamping_staff_id)
+        log_stamp_event(business.get('id'), customer.get('id'), stamping_staff_id, stamping_branch_id)
     except Exception as e:
         error_msg = str(e)
         if 'reward_unlocked' in error_msg.lower():
@@ -1986,7 +2172,7 @@ async def add_stamp(public_id: str, req: StampRequest):
                     'stamp_count': new_count,
                     'updated_at': datetime.utcnow().isoformat(),
                 }).eq("id", customer.get("id")).execute()
-                log_stamp_event(business.get('id'), customer.get('id'), stamping_staff_id)
+                log_stamp_event(business.get('id'), customer.get('id'), stamping_staff_id, stamping_branch_id)
                 return {
                     "message": "Stamp added!",
                     "stamp_count": new_count,
@@ -2048,6 +2234,8 @@ async def redeem_reward(public_id: str, req: RedeemRequest):
     if customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
 
+    redeeming_staff_id = None
+    redeeming_branch_id = None
     if req.as_owner:
         pass
     else:
@@ -2057,6 +2245,8 @@ async def redeem_reward(public_id: str, req: RedeemRequest):
             staff_res = supabase.table("staff").select("*").eq("business_id", business.get("id")).eq("pin", req.staff_pin).execute()
             if not staff_res.data:
                 raise HTTPException(status_code=403, detail="Invalid staff PIN")
+            redeeming_staff_id = staff_res.data[0].get('id')
+            redeeming_branch_id = staff_res.data[0].get('branch_id')
         except HTTPException:
             raise
         except Exception as e:
@@ -2078,7 +2268,7 @@ async def redeem_reward(public_id: str, req: RedeemRequest):
         customer['stamp_count'] = new_count
         customer['reward_unlocked'] = False
         sync_wallet_object(customer, business, program)
-        log_redemption_event(business.get('id'), customer.get('id'))
+        log_redemption_event(business.get('id'), customer.get('id'), redeeming_staff_id, redeeming_branch_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
