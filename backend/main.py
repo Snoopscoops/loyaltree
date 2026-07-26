@@ -2993,10 +2993,12 @@ async def cashier_stamp_page(customer_public_id: str):
 
     script = (
         '<script>'
+        # cachedPin below is the fallback used when no session token is issued
+        # (STAFF_SESSION_SECRET not set) - kept only in memory, never persisted
         'const DATA=' + data_json + ';'
         'let stampCount=DATA.stamp_count;'
         'let rewardUnlocked=DATA.reward_unlocked;'
-        'let cachedPin=null;'  // fallback for when no session token is issued (STAFF_SESSION_SECRET not set) - kept only in memory, never persisted
+        'let cachedPin=null;'
         'const app=document.getElementById("app");'
         'const sessionKey="loyaltree_cashier_"+DATA.business_public_id;'
 
