@@ -92,9 +92,9 @@ SUBSCRIPTION_PLANS = {
         'max_branches': None,  # unlimited
         # Reserved for the geotag/geofence notification feature (push a
         # notification when a customer's device enters the business's
-        # geofence) - not implemented yet; this flag just marks it as a
-        # Pro entitlement so the gate is ready once that feature is built.
-        'geofence_notifications': True,
+        # geofence) - this is an Ultra-tier feature, not included in Pro.
+        # Not implemented yet either way.
+        'geofence_notifications': False,
     },
 }
 
