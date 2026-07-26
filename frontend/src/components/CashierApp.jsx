@@ -1,6 +1,10 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { Html5QrcodeScanner } from 'html5-qrcode'
 import { useLocation, useNavigate } from 'react-router-dom'
+
+// Only shows the raw scan/debug panel in local dev - never in a production
+// build, since it prints internal API paths and response codes on-screen.
+const DEBUG = import.meta.env.DEV
 
 function CashierApp({ API_BASE }) {
   const location = useLocation()
@@ -15,6 +19,10 @@ function CashierApp({ API_BASE }) {
   const [scanResult, setScanResult] = useState(null)
   const [businessSlug, setBusinessSlug] = useState(ownerState?.businessSlug || '')
   const [staffPin, setStaffPin] = useState('')
+  // Session token from /staff/verify-pin - sent instead of the raw PIN on
+  // every scan, so the PIN itself only crosses the wire once per shift.
+  const [sessionToken, setSessionToken] = useState('')
+  const lastScanRef = useRef({ id: null, time: 0 })
   const [customerData, setCustomerData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('')
@@ -25,7 +33,7 @@ function CashierApp({ API_BASE }) {
   const [staffName, setStaffName] = useState(isOwner ? (ownerState?.ownerName || 'Owner') : '')
 
   useEffect(() => {
-    if (!businessSlug || !staffName || (!isOwner && !staffPin)) return
+    if (!businessSlug || !staffName || (!isOwner && !staffPin && !sessionToken)) return
     if (customerData) return // #reader isn't mounted while the customer card is showing
 
     const scanner = new Html5QrcodeScanner('reader', {
@@ -36,9 +44,6 @@ function CashierApp({ API_BASE }) {
     scanner.render(onScanSuccess, onScanError)
 
     function onScanSuccess(decodedText) {
-      scanner.clear()
-      setDebugInfo('Scanned: ' + decodedText.substring(0, 30))
-
       // Extract customer ID from URL if needed
       let customerId = decodedText.trim()
 
@@ -58,7 +63,18 @@ function CashierApp({ API_BASE }) {
         customerId = customerId.split('#')[0]
       }
 
-      setDebugInfo(prev => prev + ' | ID: ' + customerId.substring(0, 20))
+      // The scanner reads several frames a second, so the same code can
+      // fire onScanSuccess many times before the reader is torn down below.
+      // Without this guard a single hold-up-your-phone moment could add
+      // more than one stamp.
+      const now = Date.now()
+      if (lastScanRef.current.id === customerId && now - lastScanRef.current.time < 3000) {
+        return
+      }
+      lastScanRef.current = { id: customerId, time: now }
+
+      scanner.clear()
+      if (DEBUG) setDebugInfo('Scanned: ' + decodedText.substring(0, 30) + ' | ID: ' + customerId.substring(0, 20))
       setScanResult(customerId)
       fetchCustomer(customerId)
     }
@@ -70,17 +86,17 @@ function CashierApp({ API_BASE }) {
     return () => {
       scanner.clear().catch(() => {})
     }
-  }, [businessSlug, staffPin, staffName, customerData, isOwner])
+  }, [businessSlug, staffPin, sessionToken, staffName, customerData, isOwner])
 
   const fetchCustomer = async (customerId) => {
     setLoading(true)
     setMessage('')
     const url = `${API_BASE}/api/v1/customer/${customerId}`
-    setDebugInfo(prev => prev + ' | URL: ' + url.replace(API_BASE, ''))
+    if (DEBUG) setDebugInfo(prev => prev + ' | URL: ' + url.replace(API_BASE, ''))
 
     try {
       const res = await fetch(url)
-      setDebugInfo(prev => prev + ' | Status: ' + res.status)
+      if (DEBUG) setDebugInfo(prev => prev + ' | Status: ' + res.status)
 
       if (res.ok) {
         const data = await res.json()
@@ -98,17 +114,17 @@ function CashierApp({ API_BASE }) {
       } else {
         const errorData = await res.json().catch(() => ({}))
         setMessage(`Not found: ${customerId.substring(0, 12)}...`)
-        setDebugInfo(prev => prev + ' | Error: ' + (errorData.detail || 'Unknown'))
+        if (DEBUG) setDebugInfo(prev => prev + ' | Error: ' + (errorData.detail || 'Unknown'))
       }
     } catch (err) {
       setMessage('Network error - check connection')
-      setDebugInfo(prev => prev + ' | Network Error')
+      if (DEBUG) setDebugInfo(prev => prev + ' | Network Error')
     }
     setLoading(false)
   }
 
   const addStamp = async () => {
-    if (!customerData || !businessSlug || (!isOwner && !staffPin)) {
+    if (!customerData || !businessSlug || (!isOwner && !staffPin && !sessionToken)) {
       setMessage('Missing info - scan again')
       return
     }
@@ -118,10 +134,16 @@ function CashierApp({ API_BASE }) {
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/stamp`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          // Preferred: session token from verify-pin, so the PIN itself
+          // never has to be resent. Falls back to sending the raw PIN in
+          // the body only if the backend hasn't issued a token yet.
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+        },
         body: JSON.stringify({
           customer_public_id: customerData.public_id,
-          staff_pin: staffPin,
+          ...(sessionToken ? {} : { staff_pin: staffPin }),
           as_owner: isOwner,
         })
       })
@@ -152,17 +174,20 @@ function CashierApp({ API_BASE }) {
   }
 
   const redeemReward = async () => {
-    if (!customerData || !businessSlug || (!isOwner && !staffPin)) return
+    if (!customerData || !businessSlug || (!isOwner && !staffPin && !sessionToken)) return
     setLoading(true)
     setMessage('Redeeming...')
 
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/reward/redeem`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+        },
         body: JSON.stringify({
           customer_public_id: customerData.public_id,
-          staff_pin: staffPin,
+          ...(sessionToken ? {} : { staff_pin: staffPin }),
           as_owner: isOwner,
         })
       })
@@ -208,7 +233,14 @@ function CashierApp({ API_BASE }) {
       const data = await res.json()
       if (res.ok && data.success) {
         setBusinessSlug(cleanSlug)
-        setStaffPin(cleanPin)
+        // If the backend issued a session token, keep it and stop holding
+        // onto the raw PIN - it's only sent once, right here.
+        if (data.session_token) {
+          setSessionToken(data.session_token)
+          setStaffPin('')
+        } else {
+          setStaffPin(cleanPin)
+        }
         setStaffName(data.name || 'Staff')
         setMessage('')
       } else {
@@ -222,7 +254,7 @@ function CashierApp({ API_BASE }) {
 
   // Login screen (skipped entirely for the owner - they already authenticated
   // on the dashboard, so there's no PIN to collect here)
-  if (!isOwner && (!businessSlug || !staffPin || !staffName)) {
+  if (!isOwner && (!businessSlug || (!staffPin && !sessionToken) || !staffName)) {
     return (
       <div style={styles.container}>
         <div style={styles.loginCard}>
@@ -275,6 +307,7 @@ function CashierApp({ API_BASE }) {
           }
           setBusinessSlug('')
           setStaffPin('')
+          setSessionToken('')
           setStaffName('')
           resetScan()
         }}>
@@ -289,8 +322,8 @@ function CashierApp({ API_BASE }) {
         </div>
       )}
 
-      {/* Debug Info (small text for troubleshooting) */}
-      {debugInfo && (
+      {/* Debug Info (small text for troubleshooting) - dev builds only */}
+      {DEBUG && debugInfo && (
         <div style={styles.debugBox}>{debugInfo}</div>
       )}
 

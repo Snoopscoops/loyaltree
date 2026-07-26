@@ -8,7 +8,7 @@ import html as html_lib
 from datetime import datetime, timedelta
 from typing import Optional, List
 
-from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi import FastAPI, HTTPException, Request, Depends, Header
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -138,6 +138,46 @@ def require_cron(request: Request):
     if request.headers.get("x-cron-secret", "") != CRON_SECRET:
         raise HTTPException(status_code=401, detail="Invalid or missing cron secret")
     return True
+
+# Staff session tokens - issued once when a cashier/manager verifies their
+# PIN at the start of a shift (see /staff/verify-pin). The frontend then
+# sends this token on every scan instead of re-sending the raw PIN, so the
+# PIN itself only ever crosses the wire once. Signed + time-limited, so a
+# leaked token is only useful for STAFF_SESSION_TTL_HOURS and only for the
+# one business it was issued for.
+STAFF_SESSION_SECRET = os.getenv('STAFF_SESSION_SECRET', '')
+STAFF_SESSION_TTL_HOURS = 12  # covers a full shift
+
+def create_staff_session_token(business_public_id: str, staff_id, role: str, name: str) -> str:
+    import jwt as pyjwt
+    payload = {
+        'business_public_id': business_public_id,
+        'staff_id': staff_id,  # None when the owner is the one scanning
+        'role': role,
+        'name': name,
+        'exp': datetime.utcnow() + timedelta(hours=STAFF_SESSION_TTL_HOURS),
+    }
+    return pyjwt.encode(payload, STAFF_SESSION_SECRET, algorithm='HS256')
+
+def verify_staff_session_token(token: str):
+    import jwt as pyjwt
+    try:
+        return pyjwt.decode(token, STAFF_SESSION_SECRET, algorithms=['HS256'])
+    except Exception:
+        return None
+
+def get_staff_session_claims(public_id: str, authorization: str):
+    """Pulls staff/owner identity off a Bearer session token and checks it
+    matches the business in the URL. Returns None if there's no token to
+    check (caller then falls back to the legacy per-request PIN path)."""
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    claims = verify_staff_session_token(authorization.split(" ", 1)[1])
+    if not claims:
+        raise HTTPException(status_code=401, detail="Session expired - please log in again")
+    if claims.get('business_public_id') != public_id:
+        raise HTTPException(status_code=403, detail="Session does not match this business")
+    return claims
 
 ENV_ERROR = None
 if not SUPABASE_URL or not SUPABASE_KEY:
@@ -2156,8 +2196,8 @@ async def get_qr_code(public_id: str):
     })
 
 @app.post("/api/v1/business/{public_id}/stamp")
-async def add_stamp(public_id: str, req: StampRequest):
-    print(f"STAMP REQUEST: business={public_id}, customer={req.customer_public_id}, pin={req.staff_pin}")
+async def add_stamp(public_id: str, req: StampRequest, authorization: str = Header(default="")):
+    print(f"STAMP REQUEST: business={public_id}, customer={req.customer_public_id}")
 
     business = safe_get_business(public_id)
     if not business:
@@ -2172,12 +2212,22 @@ async def add_stamp(public_id: str, req: StampRequest):
 
     stamping_staff_id = None
     stamping_branch_id = None
-    if req.as_owner:
+
+    # Preferred path: a session token from /staff/verify-pin. Raises its own
+    # HTTPException on a bad/expired/mismatched token; returns None only
+    # when no token was sent at all, so we fall through to the legacy path.
+    session_claims = get_staff_session_claims(public_id, authorization)
+
+    if session_claims:
+        stamping_staff_id = session_claims.get('staff_id')  # None for the owner
+    elif req.as_owner:
         # Owner is scanning from their own dashboard, where they've already
         # authenticated with their business email/password - no separate
         # cashier PIN to check.
         pass
     else:
+        # Legacy fallback for clients that haven't switched to session
+        # tokens yet - re-checks the raw PIN on every single request.
         if not req.staff_pin:
             raise HTTPException(status_code=400, detail="Staff PIN required")
         try:
@@ -2257,18 +2307,29 @@ async def verify_staff_pin(public_id: str, req: PinVerify):
         staff = res.data[0]
         if not staff.get('is_active', True):
             raise HTTPException(status_code=403, detail="This staff account is inactive")
-        return {
+
+        response = {
             "success": True,
             "name": staff.get("name", ""),
             "role": staff.get("role", "cashier"),
         }
+        # Issue a session token so the PIN doesn't need to be re-sent on
+        # every scan for the rest of the shift. Only added if the server
+        # has STAFF_SESSION_SECRET configured - if not, the frontend keeps
+        # working exactly as before (resending the raw PIN each time).
+        if STAFF_SESSION_SECRET:
+            response["session_token"] = create_staff_session_token(
+                public_id, staff.get('id'), staff.get('role', 'cashier'), staff.get('name', '')
+            )
+            response["expires_in_hours"] = STAFF_SESSION_TTL_HOURS
+        return response
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/business/{public_id}/reward/redeem")
-async def redeem_reward(public_id: str, req: RedeemRequest):
+async def redeem_reward(public_id: str, req: RedeemRequest, authorization: str = Header(default="")):
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -2282,9 +2343,16 @@ async def redeem_reward(public_id: str, req: RedeemRequest):
 
     redeeming_staff_id = None
     redeeming_branch_id = None
-    if req.as_owner:
+
+    session_claims = get_staff_session_claims(public_id, authorization)
+
+    if session_claims:
+        redeeming_staff_id = session_claims.get('staff_id')
+    elif req.as_owner:
         pass
     else:
+        # Legacy fallback for clients that haven't switched to session
+        # tokens yet - re-checks the raw PIN on every single request.
         if not req.staff_pin:
             raise HTTPException(status_code=400, detail="Staff PIN required")
         try:
