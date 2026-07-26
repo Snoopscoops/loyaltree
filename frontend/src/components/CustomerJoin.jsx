@@ -11,6 +11,7 @@ function CustomerJoin({ API_BASE }) {
     email: '',
     birthday: '',
     occupation: '',
+    gender: '',
   })
   const [submitted, setSubmitted] = useState(false)
   const [customerId, setCustomerId] = useState('')
@@ -33,6 +34,7 @@ function CustomerJoin({ API_BASE }) {
           email: form.email || null,
           birthday: form.birthday || null,
           occupation: form.occupation || null,
+          gender: form.gender || null,
         })
       })
       const data = await res.json()
@@ -144,6 +146,19 @@ function CustomerJoin({ API_BASE }) {
               <option value="working">Working</option>
               <option value="business_owner">Business Owner</option>
               <option value="unemployed">Unemployed</option>
+            </select>
+          </div>
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>Gender <span style={styles.optional}>(optional)</span></label>
+            <select
+              value={form.gender}
+              onChange={e => setForm({...form, gender: e.target.value})}
+              style={styles.input}
+            >
+              <option value="">Select one</option>
+              <option value="male">Male</option>
+              <option value="female">Female</option>
+              <option value="rather_not_say">Rather not say</option>
             </select>
           </div>
           <div style={styles.inputGroup}>

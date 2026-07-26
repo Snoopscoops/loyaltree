@@ -52,7 +52,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
 
   if (!analytics) return null
 
-  const { overview, trends, customers, stamps, rewards, revenue } = analytics
+  const { overview, trends, customers, demographics, stamps, rewards, revenue } = analytics
 
   return (
     <div className="an-container" style={styles.container}>
@@ -204,6 +204,32 @@ function AnalyticsDashboard({ API_BASE, user }) {
             <p style={styles.insightDesc}>customers haven't visited in 30+ days</p>
             <button className="an-actionbtn" style={styles.actionBtn}>Send Win-Back Offer</button>
           </div>
+          {demographics?.gender && (() => {
+            const g = demographics.gender
+            const total = (g.male || 0) + (g.female || 0) + (g.rather_not_say || 0)
+            const pct = (n) => total ? Math.round((n / total) * 100) : 0
+            const rows = [
+              { label: 'Male', value: g.male || 0, color: '#3b82f6' },
+              { label: 'Female', value: g.female || 0, color: '#ec4899' },
+              { label: 'Rather not say', value: g.rather_not_say || 0, color: '#94a3b8' },
+            ]
+            return (
+              <div style={styles.insightCard}>
+                <h4 style={styles.insightTitle}>Gender Breakdown</h4>
+                {rows.map(r => (
+                  <div key={r.label} style={{ marginBottom: 10 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#475569', marginBottom: 4 }}>
+                      <span>{r.label}</span>
+                      <span>{r.value} ({pct(r.value)}%)</span>
+                    </div>
+                    <div style={styles.retentionBar}>
+                      <div style={{ ...styles.retentionFill, width: `${pct(r.value)}%`, background: r.color }}></div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )
+          })()}
         </div>
       </div>
 

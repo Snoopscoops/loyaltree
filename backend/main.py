@@ -251,6 +251,7 @@ class CustomerSignup(BaseModel):
     email: Optional[str] = None
     birthday: Optional[str] = None  # 'YYYY-MM-DD'
     occupation: Optional[str] = None  # 'working' | 'business_owner' | 'unemployed'
+    gender: Optional[str] = None  # 'male' | 'female' | 'rather_not_say'
     last_order_date: Optional[str] = None  # 'YYYY-MM-DD'
 
 class CustomerUpdate(BaseModel):
@@ -261,6 +262,7 @@ class CustomerUpdate(BaseModel):
     email: Optional[str] = None
     birthday: Optional[str] = None  # 'YYYY-MM-DD'
     occupation: Optional[str] = None  # 'working' | 'business_owner' | 'unemployed'
+    gender: Optional[str] = None  # 'male' | 'female' | 'rather_not_say'
     last_order_date: Optional[str] = None  # 'YYYY-MM-DD'
 
 class StampRequest(BaseModel):
@@ -1834,6 +1836,20 @@ async def get_analytics(public_id: str, range: str = '30d'):
         "engagement_rate": adoption_rate,
     }
 
+    # Gender breakdown - all-time distribution across every customer on file,
+    # not scoped to the selected date range (same treatment as top_customers
+    # above). Anyone who signed up before this field existed, or chose not
+    # to answer, falls under "rather_not_say" alongside people who picked it.
+    gender_counts = {"male": 0, "female": 0, "rather_not_say": 0}
+    for c in customers:
+        g = (c.get('gender') or 'rather_not_say')
+        if g not in gender_counts:
+            g = 'rather_not_say'
+        gender_counts[g] += 1
+    demographics_block = {
+        "gender": gender_counts,
+    }
+
     # Proxy for "how many customers hit the stamp goal": customers currently
     # sitting at reward_unlocked (goal reached, not yet redeemed) plus
     # everyone who redeemed this period. There's no separate "goal reached"
@@ -1866,6 +1882,7 @@ async def get_analytics(public_id: str, range: str = '30d'):
         "overview": overview,
         "trends": trends,
         "customers": customers_block,
+        "demographics": demographics_block,
         "stamps": stamps_block,
         "rewards": rewards_block,
         "revenue": revenue,
@@ -2672,6 +2689,12 @@ async def customer_join_page(business_public_id: str):
             '<option value="business_owner">Business Owner</option>'
             '<option value="unemployed">Unemployed</option>'
             '</select>'
+            '<select id="gender">'
+            '<option value="">Gender (optional)</option>'
+            '<option value="male">Male</option>'
+            '<option value="female">Female</option>'
+            '<option value="rather_not_say">Rather not say</option>'
+            '</select>'
             '<button type="submit">Join &amp; Get Your Card &#127793;</button>'
             '</form></div>'
             '<script>'
@@ -2689,11 +2712,12 @@ async def customer_join_page(business_public_id: str):
             'const email=document.getElementById("email").value;'
             'const birthday=document.getElementById("birthday").value;'
             'const occupation=document.getElementById("occupation").value;'
+            'const gender=document.getElementById("gender").value;'
             'try{'
             'const res=await fetch(API_BASE+"/api/v1/join/"+BIZ_ID,{'
             'method:"POST",'
             'headers:{"Content-Type":"application/json"},'
-            'body:JSON.stringify({name:name,address:address||null,age:age?parseInt(age,10):null,phone:phone,email:email||null,birthday:birthday||null,occupation:occupation||null})'
+            'body:JSON.stringify({name:name,address:address||null,age:age?parseInt(age,10):null,phone:phone,email:email||null,birthday:birthday||null,occupation:occupation||null,gender:gender||null})'
             '});'
             'const data=await res.json();'
             'if(res.ok){'
@@ -2777,6 +2801,7 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup):
         'email': signup.email,
         'birthday': signup.birthday,
         'occupation': signup.occupation,
+        'gender': signup.gender,
         'last_order_date': signup.last_order_date,
         'stamp_count': 0,
         'created_at': datetime.utcnow().isoformat(),
@@ -2971,6 +2996,7 @@ async def cashier_stamp_page(customer_public_id: str):
         'const DATA=' + data_json + ';'
         'let stampCount=DATA.stamp_count;'
         'let rewardUnlocked=DATA.reward_unlocked;'
+        'let cachedPin=null;'  // fallback for when no session token is issued (STAFF_SESSION_SECRET not set) - kept only in memory, never persisted
         'const app=document.getElementById("app");'
         'const sessionKey="loyaltree_cashier_"+DATA.business_public_id;'
 
@@ -2992,7 +3018,7 @@ async def cashier_stamp_page(customer_public_id: str):
         '}));'
         '}'
 
-        'function clearSession(){localStorage.removeItem(sessionKey);}'
+        'function clearSession(){localStorage.removeItem(sessionKey);cachedPin=null;}'
 
         'function authHeaders(){'
         'const s=getSession();'
@@ -3029,7 +3055,8 @@ async def cashier_stamp_page(customer_public_id: str):
         '});'
         'const d=await res.json();'
         'if(res.ok&&d.success){'
-        'if(d.session_token)saveSession(d.session_token,d.name,d.expires_in_hours);'
+        'if(d.session_token){saveSession(d.session_token,d.name,d.expires_in_hours);cachedPin=null;}'
+        'else{cachedPin=pin;}'
         'renderCard(d.name,null);'
         '}else{'
         'renderLogin(d.detail||"Invalid PIN");'
@@ -3064,7 +3091,8 @@ async def cashier_stamp_page(customer_public_id: str):
         'try{'
         'const res=await fetch("/api/v1/business/"+DATA.business_public_id+"/stamp",{'
         'method:"POST",headers:authHeaders(),'
-        'body:JSON.stringify({customer_public_id:DATA.customer_public_id})'
+        'body:JSON.stringify({customer_public_id:DATA.customer_public_id,'
+        'staff_pin:getSession()?undefined:cachedPin})'
         '});'
         'const d=await res.json();'
         'if(res.ok){'
@@ -3087,7 +3115,8 @@ async def cashier_stamp_page(customer_public_id: str):
         'try{'
         'const res=await fetch("/api/v1/business/"+DATA.business_public_id+"/reward/redeem",{'
         'method:"POST",headers:authHeaders(),'
-        'body:JSON.stringify({customer_public_id:DATA.customer_public_id})'
+        'body:JSON.stringify({customer_public_id:DATA.customer_public_id,'
+        'staff_pin:getSession()?undefined:cachedPin})'
         '});'
         'const d=await res.json();'
         'if(res.ok){'
