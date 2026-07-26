@@ -584,7 +584,7 @@ def create_google_wallet_jwt(loyalty_object: dict) -> str:
             'aud': 'google',
             'iat': now,
             'exp': now + timedelta(hours=1),
-            'origins': [BASE_URL, 'https://loyaltree-five.vercel.app'],
+            'origins': [BASE_URL, 'https://theloyaltytree.com', 'https://loyaltree-five.vercel.app'],
             'typ': 'savetowallet',
             'payload': {'loyaltyObjects': [loyalty_object]}
         }
