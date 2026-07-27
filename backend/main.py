@@ -1387,8 +1387,11 @@ async def get_customers(public_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.patch("/api/v1/business/{public_id}/customers/{customer_public_id}")
+@app.api_route("/api/v1/business/{public_id}/customers/{customer_public_id}", methods=["PUT", "PATCH"])
 async def update_customer(public_id: str, customer_public_id: str, update: CustomerUpdate):
+    # Accepts both PUT and PATCH: EditCustomerModal.jsx calls this with PUT,
+    # while the semantics here are really a partial update (PATCH). Supporting
+    # both avoids a 405 Method Not Allowed without having to touch the frontend.
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -1409,7 +1412,23 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
         res = supabase.table("customers").update(update_data).eq("id", customer.get("id")).execute()
         return res.data[0] if res.data else {**customer, **update_data}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        error_msg = str(e)
+        print(f"CUSTOMER UPDATE ERROR: {error_msg}")
+        is_schema_mismatch = (
+            'PGRST204' in error_msg
+            or ('column' in error_msg.lower() and 'does not exist' in error_msg.lower())
+            or ('could not find' in error_msg.lower() and 'column' in error_msg.lower())
+        )
+        if is_schema_mismatch:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"Database schema mismatch: {error_msg}. Add the missing column(s) to "
+                    f"'customers' in Supabase and run NOTIFY pgrst, 'reload schema'; "
+                    f"before retrying."
+                ),
+            )
+        raise HTTPException(status_code=500, detail=error_msg)
 
 @app.get("/api/v1/business/{public_id}/staff")
 async def get_staff(public_id: str):
@@ -2820,8 +2839,23 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup):
     except Exception as e:
         error_msg = str(e)
         print(f"CUSTOMER INSERT ERROR: {error_msg}")
-        if 'column' in error_msg.lower() and 'does not exist' in error_msg.lower():
-            raise HTTPException(status_code=500, detail=f"Database schema mismatch: {error_msg}. Please check your Supabase table columns.")
+        is_schema_mismatch = (
+            'PGRST204' in error_msg
+            or ('column' in error_msg.lower() and 'does not exist' in error_msg.lower())
+            or ('could not find' in error_msg.lower() and 'column' in error_msg.lower())
+        )
+        if is_schema_mismatch:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"Database schema mismatch: {error_msg}. One or more columns sent by the "
+                    f"app (e.g. address, age, birthday, occupation, gender, last_order_date) are "
+                    f"missing from the 'customers' table in Supabase, or the PostgREST schema "
+                    f"cache is stale. Add the missing column(s) and run "
+                    f"NOTIFY pgrst, 'reload schema'; (or use 'Reload schema' in the Supabase "
+                    f"dashboard) before retrying."
+                ),
+            )
         raise HTTPException(status_code=500, detail=error_msg)
 
     return {
