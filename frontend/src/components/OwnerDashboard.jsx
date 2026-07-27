@@ -51,7 +51,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   }, [user])
 
   // Auto-launch the setup tutorial the first time the business goes live,
-  // so the owner is walked through Roots -> Cashier -> Share Tree ->
+  // so the owner is walked through Edit Card -> Cashier -> Share Tree ->
   // Analytics before they start using the dashboard on their own.
   useEffect(() => {
     if (!isActive || !onboardingKey) return
@@ -449,7 +449,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           { id: 'tree', label: '🌳 My Tree', icon: '🌳' },
           { id: 'customers', label: '🍃 Leaves', icon: '🍃' },
           { id: 'staff', label: '🌿 Team', icon: '🌿' },
-          { id: 'program', label: '⚙️ Roots', icon: '⚙️' },
+          { id: 'program', label: '✏️ Edit Card', icon: '✏️' },
         ].map(tab => (
           <button
             key={tab.id}
@@ -905,10 +905,10 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       {showOnboarding && (() => {
         const steps = [
           {
-            emoji: '⚙️',
-            title: '1. Set Up Your Roots',
-            body: "Now that you're live, configure your loyalty program: how many stamps until a reward, what the reward is, your card color, and your logo. Save & publish so customers see your branding when they add their card to Google Wallet.",
-            cta: 'Go to Roots',
+            emoji: '✏️',
+            title: '1. Set Up Your Card',
+            body: "Configure your loyalty program: how many stamps until a reward, what the reward is, your card color, and your logo. Make sure to save & publish so your card is actually live - customers won't see your branding on their Google Wallet card until you do.",
+            cta: 'Go to Edit Card',
             action: () => { setActiveTab('program'); closeOnboarding() },
           },
           {
