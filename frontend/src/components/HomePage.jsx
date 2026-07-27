@@ -61,6 +61,24 @@ const COMPARISON = [
   },
 ]
 
+const PILLARS = [
+  {
+    icon: '📣',
+    title: 'Marketing',
+    body: 'Push announcements, birthday greetings, and review prompts straight to your customers\u2019 phones \u2014 no ad spend, no mailing list.',
+  },
+  {
+    icon: '🔁',
+    title: 'Customer Retention',
+    body: 'Stamps, rewards, and win-back messages keep regulars coming back \u2014 automatically, without your staff lifting a finger.',
+  },
+  {
+    icon: '🌱',
+    title: 'Zero Ecological Waste',
+    body: 'No paper punch cards, no plastic cards, no printing. Every loyalty card lives digitally in a customer\u2019s existing wallet app.',
+  },
+]
+
 const SCAN_STEPS = [
   {
     n: '1',
@@ -198,10 +216,10 @@ function HomePage({ onNavigateLogin }) {
 
       <section style={styles.hero}>
         <div style={styles.heroInner}>
-          <h1 style={styles.h1}>Turn regulars into a growing tree of loyal customers</h1>
+          <h1 style={styles.h1}>Marketing Just Got Smarter. Loyalty Just Got Automated.</h1>
           <p style={styles.heroSub}>
-            A digital stamp card for your business that lives in your customers' phone wallet &mdash;
-            no app to download, no punch cards to lose.
+            One digital loyalty card that markets to your customers, keeps them coming back, and
+            replaces paper punch cards entirely &mdash; no app to download, no printing, no waste.
           </p>
           <button onClick={goToLogin} style={styles.heroBtn}>🌱 Business Login</button>
         </div>
@@ -218,6 +236,18 @@ function HomePage({ onNavigateLogin }) {
             </div>
             <div style={styles.heroCardFoot}>5 of 8 stamps &middot; 3 to go</div>
           </div>
+        </div>
+      </section>
+
+      <section style={styles.pillarSection}>
+        <div style={styles.pillarGrid}>
+          {PILLARS.map(p => (
+            <div key={p.title} style={styles.pillarCard}>
+              <span style={styles.pillarIcon}>{p.icon}</span>
+              <h3 style={styles.pillarTitle}>{p.title}</h3>
+              <p style={styles.pillarBody}>{p.body}</p>
+            </div>
+          ))}
         </div>
       </section>
 
@@ -347,7 +377,7 @@ function HomePage({ onNavigateLogin }) {
 
       <footer style={styles.footer}>
         <span>🌳 LoyaltyTree</span>
-        <span style={styles.footerNote}>Where businesses grow with customers</span>
+        <span style={styles.footerNote}>Marketing, retention, and zero-waste loyalty &mdash; automated</span>
       </footer>
 
       {activeCard === 'stamps' && (
@@ -481,6 +511,21 @@ const styles = {
   heroStamp: { width: '100%', aspectRatio: '1', borderRadius: '50%' },
   heroCardFoot: { fontSize: 12, color: '#64748b', textAlign: 'center' },
   section: { padding: '64px 32px', maxWidth: 1100, margin: '0 auto' },
+
+  // Marketing / Retention / Zero Waste pillars
+  pillarSection: {
+    padding: '0 32px 64px', maxWidth: 1100, margin: '0 auto',
+  },
+  pillarGrid: {
+    display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 20,
+  },
+  pillarCard: {
+    background: 'white', border: '1px solid #e2e8f0', borderRadius: 18,
+    padding: '28px 24px', textAlign: 'center', boxShadow: '0 4px 14px rgba(15,23,42,0.04)',
+  },
+  pillarIcon: { fontSize: 30, display: 'block', marginBottom: 12 },
+  pillarTitle: { fontSize: 17, fontWeight: 700, color: '#0f172a', margin: '0 0 8px' },
+  pillarBody: { fontSize: 14, lineHeight: 1.6, color: '#64748b', margin: 0 },
 
   // Scan to Join / Scan to Stamp section
   scanSection: {
