@@ -42,6 +42,16 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [savingStaff, setSavingStaff] = useState(false)
   const [deletingStaff, setDeletingStaff] = useState(false)
   const [qrImageUrl, setQrImageUrl] = useState(null)
+
+  // One-time coupon state - at most one active coupon per customer,
+  // scoped to whichever customer is currently open in the Edit modal.
+  const [activeCoupon, setActiveCoupon] = useState(null)
+  const [couponLoading, setCouponLoading] = useState(false)
+  const [showCouponForm, setShowCouponForm] = useState(false)
+  const [couponText, setCouponText] = useState('')
+  const [couponExpiry, setCouponExpiry] = useState('')
+  const [couponError, setCouponError] = useState('')
+  const [couponSaving, setCouponSaving] = useState(false)
   const [inviteForm, setInviteForm] = useState({ name: '', email: '', phone: '', role: 'cashier', branch_public_id: '' })
   const [newBranchName, setNewBranchName] = useState('')
   const [savingBranch, setSavingBranch] = useState(false)
@@ -193,7 +203,74 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       last_order_date: c.last_order_date || '',
       stamp_count: c.stamp_count ?? 0,
     })
+    setShowCouponForm(false)
+    setCouponError('')
+    setCouponText('')
+    setCouponExpiry('')
+    fetchCoupons(c.public_id)
     setShowEditModal(true)
+  }
+
+  const fetchCoupons = async (customerPublicId) => {
+    setCouponLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${customerPublicId}/coupons`)
+      if (res.ok) {
+        const coupons = await res.json()
+        const today = new Date().toISOString().slice(0, 10)
+        const active = coupons.find(c => c.status === 'active' && (!c.expires_at || c.expires_at >= today))
+        setActiveCoupon(active || null)
+      }
+    } catch (err) {
+      // best-effort - editing the customer still works without coupon data
+    }
+    setCouponLoading(false)
+  }
+
+  const handleCreateCoupon = async () => {
+    setCouponError('')
+    if (!couponText.trim()) {
+      setCouponError('Enter what the coupon is for')
+      return
+    }
+    setCouponSaving(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${editForm.public_id}/coupons`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reward_text: couponText.trim(),
+          expires_at: couponExpiry || null,
+        })
+      })
+      const data = await res.json()
+      if (res.ok) {
+        setActiveCoupon(data)
+        setShowCouponForm(false)
+        setCouponText('')
+        setCouponExpiry('')
+      } else {
+        setCouponError(data.detail || 'Failed to create coupon')
+      }
+    } catch (err) {
+      setCouponError('Network error')
+    }
+    setCouponSaving(false)
+  }
+
+  const handleCancelCoupon = async () => {
+    if (!activeCoupon) return
+    if (!window.confirm('Cancel this coupon?')) return
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/coupons/${activeCoupon.public_id}`, {
+        method: 'DELETE'
+      })
+      if (res.ok) {
+        setActiveCoupon(null)
+      }
+    } catch (err) {
+      setCouponError('Failed to cancel coupon')
+    }
   }
 
   const saveCustomer = async (e) => {
@@ -362,6 +439,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   const viewCustomerCard = (customer) => {
     setSelectedCustomer(customer)
+    fetchCoupons(customer.public_id)
     setShowCardModal(true)
   }
 
@@ -746,6 +824,12 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               </div>
             </div>
 
+            {activeCoupon && (
+              <div style={{ background: '#f0fdfa', border: '1.5px dashed #0d9488', borderRadius: 10, padding: '10px 14px', textAlign: 'center', marginBottom: 16 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#0f766e' }}>🎟️ {activeCoupon.reward_text}</div>
+              </div>
+            )}
+
             {/* QR Code */}
             <div style={{textAlign: 'center', margin: '20px 0'}}>
               <img 
@@ -842,6 +926,73 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 {savingCustomer ? 'Saving...' : 'Save Changes'}
               </button>
             </form>
+
+            {/* One-Time Coupon */}
+            <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid #e2e8f0' }}>
+              <label style={styles.label}>One-Time Coupon</label>
+              {couponLoading ? (
+                <p style={{ fontSize: 13, color: '#94a3b8', margin: 0 }}>Loading...</p>
+              ) : activeCoupon ? (
+                <div style={{ background: '#f0fdfa', border: '1.5px solid #0d9488', borderRadius: 10, padding: '14px 16px' }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>🎟️ {activeCoupon.reward_text}</div>
+                  {activeCoupon.expires_at && (
+                    <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>Expires {activeCoupon.expires_at}</div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleCancelCoupon}
+                    style={{ marginTop: 10, padding: '8px 14px', borderRadius: 8, border: 'none', background: '#fef2f2', color: '#dc2626', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+                  >
+                    Cancel Coupon
+                  </button>
+                </div>
+              ) : showCouponForm ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <input
+                    style={styles.input}
+                    value={couponText}
+                    onChange={e => setCouponText(e.target.value)}
+                    placeholder="What's the coupon for? e.g. Free coffee"
+                    maxLength={200}
+                  />
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <input
+                      style={{ ...styles.input, flex: 1 }}
+                      type="date"
+                      value={couponExpiry}
+                      onChange={e => setCouponExpiry(e.target.value)}
+                    />
+                    <span style={{ fontSize: 12, color: '#94a3b8' }}>expiry (optional)</span>
+                  </div>
+                  {couponError && <div style={{ color: '#dc2626', fontSize: 13 }}>{couponError}</div>}
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+                    <button
+                      type="button"
+                      onClick={() => { setShowCouponForm(false); setCouponError('') }}
+                      style={{ ...styles.submitBtn, background: 'transparent', color: '#64748b' }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCreateCoupon}
+                      disabled={couponSaving}
+                      style={styles.submitBtn}
+                    >
+                      {couponSaving ? 'Creating...' : 'Create Coupon'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setShowCouponForm(true)}
+                  style={{ width: '100%', padding: '12px 16px', borderRadius: 10, border: '1.5px dashed #0d9488', background: '#f0fdfa', color: '#0f766e', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}
+                >
+                  🎟️ Create One-Time Coupon
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}
