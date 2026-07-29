@@ -306,6 +306,11 @@ class AdminBusinessUpdate(BaseModel):
     last_paid_at: Optional[str] = None          # 'YYYY-MM-DD' - when the business last paid
     subscription_expires_at: Optional[str] = None  # 'YYYY-MM-DD' - when access should lapse
     address: Optional[str] = None
+    name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    business_type: Optional[str] = None
+    logo_url: Optional[str] = None
 
 class RedeemRequest(BaseModel):
     customer_public_id: str
@@ -1329,6 +1334,25 @@ async def admin_update_business(public_id: str, update: AdminBusinessUpdate, _: 
         data['plan'] = update.plan
     if update.last_paid_at is not None:
         data['last_paid_at'] = update.last_paid_at
+    if update.name is not None:
+        if not update.name.strip():
+            raise HTTPException(status_code=400, detail="Name cannot be empty")
+        data['name'] = update.name.strip()
+    if update.email is not None:
+        new_email = update.email.strip().lower()
+        if not new_email:
+            raise HTTPException(status_code=400, detail="Email cannot be empty")
+        if new_email != (business.get('email') or '').lower():
+            existing = supabase.table("businesses").select("id").eq("email", new_email).execute().data or []
+            if any(row.get('id') != business.get('id') for row in existing):
+                raise HTTPException(status_code=400, detail="Another business already uses this email")
+        data['email'] = new_email
+    if update.phone is not None:
+        data['phone'] = update.phone
+    if update.business_type is not None:
+        data['business_type'] = update.business_type
+    if update.logo_url is not None:
+        data['logo_url'] = update.logo_url
     if update.subscription_expires_at is not None:
         data['subscription_expires_at'] = update.subscription_expires_at
     if update.address is not None:

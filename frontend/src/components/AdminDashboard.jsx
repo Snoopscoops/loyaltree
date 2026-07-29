@@ -296,15 +296,80 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
       {selected && (
         <div style={styles.modalOverlay} onClick={() => { setSelected(null); setDetail(null) }}>
           <div style={styles.modal} onClick={e => e.stopPropagation()}>
-            <h2 style={styles.modalTitle}>{selected.name}</h2>
+            <h2 style={styles.modalTitle}>{detail?.name || selected.name}</h2>
             {!detail ? (
               <p>Loading…</p>
             ) : (
               <div style={styles.detailGrid}>
                 <DetailRow label="Public ID" value={detail.public_id} />
-                <DetailRow label="Email" value={detail.email} />
-                <DetailRow label="Phone" value={detail.phone || '—'} />
-                <DetailRow label="Business type" value={detail.business_type} />
+                <div style={styles.detailRow}>
+                  <span style={styles.detailLabel}>Name</span>
+                  <input
+                    type="text"
+                    defaultValue={detail.name || ''}
+                    onBlur={e => {
+                      if (e.target.value !== (detail.name || '') && e.target.value.trim()) {
+                        updateBusiness(selected.public_id, { name: e.target.value })
+                      }
+                    }}
+                    style={styles.addressInput}
+                  />
+                </div>
+                <div style={styles.detailRow}>
+                  <span style={styles.detailLabel}>Email</span>
+                  <input
+                    type="email"
+                    defaultValue={detail.email || ''}
+                    onBlur={e => {
+                      if (e.target.value !== (detail.email || '') && e.target.value.trim()) {
+                        updateBusiness(selected.public_id, { email: e.target.value })
+                      }
+                    }}
+                    style={styles.addressInput}
+                  />
+                </div>
+                <div style={styles.detailRow}>
+                  <span style={styles.detailLabel}>Phone</span>
+                  <input
+                    type="text"
+                    defaultValue={detail.phone || ''}
+                    onBlur={e => {
+                      if (e.target.value !== (detail.phone || '')) {
+                        updateBusiness(selected.public_id, { phone: e.target.value })
+                      }
+                    }}
+                    placeholder="No phone on file"
+                    style={styles.addressInput}
+                  />
+                </div>
+                <div style={styles.detailRow}>
+                  <span style={styles.detailLabel}>Business type</span>
+                  <select
+                    value={detail.business_type || 'other'}
+                    onChange={e => updateBusiness(selected.public_id, { business_type: e.target.value })}
+                    style={styles.dateInput}
+                  >
+                    <option value="spa">Spa</option>
+                    <option value="salon">Salon</option>
+                    <option value="fitness">Fitness</option>
+                    <option value="restaurant">Restaurant</option>
+                    <option value="other">Other</option>
+                  </select>
+                </div>
+                <div style={styles.detailRow}>
+                  <span style={styles.detailLabel}>Logo URL</span>
+                  <input
+                    type="text"
+                    defaultValue={detail.logo_url || ''}
+                    onBlur={e => {
+                      if (e.target.value !== (detail.logo_url || '')) {
+                        updateBusiness(selected.public_id, { logo_url: e.target.value })
+                      }
+                    }}
+                    placeholder="No logo on file"
+                    style={styles.addressInput}
+                  />
+                </div>
                 <div style={styles.detailRow}>
                   <span style={styles.detailLabel}>Address</span>
                   <input
