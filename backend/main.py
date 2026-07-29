@@ -442,6 +442,57 @@ def safe_get_active_coupon(customer_id: int):
     except Exception:
         return None
 
+def find_business_duplicate(email: Optional[str], phone: Optional[str]) -> Optional[str]:
+    """Checks whether another business already uses this email or phone.
+    Email is compared case-insensitively; phone is compared as-entered.
+    Returns which field collided ('email' or 'phone'), or None if clear."""
+    if not supabase:
+        return None
+    email = (email or '').strip()
+    phone = (phone or '').strip()
+    try:
+        if email:
+            res = supabase.table("businesses").select("id").ilike("email", email).execute()
+            if res.data:
+                return "email"
+        if phone:
+            res = supabase.table("businesses").select("id").eq("phone", phone).execute()
+            if res.data:
+                return "phone"
+    except Exception:
+        return None
+    return None
+
+def find_customer_duplicate(business_id: int, phone: Optional[str], email: Optional[str], exclude_id: Optional[int] = None) -> Optional[str]:
+    """Checks whether another customer already enrolled in this business
+    (same business_id) has this phone or email. exclude_id skips the
+    customer's own row, so updates only flag a collision with someone else.
+    Returns which field collided ('phone' or 'email'), or None if clear."""
+    if not supabase:
+        return None
+    phone = (phone or '').strip()
+    email = (email or '').strip()
+    try:
+        if phone:
+            res = (
+                supabase.table("customers").select("id")
+                .eq("business_id", business_id).eq("phone", phone).execute()
+            )
+            for row in (res.data or []):
+                if exclude_id is None or row.get('id') != exclude_id:
+                    return "phone"
+        if email:
+            res = (
+                supabase.table("customers").select("id")
+                .eq("business_id", business_id).ilike("email", email).execute()
+            )
+            for row in (res.data or []):
+                if exclude_id is None or row.get('id') != exclude_id:
+                    return "email"
+    except Exception:
+        return None
+    return None
+
 def get_admin_token() -> Optional[str]:
     """The one valid admin token, derived from the configured super-admin
     password. Stateless by design (matches owner/staff tokens elsewhere in
@@ -1141,6 +1192,10 @@ async def register(biz: BusinessCreate):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database not connected")
 
+    dup_field = find_business_duplicate(biz.email, biz.phone)
+    if dup_field:
+        raise HTTPException(status_code=400, detail=f"An account with this {dup_field} already exists.")
+
     public_id = generate_business_public_id(biz.name)
     if biz.plan:
         if biz.plan not in SUBSCRIPTION_PLANS:
@@ -1524,6 +1579,19 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
     if not update_data:
         return customer
 
+    if 'phone' in update_data or 'email' in update_data:
+        dup_field = find_customer_duplicate(
+            business.get('id'),
+            update_data.get('phone'),
+            update_data.get('email'),
+            exclude_id=customer.get('id'),
+        )
+        if dup_field:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Another member already uses this {dup_field}."
+            )
+
     # Manual stamp correction: recompute reward_unlocked against this
     # business's current stamp goal so the card/wallet pass stays
     # consistent with the corrected total, the same way add_stamp does.
@@ -1573,6 +1641,31 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
             pass  # best-effort - a wallet push failing shouldn't block the edit itself
 
     return updated_customer
+
+@app.delete("/api/v1/business/{public_id}/customers/{customer_public_id}")
+async def delete_customer(public_id: str, customer_public_id: str):
+    """Owner removes a member from their loyalty program. No cascading FKs
+    on these tables (same as admin_delete_business below), so related rows
+    are cleared first, then the customer row itself."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    customer = safe_get_customer(customer_public_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    if customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+
+    customer_id = customer.get('id')
+    try:
+        for table in ["stamp_events", "redemption_events", "coupons"]:
+            supabase.table(table).delete().eq("customer_id", customer_id).execute()
+        supabase.table("customers").delete().eq("id", customer_id).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
+
+    return {"success": True, "deleted": customer_public_id}
 
 @app.get("/api/v1/business/{public_id}/staff")
 async def get_staff(public_id: str):
@@ -3109,6 +3202,13 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup):
 
     if business.get('status', '').upper() != 'ACTIVE':
         raise HTTPException(status_code=400, detail="Business not active")
+
+    dup_field = find_customer_duplicate(business.get('id'), signup.phone, signup.email)
+    if dup_field:
+        raise HTTPException(
+            status_code=400,
+            detail=f"This {dup_field} is already enrolled in this rewards program."
+        )
 
     customer_public_id = generate_public_id()
     customer_data = {
