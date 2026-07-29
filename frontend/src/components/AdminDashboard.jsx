@@ -13,6 +13,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [planFilter, setPlanFilter] = useState('')
+  const [sortByAddress, setSortByAddress] = useState(false)
   const [selected, setSelected] = useState(null)
   const [detail, setDetail] = useState(null)
   const [message, setMessage] = useState('')
@@ -116,6 +117,9 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   }
 
   const filteredCount = businesses.length
+  const displayBusinesses = sortByAddress
+    ? [...businesses].sort((a, b) => (a.address || '\uffff').localeCompare(b.address || '\uffff'))
+    : businesses
 
   return (
     <div style={styles.container}>
@@ -188,10 +192,16 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
         <div style={styles.filterRow}>
           <input
             style={{ ...styles.input, maxWidth: 280 }}
-            placeholder="Search by name or email…"
+            placeholder="Search by name, email, or address…"
             value={search}
             onChange={e => setSearch(e.target.value)}
           />
+          <button
+            onClick={() => setSortByAddress(s => !s)}
+            style={{ ...styles.select, cursor: 'pointer', background: sortByAddress ? '#0d9488' : 'white', color: sortByAddress ? 'white' : '#334155' }}
+          >
+            📍 Sort by location{sortByAddress ? ' ✓' : ''}
+          </button>
           <select style={styles.select} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
             <option value="">All statuses</option>
             {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
@@ -209,6 +219,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
             <thead>
               <tr>
                 <th style={styles.th}>Business</th>
+                <th style={styles.th}>Location</th>
                 <th style={styles.th}>Status</th>
                 <th style={styles.th}>Plan</th>
                 <th style={styles.th}>Paid</th>
@@ -220,7 +231,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
               </tr>
             </thead>
             <tbody>
-              {businesses.map(b => (
+              {displayBusinesses.map(b => (
                 <tr key={b.public_id} style={styles.tr}>
                   <td style={styles.td}>
                     <div onClick={() => openDetail(b)} style={styles.bizCell}>
@@ -231,6 +242,9 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                         {b.phone && <div style={styles.bizPhone}>{b.phone}</div>}
                       </div>
                     </div>
+                  </td>
+                  <td style={styles.td}>
+                    {b.address ? <span style={styles.bizPhone}>{b.address}</span> : <span style={styles.resultCount}>—</span>}
                   </td>
                   <td style={styles.td}>
                     <select
@@ -270,8 +284,8 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                   </td>
                 </tr>
               ))}
-              {businesses.length === 0 && (
-                <tr><td style={styles.td} colSpan={9}>No businesses match these filters.</td></tr>
+              {displayBusinesses.length === 0 && (
+                <tr><td style={styles.td} colSpan={10}>No businesses match these filters.</td></tr>
               )}
             </tbody>
           </table>
@@ -291,6 +305,20 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 <DetailRow label="Email" value={detail.email} />
                 <DetailRow label="Phone" value={detail.phone || '—'} />
                 <DetailRow label="Business type" value={detail.business_type} />
+                <div style={styles.detailRow}>
+                  <span style={styles.detailLabel}>Address</span>
+                  <input
+                    type="text"
+                    defaultValue={detail.address || ''}
+                    onBlur={e => {
+                      if (e.target.value !== (detail.address || '')) {
+                        updateBusiness(selected.public_id, { address: e.target.value })
+                      }
+                    }}
+                    placeholder="No address on file"
+                    style={styles.addressInput}
+                  />
+                </div>
                 <DetailRow label="Status" value={detail.status} />
                 <DetailRow label="Plan" value={detail.plan_label} />
                 <DetailRow label="Branches" value={detail.branch_count} />
@@ -554,6 +582,10 @@ const styles = {
   dateInput: {
     padding: '4px 8px', border: '1px solid #e2e8f0', borderRadius: 6,
     fontSize: 12, color: '#0f172a', cursor: 'pointer',
+  },
+  addressInput: {
+    padding: '4px 8px', border: '1px solid #e2e8f0', borderRadius: 6,
+    fontSize: 12, color: '#0f172a', width: 200, textAlign: 'right',
   },
   closeBtn: {
     padding: '10px 16px', background: '#f1f5f9', color: '#334155',

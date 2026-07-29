@@ -206,6 +206,7 @@ class BusinessCreate(BaseModel):
     password: str
     logo_url: Optional[str] = None
     business_type: Optional[str] = 'other'
+    address: Optional[str] = None  # business's main address - lets super admin organize businesses by location
     branch_count: int = Field(default=1, ge=1, le=50)
     plan: Optional[str] = None  # explicit plan choice; if omitted, derived from branch_count
 
@@ -304,6 +305,7 @@ class AdminBusinessUpdate(BaseModel):
     plan: Optional[str] = None
     last_paid_at: Optional[str] = None          # 'YYYY-MM-DD' - when the business last paid
     subscription_expires_at: Optional[str] = None  # 'YYYY-MM-DD' - when access should lapse
+    address: Optional[str] = None
 
 class RedeemRequest(BaseModel):
     customer_public_id: str
@@ -471,6 +473,7 @@ def business_summary(biz: dict) -> dict:
         "branch_count": branch_count,
         "price_month": get_price_for_plan(plan, branch_count),
         "business_type": biz.get("business_type", "other"),
+        "address": biz.get("address"),
         "logo_url": biz.get("logo_url"),
         "created_at": biz.get("created_at"),
         "last_paid_at": biz.get("last_paid_at"),
@@ -1112,6 +1115,7 @@ async def register(biz: BusinessCreate):
         'password_hash': hash_password(biz.password),
         'logo_url': biz.logo_url,
         'business_type': biz.business_type,
+        'address': biz.address,
         'plan': plan,
         'status': 'PENDING',
         'created_at': datetime.utcnow().isoformat(),
@@ -1284,7 +1288,12 @@ async def admin_list_businesses(status: Optional[str] = None, plan: Optional[str
         businesses = query.order("created_at", desc=True).execute().data or []
         if search:
             needle = search.lower()
-            businesses = [b for b in businesses if needle in (b.get('name') or '').lower() or needle in (b.get('email') or '').lower()]
+            businesses = [
+                b for b in businesses
+                if needle in (b.get('name') or '').lower()
+                or needle in (b.get('email') or '').lower()
+                or needle in (b.get('address') or '').lower()
+            ]
         return [business_summary(b) for b in businesses]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load businesses: {str(e)}")
@@ -1322,6 +1331,8 @@ async def admin_update_business(public_id: str, update: AdminBusinessUpdate, _: 
         data['last_paid_at'] = update.last_paid_at
     if update.subscription_expires_at is not None:
         data['subscription_expires_at'] = update.subscription_expires_at
+    if update.address is not None:
+        data['address'] = update.address
     if not data:
         raise HTTPException(status_code=400, detail="No fields to update")
     data['updated_at'] = datetime.utcnow().isoformat()
@@ -1383,9 +1394,38 @@ async def get_customers(public_id: str):
         raise HTTPException(status_code=404, detail="Business not found")
     try:
         res = supabase.table("customers").select("*").eq("business_id", business.get("id")).execute()
-        return res.data or []
+        customers = res.data or []
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+    # Attach last_stamp_at from stamp_events (most recent stamp per customer),
+    # so the owner dashboard can show "last stamped" instead of only the
+    # cumulative stamp_count. Best-effort - if this fails, customers still
+    # return without the field rather than erroring the whole list out.
+    try:
+        stamp_events = (
+            supabase.table("stamp_events")
+            .select("customer_id,created_at")
+            .eq("business_id", business.get("id"))
+            .execute()
+            .data or []
+        )
+        last_stamp_by_customer = {}
+        for ev in stamp_events:
+            cid = ev.get('customer_id')
+            ts = _parse_ts(ev.get('created_at'))
+            if not ts:
+                continue
+            if cid not in last_stamp_by_customer or ts > last_stamp_by_customer[cid]:
+                last_stamp_by_customer[cid] = ts
+        for c in customers:
+            last_stamp = last_stamp_by_customer.get(c.get('id'))
+            c['last_stamp_at'] = last_stamp.isoformat() if last_stamp else None
+    except Exception:
+        for c in customers:
+            c.setdefault('last_stamp_at', None)
+
+    return customers
 
 @app.api_route("/api/v1/business/{public_id}/customers/{customer_public_id}", methods=["PUT", "PATCH"])
 async def update_customer(public_id: str, customer_public_id: str, update: CustomerUpdate):

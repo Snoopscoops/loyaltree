@@ -23,6 +23,7 @@ function Signup({ API_BASE }) {
     password: '',
     phone: '',
     logo_url: '',
+    address: '',
     business_type: 'spa',
     branch_count: 1,
     plan: 'starter',
@@ -108,6 +109,10 @@ function Signup({ API_BASE }) {
           <div style={styles.inputGroup}>
             <label style={styles.label}>Phone</label>
             <input name="phone" value={form.phone} onChange={handleChange} style={styles.input} placeholder="+1 234 567 8900" />
+          </div>
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>Business Address</label>
+            <input name="address" value={form.address} onChange={handleChange} style={styles.input} placeholder="123 Main St, City" />
           </div>
           <div style={styles.inputGroup}>
             <label style={styles.label}>Logo URL (optional)</label>

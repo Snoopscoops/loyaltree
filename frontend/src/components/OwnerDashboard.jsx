@@ -3,6 +3,22 @@ import { useNavigate } from 'react-router-dom'
 import Announcements from './Announcements'
 import LoyaltyCardCustomizer from './LoyaltyCardCustomizer'
 
+// Turns an ISO timestamp into a short relative label like "2 days ago"
+function formatLastStamped(isoString) {
+  if (!isoString) return 'Never stamped'
+  const then = new Date(isoString)
+  if (isNaN(then.getTime())) return 'Never stamped'
+  const diffMs = Date.now() - then.getTime()
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
+  if (diffDays <= 0) return 'Stamped today'
+  if (diffDays === 1) return 'Stamped yesterday'
+  if (diffDays < 30) return `Stamped ${diffDays} days ago`
+  const diffMonths = Math.floor(diffDays / 30)
+  if (diffMonths < 12) return `Stamped ${diffMonths} month${diffMonths !== 1 ? 's' : ''} ago`
+  const diffYears = Math.floor(diffMonths / 12)
+  return `Stamped ${diffYears} year${diffYears !== 1 ? 's' : ''} ago`
+}
+
 function OwnerDashboard({ API_BASE, user, onLogout }) {
   const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState('tree')
@@ -533,6 +549,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                       ))}
                     </div>
                     <p style={styles.stampText}>{c.stamp_count % (c.reward_threshold || 8)} / {c.reward_threshold || 8} rings</p>
+                    <p style={styles.lastStampedText}>{formatLastStamped(c.last_stamp_at)}</p>
                     {c.reward_unlocked && <span style={styles.fruitBadge}>🍎 Reward Ready!</span>}
                   </div>
                   <div style={{display: 'flex', flexDirection: 'column', gap: 6}}>
@@ -1346,6 +1363,12 @@ const styles = {
     margin: 0,
     fontSize: 12,
     color: '#64748b',
+  },
+  lastStampedText: {
+    margin: '2px 0 0 0',
+    fontSize: 11.5,
+    color: '#94a3b8',
+    fontStyle: 'italic',
   },
   fruitBadge: {
     display: 'inline-block',
