@@ -1511,6 +1511,16 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
         raise HTTPException(status_code=404, detail="Customer not found for this business")
 
     update_data = {k: v for k, v in update.dict(exclude_unset=True).items() if v is not None}
+
+    # Empty-string dates ("" from a blank date input) aren't valid Postgres
+    # date/timestamp values - Supabase rejects them outright ("invalid input
+    # syntax for type timestamp/date: \"\""). Treat a blank date field as
+    # "not provided" rather than "clear it", same as the other Optional
+    # fields already behave via exclude_unset above.
+    for date_field in ('birthday', 'last_order_date'):
+        if update_data.get(date_field) == '':
+            del update_data[date_field]
+
     if not update_data:
         return customer
 
