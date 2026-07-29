@@ -833,7 +833,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             {/* QR Code */}
             <div style={{textAlign: 'center', margin: '20px 0'}}>
               <img 
-                src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${selectedCustomer.public_id}`}
+                src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(`${API_BASE}/stamp/${selectedCustomer.public_id}`)}`}
                 alt="Customer QR"
                 style={{borderRadius: 12, border: '2px solid #e2e8f0'}}
               />
