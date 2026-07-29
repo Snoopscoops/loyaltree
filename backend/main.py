@@ -272,6 +272,7 @@ class CustomerUpdate(BaseModel):
     occupation: Optional[str] = None  # 'working' | 'business_owner' | 'unemployed'
     gender: Optional[str] = None  # 'male' | 'female' | 'rather_not_say'
     last_order_date: Optional[str] = None  # 'YYYY-MM-DD'
+    stamp_count: Optional[int] = Field(default=None, ge=0)  # lets the owner manually correct a customer's stamp count
 
 class StampRequest(BaseModel):
     customer_public_id: str
@@ -1470,14 +1471,32 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
     if not update_data:
         return customer
 
+    # Manual stamp correction: recompute reward_unlocked against this
+    # business's current stamp goal so the card/wallet pass stays
+    # consistent with the corrected total, the same way add_stamp does.
+    program = None
+    if 'stamp_count' in update_data:
+        program = safe_get_loyalty_program(business.get('id'))
+        goal = program.get('stamp_goal', 8) if program else 8
+        update_data['reward_unlocked'] = update_data['stamp_count'] >= goal
+
     update_data['updated_at'] = datetime.utcnow().isoformat()
 
     try:
         res = supabase.table("customers").update(update_data).eq("id", customer.get("id")).execute()
-        return res.data[0] if res.data else {**customer, **update_data}
+        updated_customer = res.data[0] if res.data else {**customer, **update_data}
     except Exception as e:
         error_msg = str(e)
         print(f"CUSTOMER UPDATE ERROR: {error_msg}")
+        if 'reward_unlocked' in error_msg.lower() and 'reward_unlocked' in update_data:
+            # Some installs may not have this column yet - retry without it
+            # rather than blocking the whole edit (stamp_count still saves).
+            retry_data = {k: v for k, v in update_data.items() if k != 'reward_unlocked'}
+            try:
+                res = supabase.table("customers").update(retry_data).eq("id", customer.get("id")).execute()
+                return res.data[0] if res.data else {**customer, **retry_data}
+            except Exception as e2:
+                error_msg = str(e2)
         is_schema_mismatch = (
             'PGRST204' in error_msg
             or ('column' in error_msg.lower() and 'does not exist' in error_msg.lower())
@@ -1493,6 +1512,14 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
                 ),
             )
         raise HTTPException(status_code=500, detail=error_msg)
+
+    if 'stamp_count' in update_data:
+        try:
+            sync_wallet_object(updated_customer, business, program)
+        except Exception:
+            pass  # best-effort - a wallet push failing shouldn't block the edit itself
+
+    return updated_customer
 
 @app.get("/api/v1/business/{public_id}/staff")
 async def get_staff(public_id: str):

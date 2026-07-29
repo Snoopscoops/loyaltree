@@ -191,6 +191,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       birthday: c.birthday || '',
       occupation: c.occupation || '',
       last_order_date: c.last_order_date || '',
+      stamp_count: c.stamp_count ?? 0,
     })
     setShowEditModal(true)
   }
@@ -200,7 +201,11 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     setSavingCustomer(true)
     try {
       const { public_id, ...fields } = editForm
-      const payload = { ...fields, age: fields.age === '' ? null : parseInt(fields.age, 10) }
+      const payload = {
+        ...fields,
+        age: fields.age === '' ? null : parseInt(fields.age, 10),
+        stamp_count: fields.stamp_count === '' ? null : parseInt(fields.stamp_count, 10),
+      }
       const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${public_id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -804,6 +809,16 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             <form onSubmit={saveCustomer}>
               <label style={styles.label}>Full Name</label>
               <input style={styles.input} value={editForm.name || ''} onChange={e => setEditForm({...editForm, name: e.target.value})} required />
+              <label style={styles.label}>
+                Stamps {program?.stamp_goal ? `(of ${program.stamp_goal} for a reward)` : ''}
+              </label>
+              <input
+                style={styles.input}
+                type="number"
+                min="0"
+                value={editForm.stamp_count}
+                onChange={e => setEditForm({...editForm, stamp_count: e.target.value})}
+              />
               <label style={styles.label}>Address</label>
               <input style={styles.input} value={editForm.address || ''} onChange={e => setEditForm({...editForm, address: e.target.value})} />
               <label style={styles.label}>Age</label>
