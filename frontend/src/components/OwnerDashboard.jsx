@@ -624,14 +624,14 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                       </p>
                     )}
                     <div style={styles.stampRings}>
-                      {Array.from({length: c.reward_threshold || 8}).map((_, i) => (
+                      {Array.from({length: program?.stamp_goal || 8}).map((_, i) => (
                         <span key={i} style={{
                           ...styles.stampRing,
-                          background: i < (c.stamp_count % (c.reward_threshold || 8)) ? '#0d9488' : '#e2e8f0'
+                          background: i < (c.stamp_count % (program?.stamp_goal || 8)) ? '#0d9488' : '#e2e8f0'
                         }}></span>
                       ))}
                     </div>
-                    <p style={styles.stampText}>{c.stamp_count % (c.reward_threshold || 8)} / {c.reward_threshold || 8} rings</p>
+                    <p style={styles.stampText}>{c.stamp_count % (program?.stamp_goal || 8)} / {program?.stamp_goal || 8} rings</p>
                     <p style={styles.lastStampedText}>{formatLastStamped(c.last_stamp_at)}</p>
                     {c.reward_unlocked && <span style={styles.fruitBadge}>🍎 Reward Ready!</span>}
                   </div>
