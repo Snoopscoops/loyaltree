@@ -110,6 +110,7 @@ function CashierApp({ API_BASE }) {
           stamp_count: c.stamp_count || 0,
           reward_unlocked: !!c.reward_unlocked,
           reward_threshold: goal,
+          active_coupon: data.active_coupon || null,
         })
         setMessage(`Found: ${c.name}`)
       } else {
@@ -200,6 +201,39 @@ function CashierApp({ API_BASE }) {
         fetchCustomer(customerData.public_id)
       } else {
         setMessage(`❌ ${data.detail || 'No reward to redeem'}`)
+      }
+    } catch (err) {
+      setMessage('❌ Network error')
+    }
+    setLoading(false)
+  }
+
+  const redeemCoupon = async () => {
+    if (!customerData || !businessSlug || (!isOwner && !staffPin && !sessionToken)) return
+    setLoading(true)
+    setMessage('Redeeming coupon...')
+
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/coupon/redeem`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+        },
+        body: JSON.stringify({
+          customer_public_id: customerData.public_id,
+          ...(sessionToken ? {} : { staff_pin: staffPin }),
+          as_owner: isOwner,
+        })
+      })
+
+      const data = await res.json()
+
+      if (res.ok) {
+        setMessage('🎟️ Coupon redeemed!')
+        fetchCustomer(customerData.public_id)
+      } else {
+        setMessage(`❌ ${data.detail || 'No coupon to redeem'}`)
       }
     } catch (err) {
       setMessage('❌ Network error')
@@ -404,6 +438,14 @@ function CashierApp({ API_BASE }) {
             </div>
           )}
 
+          {/* Coupon Banner */}
+          {customerData.active_coupon && (
+            <div style={{...styles.rewardBanner, background: '#f0fdfa', border: '1.5px dashed #0d9488'}}>
+              <span style={styles.rewardEmoji}>🎟️</span>
+              <span style={{...styles.rewardText, color: '#0f766e'}}>{customerData.active_coupon.reward_text}</span>
+            </div>
+          )}
+
           {/* Actions */}
           <div style={styles.actions}>
             <button
@@ -420,6 +462,15 @@ function CashierApp({ API_BASE }) {
                 disabled={loading}
               >
                 {loading ? '...' : '🍎 Harvest'}
+              </button>
+            )}
+            {customerData.active_coupon && (
+              <button
+                style={{...styles.actionBtn, background: '#0d9488'}}
+                onClick={redeemCoupon}
+                disabled={loading}
+              >
+                {loading ? '...' : '🎟️ Redeem'}
               </button>
             )}
           </div>

@@ -318,6 +318,15 @@ class RedeemRequest(BaseModel):
     staff_pin: Optional[str] = None
     as_owner: Optional[bool] = False
 
+class CouponCreate(BaseModel):
+    reward_text: str  # free text - owner decides what the coupon is for
+    expires_at: Optional[str] = None  # 'YYYY-MM-DD', optional
+
+class CouponRedeem(BaseModel):
+    customer_public_id: str
+    staff_pin: Optional[str] = None
+    as_owner: Optional[bool] = False
+
 # Helpers
 def generate_public_id() -> str:
     return uuid.uuid4().hex
@@ -397,6 +406,39 @@ def safe_get_loyalty_program(business_id: int):
     try:
         res = supabase.table("loyalty_programs").select("*").eq("business_id", business_id).maybe_single().execute()
         return res.data
+    except Exception:
+        return None
+
+def safe_get_active_coupon(customer_id: int):
+    """The customer's current active, non-expired coupon (there's only ever
+    one at a time - creation is blocked while one is already active). If an
+    'active' row has passed its expires_at date, it's treated as expired
+    here and never returned - a background/cron sweep isn't required for
+    correctness, only for tidying up the stored status eventually."""
+    if not supabase:
+        return None
+    try:
+        res = (
+            supabase.table("coupons")
+            .select("*")
+            .eq("customer_id", customer_id)
+            .eq("status", "active")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+        if not rows:
+            return None
+        coupon = rows[0]
+        expires_at = coupon.get('expires_at')
+        if expires_at:
+            try:
+                if datetime.fromisoformat(str(expires_at)).date() < datetime.utcnow().date():
+                    return None
+            except Exception:
+                pass
+        return coupon
     except Exception:
         return None
 
@@ -1410,6 +1452,7 @@ async def get_customer_api(public_id: str):
             "logo_url": business.get("logo_url") if business else None,
         },
         "program": program,
+        "active_coupon": safe_get_active_coupon(customer.get('id')),
     }
 
 @app.get("/api/v1/business/{public_id}/customers")
@@ -2533,6 +2576,156 @@ async def redeem_reward(public_id: str, req: RedeemRequest, authorization: str =
 
     return {"message": "Reward redeemed!", "success": True, "google_review_url": review_url}
 
+# ONE-TIME COUPONS
+# Owner-issued, per-customer, free-text coupons - separate from the
+# stamp-goal reward above. Only one can be active per customer at a time
+# (enforced on create); redeeming or cancelling frees up a slot for a new
+# one. Reuses the same staff-session / owner / legacy-PIN auth pattern as
+# /stamp and /reward/redeem above.
+
+@app.post("/api/v1/business/{public_id}/customers/{customer_public_id}/coupons")
+async def create_coupon(public_id: str, customer_public_id: str, req: CouponCreate):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    customer = safe_get_customer(customer_public_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    if customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+
+    reward_text = (req.reward_text or '').strip()
+    if not reward_text:
+        raise HTTPException(status_code=400, detail="Coupon description is required")
+    if len(reward_text) > 200:
+        raise HTTPException(status_code=400, detail="Keep the coupon description under 200 characters")
+
+    if safe_get_active_coupon(customer.get('id')):
+        raise HTTPException(status_code=400, detail="This customer already has an active coupon - it must be redeemed or cancelled first")
+
+    expires_at = None
+    if req.expires_at:
+        try:
+            expires_at = datetime.fromisoformat(req.expires_at).date().isoformat()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid expiry date")
+
+    coupon = {
+        'public_id': generate_public_id(),
+        'business_id': business.get('id'),
+        'customer_id': customer.get('id'),
+        'reward_text': reward_text,
+        'status': 'active',
+        'expires_at': expires_at,
+        'created_at': datetime.utcnow().isoformat(),
+    }
+    try:
+        res = supabase.table("coupons").insert(coupon).execute()
+        created = res.data[0] if res.data else coupon
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    return created
+
+@app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/coupons")
+async def list_customer_coupons(public_id: str, customer_public_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    customer = safe_get_customer(customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+
+    try:
+        res = (
+            supabase.table("coupons")
+            .select("*")
+            .eq("customer_id", customer.get('id'))
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return res.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.delete("/api/v1/business/{public_id}/coupons/{coupon_public_id}")
+async def cancel_coupon(public_id: str, coupon_public_id: str):
+    """Lets the owner cancel a coupon they just issued by mistake, freeing
+    the customer up for a new one. Only works while it's still active -
+    a redeemed or already-cancelled/expired coupon can't be touched."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    try:
+        res = supabase.table("coupons").select("*").eq("public_id", coupon_public_id).maybe_single().execute()
+        coupon = res.data
+    except Exception:
+        coupon = None
+    if not coupon or coupon.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Coupon not found")
+    if coupon.get('status') != 'active':
+        raise HTTPException(status_code=400, detail="Only an active coupon can be cancelled")
+
+    try:
+        supabase.table("coupons").update({
+            'status': 'cancelled',
+            'updated_at': datetime.utcnow().isoformat(),
+        }).eq("id", coupon.get("id")).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    return {"message": "Coupon cancelled"}
+
+@app.post("/api/v1/business/{public_id}/coupon/redeem")
+async def redeem_coupon(public_id: str, req: CouponRedeem, authorization: str = Header(default="")):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    customer = safe_get_customer(req.customer_public_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    if customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+
+    redeeming_staff_id = None
+    session_claims = get_staff_session_claims(public_id, authorization)
+
+    if session_claims:
+        redeeming_staff_id = session_claims.get('staff_id')
+    elif req.as_owner:
+        pass
+    else:
+        if not req.staff_pin:
+            raise HTTPException(status_code=400, detail="Staff PIN required")
+        try:
+            staff_res = supabase.table("staff").select("*").eq("business_id", business.get("id")).eq("pin", req.staff_pin).execute()
+            if not staff_res.data:
+                raise HTTPException(status_code=403, detail="Invalid staff PIN")
+            redeeming_staff_id = staff_res.data[0].get('id')
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
+
+    coupon = safe_get_active_coupon(customer.get('id'))
+    if not coupon:
+        raise HTTPException(status_code=400, detail="No active coupon to redeem")
+
+    try:
+        supabase.table("coupons").update({
+            'status': 'redeemed',
+            'redeemed_at': datetime.utcnow().isoformat(),
+            'redeemed_by_staff_id': redeeming_staff_id,
+        }).eq("id", coupon.get("id")).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    return {"message": "Coupon redeemed!", "success": True, "reward_text": coupon.get('reward_text')}
+
 @app.get("/api/v1/business/{public_id}/hero-image.png")
 async def get_hero_image(public_id: str, c: Optional[str] = None):
     """Serves the generated gradient hero image that build_loyalty_class()
@@ -2993,6 +3186,19 @@ async def customer_wallet_page(customer_public_id: str):
     if customer.get('reward_unlocked'):
         reward_badge = '<span style="display:inline-block;padding:6px 14px;background:#fef3c7;color:#92400e;border-radius:20px;font-size:13px;font-weight:600;margin-top:12px;">&#127873; ' + reward_name + ' Ready!</span>'
 
+    coupon_html = ''
+    active_coupon = safe_get_active_coupon(customer.get('id'))
+    if active_coupon:
+        coupon_html = (
+            '<div style="background:#f0fdfa;border:1.5px dashed #0d9488;border-radius:12px;'
+            'padding:14px 16px;margin-bottom:16px;text-align:center;">'
+            '<div style="font-size:11px;font-weight:700;color:#0f766e;text-transform:uppercase;'
+            'letter-spacing:0.5px;margin-bottom:4px;">&#127903; Coupon Available</div>'
+            '<div style="font-size:15px;font-weight:600;color:#0f172a;">' + html_lib.escape(active_coupon.get('reward_text', '')) + '</div>'
+            '<div style="font-size:12px;color:#64748b;margin-top:6px;">Show this card to your cashier to redeem</div>'
+            '</div>'
+        )
+
     display_name_json = json.dumps(display_name)
     biz_name_json = json.dumps(business.get('name', ''))
 
@@ -3032,6 +3238,7 @@ async def customer_wallet_page(customer_public_id: str):
         '<p class="stamp-count">' + str(stamps) + ' / ' + str(stamp_goal) + ' stamps</p>'
         + reward_badge +
         '</div>'
+        + coupon_html +
         '<div class="qr-section">'
         '<img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + quote(f'{BASE_URL}/stamp/{customer.get("public_id", "")}', safe="") + '" alt="Your QR Code"/>'
         '<p>Scan at checkout to earn stamps</p>'
@@ -3077,6 +3284,8 @@ async def cashier_stamp_page(customer_public_id: str):
     stamp_goal = program.get('stamp_goal', 8) if program else 8
     reward_name = program.get('reward_name', 'Free Service') if program else 'Free Service'
 
+    active_coupon = safe_get_active_coupon(customer.get('id'))
+
     data = {
         'customer_public_id': customer.get('public_id', ''),
         'customer_name': customer.get('name', 'Member'),
@@ -3086,6 +3295,7 @@ async def cashier_stamp_page(customer_public_id: str):
         'stamp_goal': stamp_goal,
         'reward_name': reward_name,
         'reward_unlocked': bool(customer.get('reward_unlocked')),
+        'coupon_text': active_coupon.get('reward_text') if active_coupon else None,
     }
     data_json = json.dumps(data)
 
@@ -3109,11 +3319,14 @@ async def cashier_stamp_page(customer_public_id: str):
         'button:disabled{opacity:0.6;cursor:default}'
         '.btn-primary{background:' + primary_color + '}'
         '.btn-reward{background:#f59e0b}'
+        '.btn-coupon{background:#0d9488}'
         '.btn-secondary{background:#f1f5f9;color:#475569;font-weight:600}'
         '.customer-box{background:#f8fafc;border-radius:14px;padding:18px;margin-bottom:16px;text-align:center}'
         '.customer-box .name{font-size:18px;font-weight:700;color:#0f172a}'
         '.customer-box .stamps{font-size:14px;color:#64748b;margin-top:4px}'
         '.reward{background:#fef3c7;color:#92400e;border-radius:10px;padding:10px;'
+        'text-align:center;font-weight:700;font-size:14px;margin-bottom:14px}'
+        '.coupon{background:#f0fdfa;border:1.5px dashed #0d9488;color:#0f766e;border-radius:10px;padding:10px;'
         'text-align:center;font-weight:700;font-size:14px;margin-bottom:14px}'
         '.msg{margin-bottom:14px;padding:12px;border-radius:10px;font-size:14px;text-align:center}'
         '.msg-ok{background:#dcfce7;color:#166534}'
@@ -3130,6 +3343,7 @@ async def cashier_stamp_page(customer_public_id: str):
         'const DATA=' + data_json + ';'
         'let stampCount=DATA.stamp_count;'
         'let rewardUnlocked=DATA.reward_unlocked;'
+        'let couponText=DATA.coupon_text;'
         'let cachedPin=null;'
         'const app=document.getElementById("app");'
         'const sessionKey="loyaltree_cashier_"+DATA.business_public_id;'
@@ -3202,6 +3416,7 @@ async def cashier_stamp_page(customer_public_id: str):
 
         'function renderCard(staffName,msg){'
         'const rewardHtml=rewardUnlocked?"<div class=\'reward\'>&#127873; "+escapeHtml(DATA.reward_name)+" unlocked!</div>":"";'
+        'const couponHtml=couponText?"<div class=\'coupon\'>&#127903; "+escapeHtml(couponText)+"</div>":"";'
         'app.innerHTML='
         '(msg?"<div class=\'msg "+(msg.ok?"msg-ok":"msg-err")+"\'>"+escapeHtml(msg.text)+"</div>":"")+'
         '"<div class=\'customer-box\'>"+'
@@ -3209,12 +3424,16 @@ async def cashier_stamp_page(customer_public_id: str):
         '"<div class=\'stamps\'>"+stampCount+" / "+DATA.stamp_goal+" stamps</div>"+'
         '"</div>"+'
         'rewardHtml+'
+        'couponHtml+'
         '"<button class=\'btn-primary\' id=\'stampBtn\'>Add Stamp</button>"+'
         '(rewardUnlocked?"<button class=\'btn-reward\' id=\'redeemBtn\'>Redeem Reward</button>":"")+'
+        '(couponText?"<button class=\'btn-coupon\' id=\'redeemCouponBtn\'>Redeem Coupon</button>":"")+'
         '"<button class=\'btn-secondary\' id=\'switchBtn\'>Not "+escapeHtml(staffName||"you")+"? Switch</button>";'
         'document.getElementById("stampBtn").addEventListener("click",doStamp);'
         'const redeemBtn=document.getElementById("redeemBtn");'
         'if(redeemBtn)redeemBtn.addEventListener("click",doRedeem);'
+        'const redeemCouponBtn=document.getElementById("redeemCouponBtn");'
+        'if(redeemCouponBtn)redeemCouponBtn.addEventListener("click",doRedeemCoupon);'
         'document.getElementById("switchBtn").addEventListener("click",function(){clearSession();renderLogin();});'
         '}'
 
@@ -3260,6 +3479,30 @@ async def cashier_stamp_page(customer_public_id: str):
         'clearSession();renderLogin(d.detail||"Session expired - log in again");'
         '}else{'
         'renderCard(s?s.name:"",{ok:false,text:d.detail||"Could not redeem"});'
+        '}'
+        '}catch(e){'
+        'renderCard(s?s.name:"",{ok:false,text:"Network error"});'
+        '}'
+        '}'
+
+        'async function doRedeemCoupon(){'
+        'const btn=document.getElementById("redeemCouponBtn");'
+        'btn.disabled=true;btn.textContent="Redeeming...";'
+        'const s=getSession();'
+        'try{'
+        'const res=await fetch("/api/v1/business/"+DATA.business_public_id+"/coupon/redeem",{'
+        'method:"POST",headers:authHeaders(),'
+        'body:JSON.stringify({customer_public_id:DATA.customer_public_id,'
+        'staff_pin:getSession()?undefined:cachedPin})'
+        '});'
+        'const d=await res.json();'
+        'if(res.ok){'
+        'couponText=null;'
+        'renderCard(s?s.name:"",{ok:true,text:"Coupon redeemed!"});'
+        '}else if(res.status===401){'
+        'clearSession();renderLogin(d.detail||"Session expired - log in again");'
+        '}else{'
+        'renderCard(s?s.name:"",{ok:false,text:d.detail||"Could not redeem coupon"});'
         '}'
         '}catch(e){'
         'renderCard(s?s.name:"",{ok:false,text:"Network error"});'
