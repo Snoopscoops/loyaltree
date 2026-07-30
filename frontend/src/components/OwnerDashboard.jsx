@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Announcements from './Announcements'
 import LoyaltyCardCustomizer from './LoyaltyCardCustomizer'
+import SubscriptionPayment from './SubscriptionPayment'
 
 // Turns an ISO timestamp into a short relative label like "2 days ago"
 function formatLastStamped(isoString) {
@@ -28,6 +29,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [branches, setBranches] = useState([])
   const [stats, setStats] = useState(null)
   const [program, setProgram] = useState(null)
+  const [subscription, setSubscription] = useState(null)
   const [loading, setLoading] = useState(true)
   const [showInviteModal, setShowInviteModal] = useState(false)
   const [showQRModal, setShowQRModal] = useState(false)
@@ -95,7 +97,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   const loadData = async () => {
     try {
-      const [bizRes, custRes, staffRes, statsRes, progRes, stampCountRes, branchRes] = await Promise.all([
+      const [bizRes, custRes, staffRes, statsRes, progRes, stampCountRes, branchRes, subRes] = await Promise.all([
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}`),
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers`),
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff`),
@@ -103,6 +105,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config`),
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff/stamp-counts`),
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}/branches`),
+        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/subscription`),
       ])
 
       const bizData = await bizRes.json().catch(() => null)
@@ -112,6 +115,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       const progData = await progRes.json().catch(() => null)
       const stampCountData = await stampCountRes.json().catch(() => [])
       const branchData = await branchRes.json().catch(() => [])
+      const subData = await subRes.json().catch(() => null)
 
       setBusiness(bizData)
       setCustomers(custData)
@@ -119,6 +123,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       setStats(statsData)
       setProgram(progData)
       setBranches(Array.isArray(branchData) ? branchData : [])
+      setSubscription(subData)
 
       if (Array.isArray(stampCountData)) {
         const map = {}
@@ -473,6 +478,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const confirmedStamps = customers.reduce((sum, c) => sum + (c.stamp_count || 0), 0)
   const unlockedRewards = customers.filter(c => c.reward_unlocked).length
   const growthStage = customers.length < 10 ? 'seedling' : customers.length < 50 ? 'sapling' : customers.length < 200 ? 'growing' : 'mature'
+  const subStatus = subscription?.subscription_status
+  const needsRenewal = subStatus === 'expiring_soon' || subStatus === 'expired'
 
   return (
     <div style={styles.container}>
@@ -487,6 +494,19 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         </div>
         <div style={styles.headerActions}>
           <span style={styles.planBadge}>{user?.business_name}</span>
+          {needsRenewal && (
+            <button
+              onClick={() => setActiveTab('billing')}
+              style={{
+                ...styles.navBtn,
+                ...(subStatus === 'expired' ? styles.renewalBtnExpired : styles.renewalBtnWarning),
+              }}
+            >
+              {subStatus === 'expired'
+                ? '⚠️ Subscription expired — Renew now'
+                : `⏰ Renews in ${subscription.days_left}d — Pay now`}
+            </button>
+          )}
           <button onClick={() => { setOnboardingStep(0); setShowOnboarding(true) }} style={styles.navBtn}>🎓 Setup Guide</button>
           <button onClick={() => setShowAnnouncements(true)} style={styles.navBtn}>📢 Announcements</button>
           <button onClick={() => navigate('/analytics')} style={styles.navBtn}>📊 Analytics</button>
@@ -549,6 +569,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           { id: 'customers', label: '🍃 Leaves', icon: '🍃' },
           { id: 'staff', label: '🌿 Team', icon: '🌿' },
           { id: 'program', label: '✏️ Edit Card', icon: '✏️' },
+          { id: 'billing', label: needsRenewal ? '💳 Billing ⚠️' : '💳 Billing', icon: '💳' },
         ].map(tab => (
           <button
             key={tab.id}
@@ -752,6 +773,10 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               </div>
             )}
           </div>
+        )}
+
+        {activeTab === 'billing' && (
+          <SubscriptionPayment API_BASE={API_BASE} businessSlug={user.business_slug} onPaid={loadData} />
         )}
       </div>
 
@@ -1237,6 +1262,16 @@ const styles = {
     fontSize: 13,
     fontWeight: 600,
     cursor: 'pointer',
+  },
+  renewalBtnWarning: {
+    background: '#fffbeb',
+    color: '#d97706',
+    border: '1.5px solid #fde68a',
+  },
+  renewalBtnExpired: {
+    background: '#fef2f2',
+    color: '#dc2626',
+    border: '1.5px solid #fecaca',
   },
   logoutBtn: {
     padding: '8px 16px',
