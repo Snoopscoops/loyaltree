@@ -417,7 +417,8 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                       <button
                         type="button"
                         onClick={() => updateBusiness(selected.public_id, { announcement_limit_adjustment: (detail.announcement_limit_adjustment || 0) + 1 })}
-                        style={styles.stepBtn}
+                        disabled={detail.announcements_per_month_effective >= 99}
+                        style={{ ...styles.stepBtn, ...(detail.announcements_per_month_effective >= 99 ? styles.stepBtnDisabled : {}) }}
                       >
                         +
                       </button>
@@ -701,6 +702,9 @@ const styles = {
     width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center',
     padding: 0, border: '1px solid #e2e8f0', borderRadius: 6, background: 'white',
     color: '#334155', fontSize: 14, fontWeight: 700, cursor: 'pointer', lineHeight: 1,
+  },
+  stepBtnDisabled: {
+    color: '#cbd5e1', cursor: 'not-allowed', background: '#f8fafc',
   },
   closeBtn: {
     padding: '10px 16px', background: '#f1f5f9', color: '#334155',

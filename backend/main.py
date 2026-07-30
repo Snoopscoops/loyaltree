@@ -159,13 +159,14 @@ def get_plan_features(plan: Optional[str]) -> dict:
     return SUBSCRIPTION_PLANS.get(plan or 'starter', SUBSCRIPTION_PLANS['starter'])
 
 def get_effective_announcement_limit(business: dict) -> Optional[int]:
-    """The plan's announcements_per_month, adjusted by whatever an admin has
-    manually granted or deducted for this specific business (businesses.
-    announcement_limit_adjustment, e.g. +3 as a goodwill bonus or -1 to rein
-    in an abuser) - see admin_update_business. Returns None for unlimited
-    (Pro's base is unlimited already and isn't adjustable), otherwise never
-    goes below 0 - a business can be reduced to no announcements this month,
-    not a negative allowance."""
+    """The plan's announcements_per_month (2/5/5 for Starter/Growth/Pro),
+    adjusted by whatever an admin has manually granted or deducted for this
+    specific business (businesses.announcement_limit_adjustment, e.g. +3 as
+    a goodwill bonus or -1 to rein in an abuser) - see admin_update_business.
+    Returns None only when the plan itself has no limit at all (there's no
+    such plan today, but the field supports it). Otherwise the result is
+    clamped to [0, 99] - never negative, and 99 is treated as a practical
+    ceiling an admin can raise a business to but not beyond."""
     base_limit = get_plan_features(business.get('plan')).get('announcements_per_month')
     if base_limit is None:
         return None
@@ -174,7 +175,7 @@ def get_effective_announcement_limit(business: dict) -> Optional[int]:
         adjustment = int(adjustment)
     except (TypeError, ValueError):
         adjustment = 0
-    return max(0, base_limit + adjustment)
+    return max(0, min(99, base_limit + adjustment))
 
 def branch_price_bracket(branch_count: int) -> str:
     """Maps an actual branch count to one of the pricing brackets shown on
