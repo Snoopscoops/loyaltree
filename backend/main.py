@@ -1125,12 +1125,20 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     return loyalty_object
 
 
-def sync_wallet_object(customer: dict, business: dict, program: dict):
+def sync_wallet_object(customer: dict, business: dict, program: dict,
+                        notify_header: str = None, notify_body: str = None,
+                        notify_message_id: str = None):
     """Push the customer's latest stamp count to Google Wallet.
     Google only creates its own copy of the loyaltyObject when the customer taps
     "Add to Google Wallet" - after that, changes in our DB never reach the saved
     pass unless we PATCH it here. Best-effort: never raises, so a Wallet API hiccup
-    never blocks the stamp/redeem response to the cashier."""
+    never blocks the stamp/redeem response to the cashier.
+
+    Pass notify_header/notify_body/notify_message_id to also fire a
+    TEXT_AND_NOTIFY addMessage call (via send_wallet_object_message) after the
+    patch succeeds - the PATCH alone silently updates the pass's data with no
+    visible notification to the customer. Omit them (as the owner's manual
+    dashboard stamp-count edit does) to keep the sync silent."""
     access_token = get_google_access_token()
     if not access_token:
         return
@@ -1146,6 +1154,8 @@ def sync_wallet_object(customer: dict, business: dict, program: dict):
             )
             if resp.status_code in (200, 201):
                 print(f"WALLET SYNC: updated {object_id}")
+                if notify_header and notify_message_id:
+                    send_wallet_object_message(object_id, notify_header, notify_body or '', notify_message_id)
             elif resp.status_code == 404:
                 print(f"WALLET SYNC: {object_id} not found - customer hasn't added it to their wallet yet")
             else:
@@ -3439,7 +3449,13 @@ async def add_stamp(public_id: str, req: StampRequest, authorization: str = Head
         supabase.table("customers").update(update_data).eq("id", customer.get("id")).execute()
         customer['stamp_count'] = new_count
         customer['reward_unlocked'] = reward_unlocked
-        sync_wallet_object(customer, business, program)
+        sync_wallet_object(
+            customer, business, program,
+            notify_header="Reward unlocked! 🎉" if reward_unlocked else "Stamp added ⭐",
+            notify_body=("You've unlocked your reward!" if reward_unlocked
+                         else f"{new_count}/{goal} stamps - keep it up!"),
+            notify_message_id=f"stamp-{customer.get('id')}-{new_count}-{int(datetime.utcnow().timestamp())}",
+        )
         sync_apple_wallet_pass(customer)
         log_stamp_event(business.get('id'), customer.get('id'), stamping_staff_id, stamping_branch_id)
     except Exception as e:
@@ -3567,7 +3583,12 @@ async def redeem_reward(public_id: str, req: RedeemRequest, authorization: str =
         }).eq("id", customer.get("id")).execute()
         customer['stamp_count'] = new_count
         customer['reward_unlocked'] = False
-        sync_wallet_object(customer, business, program)
+        sync_wallet_object(
+            customer, business, program,
+            notify_header="Reward redeemed ✅",
+            notify_body="Your reward has been redeemed - your card is reset and ready for more stamps.",
+            notify_message_id=f"redeem-{customer.get('id')}-{int(datetime.utcnow().timestamp())}",
+        )
         sync_apple_wallet_pass(customer)
         log_redemption_event(business.get('id'), customer.get('id'), redeeming_staff_id, redeeming_branch_id)
     except Exception as e:
