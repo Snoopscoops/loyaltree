@@ -3966,7 +3966,7 @@ async def customer_join_page(business_public_id: str):
             '"<p style=\'font-size:12px;color:#94a3b8;margin-top:8px;\'>Scan at checkout</p></div>"+'
             '"<div class=\'member-id\'><p>Your Member ID</p>"+'
             '"<code>"+escapeHtml(data.public_id)+"</code></div>"+'
-            '"<a href=\'"+API_BASE+"/api/v1/customer/"+escapeHtml(data.public_id)+"/apple-wallet-pass\" class=\'wallet-btn apple-btn\'>&#63743; Add to Apple Wallet</a>"+'
+            '"<a href=\'"+API_BASE+"/api/v1/customer/"+escapeHtml(data.public_id)+"/apple-wallet-pass\' class=\'wallet-btn apple-btn\'>&#63743; Add to Apple Wallet</a>"+'
             '"<div id=\'wallet-btn-container\' style=\'margin-bottom:12px;\'>"+'
             '"<p style=\'color:#94a3b8;font-size:13px;\'>Loading Google Wallet...</p></div>"+'
             '"<button onclick=\'doShare()\' class=\'share-btn\'>&#128279; Share Card</button>"+'
