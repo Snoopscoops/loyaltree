@@ -158,6 +158,24 @@ def get_plan_features(plan: Optional[str]) -> dict:
     Pro-only features."""
     return SUBSCRIPTION_PLANS.get(plan or 'starter', SUBSCRIPTION_PLANS['starter'])
 
+def get_effective_announcement_limit(business: dict) -> Optional[int]:
+    """The plan's announcements_per_month, adjusted by whatever an admin has
+    manually granted or deducted for this specific business (businesses.
+    announcement_limit_adjustment, e.g. +3 as a goodwill bonus or -1 to rein
+    in an abuser) - see admin_update_business. Returns None for unlimited
+    (Pro's base is unlimited already and isn't adjustable), otherwise never
+    goes below 0 - a business can be reduced to no announcements this month,
+    not a negative allowance."""
+    base_limit = get_plan_features(business.get('plan')).get('announcements_per_month')
+    if base_limit is None:
+        return None
+    adjustment = business.get('announcement_limit_adjustment') or 0
+    try:
+        adjustment = int(adjustment)
+    except (TypeError, ValueError):
+        adjustment = 0
+    return max(0, base_limit + adjustment)
+
 def branch_price_bracket(branch_count: int) -> str:
     """Maps an actual branch count to one of the pricing brackets shown on
     the marketing page. Same bracket used regardless of which plan (feature
@@ -532,6 +550,7 @@ class AdminBusinessUpdate(BaseModel):
     phone: Optional[str] = None
     business_type: Optional[str] = None
     logo_url: Optional[str] = None
+    announcement_limit_adjustment: Optional[int] = None  # +/- adjustment to the plan's announcements_per_month for this business only
 
 class RedeemRequest(BaseModel):
     customer_public_id: str
@@ -789,6 +808,8 @@ def business_summary(biz: dict) -> dict:
         "plan": plan,
         "plan_label": SUBSCRIPTION_PLANS.get(plan, {}).get("label", plan),
         "plan_features": get_plan_features(plan),
+        "announcement_limit_adjustment": biz.get("announcement_limit_adjustment") or 0,
+        "announcements_per_month_effective": get_effective_announcement_limit(biz),
         "branch_count": branch_count,
         "price_month": get_price_for_plan(plan, branch_count),
         "business_type": biz.get("business_type", "other"),
@@ -2100,6 +2121,8 @@ async def admin_update_business(public_id: str, update: AdminBusinessUpdate, _: 
         data['subscription_expires_at'] = update.subscription_expires_at
     if update.address is not None:
         data['address'] = update.address
+    if update.announcement_limit_adjustment is not None:
+        data['announcement_limit_adjustment'] = update.announcement_limit_adjustment
     if not data:
         raise HTTPException(status_code=400, detail="No fields to update")
     data['updated_at'] = datetime.utcnow().isoformat()
@@ -2734,7 +2757,7 @@ async def get_plan_info(public_id: str):
     features = get_plan_features(plan)
 
     announcements_used = 0
-    limit = features.get('announcements_per_month')
+    limit = get_effective_announcement_limit(business)
     if limit is not None:
         month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         try:
@@ -3107,8 +3130,7 @@ async def create_announcement(public_id: str, ann: AnnouncementCreate):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
-    features = get_plan_features(business.get('plan'))
-    limit = features.get('announcements_per_month')
+    limit = get_effective_announcement_limit(business)
     if limit is not None:
         month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         try:

@@ -389,6 +389,42 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 <DetailRow label="Branches" value={detail.branch_count} />
                 <DetailRow label="Price" value={detail.price_month != null ? `₱${detail.price_month.toLocaleString()}/mo` : '—'} />
                 <div style={styles.detailRow}>
+                  <span style={styles.detailLabel}>
+                    Announcements/mo
+                    {detail.plan_features?.announcements_per_month != null && (
+                      <span style={styles.announcementBase}> (plan base: {detail.plan_features.announcements_per_month})</span>
+                    )}
+                  </span>
+                  {detail.plan_features?.announcements_per_month == null ? (
+                    <span style={styles.detailValue}>Unlimited</span>
+                  ) : (
+                    <div style={styles.announcementAdjustRow}>
+                      <button
+                        type="button"
+                        onClick={() => updateBusiness(selected.public_id, { announcement_limit_adjustment: (detail.announcement_limit_adjustment || 0) - 1 })}
+                        style={styles.stepBtn}
+                      >
+                        −
+                      </button>
+                      <span style={styles.announcementAdjustValue}>
+                        {detail.announcements_per_month_effective}
+                        {detail.announcement_limit_adjustment ? (
+                          <span style={styles.announcementBase}>
+                            {' '}({detail.announcement_limit_adjustment > 0 ? '+' : ''}{detail.announcement_limit_adjustment} admin)
+                          </span>
+                        ) : null}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => updateBusiness(selected.public_id, { announcement_limit_adjustment: (detail.announcement_limit_adjustment || 0) + 1 })}
+                        style={styles.stepBtn}
+                      >
+                        +
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <div style={styles.detailRow}>
                   <span style={styles.detailLabel}>Last paid</span>
                   <input
                     type="date"
@@ -651,6 +687,20 @@ const styles = {
   addressInput: {
     padding: '4px 8px', border: '1px solid #e2e8f0', borderRadius: 6,
     fontSize: 12, color: '#0f172a', width: 200, textAlign: 'right',
+  },
+  announcementAdjustRow: {
+    display: 'flex', alignItems: 'center', gap: 8,
+  },
+  announcementAdjustValue: {
+    color: '#0f172a', fontWeight: 600, fontSize: 13, minWidth: 20, textAlign: 'center',
+  },
+  announcementBase: {
+    color: '#94a3b8', fontWeight: 400, fontSize: 11.5,
+  },
+  stepBtn: {
+    width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center',
+    padding: 0, border: '1px solid #e2e8f0', borderRadius: 6, background: 'white',
+    color: '#334155', fontSize: 14, fontWeight: 700, cursor: 'pointer', lineHeight: 1,
   },
   closeBtn: {
     padding: '10px 16px', background: '#f1f5f9', color: '#334155',
