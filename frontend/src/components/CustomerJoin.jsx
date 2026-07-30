@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useParams } from 'react-router-dom'
 
 function CustomerJoin({ API_BASE }) {
@@ -17,6 +17,42 @@ function CustomerJoin({ API_BASE }) {
   const [customerId, setCustomerId] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  // Wallet data (Google save_url + Apple pass URL) for the two "Add to
+  // Wallet" buttons on the success screen - fetched right after signup so
+  // customers can add the card in one tap instead of clicking through to
+  // the separate /wallet/{id} page first.
+  const [walletData, setWalletData] = useState(null)
+  const [walletLoading, setWalletLoading] = useState(false)
+
+  useEffect(() => {
+    if (!submitted || !customerId) return
+    setWalletLoading(true)
+    fetch(`${API_BASE}/api/v1/customer/${customerId}/wallet-pass`)
+      .then(r => r.json())
+      .then(data => {
+        setWalletData(data)
+        setWalletLoading(false)
+      })
+      .catch(() => {
+        // Apple Wallet link below doesn't depend on this fetch, so it
+        // still works even if this call fails - only the Google Wallet
+        // button needs the JWT this returns.
+        setWalletLoading(false)
+      })
+  }, [submitted, customerId, API_BASE])
+
+  const addToGoogleWallet = () => {
+    if (walletData?.save_url && walletData.save_url.includes('pay.google.com')) {
+      window.open(walletData.save_url, '_blank')
+    } else {
+      alert('Save this page to your home screen for quick access!')
+    }
+  }
+
+  // Same reasoning as WalletPass.jsx: Apple Wallet has no JS API to
+  // trigger from, so this is a plain <a href> to the signed .pkpass file -
+  // Safari on iOS/macOS shows the native "Add to Apple Wallet" sheet.
+  const appleWalletUrl = `${API_BASE}/api/v1/customer/${customerId}/apple-wallet-pass`
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -61,9 +97,20 @@ function CustomerJoin({ API_BASE }) {
             <p style={styles.infoLabel}>Your Member ID</p>
             <p style={styles.infoValue}>Show this QR code on every visit</p>
           </div>
-          <button 
+
+          <a href={appleWalletUrl} style={{ ...styles.walletBtn, ...styles.appleBtn }}>
+            Add to Apple Wallet
+          </a>
+          <button
+            onClick={addToGoogleWallet}
+            disabled={walletLoading}
+            style={{ ...styles.walletBtn, background: '#4285f4', marginTop: 10 }}
+          >
+            {walletLoading ? 'Preparing card...' : 'Add to Google Wallet'}
+          </button>
+          <button
             onClick={() => { window.location.href = `${API_BASE}/wallet/${customerId}` }}
-            style={styles.walletBtn}
+            style={{ ...styles.walletBtn, ...styles.secondaryBtn, marginTop: 10 }}
           >
             📱 View My Digital Card
           </button>
@@ -310,6 +357,8 @@ const styles = {
     marginTop: 16,
   },
   walletBtn: {
+    display: 'block',
+    boxSizing: 'border-box',
     width: '100%',
     padding: '16px',
     background: 'linear-gradient(135deg, #0d9488, #0f766e)',
@@ -320,6 +369,16 @@ const styles = {
     fontWeight: 700,
     cursor: 'pointer',
     marginTop: 20,
+    textAlign: 'center',
+    textDecoration: 'none',
+  },
+  appleBtn: {
+    background: '#000000',
+  },
+  secondaryBtn: {
+    background: 'white',
+    color: '#0f766e',
+    border: '1.5px solid #e2e8f0',
   },
 }
 
