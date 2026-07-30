@@ -5,6 +5,7 @@ import uuid
 import base64
 import json
 import hashlib
+import hmac
 import html as html_lib
 from datetime import datetime, timedelta
 from typing import Optional, List
@@ -32,6 +33,28 @@ DEFAULT_LOGO_URL = os.getenv('DEFAULT_LOGO_URL', 'https://placehold.co/300x300/0
 # for this role on purpose. If unset, the admin routes are disabled.
 SUPER_ADMIN_EMAIL = os.getenv('SUPER_ADMIN_EMAIL', '')
 SUPER_ADMIN_PASSWORD = os.getenv('SUPER_ADMIN_PASSWORD', '')
+
+# PayMongo (QR Ph subscription payments). Secret key is server-side only -
+# never send it to the frontend. Webhook secret is the separate "whsec_..."
+# value PayMongo shows you when you register the webhook endpoint on their
+# dashboard (Developers > Webhooks) - it's used only to verify that
+# incoming webhook calls really came from PayMongo, and is different from
+# the API secret key above.
+PAYMONGO_SECRET_KEY = os.getenv('PAYMONGO_SECRET_KEY', '')
+PAYMONGO_WEBHOOK_SECRET = os.getenv('PAYMONGO_WEBHOOK_SECRET', '')
+PAYMONGO_API_BASE = 'https://api.paymongo.com/v1'
+SUBSCRIPTION_PERIOD_DAYS = 30  # how long a successful payment extends access for
+
+# Subscription expiry reminder emails, sent via Resend (resend.com). Get
+# RESEND_API_KEY from Resend's dashboard once you've verified a sending
+# domain there. SUBSCRIPTION_REMINDER_FROM must be an address on that
+# verified domain (e.g. 'billing@yourdomain.com') - Resend rejects sends
+# from unverified domains. FRONTEND_URL is optional and only used to put a
+# "log in to pay" link in the email; if unset, the email just omits the link.
+RESEND_API_KEY = os.getenv('RESEND_API_KEY', '')
+SUBSCRIPTION_REMINDER_FROM = os.getenv('SUBSCRIPTION_REMINDER_FROM', 'billing@loyaltytree.app')
+FRONTEND_URL = os.getenv('FRONTEND_URL', '')
+SUBSCRIPTION_REMINDER_RESEND_DAYS = 3  # don't re-email more often than this while still expiring_soon/expired
 
 # Subscription tiers available to businesses. This is the single source of
 # truth the admin dashboard AND the API's feature gates read from - nothing
@@ -133,6 +156,172 @@ def determine_plan_from_branch_count(branch_count: int) -> str:
     if branch_count <= 3:
         return 'growth'
     return 'pro'
+
+# --- PayMongo QR Ph helpers -------------------------------------------------
+# Manual flow (no BIR/DTI-gated Checkout Session needed): we drive the raw
+# Payment Intent workflow ourselves - create a Payment Intent, create a qrph
+# Payment Method, attach them together, and PayMongo hands back a QR code
+# image the customer (the business owner, in our case) scans to pay. The
+# secret key is used for all three calls since this happens entirely on our
+# server - no card data is ever collected, so there's no need to involve the
+# public key or the browser at all.
+
+def paymongo_auth_header() -> str:
+    token = base64.b64encode(f"{PAYMONGO_SECRET_KEY}:".encode()).decode()
+    return f"Basic {token}"
+
+def create_qrph_checkout(amount_php: float, description: str, billing_name: str,
+                          billing_email: str, billing_phone: Optional[str],
+                          metadata: dict) -> dict:
+    """Creates a PayMongo Payment Intent + qrph Payment Method and attaches
+    them. Returns {intent_id, status, qr_image_url}. Raises HTTPException on
+    any failure so callers don't have to duplicate error handling."""
+    import httpx
+
+    if not PAYMONGO_SECRET_KEY:
+        raise HTTPException(status_code=503, detail="Payment processing is not configured on this server.")
+
+    amount_centavos = int(round(amount_php * 100))
+    headers = {"Authorization": paymongo_auth_header(), "Content-Type": "application/json"}
+
+    try:
+        with httpx.Client(timeout=20) as client:
+            intent_res = client.post(
+                f"{PAYMONGO_API_BASE}/payment_intents",
+                headers=headers,
+                json={"data": {"attributes": {
+                    "amount": amount_centavos,
+                    "currency": "PHP",
+                    "payment_method_allowed": ["qrph"],
+                    "capture_type": "automatic",
+                    "description": description[:255],
+                    "metadata": metadata,
+                }}},
+            )
+            if intent_res.status_code >= 400:
+                raise HTTPException(status_code=502, detail=f"PayMongo error creating payment intent: {intent_res.text}")
+            intent = intent_res.json()["data"]
+            intent_id = intent["id"]
+            client_key = intent["attributes"]["client_key"]
+
+            pm_res = client.post(
+                f"{PAYMONGO_API_BASE}/payment_methods",
+                headers=headers,
+                json={"data": {"attributes": {
+                    "type": "qrph",
+                    "billing": {
+                        "name": billing_name,
+                        "email": billing_email,
+                        "phone": billing_phone,
+                    },
+                }}},
+            )
+            if pm_res.status_code >= 400:
+                raise HTTPException(status_code=502, detail=f"PayMongo error creating payment method: {pm_res.text}")
+            payment_method_id = pm_res.json()["data"]["id"]
+
+            attach_res = client.post(
+                f"{PAYMONGO_API_BASE}/payment_intents/{intent_id}/attach",
+                headers=headers,
+                json={"data": {"attributes": {
+                    "payment_method": payment_method_id,
+                    "client_key": client_key,
+                }}},
+            )
+            if attach_res.status_code >= 400:
+                raise HTTPException(status_code=502, detail=f"PayMongo error attaching payment method: {attach_res.text}")
+            attached = attach_res.json()["data"]["attributes"]
+            next_action = attached.get("next_action") or {}
+            qr_image_url = (next_action.get("code") or {}).get("image_url")
+
+            return {
+                "intent_id": intent_id,
+                "status": attached.get("status"),
+                "qr_image_url": qr_image_url,
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach PayMongo: {e}")
+
+def verify_paymongo_signature(raw_body: bytes, signature_header: str) -> bool:
+    """Verifies the Paymongo-Signature header per PayMongo's webhook spec:
+    header is 't=<timestamp>,te=<test-mode sig>,li=<live-mode sig>'; the
+    signed payload is '<timestamp>.<raw body>', HMAC-SHA256'd with the
+    webhook secret (not the API secret key). We check both the 'li' and
+    'te' values so this works against both live and test-mode webhooks."""
+    if not PAYMONGO_WEBHOOK_SECRET or not signature_header:
+        return False
+    parts = {}
+    for chunk in signature_header.split(","):
+        if "=" in chunk:
+            k, v = chunk.split("=", 1)
+            parts[k.strip()] = v.strip()
+    timestamp = parts.get("t")
+    if not timestamp:
+        return False
+    signed_payload = f"{timestamp}.{raw_body.decode('utf-8')}"
+    computed = hmac.new(PAYMONGO_WEBHOOK_SECRET.encode(), signed_payload.encode(), hashlib.sha256).hexdigest()
+    for key in ("li", "te"):
+        candidate = parts.get(key)
+        if candidate and hmac.compare_digest(candidate, computed):
+            return True
+    return False
+
+# --- Email helper (Resend) --------------------------------------------------
+
+def send_email(to_email: str, subject: str, html_body: str) -> bool:
+    """Sends a transactional email via Resend's API. Returns False (never
+    raises) on any failure so a mail hiccup never breaks the caller - same
+    best-effort pattern as send_wallet_object_message elsewhere in this file."""
+    import httpx
+
+    if not RESEND_API_KEY or not to_email:
+        return False
+    try:
+        with httpx.Client(timeout=15) as client:
+            res = client.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {RESEND_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "from": SUBSCRIPTION_REMINDER_FROM,
+                    "to": [to_email],
+                    "subject": subject,
+                    "html": html_body,
+                },
+            )
+            return res.status_code < 300
+    except Exception as e:
+        print(f"EMAIL send error: {e}")
+        return False
+
+def build_subscription_reminder_email(business: dict, days_left: Optional[int], price: float) -> tuple:
+    """Returns (subject, html_body) for a subscription reminder, worded
+    differently depending on whether access has already lapsed."""
+    name = html_lib.escape(business.get('name', 'there'))
+    login_html = f'<p><a href="{html_lib.escape(FRONTEND_URL)}/login" style="color:#0d9488;font-weight:600;">Log in to pay now</a></p>' if FRONTEND_URL else ''
+
+    if days_left is not None and days_left < 0:
+        subject = f"Your LoyaltyTree subscription has expired"
+        body = (
+            f"<p>Hi {name},</p>"
+            f"<p>Your LoyaltyTree subscription expired on {html_lib.escape(str(business.get('subscription_expires_at') or ''))}. "
+            f"Pay ₱{price:,.2f} via QR Ph from your dashboard's Billing tab to restore access.</p>"
+            f"{login_html}"
+        )
+    else:
+        subject = f"Your LoyaltyTree subscription expires in {days_left} day{'s' if days_left != 1 else ''}"
+        body = (
+            f"<p>Hi {name},</p>"
+            f"<p>Your subscription expires on {html_lib.escape(str(business.get('subscription_expires_at') or ''))} "
+            f"({days_left} day{'s' if days_left != 1 else ''} from now). "
+            f"Pay ₱{price:,.2f} via QR Ph from your dashboard's Billing tab to avoid any interruption.</p>"
+            f"{login_html}"
+        )
+    return subject, body
 
 # Shared secret for the /api/v1/cron/* endpoints (birthday greetings,
 # win-back messages). These are meant to be hit by an external scheduler
@@ -1488,6 +1677,204 @@ async def get_business_api(public_id: str):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
     return business
+
+# SUBSCRIPTION PAYMENTS (PayMongo QR Ph)
+# Flow: owner opens their billing page -> frontend POSTs to /checkout -> we
+# create a PayMongo Payment Intent for their current plan's price and hand
+# back a QR code image to display -> owner scans and pays with their
+# banking/e-wallet app -> PayMongo calls our /webhooks/paymongo endpoint ->
+# we update businesses.last_paid_at / subscription_expires_at automatically.
+# The frontend can poll GET /subscription while the QR is on screen to know
+# the moment the webhook has landed.
+
+@app.post("/api/v1/business/{public_id}/subscription/checkout")
+async def create_subscription_checkout(public_id: str):
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Database not connected")
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    try:
+        branch_res = supabase.table("branches").select("id", count="exact").eq("business_id", business.get("id")).execute()
+        branch_count = branch_res.count or 1
+    except Exception:
+        branch_count = 1
+
+    plan = business.get('plan') or 'starter'
+    price = get_price_for_plan(plan, branch_count)
+    plan_label = SUBSCRIPTION_PLANS.get(plan, {}).get('label', plan)
+    description = f"LoyaltyTree {plan_label} subscription - {business.get('name', '')}"
+
+    checkout = create_qrph_checkout(
+        amount_php=price,
+        description=description,
+        billing_name=business.get('name') or 'Business Owner',
+        billing_email=business.get('email') or '',
+        billing_phone=business.get('phone'),
+        metadata={'business_public_id': public_id, 'plan': plan},
+    )
+
+    payment_public_id = generate_public_id()
+    try:
+        supabase.table("subscription_payments").insert({
+            'public_id': payment_public_id,
+            'business_id': business.get('id'),
+            'paymongo_payment_intent_id': checkout['intent_id'],
+            'amount': price,
+            'plan': plan,
+            'branch_count': branch_count,
+            'status': 'pending',
+            'created_at': datetime.utcnow().isoformat(),
+        }).execute()
+    except Exception as e:
+        print(f"SUBSCRIPTION PAYMENT LOG error: {e}")  # not fatal - metadata on the intent itself is the webhook's fallback lookup
+
+    return {
+        "payment_intent_id": checkout['intent_id'],
+        "status": checkout['status'],
+        "qr_image_url": checkout['qr_image_url'],
+        "amount": price,
+        "plan": plan,
+        "plan_label": plan_label,
+        "expires_in_seconds": 600,  # PayMongo QR Ph codes expire ~10 minutes after generation
+    }
+
+@app.get("/api/v1/business/{public_id}/subscription")
+async def get_subscription_status(public_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    subscription_expires_at = business.get('subscription_expires_at')
+    subscription_status = 'none'
+    days_left = None
+    if subscription_expires_at:
+        expires = _parse_ts(subscription_expires_at)
+        if expires:
+            days_left = (expires - datetime.utcnow()).days
+            if days_left < 0:
+                subscription_status = 'expired'
+            elif days_left <= 7:
+                subscription_status = 'expiring_soon'
+            else:
+                subscription_status = 'active'
+
+    latest_payment = None
+    try:
+        res = (
+            supabase.table("subscription_payments")
+            .select("*")
+            .eq("business_id", business.get("id"))
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        latest_payment = (res.data or [None])[0]
+    except Exception:
+        pass
+
+    return {
+        "plan": business.get('plan', 'starter'),
+        "last_paid_at": business.get('last_paid_at'),
+        "subscription_expires_at": subscription_expires_at,
+        "subscription_status": subscription_status,
+        "days_left": days_left,
+        "latest_payment": latest_payment,
+    }
+
+@app.get("/api/v1/business/{public_id}/subscription/payments")
+async def list_subscription_payments(public_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    try:
+        res = (
+            supabase.table("subscription_payments")
+            .select("*")
+            .eq("business_id", business.get("id"))
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return res.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.post("/api/v1/webhooks/paymongo")
+async def paymongo_webhook(request: Request):
+    raw_body = await request.body()
+    signature_header = request.headers.get("paymongo-signature", "")
+
+    if not verify_paymongo_signature(raw_body, signature_header):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
+    try:
+        event = json.loads(raw_body)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid payload")
+
+    envelope = event.get("data", {}).get("attributes", {})
+    event_type = envelope.get("type", "")
+    resource = envelope.get("data", {}) or {}
+    resource_attrs = resource.get("attributes", {}) or {}
+    metadata = resource_attrs.get("metadata") or {}
+    payment_intent_id = resource_attrs.get("payment_intent_id") or resource.get("id")
+
+    print(f"PAYMONGO WEBHOOK: {event_type} intent={payment_intent_id} metadata={metadata}")
+
+    if not supabase:
+        return {"received": True}
+
+    business = None
+    business_public_id = metadata.get("business_public_id")
+    if business_public_id:
+        business = safe_get_business(business_public_id)
+    if not business and payment_intent_id:
+        try:
+            row = (
+                supabase.table("subscription_payments")
+                .select("*")
+                .eq("paymongo_payment_intent_id", payment_intent_id)
+                .maybe_single()
+                .execute()
+                .data
+            )
+            if row:
+                business = safe_get_business_by_id(row.get("business_id"))
+        except Exception:
+            pass
+
+    if event_type == "payment.paid":
+        if business:
+            now = datetime.utcnow()
+            new_expiry = (now + timedelta(days=SUBSCRIPTION_PERIOD_DAYS)).date().isoformat()
+            try:
+                supabase.table("businesses").update({
+                    "last_paid_at": now.date().isoformat(),
+                    "subscription_expires_at": new_expiry,
+                }).eq("id", business.get("id")).execute()
+            except Exception as e:
+                print(f"WEBHOOK business update error: {e}")
+            try:
+                supabase.table("subscription_payments").update({
+                    "status": "paid",
+                    "paymongo_payment_id": resource.get("id"),
+                    "paid_at": now.isoformat(),
+                }).eq("paymongo_payment_intent_id", payment_intent_id).execute()
+            except Exception as e:
+                print(f"WEBHOOK payment log update error: {e}")
+        else:
+            print(f"WEBHOOK payment.paid - could not match a business for intent {payment_intent_id}")
+
+    elif event_type in ("payment.failed", "qrph.expired"):
+        try:
+            supabase.table("subscription_payments").update({
+                "status": "failed" if event_type == "payment.failed" else "expired",
+            }).eq("paymongo_payment_intent_id", payment_intent_id).execute()
+        except Exception as e:
+            print(f"WEBHOOK failure log update error: {e}")
+
+    return {"received": True}
 
 @app.get("/api/v1/customer/{public_id}")
 async def get_customer_api(public_id: str):
@@ -3872,6 +4259,63 @@ async def run_win_back(_: bool = Depends(require_cron)):
                     pass
             else:
                 errors += 1
+
+    return {"sent": sent, "skipped_recently_sent": skipped, "errors": errors}
+
+@app.post("/api/v1/cron/subscription-reminders")
+async def run_subscription_reminders(_: bool = Depends(require_cron)):
+    """Emails an owner when their subscription is within 7 days of expiring,
+    or has already expired - at most once every SUBSCRIPTION_REMINDER_RESEND_DAYS
+    while that condition holds, so this is safe to run daily. Point an
+    external scheduler at this the same way as the two cron jobs above."""
+    if not RESEND_API_KEY:
+        raise HTTPException(status_code=503, detail="RESEND_API_KEY is not configured on this server")
+
+    now = datetime.utcnow()
+    resend_cutoff = now - timedelta(days=SUBSCRIPTION_REMINDER_RESEND_DAYS)
+    sent, skipped, errors = 0, 0, 0
+
+    try:
+        businesses = supabase.table("businesses").select("*").eq("status", "ACTIVE").execute().data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    for business in businesses:
+        expires_raw = business.get('subscription_expires_at')
+        if not expires_raw:
+            continue  # never paid yet - nothing to remind about here
+        expires = _parse_ts(expires_raw)
+        if not expires:
+            continue
+        days_left = (expires - now).days
+        if days_left > 7:
+            continue  # still comfortably active
+
+        last_sent = _parse_ts(business.get('last_subscription_reminder_sent_at'))
+        if last_sent and last_sent > resend_cutoff:
+            skipped += 1
+            continue
+
+        if not business.get('email'):
+            continue
+
+        try:
+            branch_res = supabase.table("branches").select("id", count="exact").eq("business_id", business.get("id")).execute()
+            branch_count = branch_res.count or 1
+        except Exception:
+            branch_count = 1
+        price = get_price_for_plan(business.get('plan'), branch_count)
+
+        subject, html_body = build_subscription_reminder_email(business, days_left, price)
+        ok = send_email(business.get('email'), subject, html_body)
+        if ok:
+            sent += 1
+            try:
+                supabase.table("businesses").update({'last_subscription_reminder_sent_at': now.isoformat()}).eq("id", business.get("id")).execute()
+            except Exception:
+                pass
+        else:
+            errors += 1
 
     return {"sent": sent, "skipped_recently_sent": skipped, "errors": errors}
 
