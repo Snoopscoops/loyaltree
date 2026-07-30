@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
+import logo256 from './logo-256.png'
 
 function LoginPage({ API_BASE, onLogin }) {
   const navigate = useNavigate()
@@ -48,7 +49,7 @@ function LoginPage({ API_BASE, onLogin }) {
     <div style={styles.container}>
       <div style={styles.card}>
         <div style={styles.brand}>
-          <span style={styles.logo}>🌳</span>
+          <img src={logo256} alt="LoyaltyTree" style={styles.logo} />
           <h1 style={styles.title}>LoyaltyTree</h1>
           <p style={styles.tagline}>Where businesses grow with customers</p>
         </div>
@@ -109,9 +110,11 @@ const styles = {
     marginBottom: 32,
   },
   logo: {
-    fontSize: 56,
+    width: 72,
+    height: 72,
+    borderRadius: '50%',
     display: 'block',
-    marginBottom: 8,
+    margin: '0 auto 8px',
   },
   title: {
     margin: 0,

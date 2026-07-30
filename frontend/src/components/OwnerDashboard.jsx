@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import Announcements from './Announcements'
 import LoyaltyCardCustomizer from './LoyaltyCardCustomizer'
 import SubscriptionPayment from './SubscriptionPayment'
+import logo192 from './logo-192.png'
+import logo64 from './logo-64.png'
 
 // Turns an ISO timestamp into a short relative label like "2 days ago"
 function formatLastStamped(isoString) {
@@ -486,7 +488,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       {/* Header */}
       <header style={styles.header}>
         <div style={styles.brand}>
-          <span style={styles.logo}>🌳</span>
+          <img src={logo192} alt="LoyaltyTree" style={styles.logo} />
           <div>
             <h1 style={styles.brandName}>LoyaltyTree</h1>
             <p style={styles.brandTagline}>Where businesses grow with customers</p>
@@ -826,7 +828,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               background: `linear-gradient(135deg, ${program?.primary_color || '#0d9488'} 0%, ${program?.primary_color || '#14b8a6'} 100%)`,
             }}>
               <div style={styles.cardHeader}>
-                <span style={styles.cardLogo}>🌳</span>
+                <img src={logo64} alt="LoyaltyTree" style={styles.cardLogo} />
                 <span style={styles.cardBusiness}>{user?.business_name}</span>
               </div>
               <div style={styles.cardBody}>
@@ -1226,7 +1228,10 @@ const styles = {
     gap: 12,
   },
   logo: {
-    fontSize: 36,
+    width: 40,
+    height: 40,
+    borderRadius: '50%',
+    display: 'block',
   },
   brandName: {
     margin: 0,
@@ -1726,7 +1731,12 @@ const styles = {
     paddingBottom: 12,
   },
   cardLogo: {
-    fontSize: 28,
+    width: 28,
+    height: 28,
+    borderRadius: '50%',
+    background: 'white',
+    padding: 2,
+    display: 'block',
   },
   cardBusiness: {
     fontSize: 16,

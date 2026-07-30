@@ -1,5 +1,7 @@
 import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import logo192 from './logo-192.png'
+import logo64 from './logo-64.png'
 
 const FEATURES = [
   {
@@ -208,7 +210,7 @@ function HomePage({ onNavigateLogin }) {
     <div style={styles.page}>
       <header style={styles.nav}>
         <div style={styles.brand}>
-          <span style={styles.logo}>🌳</span>
+          <img src={logo192} alt="LoyaltyTree" style={styles.logo} />
           <span style={styles.brandName}>LoyaltyTree</span>
         </div>
         <button onClick={goToLogin} style={styles.navBtn}>Business Login</button>
@@ -376,7 +378,10 @@ function HomePage({ onNavigateLogin }) {
       </section>
 
       <footer style={styles.footer}>
-        <span>🌳 LoyaltyTree</span>
+        <span style={styles.footerBrand}>
+          <img src={logo64} alt="LoyaltyTree" style={styles.footerLogo} />
+          LoyaltyTree
+        </span>
         <span style={styles.footerNote}>Marketing, retention, and zero-waste loyalty &mdash; automated</span>
       </footer>
 
@@ -479,7 +484,7 @@ const styles = {
     position: 'sticky', top: 0, zIndex: 10, borderBottom: '1px solid rgba(13,148,136,0.1)',
   },
   brand: { display: 'flex', alignItems: 'center', gap: 10 },
-  logo: { fontSize: 26 },
+  logo: { width: 32, height: 32, borderRadius: '50%', display: 'block' },
   brandName: { fontWeight: 700, fontSize: 18, color: '#0f766e' },
   navBtn: {
     padding: '10px 20px', background: '#0d9488', color: 'white', border: 'none',
@@ -595,6 +600,8 @@ const styles = {
     padding: '24px 32px', fontSize: 13, color: '#94a3b8', flexWrap: 'wrap', gap: 8,
   },
   footerNote: { fontSize: 12, color: '#cbd5e1' },
+  footerBrand: { display: 'flex', alignItems: 'center', gap: 6 },
+  footerLogo: { width: 18, height: 18, borderRadius: '50%', display: 'block' },
 
   // Comparison section
   comparisonIntro: {

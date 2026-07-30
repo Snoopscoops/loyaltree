@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import SubscriptionPayment from './SubscriptionPayment'
+import logo128 from './logo-128.png'
 
 // Mirrors the backend's branch_price_bracket() - price scales with branch
 // count independently of which plan (feature tier) is chosen.
@@ -108,9 +109,7 @@ function Signup({ API_BASE }) {
   return (
     <div style={styles.page}>
       <div style={styles.card}>
-        <div style={styles.logoBox}>
-          <span style={styles.logoIcon}>🌳</span>
-        </div>
+        <img src={logo128} alt="LoyaltyTree" style={styles.logoBox} />
         <h1 style={styles.title}>Get Started</h1>
         <p style={styles.subtitle}>Create your business account</p>
 
@@ -232,15 +231,9 @@ const styles = {
   logoBox: {
     width: 64,
     height: 64,
-    background: 'linear-gradient(135deg, #0d9488, #0f766e)',
-    borderRadius: 16,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
+    borderRadius: '50%',
+    display: 'block',
     margin: '0 auto 24px',
-  },
-  logoIcon: {
-    fontSize: 32,
   },
   title: {
     textAlign: 'center',
