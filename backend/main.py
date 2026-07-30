@@ -1291,10 +1291,10 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict) -> dict
         'authenticationToken': apple_pass_auth_token(cust_public_id),
         'storeCard': {
             'headerFields': [
-                {'key': 'stamps', 'label': 'STAMPS', 'value': f'{stamps}/{stamp_goal}'}
+                {'key': 'stamps', 'label': 'STAMPS', 'value': f'{stamps}/{stamp_goal}', 'changeMessage': 'Stamp added! You now have %@ stamps.'}
             ],
             'primaryFields': [
-                {'key': 'reward', 'label': 'REWARD', 'value': '🎉 Ready to redeem!' if reward_unlocked else reward_name}
+                {'key': 'reward', 'label': 'REWARD', 'value': '🎉 Ready to redeem!' if reward_unlocked else reward_name, 'changeMessage': '%@'}
             ],
             'secondaryFields': [
                 {'key': 'member', 'label': 'MEMBER', 'value': cust_name}
@@ -4731,7 +4731,7 @@ async def apple_list_updated_serials(device_library_identifier: str, pass_type_i
     return {"serialNumbers": serials, "lastUpdated": datetime.utcnow().isoformat()}
 
 @app.get("/api/v1/apple-wallet/v1/passes/{pass_type_identifier}/{serial_number}")
-async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, authorization: Optional[str] = Header(None)):
+async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, authorization: Optional[str] = Header(None), if_modified_since: Optional[str] = Header(None, alias="If-Modified-Since")):
     if not apple_auth_ok(serial_number, authorization):
         raise HTTPException(status_code=401, detail="Unauthorized")
     customer = safe_get_customer(serial_number)
@@ -4740,11 +4740,23 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
     business = safe_get_business_by_id(customer.get('business_id'))
     if not business:
         raise HTTPException(status_code=404, detail="Not found")
+
+    last_modified = customer.get('updated_at') or datetime.utcnow().isoformat()
+
+    # Wallet echoes back whatever we previously sent as Last-Modified (see
+    # below) as If-Modified-Since on the next check. If the customer's data
+    # hasn't changed since then, a 304 with no body is required here - Apple's
+    # own device logs flag it as a web service error when this is skipped and
+    # the full (unchanged) pass is sent back every time instead.
+    last_modified_ts = _parse_ts(last_modified)
+    since_ts = _parse_ts(if_modified_since)
+    if last_modified_ts and since_ts and last_modified_ts <= since_ts:
+        return Response(status_code=304)
+
     program = safe_get_loyalty_program(business.get('id'))
     pkpass_bytes = build_pkpass_bytes(customer, business, program)
     if pkpass_bytes is None:
         raise HTTPException(status_code=500, detail="Could not build pass")
-    last_modified = customer.get('updated_at') or datetime.utcnow().isoformat()
     return Response(
         content=pkpass_bytes,
         media_type="application/vnd.apple.pkpass",
