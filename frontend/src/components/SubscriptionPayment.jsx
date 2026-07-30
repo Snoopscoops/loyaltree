@@ -11,6 +11,12 @@ import React, { useState, useEffect, useRef, useCallback } from 'react'
 // The QR itself is confirmed by PayMongo calling /api/v1/webhooks/paymongo on
 // your server, not by this component - polling here just watches the
 // database for that webhook to land.
+//
+// Reusable for two contexts:
+//   - OwnerDashboard billing tab: <SubscriptionPayment API_BASE={..} businessSlug={..} />
+//   - Post-signup activation portal: pass title/subtitle/successMessage to
+//     match that context, and onPaid={fn} to react the moment the webhook
+//     activates the account (see Signup.jsx).
 
 const QR_TTL_SECONDS = 600 // PayMongo QR Ph codes expire ~10 minutes after generation
 const POLL_INTERVAL_MS = 4000
@@ -34,7 +40,14 @@ const STATUS_META = {
   none: { label: 'No payment yet', color: '#64748b', bg: '#f1f5f9' },
 }
 
-function SubscriptionPayment({ API_BASE, businessSlug }) {
+function SubscriptionPayment({
+  API_BASE,
+  businessSlug,
+  title = 'Billing',
+  subtitle = 'Keep your subscription active with a QR Ph payment.',
+  successMessage = '🎉 Payment received — your subscription has been extended.',
+  onPaid,
+}) {
   const [subscription, setSubscription] = useState(null)
   const [history, setHistory] = useState([])
   const [loading, setLoading] = useState(true)
@@ -94,6 +107,7 @@ function SubscriptionPayment({ API_BASE, businessSlug }) {
           setPaidJustNow(true)
           setCheckout(null)
           await Promise.all([loadSubscription(), loadHistory()])
+          if (onPaid) onPaid(match)
         } else if (match && (match.status === 'failed' || match.status === 'expired')) {
           stopPolling()
           setError(match.status === 'expired'
@@ -153,8 +167,8 @@ function SubscriptionPayment({ API_BASE, businessSlug }) {
   return (
     <div style={styles.page}>
       <div style={styles.card}>
-        <h1 style={styles.title}>Billing</h1>
-        <p style={styles.subtitle}>Keep your subscription active with a QR Ph payment.</p>
+        <h1 style={styles.title}>{title}</h1>
+        <p style={styles.subtitle}>{subtitle}</p>
 
         <div style={{ ...styles.statusRow, background: statusMeta.bg }}>
           <div>
@@ -172,7 +186,7 @@ function SubscriptionPayment({ API_BASE, businessSlug }) {
 
         {paidJustNow && (
           <div style={styles.successBanner}>
-            🎉 Payment received — your subscription has been extended.
+            {successMessage}
           </div>
         )}
 

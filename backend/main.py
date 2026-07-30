@@ -1848,11 +1848,19 @@ async def paymongo_webhook(request: Request):
         if business:
             now = datetime.utcnow()
             new_expiry = (now + timedelta(days=SUBSCRIPTION_PERIOD_DAYS)).date().isoformat()
+            business_update = {
+                "last_paid_at": now.date().isoformat(),
+                "subscription_expires_at": new_expiry,
+            }
+            # First payment activates the account automatically - no manual
+            # admin approval needed. Only PENDING is auto-promoted; if an
+            # admin has REJECTED or SUSPENDED this business, a stray/late
+            # payment should not silently reactivate it - that stays a
+            # manual admin decision.
+            if (business.get('status') or '').upper() == 'PENDING':
+                business_update['status'] = 'ACTIVE'
             try:
-                supabase.table("businesses").update({
-                    "last_paid_at": now.date().isoformat(),
-                    "subscription_expires_at": new_expiry,
-                }).eq("id", business.get("id")).execute()
+                supabase.table("businesses").update(business_update).eq("id", business.get("id")).execute()
             except Exception as e:
                 print(f"WEBHOOK business update error: {e}")
             try:

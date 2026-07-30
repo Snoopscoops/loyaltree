@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
+import SubscriptionPayment from './SubscriptionPayment'
 
 // Mirrors the backend's branch_price_bracket() - price scales with branch
 // count independently of which plan (feature tier) is chosen.
@@ -30,8 +31,10 @@ function Signup({ API_BASE }) {
   })
   const [plans, setPlans] = useState(null)
   const [error, setError] = useState('')
-  const [success, setSuccess] = useState('')
   const [loading, setLoading] = useState(false)
+  // 'form' -> 'payment' (business created, awaiting first payment) -> 'activated'
+  const [step, setStep] = useState('form')
+  const [businessSlug, setBusinessSlug] = useState('')
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -61,8 +64,8 @@ function Signup({ API_BASE }) {
       })
       const data = await res.json()
       if (res.ok) {
-        setSuccess("Account created! Your application is pending approval - we'll email you once it's reviewed. Redirecting to sign in...")
-        setTimeout(() => navigate('/login'), 3000)
+        setBusinessSlug(data.business_slug)
+        setStep('payment')
       } else {
         setError(data.detail || 'Signup failed')
       }
@@ -72,14 +75,32 @@ function Signup({ API_BASE }) {
     setLoading(false)
   }
 
-  if (success) {
+  if (step === 'activated') {
     return (
       <div style={styles.page}>
         <div style={styles.card}>
-          <div style={{ fontSize: 56, textAlign: 'center', marginBottom: 16 }}>🎉</div>
-          <h1 style={styles.title}>Welcome Aboard!</h1>
-          <p style={styles.subtitle}>{success}</p>
+          <div style={{ fontSize: 56, textAlign: 'center', marginBottom: 16 }}>✅</div>
+          <h1 style={styles.title}>You're All Set!</h1>
+          <p style={styles.subtitle}>Payment received - your account is now active. Sign in to get started.</p>
+          <button type="button" onClick={() => navigate('/login')} style={styles.button}>
+            Go to Sign In
+          </button>
         </div>
+      </div>
+    )
+  }
+
+  if (step === 'payment') {
+    return (
+      <div style={styles.page}>
+        <SubscriptionPayment
+          API_BASE={API_BASE}
+          businessSlug={businessSlug}
+          title="Activate Your Account"
+          subtitle="Your application has been received. Pay via QR Ph to activate your account instantly - no waiting on manual approval."
+          successMessage="🎉 Payment received - your account is now active!"
+          onPaid={() => setStep('activated')}
+        />
       </div>
     )
   }
