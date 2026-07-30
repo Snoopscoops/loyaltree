@@ -4133,6 +4133,31 @@ async def customer_wallet_page(customer_public_id: str):
     display_name_json = json.dumps(display_name)
     biz_name_json = json.dumps(business.get('name', ''))
 
+    # Google's save link needs a signed JWT describing the pass, not the
+    # customer's raw public_id - build_loyalty_object()/create_google_wallet_jwt()
+    # are the same helpers get_wallet_pass() (the JSON API WalletPass.jsx
+    # calls) already uses for this. Falls back to omitting the button
+    # entirely if Google Wallet isn't configured (missing JWT), rather than
+    # linking to a save URL that will 404.
+    loyalty_object = build_loyalty_object(customer, business, program)
+    google_jwt = create_google_wallet_jwt(loyalty_object)
+    google_wallet_html = ''
+    if google_jwt:
+        google_wallet_html = (
+            '<a href="https://pay.google.com/gp/v/save/' + google_jwt + '" class="wallet-btn google-btn">'
+            '&#127903; Add to Google Wallet'
+            '</a>'
+        )
+
+    # Same .pkpass download link as WalletPass.jsx/CustomerJoin.jsx use -
+    # Safari on iOS/macOS recognizes the content type and shows the native
+    # "Add to Apple Wallet" sheet; other browsers just download the file.
+    apple_wallet_html = (
+        '<a href="' + BASE_URL + '/api/v1/customer/' + customer.get("public_id", "") + '/apple-wallet-pass" class="wallet-btn apple-btn">'
+        '&#63743; Add to Apple Wallet'
+        '</a>'
+    )
+
     html = (
         '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
@@ -4156,6 +4181,7 @@ async def customer_wallet_page(customer_public_id: str):
         '.qr-section p{font-size:12px;color:#94a3b8;margin-top:8px}'
         '.wallet-btn{display:block;width:100%;padding:14px;background:#1a73e8;color:white;'
         'text-decoration:none;border-radius:10px;font-weight:600;margin-bottom:12px;text-align:center}'
+        '.apple-btn{background:#000000}'
         '.share-btn{width:100%;padding:14px;background:#f0fdf4;color:#0d9488;'
         'border:1px solid #a7f3d0;border-radius:10px;font-weight:600;cursor:pointer}'
         '</style></head><body>'
@@ -4174,9 +4200,8 @@ async def customer_wallet_page(customer_public_id: str):
         '<img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + quote(f'{BASE_URL}/stamp/{customer.get("public_id", "")}', safe="") + '" alt="Your QR Code"/>'
         '<p>Scan at checkout to earn stamps</p>'
         '</div>'
-        '<a href="https://pay.google.com/gp/v/save/' + customer.get("public_id", "") + '" class="wallet-btn">'
-        '&#127903; Add to Google Wallet'
-        '</a>'
+        + apple_wallet_html
+        + google_wallet_html +
         '<button id="shareBtn" class="share-btn">'
         '&#128279; Share Card'
         '</button>'
