@@ -4670,10 +4670,16 @@ async def apple_register_device(device_library_identifier: str, pass_type_identi
             .maybe_single()
             .execute()
         )
-        if existing.data:
+        # supabase-py's maybe_single().execute() returns None outright (not a
+        # response object with .data = None) when zero rows match - which is
+        # exactly the case for every brand-new registration, since this table
+        # starts out empty for that device+serial pair. Guard against that
+        # instead of assuming `existing` is always a response object.
+        existing_id = existing.data['id'] if existing and existing.data else None
+        if existing_id:
             supabase.table("apple_wallet_registrations").update({
                 "push_token": push_token,
-            }).eq("id", existing.data['id']).execute()
+            }).eq("id", existing_id).execute()
             return Response(status_code=200)
         supabase.table("apple_wallet_registrations").insert({
             "device_library_identifier": device_library_identifier,
