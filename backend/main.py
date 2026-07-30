@@ -4703,8 +4703,12 @@ async def apple_unregister_device(device_library_identifier: str, pass_type_iden
 
 @app.get("/api/v1/apple-wallet/v1/devices/{device_library_identifier}/registrations/{pass_type_identifier}")
 async def apple_list_updated_serials(device_library_identifier: str, pass_type_identifier: str, passesUpdatedSince: Optional[str] = None):
+    # 204 must carry no body at all - Apple's Wallet daemon (an HTTP/2 client)
+    # can misread a 204 with a JSON body attached, so this uses a bare
+    # Response() rather than HTTPException (which always attaches
+    # {"detail": ...}, even when detail is None).
     if not supabase:
-        raise HTTPException(status_code=204)
+        return Response(status_code=204)
     try:
         rows = (
             supabase.table("apple_wallet_registrations")
@@ -4717,7 +4721,7 @@ async def apple_list_updated_serials(device_library_identifier: str, pass_type_i
         rows = []
     serials = [r['serial_number'] for r in rows]
     if not serials:
-        raise HTTPException(status_code=204)
+        return Response(status_code=204)
     return {"serialNumbers": serials, "lastUpdated": datetime.utcnow().isoformat()}
 
 @app.get("/api/v1/apple-wallet/v1/passes/{pass_type_identifier}/{serial_number}")
