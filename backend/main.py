@@ -19,6 +19,7 @@ import qrcode
 from qrcode.image.svg import SvgImage
 from io import BytesIO
 from PIL import Image
+import zipfile
 
 # Environment
 SUPABASE_URL = os.getenv('SUPABASE_URL', '')
@@ -27,6 +28,36 @@ BASE_URL = os.getenv('BASE_URL', 'https://loyaltree-btw1.onrender.com')
 GOOGLE_WALLET_ISSUER_ID = os.getenv('GOOGLE_WALLET_ISSUER_ID', '')
 GOOGLE_WALLET_CLASS_SUFFIX = os.getenv('GOOGLE_WALLET_CLASS_SUFFIX', '')
 DEFAULT_LOGO_URL = os.getenv('DEFAULT_LOGO_URL', 'https://placehold.co/300x300/0d9488/ffffff.png?text=LoyaltyTree')
+
+# Apple Wallet (PassKit). Preferred setup: APPLE_PASS_CERTIFICATE is a
+# base64-encoded PEM certificate and APPLE_PASS_PRIVATE_KEY is a
+# base64-encoded PEM private key, both extracted from your Pass Type ID
+# .p12 with openssl - e.g.
+#   openssl pkcs12 -in Certificates.p12 -clcerts -nokeys -out cert.pem
+#   openssl pkcs12 -in Certificates.p12 -nocerts -nodes -out key.pem
+#   base64 -i cert.pem | pbcopy   # -> APPLE_PASS_CERTIFICATE
+#   base64 -i key.pem | pbcopy    # -> APPLE_PASS_PRIVATE_KEY
+# (PEM extraction avoids modern OpenSSL/cryptography refusing to read the
+# legacy RC2-40 encryption Keychain Access uses on .p12 exports.)
+# Alternatively, if your .p12 exported with a modern cipher and openssl
+# can read it directly, set only APPLE_PASS_CERTIFICATE to the base64 .p12
+# itself plus APPLE_PASS_CERTIFICATE_PASSWORD - both paths are supported.
+# APPLE_WWDR_CERTIFICATE is Apple's Worldwide Developer Relations
+# intermediate certificate (download from
+# https://www.apple.com/certificateauthority/ - match the G-number your
+# Pass Type ID cert's issuer shows), also base64-encoded; .pem or .cer
+# (DER) both work. APPLE_PASS_AUTH_SECRET is a secret you make up yourself
+# (any long random string) - it's used to derive a per-customer token that
+# authenticates their device's Wallet app when it calls back in for
+# updates; it is never sent to Apple.
+APPLE_PASS_TYPE_IDENTIFIER = os.getenv('APPLE_PASS_TYPE_IDENTIFIER', '')
+APPLE_TEAM_IDENTIFIER = os.getenv('APPLE_TEAM_IDENTIFIER', '')
+APPLE_PASS_CERTIFICATE = os.getenv('APPLE_PASS_CERTIFICATE', '')
+APPLE_PASS_PRIVATE_KEY = os.getenv('APPLE_PASS_PRIVATE_KEY', '')
+APPLE_PASS_CERTIFICATE_PASSWORD = os.getenv('APPLE_PASS_CERTIFICATE_PASSWORD', '')
+APPLE_WWDR_CERTIFICATE = os.getenv('APPLE_WWDR_CERTIFICATE', '')
+APPLE_PASS_AUTH_SECRET = os.getenv('APPLE_PASS_AUTH_SECRET', '')
+APPLE_PASS_WEB_SERVICE_URL = f'{BASE_URL}/api/v1/apple-wallet'
 
 # Platform super-admin credentials (you, the LoyaltyTree operator - not a
 # business owner). Set these in your environment; there is no signup flow
@@ -1100,6 +1131,374 @@ def sync_wallet_object(customer: dict, business: dict, program: dict):
     except Exception as e:
         print(f"WALLET SYNC error: {e}")
 
+# Apple Wallet (PassKit) Helpers
+#
+# Unlike Google Wallet (a REST API Google hosts), an Apple Wallet pass is a
+# signed zip file (.pkpass) that we build and sign ourselves, plus a small
+# "web service" Apple's Wallet app calls back into for live updates. Three
+# things happen here:
+#   1. build_pkpass_bytes() - assembles + signs the .pkpass, used both for
+#      the initial download and for every subsequent refetch.
+#   2. The web service routes (registration, list-updated, get-pass, log)
+#      further down, which Wallet calls per Apple's PassKit Web Service spec.
+#   3. push_apple_wallet_update() - the APNs push that tells a device's
+#      Wallet app "go call the web service, something changed" - the Apple
+#      equivalent of sync_wallet_object() above.
+
+_apple_pass_credentials_cache = None
+_apple_push_cert_paths = None
+
+def get_apple_pass_credentials():
+    """Loads (private_key, certificate, wwdr_certificate) from the env vars
+    once per process. Returns None if Apple Wallet isn't configured yet.
+    Tries the PEM cert+key path first (APPLE_PASS_CERTIFICATE +
+    APPLE_PASS_PRIVATE_KEY), falling back to reading APPLE_PASS_CERTIFICATE
+    as a raw .p12 if no separate key was given."""
+    global _apple_pass_credentials_cache
+    if _apple_pass_credentials_cache is not None:
+        return _apple_pass_credentials_cache or None
+    if not APPLE_PASS_CERTIFICATE or not APPLE_WWDR_CERTIFICATE:
+        _apple_pass_credentials_cache = False
+        return None
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.primitives import serialization
+
+        wwdr_bytes = base64.b64decode(APPLE_WWDR_CERTIFICATE)
+        try:
+            wwdr_cert = x509.load_pem_x509_certificate(wwdr_bytes)
+        except ValueError:
+            wwdr_cert = x509.load_der_x509_certificate(wwdr_bytes)
+
+        private_key = None
+        certificate = None
+
+        if APPLE_PASS_PRIVATE_KEY:
+            cert_bytes = base64.b64decode(APPLE_PASS_CERTIFICATE)
+            key_bytes = base64.b64decode(APPLE_PASS_PRIVATE_KEY)
+            certificate = x509.load_pem_x509_certificate(cert_bytes)
+            key_password = APPLE_PASS_CERTIFICATE_PASSWORD.encode() if APPLE_PASS_CERTIFICATE_PASSWORD else None
+            private_key = serialization.load_pem_private_key(key_bytes, password=key_password)
+        else:
+            from cryptography.hazmat.primitives.serialization import pkcs12
+            p12_bytes = base64.b64decode(APPLE_PASS_CERTIFICATE)
+            password_bytes = APPLE_PASS_CERTIFICATE_PASSWORD.encode() if APPLE_PASS_CERTIFICATE_PASSWORD else None
+            private_key, certificate, _extra = pkcs12.load_key_and_certificates(p12_bytes, password_bytes)
+
+        if not private_key or not certificate:
+            print("APPLE WALLET: credentials did not yield both a private key and a certificate")
+            _apple_pass_credentials_cache = False
+            return None
+        _apple_pass_credentials_cache = (private_key, certificate, wwdr_cert)
+        return _apple_pass_credentials_cache
+    except Exception as e:
+        print(f"APPLE WALLET: credential load error: {e}")
+        _apple_pass_credentials_cache = False
+        return None
+
+def apple_pass_auth_token(serial_number: str) -> str:
+    """Per-customer token embedded in pass.json's authenticationToken. The
+    Wallet app sends it back as 'Authorization: ApplePass <token>' on every
+    web service call for that pass, so we can verify the call is really
+    about that customer's pass without storing a token anywhere ourselves."""
+    secret = APPLE_PASS_AUTH_SECRET or 'unset-secret-please-configure-APPLE_PASS_AUTH_SECRET'
+    return hmac.new(secret.encode(), serial_number.encode(), hashlib.sha256).hexdigest()
+
+def apple_auth_ok(serial_number: str, authorization: Optional[str]) -> bool:
+    if not authorization or not authorization.startswith('ApplePass '):
+        return False
+    token = authorization[len('ApplePass '):].strip()
+    return hmac.compare_digest(token, apple_pass_auth_token(serial_number))
+
+def sign_pkpass_manifest(manifest_bytes: bytes) -> Optional[bytes]:
+    creds = get_apple_pass_credentials()
+    if not creds:
+        return None
+    private_key, certificate, wwdr_cert = creds
+    try:
+        from cryptography.hazmat.primitives.serialization import pkcs7, Encoding
+        from cryptography.hazmat.primitives import hashes
+        return (
+            pkcs7.PKCS7SignatureBuilder()
+            .set_data(manifest_bytes)
+            .add_signer(certificate, private_key, hashes.SHA256())
+            .add_certificate(wwdr_cert)
+            .sign(Encoding.DER, [pkcs7.PKCS7Options.DetachedSignature, pkcs7.PKCS7Options.Binary])
+        )
+    except Exception as e:
+        print(f"APPLE WALLET: manifest signing error: {e}")
+        return None
+
+def generate_apple_icon_bytes(primary_color: str, business_name: str, size: int) -> bytes:
+    """Solid primary_color square with the business's first initial - the
+    same 'colored circle + initial' look used for customer avatars in the
+    dashboard, just square (Apple rounds the corners itself)."""
+    from PIL import ImageDraw, ImageFont
+    r, g, b = _hex_to_rgb(primary_color)
+    img = Image.new('RGB', (size, size), (r, g, b))
+    draw = ImageDraw.Draw(img)
+    letter = (business_name or '?').strip()[:1].upper() or '?'
+    font = ImageFont.load_default(size=int(size * 0.55))
+    bbox = draw.textbbox((0, 0), letter, font=font)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    draw.text(((size - tw) / 2 - bbox[0], (size - th) / 2 - bbox[1]), letter, font=font, fill=(255, 255, 255))
+    return _hero_to_png(img)
+
+def generate_apple_logo_bytes(business_name: str, width: int, height: int) -> bytes:
+    """Transparent-background wordmark shown in the pass header, next to
+    logoText. Shrinks the font until the business name fits on one line."""
+    from PIL import ImageDraw, ImageFont
+    img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    text = (business_name or 'Loyalty').strip()[:24]
+    font_size = int(height * 0.55)
+    font = ImageFont.load_default(size=font_size)
+    bbox = draw.textbbox((0, 0), text, font=font)
+    tw = bbox[2] - bbox[0]
+    while tw > width - 16 and font_size > 8:
+        font_size -= 2
+        font = ImageFont.load_default(size=font_size)
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw = bbox[2] - bbox[0]
+    th = bbox[3] - bbox[1]
+    draw.text(((width - tw) / 2 - bbox[0], (height - th) / 2 - bbox[1]), text, font=font, fill=(255, 255, 255, 255))
+    return _hero_to_png(img)
+
+def build_apple_pass_json(customer: dict, business: dict, program: dict) -> dict:
+    cust_public_id = customer.get('public_id', '')
+    cust_name = customer.get('name', 'Member')
+    biz_name = business.get('name', 'Loyalty')
+    stamp_goal = program.get('stamp_goal', 8) if program else 8
+    reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
+    description = program.get('description') if program else None
+    stamps = customer.get('stamp_count', 0)
+    reward_unlocked = bool(customer.get('reward_unlocked'))
+    primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
+    r, g, b = _hex_to_rgb(primary_color)
+
+    return {
+        'formatVersion': 1,
+        'passTypeIdentifier': APPLE_PASS_TYPE_IDENTIFIER,
+        'teamIdentifier': APPLE_TEAM_IDENTIFIER,
+        'organizationName': biz_name,
+        'serialNumber': cust_public_id,
+        'description': f'{biz_name} Loyalty Card',
+        'logoText': biz_name[:20],
+        'backgroundColor': f'rgb({r}, {g}, {b})',
+        'foregroundColor': 'rgb(255, 255, 255)',
+        'labelColor': 'rgba(255, 255, 255, 0.75)',
+        'webServiceURL': APPLE_PASS_WEB_SERVICE_URL,
+        'authenticationToken': apple_pass_auth_token(cust_public_id),
+        'storeCard': {
+            'headerFields': [
+                {'key': 'stamps', 'label': 'STAMPS', 'value': f'{stamps}/{stamp_goal}'}
+            ],
+            'primaryFields': [
+                {'key': 'reward', 'label': 'REWARD', 'value': '🎉 Ready to redeem!' if reward_unlocked else reward_name}
+            ],
+            'secondaryFields': [
+                {'key': 'member', 'label': 'MEMBER', 'value': cust_name}
+            ],
+            'auxiliaryFields': [
+                {'key': 'business', 'label': 'BUSINESS', 'value': biz_name}
+            ],
+            'backFields': [
+                {'key': 'about', 'label': 'About', 'value': description or 'Collect stamps, earn rewards.'},
+                {'key': 'online', 'label': 'View Online', 'value': f'{BASE_URL}/wallet/{cust_public_id}'}
+            ]
+        },
+        'barcodes': [
+            {
+                'format': 'PKBarcodeFormatQR',
+                'message': f'{BASE_URL}/stamp/{cust_public_id}',
+                'messageEncoding': 'iso-8859-1',
+                'altText': cust_name
+            }
+        ]
+    }
+
+def build_pkpass_bytes(customer: dict, business: dict, program: dict) -> Optional[bytes]:
+    """Assembles and signs the full .pkpass zip. Returns None if Apple
+    Wallet credentials aren't configured or signing fails - callers treat
+    that the same way create_google_wallet_jwt()'s empty-string return is
+    treated: a clear 'not configured' error rather than a crash."""
+    if not APPLE_PASS_TYPE_IDENTIFIER or not APPLE_TEAM_IDENTIFIER:
+        return None
+    if get_apple_pass_credentials() is None:
+        return None
+
+    primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
+    biz_name = business.get('name', 'Loyalty')
+    pass_json = build_apple_pass_json(customer, business, program)
+
+    files = {
+        'pass.json': json.dumps(pass_json).encode('utf-8'),
+        'icon.png': generate_apple_icon_bytes(primary_color, biz_name, 29),
+        'icon@2x.png': generate_apple_icon_bytes(primary_color, biz_name, 58),
+        'icon@3x.png': generate_apple_icon_bytes(primary_color, biz_name, 87),
+        'logo.png': generate_apple_logo_bytes(biz_name, 160, 50),
+        'logo@2x.png': generate_apple_logo_bytes(biz_name, 320, 100),
+        'logo@3x.png': generate_apple_logo_bytes(biz_name, 480, 150),
+    }
+
+    manifest = {name: hashlib.sha1(content).hexdigest() for name, content in files.items()}
+    manifest_bytes = json.dumps(manifest).encode('utf-8')
+    signature = sign_pkpass_manifest(manifest_bytes)
+    if signature is None:
+        return None
+
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for name, content in files.items():
+            zf.writestr(name, content)
+        zf.writestr('manifest.json', manifest_bytes)
+        zf.writestr('signature', signature)
+    return buffer.getvalue()
+
+def get_apple_push_cert_files():
+    """Writes the signing cert + private key to temp PEM files once per
+    process (httpx/ssl need real file paths, not bytes) and reuses them -
+    this is the same cert used to sign passes, reused here as the TLS
+    client cert APNs requires to authorize pushes for this Pass Type ID."""
+    global _apple_push_cert_paths
+    if _apple_push_cert_paths and all(os.path.exists(p) for p in _apple_push_cert_paths):
+        return _apple_push_cert_paths
+    creds = get_apple_pass_credentials()
+    if not creds:
+        return None, None
+    private_key, certificate, _wwdr = creds
+    try:
+        import tempfile
+        from cryptography.hazmat.primitives import serialization
+        cert_pem = certificate.public_bytes(serialization.Encoding.PEM)
+        key_pem = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+        cert_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
+        cert_file.write(cert_pem)
+        cert_file.close()
+        key_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
+        key_file.write(key_pem)
+        key_file.close()
+        _apple_push_cert_paths = (cert_file.name, key_file.name)
+        return _apple_push_cert_paths
+    except Exception as e:
+        print(f"APPLE WALLET: push cert setup error: {e}")
+        return None, None
+
+def _send_apple_wallet_pushes(push_tokens: list) -> int:
+    """Shared APNs-sending core used by both push_apple_wallet_update()
+    (single customer, e.g. after a stamp/redeem) and
+    push_apple_wallet_announcement() (whole business, e.g. a new
+    announcement). Takes raw push tokens rather than querying itself, so
+    callers control which registrations get notified. Best-effort and
+    silent on failure - a push hiccup must never block the caller.
+    Returns the number of tokens APNs accepted (200 response), just for
+    logging - callers don't need to react to this."""
+    tokens = [t for t in push_tokens if t]
+    if not tokens:
+        return 0
+    cert_path, key_path = get_apple_push_cert_files()
+    if not cert_path:
+        return 0
+    sent = 0
+    try:
+        import httpx
+        with httpx.Client(http2=True, cert=(cert_path, key_path), timeout=10) as client:
+            for token in tokens:
+                try:
+                    resp = client.post(
+                        f"https://api.push.apple.com/3/device/{token}",
+                        headers={"apns-topic": APPLE_PASS_TYPE_IDENTIFIER},
+                        json={},
+                    )
+                    if resp.status_code == 200:
+                        sent += 1
+                        print(f"APPLE WALLET PUSH: sent to {token[:12]}...")
+                    else:
+                        print(f"APPLE WALLET PUSH failed {resp.status_code}: {resp.text}")
+                except Exception as e:
+                    print(f"APPLE WALLET PUSH error: {e}")
+    except Exception as e:
+        print(f"APPLE WALLET PUSH client error: {e}")
+    return sent
+
+def push_apple_wallet_update(serial_number: str):
+    """Tells every device that has this one customer's pass saved to
+    refetch it. Best-effort and silent on failure, same contract as
+    sync_wallet_object() - a push hiccup must never block a stamp/redeem."""
+    if not supabase or not APPLE_PASS_TYPE_IDENTIFIER:
+        return
+    try:
+        rows = (
+            supabase.table("apple_wallet_registrations")
+            .select("push_token")
+            .eq("serial_number", serial_number)
+            .eq("pass_type_identifier", APPLE_PASS_TYPE_IDENTIFIER)
+            .execute()
+        ).data or []
+    except Exception:
+        return
+    _send_apple_wallet_pushes([row.get('push_token') for row in rows])
+
+def push_apple_wallet_announcement(business_id: int) -> int:
+    """Companion to send_wallet_class_message() for announcements, but for
+    Apple Wallet: send_wallet_class_message() pushes to every Google
+    Wallet card via one class-level API call, but Apple Wallet has no
+    equivalent "notify everyone with this pass type" call - PassKit only
+    supports pushing to individual registered serial numbers. So this
+    fetches every customer's public_id for the business, looks up which
+    of those serial numbers have an Apple Wallet registration, and pushes
+    to each. Best-effort and silent on failure, same contract as
+    push_apple_wallet_update() - a push hiccup must never block posting
+    an announcement. Returns the number of tokens APNs accepted, so
+    callers can optionally log/report it; 0 is a normal outcome (no
+    Apple Wallet customers yet) and never raises."""
+    if not supabase or not APPLE_PASS_TYPE_IDENTIFIER:
+        return 0
+    try:
+        customer_rows = (
+            supabase.table("customers")
+            .select("public_id")
+            .eq("business_id", business_id)
+            .execute()
+        ).data or []
+    except Exception:
+        return 0
+    serial_numbers = [r['public_id'] for r in customer_rows if r.get('public_id')]
+    if not serial_numbers:
+        return 0
+    push_tokens = []
+    try:
+        # Chunked to stay well under PostgREST's URL length limit for large
+        # customer bases - an .in_() filter with thousands of UUIDs in one
+        # request risks a 414/URI-too-long instead of a clean empty result.
+        CHUNK_SIZE = 200
+        for i in range(0, len(serial_numbers), CHUNK_SIZE):
+            chunk = serial_numbers[i:i + CHUNK_SIZE]
+            rows = (
+                supabase.table("apple_wallet_registrations")
+                .select("push_token")
+                .in_("serial_number", chunk)
+                .eq("pass_type_identifier", APPLE_PASS_TYPE_IDENTIFIER)
+                .execute()
+            ).data or []
+            push_tokens.extend(row.get('push_token') for row in rows)
+    except Exception as e:
+        print(f"APPLE WALLET announcement lookup error: {e}")
+        return 0
+    return _send_apple_wallet_pushes(push_tokens)
+
+def sync_apple_wallet_pass(customer: dict):
+    """Companion to sync_wallet_object() - call alongside it wherever a
+    customer's stamp_count changes. Never raises."""
+    try:
+        push_apple_wallet_update(customer.get('public_id', ''))
+    except Exception as e:
+        print(f"APPLE WALLET sync error: {e}")
+
 def send_wallet_class_message(class_id: str, header: str, body: str, message_id: str, detail_url: str = None) -> bool:
     """Push a notification to every customer who has saved a loyalty card
     under this business's Wallet class. Google Wallet's addMessage endpoint on
@@ -2034,6 +2433,7 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
             sync_wallet_object(updated_customer, business, program)
         except Exception:
             pass  # best-effort - a wallet push failing shouldn't block the edit itself
+        sync_apple_wallet_pass(updated_customer)
 
     return updated_customer
 
@@ -2715,6 +3115,18 @@ async def create_announcement(public_id: str, ann: AnnouncementCreate):
         else:
             push_error = "Publish your card design to Google Wallet (Program tab) first, then customers can be notified."
 
+        # Apple Wallet has its own, separate push channel (APNs, not
+        # Google's class-message API) - fire it too so iPhone customers
+        # who added the card via Safari's "Add to Apple Wallet" also get
+        # notified. Independent of the Google push above: this still runs
+        # even if Google Wallet isn't configured for this business, and a
+        # failure here never affects the response or push_error above -
+        # same "never blocks the caller" contract as sync_apple_wallet_pass.
+        try:
+            push_apple_wallet_announcement(business.get('id'))
+        except Exception as e:
+            print(f"APPLE WALLET announcement push error: {e}")
+
     created['_push_sent'] = push_sent
     if push_error:
         created['_push_error'] = push_error
@@ -2782,6 +3194,18 @@ async def notify_announcement(public_id: str, announcement_id: str):
         ann = None
     if not ann:
         raise HTTPException(status_code=404, detail="Announcement not found")
+
+    # Apple Wallet has its own, separate push channel (APNs, not Google's
+    # class-message API), so it's fired here unconditionally rather than
+    # gated behind the Google Wallet class_id check below - an iPhone
+    # customer who added the card via Safari should still get notified
+    # even for a business that hasn't set up Google Wallet at all. Same
+    # "never blocks the caller" contract as sync_apple_wallet_pass; any
+    # failure here must not affect the Google push or the response below.
+    try:
+        push_apple_wallet_announcement(business.get('id'))
+    except Exception as e:
+        print(f"APPLE WALLET announcement push error: {e}")
 
     program = safe_get_loyalty_program(business.get('id'))
     class_id = program.get('google_wallet_class_id') if program else None
@@ -2936,6 +3360,7 @@ async def add_stamp(public_id: str, req: StampRequest, authorization: str = Head
         customer['stamp_count'] = new_count
         customer['reward_unlocked'] = reward_unlocked
         sync_wallet_object(customer, business, program)
+        sync_apple_wallet_pass(customer)
         log_stamp_event(business.get('id'), customer.get('id'), stamping_staff_id, stamping_branch_id)
     except Exception as e:
         error_msg = str(e)
@@ -3063,6 +3488,7 @@ async def redeem_reward(public_id: str, req: RedeemRequest, authorization: str =
         customer['stamp_count'] = new_count
         customer['reward_unlocked'] = False
         sync_wallet_object(customer, business, program)
+        sync_apple_wallet_pass(customer)
         log_redemption_event(business.get('id'), customer.get('id'), redeeming_staff_id, redeeming_branch_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -4113,7 +4539,7 @@ async def announcement_detail_page(business_public_id: str, announcement_id: str
     )
     return HTMLResponse(html_out)
 
-# GOOGLE WALLET PASS
+# WALLET PASS (Google + Apple)
 
 @app.get("/api/v1/customer/{customer_public_id}/wallet-pass")
 async def get_wallet_pass(customer_public_id: str):
@@ -4130,24 +4556,173 @@ async def get_wallet_pass(customer_public_id: str):
         raise HTTPException(status_code=404, detail="Business not found")
 
     program = safe_get_loyalty_program(business.get('id'))
+    stamp_goal = program.get('stamp_goal', 8) if program else 8
+    primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
 
     loyalty_object = build_loyalty_object(customer, business, program)
-
     jwt_token = create_google_wallet_jwt(loyalty_object)
+    save_url = f"https://pay.google.com/gp/v/save/{jwt_token}" if jwt_token else None
     if not jwt_token:
-        print("WALLET-PASS: JWT generation failed")
-        return JSONResponse({
-            "save_url": None,
-            "error": "Could not generate Google Wallet link. Check GOOGLE_WALLET_CREDENTIALS."
-        })
+        print("WALLET-PASS: Google JWT generation failed (check GOOGLE_WALLET_CREDENTIALS)")
 
-    save_url = f"https://pay.google.com/gp/v/save/{jwt_token}"
-    print(f"WALLET-PASS: Generated save URL for customer {customer_public_id}")
+    print(f"WALLET-PASS: Prepared pass data for customer {customer_public_id}")
 
     return {
+        # Shape WalletPass.jsx renders the card from.
+        "pass_data": {
+            "business_name": business.get('name', ''),
+            "customer_name": customer.get('name', ''),
+            "customer_id": customer_public_id,
+            "stamps": customer.get('stamp_count', 0),
+            "goal": stamp_goal,
+            "primary_color": primary_color,
+            "reward_unlocked": bool(customer.get('reward_unlocked')),
+            "qr_code": f"{BASE_URL}/stamp/{customer_public_id}",
+        },
         "save_url": save_url,
+        "apple_pass_url": f"{BASE_URL}/api/v1/customer/{customer_public_id}/apple-wallet-pass",
         "loyalty_object": loyalty_object,
     }
+
+@app.get("/api/v1/customer/{customer_public_id}/apple-wallet-pass")
+async def get_apple_wallet_pass(customer_public_id: str):
+    """Direct .pkpass download - Safari on iOS/macOS recognizes the
+    application/vnd.apple.pkpass content type and opens the native
+    'Add to Apple Wallet' sheet; any other browser just downloads the file."""
+    customer = safe_get_customer(customer_public_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    business = safe_get_business_by_id(customer.get('business_id'))
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    program = safe_get_loyalty_program(business.get('id'))
+
+    pkpass_bytes = build_pkpass_bytes(customer, business, program)
+    if pkpass_bytes is None:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Apple Wallet is not configured. Set APPLE_PASS_TYPE_IDENTIFIER, "
+                "APPLE_TEAM_IDENTIFIER, APPLE_PASS_CERTIFICATE, APPLE_PASS_PRIVATE_KEY "
+                "(or APPLE_PASS_CERTIFICATE_PASSWORD if using a .p12), "
+                "APPLE_WWDR_CERTIFICATE and APPLE_PASS_AUTH_SECRET in your "
+                "environment and redeploy."
+            ),
+        )
+    return Response(
+        content=pkpass_bytes,
+        media_type="application/vnd.apple.pkpass",
+        headers={"Content-Disposition": f'attachment; filename="{customer_public_id}.pkpass"'},
+    )
+
+# APPLE WALLET PASSKIT WEB SERVICE
+# Implements the routes Apple's Wallet app calls on its own, per Apple's
+# PassKit Web Service spec, so a pass someone already added keeps itself
+# up to date instead of going stale the moment they leave the join page.
+# webServiceURL in the pass points here (see APPLE_PASS_WEB_SERVICE_URL).
+
+@app.post("/api/v1/apple-wallet/v1/devices/{device_library_identifier}/registrations/{pass_type_identifier}/{serial_number}")
+async def apple_register_device(device_library_identifier: str, pass_type_identifier: str, serial_number: str, request: Request, authorization: Optional[str] = Header(None)):
+    if not apple_auth_ok(serial_number, authorization):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Not configured")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    push_token = body.get('pushToken', '')
+    if not push_token:
+        raise HTTPException(status_code=400, detail="Missing pushToken")
+    try:
+        existing = (
+            supabase.table("apple_wallet_registrations")
+            .select("id")
+            .eq("device_library_identifier", device_library_identifier)
+            .eq("serial_number", serial_number)
+            .maybe_single()
+            .execute()
+        )
+        if existing.data:
+            supabase.table("apple_wallet_registrations").update({
+                "push_token": push_token,
+            }).eq("id", existing.data['id']).execute()
+            return Response(status_code=200)
+        supabase.table("apple_wallet_registrations").insert({
+            "device_library_identifier": device_library_identifier,
+            "pass_type_identifier": pass_type_identifier,
+            "serial_number": serial_number,
+            "push_token": push_token,
+            "created_at": datetime.utcnow().isoformat(),
+        }).execute()
+        print(f"APPLE WALLET: registered device for {serial_number}")
+        return Response(status_code=201)
+    except Exception as e:
+        print(f"APPLE WALLET register error: {e}")
+        raise HTTPException(status_code=500, detail="Registration failed")
+
+@app.delete("/api/v1/apple-wallet/v1/devices/{device_library_identifier}/registrations/{pass_type_identifier}/{serial_number}")
+async def apple_unregister_device(device_library_identifier: str, pass_type_identifier: str, serial_number: str, authorization: Optional[str] = Header(None)):
+    if not apple_auth_ok(serial_number, authorization):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        if supabase:
+            supabase.table("apple_wallet_registrations").delete().eq(
+                "device_library_identifier", device_library_identifier
+            ).eq("serial_number", serial_number).execute()
+    except Exception as e:
+        print(f"APPLE WALLET unregister error: {e}")
+    return Response(status_code=200)
+
+@app.get("/api/v1/apple-wallet/v1/devices/{device_library_identifier}/registrations/{pass_type_identifier}")
+async def apple_list_updated_serials(device_library_identifier: str, pass_type_identifier: str, passesUpdatedSince: Optional[str] = None):
+    if not supabase:
+        raise HTTPException(status_code=204)
+    try:
+        rows = (
+            supabase.table("apple_wallet_registrations")
+            .select("serial_number")
+            .eq("device_library_identifier", device_library_identifier)
+            .eq("pass_type_identifier", pass_type_identifier)
+            .execute()
+        ).data or []
+    except Exception:
+        rows = []
+    serials = [r['serial_number'] for r in rows]
+    if not serials:
+        raise HTTPException(status_code=204)
+    return {"serialNumbers": serials, "lastUpdated": datetime.utcnow().isoformat()}
+
+@app.get("/api/v1/apple-wallet/v1/passes/{pass_type_identifier}/{serial_number}")
+async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, authorization: Optional[str] = Header(None)):
+    if not apple_auth_ok(serial_number, authorization):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    customer = safe_get_customer(serial_number)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Not found")
+    business = safe_get_business_by_id(customer.get('business_id'))
+    if not business:
+        raise HTTPException(status_code=404, detail="Not found")
+    program = safe_get_loyalty_program(business.get('id'))
+    pkpass_bytes = build_pkpass_bytes(customer, business, program)
+    if pkpass_bytes is None:
+        raise HTTPException(status_code=500, detail="Could not build pass")
+    last_modified = customer.get('updated_at') or datetime.utcnow().isoformat()
+    return Response(
+        content=pkpass_bytes,
+        media_type="application/vnd.apple.pkpass",
+        headers={"Last-Modified": last_modified},
+    )
+
+@app.post("/api/v1/apple-wallet/v1/log")
+async def apple_log(request: Request):
+    try:
+        body = await request.json()
+        for line in body.get('logs', []):
+            print(f"APPLE WALLET DEVICE LOG: {line}")
+    except Exception:
+        pass
+    return Response(status_code=200)
 
 # SCHEDULED / CRON-TRIGGERED JOBS (Pro plan only)
 # Neither of these run on their own - this app has no built-in scheduler.

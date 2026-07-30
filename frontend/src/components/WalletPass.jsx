@@ -25,12 +25,18 @@ function WalletPass({ API_BASE }) {
   }, [customerId])
 
   const addToGoogleWallet = () => {
-    if (passData?.add_to_wallet_url && passData.add_to_wallet_url.includes('pay.google.com')) {
-      window.open(passData.add_to_wallet_url, '_blank')
+    if (passData?.save_url && passData.save_url.includes('pay.google.com')) {
+      window.open(passData.save_url, '_blank')
     } else {
       alert('Save this page to your home screen for quick access!')
     }
   }
+
+  // Apple Wallet has no JS API to trigger from - it's a direct link to a
+  // signed .pkpass file. Safari on iOS/macOS recognizes the file's content
+  // type and shows the native "Add to Apple Wallet" sheet; other browsers
+  // just download the file. So this is a plain <a href>, not a click handler.
+  const appleWalletUrl = passData?.apple_pass_url || `${API_BASE}/api/v1/customer/${customerId}/apple-wallet-pass`
 
   const shareCard = async () => {
     if (navigator.share) {
@@ -124,6 +130,10 @@ function WalletPass({ API_BASE }) {
           <span style={styles.googleIcon}>G</span>
           Add to Google Wallet
         </button>
+        <a href={appleWalletUrl} style={{ ...styles.googleBtn, ...styles.appleBtn, marginTop: 10 }}>
+          <span style={styles.googleIcon}></span>
+          Add to Apple Wallet
+        </a>
         <button onClick={shareCard} style={{ ...styles.googleBtn, background: '#0d9488', marginTop: 10 }}>
           <span style={styles.googleIcon}>🔗</span>
           Share Card
@@ -310,6 +320,10 @@ const styles = {
   },
   googleIcon: {
     fontSize: 20,
+  },
+  appleBtn: {
+    background: '#000000',
+    textDecoration: 'none',
   },
   note: {
     marginTop: 15,
