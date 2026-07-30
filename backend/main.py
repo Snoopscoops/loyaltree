@@ -1264,7 +1264,37 @@ def generate_apple_logo_bytes(business_name: str, width: int, height: int) -> by
     draw.text(((width - tw) / 2 - bbox[0], (height - th) / 2 - bbox[1]), text, font=font, fill=(255, 255, 255, 255))
     return _hero_to_png(img)
 
-def build_apple_pass_json(customer: dict, business: dict, program: dict) -> dict:
+def get_latest_active_announcement(business_id: int) -> Optional[dict]:
+    """Latest still-active, not-yet-expired announcement for a business, used
+    to surface an 'Announcement' field on the Apple Wallet pass (Google
+    Wallet gets its own copy via send_wallet_class_message's addMessage
+    call, so this is Apple's equivalent data source). Returns None on any
+    error or when there simply isn't one - callers treat that the same as
+    'no announcement configured', not an error."""
+    if not supabase:
+        return None
+    try:
+        res = (
+            supabase.table("announcements")
+            .select("*")
+            .eq("business_id", business_id)
+            .eq("is_active", True)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+    except Exception:
+        return None
+    if not rows:
+        return None
+    ann = rows[0]
+    end_date = ann.get('end_date')
+    if end_date and str(end_date) < datetime.utcnow().date().isoformat():
+        return None
+    return ann
+
+def build_apple_pass_json(customer: dict, business: dict, program: dict, announcement: Optional[dict] = None) -> dict:
     cust_public_id = customer.get('public_id', '')
     cust_name = customer.get('name', 'Member')
     biz_name = business.get('name', 'Loyalty')
@@ -1275,6 +1305,33 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict) -> dict
     reward_unlocked = bool(customer.get('reward_unlocked'))
     primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
     r, g, b = _hex_to_rgb(primary_color)
+
+    # Announcement field: always present (rather than added/removed) so the
+    # field's value - not its existence - is what changes between rebuilds.
+    # PassKit only offers a lock-screen notification when a field's *value*
+    # differs from what the device already has for that key, substituted
+    # into changeMessage's %@. Falls back to a static placeholder when there
+    # is no active announcement, so first-time installs and quiet periods
+    # don't show stale or blank text. Note: this placeholder is itself a
+    # "value" PassKit can diff against, so a business going from an active
+    # announcement back to none will also trigger one (harmless but
+    # unavoidable) notification - PassKit has no per-field "silent update".
+    ann_title = (announcement or {}).get('title', '') or ''
+    ann_message = (announcement or {}).get('message', '') or ''
+    announcement_value = ann_title.strip() or ann_message.strip() or 'Check back for updates'
+
+    back_fields = [
+        {'key': 'about', 'label': 'About', 'value': description or 'Collect stamps, earn rewards.'},
+        {'key': 'online', 'label': 'View Online', 'value': f'{BASE_URL}/wallet/{cust_public_id}'},
+        {
+            'key': 'announcement',
+            'label': '📢 ANNOUNCEMENT',
+            'value': announcement_value[:150],
+            'changeMessage': '%@',
+        },
+    ]
+    if ann_message.strip() and ann_message.strip() != announcement_value:
+        back_fields.append({'key': 'announcement_detail', 'label': ' ', 'value': ann_message.strip()[:400]})
 
     return {
         'formatVersion': 1,
@@ -1302,10 +1359,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict) -> dict
             'auxiliaryFields': [
                 {'key': 'business', 'label': 'BUSINESS', 'value': biz_name}
             ],
-            'backFields': [
-                {'key': 'about', 'label': 'About', 'value': description or 'Collect stamps, earn rewards.'},
-                {'key': 'online', 'label': 'View Online', 'value': f'{BASE_URL}/wallet/{cust_public_id}'}
-            ]
+            'backFields': back_fields
         },
         'barcodes': [
             {
@@ -1317,11 +1371,14 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict) -> dict
         ]
     }
 
-def build_pkpass_bytes(customer: dict, business: dict, program: dict) -> Optional[bytes]:
+def build_pkpass_bytes(customer: dict, business: dict, program: dict, announcement: Optional[dict] = None) -> Optional[bytes]:
     """Assembles and signs the full .pkpass zip. Returns None if Apple
     Wallet credentials aren't configured or signing fails - callers treat
     that the same way create_google_wallet_jwt()'s empty-string return is
-    treated: a clear 'not configured' error rather than a crash."""
+    treated: a clear 'not configured' error rather than a crash.
+    `announcement` is optional - pass the business's current active
+    announcement (see get_latest_active_announcement) so it's reflected in
+    the pass; omitted, the pass just shows the no-announcement placeholder."""
     if not APPLE_PASS_TYPE_IDENTIFIER or not APPLE_TEAM_IDENTIFIER:
         return None
     if get_apple_pass_credentials() is None:
@@ -1329,7 +1386,7 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict) -> Optiona
 
     primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
     biz_name = business.get('name', 'Loyalty')
-    pass_json = build_apple_pass_json(customer, business, program)
+    pass_json = build_apple_pass_json(customer, business, program, announcement)
 
     files = {
         'pass.json': json.dumps(pass_json).encode('utf-8'),
@@ -4623,8 +4680,9 @@ async def get_apple_wallet_pass(customer_public_id: str):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
     program = safe_get_loyalty_program(business.get('id'))
+    announcement = get_latest_active_announcement(business.get('id'))
 
-    pkpass_bytes = build_pkpass_bytes(customer, business, program)
+    pkpass_bytes = build_pkpass_bytes(customer, business, program, announcement)
     if pkpass_bytes is None:
         raise HTTPException(
             status_code=500,
@@ -4741,20 +4799,37 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
     if not business:
         raise HTTPException(status_code=404, detail="Not found")
 
-    last_modified = customer.get('updated_at') or datetime.utcnow().isoformat()
+    announcement = get_latest_active_announcement(business.get('id'))
+
+    # Last-Modified needs to reflect whichever changed more recently - the
+    # customer row (stamps/redemptions) or the business's active announcement.
+    # Without the announcement side of this, posting a new announcement would
+    # never actually change what this endpoint serves: the customer row is
+    # untouched by an announcement, so the old customer-only timestamp would
+    # keep matching If-Modified-Since and every device would get a 304
+    # forever, no matter how many times push_apple_wallet_announcement() woke
+    # them up to check.
+    customer_ts = _parse_ts(customer.get('updated_at'))
+    ann_ts_raw = (announcement or {}).get('updated_at') or (announcement or {}).get('created_at')
+    ann_ts = _parse_ts(ann_ts_raw)
+    if ann_ts and (not customer_ts or ann_ts > customer_ts):
+        last_modified = ann_ts_raw
+        last_modified_ts = ann_ts
+    else:
+        last_modified = customer.get('updated_at') or datetime.utcnow().isoformat()
+        last_modified_ts = customer_ts
 
     # Wallet echoes back whatever we previously sent as Last-Modified (see
-    # below) as If-Modified-Since on the next check. If the customer's data
-    # hasn't changed since then, a 304 with no body is required here - Apple's
-    # own device logs flag it as a web service error when this is skipped and
+    # below) as If-Modified-Since on the next check. If neither side has
+    # changed since then, a 304 with no body is required here - Apple's own
+    # device logs flag it as a web service error when this is skipped and
     # the full (unchanged) pass is sent back every time instead.
-    last_modified_ts = _parse_ts(last_modified)
     since_ts = _parse_ts(if_modified_since)
     if last_modified_ts and since_ts and last_modified_ts <= since_ts:
         return Response(status_code=304)
 
     program = safe_get_loyalty_program(business.get('id'))
-    pkpass_bytes = build_pkpass_bytes(customer, business, program)
+    pkpass_bytes = build_pkpass_bytes(customer, business, program, announcement)
     if pkpass_bytes is None:
         raise HTTPException(status_code=500, detail="Could not build pass")
     return Response(
