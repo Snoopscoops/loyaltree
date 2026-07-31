@@ -8,7 +8,7 @@ import hashlib
 import hmac
 import html as html_lib
 from datetime import datetime, timedelta
-from typing import Optional, List
+from typing import Optional, List, Literal
 
 from fastapi import FastAPI, HTTPException, Request, Depends, Header
 from fastapi.responses import HTMLResponse, JSONResponse, Response
@@ -479,7 +479,16 @@ class BranchUpdate(BaseModel):
     is_active: Optional[bool] = None
 
 
+class PointsPrize(BaseModel):
+    # id is client-generated (uuid4 hex) so the owner can reorder/edit
+    # prizes without the list re-keying itself on every save.
+    id: Optional[str] = None
+    name: str = Field(max_length=80)
+    points_cost: int = Field(ge=1)
+    description: Optional[str] = Field(default=None, max_length=140)
+
 class LoyaltyConfig(BaseModel):
+    card_type: Literal['stamp', 'points'] = 'stamp'  # a business runs ONE active card at a time
     stamp_goal: int = Field(default=8, ge=3, le=20)
     reward_name: str = 'Free Service'
     primary_color: str = '#3b82f6'
@@ -489,6 +498,10 @@ class LoyaltyConfig(BaseModel):
     card_name: Optional[str] = None
     description: Optional[str] = Field(default=None, max_length=140)  # short blurb shown below the card on the join page / wallet pass
     google_review_url: Optional[str] = None  # Growth/Pro only - link prompted after a redeemed reward
+    # --- Points card only ---
+    points_per_amount: Optional[float] = Field(default=10, ge=0)     # points earned...
+    points_amount_pesos: Optional[float] = Field(default=100, ge=1)  # ...per this many pesos spent
+    points_prizes: Optional[List[PointsPrize]] = None                # catalog of prizes customers can redeem points for
 
 class CustomerSignup(BaseModel):
     name: str
@@ -3046,6 +3059,7 @@ async def get_loyalty_config(public_id: str):
     program = safe_get_loyalty_program(business.get('id'))
     if not program:
         return {
+            "card_type": "stamp",
             "stamp_goal": 8,
             "reward_name": "Free Service",
             "primary_color": "#3b82f6",
@@ -3055,6 +3069,9 @@ async def get_loyalty_config(public_id: str):
             "card_name": None,
             "description": None,
             "google_wallet_class_id": None,
+            "points_per_amount": 10,
+            "points_amount_pesos": 100,
+            "points_prizes": [],
         }
     return program
 
@@ -3066,6 +3083,7 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
 
     data = {
         'business_id': business.get('id'),
+        'card_type': config.card_type,
         'stamp_goal': config.stamp_goal,
         'reward_name': config.reward_name,
         'primary_color': config.primary_color,
@@ -3081,6 +3099,20 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
         data['card_name'] = config.card_name
     if config.description is not None:
         data['description'] = config.description
+    if config.card_type == 'points':
+        data['points_per_amount'] = config.points_per_amount
+        data['points_amount_pesos'] = config.points_amount_pesos
+        # Backfill an id for any prize the owner added client-side without one,
+        # so it can be referenced (e.g. from the cashier redemption flow) later.
+        prizes = []
+        for p in (config.points_prizes or []):
+            prizes.append({
+                'id': p.id or uuid.uuid4().hex[:12],
+                'name': p.name,
+                'points_cost': p.points_cost,
+                'description': p.description,
+            })
+        data['points_prizes'] = prizes
     if config.google_review_url is not None:
         features = get_plan_features(business.get('plan'))
         if not features.get('google_review_prompt'):
