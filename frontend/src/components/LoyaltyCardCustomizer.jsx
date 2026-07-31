@@ -33,6 +33,11 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
   const [walletClassId, setWalletClassId] = useState(null)
   const [error, setError] = useState('')
   const [saved, setSaved] = useState(false)
+  // 'picker' shows the Stamp vs Points choice first; 'form' shows the
+  // full editor for whichever type is selected. Always starts on the
+  // picker so the owner explicitly confirms the type every time they
+  // open the editor, even if one was already saved.
+  const [step, setStep] = useState('picker')
 
   // New-prize draft form (points card)
   const [prizeDraft, setPrizeDraft] = useState({ name: '', points_cost: '', description: '' })
@@ -187,6 +192,51 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
   const previewFilled = Math.ceil(stampGoal / 2)
   const displayName = form.card_name || `${user?.business_name || 'Your Business'} Rewards`
 
+  if (step === 'picker') {
+    return (
+      <div style={styles.page}>
+        <div style={styles.header}>
+          <h2 style={styles.title}>🎨 Choose Your Loyalty Card</h2>
+          <p style={styles.subtitle}>Pick how customers earn rewards. Your business runs one active card at a time.</p>
+        </div>
+
+        <div style={styles.pickerGrid}>
+          <button
+            type="button"
+            onClick={() => update('card_type', 'stamp')}
+            style={{
+              ...styles.pickerCard,
+              ...(form.card_type === 'stamp' ? { borderColor: form.primary_color || '#0d9488', background: '#f0fdfa' } : {}),
+            }}
+          >
+            <span style={styles.pickerCardIcon}>🎟️</span>
+            <span style={styles.pickerCardLabel}>Stamp Card</span>
+            <span style={styles.pickerCardDesc}>Customers collect a stamp on every visit and unlock a reward after a set number of stamps.</span>
+            {form.card_type === 'stamp' && <span style={styles.pickerCardBadge}>Selected</span>}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => update('card_type', 'points')}
+            style={{
+              ...styles.pickerCard,
+              ...(form.card_type === 'points' ? { borderColor: form.primary_color || '#0d9488', background: '#f0fdfa' } : {}),
+            }}
+          >
+            <span style={styles.pickerCardIcon}>💎</span>
+            <span style={styles.pickerCardLabel}>Points Card</span>
+            <span style={styles.pickerCardDesc}>Customers earn points based on how much they spend, then redeem points for prizes you set.</span>
+            {form.card_type === 'points' && <span style={styles.pickerCardBadge}>Selected</span>}
+          </button>
+        </div>
+
+        <button type="button" onClick={() => setStep('form')} style={styles.pickerContinueBtn}>
+          Continue with {form.card_type === 'points' ? 'Points Card' : 'Stamp Card'} →
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div style={styles.page}>
       <style>{`
@@ -275,35 +325,13 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
           {error && <div style={styles.error}>{error}</div>}
           {saved && <div style={styles.success}>✓ Saved</div>}
 
-          <div style={styles.fieldGroup}>
-            <label style={styles.label}>Card type</label>
-            <div style={styles.typeRow}>
-              <button
-                type="button"
-                onClick={() => update('card_type', 'stamp')}
-                style={{
-                  ...styles.typeBtn,
-                  ...(form.card_type === 'stamp' ? { borderColor: form.primary_color, background: '#f0fdfa' } : {}),
-                }}
-              >
-                <span style={styles.typeBtnIcon}>🎟️</span>
-                <span style={styles.typeBtnLabel}>Stamp Card</span>
-                <span style={styles.typeBtnDesc}>Collect a stamp per visit</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => update('card_type', 'points')}
-                style={{
-                  ...styles.typeBtn,
-                  ...(form.card_type === 'points' ? { borderColor: form.primary_color, background: '#f0fdfa' } : {}),
-                }}
-              >
-                <span style={styles.typeBtnIcon}>💎</span>
-                <span style={styles.typeBtnLabel}>Points Card</span>
-                <span style={styles.typeBtnDesc}>Earn points per peso spent</span>
-              </button>
-            </div>
-            <p style={styles.hint}>Your business runs one active card at a time. Switching type here changes what customers see.</p>
+          <div style={styles.typeSummary}>
+            <span style={styles.typeSummaryText}>
+              {form.card_type === 'points' ? '💎 Points Card' : '🎟️ Stamp Card'}
+            </span>
+            <button type="button" onClick={() => setStep('picker')} style={styles.typeChangeBtn}>
+              Change card type
+            </button>
           </div>
 
           <div style={styles.fieldGroup}>
@@ -719,36 +747,87 @@ const styles = {
     fontSize: 13,
     color: '#64748b',
   },
-  typeRow: {
-    display: 'flex',
-    gap: 12,
+  pickerGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+    gap: 20,
+    maxWidth: 720,
+    margin: '0 auto',
   },
-  typeBtn: {
-    flex: 1,
+  pickerCard: {
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'flex-start',
-    gap: 2,
-    padding: '14px 16px',
-    borderRadius: 12,
-    border: '1.5px solid #e2e8f0',
+    gap: 8,
+    position: 'relative',
+    padding: '28px 24px',
+    borderRadius: 18,
+    border: '2px solid #e2e8f0',
     background: 'white',
     cursor: 'pointer',
     textAlign: 'left',
+    boxShadow: '0 4px 14px rgba(15,23,42,0.05)',
     transition: 'all 0.15s',
   },
-  typeBtnIcon: {
-    fontSize: 20,
-    marginBottom: 2,
+  pickerCardIcon: {
+    fontSize: 34,
+    marginBottom: 4,
   },
-  typeBtnLabel: {
+  pickerCardLabel: {
+    fontSize: 17,
+    fontWeight: 800,
+    color: '#0f172a',
+  },
+  pickerCardDesc: {
+    fontSize: 13,
+    color: '#64748b',
+    lineHeight: 1.5,
+  },
+  pickerCardBadge: {
+    position: 'absolute',
+    top: 16,
+    right: 16,
+    fontSize: 11,
+    fontWeight: 700,
+    color: '#0f766e',
+    background: '#ccfbf1',
+    padding: '4px 10px',
+    borderRadius: 999,
+  },
+  pickerContinueBtn: {
+    display: 'block',
+    margin: '28px auto 0',
+    padding: '14px 28px',
+    borderRadius: 12,
+    border: 'none',
+    background: '#0d9488',
+    color: 'white',
+    fontSize: 15,
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  typeSummary: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '10px 14px',
+    background: '#f8fafc',
+    border: '1px solid #e2e8f0',
+    borderRadius: 10,
+  },
+  typeSummaryText: {
     fontSize: 14,
     fontWeight: 700,
     color: '#0f172a',
   },
-  typeBtnDesc: {
-    fontSize: 12,
-    color: '#64748b',
+  typeChangeBtn: {
+    background: 'none',
+    border: 'none',
+    color: '#0d9488',
+    fontSize: 13,
+    fontWeight: 600,
+    cursor: 'pointer',
+    textDecoration: 'underline',
   },
   pointsSection: {
     display: 'flex',
