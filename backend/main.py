@@ -2699,11 +2699,20 @@ async def get_branch_stamp_counts(public_id: str):
         branches_res = supabase.table("branches").select("id,public_id,name").eq("business_id", business.get("id")).execute()
         branch_rows = branches_res.data or []
 
-        stamp_events = supabase.table("stamp_events").select("branch_id").eq("business_id", business.get("id")).execute().data or []
+        # Points-card businesses never write to stamp_events (add_stamp
+        # rejects them - see the card_type guard there), so their activity
+        # lives in points_events instead. Same activity_events swap as
+        # get_analytics above, keeping the "stamp_count" field name so the
+        # dashboard doesn't need a second shape to handle.
+        program = safe_get_loyalty_program(business.get("id"))
+        card_type = program.get('card_type', 'stamp') if program else 'stamp'
+        activity_table = "points_events" if card_type == 'points' else "stamp_events"
+
+        activity_events = supabase.table(activity_table).select("branch_id").eq("business_id", business.get("id")).execute().data or []
         redemption_events = supabase.table("redemption_events").select("branch_id").eq("business_id", business.get("id")).execute().data or []
 
         stamp_counts, redemption_counts = {}, {}
-        for row in stamp_events:
+        for row in activity_events:
             bid = row.get("branch_id")
             if bid is not None:
                 stamp_counts[bid] = stamp_counts.get(bid, 0) + 1
@@ -2716,6 +2725,7 @@ async def get_branch_stamp_counts(public_id: str):
             {
                 "branch_public_id": b["public_id"],
                 "name": b["name"],
+                "card_type": card_type,
                 "stamp_count": stamp_counts.get(b["id"], 0),
                 "redemption_count": redemption_counts.get(b["id"], 0),
             }
@@ -2979,8 +2989,21 @@ async def get_analytics(public_id: str, range: str = '30d'):
         customers = supabase.table("customers").select("*").eq("business_id", business_id).execute().data or []
         stamp_events = supabase.table("stamp_events").select("*").eq("business_id", business_id).execute().data or []
         redemption_events = supabase.table("redemption_events").select("*").eq("business_id", business_id).execute().data or []
+        points_events = supabase.table("points_events").select("*").eq("business_id", business_id).execute().data or []
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    program = safe_get_loyalty_program(business_id)
+    card_type = program.get('card_type', 'stamp') if program else 'stamp'
+    # Points-card businesses never generate stamp_events (add_stamp rejects
+    # them - see the card_type guard there), so all "activity" metrics below
+    # - active members, trend charts, peak-activity heatmap, per-customer
+    # averages - read from points_events instead of stamp_events when the
+    # business is on a points card. Keeping the same downstream field names
+    # (total_stamps, trends.stamps, etc.) so the dashboard keeps working
+    # either way; card_type is included below for a frontend that wants to
+    # relabel them ("points sales" vs "stamps").
+    activity_events = points_events if card_type == 'points' else stamp_events
 
     now = datetime.utcnow()
     days = _range_to_days(range)
@@ -3001,8 +3024,8 @@ async def get_analytics(public_id: str, range: str = '30d'):
     cust_period = _filter_between(customers, 'created_at', period_start, now)
     cust_prev = _filter_between(customers, 'created_at', prev_start, prev_end)
 
-    stamps_period = _filter_between(stamp_events, 'created_at', period_start, now)
-    stamps_prev = _filter_between(stamp_events, 'created_at', prev_start, prev_end)
+    stamps_period = _filter_between(activity_events, 'created_at', period_start, now)
+    stamps_prev = _filter_between(activity_events, 'created_at', prev_start, prev_end)
 
     redeems_period = _filter_between(redemption_events, 'created_at', period_start, now)
     redeems_prev = _filter_between(redemption_events, 'created_at', prev_start, prev_end)
@@ -3028,7 +3051,11 @@ async def get_analytics(public_id: str, range: str = '30d'):
 
     adoption_rate = round((active_members / total_customers) * 100, 1) if total_customers else 0
 
+    total_points_earned = sum(e.get('points_earned', 0) or 0 for e in stamps_period) if card_type == 'points' else None
+    total_points_earned_prev = sum(e.get('points_earned', 0) or 0 for e in stamps_prev) if card_type == 'points' else None
+
     overview = {
+        "card_type": card_type,
         "total_customers": total_customers,
         "customer_change": _pct_change(new_customers, new_customers_prev),
         "new_customers": new_customers,
@@ -3041,30 +3068,44 @@ async def get_analytics(public_id: str, range: str = '30d'):
         "avg_stamps_per_customer": avg_stamps,
         "avg_change": _pct_change(avg_stamps, avg_stamps_prev),
         "adoption_rate": adoption_rate,
+        "total_points_earned": total_points_earned,
+        "points_change": _pct_change(total_points_earned, total_points_earned_prev) if card_type == 'points' else None,
     }
 
     trends = {
         "customers": _bucketed_series(customers, 'created_at', period_start, now),
-        "stamps": _bucketed_series(stamp_events, 'created_at', period_start, now),
+        "stamps": _bucketed_series(activity_events, 'created_at', period_start, now),
         "rewards": _bucketed_series(redemption_events, 'created_at', period_start, now),
-        "peak_hours": _day_of_week_series(stamp_events, 'created_at', period_start, now),
+        "peak_hours": _day_of_week_series(activity_events, 'created_at', period_start, now),
     }
 
-    top_customers = sorted(customers, key=lambda c: c.get('stamp_count', 0), reverse=True)[:5]
+    top_sort_field = 'points_balance' if card_type == 'points' else 'stamp_count'
+    top_customers = sorted(customers, key=lambda c: c.get(top_sort_field, 0), reverse=True)[:5]
     top_customers_out = [
-        {"name": c.get("name") or "Customer", "stamps": c.get("stamp_count", 0)}
-        for c in top_customers if c.get('stamp_count', 0) > 0
+        {"name": c.get("name") or "Customer", "stamps": c.get(top_sort_field, 0), "metric": top_sort_field}
+        for c in top_customers if c.get(top_sort_field, 0) > 0
     ]
 
     returning = active_ids_period & active_ids_prev
     retention_rate = round((len(returning) / len(active_ids_prev)) * 100, 1) if active_ids_prev else 0
 
     thirty_days_ago = now - timedelta(days=30)
-    churn_risk = sum(
-        1 for c in customers
-        if c.get('stamp_count', 0) > 0
-        and (_parse_ts(c.get('updated_at')) or _parse_ts(c.get('created_at')) or now) < thirty_days_ago
-    )
+    if card_type == 'points':
+        # "At risk" for a points card is a customer sitting on an unspent
+        # balance who hasn't earned or redeemed anything in 30+ days -
+        # stamp_count doesn't exist for these customers, so gate on
+        # points_balance instead.
+        churn_risk = sum(
+            1 for c in customers
+            if c.get('points_balance', 0) > 0
+            and (_parse_ts(c.get('updated_at')) or _parse_ts(c.get('created_at')) or now) < thirty_days_ago
+        )
+    else:
+        churn_risk = sum(
+            1 for c in customers
+            if c.get('stamp_count', 0) > 0
+            and (_parse_ts(c.get('updated_at')) or _parse_ts(c.get('created_at')) or now) < thirty_days_ago
+        )
 
     customers_block = {
         "top_customers": top_customers_out,
@@ -3087,12 +3128,21 @@ async def get_analytics(public_id: str, range: str = '30d'):
         "gender": gender_counts,
     }
 
-    # Proxy for "how many customers hit the stamp goal": customers currently
-    # sitting at reward_unlocked (goal reached, not yet redeemed) plus
-    # everyone who redeemed this period. There's no separate "goal reached"
-    # event logged today - only stamp and redemption events - so this is the
-    # closest honest approximation available without adding a new event type.
-    currently_unlocked = sum(1 for c in customers if c.get('reward_unlocked'))
+    # Proxy for "how many customers hit the goal": for stamp cards, that's
+    # reward_unlocked (goal reached, not yet redeemed) plus redemptions this
+    # period - there's no separate "goal reached" event logged, only stamp
+    # and redemption events. For points cards there's no single goal, so the
+    # closest equivalent is "can currently afford at least one prize" (using
+    # the cheapest configured prize), plus redemptions this period.
+    if card_type == 'points':
+        prize_costs = [p.get('points_cost', 0) for p in (program.get('points_prizes') or [])]
+        cheapest_prize_cost = min(prize_costs) if prize_costs else None
+        currently_unlocked = (
+            sum(1 for c in customers if c.get('points_balance', 0) >= cheapest_prize_cost)
+            if cheapest_prize_cost is not None else 0
+        )
+    else:
+        currently_unlocked = sum(1 for c in customers if c.get('reward_unlocked'))
     reached_goal_period = currently_unlocked + total_rewards
 
     stamps_block = {
@@ -3102,17 +3152,32 @@ async def get_analytics(public_id: str, range: str = '30d'):
         "redemption_rate": round((total_rewards / reached_goal_period) * 100, 1) if reached_goal_period else 0,
     }
 
-    # No price/amount field exists anywhere in this schema (stamps and
-    # redemptions don't capture a dollar value), so revenue is reported as
-    # untracked rather than guessed at. To light this up for real, add an
-    # `amount` field to StampRequest and store it on stamp_events.
-    revenue = {
-        "tracked": False,
-        "stamp_revenue": None,
-        "reward_cost": None,
-        "net_value": None,
-        "avg_transaction": None,
-    }
+    # Stamp cards still have no price/amount field anywhere in the schema
+    # (stamps and stamp-goal redemptions don't capture a dollar value), so
+    # revenue stays untracked for them rather than guessed at. Points cards
+    # are different: every points_events row already stores the real sale
+    # amount (amount_spent_pesos) via log_points_event, so revenue for those
+    # businesses is genuinely trackable.
+    if card_type == 'points':
+        revenue_period = sum(e.get('amount_spent_pesos', 0) or 0 for e in stamps_period)
+        revenue_prev = sum(e.get('amount_spent_pesos', 0) or 0 for e in stamps_prev)
+        transaction_count = len(stamps_period)
+        revenue = {
+            "tracked": True,
+            "stamp_revenue": round(revenue_period, 2),
+            "revenue_change": _pct_change(revenue_period, revenue_prev),
+            "reward_cost": None,
+            "net_value": None,
+            "avg_transaction": round(revenue_period / transaction_count, 2) if transaction_count else 0,
+        }
+    else:
+        revenue = {
+            "tracked": False,
+            "stamp_revenue": None,
+            "reward_cost": None,
+            "net_value": None,
+            "avg_transaction": None,
+        }
 
     return {
         "range": range,

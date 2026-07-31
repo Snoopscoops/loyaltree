@@ -53,6 +53,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
   if (!analytics) return null
 
   const { overview, trends, customers, demographics, stamps, rewards, revenue } = analytics
+  const isPoints = overview.card_type === 'points'
 
   return (
     <div className="an-container" style={styles.container}>
@@ -122,13 +123,23 @@ function AnalyticsDashboard({ API_BASE, user }) {
           icon="⭐" 
           color="#3b82f6"
         />
-        <StatCard 
-          title="Stamps Issued" 
-          value={overview.total_stamps} 
-          change={overview.stamp_change}
-          icon="🎯" 
-          color="#f59e0b"
-        />
+        {isPoints ? (
+          <StatCard
+            title="Points Issued"
+            value={overview.total_points_earned ?? 0}
+            change={overview.points_change}
+            icon="💎"
+            color="#f59e0b"
+          />
+        ) : (
+          <StatCard
+            title="Stamps Issued"
+            value={overview.total_stamps}
+            change={overview.stamp_change}
+            icon="🎯"
+            color="#f59e0b"
+          />
+        )}
         <StatCard 
           title="Rewards Redeemed" 
           value={overview.total_rewards} 
@@ -136,13 +147,23 @@ function AnalyticsDashboard({ API_BASE, user }) {
           icon="🎁" 
           color="#ec4899"
         />
-        <StatCard 
-          title="Avg. Stamps/Customer" 
-          value={overview.avg_stamps_per_customer} 
-          change={overview.avg_change}
-          icon="📈" 
-          color="#8b5cf6"
-        />
+        {isPoints ? (
+          <StatCard
+            title="Avg. Points/Customer"
+            value={overview.active_members ? Math.round(((overview.total_points_earned ?? 0) / overview.active_members) * 10) / 10 : 0}
+            change={overview.points_change}
+            icon="📈"
+            color="#8b5cf6"
+          />
+        ) : (
+          <StatCard
+            title="Avg. Stamps/Customer"
+            value={overview.avg_stamps_per_customer}
+            change={overview.avg_change}
+            icon="📈"
+            color="#8b5cf6"
+          />
+        )}
         <StatCard 
           title="New Customers" 
           value={overview.new_customers} 
@@ -150,6 +171,15 @@ function AnalyticsDashboard({ API_BASE, user }) {
           icon="🆕" 
           color="#10b981"
         />
+        {isPoints && (
+          <StatCard
+            title="Transactions"
+            value={overview.total_stamps}
+            change={overview.stamp_change}
+            icon="🧾"
+            color="#0ea5e9"
+          />
+        )}
       </div>
 
       {/* Charts Row */}
@@ -159,7 +189,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           <LineChart data={trends.customers} color="#0d9488" />
         </div>
         <div className="an-chart-card" style={styles.chartCard}>
-          <h3 style={styles.chartTitle}>🎯 Stamp Activity</h3>
+          <h3 style={styles.chartTitle}>{isPoints ? '💎 Points Activity' : '🎯 Stamp Activity'}</h3>
           <LineChart data={trends.stamps} color="#f59e0b" />
         </div>
       </div>
@@ -186,7 +216,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
               <div key={i} style={styles.customerRow}>
                 <span style={styles.rank}>#{i + 1}</span>
                 <span style={styles.customerName}>{c.name}</span>
-                <span style={styles.customerStamps}>{c.stamps} stamps</span>
+                <span style={styles.customerStamps}>{c.stamps} {c.metric === 'points_balance' ? 'pts' : 'stamps'}</span>
               </div>
             ))}
           </div>
@@ -239,24 +269,36 @@ function AnalyticsDashboard({ API_BASE, user }) {
         {revenue.tracked ? (
           <div className="an-revenue-grid" style={styles.revenueGrid}>
             <div style={styles.revenueCard}>
-              <h4 style={styles.insightTitle}>Stamp-Driven Revenue</h4>
+              <h4 style={styles.insightTitle}>{isPoints ? 'Points-Driven Revenue' : 'Stamp-Driven Revenue'}</h4>
               <div className="an-bignumber" style={styles.bigNumber}>${revenue.stamp_revenue}</div>
-              <p style={styles.insightDesc}>Revenue from stamp-earning transactions</p>
+              <p style={styles.insightDesc}>{isPoints ? 'Revenue from point-earning transactions' : 'Revenue from stamp-earning transactions'}</p>
             </div>
             <div style={styles.revenueCard}>
               <h4 style={styles.insightTitle}>Reward Cost</h4>
-              <div className="an-bignumber" style={{...styles.bigNumber, color: '#ef4444'}}>${revenue.reward_cost}</div>
-              <p style={styles.insightDesc}>Estimated cost of redeemed rewards</p>
+              {revenue.reward_cost != null ? (
+                <>
+                  <div className="an-bignumber" style={{...styles.bigNumber, color: '#ef4444'}}>${revenue.reward_cost}</div>
+                  <p style={styles.insightDesc}>Estimated cost of redeemed rewards</p>
+                </>
+              ) : (
+                <p style={styles.insightDesc}>Not tracked yet — prizes don't currently record a cost.</p>
+              )}
             </div>
             <div style={styles.revenueCard}>
               <h4 style={styles.insightTitle}>Net Program Value</h4>
-              <div className="an-bignumber" style={{...styles.bigNumber, color: '#10b981'}}>${revenue.net_value}</div>
-              <p style={styles.insightDesc}>Revenue minus reward costs</p>
+              {revenue.net_value != null ? (
+                <>
+                  <div className="an-bignumber" style={{...styles.bigNumber, color: '#10b981'}}>${revenue.net_value}</div>
+                  <p style={styles.insightDesc}>Revenue minus reward costs</p>
+                </>
+              ) : (
+                <p style={styles.insightDesc}>Needs reward cost data to calculate.</p>
+              )}
             </div>
             <div style={styles.revenueCard}>
               <h4 style={styles.insightTitle}>Avg. Transaction</h4>
               <div className="an-bignumber" style={styles.bigNumber}>${revenue.avg_transaction}</div>
-              <p style={styles.insightDesc}>Average spend per stamp transaction</p>
+              <p style={styles.insightDesc}>{isPoints ? 'Average spend per point-earning transaction' : 'Average spend per stamp transaction'}</p>
             </div>
           </div>
         ) : (
@@ -275,7 +317,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
         <h2 className="an-section-title" style={styles.sectionTitle}>🏥 Program Health</h2>
         <div className="an-health-grid" style={styles.healthGrid}>
           <HealthMetric 
-            label="Stamp Completion Rate" 
+            label={isPoints ? 'Prize Eligibility Rate' : 'Stamp Completion Rate'}
             value={stamps.completion_rate} 
             target={75}
             color="#f59e0b"
@@ -308,12 +350,12 @@ function AnalyticsDashboard({ API_BASE, user }) {
           <h2 className="an-section-title" style={styles.sectionTitle}>🏢 Branch Performance</h2>
           <div className="an-insights-grid" style={styles.insightsGrid}>
             <div style={styles.insightCard}>
-              <h4 style={styles.insightTitle}>Stamps by Branch</h4>
+              <h4 style={styles.insightTitle}>{isPoints ? 'Transactions by Branch' : 'Stamps by Branch'}</h4>
               {[...branchStats].sort((a, b) => b.stamp_count - a.stamp_count).map((b, i) => (
                 <div key={b.branch_public_id} style={styles.customerRow}>
                   <span style={styles.rank}>#{i + 1}</span>
                   <span style={styles.customerName}>{b.name}</span>
-                  <span style={styles.customerStamps}>{b.stamp_count} stamps</span>
+                  <span style={styles.customerStamps}>{b.stamp_count} {b.card_type === 'points' ? 'transactions' : 'stamps'}</span>
                 </div>
               ))}
             </div>
