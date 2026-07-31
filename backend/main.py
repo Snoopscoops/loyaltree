@@ -3540,6 +3540,8 @@ async def add_stamp(public_id: str, req: StampRequest, authorization: str = Head
             raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
 
     program = safe_get_loyalty_program(business.get('id'))
+    if program and program.get('card_type') == 'points':
+        raise HTTPException(status_code=400, detail="This business is on a points card - use /points-sale instead")
     goal = program.get('stamp_goal', 8) if program else 8
     new_count = customer.get('stamp_count', 0) + 1
     reward_unlocked = new_count >= goal
