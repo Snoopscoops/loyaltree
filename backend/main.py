@@ -4669,15 +4669,21 @@ async def cashier_stamp_page(customer_public_id: str):
 
     active_coupon = safe_get_active_coupon(customer.get('id'))
 
+    card_type = program.get('card_type', 'stamp') if program else 'stamp'
+    points_prizes = program.get('points_prizes', []) if program else []
+
     data = {
         'customer_public_id': customer.get('public_id', ''),
         'customer_name': customer.get('name', 'Member'),
         'business_public_id': business.get('public_id', ''),
         'business_name': business.get('name', ''),
+        'card_type': card_type,
         'stamp_count': customer.get('stamp_count', 0),
         'stamp_goal': stamp_goal,
         'reward_name': reward_name,
         'reward_unlocked': bool(customer.get('reward_unlocked')),
+        'points_balance': customer.get('points_balance', 0),
+        'points_prizes': points_prizes if isinstance(points_prizes, list) else [],
         'coupon_text': active_coupon.get('reward_text') if active_coupon else None,
     }
     data_json = json.dumps(data)
@@ -4685,7 +4691,7 @@ async def cashier_stamp_page(customer_public_id: str):
     head = (
         '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
-        '<title>Add Stamp - ' + html_lib.escape(business.get('name', '')) + '</title>'
+        '<title>' + ('Add Points' if card_type == 'points' else 'Add Stamp') + ' - ' + html_lib.escape(business.get('name', '')) + '</title>'
         '<style>'
         '*{box-sizing:border-box;margin:0;padding:0}'
         'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;'
@@ -4724,8 +4730,11 @@ async def cashier_stamp_page(customer_public_id: str):
         # cachedPin below is the fallback used when no session token is issued
         # (STAFF_SESSION_SECRET not set) - kept only in memory, never persisted
         'const DATA=' + data_json + ';'
+        'const cardType=DATA.card_type;'
         'let stampCount=DATA.stamp_count;'
         'let rewardUnlocked=DATA.reward_unlocked;'
+        'let pointsBalance=DATA.points_balance;'
+        'const pointsPrizes=DATA.points_prizes||[];'
         'let couponText=DATA.coupon_text;'
         'let cachedPin=null;'
         'const app=document.getElementById("app");'
@@ -4797,24 +4806,59 @@ async def cashier_stamp_page(customer_public_id: str):
         '}'
         '}'
 
-        'function renderCard(staffName,msg){'
+        'function renderStampBody(){'
         'const rewardHtml=rewardUnlocked?"<div class=\'reward\'>&#127873; "+escapeHtml(DATA.reward_name)+" unlocked!</div>":"";'
+        'return rewardHtml+'
+        '"<button class=\'btn-primary\' id=\'stampBtn\'>Add Stamp</button>"+'
+        '(rewardUnlocked?"<button class=\'btn-reward\' id=\'redeemBtn\'>Redeem Reward</button>":"");'
+        '}'
+
+        'function renderPointsBody(){'
+        'let prizeHtml="";'
+        'for(let i=0;i<pointsPrizes.length;i++){'
+        'const p=pointsPrizes[i];'
+        'const affordable=pointsBalance>=p.points_cost;'
+        'prizeHtml+="<div style=\'display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:#f8fafc;border-radius:10px;border:1px solid #e2e8f0;margin-bottom:8px;opacity:"+(affordable?"1":"0.5")+"\'>"+'
+        '"<div><div style=\'font-weight:600;font-size:14px;color:#0f172a\'>"+escapeHtml(p.name)+"</div><div style=\'font-size:12px;color:#64748b\'>"+p.points_cost+" pts</div></div>"+'
+        '"<button data-prize-id=\'"+escapeHtml(String(p.id))+"\' class=\'prizeRedeemBtn\' style=\'padding:8px 14px;border-radius:8px;border:none;background:"+(affordable?"#f59e0b":"#cbd5e1")+";color:white;font-size:13px;font-weight:700;cursor:"+(affordable?"pointer":"not-allowed")+"\' "+(affordable?"":"disabled")+">Redeem</button>"+'
+        '"</div>";'
+        '}'
+        'return "<input id=\'saleAmount\' type=\'number\' inputmode=\'decimal\' min=\'0\' placeholder=\'Amount spent\'>"+'
+        '"<button class=\'btn-primary\' id=\'pointsBtn\'>Add Points</button>"+'
+        'prizeHtml;'
+        '}'
+
+        'function attachBodyListeners(){'
+        'if(cardType==="points"){'
+        'const pointsBtn=document.getElementById("pointsBtn");'
+        'if(pointsBtn)pointsBtn.addEventListener("click",doPoints);'
+        'const prizeBtns=document.querySelectorAll(".prizeRedeemBtn");'
+        'for(let i=0;i<prizeBtns.length;i++){'
+        'prizeBtns[i].addEventListener("click",function(e){doRedeemPrize(e.currentTarget.getAttribute("data-prize-id"));});'
+        '}'
+        '}else{'
+        'const stampBtn=document.getElementById("stampBtn");'
+        'if(stampBtn)stampBtn.addEventListener("click",doStamp);'
+        'const redeemBtn=document.getElementById("redeemBtn");'
+        'if(redeemBtn)redeemBtn.addEventListener("click",doRedeem);'
+        '}'
+        '}'
+
+        'function renderCard(staffName,msg){'
+        'const bodyHtml=cardType==="points"?renderPointsBody():renderStampBody();'
         'const couponHtml=couponText?"<div class=\'coupon\'>&#127903; "+escapeHtml(couponText)+"</div>":"";'
+        'const statsHtml=cardType==="points"?(pointsBalance+" points"):(stampCount+" / "+DATA.stamp_goal+" stamps");'
         'app.innerHTML='
         '(msg?"<div class=\'msg "+(msg.ok?"msg-ok":"msg-err")+"\'>"+escapeHtml(msg.text)+"</div>":"")+'
         '"<div class=\'customer-box\'>"+'
         '"<div class=\'name\'>"+escapeHtml(DATA.customer_name)+"</div>"+'
-        '"<div class=\'stamps\'>"+stampCount+" / "+DATA.stamp_goal+" stamps</div>"+'
+        '"<div class=\'stamps\'>"+statsHtml+"</div>"+'
         '"</div>"+'
-        'rewardHtml+'
+        'bodyHtml+'
         'couponHtml+'
-        '"<button class=\'btn-primary\' id=\'stampBtn\'>Add Stamp</button>"+'
-        '(rewardUnlocked?"<button class=\'btn-reward\' id=\'redeemBtn\'>Redeem Reward</button>":"")+'
         '(couponText?"<button class=\'btn-coupon\' id=\'redeemCouponBtn\'>Redeem Coupon</button>":"")+'
         '"<button class=\'btn-secondary\' id=\'switchBtn\'>Not "+escapeHtml(staffName||"you")+"? Switch</button>";'
-        'document.getElementById("stampBtn").addEventListener("click",doStamp);'
-        'const redeemBtn=document.getElementById("redeemBtn");'
-        'if(redeemBtn)redeemBtn.addEventListener("click",doRedeem);'
+        'attachBodyListeners();'
         'const redeemCouponBtn=document.getElementById("redeemCouponBtn");'
         'if(redeemCouponBtn)redeemCouponBtn.addEventListener("click",doRedeemCoupon);'
         'document.getElementById("switchBtn").addEventListener("click",function(){clearSession();renderLogin();});'
@@ -4841,6 +4885,55 @@ async def cashier_stamp_page(customer_public_id: str):
         '}'
         '}catch(e){'
         'renderCard(s?s.name:"",{ok:false,text:"Network error - stamp not added"});'
+        '}'
+        '}'
+
+        'async function doPoints(){'
+        'const input=document.getElementById("saleAmount");'
+        'const amount=parseFloat(input?input.value:"");'
+        'if(!amount||amount<=0){renderCard(getSession()?getSession().name:"",{ok:false,text:"Enter an amount spent first"});return;}'
+        'const btn=document.getElementById("pointsBtn");'
+        'btn.disabled=true;btn.textContent="Adding...";'
+        'const s=getSession();'
+        'try{'
+        'const res=await fetch("/api/v1/business/"+DATA.business_public_id+"/points-sale",{'
+        'method:"POST",headers:authHeaders(),'
+        'body:JSON.stringify({customer_public_id:DATA.customer_public_id,amount_spent:amount,'
+        'staff_pin:getSession()?undefined:cachedPin})'
+        '});'
+        'const d=await res.json();'
+        'if(res.ok){'
+        'pointsBalance=d.points_balance;'
+        'renderCard(s?s.name:"",{ok:true,text:"+"+d.points_earned+" points! "+pointsBalance+" total."});'
+        '}else if(res.status===401){'
+        'clearSession();renderLogin(d.detail||"Session expired - log in again");'
+        '}else{'
+        'renderCard(s?s.name:"",{ok:false,text:d.detail||"Could not add points"});'
+        '}'
+        '}catch(e){'
+        'renderCard(s?s.name:"",{ok:false,text:"Network error - points not added"});'
+        '}'
+        '}'
+
+        'async function doRedeemPrize(prizeId){'
+        'const s=getSession();'
+        'try{'
+        'const res=await fetch("/api/v1/business/"+DATA.business_public_id+"/points-redeem",{'
+        'method:"POST",headers:authHeaders(),'
+        'body:JSON.stringify({customer_public_id:DATA.customer_public_id,prize_id:prizeId,'
+        'staff_pin:getSession()?undefined:cachedPin})'
+        '});'
+        'const d=await res.json();'
+        'if(res.ok){'
+        'pointsBalance=d.points_balance;'
+        'renderCard(s?s.name:"",{ok:true,text:escapeHtml(d.prize_name||"Prize")+" redeemed!"});'
+        '}else if(res.status===401){'
+        'clearSession();renderLogin(d.detail||"Session expired - log in again");'
+        '}else{'
+        'renderCard(s?s.name:"",{ok:false,text:d.detail||"Could not redeem prize"});'
+        '}'
+        '}catch(e){'
+        'renderCard(s?s.name:"",{ok:false,text:"Network error"});'
         '}'
         '}'
 
