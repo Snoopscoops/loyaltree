@@ -2551,9 +2551,13 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
     # Manual stamp correction: recompute reward_unlocked against this
     # business's current stamp goal so the card/wallet pass stays
     # consistent with the corrected total, the same way add_stamp does.
+    # Points corrections don't need a recomputed field the way stamps do
+    # (no reward_unlocked equivalent for points), but still need `program`
+    # loaded below so the wallet push has it.
     program = None
-    if 'stamp_count' in update_data:
+    if 'stamp_count' in update_data or 'points_balance' in update_data:
         program = safe_get_loyalty_program(business.get('id'))
+    if 'stamp_count' in update_data:
         goal = program.get('stamp_goal', 8) if program else 8
         update_data['reward_unlocked'] = update_data['stamp_count'] >= goal
 
@@ -2590,7 +2594,7 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
             )
         raise HTTPException(status_code=500, detail=error_msg)
 
-    if 'stamp_count' in update_data:
+    if 'stamp_count' in update_data or 'points_balance' in update_data:
         try:
             sync_wallet_object(updated_customer, business, program)
         except Exception:
@@ -3586,11 +3590,10 @@ async def add_stamp(public_id: str, req: StampRequest, authorization: str = Head
 async def add_points_sale(public_id: str, req: PointsSaleRequest, authorization: str = Header(default="")):
     """Points-card equivalent of add_stamp: converts a purchase amount into
     points using the program's points_per_amount/points_amount_pesos rate
-    and credits the customer's points_balance. Wallet pass syncing for
-    points cards is handled in a later phase - build_loyalty_object() and
-    build_apple_pass_json() are still stamp-only, so we don't push a wallet
-    update here yet (that would notify the customer about a card that
-    still visually shows stamps)."""
+    and credits the customer's points_balance, then pushes the update to
+    any Google/Apple Wallet pass the customer already saved - same pattern
+    add_stamp() uses, now that build_loyalty_object()/build_apple_pass_json()
+    are points-aware."""
     print(f"POINTS SALE REQUEST: business={public_id}, customer={req.customer_public_id}, amount={req.amount_spent}")
 
     business = safe_get_business(public_id)
@@ -3648,6 +3651,13 @@ async def add_points_sale(public_id: str, req: PointsSaleRequest, authorization:
         }
         supabase.table("customers").update(update_data).eq("id", customer.get("id")).execute()
         customer['points_balance'] = new_balance
+        sync_wallet_object(
+            customer, business, program,
+            notify_header="Points added ⭐",
+            notify_body=f"You now have {new_balance} points!",
+            notify_message_id=f"points-{customer.get('id')}-{new_balance}-{int(datetime.utcnow().timestamp())}",
+        )
+        sync_apple_wallet_pass(customer)
         log_points_event(business.get('id'), customer.get('id'), req.amount_spent, points_earned, sale_staff_id, sale_branch_id)
     except Exception as e:
         error_msg = str(e)
