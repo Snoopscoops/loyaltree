@@ -784,7 +784,10 @@ def business_summary(biz: dict) -> dict:
     biz_id = biz.get('id')
     customer_count = 0
     staff_count = 0
-    stamps_30d = 0
+    activity_30d = 0
+    points_balance_outstanding = 0
+    program = safe_get_loyalty_program(biz_id)
+    card_type = program.get('card_type', 'stamp') if program else 'stamp'
     try:
         cust_res = supabase.table("customers").select("id", count="exact").eq("business_id", biz_id).execute()
         customer_count = cust_res.count or 0
@@ -796,11 +799,25 @@ def business_summary(biz: dict) -> dict:
     except Exception:
         pass
     try:
+        # Points-card businesses log sales to points_events, not
+        # stamp_events (see the card_type guard around /stamp vs
+        # /points-sale) - read from whichever table actually holds this
+        # business's activity so points businesses don't show a false 0.
         since = (datetime.utcnow() - timedelta(days=30)).isoformat()
-        stamp_res = supabase.table("stamp_events").select("id", count="exact").eq("business_id", biz_id).gte("created_at", since).execute()
-        stamps_30d = stamp_res.count or 0
+        activity_table = "points_events" if card_type == 'points' else "stamp_events"
+        activity_res = supabase.table(activity_table).select("id", count="exact").eq("business_id", biz_id).gte("created_at", since).execute()
+        activity_30d = activity_res.count or 0
     except Exception:
         pass
+    if card_type == 'points':
+        try:
+            # Outstanding points liability across all customers - lets
+            # admin monitor how many unredeemed points a points-card
+            # business is carrying.
+            bal_res = supabase.table("customers").select("points_balance").eq("business_id", biz_id).execute()
+            points_balance_outstanding = sum((c.get('points_balance') or 0) for c in (bal_res.data or []))
+        except Exception:
+            pass
     plan = biz.get('plan', 'starter')
 
     branch_count = 1
@@ -848,7 +865,12 @@ def business_summary(biz: dict) -> dict:
         "subscription_status": subscription_status,
         "customer_count": customer_count,
         "staff_count": staff_count,
-        "stamps_30d": stamps_30d,
+        "card_type": card_type,
+        # stamps_30d holds stamp punches for stamp cards, or points sales
+        # (transactions, not points earned) for points cards - see card_type
+        # to know which. Kept as one key so existing callers keep working.
+        "stamps_30d": activity_30d,
+        "points_balance_outstanding": points_balance_outstanding if card_type == 'points' else None,
     }
 
 def generate_qr_svg(data: str) -> str:
@@ -2118,14 +2140,31 @@ async def admin_overview(_: bool = Depends(require_admin)):
         since = (datetime.utcnow() - timedelta(days=30)).isoformat()
         stamps_30d_res = supabase.table("stamp_events").select("id", count="exact").gte("created_at", since).execute()
         redemptions_30d_res = supabase.table("redemption_events").select("id", count="exact").gte("created_at", since).execute()
+        points_sales_30d_res = supabase.table("points_events").select("points_earned").gte("created_at", since).execute()
+        points_sales_30d = len(points_sales_30d_res.data or [])
+        points_issued_30d = sum((e.get('points_earned') or 0) for e in (points_sales_30d_res.data or []))
 
         status_breakdown = {}
         plan_breakdown = {}
+        card_type_breakdown = {'stamp': 0, 'points': 0}
         for b in businesses:
             status = (b.get('status') or 'PENDING').upper()
             plan = b.get('plan') or 'starter'
             status_breakdown[status] = status_breakdown.get(status, 0) + 1
             plan_breakdown[plan] = plan_breakdown.get(plan, 0) + 1
+
+        # Outstanding points liability across every points-card business.
+        total_points_outstanding = 0
+        try:
+            points_programs = supabase.table("loyalty_programs").select("business_id").eq("card_type", "points").execute().data or []
+            points_business_ids = [p.get('business_id') for p in points_programs]
+            card_type_breakdown['points'] = len(points_business_ids)
+            card_type_breakdown['stamp'] = len(businesses) - len(points_business_ids)
+            if points_business_ids:
+                bal_res = supabase.table("customers").select("points_balance").in_("business_id", points_business_ids).execute()
+                total_points_outstanding = sum((c.get('points_balance') or 0) for c in (bal_res.data or []))
+        except Exception:
+            pass
 
         return {
             "total_businesses": len(businesses),
@@ -2133,6 +2172,10 @@ async def admin_overview(_: bool = Depends(require_admin)):
             "total_staff": staff_res.count or 0,
             "stamps_30d": stamps_30d_res.count or 0,
             "redemptions_30d": redemptions_30d_res.count or 0,
+            "points_sales_30d": points_sales_30d,
+            "points_issued_30d": points_issued_30d,
+            "total_points_outstanding": total_points_outstanding,
+            "card_type_breakdown": card_type_breakdown,
             "status_breakdown": status_breakdown,
             "plan_breakdown": plan_breakdown,
         }
@@ -2175,6 +2218,13 @@ async def admin_get_business(public_id: str, _: bool = Depends(require_admin)):
         summary["redemptions_30d"] = redemptions_res.count or 0
     except Exception:
         summary["redemptions_30d"] = 0
+    if summary.get("card_type") == 'points':
+        try:
+            since = (datetime.utcnow() - timedelta(days=30)).isoformat()
+            pe_res = supabase.table("points_events").select("points_earned").eq("business_id", business.get('id')).gte("created_at", since).execute()
+            summary["points_issued_30d"] = sum((e.get('points_earned') or 0) for e in (pe_res.data or []))
+        except Exception:
+            summary["points_issued_30d"] = 0
     summary["loyalty_program"] = program
     return summary
 

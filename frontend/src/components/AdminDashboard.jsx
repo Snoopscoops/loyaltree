@@ -176,6 +176,14 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
           <StatCard label="Total customers" value={overview?.total_customers ?? 0} />
           <StatCard label="Stamps (30d)" value={overview?.stamps_30d ?? 0} />
           <StatCard label="Redemptions (30d)" value={overview?.redemptions_30d ?? 0} />
+          {overview?.card_type_breakdown?.points > 0 && (
+            <>
+              <StatCard label="Points businesses" value={overview.card_type_breakdown.points} accent="#7c3aed" />
+              <StatCard label="Points sales (30d)" value={overview?.points_sales_30d ?? 0} accent="#7c3aed" />
+              <StatCard label="Points issued (30d)" value={(overview?.points_issued_30d ?? 0).toLocaleString()} accent="#7c3aed" />
+              <StatCard label="Points outstanding" value={(overview?.total_points_outstanding ?? 0).toLocaleString()} accent="#7c3aed" />
+            </>
+          )}
         </div>
 
         {overview?.plan_breakdown && (
@@ -226,7 +234,8 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 <th style={styles.th}>Expires</th>
                 <th style={styles.th}>Customers</th>
                 <th style={styles.th}>Staff</th>
-                <th style={styles.th}>Stamps (30d)</th>
+                <th style={styles.th}>Card</th>
+                <th style={styles.th}>Activity (30d)</th>
                 <th style={styles.th}></th>
               </tr>
             </thead>
@@ -277,7 +286,20 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                   </td>
                   <td style={styles.td}>{b.customer_count}</td>
                   <td style={styles.td}>{b.staff_count}</td>
-                  <td style={styles.td}>{b.stamps_30d}</td>
+                  <td style={styles.td}>
+                    <span style={cardTypeBadgeStyle(b.card_type)}>
+                      {b.card_type === 'points' ? '⭐ Points' : '🎟️ Stamp'}
+                    </span>
+                  </td>
+                  <td style={styles.td}>
+                    {b.stamps_30d}
+                    <div style={styles.rowPriceHint}>
+                      {b.card_type === 'points' ? 'points sales' : 'stamps'}
+                      {b.card_type === 'points' && b.points_balance_outstanding != null && (
+                        <> · {b.points_balance_outstanding.toLocaleString()} pts outstanding</>
+                      )}
+                    </div>
+                  </td>
                   <td style={styles.td}>
                     <button onClick={() => openDetail(b)} style={styles.viewBtn}>View</button>
                     <button onClick={() => setConfirmDelete(b)} style={styles.deleteBtn}>Remove</button>
@@ -285,7 +307,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 </tr>
               ))}
               {displayBusinesses.length === 0 && (
-                <tr><td style={styles.td} colSpan={10}>No businesses match these filters.</td></tr>
+                <tr><td style={styles.td} colSpan={11}>No businesses match these filters.</td></tr>
               )}
             </tbody>
           </table>
@@ -451,10 +473,35 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 )}
                 <DetailRow label="Customers" value={detail.customer_count} />
                 <DetailRow label="Staff" value={detail.staff_count} />
-                <DetailRow label="Stamps (30d)" value={detail.stamps_30d} />
+                <DetailRow label="Card type" value={detail.card_type === 'points' ? '⭐ Points' : '🎟️ Stamp'} />
+                {detail.card_type === 'points' ? (
+                  <>
+                    <DetailRow label="Points sales (30d)" value={detail.stamps_30d} />
+                    <DetailRow label="Points issued (30d)" value={(detail.points_issued_30d ?? 0).toLocaleString()} />
+                    <DetailRow label="Points outstanding" value={(detail.points_balance_outstanding ?? 0).toLocaleString()} />
+                  </>
+                ) : (
+                  <DetailRow label="Stamps (30d)" value={detail.stamps_30d} />
+                )}
                 <DetailRow label="Redemptions (30d)" value={detail.redemptions_30d} />
                 <DetailRow label="Created" value={detail.created_at ? new Date(detail.created_at).toLocaleDateString() : '—'} />
-                {detail.loyalty_program && (
+                {detail.loyalty_program && detail.card_type === 'points' ? (
+                  <>
+                    <DetailRow label="Points rate" value={`${detail.loyalty_program.points_per_amount ?? 0} pts per ₱${detail.loyalty_program.points_amount_pesos ?? 0}`} />
+                    {(detail.loyalty_program.points_prizes || []).length > 0 && (
+                      <div style={styles.detailRow}>
+                        <span style={styles.detailLabel}>Prize catalog</span>
+                        <div style={{ textAlign: 'right' }}>
+                          {detail.loyalty_program.points_prizes.map((p, i) => (
+                            <div key={p.id || i} style={styles.detailValue}>
+                              {p.name} — {p.points_cost} pts
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                ) : detail.loyalty_program && (
                   <>
                     <DetailRow label="Reward" value={detail.loyalty_program.reward_name} />
                     <DetailRow label="Stamp goal" value={detail.loyalty_program.stamp_goal} />
@@ -511,6 +558,15 @@ function statusStyle(status) {
   if (status === 'SUSPENDED') return { background: '#fee2e2', color: '#991b1b' }
   if (status === 'REJECTED') return { background: '#f1f5f9', color: '#475569' }
   return { background: '#fef3c7', color: '#92400e' }
+}
+
+function cardTypeBadgeStyle(cardType) {
+  const base = {
+    display: 'inline-block', padding: '3px 9px', borderRadius: 20,
+    fontSize: 11.5, fontWeight: 600, whiteSpace: 'nowrap',
+  }
+  if (cardType === 'points') return { ...base, background: '#ede9fe', color: '#6d28d9' }
+  return { ...base, background: '#f1f5f9', color: '#475569' }
 }
 
 function subscriptionStatusStyle(status) {
