@@ -209,6 +209,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       occupation: c.occupation || '',
       last_order_date: c.last_order_date || '',
       stamp_count: c.stamp_count ?? 0,
+      points_balance: c.points_balance ?? 0,
     })
     setShowCouponForm(false)
     setCouponError('')
@@ -289,6 +290,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         ...fields,
         age: fields.age === '' ? null : parseInt(fields.age, 10),
         stamp_count: fields.stamp_count === '' ? null : parseInt(fields.stamp_count, 10),
+        points_balance: fields.points_balance === '' ? null : parseInt(fields.points_balance, 10),
       }
       const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${public_id}`, {
         method: 'PATCH',
@@ -477,7 +479,9 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     </div>
   )
 
+  const isPointsCard = program?.card_type === 'points'
   const confirmedStamps = customers.reduce((sum, c) => sum + (c.stamp_count || 0), 0)
+  const totalPoints = customers.reduce((sum, c) => sum + (c.points_balance || 0), 0)
   const unlockedRewards = customers.filter(c => c.reward_unlocked).length
   const growthStage = customers.length < 10 ? 'seedling' : customers.length < 50 ? 'sapling' : customers.length < 200 ? 'growing' : 'mature'
   const subStatus = subscription?.subscription_status
@@ -548,8 +552,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             <span style={styles.orbLabel}>Leaves</span>
           </div>
           <div style={styles.statOrb}>
-            <span style={styles.orbNumber}>{confirmedStamps}</span>
-            <span style={styles.orbLabel}>Rings</span>
+            <span style={styles.orbNumber}>{isPointsCard ? totalPoints : confirmedStamps}</span>
+            <span style={styles.orbLabel}>{isPointsCard ? 'Points' : 'Rings'}</span>
           </div>
           <div style={styles.statOrb}>
             <span style={styles.orbNumber}>{unlockedRewards}</span>
@@ -620,7 +624,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 <div key={c.public_id} style={styles.activityRow}>
                   <span style={styles.activityLeaf}>🍃</span>
                   <span style={styles.activityName}>{c.name}</span>
-                  <span style={styles.activityStamps}>{c.stamp_count} rings</span>
+                  <span style={styles.activityStamps}>{isPointsCard ? `${c.points_balance || 0} points` : `${c.stamp_count} rings`}</span>
                   {c.reward_unlocked && <span style={styles.activityFruit}>🍎</span>}
                 </div>
               ))}
@@ -646,15 +650,21 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                         {c.age ? `${c.age} yrs` : ''}{c.age && c.occupation ? ' · ' : ''}{c.occupation ? c.occupation.replace('_', ' ') : ''}
                       </p>
                     )}
-                    <div style={styles.stampRings}>
-                      {Array.from({length: program?.stamp_goal || 8}).map((_, i) => (
-                        <span key={i} style={{
-                          ...styles.stampRing,
-                          background: i < (c.stamp_count % (program?.stamp_goal || 8)) ? '#0d9488' : '#e2e8f0'
-                        }}></span>
-                      ))}
-                    </div>
-                    <p style={styles.stampText}>{c.stamp_count % (program?.stamp_goal || 8)} / {program?.stamp_goal || 8} rings</p>
+                    {isPointsCard ? (
+                      <p style={styles.stampText}>💎 {c.points_balance || 0} points</p>
+                    ) : (
+                      <>
+                        <div style={styles.stampRings}>
+                          {Array.from({length: program?.stamp_goal || 8}).map((_, i) => (
+                            <span key={i} style={{
+                              ...styles.stampRing,
+                              background: i < (c.stamp_count % (program?.stamp_goal || 8)) ? '#0d9488' : '#e2e8f0'
+                            }}></span>
+                          ))}
+                        </div>
+                        <p style={styles.stampText}>{c.stamp_count % (program?.stamp_goal || 8)} / {program?.stamp_goal || 8} rings</p>
+                      </>
+                    )}
                     <p style={styles.lastStampedText}>{formatLastStamped(c.last_stamp_at)}</p>
                     {c.reward_unlocked && <span style={styles.fruitBadge}>🍎 Reward Ready!</span>}
                   </div>
@@ -834,19 +844,44 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               <div style={styles.cardBody}>
                 <h3 style={styles.cardName}>{selectedCustomer.name}</h3>
                 <p style={styles.cardId}>ID: {selectedCustomer.public_id?.slice(0, 8)}...</p>
-                <div style={styles.cardStamps}>
-                  {Array.from({length: program?.stamp_goal || 8}).map((_, i) => (
-                    <span key={i} style={{
-                      ...styles.cardStamp,
-                      background: i < (selectedCustomer.stamp_count % (program?.stamp_goal || 8)) ? 'white' : 'rgba(255,255,255,0.3)',
-                    }}>★</span>
-                  ))}
-                </div>
-                <p style={styles.cardProgress}>
-                  {selectedCustomer.stamp_count % (program?.stamp_goal || 8)} / {program?.stamp_goal || 8} stamps
-                </p>
-                {selectedCustomer.reward_unlocked && (
-                  <div style={styles.cardReward}>🎁 {program?.reward_name || 'Free Reward'} Unlocked!</div>
+                {isPointsCard ? (
+                  <div style={styles.cardProgress}>
+                    <p style={{fontSize: 32, fontWeight: 800, color: 'white', margin: '8px 0 0'}}>
+                      {selectedCustomer.points_balance || 0}
+                    </p>
+                    <p style={{fontSize: 13, color: 'rgba(255,255,255,0.85)', margin: '2px 0 0'}}>points</p>
+                    {(program?.points_prizes || []).length > 0 && (
+                      <div style={{marginTop: 12, borderTop: '1px solid rgba(255,255,255,0.25)', paddingTop: 8, textAlign: 'left'}}>
+                        {program.points_prizes.map((prize, i) => (
+                          <div key={prize.id || i} style={{
+                            display: 'flex', justifyContent: 'space-between', padding: '4px 0',
+                            fontSize: 12.5, color: 'white',
+                            opacity: (selectedCustomer.points_balance || 0) >= prize.points_cost ? 1 : 0.5,
+                          }}>
+                            <span>{prize.name}</span>
+                            <span style={{fontWeight: 700}}>{prize.points_cost} pts</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <>
+                    <div style={styles.cardStamps}>
+                      {Array.from({length: program?.stamp_goal || 8}).map((_, i) => (
+                        <span key={i} style={{
+                          ...styles.cardStamp,
+                          background: i < (selectedCustomer.stamp_count % (program?.stamp_goal || 8)) ? 'white' : 'rgba(255,255,255,0.3)',
+                        }}>★</span>
+                      ))}
+                    </div>
+                    <p style={styles.cardProgress}>
+                      {selectedCustomer.stamp_count % (program?.stamp_goal || 8)} / {program?.stamp_goal || 8} stamps
+                    </p>
+                    {selectedCustomer.reward_unlocked && (
+                      <div style={styles.cardReward}>🎁 {program?.reward_name || 'Free Reward'} Unlocked!</div>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -920,16 +955,31 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             <form onSubmit={saveCustomer}>
               <label style={styles.label}>Full Name</label>
               <input style={styles.input} value={editForm.name || ''} onChange={e => setEditForm({...editForm, name: e.target.value})} required />
-              <label style={styles.label}>
-                Stamps {program?.stamp_goal ? `(of ${program.stamp_goal} for a reward)` : ''}
-              </label>
-              <input
-                style={styles.input}
-                type="number"
-                min="0"
-                value={editForm.stamp_count}
-                onChange={e => setEditForm({...editForm, stamp_count: e.target.value})}
-              />
+              {isPointsCard ? (
+                <>
+                  <label style={styles.label}>Points Balance</label>
+                  <input
+                    style={styles.input}
+                    type="number"
+                    min="0"
+                    value={editForm.points_balance}
+                    onChange={e => setEditForm({...editForm, points_balance: e.target.value})}
+                  />
+                </>
+              ) : (
+                <>
+                  <label style={styles.label}>
+                    Stamps {program?.stamp_goal ? `(of ${program.stamp_goal} for a reward)` : ''}
+                  </label>
+                  <input
+                    style={styles.input}
+                    type="number"
+                    min="0"
+                    value={editForm.stamp_count}
+                    onChange={e => setEditForm({...editForm, stamp_count: e.target.value})}
+                  />
+                </>
+              )}
               <label style={styles.label}>Address</label>
               <input style={styles.input} value={editForm.address || ''} onChange={e => setEditForm({...editForm, address: e.target.value})} />
               <label style={styles.label}>Age</label>
