@@ -928,12 +928,18 @@ def generate_personalized_hero_image_bytes(
     stamps: int,
     stamp_goal: int,
     description: Optional[str] = None,
+    card_type: str = 'stamp',
+    points_balance: int = 0,
 ) -> bytes:
     """Same gradient as generate_hero_image_bytes, but with a bottom banner
-    burned in showing the reward, live stamp progress, and short description
-    - the per-customer Wallet equivalent of the reward/progress rows shown
-    on the web card. This is set as the *object*-level heroImage (per
-    customer), not the class-level one, since progress differs per person."""
+    burned in showing the reward/progress and short description - the
+    per-customer Wallet equivalent of the reward/progress rows shown on the
+    web card. This is set as the *object*-level heroImage (per customer),
+    not the class-level one, since progress differs per person.
+    For card_type == 'points', the top line becomes a plain points balance
+    instead of a reward name (points cards have no single fixed reward -
+    see points_prizes on loyalty_programs) and the progress line reports
+    the points balance instead of a stamp count."""
     img = _render_hero(primary_color).convert('RGBA')
     from PIL import ImageDraw, ImageFont
 
@@ -953,8 +959,12 @@ def generate_personalized_hero_image_bytes(
     font_progress = ImageFont.load_default(size=24)
     font_desc = ImageFont.load_default(size=19)
 
-    reward_line = (reward_name or 'Reward')[:60]
-    progress_line = f'{stamps} of {stamp_goal} stamps'
+    if card_type == 'points':
+        reward_line = f'{points_balance} points'
+        progress_line = 'Redeem prizes in-store'
+    else:
+        reward_line = (reward_name or 'Reward')[:60]
+        progress_line = f'{stamps} of {stamp_goal} stamps'
     desc_lines = _wrap_text(draw, description or '', font_desc, max_w, max_lines=2) if description else []
 
     y = HERO_SIZE[1] - 24
@@ -1096,11 +1106,24 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     cust_public_id = customer.get('public_id', '')
     class_id = program.get('google_wallet_class_id') if program and program.get('google_wallet_class_id') else f'{GOOGLE_WALLET_ISSUER_ID}.{GOOGLE_WALLET_CLASS_SUFFIX}'
     object_id = f'{GOOGLE_WALLET_ISSUER_ID}.{cust_public_id}'
+    card_type = program.get('card_type', 'stamp') if program else 'stamp'
     stamp_goal = program.get('stamp_goal', 8) if program else 8
     reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
     stamps = customer.get('stamp_count', 0)
+    points_balance = customer.get('points_balance', 0)
     cust_name = customer.get('name', 'Member')
     biz_name = business.get('name', '')
+
+    if card_type == 'points':
+        loyalty_points_label = 'Points'
+        loyalty_points_balance = str(points_balance)
+        progress_body = f'{points_balance} points'
+        reward_body = 'Redeem prizes in-store'
+    else:
+        loyalty_points_label = 'Stamps'
+        loyalty_points_balance = f'{stamps}/{stamp_goal}'
+        progress_body = f'{stamps} of {stamp_goal} stamps'
+        reward_body = reward_name
 
     loyalty_object = {
         'id': object_id,
@@ -1114,13 +1137,13 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         'accountId': cust_public_id,
         'accountName': cust_name,
         'loyaltyPoints': {
-            'label': 'Stamps',
-            'balance': {'string': f'{stamps}/{stamp_goal}'}
+            'label': loyalty_points_label,
+            'balance': {'string': loyalty_points_balance}
         },
         'textModulesData': [
             {'header': 'Business', 'body': biz_name},
-            {'header': 'Reward', 'body': reward_name},
-            {'header': 'Progress', 'body': f'{stamps} of {stamp_goal} stamps'}
+            {'header': 'Reward', 'body': reward_body},
+            {'header': 'Progress', 'body': progress_body}
         ],
         'linksModuleData': {
             'uris': [{'uri': f'{BASE_URL}/wallet/{cust_public_id}', 'description': 'View Card Online'}]
@@ -1136,9 +1159,10 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
         description = program.get('description') if program else None
         color_key = primary_color.lstrip('#')
+        progress_key = points_balance if card_type == 'points' else stamps
         hero_url = (
             f'{BASE_URL}/api/v1/customer/{cust_public_id}/hero-image.png'
-            f'?s={stamps}&g={stamp_goal}&c={color_key}'
+            f'?s={progress_key}&g={stamp_goal}&c={color_key}'
         )
         loyalty_object['heroImage'] = {'sourceUri': {'uri': hero_url}}
 
@@ -1350,10 +1374,12 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     cust_public_id = customer.get('public_id', '')
     cust_name = customer.get('name', 'Member')
     biz_name = business.get('name', 'Loyalty')
+    card_type = program.get('card_type', 'stamp') if program else 'stamp'
     stamp_goal = program.get('stamp_goal', 8) if program else 8
     reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
     description = program.get('description') if program else None
     stamps = customer.get('stamp_count', 0)
+    points_balance = customer.get('points_balance', 0)
     reward_unlocked = bool(customer.get('reward_unlocked'))
     primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
     r, g, b = _hex_to_rgb(primary_color)
@@ -1400,9 +1426,13 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         'authenticationToken': apple_pass_auth_token(cust_public_id),
         'storeCard': {
             'headerFields': [
+                {'key': 'points', 'label': 'POINTS', 'value': str(points_balance), 'changeMessage': 'Points added! You now have %@ points.'}
+                if card_type == 'points' else
                 {'key': 'stamps', 'label': 'STAMPS', 'value': f'{stamps}/{stamp_goal}', 'changeMessage': 'Stamp added! You now have %@ stamps.'}
             ],
             'primaryFields': [
+                {'key': 'reward', 'label': 'REWARD', 'value': 'Redeem prizes in-store', 'changeMessage': '%@'}
+                if card_type == 'points' else
                 {'key': 'reward', 'label': 'REWARD', 'value': '🎉 Ready to redeem!' if reward_unlocked else reward_name, 'changeMessage': '%@'}
             ],
             'secondaryFields': [
@@ -3946,10 +3976,13 @@ async def get_customer_hero_image(customer_public_id: str, s: Optional[str] = No
     reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
     stamp_goal = program.get('stamp_goal', 8) if program else 8
     description = program.get('description') if program else None
+    card_type = program.get('card_type', 'stamp') if program else 'stamp'
     stamps = customer.get('stamp_count', 0)
+    points_balance = customer.get('points_balance', 0)
 
     png_bytes = generate_personalized_hero_image_bytes(
-        primary_color, reward_name, stamps, stamp_goal, description
+        primary_color, reward_name, stamps, stamp_goal, description,
+        card_type=card_type, points_balance=points_balance,
     )
     return Response(
         content=png_bytes,
@@ -4351,6 +4384,9 @@ async def customer_wallet_page(customer_public_id: str):
     primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
     stamp_goal = program.get('stamp_goal', 8) if program else 8
     reward_name = program.get('reward_name', 'Free Service') if program else 'Free Service'
+    card_type = program.get('card_type', 'stamp') if program else 'stamp'
+    points_balance = customer.get('points_balance', 0)
+    points_prizes = (program.get('points_prizes') or []) if program else []
     card_name = program.get('card_name') if program else None
     display_name = card_name if card_name else (business.get('name', '') + ' Rewards')
     logo_url = business.get('logo_url')
@@ -4364,6 +4400,31 @@ async def customer_wallet_page(customer_public_id: str):
             stars_html += '<span style="width:32px;height:32px;border-radius:16px;background:' + primary_color + ';color:white;display:inline-flex;align-items:center;justify-content:center;font-size:14px;margin:3px;">&#9733;</span>'
         else:
             stars_html += '<span style="width:32px;height:32px;border-radius:16px;background:rgba(255,255,255,0.25);color:white;display:inline-flex;align-items:center;justify-content:center;font-size:14px;margin:3px;">&#9733;</span>'
+
+    # Points-card progress block - shown instead of the star grid below when
+    # this business is running a points card. Lists the prize catalog
+    # (points_prizes, set from LoyaltyCardCustomizer.jsx) so the customer
+    # can see what their balance can be redeemed for, same info the cashier
+    # sees when processing a points sale.
+    prizes_html = ''
+    for prize in points_prizes:
+        prize_name = html_lib.escape(str(prize.get('name', '')))
+        prize_cost = prize.get('points_cost', 0)
+        affordable = points_balance >= prize_cost
+        prizes_html += (
+            '<div style="display:flex;justify-content:space-between;align-items:center;'
+            'padding:8px 0;' + ('' if affordable else 'opacity:0.5;') + '">'
+            '<span style="font-size:13px;color:white;">' + prize_name + '</span>'
+            '<span style="font-size:12px;font-weight:700;color:white;">' + str(prize_cost) + ' pts</span>'
+            '</div>'
+        )
+    points_html = (
+        '<div style="text-align:center;margin:16px 0;">'
+        '<div style="font-size:40px;font-weight:800;color:white;">' + str(points_balance) + '</div>'
+        '<div style="font-size:13px;color:rgba(255,255,255,0.85);margin-top:2px;">points</div>'
+        '</div>'
+        + ('<div style="border-top:1px solid rgba(255,255,255,0.25);padding-top:8px;">' + prizes_html + '</div>' if prizes_html else '')
+    )
 
     logo_html = ''
     if logo_url:
@@ -4447,14 +4508,17 @@ async def customer_wallet_page(customer_public_id: str):
         '<h2>' + display_name + '</h2>'
         '<h3>' + customer.get("name", "") + '</h3>'
         '<p class="id">ID: ' + customer.get("public_id", "")[:12] + '...</p>'
-        '<div class="stars">' + stars_html + '</div>'
-        '<p class="stamp-count">' + str(stamps) + ' / ' + str(stamp_goal) + ' stamps</p>'
+        + (
+            points_html if card_type == 'points' else
+            '<div class="stars">' + stars_html + '</div>'
+            '<p class="stamp-count">' + str(stamps) + ' / ' + str(stamp_goal) + ' stamps</p>'
+        )
         + reward_badge +
         '</div>'
         + coupon_html +
         '<div class="qr-section">'
         '<img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + quote(f'{BASE_URL}/stamp/{customer.get("public_id", "")}', safe="") + '" alt="Your QR Code"/>'
-        '<p>Scan at checkout to earn stamps</p>'
+        '<p>Scan at checkout to earn ' + ('points' if card_type == 'points' else 'stamps') + '</p>'
         '</div>'
         + apple_wallet_html
         + google_wallet_html +
@@ -4837,8 +4901,11 @@ async def get_wallet_pass(customer_public_id: str):
         raise HTTPException(status_code=404, detail="Business not found")
 
     program = safe_get_loyalty_program(business.get('id'))
+    card_type = program.get('card_type', 'stamp') if program else 'stamp'
     stamp_goal = program.get('stamp_goal', 8) if program else 8
+    reward_name = program.get('reward_name', 'Free Service') if program else 'Free Service'
     primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
+    points_prizes = program.get('points_prizes', []) if program else []
 
     loyalty_object = build_loyalty_object(customer, business, program)
     jwt_token = create_google_wallet_jwt(loyalty_object)
@@ -4849,13 +4916,21 @@ async def get_wallet_pass(customer_public_id: str):
     print(f"WALLET-PASS: Prepared pass data for customer {customer_public_id}")
 
     return {
-        # Shape WalletPass.jsx renders the card from.
+        # Shape WalletPass.jsx renders the card from. card_type tells the
+        # frontend whether to render the stamp grid or the points balance -
+        # stamps/goal/reward_unlocked stay stamp-only, points_balance/
+        # points_prizes stay points-only, so either UI can be built without
+        # the other's fields being misleadingly present.
         "pass_data": {
             "business_name": business.get('name', ''),
             "customer_name": customer.get('name', ''),
             "customer_id": customer_public_id,
+            "card_type": card_type,
             "stamps": customer.get('stamp_count', 0),
             "goal": stamp_goal,
+            "reward_name": reward_name,
+            "points_balance": customer.get('points_balance', 0),
+            "points_prizes": points_prizes,
             "primary_color": primary_color,
             "reward_unlocked": bool(customer.get('reward_unlocked')),
             "qr_code": f"{BASE_URL}/stamp/{customer_public_id}",

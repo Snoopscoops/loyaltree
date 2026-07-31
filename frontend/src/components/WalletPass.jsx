@@ -59,7 +59,8 @@ function WalletPass({ API_BASE }) {
   if (error) return <div style={styles.container}><p>{error}</p></div>
 
   const { pass_data } = passData
-  const progress = (pass_data.stamps / pass_data.goal) * 100
+  const isPoints = pass_data.card_type === 'points'
+  const progress = isPoints ? 0 : (pass_data.stamps / pass_data.goal) * 100
 
   return (
     <div style={styles.container}>
@@ -80,26 +81,48 @@ function WalletPass({ API_BASE }) {
           </div>
         </div>
 
-        <div style={styles.progressSection}>
-          <div style={styles.progressBar}>
-            <div style={{ ...styles.progressFill, width: `${progress}%` }}></div>
+        {isPoints ? (
+          <div style={styles.pointsSection}>
+            <div style={styles.pointsBalance}>{pass_data.points_balance ?? 0}</div>
+            <p style={styles.pointsLabel}>points</p>
+            {pass_data.points_prizes?.length > 0 && (
+              <div style={styles.prizeList}>
+                {pass_data.points_prizes.map((prize, i) => {
+                  const affordable = (pass_data.points_balance ?? 0) >= prize.points_cost
+                  return (
+                    <div key={prize.id || i} style={{ ...styles.prizeRow, opacity: affordable ? 1 : 0.5 }}>
+                      <span>{prize.name}</span>
+                      <span style={styles.prizeCost}>{prize.points_cost} pts</span>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
           </div>
-          <p style={styles.progressText}>{pass_data.stamps} / {pass_data.goal} stamps</p>
-        </div>
-
-        <div style={styles.stampGrid}>
-          {Array.from({ length: pass_data.goal }).map((_, i) => (
-            <div key={i} style={{
-              ...styles.stampSlot,
-              background: i < pass_data.stamps ? '#fbbf24' : 'rgba(255,255,255,0.2)',
-              borderColor: i < pass_data.stamps ? '#f59e0b' : 'rgba(255,255,255,0.3)'
-            }}>
-              {i < pass_data.stamps ? '★' : ''}
+        ) : (
+          <>
+            <div style={styles.progressSection}>
+              <div style={styles.progressBar}>
+                <div style={{ ...styles.progressFill, width: `${progress}%` }}></div>
+              </div>
+              <p style={styles.progressText}>{pass_data.stamps} / {pass_data.goal} stamps</p>
             </div>
-          ))}
-        </div>
 
-        {pass_data.reward_unlocked && (
+            <div style={styles.stampGrid}>
+              {Array.from({ length: pass_data.goal }).map((_, i) => (
+                <div key={i} style={{
+                  ...styles.stampSlot,
+                  background: i < pass_data.stamps ? '#fbbf24' : 'rgba(255,255,255,0.2)',
+                  borderColor: i < pass_data.stamps ? '#f59e0b' : 'rgba(255,255,255,0.3)'
+                }}>
+                  {i < pass_data.stamps ? '★' : ''}
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {!isPoints && pass_data.reward_unlocked && (
           <div style={styles.rewardBanner}>
             <span style={styles.rewardIcon}>🎉</span>
             <span>Reward Unlocked!</span>
@@ -211,6 +234,37 @@ const styles = {
     margin: 0,
     fontSize: 14,
     opacity: 0.8,
+  },
+  pointsSection: {
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  pointsBalance: {
+    fontSize: 44,
+    fontWeight: 800,
+    lineHeight: 1,
+  },
+  pointsLabel: {
+    fontSize: 13,
+    opacity: 0.85,
+    marginTop: 4,
+  },
+  prizeList: {
+    marginTop: 16,
+    borderTop: '1px solid rgba(255,255,255,0.25)',
+    paddingTop: 10,
+    textAlign: 'left',
+  },
+  prizeRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '6px 0',
+    fontSize: 13,
+  },
+  prizeCost: {
+    fontSize: 12,
+    fontWeight: 700,
   },
   progressSection: {
     marginBottom: 20,
