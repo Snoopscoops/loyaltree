@@ -525,9 +525,16 @@ class CustomerUpdate(BaseModel):
     gender: Optional[str] = None  # 'male' | 'female' | 'rather_not_say'
     last_order_date: Optional[str] = None  # 'YYYY-MM-DD'
     stamp_count: Optional[int] = Field(default=None, ge=0)  # lets the owner manually correct a customer's stamp count
+    points_balance: Optional[int] = Field(default=None, ge=0)  # lets the owner manually correct a customer's points balance
 
 class StampRequest(BaseModel):
     customer_public_id: str
+    staff_pin: Optional[str] = None
+    as_owner: Optional[bool] = False
+
+class PointsSaleRequest(BaseModel):
+    customer_public_id: str
+    amount_spent: float = Field(gt=0)  # pesos - converted to points via program.points_per_amount / points_amount_pesos
     staff_pin: Optional[str] = None
     as_owner: Optional[bool] = False
 
@@ -1736,6 +1743,27 @@ def log_redemption_event(business_id: int, customer_id: int, staff_id: Optional[
         supabase.table("redemption_events").insert(event).execute()
     except Exception as e:
         print(f"REDEMPTION EVENT LOG error: {e}")
+
+def log_points_event(business_id: int, customer_id: int, amount_spent: float, points_earned: int,
+                      staff_id: Optional[int] = None, branch_id: Optional[int] = None):
+    """Best-effort event log for points-card sales - powers the Analytics
+    dashboard the same way log_stamp_event powers it for stamp cards.
+    Never raises."""
+    try:
+        event = {
+            'business_id': business_id,
+            'customer_id': customer_id,
+            'amount_spent_pesos': amount_spent,
+            'points_earned': points_earned,
+            'created_at': datetime.utcnow().isoformat(),
+        }
+        if staff_id is not None:
+            event['staff_id'] = staff_id
+        if branch_id is not None:
+            event['branch_id'] = branch_id
+        supabase.table("points_events").insert(event).execute()
+    except Exception as e:
+        print(f"POINTS EVENT LOG error: {e}")
 
 # FastAPI App
 app = FastAPI(title='LoyaltyTree API')
@@ -3524,6 +3552,98 @@ async def add_stamp(public_id: str, req: StampRequest, authorization: str = Head
         "reward_unlocked": reward_unlocked,
     }
 
+@app.post("/api/v1/business/{public_id}/points-sale")
+async def add_points_sale(public_id: str, req: PointsSaleRequest, authorization: str = Header(default="")):
+    """Points-card equivalent of add_stamp: converts a purchase amount into
+    points using the program's points_per_amount/points_amount_pesos rate
+    and credits the customer's points_balance. Wallet pass syncing for
+    points cards is handled in a later phase - build_loyalty_object() and
+    build_apple_pass_json() are still stamp-only, so we don't push a wallet
+    update here yet (that would notify the customer about a card that
+    still visually shows stamps)."""
+    print(f"POINTS SALE REQUEST: business={public_id}, customer={req.customer_public_id}, amount={req.amount_spent}")
+
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    customer = safe_get_customer(req.customer_public_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    if customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+
+    program = safe_get_loyalty_program(business.get('id'))
+    if not program or program.get('card_type') != 'points':
+        raise HTTPException(status_code=400, detail="This business is not on a points card - use /stamp instead")
+
+    sale_staff_id = None
+    sale_branch_id = None
+
+    # Same auth pattern as add_stamp: session token from /staff/verify-pin
+    # preferred, owner-mode next, raw PIN as legacy fallback.
+    session_claims = get_staff_session_claims(public_id, authorization)
+
+    if session_claims:
+        sale_staff_id = session_claims.get('staff_id')  # None for the owner
+    elif req.as_owner:
+        pass
+    else:
+        if not req.staff_pin:
+            raise HTTPException(status_code=400, detail="Staff PIN required")
+        try:
+            staff_res = supabase.table("staff").select("*").eq("business_id", business.get("id")).eq("pin", req.staff_pin).execute()
+            if not staff_res.data:
+                raise HTTPException(status_code=403, detail="Invalid staff PIN")
+            sale_staff_id = staff_res.data[0].get('id')
+            sale_branch_id = staff_res.data[0].get('branch_id')
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
+
+    points_per_amount = program.get('points_per_amount') or 0
+    points_amount_pesos = program.get('points_amount_pesos') or 1
+    points_earned = int((req.amount_spent / points_amount_pesos) * points_per_amount)
+    if points_earned < 0:
+        points_earned = 0
+
+    new_balance = customer.get('points_balance', 0) + points_earned
+
+    try:
+        update_data = {
+            'points_balance': new_balance,
+            'updated_at': datetime.utcnow().isoformat(),
+        }
+        supabase.table("customers").update(update_data).eq("id", customer.get("id")).execute()
+        customer['points_balance'] = new_balance
+        log_points_event(business.get('id'), customer.get('id'), req.amount_spent, points_earned, sale_staff_id, sale_branch_id)
+    except Exception as e:
+        error_msg = str(e)
+        is_schema_mismatch = (
+            'PGRST204' in error_msg
+            or ('column' in error_msg.lower() and 'does not exist' in error_msg.lower())
+            or ('could not find' in error_msg.lower() and 'column' in error_msg.lower())
+        )
+        if is_schema_mismatch:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"Database schema mismatch: {error_msg}. Add a 'points_balance' integer "
+                    f"column (default 0) to 'customers' in Supabase and run "
+                    f"NOTIFY pgrst, 'reload schema'; before retrying."
+                ),
+            )
+        raise HTTPException(status_code=500, detail=error_msg)
+
+    return {
+        "message": f"{points_earned} points added!",
+        "amount_spent": req.amount_spent,
+        "points_earned": points_earned,
+        "points_balance": new_balance,
+    }
+
 @app.post("/api/v1/business/{public_id}/staff/verify-pin")
 async def verify_staff_pin(public_id: str, req: PinVerify):
     business = safe_get_business(public_id)
@@ -4180,6 +4300,7 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup):
         'gender': signup.gender,
         'last_order_date': signup.last_order_date,
         'stamp_count': 0,
+        'points_balance': 0,
         'created_at': datetime.utcnow().isoformat(),
         'updated_at': datetime.utcnow().isoformat(),
     }

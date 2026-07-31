@@ -32,6 +32,7 @@ function CashierApp({ API_BASE }) {
   const [debugInfo, setDebugInfo] = useState('')
   const [verifying, setVerifying] = useState(false)
   const [staffName, setStaffName] = useState(isOwner ? (ownerState?.ownerName || 'Owner') : '')
+  const [saleAmount, setSaleAmount] = useState('')
 
   useEffect(() => {
     if (!businessSlug || !staffName || (!isOwner && !staffPin && !sessionToken)) return
@@ -102,14 +103,19 @@ function CashierApp({ API_BASE }) {
       if (res.ok) {
         const data = await res.json()
         const c = data.customer || {}
-        const goal = data.program?.stamp_goal || 8
+        const program = data.program || {}
+        const goal = program.stamp_goal || 8
+        const isPoints = program.card_type === 'points'
         setCustomerData({
           public_id: c.public_id,
           name: c.name,
           phone: c.phone,
+          card_type: isPoints ? 'points' : 'stamp',
           stamp_count: c.stamp_count || 0,
           reward_unlocked: !!c.reward_unlocked,
           reward_threshold: goal,
+          points_balance: c.points_balance || 0,
+          points_prizes: Array.isArray(program.points_prizes) ? program.points_prizes : [],
           active_coupon: data.active_coupon || null,
         })
         setMessage(`Found: ${c.name}`)
@@ -171,6 +177,52 @@ function CashierApp({ API_BASE }) {
       }
     } catch (err) {
       setMessage('❌ Network error - stamp not added')
+    }
+    setLoading(false)
+  }
+
+  const addPoints = async () => {
+    if (!customerData || !businessSlug || (!isOwner && !staffPin && !sessionToken)) {
+      setMessage('Missing info - scan again')
+      return
+    }
+    const amount = parseFloat(saleAmount)
+    if (!amount || amount <= 0) {
+      setMessage('Enter an amount spent first')
+      return
+    }
+    setLoading(true)
+    setMessage('Adding points...')
+
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/points-sale`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+        },
+        body: JSON.stringify({
+          customer_public_id: customerData.public_id,
+          amount_spent: amount,
+          ...(sessionToken ? {} : { staff_pin: staffPin }),
+          as_owner: isOwner,
+        })
+      })
+
+      const data = await res.json()
+
+      if (res.ok) {
+        setMessage(`✅ +${data.points_earned} points! ${customerData.name} now has ${data.points_balance} points`)
+        setCustomerData(prev => prev ? {
+          ...prev,
+          points_balance: data.points_balance,
+        } : prev)
+        setSaleAmount('')
+      } else {
+        setMessage(`❌ Failed: ${data.detail || 'Unknown error'}`)
+      }
+    } catch (err) {
+      setMessage('❌ Network error - points not added')
     }
     setLoading(false)
   }
@@ -248,6 +300,7 @@ function CashierApp({ API_BASE }) {
     setManualId('')
     setMessage('')
     setDebugInfo('')
+    setSaleAmount('')
   }
 
   const verifyPinAndStart = async () => {
@@ -413,25 +466,47 @@ function CashierApp({ API_BASE }) {
             <div>
               <h3 style={styles.customerName}>{customerData.name}</h3>
               <p style={styles.customerMeta}>
-                {customerData.stamp_count} rings • {customerData.reward_threshold - (customerData.stamp_count % customerData.reward_threshold)} to fruit
+                {customerData.card_type === 'points'
+                  ? `${customerData.points_balance} points`
+                  : `${customerData.stamp_count} rings • ${customerData.reward_threshold - (customerData.stamp_count % customerData.reward_threshold)} to fruit`}
               </p>
             </div>
           </div>
 
-          {/* Stamp Rings */}
-          <div style={styles.stampVisual}>
-            {Array.from({length: customerData.reward_threshold || 8}).map((_, i) => (
-              <div key={i} style={{
-                ...styles.stampDot,
-                background: i < (customerData.stamp_count % (customerData.reward_threshold || 8)) ? '#0d9488' : '#e2e8f0',
-              }}>
-                {i < (customerData.stamp_count % (customerData.reward_threshold || 8)) ? '🍃' : ''}
+          {customerData.card_type === 'points' ? (
+            <>
+              {/* Points Balance */}
+              <div style={styles.pointsBalanceBox}>
+                <span style={styles.pointsBalanceNumber}>{customerData.points_balance}</span>
+                <span style={styles.pointsBalanceLabel}>points</span>
               </div>
-            ))}
-          </div>
 
-          {/* Reward Banner */}
-          {customerData.reward_unlocked && (
+              {/* Prizes available now */}
+              {customerData.points_prizes?.some(p => p.points_cost <= customerData.points_balance) && (
+                <div style={styles.rewardBanner}>
+                  <span style={styles.rewardEmoji}>🎁</span>
+                  <span style={styles.rewardText}>
+                    {customerData.points_prizes.filter(p => p.points_cost <= customerData.points_balance).length} prize(s) available
+                  </span>
+                </div>
+              )}
+            </>
+          ) : (
+            /* Stamp Rings */
+            <div style={styles.stampVisual}>
+              {Array.from({length: customerData.reward_threshold || 8}).map((_, i) => (
+                <div key={i} style={{
+                  ...styles.stampDot,
+                  background: i < (customerData.stamp_count % (customerData.reward_threshold || 8)) ? '#0d9488' : '#e2e8f0',
+                }}>
+                  {i < (customerData.stamp_count % (customerData.reward_threshold || 8)) ? '🍃' : ''}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Reward Banner (stamp cards only) */}
+          {customerData.card_type !== 'points' && customerData.reward_unlocked && (
             <div style={styles.rewardBanner}>
               <span style={styles.rewardEmoji}>🍎</span>
               <span style={styles.rewardText}>Fruit Ready!</span>
@@ -447,15 +522,37 @@ function CashierApp({ API_BASE }) {
           )}
 
           {/* Actions */}
+          {customerData.card_type === 'points' ? (
+            <div style={styles.pointsSaleRow}>
+              <input
+                type="number"
+                inputMode="decimal"
+                min="0"
+                placeholder="Amount spent (₱)"
+                value={saleAmount}
+                onChange={e => setSaleAmount(e.target.value)}
+                style={styles.pointsSaleInput}
+              />
+              <button
+                style={{...styles.actionBtn, background: '#0d9488', flex: 'none', padding: '14px 20px'}}
+                onClick={addPoints}
+                disabled={loading || !saleAmount}
+              >
+                {loading ? '...' : '💎 Add Points'}
+              </button>
+            </div>
+          ) : null}
           <div style={styles.actions}>
-            <button
-              style={{...styles.actionBtn, background: '#0d9488'}}
-              onClick={addStamp}
-              disabled={loading}
-            >
-              {loading ? '...' : '🍃 Add Ring'}
-            </button>
-            {customerData.reward_unlocked && (
+            {customerData.card_type !== 'points' && (
+              <button
+                style={{...styles.actionBtn, background: '#0d9488'}}
+                onClick={addStamp}
+                disabled={loading}
+              >
+                {loading ? '...' : '🍃 Add Ring'}
+              </button>
+            )}
+            {customerData.card_type !== 'points' && customerData.reward_unlocked && (
               <button
                 style={{...styles.actionBtn, background: '#f59e0b'}}
                 onClick={redeemReward}
@@ -708,6 +805,40 @@ const styles = {
     gridTemplateColumns: 'repeat(8, 1fr)',
     gap: 6,
     marginBottom: 16,
+  },
+  pointsBalanceBox: {
+    display: 'flex',
+    alignItems: 'baseline',
+    justifyContent: 'center',
+    gap: 8,
+    padding: '18px 0',
+    marginBottom: 16,
+    background: '#f0fdfa',
+    borderRadius: 12,
+  },
+  pointsBalanceNumber: {
+    fontSize: 34,
+    fontWeight: 800,
+    color: '#0f766e',
+  },
+  pointsBalanceLabel: {
+    fontSize: 14,
+    fontWeight: 600,
+    color: '#0d9488',
+  },
+  pointsSaleRow: {
+    display: 'flex',
+    gap: 10,
+    marginBottom: 12,
+  },
+  pointsSaleInput: {
+    flex: 1,
+    padding: '14px 16px',
+    border: '1.5px solid #e2e8f0',
+    borderRadius: 10,
+    fontSize: 15,
+    outline: 'none',
+    boxSizing: 'border-box',
   },
   stampDot: {
     aspectRatio: '1',
