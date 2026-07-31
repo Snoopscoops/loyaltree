@@ -116,6 +116,11 @@ function CashierApp({ API_BASE }) {
           reward_threshold: goal,
           points_balance: c.points_balance || 0,
           points_prizes: Array.isArray(program.points_prizes) ? program.points_prizes : [],
+          // Rate used to preview how many points a sale amount will earn,
+          // before the cashier taps "Add Points" - same formula the backend
+          // uses in /points-sale (amount_spent / points_amount_pesos * points_per_amount).
+          points_per_amount: program.points_per_amount || 0,
+          points_amount_pesos: program.points_amount_pesos || 1,
           active_coupon: data.active_coupon || null,
         })
         setMessage(`Found: ${c.name}`)
@@ -428,6 +433,19 @@ function CashierApp({ API_BASE }) {
     )
   }
 
+  // Live preview of how many points the current saleAmount will earn, using
+  // the same formula the backend applies in /points-sale - lets the cashier
+  // (and customer) see the conversion before tapping "Add Points" instead of
+  // only finding out afterward.
+  const previewPoints = (() => {
+    if (!customerData || customerData.card_type !== 'points') return 0
+    const amount = parseFloat(saleAmount)
+    if (!amount || amount <= 0) return 0
+    const rate = customerData.points_per_amount || 0
+    const pesos = customerData.points_amount_pesos || 1
+    return Math.floor((amount / pesos) * rate)
+  })()
+
   return (
     <div style={styles.container}>
       {/* Header */}
@@ -579,23 +597,32 @@ function CashierApp({ API_BASE }) {
 
           {/* Actions */}
           {customerData.card_type === 'points' ? (
-            <div style={styles.pointsSaleRow}>
-              <input
-                type="number"
-                inputMode="decimal"
-                min="0"
-                placeholder="Amount spent (₱)"
-                value={saleAmount}
-                onChange={e => setSaleAmount(e.target.value)}
-                style={styles.pointsSaleInput}
-              />
-              <button
-                style={{...styles.actionBtn, background: '#0d9488', flex: 'none', padding: '14px 20px'}}
-                onClick={addPoints}
-                disabled={loading || !saleAmount}
-              >
-                {loading ? '...' : '💎 Add Points'}
-              </button>
+            <div style={styles.pointsSaleSection}>
+              <div style={styles.pointsSaleRow}>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min="0"
+                  placeholder="Amount spent (₱)"
+                  value={saleAmount}
+                  onChange={e => setSaleAmount(e.target.value)}
+                  style={styles.pointsSaleInput}
+                />
+                <button
+                  style={{...styles.actionBtn, background: '#0d9488', flex: 'none', padding: '14px 20px'}}
+                  onClick={addPoints}
+                  disabled={loading || !saleAmount}
+                >
+                  {loading ? '...' : '💎 Add Points'}
+                </button>
+              </div>
+              {saleAmount && (
+                <p style={styles.pointsPreview}>
+                  {previewPoints > 0
+                    ? `= +${previewPoints} point${previewPoints === 1 ? '' : 's'}`
+                    : 'Enter a valid amount'}
+                </p>
+              )}
             </div>
           ) : null}
           <div style={styles.actions}>
@@ -882,10 +909,18 @@ const styles = {
     fontWeight: 600,
     color: '#0d9488',
   },
+  pointsSaleSection: {
+    marginBottom: 12,
+  },
   pointsSaleRow: {
     display: 'flex',
     gap: 10,
-    marginBottom: 12,
+  },
+  pointsPreview: {
+    margin: '6px 2px 0',
+    fontSize: 13,
+    fontWeight: 600,
+    color: '#0f766e',
   },
   pointsSaleInput: {
     flex: 1,
