@@ -260,6 +260,44 @@ function CashierApp({ API_BASE }) {
     setLoading(false)
   }
 
+  const redeemPrize = async (prize) => {
+    if (!customerData || !businessSlug || (!isOwner && !staffPin && !sessionToken)) return
+    if (customerData.points_balance < prize.points_cost) return
+    setLoading(true)
+    setMessage(`Redeeming ${prize.name}...`)
+
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/points-redeem`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+        },
+        body: JSON.stringify({
+          customer_public_id: customerData.public_id,
+          prize_id: prize.id,
+          ...(sessionToken ? {} : { staff_pin: staffPin }),
+          as_owner: isOwner,
+        })
+      })
+
+      const data = await res.json()
+
+      if (res.ok) {
+        setMessage(`🎁 ${data.prize_name} redeemed! ${customerData.name} now has ${data.points_balance} points`)
+        setCustomerData(prev => prev ? {
+          ...prev,
+          points_balance: data.points_balance,
+        } : prev)
+      } else {
+        setMessage(`❌ ${data.detail || 'Could not redeem prize'}`)
+      }
+    } catch (err) {
+      setMessage('❌ Network error - prize not redeemed')
+    }
+    setLoading(false)
+  }
+
   const redeemCoupon = async () => {
     if (!customerData || !businessSlug || (!isOwner && !staffPin && !sessionToken)) return
     setLoading(true)
@@ -481,13 +519,31 @@ function CashierApp({ API_BASE }) {
                 <span style={styles.pointsBalanceLabel}>points</span>
               </div>
 
-              {/* Prizes available now */}
-              {customerData.points_prizes?.some(p => p.points_cost <= customerData.points_balance) && (
-                <div style={styles.rewardBanner}>
-                  <span style={styles.rewardEmoji}>🎁</span>
-                  <span style={styles.rewardText}>
-                    {customerData.points_prizes.filter(p => p.points_cost <= customerData.points_balance).length} prize(s) available
-                  </span>
+              {/* Prize catalog - every prize is listed, greyed out and
+                  unclickable until the customer's balance covers it. */}
+              {customerData.points_prizes?.length > 0 && (
+                <div style={styles.prizeList}>
+                  {customerData.points_prizes.map(prize => {
+                    const affordable = customerData.points_balance >= prize.points_cost
+                    return (
+                      <div key={prize.id} style={{ ...styles.prizeRow, opacity: affordable ? 1 : 0.5 }}>
+                        <div>
+                          <div style={styles.prizeName}>{prize.name}</div>
+                          <div style={styles.prizeCost}>{prize.points_cost} pts</div>
+                        </div>
+                        <button
+                          style={{
+                            ...styles.prizeRedeemBtn,
+                            ...(affordable ? {} : styles.prizeRedeemBtnDisabled),
+                          }}
+                          onClick={() => redeemPrize(prize)}
+                          disabled={loading || !affordable}
+                        >
+                          {loading ? '...' : '🎁 Redeem'}
+                        </button>
+                      </div>
+                    )
+                  })}
                 </div>
               )}
             </>
@@ -839,6 +895,46 @@ const styles = {
     fontSize: 15,
     outline: 'none',
     boxSizing: 'border-box',
+  },
+  prizeList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+    marginBottom: 16,
+  },
+  prizeRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '10px 14px',
+    background: '#f8fafc',
+    borderRadius: 10,
+    border: '1px solid #e2e8f0',
+  },
+  prizeName: {
+    fontSize: 14,
+    fontWeight: 600,
+    color: '#0f172a',
+  },
+  prizeCost: {
+    fontSize: 12,
+    color: '#64748b',
+    marginTop: 2,
+  },
+  prizeRedeemBtn: {
+    padding: '8px 14px',
+    borderRadius: 8,
+    border: 'none',
+    background: '#f59e0b',
+    color: 'white',
+    fontSize: 13,
+    fontWeight: 700,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  },
+  prizeRedeemBtnDisabled: {
+    background: '#cbd5e1',
+    cursor: 'not-allowed',
   },
   stampDot: {
     aspectRatio: '1',

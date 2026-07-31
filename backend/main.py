@@ -538,6 +538,12 @@ class PointsSaleRequest(BaseModel):
     staff_pin: Optional[str] = None
     as_owner: Optional[bool] = False
 
+class PointsRedeemRequest(BaseModel):
+    customer_public_id: str
+    prize_id: str  # matches the id of an entry in loyalty_programs.points_prizes
+    staff_pin: Optional[str] = None
+    as_owner: Optional[bool] = False
+
 class PinVerify(BaseModel):
     email: str
     pin: str
@@ -1757,9 +1763,12 @@ def log_stamp_event(business_id: int, customer_id: int, staff_id: Optional[int] 
     except Exception as e:
         print(f"STAMP EVENT LOG error: {e}")
 
-def log_redemption_event(business_id: int, customer_id: int, staff_id: Optional[int] = None, branch_id: Optional[int] = None):
+def log_redemption_event(business_id: int, customer_id: int, staff_id: Optional[int] = None, branch_id: Optional[int] = None,
+                          prize_name: Optional[str] = None, points_spent: Optional[int] = None):
     """Best-effort event log powering the Analytics dashboard's reward
-    trend chart. Never raises."""
+    trend chart. Never raises. prize_name/points_spent are set only for
+    points-card prize redemptions (see redeem_points_prize) - left out
+    entirely for stamp-goal reward redemptions, same as before."""
     try:
         event = {
             'business_id': business_id,
@@ -1770,6 +1779,10 @@ def log_redemption_event(business_id: int, customer_id: int, staff_id: Optional[
             event['staff_id'] = staff_id
         if branch_id is not None:
             event['branch_id'] = branch_id
+        if prize_name is not None:
+            event['prize_name'] = prize_name
+        if points_spent is not None:
+            event['points_spent'] = points_spent
         supabase.table("redemption_events").insert(event).execute()
     except Exception as e:
         print(f"REDEMPTION EVENT LOG error: {e}")
@@ -3681,6 +3694,88 @@ async def add_points_sale(public_id: str, req: PointsSaleRequest, authorization:
         "message": f"{points_earned} points added!",
         "amount_spent": req.amount_spent,
         "points_earned": points_earned,
+        "points_balance": new_balance,
+    }
+
+@app.post("/api/v1/business/{public_id}/points-redeem")
+async def redeem_points_prize(public_id: str, req: PointsRedeemRequest, authorization: str = Header(default="")):
+    """Points-card equivalent of /reward/redeem: deducts a prize's
+    points_cost from the customer's points_balance instead of resetting a
+    stamp count. Same staff-session / owner / legacy-PIN auth pattern as
+    every other cashier-facing action."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    customer = safe_get_customer(req.customer_public_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    if customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+
+    program = safe_get_loyalty_program(business.get('id'))
+    if not program or program.get('card_type') != 'points':
+        raise HTTPException(status_code=400, detail="This business is not on a points card")
+
+    prize = next((p for p in (program.get('points_prizes') or []) if p.get('id') == req.prize_id), None)
+    if not prize:
+        raise HTTPException(status_code=404, detail="Prize not found - it may have been removed or changed")
+
+    prize_cost = prize.get('points_cost', 0)
+    current_balance = customer.get('points_balance', 0)
+    if current_balance < prize_cost:
+        raise HTTPException(status_code=400, detail=f"Not enough points - needs {prize_cost}, has {current_balance}")
+
+    redeeming_staff_id = None
+    redeeming_branch_id = None
+
+    session_claims = get_staff_session_claims(public_id, authorization)
+
+    if session_claims:
+        redeeming_staff_id = session_claims.get('staff_id')
+    elif req.as_owner:
+        pass
+    else:
+        if not req.staff_pin:
+            raise HTTPException(status_code=400, detail="Staff PIN required")
+        try:
+            staff_res = supabase.table("staff").select("*").eq("business_id", business.get("id")).eq("pin", req.staff_pin).execute()
+            if not staff_res.data:
+                raise HTTPException(status_code=403, detail="Invalid staff PIN")
+            redeeming_staff_id = staff_res.data[0].get('id')
+            redeeming_branch_id = staff_res.data[0].get('branch_id')
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
+
+    try:
+        new_balance = current_balance - prize_cost
+        supabase.table("customers").update({
+            'points_balance': new_balance,
+            'updated_at': datetime.utcnow().isoformat(),
+        }).eq("id", customer.get("id")).execute()
+        customer['points_balance'] = new_balance
+        sync_wallet_object(
+            customer, business, program,
+            notify_header="Prize redeemed 🎁",
+            notify_body=f"{prize.get('name', 'Prize')} redeemed - you now have {new_balance} points.",
+            notify_message_id=f"points-redeem-{customer.get('id')}-{int(datetime.utcnow().timestamp())}",
+        )
+        sync_apple_wallet_pass(customer)
+        log_redemption_event(
+            business.get('id'), customer.get('id'), redeeming_staff_id, redeeming_branch_id,
+            prize_name=prize.get('name'), points_spent=prize_cost,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {
+        "message": f"{prize.get('name', 'Prize')} redeemed!",
+        "success": True,
+        "prize_name": prize.get('name'),
+        "points_spent": prize_cost,
         "points_balance": new_balance,
     }
 
