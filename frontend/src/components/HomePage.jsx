@@ -104,6 +104,8 @@ const STEPS = [
 
 const CARD_TYPES = [
   { key: 'stamps', icon: '🎟️', title: 'Stamps', available: true },
+  { key: 'coupons', icon: '✂️', title: 'Coupons', available: true },
+  { key: 'points', icon: '⭐', title: 'Points', available: true },
   { key: 'cashback', icon: '💵', title: 'Cashback', available: false },
   { key: 'discount', icon: '🏷️', title: 'Discount', available: false },
   { key: 'multipass', icon: '🎫', title: 'Multipass', available: false },
@@ -112,6 +114,65 @@ const CARD_TYPES = [
   { key: 'vip', icon: '👑', title: 'VIP Cards', available: false },
   { key: 'nfc', icon: '📡', title: 'NFC Enabled Cards', available: false },
 ]
+
+// Sample-card visuals + copy shown in the "Choose your card type" modal.
+// Keyed by CARD_TYPES[].key so the modal can look up whichever available
+// card the merchant clicks, instead of hard-coding a single type.
+const CARD_SAMPLES = {
+  stamps: {
+    name: 'Stamps',
+    intro: 'Customers collect a stamp per visit and unlock a reward once the card is full.',
+    render: (styles) => (
+      <div style={styles.heroCard}>
+        <div style={styles.heroCardHeader}>
+          <span>Free Coffee</span>
+          <span style={{ fontSize: 12, opacity: 0.85 }}>Corner Cafe</span>
+        </div>
+        <div style={styles.heroStampRow}>
+          {Array.from({ length: 8 }).map((_, i) => (
+            <div key={i} style={{ ...styles.heroStamp, background: i < 5 ? '#0d9488' : '#e2e8f0' }} />
+          ))}
+        </div>
+        <div style={styles.heroCardFoot}>5 of 8 stamps &middot; 3 to go</div>
+      </div>
+    ),
+  },
+  coupons: {
+    name: 'Coupons',
+    intro: 'Send a one-time discount or offer straight to a customer\u2019s wallet pass \u2014 they show it to redeem, staff marks it used.',
+    render: (styles) => (
+      <div style={styles.heroCard}>
+        <div style={styles.heroCardHeader}>
+          <span>20% Off</span>
+          <span style={{ fontSize: 12, opacity: 0.85 }}>Corner Cafe</span>
+        </div>
+        <div style={styles.couponBody}>
+          <div style={styles.couponIcon}>✂️</div>
+          <div style={styles.couponCode}>WELCOME20</div>
+          <div style={styles.couponExpiry}>Valid until Aug 31</div>
+        </div>
+        <div style={styles.heroCardFoot}>Show this pass at checkout to redeem</div>
+      </div>
+    ),
+  },
+  points: {
+    name: 'Points',
+    intro: 'Customers earn points on every purchase and redeem them for rewards once they hit a threshold.',
+    render: (styles) => (
+      <div style={styles.heroCard}>
+        <div style={styles.heroCardHeader}>
+          <span>Rewards Points</span>
+          <span style={{ fontSize: 12, opacity: 0.85 }}>Corner Cafe</span>
+        </div>
+        <div style={styles.pointsBody}>
+          <div style={styles.pointsValue}>1,240 <span style={styles.pointsUnit}>pts</span></div>
+          <div style={styles.pointsToNext}>260 pts to next reward</div>
+        </div>
+        <div style={styles.heroCardFoot}>Earn 1 point per ₱50 spent</div>
+      </div>
+    ),
+  },
+}
 
 const BRANCH_TIERS = [
   { key: '1', label: '1 branch' },
@@ -334,7 +395,7 @@ function HomePage({ onNavigateLogin }) {
 
       <section style={styles.section}>
         <h2 style={styles.h2}>Choose your card type</h2>
-        <p style={styles.cardTypesIntro}>Stamps is live today. Everything else is on its way.</p>
+        <p style={styles.cardTypesIntro}>Stamps, Coupons, and Points are live today. Everything else is on its way.</p>
         <div style={styles.cardTypesGrid}>
           {CARD_TYPES.map(c => (
             <button
@@ -385,28 +446,17 @@ function HomePage({ onNavigateLogin }) {
         <span style={styles.footerNote}>Marketing, retention, and zero-waste loyalty &mdash; automated</span>
       </footer>
 
-      {activeCard === 'stamps' && (
+      {activeCard && CARD_SAMPLES[activeCard] && (
         <div style={styles.modalOverlay} onClick={closeModal}>
           <div style={styles.modal} onClick={e => e.stopPropagation()}>
             <button onClick={closeModal} style={styles.modalCloseBtn} aria-label="Close">✕</button>
 
             {modalView === 'sample' ? (
               <>
-                <h2 style={styles.modalTitle}>Sample: Stamps card</h2>
-                <p style={styles.modalSubtitle}>This is what your customers see on their phone.</p>
+                <h2 style={styles.modalTitle}>Sample: {CARD_SAMPLES[activeCard].name} card</h2>
+                <p style={styles.modalSubtitle}>{CARD_SAMPLES[activeCard].intro}</p>
                 <div style={styles.sampleWrap}>
-                  <div style={styles.heroCard}>
-                    <div style={styles.heroCardHeader}>
-                      <span>Free Coffee</span>
-                      <span style={{ fontSize: 12, opacity: 0.85 }}>Corner Cafe</span>
-                    </div>
-                    <div style={styles.heroStampRow}>
-                      {Array.from({ length: 8 }).map((_, i) => (
-                        <div key={i} style={{ ...styles.heroStamp, background: i < 5 ? '#0d9488' : '#e2e8f0' }} />
-                      ))}
-                    </div>
-                    <div style={styles.heroCardFoot}>5 of 8 stamps &middot; 3 to go</div>
-                  </div>
+                  {CARD_SAMPLES[activeCard].render(styles)}
                 </div>
                 <button onClick={() => setModalView('pricing')} style={styles.pricingBtn}>
                   See pricing
@@ -414,7 +464,7 @@ function HomePage({ onNavigateLogin }) {
               </>
             ) : (
               <>
-                <h2 style={styles.modalTitle}>Stamps pricing</h2>
+                <h2 style={styles.modalTitle}>{CARD_SAMPLES[activeCard].name} pricing</h2>
                 <p style={styles.modalSubtitle}>Pick the plan and branch count that fits your business.</p>
 
                 <div style={styles.branchTierRow}>
@@ -515,6 +565,22 @@ const styles = {
   heroStampRow: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 12 },
   heroStamp: { width: '100%', aspectRatio: '1', borderRadius: '50%' },
   heroCardFoot: { fontSize: 12, color: '#64748b', textAlign: 'center' },
+
+  // Coupons sample card
+  couponBody: { textAlign: 'center', padding: '14px 0 18px' },
+  couponIcon: { fontSize: 30, marginBottom: 6 },
+  couponCode: {
+    fontSize: 18, fontWeight: 800, color: '#0f172a', letterSpacing: '1px',
+    border: '1.5px dashed #cbd5e1', borderRadius: 10, padding: '6px 14px',
+    display: 'inline-block', marginBottom: 8,
+  },
+  couponExpiry: { fontSize: 12, color: '#94a3b8' },
+
+  // Points sample card
+  pointsBody: { textAlign: 'center', padding: '12px 0 16px' },
+  pointsValue: { fontSize: 32, fontWeight: 800, color: '#0d9488' },
+  pointsUnit: { fontSize: 14, fontWeight: 600, color: '#94a3b8' },
+  pointsToNext: { fontSize: 12.5, color: '#64748b', marginTop: 4 },
   section: { padding: '64px 32px', maxWidth: 1100, margin: '0 auto' },
 
   // Marketing / Retention / Zero Waste pillars
