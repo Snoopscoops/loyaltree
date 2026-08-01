@@ -1,5 +1,6 @@
 import os
 import re
+import asyncio
 from urllib.parse import quote
 import uuid
 import base64
@@ -1842,6 +1843,36 @@ app.add_middleware(
     allow_methods=['*'],
     allow_headers=['*'],
 )
+
+@app.get("/health")
+async def health():
+    """Cheap endpoint with no DB/auth work - just proves the process is
+    alive. Used by the keep-alive loop below and safe for an external
+    uptime monitor to hit too."""
+    return {"status": "ok"}
+
+# KEEP-ALIVE (Render free tier spins the service down after ~15 min with no
+# inbound requests). This loop pings our own public /health endpoint every
+# 10 minutes so Render always sees recent traffic and never sleeps us.
+# RENDER_EXTERNAL_URL is set automatically by Render on every web service -
+# no manual config needed there. If it's missing (e.g. running locally, or
+# hosted elsewhere), the loop just skips itself instead of erroring.
+async def _keep_alive_loop():
+    import httpx
+    self_url = os.getenv("RENDER_EXTERNAL_URL")
+    if not self_url:
+        return
+    while True:
+        await asyncio.sleep(10 * 60)
+        try:
+            with httpx.Client(timeout=10) as client:
+                client.get(f"{self_url}/health")
+        except Exception as e:
+            print(f"KEEP-ALIVE ping error: {e}")
+
+@app.on_event("startup")
+async def start_keep_alive():
+    asyncio.create_task(_keep_alive_loop())
 
 @app.middleware("http")
 async def check_env(request: Request, call_next):
