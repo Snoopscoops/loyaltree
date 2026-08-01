@@ -270,7 +270,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           <div className="an-revenue-grid" style={styles.revenueGrid}>
             <div style={styles.revenueCard}>
               <h4 style={styles.insightTitle}>{isPoints ? 'Points-Driven Revenue' : 'Stamp-Driven Revenue'}</h4>
-              <div className="an-bignumber" style={styles.bigNumber}>${revenue.stamp_revenue}</div>
+              <div className="an-bignumber" style={styles.bigNumber}>₱{revenue.stamp_revenue}</div>
               <p style={styles.insightDesc}>{isPoints ? 'Revenue from point-earning transactions' : 'Revenue from stamp-earning transactions'}</p>
             </div>
             <div style={styles.revenueCard}>
@@ -297,7 +297,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
             </div>
             <div style={styles.revenueCard}>
               <h4 style={styles.insightTitle}>Avg. Transaction</h4>
-              <div className="an-bignumber" style={styles.bigNumber}>${revenue.avg_transaction}</div>
+              <div className="an-bignumber" style={styles.bigNumber}>₱{revenue.avg_transaction}</div>
               <p style={styles.insightDesc}>{isPoints ? 'Average spend per point-earning transaction' : 'Average spend per stamp transaction'}</p>
             </div>
           </div>
