@@ -1453,21 +1453,23 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         'webServiceURL': APPLE_PASS_WEB_SERVICE_URL,
         'authenticationToken': apple_pass_auth_token(cust_public_id),
         'storeCard': {
+            # Clean, real-card layout: one small header (member name), one
+            # BIG hero value (the number that matters - points or stamp
+            # progress), and a single short secondary line for the reward.
+            # Nothing repeats logoText/organizationName (already shown up
+            # top), so there's no duplicate "business name" field.
             'headerFields': [
+                {'key': 'member', 'label': 'MEMBER', 'value': cust_name[:20]}
+            ],
+            'primaryFields': [
                 {'key': 'points', 'label': 'POINTS', 'value': str(points_balance), 'changeMessage': 'Points added! You now have %@ points.'}
                 if card_type == 'points' else
                 {'key': 'stamps', 'label': 'STAMPS', 'value': f'{stamps}/{stamp_goal}', 'changeMessage': 'Stamp added! You now have %@ stamps.'}
             ],
-            'primaryFields': [
+            'secondaryFields': [
                 {'key': 'reward', 'label': 'REWARD', 'value': 'Redeem prizes in-store', 'changeMessage': '%@'}
                 if card_type == 'points' else
-                {'key': 'reward', 'label': 'REWARD', 'value': '🎉 Ready to redeem!' if reward_unlocked else reward_name, 'changeMessage': '%@'}
-            ],
-            'secondaryFields': [
-                {'key': 'member', 'label': 'MEMBER', 'value': cust_name}
-            ],
-            'auxiliaryFields': [
-                {'key': 'business', 'label': 'BUSINESS', 'value': biz_name}
+                {'key': 'reward', 'label': 'REWARD', 'value': ('🎉 Ready to redeem!' if reward_unlocked else reward_name)[:30], 'changeMessage': '%@'}
             ],
             'backFields': back_fields
         },
