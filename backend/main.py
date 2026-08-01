@@ -2046,6 +2046,25 @@ async def register(biz: BusinessCreate):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Registration failed: {str(e)}")
 
+    # Best-effort heads-up to the platform admin - never blocks signup if it fails.
+    if SUPER_ADMIN_EMAIL:
+        send_email(
+            SUPER_ADMIN_EMAIL,
+            subject=f"New business signed up: {biz.name}",
+            html_body=(
+                f"<p>A new business just registered on LoyaltyTree.</p>"
+                f"<ul>"
+                f"<li><b>Name:</b> {html_lib.escape(biz.name)}</li>"
+                f"<li><b>Email:</b> {html_lib.escape(biz.email or '')}</li>"
+                f"<li><b>Phone:</b> {html_lib.escape(biz.phone or '')}</li>"
+                f"<li><b>Plan:</b> {SUBSCRIPTION_PLANS.get(plan, {}).get('label', plan)}</li>"
+                f"<li><b>Branches:</b> {biz.branch_count}</li>"
+                f"<li><b>Status:</b> PENDING approval</li>"
+                f"</ul>"
+            ),
+        )
+
+
     # One placeholder branch per unit they signed up with, named so the
     # owner can tell them apart immediately and rename later from the
     # dashboard. "Main Branch" instead of "Branch 1" when there's only one.
@@ -2528,6 +2547,26 @@ async def paymongo_webhook(request: Request):
                 }).eq("paymongo_payment_intent_id", payment_intent_id).execute()
             except Exception as e:
                 print(f"WEBHOOK payment log update error: {e}")
+
+            # Best-effort heads-up to the platform admin - never blocks the
+            # webhook if it fails. amount_php comes off PayMongo's own
+            # amount field (centavos) rather than the local payments table,
+            # so this still fires correctly even if that DB write above failed.
+            if SUPER_ADMIN_EMAIL:
+                amount_centavos = resource_attrs.get("amount")
+                amount_php = f"{amount_centavos / 100:.2f}" if amount_centavos else "unknown"
+                send_email(
+                    SUPER_ADMIN_EMAIL,
+                    subject=f"Payment received: {business.get('name', '')}",
+                    html_body=(
+                        f"<p>A subscription payment just came through via PayMongo.</p>"
+                        f"<ul>"
+                        f"<li><b>Business:</b> {html_lib.escape(business.get('name', ''))}</li>"
+                        f"<li><b>Amount:</b> ₱{amount_php}</li>"
+                        f"<li><b>Plan:</b> {SUBSCRIPTION_PLANS.get(business.get('plan'), {}).get('label', business.get('plan'))}</li>"
+                        f"</ul>"
+                    ),
+                )
         else:
             print(f"WEBHOOK payment.paid - could not match a business for intent {payment_intent_id}")
 
