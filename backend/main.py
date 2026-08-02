@@ -557,6 +557,24 @@ class AnnouncementCreate(BaseModel):
     is_active: Optional[bool] = True
     end_date: Optional[str] = None  # 'YYYY-MM-DD'
 
+class PlatformAnnouncementCreate(BaseModel):
+    """Admin -> business owner promo/announcement (e.g. 'Refer a friend and
+    get a free month'), shown on the owner's dashboard - distinct from
+    AnnouncementCreate above, which is a business owner -> their own
+    customers announcement."""
+    title: str
+    message: str
+    type: Optional[str] = 'promo'
+    is_active: Optional[bool] = True
+    end_date: Optional[str] = None  # 'YYYY-MM-DD'
+
+class PlatformAnnouncementUpdate(BaseModel):
+    title: Optional[str] = None
+    message: Optional[str] = None
+    type: Optional[str] = None
+    is_active: Optional[bool] = None
+    end_date: Optional[str] = None
+
 class AnnouncementUpdate(BaseModel):
     title: Optional[str] = None
     message: Optional[str] = None
@@ -2354,6 +2372,69 @@ async def admin_delete_business(public_id: str, _: bool = Depends(require_admin)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
 
+# PLATFORM ANNOUNCEMENTS (admin -> all business owners' dashboards, e.g.
+# LoyaltyTree promos like "refer a friend, get a free month"). Separate
+# from the /business/{id}/announcements routes above, which are a business
+# owner's own announcements to their customers.
+
+@app.get("/api/v1/admin/platform-announcements")
+async def admin_list_platform_announcements(_: bool = Depends(require_admin)):
+    try:
+        res = (
+            supabase.table("platform_announcements")
+            .select("*")
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return res.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.post("/api/v1/admin/platform-announcements")
+async def admin_create_platform_announcement(ann: PlatformAnnouncementCreate, _: bool = Depends(require_admin)):
+    data = {
+        'public_id': generate_public_id(),
+        'title': ann.title,
+        'message': ann.message,
+        'type': ann.type or 'promo',
+        'is_active': ann.is_active if ann.is_active is not None else True,
+        'end_date': ann.end_date,
+        'created_at': datetime.utcnow().isoformat(),
+        'updated_at': datetime.utcnow().isoformat(),
+    }
+    try:
+        res = supabase.table("platform_announcements").insert(data).execute()
+        return res.data[0] if res.data else data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.put("/api/v1/admin/platform-announcements/{announcement_id}")
+async def admin_update_platform_announcement(announcement_id: str, ann: PlatformAnnouncementUpdate, _: bool = Depends(require_admin)):
+    update_data = {k: v for k, v in ann.dict().items() if v is not None}
+    update_data['updated_at'] = datetime.utcnow().isoformat()
+    try:
+        res = (
+            supabase.table("platform_announcements")
+            .update(update_data)
+            .eq("public_id", announcement_id)
+            .execute()
+        )
+        if not res.data:
+            raise HTTPException(status_code=404, detail="Announcement not found")
+        return res.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.delete("/api/v1/admin/platform-announcements/{announcement_id}")
+async def admin_delete_platform_announcement(announcement_id: str, _: bool = Depends(require_admin)):
+    try:
+        supabase.table("platform_announcements").delete().eq("public_id", announcement_id).execute()
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
 # API ROUTES
 
 @app.get("/api/v1/business/{public_id}")
@@ -3420,6 +3501,61 @@ def friendly_db_error(e: Exception) -> str:
     return msg
 
 # ANNOUNCEMENTS
+
+@app.get("/api/v1/business/{public_id}/platform-announcements")
+async def get_platform_announcements(public_id: str):
+    """Active LoyaltyTree promos/announcements for this owner's dashboard,
+    minus ones they've already dismissed. No admin auth needed here - any
+    business can read the ones addressed to them, same trust level as
+    reading their own /business/{id} record."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    today = datetime.utcnow().date().isoformat()
+    try:
+        res = (
+            supabase.table("platform_announcements")
+            .select("*")
+            .eq("is_active", True)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        all_active = res.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    # Drop anything past its end_date - same "still running" check the
+    # customer-facing announcements use.
+    still_running = [a for a in all_active if not a.get('end_date') or a.get('end_date') >= today]
+
+    try:
+        dismissed_res = (
+            supabase.table("platform_announcement_dismissals")
+            .select("announcement_id")
+            .eq("business_id", business.get("id"))
+            .execute()
+        )
+        dismissed_ids = {row['announcement_id'] for row in (dismissed_res.data or [])}
+    except Exception:
+        dismissed_ids = set()  # best-effort - worst case an owner sees one they already dismissed
+
+    return [a for a in still_running if a.get('id') not in dismissed_ids]
+
+@app.post("/api/v1/business/{public_id}/platform-announcements/{announcement_id}/dismiss")
+async def dismiss_platform_announcement(public_id: str, announcement_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    try:
+        supabase.table("platform_announcement_dismissals").insert({
+            'business_id': business.get('id'),
+            'announcement_id': announcement_id,
+            'dismissed_at': datetime.utcnow().isoformat(),
+        }).execute()
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
 @app.get("/api/v1/business/{public_id}/announcements")
 async def get_announcements(public_id: str):

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Announcements from './Announcements'
+import PlatformPromoBanner from './PlatformPromoBanner'
 import LoyaltyCardCustomizer from './LoyaltyCardCustomizer'
 import SubscriptionPayment from './SubscriptionPayment'
 import logo192 from './logo-192.png'
@@ -519,6 +520,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           <button onClick={onLogout} style={styles.logoutBtn}>Logout</button>
         </div>
       </header>
+
+      <PlatformPromoBanner API_BASE={API_BASE} businessSlug={user?.business_slug} />
 
       {message && (
         <div style={styles.toast} onClick={() => setMessage('')}>
