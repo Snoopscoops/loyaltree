@@ -64,11 +64,39 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [stampCounts, setStampCounts] = useState({}) // staff public_id -> stamps added
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [onboardingStep, setOnboardingStep] = useState(0)
+  const [announcementsChecked, setAnnouncementsChecked] = useState(false)
+  const [analyticsChecked, setAnalyticsChecked] = useState(false)
 
   // Frontend URL for customer-facing pages
   const FRONTEND_URL = 'https://loyaltree-btw1.onrender.com'
   const onboardingKey = user?.business_slug ? `loyaltree_onboarding_seen_${user.business_slug}` : null
+  const announcementsCheckedKey = user?.business_slug ? `loyaltree_checked_announcements_${user.business_slug}` : null
+  const analyticsCheckedKey = user?.business_slug ? `loyaltree_checked_analytics_${user.business_slug}` : null
   const isActive = (business?.status || '').toUpperCase() === 'ACTIVE'
+
+  // The 4 required setup conditions. Card type + card design are collapsed
+  // into one check (google_wallet_class_id) because loyalty-config always
+  // returns a full object with defaults even for a business that's never
+  // saved anything - card_type alone can't tell "picked stamp" apart from
+  // "never touched, still on the default." Publishing is the one signal
+  // that proves they actually went through and saved the card.
+  const cardSetUp = !!program?.google_wallet_class_id
+  const cashierSetUp = staff.length > 0
+  const requiredSetupDone = cardSetUp && cashierSetUp && announcementsChecked && analyticsChecked
+
+  useEffect(() => {
+    if (announcementsCheckedKey) setAnnouncementsChecked(localStorage.getItem(announcementsCheckedKey) === '1')
+    if (analyticsCheckedKey) setAnalyticsChecked(localStorage.getItem(analyticsCheckedKey) === '1')
+  }, [announcementsCheckedKey, analyticsCheckedKey])
+
+  const markAnnouncementsChecked = () => {
+    if (announcementsCheckedKey) localStorage.setItem(announcementsCheckedKey, '1')
+    setAnnouncementsChecked(true)
+  }
+  const markAnalyticsChecked = () => {
+    if (analyticsCheckedKey) localStorage.setItem(analyticsCheckedKey, '1')
+    setAnalyticsChecked(true)
+  }
 
   useEffect(() => {
     if (!user?.business_slug) return
@@ -84,17 +112,30 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   // Auto-launch the setup tutorial the first time the business goes live,
   // so the owner is walked through Edit Card -> Cashier -> Share Tree ->
   // Analytics before they start using the dashboard on their own.
+  // While any of the 4 required conditions is missing, this keeps
+  // reappearing on the home tab every visit instead of the usual
+  // once-ever behavior, and can't be permanently skipped until they're
+  // all done.
   useEffect(() => {
     if (!isActive || !onboardingKey) return
+    if (!requiredSetupDone) {
+      if (activeTab === 'tree') {
+        setOnboardingStep(0)
+        setShowOnboarding(true)
+      }
+      return
+    }
     const seen = localStorage.getItem(onboardingKey)
     if (!seen) {
       setOnboardingStep(0)
       setShowOnboarding(true)
     }
-  }, [isActive, onboardingKey])
+  }, [isActive, onboardingKey, requiredSetupDone, activeTab])
 
   const closeOnboarding = () => {
-    if (onboardingKey) localStorage.setItem(onboardingKey, '1')
+    // Only remember "seen" once setup is actually done - otherwise it just
+    // reopens next time they land on the home tab anyway (see effect above).
+    if (onboardingKey && requiredSetupDone) localStorage.setItem(onboardingKey, '1')
     setShowOnboarding(false)
   }
 
@@ -515,8 +556,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             </button>
           )}
           <button onClick={() => { setOnboardingStep(0); setShowOnboarding(true) }} style={styles.navBtn}>🎓 Setup Guide</button>
-          <button onClick={() => setShowAnnouncements(true)} style={styles.navBtn}>📢 Announcements</button>
-          <button onClick={() => navigate('/analytics')} style={styles.navBtn}>📊 Analytics</button>
+          <button onClick={() => { setShowAnnouncements(true); markAnnouncementsChecked() }} style={styles.navBtn}>📢 Announcements</button>
+          <button onClick={() => { markAnalyticsChecked(); navigate('/analytics') }} style={styles.navBtn}>📊 Analytics</button>
           <button onClick={onLogout} style={styles.logoutBtn}>Logout</button>
         </div>
       </header>
@@ -639,7 +680,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           <div>
             <div style={styles.sectionHeader}>
               <h2 style={styles.sectionTitle}>🍃 Your Leaves ({customers.length})</h2>
-              <button onClick={() => navigate('/analytics')} style={styles.viewAnalyticsBtn}>📊 View Analytics</button>
+              <button onClick={() => { markAnalyticsChecked(); navigate('/analytics') }} style={styles.viewAnalyticsBtn}>📊 View Analytics</button>
             </div>
             <div style={styles.customerGrid}>
               {customers.map(c => (
@@ -1173,6 +1214,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             body: "Configure your loyalty program: how many stamps until a reward, what the reward is, your card color, and your logo. Make sure to save & publish so your card is actually live - customers won't see your branding on their Google Wallet card until you do.",
             cta: 'Go to Edit Card',
             action: () => { setActiveTab('program'); closeOnboarding() },
+            required: true,
+            done: cardSetUp,
           },
           {
             emoji: '🌿',
@@ -1180,6 +1223,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             body: "Invite your staff and each one gets a 4-digit PIN. Important: cashiers also need your Business ID (shown on the Team tab) to log into the scanner - without it, their PIN alone won't work. Share both with them.",
             cta: 'Go to Team',
             action: () => { setActiveTab('staff'); closeOnboarding() },
+            required: true,
+            done: cashierSetUp,
           },
           {
             emoji: '🔗',
@@ -1187,29 +1232,43 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             body: "Get your join QR code and print it out. Keep it at the counter or entrance so customers can scan it themselves as they come in, sign up in seconds, and start earning stamps right away.",
             cta: 'Get QR Code',
             action: () => { setActiveTab('tree'); closeOnboarding(); fetchQRImage() },
+            required: false,
           },
           {
             emoji: '📊',
             title: '4. Analytics & Announcements',
             body: "Check Analytics to see visit trends, repeat customers, and redemption rates. Use Announcements to push a message straight to customers' Google Wallet cards - great for promos or reminders.",
             cta: 'View Analytics',
-            action: () => { closeOnboarding(); navigate('/analytics') },
+            action: () => { closeOnboarding(); markAnalyticsChecked(); navigate('/analytics') },
+            required: true,
+            done: announcementsChecked && analyticsChecked,
           },
         ]
         const step = steps[onboardingStep]
         const isLast = onboardingStep === steps.length - 1
         return (
-          <div style={styles.modalOverlay} onClick={closeOnboarding}>
+          <div style={styles.modalOverlay} onClick={requiredSetupDone ? closeOnboarding : undefined}>
             <div style={{...styles.modal, textAlign: 'center', maxWidth: 420}} onClick={e => e.stopPropagation()}>
+              {!requiredSetupDone && (
+                <div style={{
+                  display: 'inline-block', background: '#fef3c7', color: '#92400e',
+                  fontSize: 12, fontWeight: 700, padding: '4px 10px', borderRadius: 20,
+                  marginBottom: 10, letterSpacing: '0.3px',
+                }}>
+                  ⚠️ REQUIRED SETUP
+                </div>
+              )}
               <div style={{fontSize: 40, marginBottom: 8}}>{step.emoji}</div>
-              <h3 style={{marginBottom: 12}}>{step.title}</h3>
+              <h3 style={{marginBottom: 12}}>
+                {step.title}{step.required && step.done && <span style={{color: '#0d9488'}}> ✓</span>}
+              </h3>
               <p style={{color: '#64748b', fontSize: 14, marginBottom: 20, lineHeight: 1.5}}>{step.body}</p>
 
               <div style={{display: 'flex', justifyContent: 'center', gap: 6, marginBottom: 20}}>
-                {steps.map((_, i) => (
+                {steps.map((s, i) => (
                   <span key={i} style={{
                     width: 8, height: 8, borderRadius: 4,
-                    background: i === onboardingStep ? '#0d9488' : '#e2e8f0',
+                    background: i === onboardingStep ? '#0d9488' : (s.required && s.done ? '#a7f3d0' : '#e2e8f0'),
                   }} />
                 ))}
               </div>
@@ -1230,9 +1289,15 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 )}
               </div>
 
-              <button onClick={closeOnboarding} style={{background: 'none', border: 'none', color: '#94a3b8', fontSize: 13, cursor: 'pointer'}}>
-                Skip tutorial
-              </button>
+              {requiredSetupDone ? (
+                <button onClick={closeOnboarding} style={{background: 'none', border: 'none', color: '#94a3b8', fontSize: 13, cursor: 'pointer'}}>
+                  Skip tutorial
+                </button>
+              ) : (
+                <p style={{color: '#94a3b8', fontSize: 12.5, margin: 0}}>
+                  Finish the steps marked required to unlock the rest of your dashboard.
+                </p>
+              )}
             </div>
           </div>
         )
