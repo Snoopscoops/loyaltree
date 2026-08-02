@@ -33,9 +33,10 @@ function Signup({ API_BASE }) {
   const [plans, setPlans] = useState(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  // 'form' -> 'payment' (business created, awaiting first payment) -> 'activated'
+  // 'form' -> 'choice' (account is live on a free trial - pay now or wait) -> 'payment' (optional, pay early) -> 'activated'
   const [step, setStep] = useState('form')
   const [businessSlug, setBusinessSlug] = useState('')
+  const [trialExpiresAt, setTrialExpiresAt] = useState('')
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -66,7 +67,8 @@ function Signup({ API_BASE }) {
       const data = await res.json()
       if (res.ok) {
         setBusinessSlug(data.business_slug)
-        setStep('payment')
+        setTrialExpiresAt(data.trial_expires_at || '')
+        setStep('choice')
       } else {
         setError(data.detail || 'Signup failed')
       }
@@ -82,10 +84,36 @@ function Signup({ API_BASE }) {
         <div style={styles.card}>
           <div style={{ fontSize: 56, textAlign: 'center', marginBottom: 16 }}>✅</div>
           <h1 style={styles.title}>You're All Set!</h1>
-          <p style={styles.subtitle}>Payment received - your account is now active. Sign in to get started.</p>
+          <p style={styles.subtitle}>Payment received - you're all paid up. Sign in to get started.</p>
           <button type="button" onClick={() => navigate('/login')} style={styles.button}>
             Go to Sign In
           </button>
+        </div>
+      </div>
+    )
+  }
+
+  if (step === 'choice') {
+    return (
+      <div style={styles.page}>
+        <div style={styles.card}>
+          <div style={{ fontSize: 56, textAlign: 'center', marginBottom: 16 }}>🎉</div>
+          <h1 style={styles.title}>Your Free Trial Has Started!</h1>
+          <p style={styles.subtitle}>
+            Your account is live right now - no payment needed yet.
+            {trialExpiresAt && <> Free access runs through <strong>{trialExpiresAt}</strong>.</>}
+          </p>
+
+          <button type="button" onClick={() => navigate('/login')} style={styles.button}>
+            Start Using My Free Trial
+          </button>
+          <button type="button" onClick={() => setStep('payment')} style={styles.secondaryButton}>
+            Pay Now Instead
+          </button>
+
+          <p style={styles.footer}>
+            You can always pay later from your dashboard before the trial ends.
+          </p>
         </div>
       </div>
     )
@@ -97,9 +125,9 @@ function Signup({ API_BASE }) {
         <SubscriptionPayment
           API_BASE={API_BASE}
           businessSlug={businessSlug}
-          title="Activate Your Account"
-          subtitle="Your application has been received. Pay via QR Ph to activate your account instantly - no waiting on manual approval."
-          successMessage="🎉 Payment received - your account is now active!"
+          title="Pay Now"
+          subtitle="Your account is already live on a free trial - paying now just locks in your plan and skips any interruption once the trial ends."
+          successMessage="🎉 Payment received - you're all paid up!"
           onPaid={() => setStep('activated')}
         />
       </div>
@@ -336,6 +364,19 @@ const styles = {
     fontWeight: 600,
     cursor: 'pointer',
     marginTop: 8,
+  },
+  secondaryButton: {
+    width: '100%',
+    boxSizing: 'border-box',
+    padding: '14px',
+    background: 'white',
+    color: '#0f766e',
+    border: '1.5px solid #e2e8f0',
+    borderRadius: 10,
+    fontSize: 15,
+    fontWeight: 600,
+    cursor: 'pointer',
+    marginTop: 10,
   },
   error: {
     padding: '12px 16px',

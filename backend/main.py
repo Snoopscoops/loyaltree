@@ -76,6 +76,7 @@ PAYMONGO_SECRET_KEY = os.getenv('PAYMONGO_SECRET_KEY', '')
 PAYMONGO_WEBHOOK_SECRET = os.getenv('PAYMONGO_WEBHOOK_SECRET', '')
 PAYMONGO_API_BASE = 'https://api.paymongo.com/v1'
 SUBSCRIPTION_PERIOD_DAYS = 30  # how long a successful payment extends access for
+TRIAL_PERIOD_DAYS = 7  # free trial length granted automatically on signup, no payment/approval needed
 
 # Subscription expiry reminder emails, sent via Resend (resend.com). Get
 # RESEND_API_KEY from Resend's dashboard once you've verified a sending
@@ -2026,6 +2027,7 @@ async def register(biz: BusinessCreate):
     else:
         plan = determine_plan_from_branch_count(biz.branch_count)
     price_month = get_price_for_plan(plan, biz.branch_count)
+    trial_expires = (datetime.utcnow() + timedelta(days=TRIAL_PERIOD_DAYS)).date().isoformat()
     business_data = {
         'public_id': public_id,
         'name': biz.name,
@@ -2036,7 +2038,13 @@ async def register(biz: BusinessCreate):
         'business_type': biz.business_type,
         'address': biz.address,
         'plan': plan,
-        'status': 'PENDING',
+        # Live immediately on a free trial - no manual admin approval or
+        # payment needed to start using the app. subscription_expires_at
+        # doubles as the trial end date; the existing reminder cron already
+        # emails the owner as this gets close, and a real PayMongo payment
+        # later just extends it by SUBSCRIPTION_PERIOD_DAYS as normal.
+        'status': 'ACTIVE',
+        'subscription_expires_at': trial_expires,
         'created_at': datetime.utcnow().isoformat(),
     }
 
@@ -2059,7 +2067,7 @@ async def register(biz: BusinessCreate):
                 f"<li><b>Phone:</b> {html_lib.escape(biz.phone or '')}</li>"
                 f"<li><b>Plan:</b> {SUBSCRIPTION_PLANS.get(plan, {}).get('label', plan)}</li>"
                 f"<li><b>Branches:</b> {biz.branch_count}</li>"
-                f"<li><b>Status:</b> PENDING approval</li>"
+                f"<li><b>Status:</b> ACTIVE (7-day free trial, expires {trial_expires})</li>"
                 f"</ul>"
             ),
         )
@@ -2097,6 +2105,7 @@ async def register(biz: BusinessCreate):
         "plan": plan,
         "branch_count": biz.branch_count,
         "price_month": price_month,
+        "trial_expires_at": trial_expires,
     }
 
 @app.get("/api/v1/me")
