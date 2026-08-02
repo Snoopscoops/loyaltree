@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react'
+import PlatformAnnouncementsAdmin from './PlatformAnnouncementsAdmin'
 
 const STATUS_OPTIONS = ['PENDING', 'ACTIVE', 'SUSPENDED', 'REJECTED']
 
@@ -195,6 +196,8 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
             ))}
           </div>
         )}
+
+        <PlatformAnnouncementsAdmin API_BASE={API_BASE} token={token} />
 
         {/* Filters */}
         <div style={styles.filterRow}>
