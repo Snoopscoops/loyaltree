@@ -42,6 +42,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [showEditModal, setShowEditModal] = useState(false)
   const [editForm, setEditForm] = useState({})
   const [savingCustomer, setSavingCustomer] = useState(false)
+  const [issuingPass, setIssuingPass] = useState(false)
   const [showStaffEditModal, setShowStaffEditModal] = useState(false)
   const [staffEditForm, setStaffEditForm] = useState({})
   const [savingStaff, setSavingStaff] = useState(false)
@@ -252,6 +253,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       last_order_date: c.last_order_date || '',
       stamp_count: c.stamp_count ?? 0,
       points_balance: c.points_balance ?? 0,
+      multipass_sessions_remaining: c.multipass_sessions_remaining ?? 0,
     })
     setShowCouponForm(false)
     setCouponError('')
@@ -333,6 +335,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         age: fields.age === '' ? null : parseInt(fields.age, 10),
         stamp_count: fields.stamp_count === '' ? null : parseInt(fields.stamp_count, 10),
         points_balance: fields.points_balance === '' ? null : parseInt(fields.points_balance, 10),
+        multipass_sessions_remaining: fields.multipass_sessions_remaining === '' ? null : parseInt(fields.multipass_sessions_remaining, 10),
       }
       const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${public_id}`, {
         method: 'PATCH',
@@ -350,6 +353,31 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       setMessage('Network error')
     }
     setSavingCustomer(false)
+  }
+
+  // Issues a fresh multipass pack to the currently-open customer, using the
+  // program's default pack size - the owner's equivalent of the cashier's
+  // "Issue New Pass" button, for sales made without going through the scanner.
+  const issueNewPass = async () => {
+    if (!editForm.public_id) return
+    setIssuingPass(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/multipass/issue`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customer_public_id: editForm.public_id, as_owner: true })
+      })
+      const data = await res.json()
+      if (res.ok) {
+        setEditForm(prev => ({ ...prev, multipass_sessions_remaining: data.sessions_remaining }))
+        setMessage(data.message || 'New pass issued!')
+      } else {
+        setMessage(data.detail || 'Could not issue a new pass')
+      }
+    } catch (err) {
+      setMessage('Network error')
+    }
+    setIssuingPass(false)
   }
 
   const openEditStaff = (s) => {
@@ -522,8 +550,11 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   )
 
   const isPointsCard = program?.card_type === 'points'
+  const isMultipassCard = program?.card_type === 'multipass'
   const confirmedStamps = customers.reduce((sum, c) => sum + (c.stamp_count || 0), 0)
   const totalPoints = customers.reduce((sum, c) => sum + (c.points_balance || 0), 0)
+  const totalSessionsRemaining = customers.reduce((sum, c) => sum + (c.multipass_sessions_remaining || 0), 0)
+  const activePasses = customers.filter(c => (c.multipass_sessions_remaining || 0) > 0).length
   const unlockedRewards = customers.filter(c => c.reward_unlocked).length
   const growthStage = customers.length < 10 ? 'seedling' : customers.length < 50 ? 'sapling' : customers.length < 200 ? 'growing' : 'mature'
   const subStatus = subscription?.subscription_status
@@ -596,12 +627,12 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             <span style={styles.orbLabel}>Leaves</span>
           </div>
           <div style={styles.statOrb}>
-            <span style={styles.orbNumber}>{isPointsCard ? totalPoints : confirmedStamps}</span>
-            <span style={styles.orbLabel}>{isPointsCard ? 'Points' : 'Rings'}</span>
+            <span style={styles.orbNumber}>{isPointsCard ? totalPoints : isMultipassCard ? totalSessionsRemaining : confirmedStamps}</span>
+            <span style={styles.orbLabel}>{isPointsCard ? 'Points' : isMultipassCard ? 'Sessions Left' : 'Rings'}</span>
           </div>
           <div style={styles.statOrb}>
-            <span style={styles.orbNumber}>{unlockedRewards}</span>
-            <span style={styles.orbLabel}>Fruits</span>
+            <span style={styles.orbNumber}>{isMultipassCard ? activePasses : unlockedRewards}</span>
+            <span style={styles.orbLabel}>{isMultipassCard ? 'Active Passes' : 'Fruits'}</span>
           </div>
         </div>
         <div style={styles.growthBadge}>
@@ -668,7 +699,13 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 <div key={c.public_id} style={styles.activityRow}>
                   <span style={styles.activityLeaf}>🍃</span>
                   <span style={styles.activityName}>{c.name}</span>
-                  <span style={styles.activityStamps}>{isPointsCard ? `${c.points_balance || 0} points` : `${c.stamp_count} rings`}</span>
+                  <span style={styles.activityStamps}>
+                    {isPointsCard
+                      ? `${c.points_balance || 0} points`
+                      : isMultipassCard
+                      ? `${c.multipass_sessions_remaining || 0}/${c.multipass_total_sessions || 0} sessions`
+                      : `${c.stamp_count} rings`}
+                  </span>
                   {c.reward_unlocked && <span style={styles.activityFruit}>🍎</span>}
                 </div>
               ))}
@@ -696,6 +733,17 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     )}
                     {isPointsCard ? (
                       <p style={styles.stampText}>💎 {c.points_balance || 0} points</p>
+                    ) : isMultipassCard ? (
+                      <>
+                        <p style={styles.stampText}>
+                          🎟️ {c.multipass_sessions_remaining || 0} / {c.multipass_total_sessions || 0} sessions left
+                        </p>
+                        {c.multipass_expires_at && (
+                          <p style={{...styles.customerPhone, fontSize: 12, color: c.multipass_expires_at < new Date().toISOString().slice(0, 10) ? '#dc2626' : '#94a3b8'}}>
+                            {c.multipass_expires_at < new Date().toISOString().slice(0, 10) ? 'Expired' : 'Valid until'} {c.multipass_expires_at}
+                          </p>
+                        )}
+                      </>
                     ) : (
                       <>
                         <div style={styles.stampRings}>
@@ -709,8 +757,11 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                         <p style={styles.stampText}>{c.stamp_count % (program?.stamp_goal || 8)} / {program?.stamp_goal || 8} rings</p>
                       </>
                     )}
-                    <p style={styles.lastStampedText}>{formatLastStamped(c.last_stamp_at)}</p>
+                    {!isMultipassCard && <p style={styles.lastStampedText}>{formatLastStamped(c.last_stamp_at)}</p>}
                     {c.reward_unlocked && <span style={styles.fruitBadge}>🍎 Reward Ready!</span>}
+                    {isMultipassCard && (c.multipass_sessions_remaining || 0) <= 0 && (
+                      <span style={styles.fruitBadge}>🎉 Sell New Pass</span>
+                    )}
                   </div>
                   <div style={{display: 'flex', flexDirection: 'column', gap: 6}}>
                     <button
@@ -909,6 +960,23 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                       </div>
                     )}
                   </div>
+                ) : isMultipassCard ? (
+                  <div style={styles.cardProgress}>
+                    <p style={{fontSize: 32, fontWeight: 800, color: 'white', margin: '8px 0 0'}}>
+                      {selectedCustomer.multipass_sessions_remaining || 0}
+                    </p>
+                    <p style={{fontSize: 13, color: 'rgba(255,255,255,0.85)', margin: '2px 0 0'}}>
+                      of {selectedCustomer.multipass_total_sessions || 0} sessions left
+                    </p>
+                    {selectedCustomer.multipass_expires_at && (
+                      <p style={{fontSize: 12, color: 'rgba(255,255,255,0.75)', margin: '6px 0 0'}}>
+                        {selectedCustomer.multipass_expires_at < new Date().toISOString().slice(0, 10) ? 'Expired' : 'Valid until'} {selectedCustomer.multipass_expires_at}
+                      </p>
+                    )}
+                    {(selectedCustomer.multipass_sessions_remaining || 0) <= 0 && (
+                      <div style={styles.cardReward}>🎉 Sell a new pass!</div>
+                    )}
+                  </div>
                 ) : (
                   <>
                     <div style={styles.cardStamps}>
@@ -1009,6 +1077,30 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     value={editForm.points_balance}
                     onChange={e => setEditForm({...editForm, points_balance: e.target.value})}
                   />
+                </>
+              ) : isMultipassCard ? (
+                <>
+                  <label style={styles.label}>Sessions Remaining</label>
+                  <div style={{display: 'flex', gap: 8, alignItems: 'center'}}>
+                    <input
+                      style={{...styles.input, flex: 1}}
+                      type="number"
+                      min="0"
+                      value={editForm.multipass_sessions_remaining}
+                      onChange={e => setEditForm({...editForm, multipass_sessions_remaining: e.target.value})}
+                    />
+                    <button
+                      type="button"
+                      onClick={issueNewPass}
+                      disabled={issuingPass}
+                      style={{...styles.submitBtn, width: 'auto', whiteSpace: 'nowrap', padding: '10px 14px', margin: 0}}
+                    >
+                      {issuingPass ? 'Issuing...' : '🎟️ Issue New Pass'}
+                    </button>
+                  </div>
+                  <p style={{fontSize: 12, color: '#94a3b8', margin: '4px 0 12px'}}>
+                    Editing this number corrects the count manually - "Issue New Pass" sells a fresh pack at the program's default size.
+                  </p>
                 </>
               ) : (
                 <>

@@ -60,7 +60,15 @@ function WalletPass({ API_BASE }) {
 
   const { pass_data } = passData
   const isPoints = pass_data.card_type === 'points'
-  const progress = isPoints ? 0 : (pass_data.stamps / pass_data.goal) * 100
+  const isMultipass = pass_data.card_type === 'multipass'
+  const isStamp = !isPoints && !isMultipass
+  const progress = isStamp ? (pass_data.stamps / pass_data.goal) * 100 : 0
+  const sessionsTotal = pass_data.sessions_total || 0
+  const sessionsRemaining = pass_data.sessions_remaining ?? 0
+  const sessionsUsed = Math.max(sessionsTotal - sessionsRemaining, 0)
+  const sessionProgress = sessionsTotal > 0 ? (sessionsUsed / sessionsTotal) * 100 : 0
+  const multipassDone = isMultipass && sessionsRemaining <= 0
+  const multipassExpired = isMultipass && !!pass_data.multipass_expired
 
   return (
     <div style={styles.container}>
@@ -99,6 +107,45 @@ function WalletPass({ API_BASE }) {
               </div>
             )}
           </div>
+        ) : isMultipass ? (
+          <>
+            <div style={styles.pointsSection}>
+              <div style={styles.pointsBalance}>{sessionsRemaining}</div>
+              <p style={styles.pointsLabel}>
+                {sessionsRemaining === 1 ? 'session left' : 'sessions left'} of {sessionsTotal}
+              </p>
+            </div>
+
+            <div style={styles.progressSection}>
+              <div style={styles.progressBar}>
+                <div style={{ ...styles.progressFill, width: `${sessionProgress}%` }}></div>
+              </div>
+            </div>
+
+            {pass_data.multipass_description && (
+              <p style={styles.multipassDescription}>{pass_data.multipass_description}</p>
+            )}
+
+            {sessionsTotal > 0 && sessionsTotal <= 20 && (
+              <div style={styles.stampGrid}>
+                {Array.from({ length: sessionsTotal }).map((_, i) => (
+                  <div key={i} style={{
+                    ...styles.stampSlot,
+                    background: i < sessionsUsed ? 'rgba(255,255,255,0.15)' : '#fbbf24',
+                    borderColor: i < sessionsUsed ? 'rgba(255,255,255,0.25)' : '#f59e0b'
+                  }}>
+                    {i < sessionsUsed ? '✓' : ''}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {pass_data.multipass_expires_at && (
+              <p style={styles.expiryText}>
+                {multipassExpired ? 'Expired' : 'Valid until'} {pass_data.multipass_expires_at}
+              </p>
+            )}
+          </>
         ) : (
           <>
             <div style={styles.progressSection}>
@@ -122,10 +169,24 @@ function WalletPass({ API_BASE }) {
           </>
         )}
 
-        {!isPoints && pass_data.reward_unlocked && (
+        {isStamp && pass_data.reward_unlocked && (
           <div style={styles.rewardBanner}>
             <span style={styles.rewardIcon}>🎉</span>
             <span>Reward Unlocked!</span>
+          </div>
+        )}
+
+        {isMultipass && multipassExpired && (
+          <div style={{ ...styles.rewardBanner, background: '#fecaca', color: '#991b1b' }}>
+            <span style={styles.rewardIcon}>⏰</span>
+            <span>Pass expired - ask about a new one</span>
+          </div>
+        )}
+
+        {isMultipass && !multipassExpired && multipassDone && (
+          <div style={styles.rewardBanner}>
+            <span style={styles.rewardIcon}>🎉</span>
+            <span>All sessions used - come back for a new pass!</span>
           </div>
         )}
 
@@ -286,6 +347,19 @@ const styles = {
     marginTop: 8,
     fontSize: 14,
     fontWeight: 600,
+  },
+  multipassDescription: {
+    textAlign: 'center',
+    fontSize: 13.5,
+    opacity: 0.9,
+    margin: '4px 0 16px',
+  },
+  expiryText: {
+    textAlign: 'center',
+    fontSize: 12.5,
+    opacity: 0.8,
+    marginTop: -8,
+    marginBottom: 20,
   },
   stampGrid: {
     display: 'grid',

@@ -490,7 +490,7 @@ class PointsPrize(BaseModel):
     description: Optional[str] = Field(default=None, max_length=140)
 
 class LoyaltyConfig(BaseModel):
-    card_type: Literal['stamp', 'points'] = 'stamp'  # a business runs ONE active card at a time
+    card_type: Literal['stamp', 'points', 'multipass'] = 'stamp'  # a business runs ONE active card at a time
     stamp_goal: int = Field(default=8, ge=3, le=20)
     reward_name: str = 'Free Service'
     primary_color: str = '#3b82f6'
@@ -498,12 +498,15 @@ class LoyaltyConfig(BaseModel):
     program_logo_url: Optional[str] = None
     hero_image_url: Optional[str] = None
     card_name: Optional[str] = None
-    description: Optional[str] = Field(default=None, max_length=140)  # short blurb shown below the card on the join page / wallet pass
+    description: Optional[str] = Field(default=None, max_length=140)  # short blurb shown below the card on the join page / wallet pass - also doubles as the multipass card's "what these sessions are for" description
     google_review_url: Optional[str] = None  # Growth/Pro only - link prompted after a redeemed reward
     # --- Points card only ---
     points_per_amount: Optional[float] = Field(default=10, ge=0)     # points earned...
     points_amount_pesos: Optional[float] = Field(default=100, ge=1)  # ...per this many pesos spent
     points_prizes: Optional[List[PointsPrize]] = None                # catalog of prizes customers can redeem points for
+    # --- Multipass card only ---
+    multipass_session_count: Optional[int] = Field(default=12, ge=2, le=200)  # sessions issued per pass, e.g. 12 sessions sold at the price of 10
+    multipass_validity_days: Optional[int] = Field(default=90, ge=1)          # days a freshly-issued pass stays valid before it expires unused
 
 class CustomerSignup(BaseModel):
     name: str
@@ -528,6 +531,7 @@ class CustomerUpdate(BaseModel):
     last_order_date: Optional[str] = None  # 'YYYY-MM-DD'
     stamp_count: Optional[int] = Field(default=None, ge=0)  # lets the owner manually correct a customer's stamp count
     points_balance: Optional[int] = Field(default=None, ge=0)  # lets the owner manually correct a customer's points balance
+    multipass_sessions_remaining: Optional[int] = Field(default=None, ge=0)  # lets the owner manually correct a customer's remaining sessions
 
 class StampRequest(BaseModel):
     customer_public_id: str
@@ -543,6 +547,20 @@ class PointsSaleRequest(BaseModel):
 class PointsRedeemRequest(BaseModel):
     customer_public_id: str
     prize_id: str  # matches the id of an entry in loyalty_programs.points_prizes
+    staff_pin: Optional[str] = None
+    as_owner: Optional[bool] = False
+
+class MultipassIssueRequest(BaseModel):
+    # Issues a fresh session pack to a customer - their first pack, or a
+    # renewal once their previous one is used up / expired.
+    customer_public_id: str
+    session_count: Optional[int] = Field(default=None, ge=1)  # overrides the program's default pack size for a one-off custom sale
+    staff_pin: Optional[str] = None
+    as_owner: Optional[bool] = False
+
+class MultipassUseRequest(BaseModel):
+    # Burns one session off the customer's current pack.
+    customer_public_id: str
     staff_pin: Optional[str] = None
     as_owner: Optional[bool] = False
 
@@ -808,6 +826,7 @@ def business_summary(biz: dict) -> dict:
     points_balance_outstanding = 0
     program = safe_get_loyalty_program(biz_id)
     card_type = program.get('card_type', 'stamp') if program else 'stamp'
+    sessions_outstanding = 0
     try:
         cust_res = supabase.table("customers").select("id", count="exact").eq("business_id", biz_id).execute()
         customer_count = cust_res.count or 0
@@ -819,13 +838,23 @@ def business_summary(biz: dict) -> dict:
     except Exception:
         pass
     try:
-        # Points-card businesses log sales to points_events, not
-        # stamp_events (see the card_type guard around /stamp vs
-        # /points-sale) - read from whichever table actually holds this
-        # business's activity so points businesses don't show a false 0.
+        # Points-card businesses log sales to points_events and multipass
+        # businesses log issues/uses to multipass_events, not stamp_events
+        # (see the card_type guard around /stamp vs /points-sale vs
+        # /multipass) - read from whichever table actually holds this
+        # business's activity so it doesn't show a false 0.
         since = (datetime.utcnow() - timedelta(days=30)).isoformat()
-        activity_table = "points_events" if card_type == 'points' else "stamp_events"
-        activity_res = supabase.table(activity_table).select("id", count="exact").eq("business_id", biz_id).gte("created_at", since).execute()
+        if card_type == 'points':
+            activity_table = "points_events"
+        elif card_type == 'multipass':
+            activity_table = "multipass_events"
+        else:
+            activity_table = "stamp_events"
+        activity_q = supabase.table(activity_table).select("id", count="exact").eq("business_id", biz_id).gte("created_at", since)
+        if card_type == 'multipass':
+            # "activity" here means sessions actually used, not passes issued.
+            activity_q = activity_q.eq("action", "used")
+        activity_res = activity_q.execute()
         activity_30d = activity_res.count or 0
     except Exception:
         pass
@@ -836,6 +865,14 @@ def business_summary(biz: dict) -> dict:
             # business is carrying.
             bal_res = supabase.table("customers").select("points_balance").eq("business_id", biz_id).execute()
             points_balance_outstanding = sum((c.get('points_balance') or 0) for c in (bal_res.data or []))
+        except Exception:
+            pass
+    elif card_type == 'multipass':
+        try:
+            # Outstanding session liability - unused sessions still owed on
+            # unexpired passes, same idea as points_balance_outstanding.
+            bal_res = supabase.table("customers").select("multipass_sessions_remaining").eq("business_id", biz_id).execute()
+            sessions_outstanding = sum((c.get('multipass_sessions_remaining') or 0) for c in (bal_res.data or []))
         except Exception:
             pass
     plan = biz.get('plan', 'starter')
@@ -886,11 +923,13 @@ def business_summary(biz: dict) -> dict:
         "customer_count": customer_count,
         "staff_count": staff_count,
         "card_type": card_type,
-        # stamps_30d holds stamp punches for stamp cards, or points sales
-        # (transactions, not points earned) for points cards - see card_type
-        # to know which. Kept as one key so existing callers keep working.
+        # stamps_30d holds stamp punches for stamp cards, points sales
+        # (transactions, not points earned) for points cards, or sessions
+        # used for multipass cards - see card_type to know which. Kept as
+        # one key so existing callers keep working.
         "stamps_30d": activity_30d,
         "points_balance_outstanding": points_balance_outstanding if card_type == 'points' else None,
+        "sessions_outstanding": sessions_outstanding if card_type == 'multipass' else None,
     }
 
 def generate_qr_svg(data: str) -> str:
@@ -978,6 +1017,8 @@ def generate_personalized_hero_image_bytes(
     description: Optional[str] = None,
     card_type: str = 'stamp',
     points_balance: int = 0,
+    sessions_remaining: int = 0,
+    sessions_total: int = 0,
 ) -> bytes:
     """Same gradient as generate_hero_image_bytes, but with a bottom banner
     burned in showing the reward/progress and short description - the
@@ -1010,6 +1051,10 @@ def generate_personalized_hero_image_bytes(
     if card_type == 'points':
         reward_line = f'{points_balance} points'
         progress_line = 'Redeem prizes in-store'
+    elif card_type == 'multipass':
+        reward_line = 'Session Pass'
+        progress_line = (f'{sessions_remaining} of {sessions_total} sessions left' if sessions_remaining > 0
+                         else 'All sessions used')
     else:
         reward_line = (reward_name or 'Reward')[:60]
         progress_line = f'{stamps} of {stamp_goal} stamps'
@@ -1109,10 +1154,17 @@ def build_loyalty_class(business: dict, program: dict, review_status: str = 'UND
 
     primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
     reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
+    card_type = program.get('card_type', 'stamp') if program else 'stamp'
     card_name = program.get('card_name') if program else None
     description = program.get('description') if program else None
     biz_name = business.get('name', 'Loyalty')
     program_name = card_name if card_name else f'{biz_name} Rewards'
+
+    if card_type == 'multipass':
+        session_count = program.get('multipass_session_count', 12) if program else 12
+        reward_module_body = f'{session_count}-session pass'
+    else:
+        reward_module_body = reward_name
 
     loyalty_class = {
         'id': class_id,
@@ -1121,7 +1173,7 @@ def build_loyalty_class(business: dict, program: dict, review_status: str = 'UND
         'reviewStatus': review_status,
         'hexBackgroundColor': primary_color if primary_color.startswith('#') else f'#{primary_color}',
         'textModulesData': [
-            {'header': 'Reward', 'body': reward_name},
+            {'header': 'Reward', 'body': reward_module_body},
             {'header': 'About', 'body': description if description else 'Collect stamps, earn rewards'}
         ]
     }
@@ -1159,6 +1211,8 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
     stamps = customer.get('stamp_count', 0)
     points_balance = customer.get('points_balance', 0)
+    sessions_remaining = customer.get('multipass_sessions_remaining', 0) or 0
+    sessions_total = customer.get('multipass_total_sessions', 0) or (program.get('multipass_session_count', 12) if program else 12)
     cust_name = customer.get('name', 'Member')
     biz_name = business.get('name', '')
 
@@ -1167,6 +1221,11 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         loyalty_points_balance = str(points_balance)
         progress_body = f'{points_balance} points'
         reward_body = 'Redeem prizes in-store'
+    elif card_type == 'multipass':
+        loyalty_points_label = 'Sessions'
+        loyalty_points_balance = f'{sessions_remaining}/{sessions_total}'
+        progress_body = f'{sessions_remaining} of {sessions_total} sessions left'
+        reward_body = (program.get('description') if program else None) or 'Session pass'
     else:
         loyalty_points_label = 'Stamps'
         loyalty_points_balance = f'{stamps}/{stamp_goal}'
@@ -1207,7 +1266,12 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
         description = program.get('description') if program else None
         color_key = primary_color.lstrip('#')
-        progress_key = points_balance if card_type == 'points' else stamps
+        if card_type == 'points':
+            progress_key = points_balance
+        elif card_type == 'multipass':
+            progress_key = sessions_remaining
+        else:
+            progress_key = stamps
         hero_url = (
             f'{BASE_URL}/api/v1/customer/{cust_public_id}/hero-image.png'
             f'?s={progress_key}&g={stamp_goal}&c={color_key}'
@@ -1428,6 +1492,9 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     description = program.get('description') if program else None
     stamps = customer.get('stamp_count', 0)
     points_balance = customer.get('points_balance', 0)
+    sessions_remaining = customer.get('multipass_sessions_remaining', 0) or 0
+    sessions_total = customer.get('multipass_total_sessions', 0) or (program.get('multipass_session_count', 12) if program else 12)
+    multipass_expires_at = customer.get('multipass_expires_at')
     reward_unlocked = bool(customer.get('reward_unlocked'))
     primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
     r, g, b = _hex_to_rgb(primary_color)
@@ -1484,11 +1551,15 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
             'primaryFields': [
                 {'key': 'points', 'label': 'POINTS', 'value': str(points_balance), 'changeMessage': 'Points added! You now have %@ points.'}
                 if card_type == 'points' else
+                {'key': 'sessions', 'label': 'SESSIONS', 'value': f'{sessions_remaining}/{sessions_total}', 'changeMessage': 'Session used! %@ sessions left.'}
+                if card_type == 'multipass' else
                 {'key': 'stamps', 'label': 'STAMPS', 'value': f'{stamps}/{stamp_goal}', 'changeMessage': 'Stamp added! You now have %@ stamps.'}
             ],
             'secondaryFields': [
                 {'key': 'reward', 'label': 'REWARD', 'value': 'Redeem prizes in-store', 'changeMessage': '%@'}
                 if card_type == 'points' else
+                {'key': 'reward', 'label': 'EXPIRES', 'value': (multipass_expires_at or 'No expiry set'), 'changeMessage': '%@'}
+                if card_type == 'multipass' else
                 {'key': 'reward', 'label': 'REWARD', 'value': ('🎉 Ready to redeem!' if reward_unlocked else reward_name)[:30], 'changeMessage': '%@'}
             ],
             'backFields': back_fields
@@ -1851,6 +1922,27 @@ def log_points_event(business_id: int, customer_id: int, amount_spent: float, po
         supabase.table("points_events").insert(event).execute()
     except Exception as e:
         print(f"POINTS EVENT LOG error: {e}")
+
+def log_multipass_event(business_id: int, customer_id: int, action: str, sessions_remaining: int,
+                         staff_id: Optional[int] = None, branch_id: Optional[int] = None):
+    """Best-effort event log for multipass issues/uses - powers the Analytics
+    dashboard the same way log_stamp_event/log_points_event do for their
+    card types. action is 'issued' or 'used'. Never raises."""
+    try:
+        event = {
+            'business_id': business_id,
+            'customer_id': customer_id,
+            'action': action,
+            'sessions_remaining': sessions_remaining,
+            'created_at': datetime.utcnow().isoformat(),
+        }
+        if staff_id is not None:
+            event['staff_id'] = staff_id
+        if branch_id is not None:
+            event['branch_id'] = branch_id
+        supabase.table("multipass_events").insert(event).execute()
+    except Exception as e:
+        print(f"MULTIPASS EVENT LOG error: {e}")
 
 # FastAPI App
 app = FastAPI(title='LoyaltyTree API')
@@ -2225,23 +2317,35 @@ async def admin_overview(_: bool = Depends(require_admin)):
 
         status_breakdown = {}
         plan_breakdown = {}
-        card_type_breakdown = {'stamp': 0, 'points': 0}
+        card_type_breakdown = {'stamp': 0, 'points': 0, 'multipass': 0}
         for b in businesses:
             status = (b.get('status') or 'PENDING').upper()
             plan = b.get('plan') or 'starter'
             status_breakdown[status] = status_breakdown.get(status, 0) + 1
             plan_breakdown[plan] = plan_breakdown.get(plan, 0) + 1
 
-        # Outstanding points liability across every points-card business.
+        # Outstanding points/session liability across every points/multipass business.
         total_points_outstanding = 0
+        sessions_issued_30d = 0
+        sessions_used_30d = 0
+        total_sessions_outstanding = 0
         try:
             points_programs = supabase.table("loyalty_programs").select("business_id").eq("card_type", "points").execute().data or []
             points_business_ids = [p.get('business_id') for p in points_programs]
+            multipass_programs = supabase.table("loyalty_programs").select("business_id").eq("card_type", "multipass").execute().data or []
+            multipass_business_ids = [p.get('business_id') for p in multipass_programs]
             card_type_breakdown['points'] = len(points_business_ids)
-            card_type_breakdown['stamp'] = len(businesses) - len(points_business_ids)
+            card_type_breakdown['multipass'] = len(multipass_business_ids)
+            card_type_breakdown['stamp'] = len(businesses) - len(points_business_ids) - len(multipass_business_ids)
             if points_business_ids:
                 bal_res = supabase.table("customers").select("points_balance").in_("business_id", points_business_ids).execute()
                 total_points_outstanding = sum((c.get('points_balance') or 0) for c in (bal_res.data or []))
+            if multipass_business_ids:
+                mp_events_30d = supabase.table("multipass_events").select("action").in_("business_id", multipass_business_ids).gte("created_at", since).execute().data or []
+                sessions_issued_30d = sum(1 for e in mp_events_30d if e.get('action') == 'issued')
+                sessions_used_30d = sum(1 for e in mp_events_30d if e.get('action') == 'used')
+                mp_bal_res = supabase.table("customers").select("multipass_sessions_remaining").in_("business_id", multipass_business_ids).execute()
+                total_sessions_outstanding = sum((c.get('multipass_sessions_remaining') or 0) for c in (mp_bal_res.data or []))
         except Exception:
             pass
 
@@ -2254,6 +2358,9 @@ async def admin_overview(_: bool = Depends(require_admin)):
             "points_sales_30d": points_sales_30d,
             "points_issued_30d": points_issued_30d,
             "total_points_outstanding": total_points_outstanding,
+            "sessions_issued_30d": sessions_issued_30d,
+            "sessions_used_30d": sessions_used_30d,
+            "total_sessions_outstanding": total_sessions_outstanding,
             "card_type_breakdown": card_type_breakdown,
             "status_breakdown": status_breakdown,
             "plan_breakdown": plan_breakdown,
@@ -2304,6 +2411,15 @@ async def admin_get_business(public_id: str, _: bool = Depends(require_admin)):
             summary["points_issued_30d"] = sum((e.get('points_earned') or 0) for e in (pe_res.data or []))
         except Exception:
             summary["points_issued_30d"] = 0
+    elif summary.get("card_type") == 'multipass':
+        try:
+            since = (datetime.utcnow() - timedelta(days=30)).isoformat()
+            mp_res = supabase.table("multipass_events").select("action").eq("business_id", business.get('id')).gte("created_at", since).execute().data or []
+            summary["sessions_issued_30d"] = sum(1 for e in mp_res if e.get('action') == 'issued')
+            summary["sessions_used_30d"] = sum(1 for e in mp_res if e.get('action') == 'used')
+        except Exception:
+            summary["sessions_issued_30d"] = 0
+            summary["sessions_used_30d"] = 0
     summary["loyalty_program"] = program
     return summary
 
@@ -2780,7 +2896,7 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
     # (no reward_unlocked equivalent for points), but still need `program`
     # loaded below so the wallet push has it.
     program = None
-    if 'stamp_count' in update_data or 'points_balance' in update_data:
+    if 'stamp_count' in update_data or 'points_balance' in update_data or 'multipass_sessions_remaining' in update_data:
         program = safe_get_loyalty_program(business.get('id'))
     if 'stamp_count' in update_data:
         goal = program.get('stamp_goal', 8) if program else 8
@@ -2819,7 +2935,7 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
             )
         raise HTTPException(status_code=500, detail=error_msg)
 
-    if 'stamp_count' in update_data or 'points_balance' in update_data:
+    if 'stamp_count' in update_data or 'points_balance' in update_data or 'multipass_sessions_remaining' in update_data:
         try:
             sync_wallet_object(updated_customer, business, program)
         except Exception:
@@ -2913,21 +3029,40 @@ async def get_branch_stamp_counts(public_id: str):
 
         # Points-card businesses never write to stamp_events (add_stamp
         # rejects them - see the card_type guard there), so their activity
-        # lives in points_events instead. Same activity_events swap as
-        # get_analytics above, keeping the "stamp_count" field name so the
-        # dashboard doesn't need a second shape to handle.
+        # lives in points_events instead, and multipass businesses log to
+        # multipass_events. Same activity_events swap as get_analytics
+        # above, keeping the "stamp_count" field name so the dashboard
+        # doesn't need a second shape to handle.
         program = safe_get_loyalty_program(business.get("id"))
         card_type = program.get('card_type', 'stamp') if program else 'stamp'
-        activity_table = "points_events" if card_type == 'points' else "stamp_events"
+        if card_type == 'points':
+            activity_table = "points_events"
+        elif card_type == 'multipass':
+            activity_table = "multipass_events"
+        else:
+            activity_table = "stamp_events"
 
-        activity_events = supabase.table(activity_table).select("branch_id").eq("business_id", business.get("id")).execute().data or []
-        redemption_events = supabase.table("redemption_events").select("branch_id").eq("business_id", business.get("id")).execute().data or []
+        activity_q = supabase.table(activity_table).select("branch_id,sessions_remaining" if card_type == 'multipass' else "branch_id").eq("business_id", business.get("id"))
+        if card_type == 'multipass':
+            # "activity" is sessions used, not passes issued - see get_analytics.
+            activity_q = activity_q.eq("action", "used")
+        activity_events = activity_q.execute().data or []
+
+        # multipass never writes to redemption_events - its "redemption"
+        # equivalent (a used session that leaves 0 remaining, i.e. a
+        # completed pack) is derived from the activity rows above instead.
+        redemption_events = (
+            [] if card_type == 'multipass'
+            else supabase.table("redemption_events").select("branch_id").eq("business_id", business.get("id")).execute().data or []
+        )
 
         stamp_counts, redemption_counts = {}, {}
         for row in activity_events:
             bid = row.get("branch_id")
             if bid is not None:
                 stamp_counts[bid] = stamp_counts.get(bid, 0) + 1
+                if card_type == 'multipass' and (row.get('sessions_remaining') or 0) <= 0:
+                    redemption_counts[bid] = redemption_counts.get(bid, 0) + 1
         for row in redemption_events:
             bid = row.get("branch_id")
             if bid is not None:
@@ -3202,6 +3337,7 @@ async def get_analytics(public_id: str, range: str = '30d'):
         stamp_events = supabase.table("stamp_events").select("*").eq("business_id", business_id).execute().data or []
         redemption_events = supabase.table("redemption_events").select("*").eq("business_id", business_id).execute().data or []
         points_events = supabase.table("points_events").select("*").eq("business_id", business_id).execute().data or []
+        multipass_events = supabase.table("multipass_events").select("*").eq("business_id", business_id).execute().data or []
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
@@ -3215,7 +3351,28 @@ async def get_analytics(public_id: str, range: str = '30d'):
     # (total_stamps, trends.stamps, etc.) so the dashboard keeps working
     # either way; card_type is included below for a frontend that wants to
     # relabel them ("points sales" vs "stamps").
-    activity_events = points_events if card_type == 'points' else stamp_events
+    #
+    # Multipass "activity" is sessions used (the day-to-day equivalent of a
+    # stamp punch / points sale) - pack issues are a separate signal (a new
+    # or renewed pack), not routine activity, so they're excluded the same
+    # way a points top-up wouldn't count as "activity" either.
+    multipass_used_events = [e for e in multipass_events if e.get('action') == 'used']
+    # A 'used' event that leaves 0 sessions remaining is a completed pack -
+    # the multipass equivalent of a redeemed reward. multipass_events
+    # already stores the resulting sessions_remaining on every 'used' row
+    # (see log_multipass_event), so this is derived rather than needing a
+    # separate completion log; redemption_events is never written for
+    # multipass businesses.
+    multipass_completed_events = [e for e in multipass_used_events if (e.get('sessions_remaining') or 0) <= 0]
+
+    if card_type == 'points':
+        activity_events = points_events
+    elif card_type == 'multipass':
+        activity_events = multipass_used_events
+    else:
+        activity_events = stamp_events
+
+    reward_events = multipass_completed_events if card_type == 'multipass' else redemption_events
 
     now = datetime.utcnow()
     days = _range_to_days(range)
@@ -3239,8 +3396,8 @@ async def get_analytics(public_id: str, range: str = '30d'):
     stamps_period = _filter_between(activity_events, 'created_at', period_start, now)
     stamps_prev = _filter_between(activity_events, 'created_at', prev_start, prev_end)
 
-    redeems_period = _filter_between(redemption_events, 'created_at', period_start, now)
-    redeems_prev = _filter_between(redemption_events, 'created_at', prev_start, prev_end)
+    redeems_period = _filter_between(reward_events, 'created_at', period_start, now)
+    redeems_prev = _filter_between(reward_events, 'created_at', prev_start, prev_end)
 
     active_ids_period = {e.get('customer_id') for e in stamps_period}
     active_ids_prev = {e.get('customer_id') for e in stamps_prev}
@@ -3287,16 +3444,30 @@ async def get_analytics(public_id: str, range: str = '30d'):
     trends = {
         "customers": _bucketed_series(customers, 'created_at', period_start, now),
         "stamps": _bucketed_series(activity_events, 'created_at', period_start, now),
-        "rewards": _bucketed_series(redemption_events, 'created_at', period_start, now),
+        "rewards": _bucketed_series(reward_events, 'created_at', period_start, now),
         "peak_hours": _day_of_week_series(activity_events, 'created_at', period_start, now),
     }
 
-    top_sort_field = 'points_balance' if card_type == 'points' else 'stamp_count'
-    top_customers = sorted(customers, key=lambda c: c.get(top_sort_field, 0), reverse=True)[:5]
-    top_customers_out = [
-        {"name": c.get("name") or "Customer", "stamps": c.get(top_sort_field, 0), "metric": top_sort_field}
-        for c in top_customers if c.get(top_sort_field, 0) > 0
-    ]
+    if card_type == 'multipass':
+        # No single "sessions used" field on the customer row - derive it
+        # from the pack size vs what's left, same arithmetic the wallet
+        # pass and cashier app use to show progress.
+        def _sessions_used(c):
+            total = c.get('multipass_total_sessions', 0) or 0
+            remaining = c.get('multipass_sessions_remaining', 0) or 0
+            return max(total - remaining, 0)
+        top_customers = sorted(customers, key=_sessions_used, reverse=True)[:5]
+        top_customers_out = [
+            {"name": c.get("name") or "Customer", "stamps": _sessions_used(c), "metric": "sessions_used"}
+            for c in top_customers if _sessions_used(c) > 0
+        ]
+    else:
+        top_sort_field = 'points_balance' if card_type == 'points' else 'stamp_count'
+        top_customers = sorted(customers, key=lambda c: c.get(top_sort_field, 0), reverse=True)[:5]
+        top_customers_out = [
+            {"name": c.get("name") or "Customer", "stamps": c.get(top_sort_field, 0), "metric": top_sort_field}
+            for c in top_customers if c.get(top_sort_field, 0) > 0
+        ]
 
     returning = active_ids_period & active_ids_prev
     retention_rate = round((len(returning) / len(active_ids_prev)) * 100, 1) if active_ids_prev else 0
@@ -3310,6 +3481,15 @@ async def get_analytics(public_id: str, range: str = '30d'):
         churn_risk = sum(
             1 for c in customers
             if c.get('points_balance', 0) > 0
+            and (_parse_ts(c.get('updated_at')) or _parse_ts(c.get('created_at')) or now) < thirty_days_ago
+        )
+    elif card_type == 'multipass':
+        # "At risk" here means sessions still sitting on an active pack
+        # that haven't been touched in 30+ days - mirrors the points-card
+        # gate above, keyed on the outstanding session balance instead.
+        churn_risk = sum(
+            1 for c in customers
+            if (c.get('multipass_sessions_remaining', 0) or 0) > 0
             and (_parse_ts(c.get('updated_at')) or _parse_ts(c.get('created_at')) or now) < thirty_days_ago
         )
     else:
@@ -3352,6 +3532,15 @@ async def get_analytics(public_id: str, range: str = '30d'):
         currently_unlocked = (
             sum(1 for c in customers if c.get('points_balance', 0) >= cheapest_prize_cost)
             if cheapest_prize_cost is not None else 0
+        )
+    elif card_type == 'multipass':
+        # Pack exhausted right now (0 sessions left, pack was actually
+        # issued) - the multipass equivalent of reward_unlocked: goal
+        # reached, awaiting the customer to come back and renew.
+        currently_unlocked = sum(
+            1 for c in customers
+            if (c.get('multipass_total_sessions', 0) or 0) > 0
+            and (c.get('multipass_sessions_remaining', 0) or 0) <= 0
         )
     else:
         currently_unlocked = sum(1 for c in customers if c.get('reward_unlocked'))
@@ -4113,6 +4302,182 @@ async def redeem_points_prize(public_id: str, req: PointsRedeemRequest, authoriz
         "points_balance": new_balance,
     }
 
+@app.post("/api/v1/business/{public_id}/multipass/issue")
+async def issue_multipass(public_id: str, req: MultipassIssueRequest, authorization: str = Header(default="")):
+    """Multipass-card equivalent of the customer's first stamp: issues a
+    fresh session pack, e.g. 12 sessions sold at the price of 10. Called
+    whenever a customer buys a pack - their first one, or a renewal once
+    their previous pack is used up or expired. Overwrites whatever pack the
+    customer currently has, since a business runs ONE active card at a time
+    and a customer only ever has one multipass in flight."""
+    print(f"MULTIPASS ISSUE REQUEST: business={public_id}, customer={req.customer_public_id}")
+
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    customer = safe_get_customer(req.customer_public_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    if customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+
+    program = safe_get_loyalty_program(business.get('id'))
+    if not program or program.get('card_type') != 'multipass':
+        raise HTTPException(status_code=400, detail="This business is not on a multi-pass card")
+
+    issuing_staff_id = None
+    issuing_branch_id = None
+
+    # Same staff-session / owner / legacy-PIN auth pattern as /stamp and /points-sale.
+    session_claims = get_staff_session_claims(public_id, authorization)
+
+    if session_claims:
+        issuing_staff_id = session_claims.get('staff_id')
+    elif req.as_owner:
+        pass
+    else:
+        if not req.staff_pin:
+            raise HTTPException(status_code=400, detail="Staff PIN required")
+        try:
+            staff_res = supabase.table("staff").select("*").eq("business_id", business.get("id")).eq("pin", req.staff_pin).execute()
+            if not staff_res.data:
+                raise HTTPException(status_code=403, detail="Invalid staff PIN")
+            issuing_staff_id = staff_res.data[0].get('id')
+            issuing_branch_id = staff_res.data[0].get('branch_id')
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
+
+    session_count = req.session_count or program.get('multipass_session_count', 12)
+    validity_days = program.get('multipass_validity_days', 90)
+    expires_at = (datetime.utcnow() + timedelta(days=validity_days)).date().isoformat()
+
+    try:
+        update_data = {
+            'multipass_sessions_remaining': session_count,
+            'multipass_total_sessions': session_count,
+            'multipass_expires_at': expires_at,
+            'updated_at': datetime.utcnow().isoformat(),
+        }
+        supabase.table("customers").update(update_data).eq("id", customer.get("id")).execute()
+        customer.update(update_data)
+        sync_wallet_object(
+            customer, business, program,
+            notify_header="New pass activated 🎟️",
+            notify_body=f"You have {session_count} sessions - valid until {expires_at}.",
+            notify_message_id=f"multipass-issue-{customer.get('id')}-{int(datetime.utcnow().timestamp())}",
+        )
+        sync_apple_wallet_pass(customer)
+        log_multipass_event(business.get('id'), customer.get('id'), 'issued', session_count, issuing_staff_id, issuing_branch_id)
+    except Exception as e:
+        error_msg = str(e)
+        is_schema_mismatch = (
+            'PGRST204' in error_msg
+            or ('column' in error_msg.lower() and 'does not exist' in error_msg.lower())
+            or ('could not find' in error_msg.lower() and 'column' in error_msg.lower())
+        )
+        if is_schema_mismatch:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"Database schema mismatch: {error_msg}. Add 'multipass_sessions_remaining' "
+                    f"(int, default 0), 'multipass_total_sessions' (int, default 0), and "
+                    f"'multipass_expires_at' (date) columns to 'customers' in Supabase and run "
+                    f"NOTIFY pgrst, 'reload schema'; before retrying."
+                ),
+            )
+        raise HTTPException(status_code=500, detail=error_msg)
+
+    return {
+        "message": f"{session_count}-session pass issued!",
+        "sessions_remaining": session_count,
+        "sessions_total": session_count,
+        "multipass_expires_at": expires_at,
+    }
+
+@app.post("/api/v1/business/{public_id}/multipass/use")
+async def use_multipass_session(public_id: str, req: MultipassUseRequest, authorization: str = Header(default="")):
+    """Multipass-card equivalent of /stamp: burns one session off the
+    customer's current pack (e.g. checking off one of their 12 tooth-cleaning
+    visits). Refuses if the pack is exhausted or has expired - the cashier
+    should issue a new pack via /multipass/issue instead."""
+    print(f"MULTIPASS USE REQUEST: business={public_id}, customer={req.customer_public_id}")
+
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    customer = safe_get_customer(req.customer_public_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    if customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+
+    program = safe_get_loyalty_program(business.get('id'))
+    if not program or program.get('card_type') != 'multipass':
+        raise HTTPException(status_code=400, detail="This business is not on a multi-pass card")
+
+    sessions_remaining = customer.get('multipass_sessions_remaining', 0) or 0
+    expires_at = customer.get('multipass_expires_at')
+    today = datetime.utcnow().date().isoformat()
+    if expires_at and expires_at < today:
+        raise HTTPException(status_code=400, detail=f"This pass expired on {expires_at} - issue a new one")
+    if sessions_remaining <= 0:
+        raise HTTPException(status_code=400, detail="No sessions left on this pass - issue a new one")
+
+    using_staff_id = None
+    using_branch_id = None
+
+    session_claims = get_staff_session_claims(public_id, authorization)
+
+    if session_claims:
+        using_staff_id = session_claims.get('staff_id')
+    elif req.as_owner:
+        pass
+    else:
+        if not req.staff_pin:
+            raise HTTPException(status_code=400, detail="Staff PIN required")
+        try:
+            staff_res = supabase.table("staff").select("*").eq("business_id", business.get("id")).eq("pin", req.staff_pin).execute()
+            if not staff_res.data:
+                raise HTTPException(status_code=403, detail="Invalid staff PIN")
+            using_staff_id = staff_res.data[0].get('id')
+            using_branch_id = staff_res.data[0].get('branch_id')
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
+
+    new_remaining = sessions_remaining - 1
+
+    try:
+        supabase.table("customers").update({
+            'multipass_sessions_remaining': new_remaining,
+            'updated_at': datetime.utcnow().isoformat(),
+        }).eq("id", customer.get("id")).execute()
+        customer['multipass_sessions_remaining'] = new_remaining
+        sync_wallet_object(
+            customer, business, program,
+            notify_header="Session used ✅" if new_remaining > 0 else "Pass complete 🎉",
+            notify_body=(f"{new_remaining} sessions left." if new_remaining > 0
+                         else "You've used all your sessions - come back to buy a new pass!"),
+            notify_message_id=f"multipass-use-{customer.get('id')}-{new_remaining}-{int(datetime.utcnow().timestamp())}",
+        )
+        sync_apple_wallet_pass(customer)
+        log_multipass_event(business.get('id'), customer.get('id'), 'used', new_remaining, using_staff_id, using_branch_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {
+        "message": "Session used!",
+        "sessions_remaining": new_remaining,
+        "sessions_total": customer.get('multipass_total_sessions', 0),
+    }
+
 @app.post("/api/v1/business/{public_id}/staff/verify-pin")
 async def verify_staff_pin(public_id: str, req: PinVerify):
     business = safe_get_business(public_id)
@@ -4418,10 +4783,13 @@ async def get_customer_hero_image(customer_public_id: str, s: Optional[str] = No
     card_type = program.get('card_type', 'stamp') if program else 'stamp'
     stamps = customer.get('stamp_count', 0)
     points_balance = customer.get('points_balance', 0)
+    sessions_remaining = customer.get('multipass_sessions_remaining', 0) or 0
+    sessions_total = customer.get('multipass_total_sessions', 0) or (program.get('multipass_session_count', 12) if program else 12)
 
     png_bytes = generate_personalized_hero_image_bytes(
         primary_color, reward_name, stamps, stamp_goal, description,
         card_type=card_type, points_balance=points_balance,
+        sessions_remaining=sessions_remaining, sessions_total=sessions_total,
     )
     return Response(
         content=png_bytes,
@@ -5438,6 +5806,11 @@ async def get_wallet_pass(customer_public_id: str):
     reward_name = program.get('reward_name', 'Free Service') if program else 'Free Service'
     primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
     points_prizes = program.get('points_prizes', []) if program else []
+    multipass_description = (program.get('description') if program else None) or 'Session pass'
+    sessions_remaining = customer.get('multipass_sessions_remaining', 0) or 0
+    sessions_total = customer.get('multipass_total_sessions', 0) or (program.get('multipass_session_count', 12) if program else 12)
+    multipass_expires_at = customer.get('multipass_expires_at')
+    multipass_expired = bool(multipass_expires_at and multipass_expires_at < datetime.utcnow().date().isoformat())
 
     loyalty_object = build_loyalty_object(customer, business, program)
     jwt_token = create_google_wallet_jwt(loyalty_object)
@@ -5463,6 +5836,12 @@ async def get_wallet_pass(customer_public_id: str):
             "reward_name": reward_name,
             "points_balance": customer.get('points_balance', 0),
             "points_prizes": points_prizes,
+            # --- Multipass-only fields ---
+            "sessions_remaining": sessions_remaining,
+            "sessions_total": sessions_total,
+            "multipass_description": multipass_description,
+            "multipass_expires_at": multipass_expires_at,
+            "multipass_expired": multipass_expired,
             "primary_color": primary_color,
             "reward_unlocked": bool(customer.get('reward_unlocked')),
             "qr_code": f"{BASE_URL}/stamp/{customer_public_id}",

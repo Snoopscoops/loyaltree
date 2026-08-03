@@ -185,6 +185,14 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
               <StatCard label="Points outstanding" value={(overview?.total_points_outstanding ?? 0).toLocaleString()} accent="#7c3aed" />
             </>
           )}
+          {overview?.card_type_breakdown?.multipass > 0 && (
+            <>
+              <StatCard label="Multipass businesses" value={overview.card_type_breakdown.multipass} accent="#d97706" />
+              <StatCard label="Sessions issued (30d)" value={(overview?.sessions_issued_30d ?? 0).toLocaleString()} accent="#d97706" />
+              <StatCard label="Sessions used (30d)" value={(overview?.sessions_used_30d ?? 0).toLocaleString()} accent="#d97706" />
+              <StatCard label="Sessions outstanding" value={(overview?.total_sessions_outstanding ?? 0).toLocaleString()} accent="#d97706" />
+            </>
+          )}
         </div>
 
         {overview?.plan_breakdown && (
@@ -291,15 +299,18 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                   <td style={styles.td}>{b.staff_count}</td>
                   <td style={styles.td}>
                     <span style={cardTypeBadgeStyle(b.card_type)}>
-                      {b.card_type === 'points' ? '⭐ Points' : '🎟️ Stamp'}
+                      {b.card_type === 'points' ? '⭐ Points' : b.card_type === 'multipass' ? '🎫 Multipass' : '🎟️ Stamp'}
                     </span>
                   </td>
                   <td style={styles.td}>
                     {b.stamps_30d}
                     <div style={styles.rowPriceHint}>
-                      {b.card_type === 'points' ? 'points sales' : 'stamps'}
+                      {b.card_type === 'points' ? 'points sales' : b.card_type === 'multipass' ? 'sessions used' : 'stamps'}
                       {b.card_type === 'points' && b.points_balance_outstanding != null && (
                         <> · {b.points_balance_outstanding.toLocaleString()} pts outstanding</>
+                      )}
+                      {b.card_type === 'multipass' && b.sessions_outstanding != null && (
+                        <> · {b.sessions_outstanding.toLocaleString()} sessions outstanding</>
                       )}
                     </div>
                   </td>
@@ -476,12 +487,18 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 )}
                 <DetailRow label="Customers" value={detail.customer_count} />
                 <DetailRow label="Staff" value={detail.staff_count} />
-                <DetailRow label="Card type" value={detail.card_type === 'points' ? '⭐ Points' : '🎟️ Stamp'} />
+                <DetailRow label="Card type" value={detail.card_type === 'points' ? '⭐ Points' : detail.card_type === 'multipass' ? '🎫 Multipass' : '🎟️ Stamp'} />
                 {detail.card_type === 'points' ? (
                   <>
                     <DetailRow label="Points sales (30d)" value={detail.stamps_30d} />
                     <DetailRow label="Points issued (30d)" value={(detail.points_issued_30d ?? 0).toLocaleString()} />
                     <DetailRow label="Points outstanding" value={(detail.points_balance_outstanding ?? 0).toLocaleString()} />
+                  </>
+                ) : detail.card_type === 'multipass' ? (
+                  <>
+                    <DetailRow label="Sessions issued (30d)" value={(detail.sessions_issued_30d ?? 0).toLocaleString()} />
+                    <DetailRow label="Sessions used (30d)" value={(detail.sessions_used_30d ?? 0).toLocaleString()} />
+                    <DetailRow label="Sessions outstanding" value={(detail.sessions_outstanding ?? 0).toLocaleString()} />
                   </>
                 ) : (
                   <DetailRow label="Stamps (30d)" value={detail.stamps_30d} />
@@ -502,6 +519,14 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                           ))}
                         </div>
                       </div>
+                    )}
+                  </>
+                ) : detail.loyalty_program && detail.card_type === 'multipass' ? (
+                  <>
+                    <DetailRow label="Sessions per pass" value={detail.loyalty_program.multipass_session_count} />
+                    <DetailRow label="Pass validity" value={`${detail.loyalty_program.multipass_validity_days ?? 0} days`} />
+                    {detail.loyalty_program.description && (
+                      <DetailRow label="What sessions are for" value={detail.loyalty_program.description} />
                     )}
                   </>
                 ) : detail.loyalty_program && (
@@ -569,6 +594,7 @@ function cardTypeBadgeStyle(cardType) {
     fontSize: 11.5, fontWeight: 600, whiteSpace: 'nowrap',
   }
   if (cardType === 'points') return { ...base, background: '#ede9fe', color: '#6d28d9' }
+  if (cardType === 'multipass') return { ...base, background: '#fef3c7', color: '#92400e' }
   return { ...base, background: '#f1f5f9', color: '#475569' }
 }
 

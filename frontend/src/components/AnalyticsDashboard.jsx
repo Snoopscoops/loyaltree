@@ -54,6 +54,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
 
   const { overview, trends, customers, demographics, stamps, rewards, revenue } = analytics
   const isPoints = overview.card_type === 'points'
+  const isMultipass = overview.card_type === 'multipass'
 
   return (
     <div className="an-container" style={styles.container}>
@@ -133,15 +134,15 @@ function AnalyticsDashboard({ API_BASE, user }) {
           />
         ) : (
           <StatCard
-            title="Stamps Issued"
+            title={isMultipass ? 'Sessions Used' : 'Stamps Issued'}
             value={overview.total_stamps}
             change={overview.stamp_change}
-            icon="🎯"
+            icon={isMultipass ? '🎫' : '🎯'}
             color="#f59e0b"
           />
         )}
         <StatCard 
-          title="Rewards Redeemed" 
+          title={isMultipass ? 'Packs Completed' : 'Rewards Redeemed'}
           value={overview.total_rewards} 
           change={overview.reward_change}
           icon="🎁" 
@@ -157,7 +158,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           />
         ) : (
           <StatCard
-            title="Avg. Stamps/Customer"
+            title={isMultipass ? 'Avg. Sessions/Customer' : 'Avg. Stamps/Customer'}
             value={overview.avg_stamps_per_customer}
             change={overview.avg_change}
             icon="📈"
@@ -189,7 +190,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           <LineChart data={trends.customers} color="#0d9488" />
         </div>
         <div className="an-chart-card" style={styles.chartCard}>
-          <h3 style={styles.chartTitle}>{isPoints ? '💎 Points Activity' : '🎯 Stamp Activity'}</h3>
+          <h3 style={styles.chartTitle}>{isPoints ? '💎 Points Activity' : isMultipass ? '🎫 Session Activity' : '🎯 Stamp Activity'}</h3>
           <LineChart data={trends.stamps} color="#f59e0b" />
         </div>
       </div>
@@ -197,7 +198,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
       {/* Second Charts Row */}
       <div className="an-charts-row" style={styles.chartsRow}>
         <div className="an-chart-card" style={styles.chartCard}>
-          <h3 style={styles.chartTitle}>🎁 Reward Redemptions</h3>
+          <h3 style={styles.chartTitle}>{isMultipass ? '✅ Packs Completed' : '🎁 Reward Redemptions'}</h3>
           <BarChart data={trends.rewards} color="#ec4899" />
         </div>
         <div className="an-chart-card" style={styles.chartCard}>
@@ -216,7 +217,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
               <div key={i} style={styles.customerRow}>
                 <span style={styles.rank}>#{i + 1}</span>
                 <span style={styles.customerName}>{c.name}</span>
-                <span style={styles.customerStamps}>{c.stamps} {c.metric === 'points_balance' ? 'pts' : 'stamps'}</span>
+                <span style={styles.customerStamps}>{c.stamps} {c.metric === 'points_balance' ? 'pts' : c.metric === 'sessions_used' ? 'sessions' : 'stamps'}</span>
               </div>
             ))}
           </div>
@@ -304,9 +305,9 @@ function AnalyticsDashboard({ API_BASE, user }) {
         ) : (
           <div style={styles.insightCard}>
             <p style={styles.insightDesc}>
-              Revenue isn't tracked yet — stamping and redeeming a reward doesn't currently record a dollar
+              Revenue isn't tracked yet — {isMultipass ? 'issuing or using a pass' : 'stamping and redeeming a reward'} doesn't currently record a dollar
               amount anywhere, so this section can't show real numbers without guessing. Add a transaction
-              amount to the stamp flow to unlock this.
+              amount to the {isMultipass ? 'pass' : 'stamp'} flow to unlock this.
             </p>
           </div>
         )}
@@ -317,7 +318,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
         <h2 className="an-section-title" style={styles.sectionTitle}>🏥 Program Health</h2>
         <div className="an-health-grid" style={styles.healthGrid}>
           <HealthMetric 
-            label={isPoints ? 'Prize Eligibility Rate' : 'Stamp Completion Rate'}
+            label={isPoints ? 'Prize Eligibility Rate' : isMultipass ? 'Pack Completion Rate' : 'Stamp Completion Rate'}
             value={stamps.completion_rate} 
             target={75}
             color="#f59e0b"
@@ -350,22 +351,22 @@ function AnalyticsDashboard({ API_BASE, user }) {
           <h2 className="an-section-title" style={styles.sectionTitle}>🏢 Branch Performance</h2>
           <div className="an-insights-grid" style={styles.insightsGrid}>
             <div style={styles.insightCard}>
-              <h4 style={styles.insightTitle}>{isPoints ? 'Transactions by Branch' : 'Stamps by Branch'}</h4>
+              <h4 style={styles.insightTitle}>{isPoints ? 'Transactions by Branch' : isMultipass ? 'Sessions by Branch' : 'Stamps by Branch'}</h4>
               {[...branchStats].sort((a, b) => b.stamp_count - a.stamp_count).map((b, i) => (
                 <div key={b.branch_public_id} style={styles.customerRow}>
                   <span style={styles.rank}>#{i + 1}</span>
                   <span style={styles.customerName}>{b.name}</span>
-                  <span style={styles.customerStamps}>{b.stamp_count} {b.card_type === 'points' ? 'transactions' : 'stamps'}</span>
+                  <span style={styles.customerStamps}>{b.stamp_count} {b.card_type === 'points' ? 'transactions' : b.card_type === 'multipass' ? 'sessions' : 'stamps'}</span>
                 </div>
               ))}
             </div>
             <div style={styles.insightCard}>
-              <h4 style={styles.insightTitle}>Redemptions by Branch</h4>
+              <h4 style={styles.insightTitle}>{isMultipass ? 'Packs Completed by Branch' : 'Redemptions by Branch'}</h4>
               {[...branchStats].sort((a, b) => b.redemption_count - a.redemption_count).map((b, i) => (
                 <div key={b.branch_public_id} style={styles.customerRow}>
                   <span style={styles.rank}>#{i + 1}</span>
                   <span style={styles.customerName}>{b.name}</span>
-                  <span style={styles.customerStamps}>{b.redemption_count} redeemed</span>
+                  <span style={styles.customerStamps}>{b.redemption_count} {isMultipass ? 'completed' : 'redeemed'}</span>
                 </div>
               ))}
             </div>
