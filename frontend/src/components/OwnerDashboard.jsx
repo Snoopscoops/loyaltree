@@ -42,6 +42,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [showEditModal, setShowEditModal] = useState(false)
   const [editForm, setEditForm] = useState({})
   const [savingCustomer, setSavingCustomer] = useState(false)
+  const [deletingCustomer, setDeletingCustomer] = useState(false)
   const [showStaffEditModal, setShowStaffEditModal] = useState(false)
   const [staffEditForm, setStaffEditForm] = useState({})
   const [savingStaff, setSavingStaff] = useState(false)
@@ -62,6 +63,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [savingBranch, setSavingBranch] = useState(false)
   const [message, setMessage] = useState('')
   const [stampCounts, setStampCounts] = useState({}) // staff public_id -> stamps added
+  const [customerSearch, setCustomerSearch] = useState('')
+  const [staffSearch, setStaffSearch] = useState('')
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [onboardingStep, setOnboardingStep] = useState(0)
   const [announcementsChecked, setAnnouncementsChecked] = useState(false)
@@ -337,6 +340,27 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     setSavingCustomer(false)
   }
 
+  const deleteCustomer = async () => {
+    if (!editForm.public_id) return
+    if (!window.confirm(`Remove ${editForm.name || 'this leaf'} from your tree? This can't be undone.`)) return
+    setDeletingCustomer(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${editForm.public_id}`, {
+        method: 'DELETE',
+      })
+      if (res.ok) {
+        setShowEditModal(false)
+        loadData()
+      } else {
+        const data = await res.json().catch(() => ({}))
+        setMessage(data.detail || 'Could not remove leaf')
+      }
+    } catch (err) {
+      setMessage('Network error')
+    }
+    setDeletingCustomer(false)
+  }
+
   const openEditStaff = (s) => {
     const currentBranch = branches.find(b => b.id === s.branch_id)
     setStaffEditForm({
@@ -516,6 +540,26 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const subStatus = subscription?.subscription_status
   const needsRenewal = subStatus === 'expiring_soon' || subStatus === 'expired'
 
+  // Leaves (customers) search - matches name, phone, or email
+  const customerSearchTerm = customerSearch.trim().toLowerCase()
+  const filteredCustomers = customerSearchTerm
+    ? customers.filter(c => (
+        (c.name || '').toLowerCase().includes(customerSearchTerm) ||
+        (c.phone || '').toLowerCase().includes(customerSearchTerm) ||
+        (c.email || '').toLowerCase().includes(customerSearchTerm)
+      ))
+    : customers
+
+  // Team members (staff) search - matches name, email, or role
+  const staffSearchTerm = staffSearch.trim().toLowerCase()
+  const filteredStaff = staffSearchTerm
+    ? staff.filter(s => (
+        (s.name || '').toLowerCase().includes(staffSearchTerm) ||
+        (s.email || '').toLowerCase().includes(staffSearchTerm) ||
+        (s.role || '').toLowerCase().includes(staffSearchTerm)
+      ))
+    : staff
+
   return (
     <div style={styles.container}>
       {/* Header */}
@@ -668,11 +712,27 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         {activeTab === 'customers' && (
           <div>
             <div style={styles.sectionHeader}>
-              <h2 style={styles.sectionTitle}>🍃 Your Leaves ({customers.length})</h2>
+              <h2 style={styles.sectionTitle}>🍃 Your Leaves ({filteredCustomers.length}{customerSearchTerm ? ` of ${customers.length}` : ''})</h2>
               <button onClick={() => { markAnalyticsChecked(); navigate('/analytics') }} style={styles.viewAnalyticsBtn}>📊 View Analytics</button>
             </div>
+            <div style={styles.searchBarWrap}>
+              <span style={styles.searchIcon}>🔍</span>
+              <input
+                type="text"
+                placeholder="Search leaves by name, phone, or email..."
+                value={customerSearch}
+                onChange={e => setCustomerSearch(e.target.value)}
+                style={styles.searchInput}
+              />
+              {customerSearch && (
+                <button onClick={() => setCustomerSearch('')} style={styles.searchClearBtn} aria-label="Clear search">✕</button>
+              )}
+            </div>
+            {filteredCustomers.length === 0 && (
+              <p style={styles.searchEmptyText}>No leaves match "{customerSearch}".</p>
+            )}
             <div style={styles.customerGrid}>
-              {customers.map(c => (
+              {filteredCustomers.map(c => (
                 <div key={c.public_id} style={styles.customerCard}>
                   <div style={styles.customerAvatar}>{c.name?.[0]?.toUpperCase() || '?'}</div>
                   <div style={styles.customerInfo}>
@@ -742,9 +802,25 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         {activeTab === 'staff' && (
           <div>
             <div style={styles.sectionHeader}>
-              <h2 style={styles.sectionTitle}>🌿 Your Team ({staff.length})</h2>
+              <h2 style={styles.sectionTitle}>🌿 Your Team ({filteredStaff.length}{staffSearchTerm ? ` of ${staff.length}` : ''})</h2>
               <button onClick={() => setShowInviteModal(true)} style={styles.addBtn}>+ Grow Team</button>
             </div>
+            <div style={styles.searchBarWrap}>
+              <span style={styles.searchIcon}>🔍</span>
+              <input
+                type="text"
+                placeholder="Search members by name, email, or role..."
+                value={staffSearch}
+                onChange={e => setStaffSearch(e.target.value)}
+                style={styles.searchInput}
+              />
+              {staffSearch && (
+                <button onClick={() => setStaffSearch('')} style={styles.searchClearBtn} aria-label="Clear search">✕</button>
+              )}
+            </div>
+            {filteredStaff.length === 0 && (
+              <p style={styles.searchEmptyText}>No team members match "{staffSearch}".</p>
+            )}
 
             <div style={{background: '#f0fdf4', border: '1px solid #a7f3d0', borderRadius: 12, padding: '14px 16px', marginBottom: 16}}>
               <p style={{margin: '0 0 8px 0', fontSize: 13, fontWeight: 600, color: '#0f766e'}}>
@@ -790,7 +866,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             </div>
 
             <div style={styles.staffGrid}>
-              {staff.map(s => (
+              {filteredStaff.map(s => (
                 <div key={s.public_id} style={styles.staffCard}>
                   <div style={styles.staffAvatar}>{s.name?.[0]?.toUpperCase()}</div>
                   <div style={styles.staffInfo}>
@@ -1080,6 +1156,14 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               <input style={styles.input} type="date" value={editForm.last_order_date || ''} onChange={e => setEditForm({...editForm, last_order_date: e.target.value})} />
               <button type="submit" style={styles.submitBtn} disabled={savingCustomer}>
                 {savingCustomer ? 'Saving...' : 'Save Changes'}
+              </button>
+              <button
+                type="button"
+                onClick={deleteCustomer}
+                disabled={deletingCustomer}
+                style={{...styles.submitBtn, background: 'transparent', color: '#dc2626', border: '1px solid #fecaca', marginTop: 8}}
+              >
+                {deletingCustomer ? 'Removing...' : '🗑️ Remove Leaf'}
               </button>
             </form>
 
@@ -1648,6 +1732,49 @@ const styles = {
     fontSize: 13,
     fontWeight: 600,
     cursor: 'pointer',
+  },
+  searchBarWrap: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    background: 'white',
+    border: '1.5px solid #e2e8f0',
+    borderRadius: 12,
+    padding: '10px 14px',
+    marginBottom: 16,
+    boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
+  },
+  searchIcon: {
+    fontSize: 14,
+    opacity: 0.6,
+  },
+  searchInput: {
+    flex: 1,
+    border: 'none',
+    outline: 'none',
+    fontSize: 14,
+    color: '#1e293b',
+    background: 'transparent',
+  },
+  searchClearBtn: {
+    border: 'none',
+    background: '#f1f5f9',
+    color: '#64748b',
+    width: 22,
+    height: 22,
+    borderRadius: '50%',
+    fontSize: 11,
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  searchEmptyText: {
+    fontSize: 13.5,
+    color: '#94a3b8',
+    textAlign: 'center',
+    padding: '24px 0',
   },
   customerGrid: {
     display: 'grid',
