@@ -60,7 +60,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
       if (res.ok) {
         setForm(f => ({
           ...f,
-          card_type: data.card_type === 'points' ? 'points' : data.card_type === 'multipass' ? 'multipass' : 'stamp',
+          card_type: (data.card_type === 'points' || data.card_type === 'multipass') ? data.card_type : 'stamp',
           card_name: data.card_name || '',
           primary_color: data.primary_color || '#0d9488',
           reward_name: data.reward_name || '',
@@ -197,8 +197,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
 
   const stampGoal = Math.min(20, Math.max(3, Number(form.stamp_goal) || 8))
   const previewFilled = Math.ceil(stampGoal / 2)
-  const sessionCount = Math.min(20, Math.max(2, Number(form.multipass_session_count) || 12))
-  const previewSessionsUsed = Math.max(1, Math.floor(sessionCount / 3))
+  const multipassSessionCount = Math.min(200, Math.max(2, Number(form.multipass_session_count) || 12))
+  const multipassPreviewUsed = Math.ceil(multipassSessionCount / 3)
   const displayName = form.card_name || `${user?.business_name || 'Your Business'} Rewards`
 
   if (step === 'picker') {
@@ -247,14 +247,14 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
             }}
           >
             <span style={styles.pickerCardIcon}>🎫</span>
-            <span style={styles.pickerCardLabel}>Multipass</span>
-            <span style={styles.pickerCardDesc}>Customers buy a pack of sessions upfront and use one each visit until the pack runs out.</span>
+            <span style={styles.pickerCardLabel}>Multi-Pass</span>
+            <span style={styles.pickerCardDesc}>Customers buy a bulk session pack (e.g. 12 sessions for the price of 10) that counts down as they're used.</span>
             {form.card_type === 'multipass' && <span style={styles.pickerCardBadge}>Selected</span>}
           </button>
         </div>
 
         <button type="button" onClick={() => setStep('form')} style={styles.pickerContinueBtn}>
-          Continue with {form.card_type === 'points' ? 'Points Card' : form.card_type === 'multipass' ? 'Multipass' : 'Stamp Card'} →
+          Continue with {form.card_type === 'points' ? 'Points Card' : form.card_type === 'multipass' ? 'Multi-Pass' : 'Stamp Card'} →
         </button>
       </div>
     )
@@ -282,7 +282,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
             <div style={styles.card}>
               <div style={{ ...styles.cardHeader, background: form.primary_color || '#0d9488' }}>
                 <span style={styles.cardHeaderTitle}>
-                  {form.card_type === 'points' ? 'Points Rewards' : form.card_type === 'multipass' ? 'Session Pass' : (form.reward_name || 'Free Service')}
+                  {form.card_type === 'points' ? 'Points Rewards' : form.card_type === 'multipass' ? `${Number(form.multipass_session_count) || 12}-Session Pass` : (form.reward_name || 'Free Service')}
                 </span>
                 <span style={styles.cardHeaderSub}>{displayName}</span>
               </div>
@@ -317,18 +317,21 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
                   </>
                 ) : form.card_type === 'multipass' ? (
                   <>
+                    <div style={styles.previewPointsBalance}>
+                      <span style={{ color: form.primary_color || '#0d9488' }}>{multipassSessionCount - multipassPreviewUsed}</span> sessions left
+                    </div>
                     <div style={styles.stampGrid}>
-                      {Array.from({ length: sessionCount }).map((_, i) => (
+                      {Array.from({ length: Math.min(multipassSessionCount, 20) }).map((_, i) => (
                         <div
                           key={i}
                           style={{
                             ...styles.stampDot,
-                            background: i < previewSessionsUsed ? '#e2e8f0' : (form.primary_color || '#0d9488'),
+                            background: i < multipassPreviewUsed ? '#e2e8f0' : (form.primary_color || '#0d9488'),
                           }}
                         />
                       ))}
                     </div>
-                    <div style={styles.cardFoot}>{sessionCount - previewSessionsUsed} of {sessionCount} sessions left &middot; valid {form.multipass_validity_days || 90} days after issued</div>
+                    <div style={styles.cardFoot}>valid {form.multipass_validity_days || 90} days after purchase</div>
                   </>
                 ) : (
                   <>
@@ -365,7 +368,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
 
           <div style={styles.typeSummary}>
             <span style={styles.typeSummaryText}>
-              {form.card_type === 'points' ? '💎 Points Card' : form.card_type === 'multipass' ? '🎫 Multipass' : '🎟️ Stamp Card'}
+              {form.card_type === 'points' ? '💎 Points Card' : form.card_type === 'multipass' ? '🎫 Multi-Pass' : '🎟️ Stamp Card'}
             </span>
             <button type="button" onClick={() => setStep('picker')} style={styles.typeChangeBtn}>
               Change card type
@@ -427,32 +430,33 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
             </div>
           ) : form.card_type === 'multipass' ? (
             <div style={styles.pointsSection}>
-              <div style={styles.fieldGroup}>
-                <label style={styles.label}>Sessions per pass</label>
-                <input
-                  style={{ ...styles.input, maxWidth: 120 }}
-                  type="number"
-                  min={2}
-                  max={200}
-                  value={form.multipass_session_count}
-                  onChange={e => update('multipass_session_count', e.target.value)}
-                />
-                <p style={styles.hint}>How many sessions a customer gets in one pass — e.g. 12 sessions sold at the price of 10.</p>
-              </div>
-
-              <div style={styles.fieldGroup}>
-                <label style={styles.label}>Pass validity</label>
-                <div style={styles.earnRateRow}>
+              <div style={styles.row}>
+                <div style={{ ...styles.fieldGroup, flex: 1 }}>
+                  <label style={styles.label}>Sessions per pass</label>
                   <input
-                    style={styles.earnRateInput}
+                    style={styles.input}
                     type="number"
-                    min={1}
-                    value={form.multipass_validity_days}
-                    onChange={e => update('multipass_validity_days', e.target.value)}
+                    min={2}
+                    max={200}
+                    value={form.multipass_session_count}
+                    onChange={e => update('multipass_session_count', e.target.value)}
                   />
-                  <span style={styles.earnRateText}>days from when it's issued</span>
+                  <p style={styles.hint}>e.g. 12 sessions sold at the price of 10 &mdash; set the total count here, not the price.</p>
                 </div>
-                <p style={styles.hint}>A freshly issued pass expires if left unused for this many days.</p>
+                <div style={{ ...styles.fieldGroup, width: 130 }}>
+                  <label style={styles.label}>Valid for</label>
+                  <div style={styles.colorRow}>
+                    <input
+                      style={styles.input}
+                      type="number"
+                      min={1}
+                      value={form.multipass_validity_days}
+                      onChange={e => update('multipass_validity_days', e.target.value)}
+                    />
+                    <span style={styles.unit}>days</span>
+                  </div>
+                  <p style={styles.hint}>From the day a pass is issued.</p>
+                </div>
               </div>
             </div>
           ) : (

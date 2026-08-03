@@ -33,9 +33,7 @@ function CashierApp({ API_BASE }) {
   const [verifying, setVerifying] = useState(false)
   const [staffName, setStaffName] = useState(isOwner ? (ownerState?.ownerName || 'Owner') : '')
   const [saleAmount, setSaleAmount] = useState('')
-  // Optional override for how many sessions a fresh multipass pack contains -
-  // defaults to the program's configured pack size, set once customerData loads.
-  const [packSize, setPackSize] = useState('')
+  const [customSessionCount, setCustomSessionCount] = useState('')
 
   useEffect(() => {
     if (!businessSlug || !staffName || (!isOwner && !staffPin && !sessionToken)) return
@@ -124,15 +122,16 @@ function CashierApp({ API_BASE }) {
           // uses in /points-sale (amount_spent / points_amount_pesos * points_per_amount).
           points_per_amount: program.points_per_amount || 0,
           points_amount_pesos: program.points_amount_pesos || 1,
-          // Multipass fields - sessions_remaining/total mirror the raw
-          // customer row; pack_default_size is what a fresh /multipass/issue
-          // call issues unless the cashier overrides it below.
-          multipass_sessions_remaining: c.multipass_sessions_remaining || 0,
-          multipass_sessions_total: c.multipass_total_sessions || (program.multipass_session_count || 12),
-          multipass_expires_at: c.multipass_expires_at || null,
-          multipass_description: program.description || null,
-          multipass_pack_default_size: program.multipass_session_count || 12,
           active_coupon: data.active_coupon || null,
+          // Multipass fields - sessions_remaining/total come off the customer
+          // row, session_count/validity_days are the program's defaults for
+          // when a fresh pack is issued.
+          sessions_remaining: c.multipass_sessions_remaining || 0,
+          sessions_total: c.multipass_total_sessions || 0,
+          multipass_expires_at: c.multipass_expires_at || null,
+          multipass_session_count: program.multipass_session_count || 12,
+          multipass_validity_days: program.multipass_validity_days || 90,
+          multipass_description: program.description || '',
         })
         setMessage(`Found: ${c.name}`)
       } else {
@@ -268,14 +267,16 @@ function CashierApp({ API_BASE }) {
       const data = await res.json()
 
       if (res.ok) {
-        setMessage(`✅ Session used! ${customerData.name} has ${data.sessions_remaining} session${data.sessions_remaining === 1 ? '' : 's'} left`)
+        let msg = `✅ Session used! ${customerData.name} has ${data.sessions_remaining} sessions left`
+        if (data.sessions_remaining === 0) msg += ' 🎉 Pass complete!'
+        setMessage(msg)
         setCustomerData(prev => prev ? {
           ...prev,
-          multipass_sessions_remaining: data.sessions_remaining,
-          multipass_sessions_total: data.sessions_total,
+          sessions_remaining: data.sessions_remaining,
+          sessions_total: data.sessions_total,
         } : prev)
       } else {
-        setMessage(`❌ Failed: ${data.detail || 'Unknown error'}`)
+        setMessage(`❌ ${data.detail || 'Could not use session'}`)
       }
     } catch (err) {
       setMessage('❌ Network error - session not used')
@@ -288,9 +289,19 @@ function CashierApp({ API_BASE }) {
       setMessage('Missing info - scan again')
       return
     }
-    const override = parseInt(packSize, 10)
+    const overrideCount = customSessionCount ? parseInt(customSessionCount, 10) : null
+    if (customSessionCount && (!overrideCount || overrideCount < 1)) {
+      setMessage('Enter a valid session count')
+      return
+    }
+    if (customerData.sessions_remaining > 0) {
+      const ok = window.confirm(
+        `${customerData.name} still has ${customerData.sessions_remaining} sessions left on their current pass. Issue a new pack anyway? This replaces the old one.`
+      )
+      if (!ok) return
+    }
     setLoading(true)
-    setMessage('Issuing new pass...')
+    setMessage('Issuing pack...')
 
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/multipass/issue`, {
@@ -301,7 +312,7 @@ function CashierApp({ API_BASE }) {
         },
         body: JSON.stringify({
           customer_public_id: customerData.public_id,
-          ...(override > 0 ? { session_count: override } : {}),
+          ...(overrideCount ? { session_count: overrideCount } : {}),
           ...(sessionToken ? {} : { staff_pin: staffPin }),
           as_owner: isOwner,
         })
@@ -310,19 +321,19 @@ function CashierApp({ API_BASE }) {
       const data = await res.json()
 
       if (res.ok) {
-        setMessage(`✅ ${data.message}`)
+        setMessage(`✅ ${data.sessions_remaining}-session pack issued! Valid until ${data.multipass_expires_at}`)
         setCustomerData(prev => prev ? {
           ...prev,
-          multipass_sessions_remaining: data.sessions_remaining,
-          multipass_sessions_total: data.sessions_total,
+          sessions_remaining: data.sessions_remaining,
+          sessions_total: data.sessions_total,
           multipass_expires_at: data.multipass_expires_at,
         } : prev)
-        setPackSize('')
+        setCustomSessionCount('')
       } else {
         setMessage(`❌ Failed: ${data.detail || 'Unknown error'}`)
       }
     } catch (err) {
-      setMessage('❌ Network error - pass not issued')
+      setMessage('❌ Network error - pack not issued')
     }
     setLoading(false)
   }
@@ -439,7 +450,7 @@ function CashierApp({ API_BASE }) {
     setMessage('')
     setDebugInfo('')
     setSaleAmount('')
-    setPackSize('')
+    setCustomSessionCount('')
   }
 
   const verifyPinAndStart = async () => {
@@ -542,10 +553,11 @@ function CashierApp({ API_BASE }) {
     return Math.floor((amount / pesos) * rate)
   })()
 
-  const today = new Date().toISOString().slice(0, 10)
-  const multipassExpired = customerData?.card_type === 'multipass' && !!customerData.multipass_expires_at && customerData.multipass_expires_at < today
-  const multipassExhausted = customerData?.card_type === 'multipass' && (customerData.multipass_sessions_remaining || 0) <= 0
-  const multipassBlocked = multipassExpired || multipassExhausted
+  const isMultipassExpired = !!(
+    customerData?.card_type === 'multipass' &&
+    customerData.multipass_expires_at &&
+    customerData.multipass_expires_at < new Date().toISOString().slice(0, 10)
+  )
 
   return (
     <div style={styles.container}>
@@ -626,7 +638,7 @@ function CashierApp({ API_BASE }) {
                 {customerData.card_type === 'points'
                   ? `${customerData.points_balance} points`
                   : customerData.card_type === 'multipass'
-                  ? `${customerData.multipass_sessions_remaining}/${customerData.multipass_sessions_total} sessions left`
+                  ? `${customerData.sessions_remaining}/${customerData.sessions_total} sessions left`
                   : `${customerData.stamp_count} rings • ${customerData.reward_threshold - (customerData.stamp_count % customerData.reward_threshold)} to fruit`}
               </p>
             </div>
@@ -672,29 +684,17 @@ function CashierApp({ API_BASE }) {
             <>
               {/* Sessions Balance */}
               <div style={styles.pointsBalanceBox}>
-                <span style={styles.pointsBalanceNumber}>{customerData.multipass_sessions_remaining}</span>
-                <span style={styles.pointsBalanceLabel}>
-                  session{customerData.multipass_sessions_remaining === 1 ? '' : 's'} of {customerData.multipass_sessions_total} left
-                </span>
+                <span style={styles.pointsBalanceNumber}>{customerData.sessions_remaining}</span>
+                <span style={styles.pointsBalanceLabel}>of {customerData.sessions_total} sessions left</span>
               </div>
+
               {customerData.multipass_description && (
-                <p style={{...styles.customerMeta, textAlign: 'center', marginBottom: 12}}>{customerData.multipass_description}</p>
+                <p style={styles.multipassDescription}>{customerData.multipass_description}</p>
               )}
-              {customerData.multipass_sessions_total > 0 && customerData.multipass_sessions_total <= 20 && (
-                <div style={styles.stampVisual}>
-                  {Array.from({length: customerData.multipass_sessions_total}).map((_, i) => {
-                    const used = i < (customerData.multipass_sessions_total - customerData.multipass_sessions_remaining)
-                    return (
-                      <div key={i} style={{ ...styles.stampDot, background: used ? '#e2e8f0' : '#0d9488' }}>
-                        {used ? '✓' : ''}
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
+
               {customerData.multipass_expires_at && (
-                <p style={{...styles.customerMeta, textAlign: 'center'}}>
-                  {multipassExpired ? 'Expired' : 'Valid until'} {customerData.multipass_expires_at}
+                <p style={styles.multipassExpiry}>
+                  {isMultipassExpired ? '⏰ Expired' : 'Valid until'} {customerData.multipass_expires_at}
                 </p>
               )}
             </>
@@ -712,21 +712,25 @@ function CashierApp({ API_BASE }) {
             </div>
           )}
 
-          {/* Multipass expired/exhausted banner */}
-          {customerData.card_type === 'multipass' && multipassBlocked && (
-            <div style={{...styles.rewardBanner, background: multipassExpired ? '#fecaca' : '#fef3c7'}}>
-              <span style={styles.rewardEmoji}>{multipassExpired ? '⏰' : '🎉'}</span>
-              <span style={{...styles.rewardText, color: multipassExpired ? '#991b1b' : '#92400e'}}>
-                {multipassExpired ? 'Pass expired - sell a new one' : 'All sessions used - sell a new pass'}
-              </span>
-            </div>
-          )}
-
           {/* Reward Banner (stamp cards only) */}
           {customerData.card_type !== 'points' && customerData.card_type !== 'multipass' && customerData.reward_unlocked && (
             <div style={styles.rewardBanner}>
               <span style={styles.rewardEmoji}>🍎</span>
               <span style={styles.rewardText}>Fruit Ready!</span>
+            </div>
+          )}
+
+          {/* Multipass status banners */}
+          {customerData.card_type === 'multipass' && isMultipassExpired && (
+            <div style={{...styles.rewardBanner, background: '#fee2e2'}}>
+              <span style={styles.rewardEmoji}>⏰</span>
+              <span style={{...styles.rewardText, color: '#991b1b'}}>Pass expired - issue a new one</span>
+            </div>
+          )}
+          {customerData.card_type === 'multipass' && !isMultipassExpired && customerData.sessions_remaining <= 0 && (
+            <div style={styles.rewardBanner}>
+              <span style={styles.rewardEmoji}>🎉</span>
+              <span style={styles.rewardText}>All sessions used!</span>
             </div>
           )}
 
@@ -767,47 +771,47 @@ function CashierApp({ API_BASE }) {
                 </p>
               )}
             </div>
-          ) : customerData.card_type === 'multipass' ? (
+          ) : null}
+          {customerData.card_type === 'multipass' ? (
             <div style={styles.pointsSaleSection}>
               <div style={styles.pointsSaleRow}>
                 <input
                   type="number"
                   inputMode="numeric"
                   min="1"
-                  placeholder={`Sessions in pack (default ${customerData.multipass_pack_default_size})`}
-                  value={packSize}
-                  onChange={e => setPackSize(e.target.value)}
+                  placeholder={`Sessions (default ${customerData.multipass_session_count})`}
+                  value={customSessionCount}
+                  onChange={e => setCustomSessionCount(e.target.value)}
                   style={styles.pointsSaleInput}
                 />
                 <button
-                  style={{...styles.actionBtn, background: '#0d9488', flex: 'none', padding: '14px 20px'}}
+                  style={{...styles.actionBtn, background: '#1a73e8', flex: 'none', padding: '14px 20px'}}
                   onClick={issueMultipass}
                   disabled={loading}
                 >
-                  {loading ? '...' : '🎟️ Issue New Pass'}
+                  {loading ? '...' : '🎫 Issue Pack'}
                 </button>
               </div>
-              <p style={styles.pointsPreview}>
-                {multipassBlocked ? 'Sell a fresh pack to reactivate this customer' : 'Sell an add-on pack, or leave blank to use the default size'}
-              </p>
+              <p style={styles.pointsPreview}>Leave blank to use the default pack size and validity.</p>
             </div>
           ) : null}
           <div style={styles.actions}>
-            {customerData.card_type === 'multipass' ? (
-              <button
-                style={{...styles.actionBtn, background: multipassBlocked ? '#cbd5e1' : '#0d9488'}}
-                onClick={useMultipassSession}
-                disabled={loading || multipassBlocked}
-              >
-                {loading ? '...' : '✅ Use Session'}
-              </button>
-            ) : customerData.card_type !== 'points' && (
+            {customerData.card_type !== 'points' && customerData.card_type !== 'multipass' && (
               <button
                 style={{...styles.actionBtn, background: '#0d9488'}}
                 onClick={addStamp}
                 disabled={loading}
               >
                 {loading ? '...' : '🍃 Add Ring'}
+              </button>
+            )}
+            {customerData.card_type === 'multipass' && (
+              <button
+                style={{...styles.actionBtn, background: '#0d9488'}}
+                onClick={useMultipassSession}
+                disabled={loading || isMultipassExpired || customerData.sessions_remaining <= 0}
+              >
+                {loading ? '...' : '✅ Use Session'}
               </button>
             )}
             {customerData.card_type !== 'points' && customerData.card_type !== 'multipass' && customerData.reward_unlocked && (
@@ -1105,6 +1109,18 @@ const styles = {
     fontSize: 15,
     outline: 'none',
     boxSizing: 'border-box',
+  },
+  multipassDescription: {
+    textAlign: 'center',
+    fontSize: 13.5,
+    color: '#475569',
+    margin: '0 0 12px',
+  },
+  multipassExpiry: {
+    textAlign: 'center',
+    fontSize: 12.5,
+    color: '#94a3b8',
+    margin: '0 0 12px',
   },
   prizeList: {
     display: 'flex',

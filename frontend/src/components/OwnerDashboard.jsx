@@ -42,7 +42,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [showEditModal, setShowEditModal] = useState(false)
   const [editForm, setEditForm] = useState({})
   const [savingCustomer, setSavingCustomer] = useState(false)
-  const [issuingPass, setIssuingPass] = useState(false)
   const [showStaffEditModal, setShowStaffEditModal] = useState(false)
   const [staffEditForm, setStaffEditForm] = useState({})
   const [savingStaff, setSavingStaff] = useState(false)
@@ -75,15 +74,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const analyticsCheckedKey = user?.business_slug ? `loyaltree_checked_analytics_${user.business_slug}` : null
   const isActive = (business?.status || '').toUpperCase() === 'ACTIVE'
 
-  // The 4 required setup conditions. Card type + card design are collapsed
-  // into one check (google_wallet_class_id) because loyalty-config always
-  // returns a full object with defaults even for a business that's never
-  // saved anything - card_type alone can't tell "picked stamp" apart from
-  // "never touched, still on the default." Publishing is the one signal
-  // that proves they actually went through and saved the card.
   const cardSetUp = !!program?.google_wallet_class_id
   const cashierSetUp = staff.length > 0
-  const requiredSetupDone = cardSetUp && cashierSetUp && announcementsChecked && analyticsChecked
 
   useEffect(() => {
     if (announcementsCheckedKey) setAnnouncementsChecked(localStorage.getItem(announcementsCheckedKey) === '1')
@@ -112,31 +104,21 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   // Auto-launch the setup tutorial the first time the business goes live,
   // so the owner is walked through Edit Card -> Cashier -> Share Tree ->
-  // Analytics before they start using the dashboard on their own.
-  // While any of the 4 required conditions is missing, this keeps
-  // reappearing on the home tab every visit instead of the usual
-  // once-ever behavior, and can't be permanently skipped until they're
-  // all done.
+  // Analytics before they start using the dashboard on their own. Shows
+  // once ever per business - dismissing it (or finishing it) is final,
+  // it never forces itself back open.
   useEffect(() => {
     if (!isActive || !onboardingKey) return
-    if (!requiredSetupDone) {
-      if (activeTab === 'tree') {
-        setOnboardingStep(0)
-        setShowOnboarding(true)
-      }
-      return
-    }
+    if (activeTab !== 'tree') return
     const seen = localStorage.getItem(onboardingKey)
     if (!seen) {
       setOnboardingStep(0)
       setShowOnboarding(true)
     }
-  }, [isActive, onboardingKey, requiredSetupDone, activeTab])
+  }, [isActive, onboardingKey, activeTab])
 
   const closeOnboarding = () => {
-    // Only remember "seen" once setup is actually done - otherwise it just
-    // reopens next time they land on the home tab anyway (see effect above).
-    if (onboardingKey && requiredSetupDone) localStorage.setItem(onboardingKey, '1')
+    if (onboardingKey) localStorage.setItem(onboardingKey, '1')
     setShowOnboarding(false)
   }
 
@@ -355,31 +337,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     setSavingCustomer(false)
   }
 
-  // Issues a fresh multipass pack to the currently-open customer, using the
-  // program's default pack size - the owner's equivalent of the cashier's
-  // "Issue New Pass" button, for sales made without going through the scanner.
-  const issueNewPass = async () => {
-    if (!editForm.public_id) return
-    setIssuingPass(true)
-    try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/multipass/issue`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ customer_public_id: editForm.public_id, as_owner: true })
-      })
-      const data = await res.json()
-      if (res.ok) {
-        setEditForm(prev => ({ ...prev, multipass_sessions_remaining: data.sessions_remaining }))
-        setMessage(data.message || 'New pass issued!')
-      } else {
-        setMessage(data.detail || 'Could not issue a new pass')
-      }
-    } catch (err) {
-      setMessage('Network error')
-    }
-    setIssuingPass(false)
-  }
-
   const openEditStaff = (s) => {
     const currentBranch = branches.find(b => b.id === s.branch_id)
     setStaffEditForm({
@@ -553,8 +510,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const isMultipassCard = program?.card_type === 'multipass'
   const confirmedStamps = customers.reduce((sum, c) => sum + (c.stamp_count || 0), 0)
   const totalPoints = customers.reduce((sum, c) => sum + (c.points_balance || 0), 0)
-  const totalSessionsRemaining = customers.reduce((sum, c) => sum + (c.multipass_sessions_remaining || 0), 0)
-  const activePasses = customers.filter(c => (c.multipass_sessions_remaining || 0) > 0).length
+  const totalSessionsLeft = customers.reduce((sum, c) => sum + (c.multipass_sessions_remaining || 0), 0)
   const unlockedRewards = customers.filter(c => c.reward_unlocked).length
   const growthStage = customers.length < 10 ? 'seedling' : customers.length < 50 ? 'sapling' : customers.length < 200 ? 'growing' : 'mature'
   const subStatus = subscription?.subscription_status
@@ -627,12 +583,12 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             <span style={styles.orbLabel}>Leaves</span>
           </div>
           <div style={styles.statOrb}>
-            <span style={styles.orbNumber}>{isPointsCard ? totalPoints : isMultipassCard ? totalSessionsRemaining : confirmedStamps}</span>
+            <span style={styles.orbNumber}>{isPointsCard ? totalPoints : isMultipassCard ? totalSessionsLeft : confirmedStamps}</span>
             <span style={styles.orbLabel}>{isPointsCard ? 'Points' : isMultipassCard ? 'Sessions Left' : 'Rings'}</span>
           </div>
           <div style={styles.statOrb}>
-            <span style={styles.orbNumber}>{isMultipassCard ? activePasses : unlockedRewards}</span>
-            <span style={styles.orbLabel}>{isMultipassCard ? 'Active Passes' : 'Fruits'}</span>
+            <span style={styles.orbNumber}>{isMultipassCard ? customers.filter(c => (c.multipass_sessions_remaining || 0) <= 0).length : unlockedRewards}</span>
+            <span style={styles.orbLabel}>{isMultipassCard ? 'Passes Done' : 'Fruits'}</span>
           </div>
         </div>
         <div style={styles.growthBadge}>
@@ -700,11 +656,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                   <span style={styles.activityLeaf}>🍃</span>
                   <span style={styles.activityName}>{c.name}</span>
                   <span style={styles.activityStamps}>
-                    {isPointsCard
-                      ? `${c.points_balance || 0} points`
-                      : isMultipassCard
-                      ? `${c.multipass_sessions_remaining || 0}/${c.multipass_total_sessions || 0} sessions`
-                      : `${c.stamp_count} rings`}
+                    {isPointsCard ? `${c.points_balance || 0} points` : isMultipassCard ? `${c.multipass_sessions_remaining || 0}/${c.multipass_total_sessions || 0} sessions` : `${c.stamp_count} rings`}
                   </span>
                   {c.reward_unlocked && <span style={styles.activityFruit}>🍎</span>}
                 </div>
@@ -735,14 +687,18 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                       <p style={styles.stampText}>💎 {c.points_balance || 0} points</p>
                     ) : isMultipassCard ? (
                       <>
+                        <div style={styles.stampRings}>
+                          {Array.from({length: Math.min(c.multipass_total_sessions || program?.multipass_session_count || 12, 20)}).map((_, i) => (
+                            <span key={i} style={{
+                              ...styles.stampRing,
+                              background: i < ((c.multipass_total_sessions || 0) - (c.multipass_sessions_remaining || 0)) ? '#e2e8f0' : '#0d9488'
+                            }}></span>
+                          ))}
+                        </div>
                         <p style={styles.stampText}>
-                          🎟️ {c.multipass_sessions_remaining || 0} / {c.multipass_total_sessions || 0} sessions left
+                          {c.multipass_sessions_remaining || 0} / {c.multipass_total_sessions || 0} sessions left
+                          {c.multipass_expires_at ? ` · until ${c.multipass_expires_at}` : ''}
                         </p>
-                        {c.multipass_expires_at && (
-                          <p style={{...styles.customerPhone, fontSize: 12, color: c.multipass_expires_at < new Date().toISOString().slice(0, 10) ? '#dc2626' : '#94a3b8'}}>
-                            {c.multipass_expires_at < new Date().toISOString().slice(0, 10) ? 'Expired' : 'Valid until'} {c.multipass_expires_at}
-                          </p>
-                        )}
                       </>
                     ) : (
                       <>
@@ -757,10 +713,10 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                         <p style={styles.stampText}>{c.stamp_count % (program?.stamp_goal || 8)} / {program?.stamp_goal || 8} rings</p>
                       </>
                     )}
-                    {!isMultipassCard && <p style={styles.lastStampedText}>{formatLastStamped(c.last_stamp_at)}</p>}
+                    <p style={styles.lastStampedText}>{formatLastStamped(c.last_stamp_at)}</p>
                     {c.reward_unlocked && <span style={styles.fruitBadge}>🍎 Reward Ready!</span>}
-                    {isMultipassCard && (c.multipass_sessions_remaining || 0) <= 0 && (
-                      <span style={styles.fruitBadge}>🎉 Sell New Pass</span>
+                    {isMultipassCard && (c.multipass_sessions_remaining || 0) <= 0 && (c.multipass_total_sessions || 0) > 0 && (
+                      <span style={styles.fruitBadge}>🎫 Pass Complete</span>
                     )}
                   </div>
                   <div style={{display: 'flex', flexDirection: 'column', gap: 6}}>
@@ -968,13 +924,13 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     <p style={{fontSize: 13, color: 'rgba(255,255,255,0.85)', margin: '2px 0 0'}}>
                       of {selectedCustomer.multipass_total_sessions || 0} sessions left
                     </p>
-                    {selectedCustomer.multipass_expires_at && (
-                      <p style={{fontSize: 12, color: 'rgba(255,255,255,0.75)', margin: '6px 0 0'}}>
-                        {selectedCustomer.multipass_expires_at < new Date().toISOString().slice(0, 10) ? 'Expired' : 'Valid until'} {selectedCustomer.multipass_expires_at}
-                      </p>
+                    {program?.description && (
+                      <p style={{fontSize: 12.5, color: 'rgba(255,255,255,0.85)', margin: '10px 0 0'}}>{program.description}</p>
                     )}
-                    {(selectedCustomer.multipass_sessions_remaining || 0) <= 0 && (
-                      <div style={styles.cardReward}>🎉 Sell a new pass!</div>
+                    {selectedCustomer.multipass_expires_at && (
+                      <p style={{fontSize: 12, color: 'rgba(255,255,255,0.7)', margin: '6px 0 0'}}>
+                        Valid until {selectedCustomer.multipass_expires_at}
+                      </p>
                     )}
                   </div>
                 ) : (
@@ -1081,26 +1037,13 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               ) : isMultipassCard ? (
                 <>
                   <label style={styles.label}>Sessions Remaining</label>
-                  <div style={{display: 'flex', gap: 8, alignItems: 'center'}}>
-                    <input
-                      style={{...styles.input, flex: 1}}
-                      type="number"
-                      min="0"
-                      value={editForm.multipass_sessions_remaining}
-                      onChange={e => setEditForm({...editForm, multipass_sessions_remaining: e.target.value})}
-                    />
-                    <button
-                      type="button"
-                      onClick={issueNewPass}
-                      disabled={issuingPass}
-                      style={{...styles.submitBtn, width: 'auto', whiteSpace: 'nowrap', padding: '10px 14px', margin: 0}}
-                    >
-                      {issuingPass ? 'Issuing...' : '🎟️ Issue New Pass'}
-                    </button>
-                  </div>
-                  <p style={{fontSize: 12, color: '#94a3b8', margin: '4px 0 12px'}}>
-                    Editing this number corrects the count manually - "Issue New Pass" sells a fresh pack at the program's default size.
-                  </p>
+                  <input
+                    style={styles.input}
+                    type="number"
+                    min="0"
+                    value={editForm.multipass_sessions_remaining}
+                    onChange={e => setEditForm({...editForm, multipass_sessions_remaining: e.target.value})}
+                  />
                 </>
               ) : (
                 <>
@@ -1306,7 +1249,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             body: "Configure your loyalty program: how many stamps until a reward, what the reward is, your card color, and your logo. Make sure to save & publish so your card is actually live - customers won't see your branding on their Google Wallet card until you do.",
             cta: 'Go to Edit Card',
             action: () => { setActiveTab('program'); closeOnboarding() },
-            required: true,
             done: cardSetUp,
           },
           {
@@ -1315,7 +1257,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             body: "Invite your staff and each one gets a 4-digit PIN. Important: cashiers also need your Business ID (shown on the Team tab) to log into the scanner - without it, their PIN alone won't work. Share both with them.",
             cta: 'Go to Team',
             action: () => { setActiveTab('staff'); closeOnboarding() },
-            required: true,
             done: cashierSetUp,
           },
           {
@@ -1324,7 +1265,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             body: "Get your join QR code and print it out. Keep it at the counter or entrance so customers can scan it themselves as they come in, sign up in seconds, and start earning stamps right away.",
             cta: 'Get QR Code',
             action: () => { setActiveTab('tree'); closeOnboarding(); fetchQRImage() },
-            required: false,
           },
           {
             emoji: '📊',
@@ -1332,27 +1272,17 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             body: "Check Analytics to see visit trends, repeat customers, and redemption rates. Use Announcements to push a message straight to customers' Google Wallet cards - great for promos or reminders.",
             cta: 'View Analytics',
             action: () => { closeOnboarding(); markAnalyticsChecked(); navigate('/analytics') },
-            required: true,
             done: announcementsChecked && analyticsChecked,
           },
         ]
         const step = steps[onboardingStep]
         const isLast = onboardingStep === steps.length - 1
         return (
-          <div style={styles.modalOverlay} onClick={requiredSetupDone ? closeOnboarding : undefined}>
+          <div style={styles.modalOverlay} onClick={closeOnboarding}>
             <div style={{...styles.modal, textAlign: 'center', maxWidth: 420}} onClick={e => e.stopPropagation()}>
-              {!requiredSetupDone && (
-                <div style={{
-                  display: 'inline-block', background: '#fef3c7', color: '#92400e',
-                  fontSize: 12, fontWeight: 700, padding: '4px 10px', borderRadius: 20,
-                  marginBottom: 10, letterSpacing: '0.3px',
-                }}>
-                  ⚠️ REQUIRED SETUP
-                </div>
-              )}
               <div style={{fontSize: 40, marginBottom: 8}}>{step.emoji}</div>
               <h3 style={{marginBottom: 12}}>
-                {step.title}{step.required && step.done && <span style={{color: '#0d9488'}}> ✓</span>}
+                {step.title}{step.done && <span style={{color: '#0d9488'}}> ✓</span>}
               </h3>
               <p style={{color: '#64748b', fontSize: 14, marginBottom: 20, lineHeight: 1.5}}>{step.body}</p>
 
@@ -1360,7 +1290,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 {steps.map((s, i) => (
                   <span key={i} style={{
                     width: 8, height: 8, borderRadius: 4,
-                    background: i === onboardingStep ? '#0d9488' : (s.required && s.done ? '#a7f3d0' : '#e2e8f0'),
+                    background: i === onboardingStep ? '#0d9488' : (s.done ? '#a7f3d0' : '#e2e8f0'),
                   }} />
                 ))}
               </div>
@@ -1381,15 +1311,9 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 )}
               </div>
 
-              {requiredSetupDone ? (
-                <button onClick={closeOnboarding} style={{background: 'none', border: 'none', color: '#94a3b8', fontSize: 13, cursor: 'pointer'}}>
-                  Skip tutorial
-                </button>
-              ) : (
-                <p style={{color: '#94a3b8', fontSize: 12.5, margin: 0}}>
-                  Finish the steps marked required to unlock the rest of your dashboard.
-                </p>
-              )}
+              <button onClick={closeOnboarding} style={{background: 'none', border: 'none', color: '#94a3b8', fontSize: 13, cursor: 'pointer'}}>
+                Skip tutorial
+              </button>
             </div>
           </div>
         )
