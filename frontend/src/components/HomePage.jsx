@@ -108,7 +108,7 @@ const CARD_TYPES = [
   { key: 'points', icon: '⭐', title: 'Points', available: true },
   { key: 'cashback', icon: '💵', title: 'Cashback', available: false },
   { key: 'discount', icon: '🏷️', title: 'Discount', available: false },
-  { key: 'multipass', icon: '🎫', title: 'Multipass', available: false },
+  { key: 'multipass', icon: '🎫', title: 'Multipass', available: true },
   { key: 'membership', icon: '🪪', title: 'Membership', available: false },
   { key: 'giftcard', icon: '🎁', title: 'Gift Card', available: false },
   { key: 'vip', icon: '👑', title: 'VIP Cards', available: false },
@@ -169,6 +169,24 @@ const CARD_SAMPLES = {
           <div style={styles.pointsToNext}>260 pts to next reward</div>
         </div>
         <div style={styles.heroCardFoot}>Earn 1 point per ₱50 spent</div>
+      </div>
+    ),
+  },
+  multipass: {
+    name: 'Multipass',
+    intro: 'Customers pay upfront for a set number of visits or sessions, then check in each time until the pass runs out.',
+    render: (styles) => (
+      <div style={styles.heroCard}>
+        <div style={styles.heroCardHeader}>
+          <span>10-Visit Pass</span>
+          <span style={{ fontSize: 12, opacity: 0.85 }}>Corner Cafe</span>
+        </div>
+        <div style={styles.heroStampRow}>
+          {Array.from({ length: 10 }).map((_, i) => (
+            <div key={i} style={{ ...styles.heroStamp, background: i < 4 ? '#0d9488' : '#e2e8f0' }} />
+          ))}
+        </div>
+        <div style={styles.heroCardFoot}>4 of 10 visits used &middot; 6 remaining</div>
       </div>
     ),
   },
@@ -513,7 +531,7 @@ function HomePage({ onNavigateLogin }) {
 
                 <p style={styles.contactNote}>
                   6 branches or more? Let's talk it through together &mdash; email{' '}
-                  <a href="mailto:connect.aliciabrewery@gmail.com" style={styles.contactLink}>connect.aliciabrewery@gmail.com</a>
+                  <a href="mailto:theloyaltytree@gmail.com" style={styles.contactLink}>theloyaltytree@gmail.com</a>
                 </p>
 
                 <button onClick={() => setModalView('sample')} style={styles.backBtn}>
