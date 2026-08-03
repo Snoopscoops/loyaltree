@@ -108,7 +108,7 @@ const CARD_TYPES = [
   { key: 'points', icon: '⭐', title: 'Points', available: true },
   { key: 'cashback', icon: '💵', title: 'Cashback', available: false },
   { key: 'discount', icon: '🏷️', title: 'Discount', available: false },
-  { key: 'multipass', icon: '🎫', title: 'Multipass', available: true },
+  { key: 'multipass', icon: '🎫', title: 'Multipass', available: false },
   { key: 'membership', icon: '🪪', title: 'Membership', available: false },
   { key: 'giftcard', icon: '🎁', title: 'Gift Card', available: false },
   { key: 'vip', icon: '👑', title: 'VIP Cards', available: false },
@@ -172,28 +172,6 @@ const CARD_SAMPLES = {
       </div>
     ),
   },
-  multipass: {
-    name: 'Multipass',
-    intro: 'Customers buy a pack of sessions up front \u2014 e.g. 12 sessions for the price of 10 \u2014 and use one per visit until the pack runs out.',
-    render: (styles) => (
-      <div style={styles.heroCard}>
-        <div style={styles.heroCardHeader}>
-          <span>10-Session Pass</span>
-          <span style={{ fontSize: 12, opacity: 0.85 }}>Corner Cafe</span>
-        </div>
-        <div style={styles.sessionsBody}>
-          <div style={styles.sessionsValue}>7</div>
-          <div style={styles.sessionsUnit}>sessions left</div>
-        </div>
-        <div style={styles.heroStampRow}>
-          {Array.from({ length: 10 }).map((_, i) => (
-            <div key={i} style={{ ...styles.heroStamp, borderRadius: 6, background: i < 3 ? '#e2e8f0' : '#0d9488' }} />
-          ))}
-        </div>
-        <div style={styles.heroCardFoot}>7 of 10 sessions left &middot; valid for 90 days</div>
-      </div>
-    ),
-  },
 }
 
 const BRANCH_TIERS = [
@@ -213,12 +191,14 @@ const PLANS = [
       'Full digital system',
       'Full loyalty card customization',
       'Analytics',
+      'Birthday automated greetings',
       'Customer service',
     ],
   },
   {
     key: 'growth',
     name: 'Growth',
+    highlight: true,
     prices: { '1': 550, '2-3': 750, '5': 950 },
     features: [
       'Google Wallet & Apple Wallet',
@@ -228,30 +208,13 @@ const PLANS = [
       'Analytics',
       'Google review prompt',
       'Birthday automated greetings',
+      "Win-back system (message if 30 days pass without a stamp)",
       'Customer service',
     ],
   },
   {
     key: 'pro',
     name: 'Pro',
-    highlight: true,
-    prices: { '1': 750, '2-3': 950, '5': 1150 },
-    features: [
-      'Google Wallet & Apple Wallet',
-      '5 announcements per month',
-      'Full digital system',
-      'Full loyalty card customization',
-      'Analytics',
-      'Google review prompt',
-      'Birthday automated greetings',
-      'Up to 3 different loyalty cards in circulation',
-      "Win-back system (message if 30 days pass without a stamp)",
-      'Customer service',
-    ],
-  },
-  {
-    key: 'ultra',
-    name: 'Ultra',
     comingSoon: true,
     features: [
       'Google Wallet & Apple Wallet',
@@ -263,9 +226,29 @@ const PLANS = [
       'Birthday automated greetings',
       'Up to 3 different loyalty cards in circulation',
       "Win-back system (message if 30 days pass without a stamp)",
+      'Geo tagging',
+      'Advance ordering',
       'Customer service',
-      'Geo-based notifications',
-      'Early order',
+    ],
+  },
+  {
+    key: 'specialized',
+    name: 'Specialized System',
+    comingSoon: true,
+    features: [
+      'Specialized system for your business',
+      'Google Wallet & Apple Wallet',
+      '5 announcements per month',
+      'Full digital system',
+      'Full loyalty card customization',
+      'Analytics',
+      'Google review prompt',
+      'Birthday automated greetings',
+      'Up to 3 different loyalty cards in circulation',
+      "Win-back system (message if 30 days pass without a stamp)",
+      'Geo tagging',
+      'Advance ordering',
+      'Customer service',
     ],
   },
 ]
@@ -417,7 +400,7 @@ function HomePage({ onNavigateLogin }) {
 
       <section style={styles.section}>
         <h2 style={styles.h2}>Choose your card type</h2>
-        <p style={styles.cardTypesIntro}>Stamps, Coupons, Points, and Multipass are live today. Everything else is on its way.</p>
+        <p style={styles.cardTypesIntro}>Stamps, Coupons, and Points are live today. Everything else is on its way.</p>
         <div style={styles.cardTypesGrid}>
           {CARD_TYPES.map(c => (
             <button
@@ -603,11 +586,6 @@ const styles = {
   pointsValue: { fontSize: 32, fontWeight: 800, color: '#0d9488' },
   pointsUnit: { fontSize: 14, fontWeight: 600, color: '#94a3b8' },
   pointsToNext: { fontSize: 12.5, color: '#64748b', marginTop: 4 },
-
-  // Multipass sample card
-  sessionsBody: { textAlign: 'center', padding: '4px 0 12px' },
-  sessionsValue: { fontSize: 32, fontWeight: 800, color: '#0d9488', lineHeight: 1 },
-  sessionsUnit: { fontSize: 12.5, fontWeight: 600, color: '#94a3b8', marginTop: 2 },
   section: { padding: '64px 32px', maxWidth: 1100, margin: '0 auto' },
 
   // Marketing / Retention / Zero Waste pillars
