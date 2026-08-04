@@ -166,10 +166,12 @@ async function uploadImageToCloudinary(apiBase, businessId, file) {
   return cloudData.secure_url
 }
 
+const VEHICLE_MAX_PHOTOS = 5
+
 function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved }) {
   const emptyForm = { make: '', model: '', year: '', plate_number: '', color: '', mileage: '', price: '', status: 'available' }
   const [form, setForm] = useState(emptyForm)
-  const [imageUrl, setImageUrl] = useState('')
+  const [imageUrls, setImageUrls] = useState([]) // up to VEHICLE_MAX_PHOTOS Cloudinary URLs, shown as a gallery on the showroom card
   const [uploading, setUploading] = useState(false)
   const [dragActive, setDragActive] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -189,10 +191,10 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
         price: vehicle.price ?? '',
         status: vehicle.status || 'available',
       })
-      setImageUrl(vehicle.image_url || '')
+      setImageUrls(vehicle.image_urls && vehicle.image_urls.length ? vehicle.image_urls : (vehicle.image_url ? [vehicle.image_url] : []))
     } else {
       setForm(emptyForm)
-      setImageUrl('')
+      setImageUrls([])
     }
     setError('')
     setUploading(false)
@@ -200,24 +202,43 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
 
   if (!open) return null
 
-  const uploadFile = async (file) => {
-    if (!file) return
+  const slotsLeft = VEHICLE_MAX_PHOTOS - imageUrls.length
+
+  // Uploads as many of the given files as fit within the 5-photo cap, one at
+  // a time (Cloudinary signatures are single-use-ish and this keeps upload
+  // order == display order). Stops early and reports how many were skipped
+  // if the batch would go over the cap.
+  const uploadFiles = async (fileList) => {
+    const files = Array.from(fileList || []).filter(Boolean)
+    if (!files.length) return
     setError('')
+    const toUpload = files.slice(0, slotsLeft)
+    const skipped = files.length - toUpload.length
     setUploading(true)
+    const uploaded = []
     try {
-      const url = await uploadImageToCloudinary(apiBase, businessId, file)
-      setImageUrl(url)
+      for (const file of toUpload) {
+        const url = await uploadImageToCloudinary(apiBase, businessId, file)
+        uploaded.push(url)
+      }
+      if (uploaded.length) setImageUrls(prev => [...prev, ...uploaded])
+      if (skipped > 0) setError(`Only added ${uploaded.length} photo${uploaded.length === 1 ? '' : 's'} - limit is ${VEHICLE_MAX_PHOTOS} per vehicle`)
     } catch (err) {
+      if (uploaded.length) setImageUrls(prev => [...prev, ...uploaded])
       setError(err.message)
     }
     setUploading(false)
   }
 
+  const removeImage = (idx) => {
+    setImageUrls(prev => prev.filter((_, i) => i !== idx))
+  }
+
   const handleDrop = (e) => {
     e.preventDefault()
     setDragActive(false)
-    const file = e.dataTransfer.files && e.dataTransfer.files[0]
-    if (file) uploadFile(file)
+    if (slotsLeft <= 0) { setError(`You can add up to ${VEHICLE_MAX_PHOTOS} photos per vehicle`); return }
+    uploadFiles(e.dataTransfer.files)
   }
 
   const handleSave = async () => {
@@ -226,7 +247,7 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
       return
     }
     if (uploading) {
-      setError('Please wait for the photo to finish uploading')
+      setError('Please wait for photos to finish uploading')
       return
     }
     setSaving(true)
@@ -247,7 +268,7 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
           mileage: form.mileage !== '' ? Number(form.mileage) : null,
           price: form.price !== '' ? Number(form.price) : 0,
           status: form.status,
-          image_url: imageUrl || null,
+          image_urls: imageUrls,
         }),
       })
       const data = await res.json().catch(() => ({}))
@@ -265,31 +286,44 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
       <div style={styles.modal} onClick={e => e.stopPropagation()}>
         <h3 style={styles.modalTitle}>{vehicle ? 'Edit vehicle' : 'Add vehicle'}</h3>
 
-        <div
-          style={{ ...styles.uploadZone, ...(dragActive ? styles.uploadZoneActive : {}) }}
-          onClick={() => !uploading && fileInputRef.current && fileInputRef.current.click()}
-          onDragOver={e => { e.preventDefault(); setDragActive(true) }}
-          onDragLeave={() => setDragActive(false)}
-          onDrop={handleDrop}
-        >
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            style={{ display: 'none' }}
-            onChange={e => uploadFile(e.target.files && e.target.files[0])}
-          />
-          {uploading ? (
-            <div style={styles.uploadHint}>Uploading…</div>
-          ) : imageUrl ? (
-            <>
-              <img src={imageUrl} alt="Vehicle" style={styles.uploadPreview} />
-              <div style={styles.uploadHint}>Click or drop to replace photo</div>
-            </>
-          ) : (
-            <div style={styles.uploadHint}>📷 Click or drag a photo here</div>
+        <div style={styles.photoGrid}>
+          {imageUrls.map((url, idx) => (
+            <div key={url + idx} style={styles.photoThumbWrap}>
+              <img src={url} alt={`Vehicle ${idx + 1}`} style={styles.photoThumb} />
+              {idx === 0 && <span style={styles.photoMainBadge}>Main</span>}
+              <button
+                type="button"
+                onClick={() => removeImage(idx)}
+                style={styles.photoRemoveBtn}
+                aria-label="Remove photo"
+              >×</button>
+            </div>
+          ))}
+          {slotsLeft > 0 && (
+            <div
+              style={{ ...styles.photoAddTile, ...(dragActive ? styles.uploadZoneActive : {}) }}
+              onClick={() => !uploading && fileInputRef.current && fileInputRef.current.click()}
+              onDragOver={e => { e.preventDefault(); setDragActive(true) }}
+              onDragLeave={() => setDragActive(false)}
+              onDrop={handleDrop}
+            >
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                style={{ display: 'none' }}
+                onChange={e => uploadFiles(e.target.files)}
+              />
+              {uploading ? (
+                <div style={styles.uploadHint}>Uploading…</div>
+              ) : (
+                <div style={styles.uploadHint}>📷 Add photo</div>
+              )}
+            </div>
           )}
         </div>
+        <div style={styles.photoCountHint}>{imageUrls.length}/{VEHICLE_MAX_PHOTOS} photos {imageUrls.length > 1 ? '· first photo is the cover shown on the showroom' : ''}</div>
 
         <div style={styles.formGrid}>
           <label style={styles.label}>Make</label>
@@ -1373,9 +1407,16 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
               </div>
             ) : (
               <div style={styles.cardList}>
-                {vehicles.map(v => (
+                {vehicles.map(v => {
+                  const photos = v.image_urls && v.image_urls.length ? v.image_urls : (v.image_url ? [v.image_url] : [])
+                  return (
                   <div key={v.public_id} style={styles.recordCard}>
-                    {v.image_url && <img src={v.image_url} alt="" style={styles.vehicleThumb} />}
+                    {photos.length > 0 && (
+                      <div style={{ position: 'relative', flexShrink: 0 }}>
+                        <img src={photos[0]} alt="" style={styles.vehicleThumb} />
+                        {photos.length > 1 && <span style={styles.photoMainBadge}>+{photos.length - 1}</span>}
+                      </div>
+                    )}
                     <div style={styles.recordInfo}>
                       <div style={styles.recordTitleRow}>
                         <span style={styles.recordTitle}>{v.year ? `${v.year} ` : ''}{v.make} {v.model}</span>
@@ -1393,7 +1434,8 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                       <button onClick={() => deleteVehicle(v)} style={styles.deleteBtn}>Delete</button>
                     </div>
                   </div>
-                ))}
+                  )
+                })}
               </div>
             )}
           </div>
@@ -2426,6 +2468,27 @@ const styles = {
   uploadZoneActive: { borderColor: '#0d9488', background: '#f0fdfa' },
   uploadPreview: { width: '100%', maxHeight: 160, objectFit: 'cover', borderRadius: 8, marginBottom: 8 },
   uploadHint: { fontSize: 13, color: '#64748b' },
+  photoGrid: {
+    display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 6,
+  },
+  photoThumbWrap: {
+    position: 'relative', borderRadius: 10, overflow: 'hidden', aspectRatio: '1 / 1', background: '#f1f5f9',
+  },
+  photoThumb: { width: '100%', height: '100%', objectFit: 'cover', display: 'block' },
+  photoMainBadge: {
+    position: 'absolute', bottom: 4, left: 4, background: 'rgba(15,23,42,0.75)', color: 'white',
+    fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 999, letterSpacing: 0.3,
+  },
+  photoRemoveBtn: {
+    position: 'absolute', top: 4, right: 4, width: 20, height: 20, borderRadius: '50%', border: 'none',
+    background: 'rgba(15,23,42,0.75)', color: 'white', fontSize: 14, lineHeight: '20px', cursor: 'pointer', padding: 0,
+  },
+  photoAddTile: {
+    aspectRatio: '1 / 1', border: '2px dashed #cbd5e1', borderRadius: 10, display: 'flex',
+    alignItems: 'center', justifyContent: 'center', textAlign: 'center', cursor: 'pointer',
+    background: '#f8fafc', transition: 'border-color 0.15s, background 0.15s', padding: 4,
+  },
+  photoCountHint: { fontSize: 11.5, color: '#94a3b8', marginBottom: 16 },
   uploadError: {
     background: '#fef2f2', color: '#dc2626', fontSize: 12.5, padding: '8px 12px',
     borderRadius: 8, marginBottom: 12,

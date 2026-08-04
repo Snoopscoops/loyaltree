@@ -514,6 +514,8 @@ class CLCustomerUpdate(BaseModel):
 # --- Car Lending / Showroom: vehicle inventory ---
 VEHICLE_STATUS_OPTIONS = ['available', 'reserved', 'sold', 'financed']
 
+VEHICLE_MAX_PHOTOS = 5
+
 class VehicleCreate(BaseModel):
     make: str
     model: str
@@ -523,7 +525,8 @@ class VehicleCreate(BaseModel):
     mileage: Optional[int] = Field(default=None, ge=0)
     price: float = Field(default=0, ge=0)
     status: Optional[Literal['available', 'reserved', 'sold', 'financed']] = 'available'
-    image_url: Optional[str] = None
+    image_url: Optional[str] = None  # legacy single-photo field - kept in sync as image_urls[0] for old readers
+    image_urls: Optional[List[str]] = None  # up to VEHICLE_MAX_PHOTOS photos, shown as a gallery on the showroom card
 
 class VehicleUpdate(BaseModel):
     make: Optional[str] = None
@@ -535,6 +538,7 @@ class VehicleUpdate(BaseModel):
     price: Optional[float] = Field(default=None, ge=0)
     status: Optional[Literal['available', 'reserved', 'sold', 'financed']] = None
     image_url: Optional[str] = None
+    image_urls: Optional[List[str]] = None
 
 # --- Car Lending / Showroom: public showroom page settings (one row per
 # business - hero banner shown at the top of /showroom/{public_id} and the
@@ -4830,6 +4834,12 @@ async def create_vehicle(public_id: str, vehicle: VehicleCreate):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
+    # image_urls is the source of truth going forward; image_url (legacy
+    # single-photo field, still read by anything not yet updated) is kept
+    # in sync as just its first entry. Accept either on the way in, but
+    # never store more than VEHICLE_MAX_PHOTOS.
+    image_urls = [u for u in (vehicle.image_urls or ([vehicle.image_url] if vehicle.image_url else [])) if u][:VEHICLE_MAX_PHOTOS]
+
     vehicle_data = {
         'business_id': business.get('id'),
         'public_id': generate_public_id(),
@@ -4841,7 +4851,8 @@ async def create_vehicle(public_id: str, vehicle: VehicleCreate):
         'mileage': vehicle.mileage,
         'price': vehicle.price,
         'status': vehicle.status or 'available',
-        'image_url': vehicle.image_url,
+        'image_url': image_urls[0] if image_urls else None,
+        'image_urls': image_urls,
     }
     try:
         res = supabase.table("vehicles").insert(vehicle_data).execute()
@@ -4861,6 +4872,15 @@ async def update_vehicle(public_id: str, vehicle_public_id: str, update: Vehicle
     update_data = {k: v for k, v in update.dict(exclude_unset=True).items() if v is not None}
     if not update_data:
         return vehicle
+
+    # Keep the legacy image_url field mirrored to image_urls[0] whenever the
+    # gallery changes, and cap it to VEHICLE_MAX_PHOTOS. Sending image_urls: []
+    # explicitly clears all photos (empty list isn't None, so it still lands
+    # in update_data above).
+    if 'image_urls' in update_data:
+        capped = [u for u in (update_data.get('image_urls') or []) if u][:VEHICLE_MAX_PHOTOS]
+        update_data['image_urls'] = capped
+        update_data['image_url'] = capped[0] if capped else None
 
     update_data['updated_at'] = datetime.utcnow().isoformat()
     try:
@@ -7640,6 +7660,175 @@ async def cl_customer_join_page(business_public_id: str):
 # needed, this just reads live off the vehicles table. Scanning the
 # showroom QR (GET .../showroom-qr-code) or tapping the link on a buyer's
 # Wallet loan card both land here.
+SHOWROOM_CSS = """
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--ink:#0f172a;--muted:#64748b;--line:#e7eaf0;--accent:#0d9488;--accent-dark:#0b7c72;--paper:#f6f7fb}
+html{scroll-behavior:smooth}
+body{font-family:'Inter',-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--paper);color:var(--ink);padding-bottom:48px;-webkit-font-smoothing:antialiased}
+a{color:inherit}
+
+.hero{position:relative;height:340px;background-size:cover;background-position:center;background-color:var(--ink);isolation:isolate}
+.hero-fallback{background:radial-gradient(120% 140% at 20% 0%,#1e293b 0%,#0f172a 55%,#020617 100%)}
+.hero-overlay{position:absolute;inset:0;background:linear-gradient(180deg,rgba(2,6,23,0.25) 0%,rgba(2,6,23,0.55) 55%,rgba(2,6,23,0.92) 100%);
+  display:flex;flex-direction:column;align-items:center;justify-content:flex-end;text-align:center;color:#fff;padding:28px 20px 26px}
+.hero-eyebrow{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;
+  color:#5eead4;background:rgba(13,148,136,0.16);border:1px solid rgba(94,234,212,0.3);padding:5px 12px;border-radius:999px;margin-bottom:14px}
+.hero-eyebrow .dot{width:6px;height:6px;border-radius:50%;background:#2dd4bf;box-shadow:0 0 0 3px rgba(45,212,191,0.25)}
+.hero-logo img{width:56px;height:56px;border-radius:14px;object-fit:cover;margin-bottom:10px;box-shadow:0 6px 18px rgba(0,0,0,0.35);border:2px solid rgba(255,255,255,0.15)}
+.hero-logo{font-size:36px;margin-bottom:6px}
+.hero h1{font-size:clamp(24px,5vw,34px);font-weight:800;letter-spacing:-0.02em}
+.hero p{font-size:14px;opacity:0.78;margin-top:6px;max-width:440px}
+
+.payment-wrap{display:flex;justify-content:center;margin-top:-22px;position:relative;z-index:5;padding:0 16px}
+.payment-link{display:inline-flex;align-items:center;gap:8px;text-align:center;
+  background:linear-gradient(135deg,var(--accent) 0%,var(--accent-dark) 100%);color:#fff;text-decoration:none;font-weight:700;font-size:14px;
+  padding:14px 26px;border-radius:999px;box-shadow:0 12px 24px rgba(13,148,136,0.32);transition:transform .15s ease,box-shadow .15s ease}
+.payment-link:hover{transform:translateY(-2px);box-shadow:0 16px 30px rgba(13,148,136,0.4)}
+
+.stats-strip{max-width:1080px;margin:30px auto 0;padding:0 20px;display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.stats-strip h2{font-size:19px;font-weight:800;letter-spacing:-0.01em}
+.stats-strip span{font-size:13px;color:var(--muted)}
+
+.filter-bar{max-width:1080px;margin:14px auto 0;padding:0 20px;display:flex;gap:8px;flex-wrap:wrap}
+.filter-chip{border:1px solid var(--line);background:#fff;color:var(--muted);font-size:12.5px;font-weight:600;
+  padding:8px 14px;border-radius:999px;cursor:pointer;transition:all .15s ease}
+.filter-chip:hover{border-color:#cbd5e1;color:var(--ink)}
+.filter-chip.active{background:var(--ink);border-color:var(--ink);color:#fff}
+
+.car-grid{max-width:1080px;margin:18px auto 0;padding:0 20px;display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:22px}
+.car-card{background:#fff;border-radius:18px;overflow:hidden;border:1px solid var(--line);
+  box-shadow:0 1px 3px rgba(15,23,42,0.04);transition:transform .2s ease,box-shadow .2s ease}
+.car-card:hover{transform:translateY(-5px);box-shadow:0 18px 34px rgba(15,23,42,0.12)}
+
+.car-gallery{position:relative;aspect-ratio:4/3;background:#e2e8f0;overflow:hidden;cursor:pointer}
+.gal-track{display:flex;height:100%;transition:transform .35s cubic-bezier(.4,0,.2,1)}
+.gal-track img{flex:0 0 100%;width:100%;height:100%;object-fit:cover;display:block;user-select:none;-webkit-user-drag:none}
+.gal-btn{position:absolute;top:50%;transform:translateY(-50%);width:30px;height:30px;border-radius:50%;border:none;
+  background:rgba(2,6,23,0.5);color:#fff;font-size:13px;display:flex;align-items:center;justify-content:center;
+  cursor:pointer;opacity:0;transition:opacity .15s ease,background .15s ease;backdrop-filter:blur(2px)}
+.car-gallery:hover .gal-btn{opacity:1}
+.gal-btn:hover{background:rgba(2,6,23,0.75)}
+.gal-btn.prev{left:8px}.gal-btn.next{right:8px}
+.gal-dots{position:absolute;bottom:9px;left:0;right:0;display:flex;justify-content:center;gap:5px}
+.gal-dots .dot{width:5px;height:5px;border-radius:50%;background:rgba(255,255,255,0.55);transition:all .15s ease}
+.gal-dots .dot.active{background:#fff;width:14px;border-radius:3px}
+.gal-count{position:absolute;top:9px;right:9px;background:rgba(2,6,23,0.55);color:#fff;font-size:10.5px;font-weight:600;
+  padding:3px 8px;border-radius:999px;letter-spacing:0.02em}
+.no-image{width:100%;aspect-ratio:4/3;background:linear-gradient(135deg,#eef1f6,#e2e8f0);display:flex;align-items:center;
+  justify-content:center;font-size:44px;color:#b6c0cf}
+
+.badge{position:absolute;top:10px;left:10px;z-index:2;display:inline-block;font-size:10.5px;font-weight:700;
+  padding:4px 10px;border-radius:999px;letter-spacing:0.02em;box-shadow:0 4px 10px rgba(0,0,0,0.15)}
+.badge.reserved{background:#fef3c7;color:#92400e}
+
+.car-info{padding:16px 16px 18px}
+.car-info h3{font-size:16px;font-weight:700;margin:2px 0 4px;letter-spacing:-0.01em}
+.car-meta{font-size:12.5px;color:var(--muted)}
+.car-price-row{display:flex;align-items:center;justify-content:space-between;margin-top:12px;padding-top:12px;border-top:1px dashed var(--line)}
+.car-price{font-size:17px;font-weight:800;color:var(--ink);letter-spacing:-0.01em}
+.car-price small{font-size:11px;font-weight:600;color:var(--muted);margin-left:4px}
+
+.empty-state{max-width:480px;margin:70px auto;text-align:center;color:var(--muted);padding:0 24px}
+.empty-state .icon{font-size:42px;margin-bottom:10px;opacity:0.6}
+.empty-state p{font-size:14px}
+
+.footer{max-width:1080px;margin:44px auto 0;padding:20px 20px 0;text-align:center;color:#9aa4b2;font-size:11.5px;
+  border-top:1px solid var(--line)}
+
+.lightbox{display:none;position:fixed;inset:0;background:rgba(2,6,23,0.94);z-index:1000;align-items:center;justify-content:center}
+.lightbox.open{display:flex}
+.lightbox-img{max-width:88vw;max-height:78vh;border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,0.5);object-fit:contain}
+.lightbox-close{position:fixed;top:18px;right:20px;font-size:30px;line-height:1;color:#fff;background:rgba(255,255,255,0.08);
+  border:none;width:42px;height:42px;border-radius:50%;cursor:pointer}
+.lightbox-close:hover{background:rgba(255,255,255,0.16)}
+.lightbox-nav{position:fixed;top:50%;transform:translateY(-50%);width:46px;height:46px;border-radius:50%;
+  background:rgba(255,255,255,0.08);color:#fff;border:none;font-size:18px;cursor:pointer;transition:background .15s ease}
+.lightbox-nav:hover{background:rgba(255,255,255,0.18)}
+.lightbox-nav.prev{left:16px}.lightbox-nav.next{right:16px}
+.lightbox-counter{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);color:#fff;font-size:12.5px;
+  background:rgba(255,255,255,0.1);padding:5px 14px;border-radius:999px;letter-spacing:0.02em}
+
+@media(max-width:520px){
+  .hero{height:300px}
+  .lightbox-nav{width:40px;height:40px;font-size:15px}
+  .lightbox-nav.prev{left:8px}.lightbox-nav.next{right:8px}
+}
+"""
+
+SHOWROOM_JS = """
+(function(){
+  document.querySelectorAll('.car-gallery').forEach(function(gallery){
+    var track = gallery.querySelector('.gal-track');
+    if (!track) return;
+    var imgs = track.querySelectorAll('img');
+    var dots = gallery.querySelectorAll('.gal-dots .dot');
+    var counter = gallery.querySelector('.gal-count');
+    var index = 0;
+    function render(){
+      track.style.transform = 'translateX(-' + (index * 100) + '%)';
+      dots.forEach(function(d, i){ d.classList.toggle('active', i === index); });
+      if (counter) counter.textContent = (index + 1) + '/' + imgs.length;
+    }
+    var prevBtn = gallery.querySelector('.gal-btn.prev');
+    var nextBtn = gallery.querySelector('.gal-btn.next');
+    if (prevBtn) prevBtn.addEventListener('click', function(e){ e.stopPropagation(); index = (index - 1 + imgs.length) % imgs.length; render(); });
+    if (nextBtn) nextBtn.addEventListener('click', function(e){ e.stopPropagation(); index = (index + 1) % imgs.length; render(); });
+    dots.forEach(function(d, i){ d.addEventListener('click', function(e){ e.stopPropagation(); index = i; render(); }); });
+    gallery.addEventListener('click', function(){
+      openLightbox(Array.prototype.map.call(imgs, function(im){ return im.src; }), index);
+    });
+  });
+
+  var lightbox = document.getElementById('lightbox');
+  var lbImg = document.getElementById('lightbox-img');
+  var lbCounter = document.getElementById('lightbox-counter');
+  var lbImages = [];
+  var lbIndex = 0;
+
+  function openLightbox(images, startIndex){
+    if (!images.length) return;
+    lbImages = images;
+    lbIndex = startIndex || 0;
+    renderLightbox();
+    lightbox.classList.add('open');
+  }
+  function renderLightbox(){
+    lbImg.src = lbImages[lbIndex];
+    lbCounter.textContent = (lbIndex + 1) + ' / ' + lbImages.length;
+  }
+  function closeLightbox(){ lightbox.classList.remove('open'); lbImg.src=''; }
+  function stepLightbox(delta){ lbIndex = (lbIndex + delta + lbImages.length) % lbImages.length; renderLightbox(); }
+
+  var closeBtn = document.getElementById('lightbox-close');
+  var prevBtn = document.getElementById('lightbox-prev');
+  var nextBtn = document.getElementById('lightbox-next');
+  if (closeBtn) closeBtn.addEventListener('click', closeLightbox);
+  if (prevBtn) prevBtn.addEventListener('click', function(){ stepLightbox(-1); });
+  if (nextBtn) nextBtn.addEventListener('click', function(){ stepLightbox(1); });
+  if (lightbox) lightbox.addEventListener('click', function(e){ if (e.target === lightbox) closeLightbox(); });
+  document.addEventListener('keydown', function(e){
+    if (!lightbox || !lightbox.classList.contains('open')) return;
+    if (e.key === 'Escape') closeLightbox();
+    if (e.key === 'ArrowLeft') stepLightbox(-1);
+    if (e.key === 'ArrowRight') stepLightbox(1);
+  });
+
+  var chips = document.querySelectorAll('.filter-chip');
+  var cards = document.querySelectorAll('.car-card');
+  chips.forEach(function(chip){
+    chip.addEventListener('click', function(){
+      chips.forEach(function(c){ c.classList.remove('active'); });
+      chip.classList.add('active');
+      var status = chip.getAttribute('data-status');
+      cards.forEach(function(card){
+        card.style.display = (status === 'all' || card.getAttribute('data-status') === status) ? '' : 'none';
+      });
+    });
+  });
+})();
+"""
+
 @app.get("/showroom/{business_public_id}", response_class=HTMLResponse)
 async def showroom_page(business_public_id: str):
     try:
@@ -7659,88 +7848,115 @@ async def showroom_page(business_public_id: str):
         except Exception:
             vehicles = []
 
-        if hero_url:
-            hero_html = (
-                '<div class="hero" style="background-image:url(\'' + html_lib.escape(hero_url) + '\')">'
-                '<div class="hero-overlay"><div class="hero-logo">' +
-                ('<img src="' + html_lib.escape(logo_url) + '" alt="Logo"/>' if logo_url else '') +
-                '</div><h1>' + html_lib.escape(biz_name) + '</h1><p>Browse our current inventory</p></div></div>'
-            )
-        else:
-            hero_html = (
-                '<div class="hero hero-fallback"><div class="hero-overlay"><div class="hero-logo">' +
-                ('<img src="' + html_lib.escape(logo_url) + '" alt="Logo"/>' if logo_url else '&#128663;') +
-                '</div><h1>' + html_lib.escape(biz_name) + '</h1><p>Browse our current inventory</p></div></div>'
-            )
+        logo_html = ('<img src="' + html_lib.escape(logo_url) + '" alt="Logo"/>') if logo_url else '&#128663;'
+        hero_class = 'hero' if hero_url else 'hero hero-fallback'
+        hero_style = (" style=\"background-image:url('" + html_lib.escape(hero_url) + "')\"") if hero_url else ''
+        hero_html = (
+            '<div class="' + hero_class + '"' + hero_style + '>'
+            '<div class="hero-overlay">'
+            '<div class="hero-eyebrow"><span class="dot"></span>Live inventory</div>'
+            '<div class="hero-logo">' + logo_html + '</div>'
+            '<h1>' + html_lib.escape(biz_name) + '</h1>'
+            '<p>Browse our current lineup - photos and pricing update the moment a unit moves.</p>'
+            '</div></div>'
+        )
 
         if pay_url:
             payment_html = (
-                '<a class="payment-link" href="' + html_lib.escape(pay_url) + '" target="_blank" rel="noopener">'
-                '&#128179; ' + html_lib.escape(pay_label) + '</a>'
+                '<div class="payment-wrap"><a class="payment-link" href="' + html_lib.escape(pay_url) + '" target="_blank" rel="noopener">'
+                '&#128179; ' + html_lib.escape(pay_label) + '</a></div>'
             )
         else:
             payment_html = ''
 
+        n_available = sum(1 for v in vehicles if v.get('status') == 'available')
+        n_reserved = sum(1 for v in vehicles if v.get('status') == 'reserved')
+
+        stats_html = (
+            '<div class="stats-strip"><h2>Available Vehicles</h2>'
+            '<span>' + str(len(vehicles)) + (' unit' if len(vehicles) == 1 else ' units') + ' listed</span></div>'
+        )
+
+        chips = ['<button class="filter-chip active" data-status="all">All (' + str(len(vehicles)) + ')</button>']
+        if n_available:
+            chips.append('<button class="filter-chip" data-status="available">Available (' + str(n_available) + ')</button>')
+        if n_reserved:
+            chips.append('<button class="filter-chip" data-status="reserved">Reserved (' + str(n_reserved) + ')</button>')
+        filter_html = ('<div class="filter-bar">' + ''.join(chips) + '</div>') if vehicles else ''
+
         if vehicles:
             cards = []
             for v in vehicles:
-                img = v.get('image_url')
-                img_html = ('<img src="' + html_lib.escape(img) + '" alt="' + html_lib.escape(v.get('make', '')) + '"/>') if img \
-                    else '<div class="no-image">&#128663;</div>'
+                raw_imgs = v.get('image_urls') or ([v.get('image_url')] if v.get('image_url') else [])
+                imgs = [html_lib.escape(i) for i in raw_imgs if i][:5]
                 title = html_lib.escape(f"{v.get('year') or ''} {v.get('make', '')} {v.get('model', '')}".strip())
+
+                if imgs:
+                    gal_imgs_html = ''.join('<img src="' + i + '" alt="' + title + '" loading="lazy">' for i in imgs)
+                    multi = len(imgs) > 1
+                    nav_html = ('<button class="gal-btn prev" aria-label="Previous photo">&#10094;</button>'
+                                '<button class="gal-btn next" aria-label="Next photo">&#10095;</button>') if multi else ''
+                    dots_html = ('<div class="gal-dots">' + ''.join(
+                        '<span class="dot' + (' active' if i == 0 else '') + '"></span>' for i in range(len(imgs))
+                    ) + '</div>') if multi else ''
+                    count_html = ('<span class="gal-count">1/' + str(len(imgs)) + '</span>') if multi else ''
+                    badge = '<span class="badge reserved">Reserved</span>' if v.get('status') == 'reserved' else ''
+                    gallery_html = (
+                        '<div class="car-gallery">' + badge +
+                        '<div class="gal-track">' + gal_imgs_html + '</div>' +
+                        nav_html + dots_html + count_html +
+                        '</div>'
+                    )
+                else:
+                    badge = '<span class="badge reserved">Reserved</span>' if v.get('status') == 'reserved' else ''
+                    gallery_html = '<div style="position:relative">' + badge + '<div class="no-image">&#128663;</div></div>'
+
                 price = v.get('price') or 0
                 price_str = f"₱{price:,.0f}"
-                badge = '<span class="badge reserved">Reserved</span>' if v.get('status') == 'reserved' else ''
                 meta_bits = []
                 if v.get('color'):
                     meta_bits.append(html_lib.escape(str(v.get('color'))))
                 if v.get('mileage') is not None:
                     meta_bits.append(f"{v.get('mileage'):,} km")
+                if v.get('plate_number'):
+                    meta_bits.append(html_lib.escape(str(v.get('plate_number'))))
                 meta = ' &middot; '.join(meta_bits)
+
                 cards.append(
-                    '<div class="car-card">' + img_html +
-                    '<div class="car-info">' + badge +
+                    '<div class="car-card" data-status="' + html_lib.escape(v.get('status') or '') + '">' +
+                    gallery_html +
+                    '<div class="car-info">' +
                     '<h3>' + title + '</h3>' +
                     ('<p class="car-meta">' + meta + '</p>' if meta else '') +
-                    '<p class="car-price">' + price_str + '</p>'
+                    '<div class="car-price-row"><span class="car-price">' + price_str + '</span></div>'
                     '</div></div>'
                 )
             grid_html = '<div class="car-grid">' + ''.join(cards) + '</div>'
         else:
-            grid_html = '<div class="empty-state"><p>No vehicles available right now - check back soon!</p></div>'
+            grid_html = '<div class="empty-state"><div class="icon">&#128663;</div><p>No vehicles available right now - check back soon!</p></div>'
+
+        lightbox_html = (
+            '<div id="lightbox" class="lightbox">'
+            '<button id="lightbox-close" class="lightbox-close" aria-label="Close">&times;</button>'
+            '<button id="lightbox-prev" class="lightbox-nav prev" aria-label="Previous">&#10094;</button>'
+            '<img id="lightbox-img" class="lightbox-img" src="" alt="Vehicle photo">'
+            '<button id="lightbox-next" class="lightbox-nav next" aria-label="Next">&#10095;</button>'
+            '<div id="lightbox-counter" class="lightbox-counter"></div>'
+            '</div>'
+        )
+
+        footer_html = '<div class="footer">Powered by LoyaltyTree &middot; listings update in real time</div>'
 
         html = (
             '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
             '<title>' + html_lib.escape(biz_name) + ' Showroom</title>'
-            '<style>'
-            '*{box-sizing:border-box;margin:0;padding:0}'
-            'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#f8fafc;color:#1e293b;padding-bottom:40px}'
-            '.hero{position:relative;height:260px;background-size:cover;background-position:center;'
-            'background-color:#0f172a}'
-            '.hero-fallback{background:linear-gradient(135deg,#0f172a 0%,#334155 100%)}'
-            '.hero-overlay{position:absolute;inset:0;background:linear-gradient(180deg,rgba(15,23,42,0.35) 0%,rgba(15,23,42,0.75) 100%);'
-            'display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:#fff;padding:20px}'
-            '.hero-logo img{width:64px;height:64px;border-radius:16px;object-fit:cover;margin-bottom:12px}'
-            '.hero-logo{font-size:40px;margin-bottom:8px}'
-            '.hero h1{font-size:26px;font-weight:800}'
-            '.hero p{font-size:14px;opacity:0.85;margin-top:4px}'
-            '.payment-link{display:block;max-width:480px;margin:16px auto 0;text-align:center;'
-            'background:#16a34a;color:#fff;text-decoration:none;font-weight:700;padding:14px 20px;border-radius:12px;'
-            'box-shadow:0 8px 20px rgba(22,163,74,0.25)}'
-            '.car-grid{max-width:960px;margin:28px auto 0;padding:0 16px;display:grid;'
-            'grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px}'
-            '.car-card{background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 14px rgba(0,0,0,0.06)}'
-            '.car-card img{width:100%;height:150px;object-fit:cover;display:block}'
-            '.no-image{width:100%;height:150px;background:#e2e8f0;display:flex;align-items:center;justify-content:center;font-size:40px;color:#94a3b8}'
-            '.car-info{padding:14px}'
-            '.car-info h3{font-size:16px;margin:4px 0 2px}'
-            '.car-meta{font-size:12px;color:#64748b}'
-            '.car-price{font-size:16px;font-weight:800;color:#0f172a;margin-top:6px}'
-            '.badge{display:inline-block;font-size:11px;font-weight:700;padding:3px 8px;border-radius:999px;background:#fef3c7;color:#92400e}'
-            '.empty-state{max-width:480px;margin:60px auto;text-align:center;color:#64748b;padding:0 20px}'
-            '</style></head><body>'
-            + hero_html + payment_html + grid_html +
+            '<link rel="preconnect" href="https://fonts.googleapis.com">'
+            '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
+            '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">'
+            '<style>' + SHOWROOM_CSS + '</style></head><body>'
+            + hero_html + payment_html + stats_html + filter_html + grid_html + footer_html + lightbox_html +
+            '<script>' + SHOWROOM_JS + '</script>'
             '</body></html>'
         )
         return HTMLResponse(html)
