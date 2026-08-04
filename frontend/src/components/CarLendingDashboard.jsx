@@ -451,13 +451,15 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const [showVehicleForm, setShowVehicleForm] = useState(false)
   const [editingVehicle, setEditingVehicle] = useState(null) // vehicle being edited, or null for "new" - AddVehicleModal reads its form straight off this
 
-  // ---------- Showroom settings (hero banner + payment methods link shown
-  // on the public /showroom page) ----------
-  const [showroomForm, setShowroomForm] = useState({ hero_image_url: '', contact_text: '' })
+  // ---------- Showroom settings (hero banner + logo + payment methods
+  // link shown on the public /showroom page) ----------
+  const [showroomForm, setShowroomForm] = useState({ hero_image_url: '', contact_text: '', logo_url: '' })
   const [uploadingHero, setUploadingHero] = useState(false)
+  const [uploadingLogo, setUploadingLogo] = useState(false)
   const [savingShowroom, setSavingShowroom] = useState(false)
   const [showroomQR, setShowroomQR] = useState(null) // { svg, showroom_url }, or null
   const heroFileInputRef = React.useRef(null)
+  const logoFileInputRef = React.useRef(null)
 
   // ---------- Contracts (deals) state ----------
   const emptyContractForm = {
@@ -537,6 +539,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
         setShowroomForm({
           hero_image_url: showroomData.hero_image_url || '',
           contact_text: showroomData.contact_text || '',
+          logo_url: showroomData.logo_url || '',
         })
       }
     } catch (err) {
@@ -739,7 +742,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     }
   }
 
-  // ---------- Showroom settings (hero banner + payment methods link) ----------
+  // ---------- Showroom settings (hero banner + logo + payment methods link) ----------
   const uploadShowroomHero = async (file) => {
     if (!file) return
     setUploadingHero(true)
@@ -752,6 +755,18 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     setUploadingHero(false)
   }
 
+  const uploadShowroomLogo = async (file) => {
+    if (!file) return
+    setUploadingLogo(true)
+    try {
+      const url = await uploadImageToCloudinary(API_BASE, businessId, file)
+      setShowroomForm({ ...showroomForm, logo_url: url })
+    } catch (err) {
+      flash(err.message)
+    }
+    setUploadingLogo(false)
+  }
+
   const saveShowroomConfig = async () => {
     setSavingShowroom(true)
     try {
@@ -761,6 +776,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
         body: JSON.stringify({
           hero_image_url: showroomForm.hero_image_url || null,
           contact_text: showroomForm.contact_text,
+          logo_url: showroomForm.logo_url || null,
         }),
       })
       const data = await res.json().catch(() => ({}))
@@ -1320,9 +1336,41 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
             <div style={styles.walletSetupCard}>
               <h3 style={styles.walletSetupTitle}>Showroom settings</h3>
               <p style={styles.walletSetupSubtitle}>
-                The hero banner and payment methods link shown at the top of your public showroom page.
+                The logo, hero banner, and contact note shown at the top of your public showroom page.
               </p>
 
+              <label style={styles.label}>Logo</label>
+              <div
+                style={{ ...styles.uploadZone, marginBottom: 12, minHeight: 90 }}
+                onClick={() => !uploadingLogo && logoFileInputRef.current && logoFileInputRef.current.click()}
+                onDragOver={e => e.preventDefault()}
+                onDrop={e => {
+                  e.preventDefault()
+                  const file = e.dataTransfer.files && e.dataTransfer.files[0]
+                  if (file) uploadShowroomLogo(file)
+                }}
+              >
+                <input
+                  ref={logoFileInputRef}
+                  type="file"
+                  accept="image/*"
+                  style={{ display: 'none' }}
+                  onChange={e => uploadShowroomLogo(e.target.files && e.target.files[0])}
+                />
+                {uploadingLogo ? (
+                  <div style={styles.uploadHint}>Uploading…</div>
+                ) : showroomForm.logo_url ? (
+                  <>
+                    <img src={showroomForm.logo_url} alt="Business logo" style={{ ...styles.uploadPreview, width: 72, height: 72, objectFit: 'cover', borderRadius: 16 }} />
+                    <div style={styles.uploadHint}>Click or drop to replace logo</div>
+                  </>
+                ) : (
+                  <div style={styles.uploadHint}>🏷️ Click or drag a logo image here</div>
+                )}
+              </div>
+              <div style={styles.photoCountHint}>Shown inside the hero banner on the showroom page (and anywhere else your logo appears, e.g. loyalty/wallet cards).</div>
+
+              <label style={{ ...styles.label, marginTop: 14 }}>Hero banner</label>
               <div
                 style={{ ...styles.uploadZone, marginBottom: 12 }}
                 onClick={() => !uploadingHero && heroFileInputRef.current && heroFileInputRef.current.click()}
@@ -1363,7 +1411,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
               <div style={styles.photoCountHint}>{showroomForm.contact_text.length}/280 · shown as plain text below the hero banner on the showroom page</div>
 
               <div style={{ ...styles.modalActions, marginTop: 14, justifyContent: 'flex-start' }}>
-                <button onClick={saveShowroomConfig} disabled={savingShowroom || uploadingHero} style={styles.newBtnAlt}>
+                <button onClick={saveShowroomConfig} disabled={savingShowroom || uploadingHero || uploadingLogo} style={styles.newBtnAlt}>
                   {savingShowroom ? 'Saving…' : 'Save showroom settings'}
                 </button>
               </div>

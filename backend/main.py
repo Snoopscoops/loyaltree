@@ -545,15 +545,17 @@ class VehicleUpdate(BaseModel):
     image_urls: Optional[List[str]] = None
 
 # --- Car Lending / Showroom: public showroom page settings (one row per
-# business - hero banner shown at the top of /showroom/{public_id} and an
-# owner-editable inquiries/contact note shown just below it, e.g. "For
-# inquiries, call 0917-xxx-xxxx" - free text, not a link). Stored directly
-# on the businesses table (see showroom_hero_image_url /
-# showroom_contact_text columns) since it's a single settings object per
-# business, same spirit as logo_url. ---
+# business - hero banner shown at the top of /showroom/{public_id}, the
+# business logo shown inside that banner, and an owner-editable
+# inquiries/contact note shown just below it, e.g. "For inquiries, call
+# 0917-xxx-xxxx" - free text, not a link). Stored directly on the
+# businesses table (hero_image_url/contact_text under showroom_* columns,
+# logo_url shared with the rest of the app - loyalty cards, wallet passes,
+# etc). ---
 class ShowroomConfigUpdate(BaseModel):
     hero_image_url: Optional[str] = None
     contact_text: Optional[str] = Field(default=None, max_length=280)
+    logo_url: Optional[str] = None
 
 # --- Car Lending / Showroom: contracts (the deal - cash sale or financed) ---
 class ContractCreate(BaseModel):
@@ -4735,15 +4737,16 @@ async def get_cl_join_qr_code(public_id: str):
 
 @app.get("/api/v1/business/{public_id}/showroom-config")
 async def get_showroom_config(public_id: str):
-    """Hero banner + owner-editable contact/inquiries note shown on the
-    public /showroom page. Read straight off the businesses row - no
-    separate table, same as logo_url."""
+    """Hero banner + logo + owner-editable contact/inquiries note shown on
+    the public /showroom page. Read straight off the businesses row - no
+    separate table."""
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
     return {
         "hero_image_url": business.get("showroom_hero_image_url"),
         "contact_text": business.get("showroom_contact_text") or "",
+        "logo_url": business.get("logo_url"),
     }
 
 @app.post("/api/v1/business/{public_id}/showroom-config")
@@ -4755,6 +4758,7 @@ async def save_showroom_config(public_id: str, config: ShowroomConfigUpdate):
     update_data = {k: v for k, v in {
         'showroom_hero_image_url': config.hero_image_url,
         'showroom_contact_text': config.contact_text,
+        'logo_url': config.logo_url,
     }.items() if v is not None}
     if not update_data:
         return await get_showroom_config(public_id)
@@ -7707,9 +7711,16 @@ a{color:inherit}
 
 .filter-bar{max-width:1080px;margin:14px auto 0;padding:0 20px;display:flex;gap:8px;flex-wrap:wrap}
 .filter-chip{border:1px solid var(--line);background:#fff;color:var(--muted);font-size:12.5px;font-weight:600;
-  padding:8px 14px;border-radius:999px;cursor:pointer;transition:all .15s ease}
+  padding:8px 14px;border-radius:999px;cursor:pointer;transition:all .15s ease;display:inline-flex;align-items:center;gap:7px}
 .filter-chip:hover{border-color:#cbd5e1;color:var(--ink)}
 .filter-chip.active{background:var(--ink);border-color:var(--ink);color:#fff}
+.filter-chip .chip-count{color:inherit;opacity:0.55;font-weight:700}
+.filter-chip.active .chip-count{opacity:0.75}
+
+.make-filter-bar{flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px;scrollbar-width:thin}
+.make-filter-bar::-webkit-scrollbar{height:5px}
+.make-filter-bar::-webkit-scrollbar-thumb{background:var(--line);border-radius:999px}
+.make-filter-bar .filter-chip{flex:0 0 auto}
 
 .car-grid{max-width:1080px;margin:18px auto 0;padding:0 20px;display:grid;
   grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:22px}
@@ -7830,16 +7841,35 @@ SHOWROOM_JS = """
     if (e.key === 'ArrowRight') stepLightbox(1);
   });
 
-  var chips = document.querySelectorAll('.filter-chip');
   var cards = document.querySelectorAll('.car-card');
-  chips.forEach(function(chip){
+  var activeStatus = 'all';
+  var activeMake = 'all';
+
+  function applyFilters(){
+    cards.forEach(function(card){
+      var statusOk = (activeStatus === 'all' || card.getAttribute('data-status') === activeStatus);
+      var makeOk = (activeMake === 'all' || card.getAttribute('data-make') === activeMake);
+      card.style.display = (statusOk && makeOk) ? '' : 'none';
+    });
+  }
+
+  var statusChips = document.querySelectorAll('.filter-bar:not(.make-filter-bar) .filter-chip');
+  statusChips.forEach(function(chip){
     chip.addEventListener('click', function(){
-      chips.forEach(function(c){ c.classList.remove('active'); });
+      statusChips.forEach(function(c){ c.classList.remove('active'); });
       chip.classList.add('active');
-      var status = chip.getAttribute('data-status');
-      cards.forEach(function(card){
-        card.style.display = (status === 'all' || card.getAttribute('data-status') === status) ? '' : 'none';
-      });
+      activeStatus = chip.getAttribute('data-status');
+      applyFilters();
+    });
+  });
+
+  var makeChips = document.querySelectorAll('.make-filter-bar .filter-chip');
+  makeChips.forEach(function(chip){
+    chip.addEventListener('click', function(){
+      makeChips.forEach(function(c){ c.classList.remove('active'); });
+      chip.classList.add('active');
+      activeMake = chip.getAttribute('data-make');
+      applyFilters();
     });
   });
 })();
@@ -7872,7 +7902,6 @@ async def showroom_page(business_public_id: str):
             '<div class="hero-eyebrow"><span class="dot"></span>Live inventory</div>'
             '<div class="hero-logo">' + logo_html + '</div>'
             '<h1>' + html_lib.escape(biz_name) + '</h1>'
-            '<p>Browse our current lineup - photos and pricing update the moment a unit moves.</p>'
             '</div></div>'
         )
 
@@ -7899,6 +7928,29 @@ async def showroom_page(business_public_id: str):
         if n_reserved:
             chips.append('<button class="filter-chip" data-status="reserved">Reserved (' + str(n_reserved) + ')</button>')
         filter_html = ('<div class="filter-bar">' + ''.join(chips) + '</div>') if vehicles else ''
+
+        # Make/brand chips (All + one per manufacturer, most-listed first) so
+        # buyers can jump straight to a brand instead of scrolling the whole
+        # grid - mirrors the status chips above but filters on data-make.
+        make_counts = {}
+        for v in vehicles:
+            mk = (v.get('make') or '').strip()
+            if mk:
+                make_counts[mk] = make_counts.get(mk, 0) + 1
+        sorted_makes = sorted(make_counts.items(), key=lambda kv: (-kv[1], kv[0].lower()))
+
+        if len(sorted_makes) > 1:
+            make_chips = ['<button class="filter-chip active" data-make="all">All <span class="chip-count">'
+                          + str(len(vehicles)) + '</span></button>']
+            for mk, cnt in sorted_makes:
+                make_chips.append(
+                    '<button class="filter-chip" data-make="' + html_lib.escape(mk) + '">'
+                    + html_lib.escape(mk) + ' <span class="chip-count">' + str(cnt) + '</span>'
+                    '</button>'
+                )
+            make_filter_html = '<div class="filter-bar make-filter-bar">' + ''.join(make_chips) + '</div>'
+        else:
+            make_filter_html = ''
 
         if vehicles:
             cards = []
@@ -7939,7 +7991,8 @@ async def showroom_page(business_public_id: str):
                 meta = ' &middot; '.join(meta_bits)
 
                 cards.append(
-                    '<div class="car-card" data-status="' + html_lib.escape(v.get('status') or '') + '">' +
+                    '<div class="car-card" data-status="' + html_lib.escape(v.get('status') or '') +
+                    '" data-make="' + html_lib.escape((v.get('make') or '').strip()) + '">' +
                     gallery_html +
                     '<div class="car-info">' +
                     '<h3>' + title + '</h3>' +
@@ -7971,7 +8024,7 @@ async def showroom_page(business_public_id: str):
             '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
             '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">'
             '<style>' + SHOWROOM_CSS + '</style></head><body>'
-            + hero_html + payment_html + stats_html + filter_html + grid_html + footer_html + lightbox_html +
+            + hero_html + payment_html + stats_html + filter_html + make_filter_html + grid_html + footer_html + lightbox_html +
             '<script>' + SHOWROOM_JS + '</script>'
             '</body></html>'
         )
