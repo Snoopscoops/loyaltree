@@ -176,7 +176,7 @@ async function uploadImageToCloudinary(apiBase, businessId, file) {
   return cloudData.secure_url
 }
 
-const VEHICLE_MAX_PHOTOS = 5
+const VEHICLE_MAX_PHOTOS = 10
 
 function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved }) {
   const emptyForm = { make: '', model: '', year: '', plate_number: '', color: '', mileage: '', price: '', total_cost: '', agent_name: '', status: 'available' }

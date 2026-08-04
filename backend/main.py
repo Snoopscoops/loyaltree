@@ -514,7 +514,7 @@ class CLCustomerUpdate(BaseModel):
 # --- Car Lending / Showroom: vehicle inventory ---
 VEHICLE_STATUS_OPTIONS = ['available', 'reserved', 'sold', 'financed']
 
-VEHICLE_MAX_PHOTOS = 5
+VEHICLE_MAX_PHOTOS = 10
 
 class VehicleCreate(BaseModel):
     make: str
@@ -7724,7 +7724,7 @@ a{color:inherit}
 
 .car-grid{max-width:1080px;margin:18px auto 0;padding:0 20px;display:grid;
   grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:22px}
-.car-card{background:#fff;border-radius:18px;overflow:hidden;border:1px solid var(--line);
+.car-card{background:#fff;border-radius:18px;overflow:hidden;border:1px solid var(--line);cursor:pointer;
   box-shadow:0 1px 3px rgba(15,23,42,0.04);transition:transform .2s ease,box-shadow .2s ease}
 .car-card:hover{transform:translateY(-5px);box-shadow:0 18px 34px rgba(15,23,42,0.12)}
 
@@ -7781,6 +7781,35 @@ a{color:inherit}
   .lightbox-nav{width:40px;height:40px;font-size:15px}
   .lightbox-nav.prev{left:8px}.lightbox-nav.next{right:8px}
 }
+
+.vehicle-modal{display:none;position:fixed;inset:0;background:rgba(2,6,23,0.6);z-index:900;
+  align-items:center;justify-content:center;padding:20px}
+.vehicle-modal.open{display:flex}
+.vehicle-modal-card{background:#fff;border-radius:20px;max-width:480px;width:100%;max-height:88vh;
+  overflow-y:auto;box-shadow:0 24px 60px rgba(2,6,23,0.35);position:relative}
+.vehicle-modal-close{position:absolute;top:12px;right:12px;z-index:3;width:34px;height:34px;border-radius:50%;
+  border:none;background:rgba(15,23,42,0.55);color:#fff;font-size:20px;line-height:1;cursor:pointer}
+.vehicle-modal-close:hover{background:rgba(15,23,42,0.75)}
+.vehicle-modal-gallery{position:relative;aspect-ratio:4/3;background:#e2e8f0;border-radius:20px 20px 0 0;overflow:hidden}
+.vehicle-modal-gallery img{width:100%;height:100%;object-fit:cover;cursor:zoom-in;display:block}
+.vehicle-modal-nav{position:absolute;top:50%;transform:translateY(-50%);width:36px;height:36px;border-radius:50%;
+  border:none;background:rgba(255,255,255,0.85);color:var(--ink);font-size:14px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.2)}
+.vehicle-modal-nav.prev{left:12px}.vehicle-modal-nav.next{right:12px}
+.vehicle-modal-count{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);color:#fff;font-size:12px;
+  background:rgba(2,6,23,0.55);padding:4px 12px;border-radius:999px}
+.vehicle-modal-body{padding:20px 22px 24px}
+.vehicle-modal-body h3{font-size:19px;font-weight:800;letter-spacing:-0.01em;margin-bottom:4px}
+.vehicle-modal-meta{font-size:13px;color:var(--muted);margin-bottom:14px}
+.vehicle-modal-price-row{display:flex;align-items:center;gap:10px;padding-top:14px;border-top:1px dashed var(--line);margin-bottom:16px}
+.vehicle-modal-price{font-size:22px;font-weight:800;color:var(--ink);letter-spacing:-0.01em}
+.vehicle-modal-call-btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;
+  background:var(--accent);color:#fff;font-size:14.5px;font-weight:700;padding:13px 18px;border-radius:12px;
+  text-decoration:none;transition:background .15s ease}
+.vehicle-modal-call-btn:hover{background:var(--accent-dark)}
+
+@media(max-width:520px){
+  .vehicle-modal-card{max-height:92vh}
+}
 """
 
 SHOWROOM_JS = """
@@ -7802,9 +7831,6 @@ SHOWROOM_JS = """
     if (prevBtn) prevBtn.addEventListener('click', function(e){ e.stopPropagation(); index = (index - 1 + imgs.length) % imgs.length; render(); });
     if (nextBtn) nextBtn.addEventListener('click', function(e){ e.stopPropagation(); index = (index + 1) % imgs.length; render(); });
     dots.forEach(function(d, i){ d.addEventListener('click', function(e){ e.stopPropagation(); index = i; render(); }); });
-    gallery.addEventListener('click', function(){
-      openLightbox(Array.prototype.map.call(imgs, function(im){ return im.src; }), index);
-    });
   });
 
   var lightbox = document.getElementById('lightbox');
@@ -7828,17 +7854,18 @@ SHOWROOM_JS = """
   function stepLightbox(delta){ lbIndex = (lbIndex + delta + lbImages.length) % lbImages.length; renderLightbox(); }
 
   var closeBtn = document.getElementById('lightbox-close');
-  var prevBtn = document.getElementById('lightbox-prev');
-  var nextBtn = document.getElementById('lightbox-next');
+  var lbPrevBtn = document.getElementById('lightbox-prev');
+  var lbNextBtn = document.getElementById('lightbox-next');
   if (closeBtn) closeBtn.addEventListener('click', closeLightbox);
-  if (prevBtn) prevBtn.addEventListener('click', function(){ stepLightbox(-1); });
-  if (nextBtn) nextBtn.addEventListener('click', function(){ stepLightbox(1); });
+  if (lbPrevBtn) lbPrevBtn.addEventListener('click', function(){ stepLightbox(-1); });
+  if (lbNextBtn) lbNextBtn.addEventListener('click', function(){ stepLightbox(1); });
   if (lightbox) lightbox.addEventListener('click', function(e){ if (e.target === lightbox) closeLightbox(); });
   document.addEventListener('keydown', function(e){
-    if (!lightbox || !lightbox.classList.contains('open')) return;
-    if (e.key === 'Escape') closeLightbox();
-    if (e.key === 'ArrowLeft') stepLightbox(-1);
-    if (e.key === 'ArrowRight') stepLightbox(1);
+    if (lightbox && lightbox.classList.contains('open')) {
+      if (e.key === 'Escape') closeLightbox();
+      if (e.key === 'ArrowLeft') stepLightbox(-1);
+      if (e.key === 'ArrowRight') stepLightbox(1);
+    }
   });
 
   var cards = document.querySelectorAll('.car-card');
@@ -7870,6 +7897,71 @@ SHOWROOM_JS = """
       chip.classList.add('active');
       activeMake = chip.getAttribute('data-make');
       applyFilters();
+    });
+  });
+
+  // ---- Tap a car card to open its details (photos, price, status, and a
+  // "Call to inquire" button using the dealership's phone number) ----
+  var CARS = [];
+  try {
+    var carsDataEl = document.getElementById('cars-data');
+    CARS = carsDataEl ? JSON.parse(carsDataEl.textContent || '[]') : [];
+  } catch (e) { CARS = []; }
+
+  var vModal = document.getElementById('vehicle-modal');
+  var vImg = document.getElementById('vehicle-modal-img');
+  var vTitle = document.getElementById('vehicle-modal-title');
+  var vMeta = document.getElementById('vehicle-modal-meta');
+  var vPrice = document.getElementById('vehicle-modal-price');
+  var vBadge = document.getElementById('vehicle-modal-badge');
+  var vCall = document.getElementById('vehicle-modal-call');
+  var vCount = document.getElementById('vehicle-modal-count');
+  var vPrev = document.getElementById('vehicle-modal-prev');
+  var vNext = document.getElementById('vehicle-modal-next');
+  var vClose = document.getElementById('vehicle-modal-close');
+  var vCurCar = null;
+  var vCurIdx = 0;
+
+  function renderVehicleModal(){
+    if (!vCurCar) return;
+    var vimgs = vCurCar.imgs || [];
+    var multi = vimgs.length > 1;
+    if (vImg) vImg.src = vimgs[vCurIdx] || '';
+    if (vImg) vImg.alt = vCurCar.title || 'Vehicle photo';
+    if (vTitle) vTitle.textContent = vCurCar.title || '';
+    if (vMeta) { vMeta.textContent = vCurCar.meta || ''; vMeta.style.display = vCurCar.meta ? '' : 'none'; }
+    if (vPrice) vPrice.textContent = vCurCar.price || '';
+    if (vBadge) vBadge.style.display = (vCurCar.status === 'reserved') ? '' : 'none';
+    if (vPrev) vPrev.style.display = multi ? '' : 'none';
+    if (vNext) vNext.style.display = multi ? '' : 'none';
+    if (vCount) { vCount.style.display = multi ? '' : 'none'; vCount.textContent = (vCurIdx + 1) + '/' + vimgs.length; }
+  }
+  function openVehicleModal(idx){
+    var car = CARS[idx];
+    if (!car || !vModal) return;
+    vCurCar = car;
+    vCurIdx = 0;
+    renderVehicleModal();
+    vModal.classList.add('open');
+  }
+  function closeVehicleModal(){ if (vModal) vModal.classList.remove('open'); }
+
+  if (vPrev) vPrev.addEventListener('click', function(e){ e.stopPropagation(); var n = (vCurCar && vCurCar.imgs ? vCurCar.imgs.length : 0); if (!n) return; vCurIdx = (vCurIdx - 1 + n) % n; renderVehicleModal(); });
+  if (vNext) vNext.addEventListener('click', function(e){ e.stopPropagation(); var n = (vCurCar && vCurCar.imgs ? vCurCar.imgs.length : 0); if (!n) return; vCurIdx = (vCurIdx + 1) % n; renderVehicleModal(); });
+  if (vClose) vClose.addEventListener('click', closeVehicleModal);
+  if (vModal) vModal.addEventListener('click', function(e){ if (e.target === vModal) closeVehicleModal(); });
+  if (vImg) vImg.addEventListener('click', function(){
+    if (vCurCar && vCurCar.imgs && vCurCar.imgs.length) openLightbox(vCurCar.imgs, vCurIdx);
+  });
+  document.addEventListener('keydown', function(e){
+    if (!vModal || !vModal.classList.contains('open')) return;
+    if (e.key === 'Escape') closeVehicleModal();
+  });
+
+  cards.forEach(function(card){
+    card.addEventListener('click', function(){
+      var idx = card.getAttribute('data-idx');
+      if (idx !== null) openVehicleModal(parseInt(idx, 10));
     });
   });
 })();
@@ -7954,10 +8046,13 @@ async def showroom_page(business_public_id: str):
 
         if vehicles:
             cards = []
-            for v in vehicles:
+            cars_data = []
+            for idx, v in enumerate(vehicles):
                 raw_imgs = v.get('image_urls') or ([v.get('image_url')] if v.get('image_url') else [])
-                imgs = [html_lib.escape(i) for i in raw_imgs if i][:5]
+                raw_imgs = [i for i in raw_imgs if i][:VEHICLE_MAX_PHOTOS]
+                imgs = [html_lib.escape(i) for i in raw_imgs]
                 title = html_lib.escape(f"{v.get('year') or ''} {v.get('make', '')} {v.get('model', '')}".strip())
+                title_plain = f"{v.get('year') or ''} {v.get('make', '')} {v.get('model', '')}".strip()
 
                 if imgs:
                     gal_imgs_html = ''.join('<img src="' + i + '" alt="' + title + '" loading="lazy">' for i in imgs)
@@ -7982,16 +8077,21 @@ async def showroom_page(business_public_id: str):
                 price = v.get('price') or 0
                 price_str = f"₱{price:,.0f}"
                 meta_bits = []
+                meta_bits_plain = []
                 if v.get('color'):
                     meta_bits.append(html_lib.escape(str(v.get('color'))))
+                    meta_bits_plain.append(str(v.get('color')))
                 if v.get('mileage') is not None:
                     meta_bits.append(f"{v.get('mileage'):,} km")
+                    meta_bits_plain.append(f"{v.get('mileage'):,} km")
                 if v.get('plate_number'):
                     meta_bits.append(html_lib.escape(str(v.get('plate_number'))))
+                    meta_bits_plain.append(str(v.get('plate_number')))
                 meta = ' &middot; '.join(meta_bits)
+                meta_plain = ' · '.join(meta_bits_plain)
 
                 cards.append(
-                    '<div class="car-card" data-status="' + html_lib.escape(v.get('status') or '') +
+                    '<div class="car-card" data-idx="' + str(idx) + '" data-status="' + html_lib.escape(v.get('status') or '') +
                     '" data-make="' + html_lib.escape((v.get('make') or '').strip()) + '">' +
                     gallery_html +
                     '<div class="car-info">' +
@@ -8000,9 +8100,22 @@ async def showroom_page(business_public_id: str):
                     '<div class="car-price-row"><span class="car-price">' + price_str + '</span></div>'
                     '</div></div>'
                 )
+
+                # Plain (unescaped) copy for the tap-to-view details modal - the
+                # JS sets these via textContent/img.src, not innerHTML, so no
+                # HTML-escaping is needed here, only JSON-escaping below.
+                cars_data.append({
+                    'title': title_plain,
+                    'meta': meta_plain,
+                    'price': price_str,
+                    'status': v.get('status') or '',
+                    'imgs': raw_imgs,
+                })
             grid_html = '<div class="car-grid">' + ''.join(cards) + '</div>'
+            cars_json = json.dumps(cars_data).replace('</', '<\\/')
         else:
             grid_html = '<div class="empty-state"><div class="icon">&#128663;</div><p>No vehicles available right now - check back soon!</p></div>'
+            cars_json = '[]'
 
         lightbox_html = (
             '<div id="lightbox" class="lightbox">'
@@ -8012,6 +8125,32 @@ async def showroom_page(business_public_id: str):
             '<button id="lightbox-next" class="lightbox-nav next" aria-label="Next">&#10095;</button>'
             '<div id="lightbox-counter" class="lightbox-counter"></div>'
             '</div>'
+        )
+
+        biz_phone_digits = re.sub(r'[^0-9+]', '', business.get('phone') or '')
+        call_btn_html = (
+            '<a id="vehicle-modal-call" class="vehicle-modal-call-btn" href="tel:' + html_lib.escape(biz_phone_digits) + '">&#128222; Call to inquire</a>'
+        ) if biz_phone_digits else ''
+        vehicle_modal_html = (
+            '<div id="vehicle-modal" class="vehicle-modal">'
+            '<div class="vehicle-modal-card">'
+            '<button id="vehicle-modal-close" class="vehicle-modal-close" aria-label="Close">&times;</button>'
+            '<div class="vehicle-modal-gallery">'
+            '<img id="vehicle-modal-img" src="" alt="Vehicle photo">'
+            '<button id="vehicle-modal-prev" class="vehicle-modal-nav prev" aria-label="Previous photo">&#10094;</button>'
+            '<button id="vehicle-modal-next" class="vehicle-modal-nav next" aria-label="Next photo">&#10095;</button>'
+            '<span id="vehicle-modal-count" class="vehicle-modal-count"></span>'
+            '</div>'
+            '<div class="vehicle-modal-body">'
+            '<h3 id="vehicle-modal-title"></h3>'
+            '<p id="vehicle-modal-meta" class="vehicle-modal-meta"></p>'
+            '<div class="vehicle-modal-price-row">'
+            '<span id="vehicle-modal-price" class="vehicle-modal-price"></span>'
+            '<span id="vehicle-modal-badge" class="badge reserved" style="display:none;position:static">Reserved</span>'
+            '</div>'
+            + call_btn_html +
+            '</div></div></div>'
+            '<script id="cars-data" type="application/json">' + cars_json + '</script>'
         )
 
         footer_html = '<div class="footer">Powered by LoyaltyTree &middot; listings update in real time</div>'
@@ -8024,7 +8163,7 @@ async def showroom_page(business_public_id: str):
             '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
             '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">'
             '<style>' + SHOWROOM_CSS + '</style></head><body>'
-            + hero_html + payment_html + stats_html + filter_html + make_filter_html + grid_html + footer_html + lightbox_html +
+            + hero_html + payment_html + stats_html + filter_html + make_filter_html + grid_html + footer_html + lightbox_html + vehicle_modal_html +
             '<script>' + SHOWROOM_JS + '</script>'
             '</body></html>'
         )
