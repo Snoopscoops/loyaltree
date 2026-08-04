@@ -7874,6 +7874,15 @@ a{color:inherit}
 .empty-state .icon{font-size:42px;margin-bottom:10px;opacity:0.6}
 .empty-state p{font-size:14px}
 
+.location-wrap{max-width:1080px;margin:40px auto 0;padding:0 20px;text-align:center}
+.location-title{font-size:19px;font-weight:800;letter-spacing:-0.01em;margin-bottom:6px}
+.location-address{font-size:13.5px;color:var(--muted);margin-bottom:16px}
+.location-map{border-radius:16px;overflow:hidden;border:1px solid var(--line);box-shadow:0 10px 24px rgba(15,23,42,0.06)}
+.location-map iframe{display:block;width:100%;height:300px;border:0}
+.location-directions-btn{display:inline-flex;align-items:center;gap:8px;background:var(--ink);color:#fff;font-weight:700;
+  font-size:13.5px;padding:10px 20px;border-radius:999px;text-decoration:none;margin-top:16px}
+.location-directions-btn:hover{opacity:0.88}
+
 .footer{max-width:1080px;margin:44px auto 0;padding:20px 20px 0;text-align:center;color:#9aa4b2;font-size:11.5px;
   border-top:1px solid var(--line)}
 
@@ -8344,6 +8353,20 @@ async def showroom_page(business_public_id: str):
 
         footer_html = '<div class="footer">Powered by LoyaltyTree &middot; listings update in real time</div>'
 
+        showroom_address = "WOLFCARS, Saint Francis Subdivision, 129 Diamond Dr, Meycauayan, 3020 Bulacan"
+        maps_embed_src = "https://maps.google.com/maps?q=" + quote(showroom_address) + "&output=embed"
+        maps_directions_href = "https://www.google.com/maps/search/?api=1&query=" + quote(showroom_address)
+        location_html = (
+            '<div class="location-wrap">'
+            '<div class="location-title">Find us</div>'
+            '<div class="location-address">' + html_lib.escape(showroom_address) + '</div>'
+            '<div class="location-map"><iframe src="' + maps_embed_src + '" loading="lazy" '
+            'referrerpolicy="no-referrer-when-downgrade" allowfullscreen title="Showroom location"></iframe></div>'
+            '<a class="location-directions-btn" href="' + maps_directions_href + '" target="_blank" rel="noopener noreferrer">'
+            '&#128205; Get directions</a>'
+            '</div>'
+        )
+
         html = (
             '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
@@ -8352,7 +8375,7 @@ async def showroom_page(business_public_id: str):
             '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
             '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">'
             '<style>' + SHOWROOM_CSS + '</style></head><body>'
-            + hero_html + payment_html + stats_html + search_html + filter_html + make_filter_html + grid_html + footer_html + lightbox_html + vehicle_modal_html +
+            + hero_html + payment_html + stats_html + search_html + filter_html + make_filter_html + grid_html + location_html + footer_html + lightbox_html + vehicle_modal_html +
             '<script>' + SHOWROOM_JS + '</script>'
             '</body></html>'
         )
