@@ -3736,6 +3736,20 @@ async def delete_customer(public_id: str, customer_public_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
 
+    # Apple Wallet registrations aren't tied to customers by FK (the serial
+    # number is the join key, not customer_id), so they'd otherwise survive
+    # the delete as orphans - leaving a phone registered for a pass whose
+    # backing customer row is gone. Every future refetch attempt for that
+    # serial then 404s at GET /api/v1/apple-wallet/v1/passes/... forever,
+    # silently killing update notifications for that device. Best-effort:
+    # this cleanup must never block the customer delete itself.
+    try:
+        supabase.table("apple_wallet_registrations").delete().eq(
+            "serial_number", customer_public_id
+        ).execute()
+    except Exception as e:
+        print(f"APPLE WALLET registration cleanup error: {e}")
+
     return {"success": True, "deleted": customer_public_id}
 
 @app.get("/api/v1/business/{public_id}/staff")
@@ -4671,6 +4685,21 @@ async def delete_cl_customer(public_id: str, customer_public_id: str):
         supabase.table("cl_customers").delete().eq("id", customer.get("id")).execute()
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    # Same orphaned-registration issue as delete_customer() above, just with
+    # the 'cl-' prefix build_cl_apple_pass_json uses as this pass type's
+    # serial number. Without this, the phone stays registered for a serial
+    # whose cl_customers row is now gone, and every background refetch 404s
+    # forever - so no future announcement or payment-reminder push ever
+    # actually updates the pass on that device again. Best-effort: must
+    # never block the customer delete itself.
+    try:
+        supabase.table("apple_wallet_registrations").delete().eq(
+            "serial_number", f"cl-{customer_public_id}"
+        ).execute()
+    except Exception as e:
+        print(f"APPLE WALLET registration cleanup error: {e}")
+
     return {"success": True, "deleted": customer_public_id}
 
 @app.get("/api/v1/business/{public_id}/cl-customers/{customer_public_id}/qr-code")
