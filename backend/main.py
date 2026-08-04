@@ -6913,6 +6913,18 @@ async def get_cl_wallet_class(public_id: str):
         "business_name": business.get("name", ""),
         "google_class_exists": google_data is not None,
         "google_class_data": google_data,
+        # Both of these reflect the PLATFORM's shared Wallet credentials
+        # (env vars), not anything per-business - a business can't bring
+        # its own Apple/Google Wallet developer account here. Google still
+        # needs the explicit "publish" step below because each business
+        # gets its own loyaltyClass; Apple has no per-business setup step -
+        # once the platform cert is configured, .pkpass generation just
+        # works for every business automatically.
+        "google_wallet_configured": bool(GOOGLE_WALLET_ISSUER_ID),
+        "apple_wallet_configured": bool(
+            APPLE_PASS_TYPE_IDENTIFIER and APPLE_TEAM_IDENTIFIER and APPLE_PASS_CERTIFICATE
+            and APPLE_WWDR_CERTIFICATE and APPLE_PASS_AUTH_SECRET
+        ),
     }
 
 @app.post("/api/v1/business/{public_id}/cl-wallet-class")

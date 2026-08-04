@@ -192,6 +192,11 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   // /cl-join themselves) state ----------
   const [walletShare, setWalletShare] = useState(null) // { svg, wallet_url, customer_name }, or null
 
+  // ---------- Wallet setup / publish (Payments tab) state ----------
+  const [walletClassInfo, setWalletClassInfo] = useState(null) // GET /cl-wallet-class response, or null while loading
+  const [loadingWalletInfo, setLoadingWalletInfo] = useState(false)
+  const [publishingWallet, setPublishingWallet] = useState(false)
+
   // ---------- Owner -> buyer messages (Step 5) state ----------
   const [clAnnouncements, setClAnnouncements] = useState([])
   const [showMessageForm, setShowMessageForm] = useState(false)
@@ -278,6 +283,52 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const flash = (text) => {
     setMessage(text)
     setTimeout(() => setMessage(''), 3000)
+  }
+
+  // ---------- Wallet setup / publish (Payments tab) ----------
+  // Loads current Google/Apple Wallet status the first time the Payments
+  // tab is opened. Both wallets ride on this platform's own Wallet
+  // developer accounts (env vars on the server) - there's no per-business
+  // credential to collect. Google needs an explicit "publish" step because
+  // each business gets its own loyaltyClass on Google's side; Apple has no
+  // equivalent step - .pkpass files just generate on demand once the
+  // platform certificate is set up.
+  const loadWalletClassInfo = async () => {
+    if (!businessId) return
+    setLoadingWalletInfo(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-wallet-class`)
+      setWalletClassInfo(await res.json().catch(() => null))
+    } catch (err) {
+      console.error('Wallet class info error:', err)
+      setWalletClassInfo(null)
+    }
+    setLoadingWalletInfo(false)
+  }
+
+  useEffect(() => {
+    if (activeTab === 'payments' && businessId && !walletClassInfo) {
+      loadWalletClassInfo()
+    }
+  }, [activeTab, businessId])
+
+  const publishGoogleWallet = async () => {
+    if (!businessId) return
+    setPublishingWallet(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-wallet-class`, { method: 'POST' })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok) {
+        flash('Published to Google Wallet')
+      } else {
+        flash(data.detail || 'Could not publish to Google Wallet')
+      }
+    } catch (err) {
+      console.error('Publish wallet error:', err)
+      flash('Network error publishing wallet')
+    }
+    await loadWalletClassInfo()
+    setPublishingWallet(false)
   }
 
   // ---------- Announcements CRUD ----------
@@ -1093,6 +1144,60 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
             <p style={styles.sectionSubtitle}>
               Open loans, soonest due first. Log a payment directly, or scan a buyer's QR code (Customers tab → QR) to jump to theirs.
             </p>
+
+            <div style={styles.walletSetupCard}>
+              <div style={styles.sectionHeaderRow}>
+                <h3 style={styles.walletSetupTitle}>Wallet setup</h3>
+                {loadingWalletInfo && <span style={styles.walletSetupHint}>Checking status…</span>}
+              </div>
+              <p style={styles.walletSetupSubtitle}>
+                Controls whether buyers can add their loan card to Google Wallet and Apple Wallet.
+              </p>
+
+              <div style={styles.walletRow}>
+                <div style={styles.walletRowInfo}>
+                  <span style={styles.walletRowLabel}>Google Wallet</span>
+                  <span style={{
+                    ...styles.statusBadge,
+                    ...(walletClassInfo?.google_class_exists
+                      ? { background: '#dcfce7', color: '#15803d' }
+                      : { background: '#fef3c7', color: '#b45309' }),
+                  }}>
+                    {walletClassInfo?.google_class_exists ? 'Published' : 'Not published'}
+                  </span>
+                </div>
+                <button
+                  onClick={publishGoogleWallet}
+                  disabled={publishingWallet || !walletClassInfo?.google_wallet_configured}
+                  style={styles.newBtnAlt}
+                  title={!walletClassInfo?.google_wallet_configured ? 'Google Wallet is not configured on the server yet' : undefined}
+                >
+                  {publishingWallet ? 'Publishing…' : walletClassInfo?.google_class_exists ? 'Republish' : 'Publish to Google Wallet'}
+                </button>
+              </div>
+              {walletClassInfo && !walletClassInfo.google_wallet_configured && (
+                <p style={styles.walletSetupNote}>Google Wallet isn't set up on the server yet — contact support.</p>
+              )}
+
+              <div style={{ ...styles.walletRow, marginTop: 10 }}>
+                <div style={styles.walletRowInfo}>
+                  <span style={styles.walletRowLabel}>Apple Wallet</span>
+                  <span style={{
+                    ...styles.statusBadge,
+                    ...(walletClassInfo?.apple_wallet_configured
+                      ? { background: '#dcfce7', color: '#15803d' }
+                      : { background: '#fef3c7', color: '#b45309' }),
+                  }}>
+                    {walletClassInfo?.apple_wallet_configured ? 'Ready' : 'Not configured'}
+                  </span>
+                </div>
+              </div>
+              <p style={styles.walletSetupNote}>
+                {walletClassInfo?.apple_wallet_configured
+                  ? "No action needed — buyers' Apple Wallet cards generate automatically."
+                  : "Apple Wallet isn't set up on the server yet — contact support."}
+              </p>
+            </div>
 
             {(() => {
               const openLoans = contracts
@@ -2003,6 +2108,17 @@ const styles = {
     width: 220, height: 220, imageRendering: 'pixelated',
   },
   emptyState: { color: '#94a3b8', fontSize: 13, padding: '20px 0', textAlign: 'center' },
+  walletSetupCard: {
+    background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10,
+    padding: '14px 16px', marginBottom: 18,
+  },
+  walletSetupTitle: { margin: 0, fontSize: 14, fontWeight: 700, color: '#0f172a' },
+  walletSetupHint: { fontSize: 12, color: '#94a3b8' },
+  walletSetupSubtitle: { margin: '4px 0 14px', fontSize: 12.5, color: '#64748b' },
+  walletRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' },
+  walletRowInfo: { display: 'flex', alignItems: 'center', gap: 10 },
+  walletRowLabel: { fontSize: 13.5, fontWeight: 600, color: '#0f172a' },
+  walletSetupNote: { margin: '8px 0 0', fontSize: 12, color: '#94a3b8' },
   announcementsList: { display: 'flex', flexDirection: 'column', gap: 10 },
   announcementCard: {
     display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start',
