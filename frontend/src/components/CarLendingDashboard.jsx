@@ -696,10 +696,11 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const showCustomerQR = async (customer) => {
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-customers/${customer.public_id}/qr-code`)
-      const data = await res.json()
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.svg) throw new Error(data.detail || 'Could not load QR code')
       setCustomerQR(data)
     } catch (err) {
-      flash('Could not load QR code')
+      flash(err.message)
     }
   }
 
@@ -709,10 +710,11 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const showJoinQR = async () => {
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-join-qr-code`)
-      const data = await res.json()
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.svg) throw new Error(data.detail || 'Could not load join QR code — make sure the backend has been redeployed with the /cl-join-qr-code endpoint.')
       setJoinQR(data)
     } catch (err) {
-      flash('Could not load join QR code')
+      flash(err.message)
     }
   }
 
