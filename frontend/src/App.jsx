@@ -4,6 +4,7 @@ import Login from './components/Login'
 import Signup from './components/Signup'
 import HomePage from './components/HomePage'
 import OwnerDashboard from './components/OwnerDashboard'
+import CarLendingDashboard from './components/CarLendingDashboard'
 import CashierApp from './components/CashierApp'
 import AnalyticsDashboard from './components/AnalyticsDashboard'
 import AdminDashboard from './components/AdminDashboard'
@@ -77,7 +78,11 @@ function App() {
         <Route path="/login" element={<Login API_BASE={API_BASE} onLogin={setUser} />} />
         <Route path="/signup" element={<Signup API_BASE={API_BASE} />} />
         <Route path="/dashboard" element={
-          user?.role === 'owner' ? <OwnerDashboard API_BASE={API_BASE} user={user} onLogout={() => setUser(null)} /> : <Navigate to="/login" />
+          user?.role === 'owner' ? (
+            user.business_type === 'car_lending'
+              ? <CarLendingDashboard API_BASE={API_BASE} user={user} onLogout={() => setUser(null)} />
+              : <OwnerDashboard API_BASE={API_BASE} user={user} onLogout={() => setUser(null)} />
+          ) : <Navigate to="/login" />
         } />
         <Route path="/scanner" element={
           ['owner', 'manager', 'cashier'].includes(user?.role) ? <CashierApp API_BASE={API_BASE} /> : <Navigate to="/login" />

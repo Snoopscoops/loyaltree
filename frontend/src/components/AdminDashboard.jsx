@@ -19,6 +19,9 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const [detail, setDetail] = useState(null)
   const [message, setMessage] = useState('')
   const [confirmDelete, setConfirmDelete] = useState(null)
+  const [showCreateModal, setShowCreateModal] = useState(false)
+  const [createForm, setCreateForm] = useState({ name: '', email: '', password: '', phone: '', business_type: 'car_lending', address: '', branch_count: 1 })
+  const [creating, setCreating] = useState(false)
 
   const authedFetch = (path, opts = {}) => fetch(`${API_BASE}${path}`, {
     ...opts,
@@ -112,7 +115,35 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
     setTimeout(() => setMessage(''), 3000)
   }
 
-  // ---------- Loading ----------
+  const createBusiness = async () => {
+    if (!createForm.name.trim() || !createForm.email.trim() || !createForm.password.trim()) {
+      setMessage('Name, email, and password are required')
+      setTimeout(() => setMessage(''), 3000)
+      return
+    }
+    setCreating(true)
+    try {
+      const res = await authedFetch('/api/v1/admin/businesses', {
+        method: 'POST',
+        body: JSON.stringify({
+          ...createForm,
+          branch_count: Number(createForm.branch_count) || 1,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Creation failed')
+      setMessage(`Created ${createForm.name} - share these login details with the owner`)
+      setShowCreateModal(false)
+      setCreateForm({ name: '', email: '', password: '', phone: '', business_type: 'car_lending', address: '', branch_count: 1 })
+      loadData()
+    } catch (err) {
+      setMessage(err.message)
+    }
+    setCreating(false)
+    setTimeout(() => setMessage(''), 4000)
+  }
+
+
   if (loading) {
     return <div style={styles.loadingScreen}>Loading platform data…</div>
   }
@@ -138,6 +169,10 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
       {message && <div style={styles.toast}>{message}</div>}
 
       <div style={styles.body}>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
+          <button onClick={() => setShowCreateModal(true)} style={styles.approveBtn}>+ Create business</button>
+        </div>
+
         {/* Applications - pending business signups awaiting approval */}
         {pendingApps.length > 0 && (
           <div style={styles.applicationsSection}>
@@ -389,6 +424,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                     <option value="salon">Salon</option>
                     <option value="fitness">Fitness</option>
                     <option value="restaurant">Restaurant</option>
+                    <option value="car_lending">Car Lending / Showroom</option>
                     <option value="other">Other</option>
                   </select>
                 </div>
@@ -555,6 +591,43 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 Yes, delete permanently
               </button>
               <button onClick={() => setConfirmDelete(null)} style={styles.closeBtn}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Create business (admin-provisioned, e.g. invite-only types like Car Lending) */}
+      {showCreateModal && (
+        <div style={styles.modalOverlay} onClick={() => setShowCreateModal(false)}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+            <h2 style={styles.modalTitle}>Create business</h2>
+            <div style={styles.detailGrid}>
+              <input style={styles.input} placeholder="Business name" value={createForm.name}
+                onChange={e => setCreateForm({ ...createForm, name: e.target.value })} />
+              <input style={styles.input} placeholder="Email (login)" value={createForm.email}
+                onChange={e => setCreateForm({ ...createForm, email: e.target.value })} />
+              <input style={styles.input} placeholder="Temporary password" value={createForm.password}
+                onChange={e => setCreateForm({ ...createForm, password: e.target.value })} />
+              <input style={styles.input} placeholder="Phone (optional)" value={createForm.phone}
+                onChange={e => setCreateForm({ ...createForm, phone: e.target.value })} />
+              <input style={styles.input} placeholder="Address (optional)" value={createForm.address}
+                onChange={e => setCreateForm({ ...createForm, address: e.target.value })} />
+              <select style={styles.select} value={createForm.business_type}
+                onChange={e => setCreateForm({ ...createForm, business_type: e.target.value })}>
+                <option value="car_lending">Car Lending / Showroom</option>
+                <option value="spa">Spa</option>
+                <option value="salon">Salon</option>
+                <option value="fitness">Fitness</option>
+                <option value="restaurant">Restaurant</option>
+                <option value="other">Other</option>
+              </select>
+              <input style={styles.input} type="number" min="1" placeholder="Branch count" value={createForm.branch_count}
+                onChange={e => setCreateForm({ ...createForm, branch_count: e.target.value })} />
+            </div>
+            <div style={{ display: 'flex', gap: 12, marginTop: 4 }}>
+              <button onClick={createBusiness} disabled={creating} style={styles.approveBtn}>
+                {creating ? 'Creating…' : 'Create business'}
+              </button>
+              <button onClick={() => setShowCreateModal(false)} style={styles.closeBtn}>Cancel</button>
             </div>
           </div>
         </div>

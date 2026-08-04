@@ -1,0 +1,1849 @@
+import React, { useState, useEffect } from 'react'
+
+// Car Lending / Showroom dashboard build, step by step:
+//   - Step 1 (done): Header + tab nav, Announcements panel (existing
+//     generic announcements endpoints, no backend changes needed)
+//   - Step 2 (done): Customers tab - cl_customers CRUD
+//   - Step 3 (done): Inventory tab - vehicles CRUD
+//   - Step 4 (done): Contracts tab - link customer + vehicle, auto-compute
+//     installment from price/down payment/interest/term. Also supports
+//     transferring an already-in-progress loan (an existing customer/car
+//     already mid-payment before this dashboard existed) via the "existing
+//     loan" toggle, which reveals manual overrides for balance remaining,
+//     last paid date, next due date, and status.
+//   - Step 5 (done): Payment tracking - log a payment against a contract
+//     (auto-updates balance/last paid/next due, clears overdue, closes the
+//     loan out at zero). No payment portal - the owner logs payments from
+//     this dashboard, either by picking a contract directly or scanning a
+//     buyer's QR code (camera, via the BarcodeDetector API where supported)
+//     to jump straight to their contract. Buyers now DO get their own
+//     wallet pass (a "Loan Card" showing balance + next due date, 0/0 if
+//     they have no active loan) - share the link from the customer edit
+//     modal's "Copy wallet link" button, or let them scan the same printed
+//     QR from their phone once they've added it. 7-day / 3-day / due-date /
+//     overdue reminders push straight to that Wallet card server-side via
+//     the /api/v1/cron/loan-payment-reminders cron job - wallet push only,
+//     no email. Owner -> buyer messages (one buyer, or broadcast to
+//     everyone) below also push to the Wallet card the same way -
+//     dealership-wide broadcasts reach every buyer's card at once,
+//     including ones with no active loan, so the whole membership can be
+//     reached regardless of loan status. Separate from the Overview
+//     "Announcements" panel above, which is for the loyalty side of the
+//     business.
+//   - Step 6+ (later): Per-customer payment history/receipts view, Overview
+//     stat cards going fully live.
+
+// Buyers' wallet-pass QR (and their printed/lookup QR) encodes just their
+// own public_id as plain text - never a URL, since there's no payment
+// portal for a URL to point at. It's read back by this same owner's
+// "Scan QR" button below to jump to their contract, and it's the same
+// barcode baked into their Google/Apple Wallet pass, so scanning their
+// phone works identically to scanning a printed card.
+function useBarcodeScanner(onResult) {
+  const videoRef = React.useRef(null)
+  const streamRef = React.useRef(null)
+  const rafRef = React.useRef(null)
+
+  const supported = typeof window !== 'undefined' && 'BarcodeDetector' in window
+
+  const stop = React.useCallback(() => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current)
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop())
+      streamRef.current = null
+    }
+  }, [])
+
+  const start = React.useCallback(async () => {
+    if (!supported) return
+    try {
+      const detector = new window.BarcodeDetector({ formats: ['qr_code'] })
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+      streamRef.current = stream
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream
+        await videoRef.current.play()
+      }
+      const tick = async () => {
+        if (!videoRef.current) return
+        try {
+          const codes = await detector.detect(videoRef.current)
+          if (codes.length > 0) {
+            onResult(codes[0].rawValue)
+            stop()
+            return
+          }
+        } catch (err) {
+          // transient decode error - keep scanning
+        }
+        rafRef.current = requestAnimationFrame(tick)
+      }
+      rafRef.current = requestAnimationFrame(tick)
+    } catch (err) {
+      console.error('Camera/scanner error:', err)
+    }
+  }, [supported, onResult, stop])
+
+  React.useEffect(() => () => stop(), [stop])
+
+  return { videoRef, supported, start, stop }
+}
+
+const TABS = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'customers', label: 'Customers' },
+  { key: 'inventory', label: 'Inventory' },
+  { key: 'contracts', label: 'Contracts' },
+  { key: 'payments', label: 'Payments' },
+]
+
+function CarLendingDashboard({ API_BASE, user, onLogout }) {
+  const [activeTab, setActiveTab] = useState('overview')
+  const [business, setBusiness] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [message, setMessage] = useState('')
+
+  // ---------- Announcements state ----------
+  const [announcements, setAnnouncements] = useState([])
+  const [showAnnForm, setShowAnnForm] = useState(false)
+  const [editingAnn, setEditingAnn] = useState(null) // announcement being edited, or null for "new"
+  const [annForm, setAnnForm] = useState({ title: '', message: '', type: 'info', end_date: '' })
+  const [savingAnn, setSavingAnn] = useState(false)
+
+  // ---------- Customers (buyers) state ----------
+  const [customers, setCustomers] = useState([])
+  const [customerSearch, setCustomerSearch] = useState('')
+  const [showCustomerForm, setShowCustomerForm] = useState(false)
+  const [editingCustomer, setEditingCustomer] = useState(null) // customer being edited, or null for "new"
+  const [customerForm, setCustomerForm] = useState({ name: '', phone: '', email: '', address: '', id_number: '', notes: '' })
+  const [savingCustomer, setSavingCustomer] = useState(false)
+
+  // ---------- Vehicle inventory state ----------
+  const [vehicles, setVehicles] = useState([])
+  const [vehicleStatusFilter, setVehicleStatusFilter] = useState('')
+  const [showVehicleForm, setShowVehicleForm] = useState(false)
+  const [editingVehicle, setEditingVehicle] = useState(null) // vehicle being edited, or null for "new"
+  const [vehicleForm, setVehicleForm] = useState({ make: '', model: '', year: '', plate_number: '', color: '', mileage: '', price: '', status: 'available', image_url: '' })
+  const [savingVehicle, setSavingVehicle] = useState(false)
+
+  // ---------- Contracts (deals) state ----------
+  const emptyContractForm = {
+    customer_public_id: '', vehicle_public_id: '', sale_type: 'financed',
+    vehicle_price: '', down_payment: '', interest_rate: '', term_months: '12',
+    payment_frequency: 'monthly', start_date: new Date().toISOString().slice(0, 10),
+    is_existing_loan: false, balance_remaining: '', last_paid_date: '', next_due_date: '', status: 'active',
+  }
+  const [contracts, setContracts] = useState([])
+  const [contractStatusFilter, setContractStatusFilter] = useState('')
+  const [showContractForm, setShowContractForm] = useState(false)
+  const [editingContract, setEditingContract] = useState(null) // contract being edited, or null for "new"
+  const [contractForm, setContractForm] = useState(emptyContractForm)
+  const [savingContract, setSavingContract] = useState(false)
+
+  // ---------- Payments (Step 5) state ----------
+  const [payingContract, setPayingContract] = useState(null) // contract currently open in the "Log payment" modal
+  const [paymentForm, setPaymentForm] = useState({ amount: '', payment_date: new Date().toISOString().slice(0, 10), method: 'cash', notes: '' })
+  const [savingPayment, setSavingPayment] = useState(false)
+  const [paymentHistory, setPaymentHistory] = useState([])
+  const [loadingHistory, setLoadingHistory] = useState(false)
+  const [showScanModal, setShowScanModal] = useState(false)
+  const [scanManualInput, setScanManualInput] = useState('')
+  const [scanPickList, setScanPickList] = useState(null) // when a scan matches >1 open contract for the same buyer
+
+  // ---------- Per-customer payment history / receipts (Step 6) state ----------
+  const [historyCustomer, setHistoryCustomer] = useState(null) // cl_customer currently open in the history modal, or null
+  const [customerHistory, setCustomerHistory] = useState([])
+  const [loadingCustomerHistory, setLoadingCustomerHistory] = useState(false)
+  const [viewingReceipt, setViewingReceipt] = useState(null) // a single payment row, shown in the printable receipt modal
+
+  // ---------- Owner -> buyer messages (Step 5) state ----------
+  const [clAnnouncements, setClAnnouncements] = useState([])
+  const [showMessageForm, setShowMessageForm] = useState(false)
+  const [messageTarget, setMessageTarget] = useState(null) // a cl_customer, or null = broadcast to everyone
+  const [messageForm, setMessageForm] = useState({ title: '', message: '' })
+  const [savingMessage, setSavingMessage] = useState(false)
+  const [showMessageHistory, setShowMessageHistory] = useState(false)
+
+  const businessId = user?.business_slug
+
+  const loadData = async () => {
+    try {
+      const [bizRes, annRes, custRes, vehRes, conRes, msgRes] = await Promise.all([
+        fetch(`${API_BASE}/api/v1/business/${businessId}`),
+        fetch(`${API_BASE}/api/v1/business/${businessId}/announcements`),
+        fetch(`${API_BASE}/api/v1/business/${businessId}/cl-customers`),
+        fetch(`${API_BASE}/api/v1/business/${businessId}/vehicles`),
+        fetch(`${API_BASE}/api/v1/business/${businessId}/contracts`),
+        fetch(`${API_BASE}/api/v1/business/${businessId}/cl-announcements`),
+      ])
+      setBusiness(await bizRes.json().catch(() => null))
+      setAnnouncements(await annRes.json().catch(() => []))
+      setCustomers(await custRes.json().catch(() => []))
+      setVehicles(await vehRes.json().catch(() => []))
+      setContracts(await conRes.json().catch(() => []))
+      setClAnnouncements(await msgRes.json().catch(() => []))
+    } catch (err) {
+      console.error('Car lending dashboard load error:', err)
+    }
+    setLoading(false)
+  }
+
+  useEffect(() => {
+    if (!businessId) return
+    loadData()
+  }, [businessId])
+
+  // Debounce customer search so we're not firing a request per keystroke
+  useEffect(() => {
+    if (!businessId) return
+    const t = setTimeout(async () => {
+      try {
+        const params = new URLSearchParams()
+        if (customerSearch) params.set('search', customerSearch)
+        const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-customers?${params.toString()}`)
+        setCustomers(await res.json().catch(() => []))
+      } catch (err) {
+        console.error('Customer search error:', err)
+      }
+    }, 350)
+    return () => clearTimeout(t)
+  }, [customerSearch])
+
+  // Re-fetch vehicles whenever the status filter changes
+  useEffect(() => {
+    if (!businessId) return
+    (async () => {
+      try {
+        const params = new URLSearchParams()
+        if (vehicleStatusFilter) params.set('status', vehicleStatusFilter)
+        const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/vehicles?${params.toString()}`)
+        setVehicles(await res.json().catch(() => []))
+      } catch (err) {
+        console.error('Vehicle filter error:', err)
+      }
+    })()
+  }, [vehicleStatusFilter])
+
+  // Re-fetch contracts whenever the status filter changes
+  useEffect(() => {
+    if (!businessId) return
+    (async () => {
+      try {
+        const params = new URLSearchParams()
+        if (contractStatusFilter) params.set('status', contractStatusFilter)
+        const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/contracts?${params.toString()}`)
+        setContracts(await res.json().catch(() => []))
+      } catch (err) {
+        console.error('Contract filter error:', err)
+      }
+    })()
+  }, [contractStatusFilter])
+
+  const flash = (text) => {
+    setMessage(text)
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  // ---------- Announcements CRUD ----------
+  const openNewAnnouncement = () => {
+    setEditingAnn(null)
+    setAnnForm({ title: '', message: '', type: 'info', end_date: '' })
+    setShowAnnForm(true)
+  }
+
+  const openEditAnnouncement = (ann) => {
+    setEditingAnn(ann)
+    setAnnForm({
+      title: ann.title || '',
+      message: ann.message || '',
+      type: ann.type || 'info',
+      end_date: ann.end_date || '',
+    })
+    setShowAnnForm(true)
+  }
+
+  const saveAnnouncement = async () => {
+    if (!annForm.title.trim() || !annForm.message.trim()) {
+      flash('Title and message are required')
+      return
+    }
+    setSavingAnn(true)
+    try {
+      const url = editingAnn
+        ? `${API_BASE}/api/v1/business/${businessId}/announcements/${editingAnn.id}`
+        : `${API_BASE}/api/v1/business/${businessId}/announcements`
+      const res = await fetch(url, {
+        method: editingAnn ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: annForm.title,
+          message: annForm.message,
+          type: annForm.type,
+          end_date: annForm.end_date || null,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Save failed')
+      flash(editingAnn ? 'Announcement updated' : 'Announcement created')
+      setShowAnnForm(false)
+      loadData()
+    } catch (err) {
+      flash(err.message)
+    }
+    setSavingAnn(false)
+  }
+
+  const deleteAnnouncement = async (id) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/announcements/${id}`, { method: 'DELETE' })
+      if (!res.ok) throw new Error('Delete failed')
+      flash('Announcement removed')
+      loadData()
+    } catch (err) {
+      flash(err.message)
+    }
+  }
+
+  // ---------- Customers CRUD ----------
+  const openNewCustomer = () => {
+    setEditingCustomer(null)
+    setCustomerForm({ name: '', phone: '', email: '', address: '', id_number: '', notes: '' })
+    setShowCustomerForm(true)
+  }
+
+  const openEditCustomer = (c) => {
+    setEditingCustomer(c)
+    setCustomerForm({
+      name: c.name || '',
+      phone: c.phone || '',
+      email: c.email || '',
+      address: c.address || '',
+      id_number: c.id_number || '',
+      notes: c.notes || '',
+    })
+    setShowCustomerForm(true)
+  }
+
+  const saveCustomer = async () => {
+    if (!customerForm.name.trim()) {
+      flash('Name is required')
+      return
+    }
+    setSavingCustomer(true)
+    try {
+      const url = editingCustomer
+        ? `${API_BASE}/api/v1/business/${businessId}/cl-customers/${editingCustomer.public_id}`
+        : `${API_BASE}/api/v1/business/${businessId}/cl-customers`
+      const res = await fetch(url, {
+        method: editingCustomer ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: customerForm.name,
+          phone: customerForm.phone || null,
+          email: customerForm.email || null,
+          address: customerForm.address || null,
+          id_number: customerForm.id_number || null,
+          notes: customerForm.notes || null,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Save failed')
+      flash(editingCustomer ? 'Customer updated' : 'Customer added')
+      setShowCustomerForm(false)
+      loadData()
+    } catch (err) {
+      flash(err.message)
+    }
+    setSavingCustomer(false)
+  }
+
+  const deleteCustomer = async (c) => {
+    if (!window.confirm(`Remove ${c.name} from your customer list?`)) return
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-customers/${c.public_id}`, { method: 'DELETE' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Delete failed')
+      flash('Customer removed')
+      loadData()
+    } catch (err) {
+      flash(err.message)
+    }
+  }
+
+  // ---------- Vehicles CRUD ----------
+  const openNewVehicle = () => {
+    setEditingVehicle(null)
+    setVehicleForm({ make: '', model: '', year: '', plate_number: '', color: '', mileage: '', price: '', status: 'available', image_url: '' })
+    setShowVehicleForm(true)
+  }
+
+  const openEditVehicle = (v) => {
+    setEditingVehicle(v)
+    setVehicleForm({
+      make: v.make || '',
+      model: v.model || '',
+      year: v.year ?? '',
+      plate_number: v.plate_number || '',
+      color: v.color || '',
+      mileage: v.mileage ?? '',
+      price: v.price ?? '',
+      status: v.status || 'available',
+      image_url: v.image_url || '',
+    })
+    setShowVehicleForm(true)
+  }
+
+  const saveVehicle = async () => {
+    if (!vehicleForm.make.trim() || !vehicleForm.model.trim()) {
+      flash('Make and model are required')
+      return
+    }
+    setSavingVehicle(true)
+    try {
+      const url = editingVehicle
+        ? `${API_BASE}/api/v1/business/${businessId}/vehicles/${editingVehicle.public_id}`
+        : `${API_BASE}/api/v1/business/${businessId}/vehicles`
+      const res = await fetch(url, {
+        method: editingVehicle ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          make: vehicleForm.make,
+          model: vehicleForm.model,
+          year: vehicleForm.year !== '' ? Number(vehicleForm.year) : null,
+          plate_number: vehicleForm.plate_number || null,
+          color: vehicleForm.color || null,
+          mileage: vehicleForm.mileage !== '' ? Number(vehicleForm.mileage) : null,
+          price: vehicleForm.price !== '' ? Number(vehicleForm.price) : 0,
+          status: vehicleForm.status,
+          image_url: vehicleForm.image_url || null,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Save failed')
+      flash(editingVehicle ? 'Vehicle updated' : 'Vehicle added')
+      setShowVehicleForm(false)
+      loadData()
+    } catch (err) {
+      flash(err.message)
+    }
+    setSavingVehicle(false)
+  }
+
+  const deleteVehicle = async (v) => {
+    if (!window.confirm(`Remove ${v.year ? v.year + ' ' : ''}${v.make} ${v.model} from inventory?`)) return
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/vehicles/${v.public_id}`, { method: 'DELETE' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Delete failed')
+      flash('Vehicle removed')
+      loadData()
+    } catch (err) {
+      flash(err.message)
+    }
+  }
+
+  // ---------- Contracts CRUD ----------
+  const openNewContract = () => {
+    setEditingContract(null)
+    setContractForm(emptyContractForm)
+    setShowContractForm(true)
+  }
+
+  const openEditContract = (c) => {
+    setEditingContract(c)
+    setContractForm({
+      customer_public_id: c.customer?.public_id || '',
+      vehicle_public_id: c.vehicle?.public_id || '',
+      sale_type: c.sale_type || 'financed',
+      vehicle_price: c.vehicle_price ?? '',
+      down_payment: c.down_payment ?? '',
+      interest_rate: c.interest_rate ?? '',
+      term_months: c.term_months ?? '',
+      payment_frequency: c.payment_frequency || 'monthly',
+      start_date: c.start_date || '',
+      is_existing_loan: true, // editing always shows the current-state fields
+      balance_remaining: c.balance_remaining ?? '',
+      last_paid_date: c.last_paid_date || '',
+      next_due_date: c.next_due_date || '',
+      status: c.status || 'active',
+    })
+    setShowContractForm(true)
+  }
+
+  // Selecting a vehicle auto-fills its listed price as a starting point for
+  // vehicle_price (still editable - the contract snapshots its own price
+  // independently of whatever the vehicle's listing later changes to).
+  const onSelectContractVehicle = (vehiclePublicId) => {
+    const v = vehicles.find(v => v.public_id === vehiclePublicId)
+    setContractForm(f => ({
+      ...f,
+      vehicle_public_id: vehiclePublicId,
+      vehicle_price: f.vehicle_price || (v ? String(v.price) : f.vehicle_price),
+    }))
+  }
+
+  const saveContract = async () => {
+    if (!editingContract && (!contractForm.customer_public_id || !contractForm.vehicle_public_id)) {
+      flash('Pick a customer and a vehicle')
+      return
+    }
+    if (!contractForm.vehicle_price || Number(contractForm.vehicle_price) <= 0) {
+      flash('Vehicle price is required')
+      return
+    }
+    setSavingContract(true)
+    try {
+      const body = {
+        sale_type: contractForm.sale_type,
+        vehicle_price: Number(contractForm.vehicle_price),
+        down_payment: contractForm.down_payment !== '' ? Number(contractForm.down_payment) : 0,
+        interest_rate: contractForm.interest_rate !== '' ? Number(contractForm.interest_rate) : 0,
+        term_months: contractForm.term_months !== '' ? Number(contractForm.term_months) : 0,
+        payment_frequency: contractForm.payment_frequency,
+        start_date: contractForm.start_date || null,
+      }
+      // Only send the "current state" overrides when transferring an
+      // existing loan (new deals compute these automatically) or when
+      // editing an existing contract (always allowed to correct).
+      if (contractForm.is_existing_loan || editingContract) {
+        if (contractForm.balance_remaining !== '') body.balance_remaining = Number(contractForm.balance_remaining)
+        if (contractForm.last_paid_date) body.last_paid_date = contractForm.last_paid_date
+        if (contractForm.next_due_date) body.next_due_date = contractForm.next_due_date
+        if (contractForm.status) body.status = contractForm.status
+      }
+
+      const url = editingContract
+        ? `${API_BASE}/api/v1/business/${businessId}/contracts/${editingContract.public_id}`
+        : `${API_BASE}/api/v1/business/${businessId}/contracts`
+      if (!editingContract) {
+        body.customer_public_id = contractForm.customer_public_id
+        body.vehicle_public_id = contractForm.vehicle_public_id
+      }
+      const res = await fetch(url, {
+        method: editingContract ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Save failed')
+      flash(editingContract ? 'Contract updated' : 'Contract created')
+      setShowContractForm(false)
+      loadData()
+    } catch (err) {
+      flash(err.message)
+    }
+    setSavingContract(false)
+  }
+
+  const deleteContract = async (c) => {
+    if (!window.confirm(`Delete this contract for ${c.customer?.name || 'this customer'}? The vehicle will be freed back up as available.`)) return
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/contracts/${c.public_id}`, { method: 'DELETE' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Delete failed')
+      flash('Contract removed')
+      loadData()
+    } catch (err) {
+      flash(err.message)
+    }
+  }
+
+  // ---------- Payments (Step 5) ----------
+  const openLogPayment = (contract) => {
+    setPayingContract(contract)
+    setPaymentForm({
+      amount: contract.installment_amount ?? '',
+      payment_date: new Date().toISOString().slice(0, 10),
+      method: 'cash',
+      notes: '',
+    })
+    setPaymentHistory([])
+    loadPaymentHistory(contract)
+  }
+
+  const loadPaymentHistory = async (contract) => {
+    setLoadingHistory(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/contracts/${contract.public_id}/payments`)
+      setPaymentHistory(await res.json().catch(() => []))
+    } catch (err) {
+      console.error('Payment history error:', err)
+    }
+    setLoadingHistory(false)
+  }
+
+  const savePayment = async () => {
+    if (!paymentForm.amount || Number(paymentForm.amount) <= 0) {
+      flash('Enter a payment amount')
+      return
+    }
+    setSavingPayment(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/contracts/${payingContract.public_id}/payments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          amount: Number(paymentForm.amount),
+          payment_date: paymentForm.payment_date || null,
+          method: paymentForm.method || null,
+          notes: paymentForm.notes || null,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Save failed')
+      flash(data.contract?.status === 'completed' ? 'Payment logged — loan paid off! 🎉' : 'Payment logged')
+      setPayingContract(null)
+      loadData()
+    } catch (err) {
+      flash(err.message)
+    }
+    setSavingPayment(false)
+  }
+
+  const undoPayment = async (payment) => {
+    if (!window.confirm(`Undo this ₱${Number(payment.amount).toLocaleString()} payment? The balance will be restored.`)) return
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/v1/business/${businessId}/contracts/${payingContract.public_id}/payments/${payment.public_id}`,
+        { method: 'DELETE' }
+      )
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Undo failed')
+      flash('Payment undone')
+      loadPaymentHistory(payingContract)
+      loadData()
+    } catch (err) {
+      flash(err.message)
+    }
+  }
+
+  // ---------- Per-customer payment history / receipts (Step 6) ----------
+  // Unlike loadPaymentHistory (Step 5, scoped to one open contract), this
+  // pulls every payment across ALL of the buyer's contracts - including
+  // completed/repossessed/cancelled ones, which never show up in the
+  // Payments tab's open-loans list.
+  const openCustomerHistory = (customer) => {
+    setHistoryCustomer(customer)
+    setCustomerHistory([])
+    loadCustomerHistory(customer)
+  }
+
+  const loadCustomerHistory = async (customer) => {
+    setLoadingCustomerHistory(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-customers/${customer.public_id}/payments`)
+      setCustomerHistory(await res.json().catch(() => []))
+    } catch (err) {
+      console.error('Customer payment history error:', err)
+    }
+    setLoadingCustomerHistory(false)
+  }
+
+  // Scan a buyer's QR code (their public_id) and jump to the matching
+  // contract's "Log payment" modal. If they have more than one open
+  // contract, show a small picker instead of guessing which one.
+  const handleScanResult = (rawValue) => {
+    setShowScanModal(false)
+    const customer = customers.find(c => c.public_id === rawValue.trim())
+    if (!customer) {
+      flash('No customer matches that code')
+      return
+    }
+    const openContracts = contracts.filter(c => c.customer?.public_id === customer.public_id && c.status !== 'completed' && c.status !== 'cancelled')
+    if (openContracts.length === 0) {
+      flash(`${customer.name} has no open contract to pay`)
+    } else if (openContracts.length === 1) {
+      openLogPayment(openContracts[0])
+    } else {
+      setScanPickList({ customer, contracts: openContracts })
+    }
+  }
+
+  const { videoRef: scanVideoRef, supported: scanSupported, start: startScan, stop: stopScan } = useBarcodeScanner(handleScanResult)
+
+  const openScanModal = () => {
+    setScanPickList(null)
+    setScanManualInput('')
+    setShowScanModal(true)
+    if (scanSupported) setTimeout(startScan, 50)
+  }
+
+  const closeScanModal = () => {
+    stopScan()
+    setShowScanModal(false)
+  }
+
+  const [customerQR, setCustomerQR] = useState(null) // { svg, customer_name } for the "Show QR" modal
+  const showCustomerQR = async (customer) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-customers/${customer.public_id}/qr-code`)
+      const data = await res.json()
+      setCustomerQR(data)
+    } catch (err) {
+      flash('Could not load QR code')
+    }
+  }
+
+  // ---------- Owner -> buyer messages (Step 5) ----------
+  const openMessageForm = (customer) => {
+    setMessageTarget(customer || null)
+    setMessageForm({ title: '', message: '' })
+    setShowMessageForm(true)
+  }
+
+  const sendMessage = async () => {
+    if (!messageForm.title.trim() || !messageForm.message.trim()) {
+      flash('Title and message are required')
+      return
+    }
+    if (!messageTarget && !window.confirm('Send this to every customer with an email on file?')) return
+    setSavingMessage(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-announcements`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: messageForm.title,
+          message: messageForm.message,
+          customer_public_id: messageTarget?.public_id || null,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Send failed')
+      flash(`Sent to ${data.sent_count} of ${data.recipient_count} recipient${data.recipient_count === 1 ? '' : 's'}`)
+      setShowMessageForm(false)
+      loadData()
+    } catch (err) {
+      flash(err.message)
+    }
+    setSavingMessage(false)
+  }
+
+  if (loading) {
+    return <div style={styles.loadingScreen}>Loading dashboard…</div>
+  }
+
+  return (
+    <div style={styles.container}>
+      <header style={styles.header}>
+        <div style={styles.brand}>
+          <span style={{ fontSize: 26 }}>🚗</span>
+          <div>
+            <h1 style={styles.brandName}>{business?.name || 'Dealer Dashboard'}</h1>
+            <p style={styles.brandTagline}>Car Lending & Showroom</p>
+          </div>
+        </div>
+        <button onClick={onLogout} style={styles.logoutBtn}>Log out</button>
+      </header>
+
+      {message && <div style={styles.toast}>{message}</div>}
+
+      <nav style={styles.tabBar}>
+        {TABS.map(t => (
+          <button
+            key={t.key}
+            onClick={() => setActiveTab(t.key)}
+            style={{ ...styles.tabBtn, ...(activeTab === t.key ? styles.tabBtnActive : {}) }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </nav>
+
+      <div style={styles.body}>
+        {activeTab === 'overview' && (
+          <>
+            <div style={styles.statsGrid}>
+              <StatCard label="Active contracts" value={contracts.filter(c => c.status === 'active').length} />
+              <StatCard label="Vehicles in stock" value={vehicles.filter(v => v.status === 'available').length} />
+              <StatCard
+                label="Overdue payments"
+                value={contracts.filter(c => c.status === 'overdue').length}
+                accent="#dc2626"
+              />
+              <StatCard label="Customers" value={customers.length} />
+            </div>
+
+            <div style={styles.announcementsSection}>
+              <div style={styles.sectionHeaderRow}>
+                <h2 style={styles.sectionTitle}>Announcements</h2>
+                <button onClick={openNewAnnouncement} style={styles.newBtn}>+ New announcement</button>
+              </div>
+              <p style={styles.sectionSubtitle}>Shown to your customers — reminders, promos, or notices.</p>
+
+              {announcements.length === 0 ? (
+                <div style={styles.emptyState}>No announcements yet.</div>
+              ) : (
+                <div style={styles.announcementsList}>
+                  {announcements.map(ann => (
+                    <div key={ann.id} style={styles.announcementCard}>
+                      <div style={styles.announcementInfo}>
+                        <div style={styles.announcementTitleRow}>
+                          <span style={styles.announcementTitle}>{ann.title}</span>
+                          {!ann.is_active && <span style={styles.inactiveBadge}>Inactive</span>}
+                        </div>
+                        <div style={styles.announcementMessage}>{ann.message}</div>
+                        {ann.end_date && <div style={styles.announcementMeta}>Ends {ann.end_date}</div>}
+                      </div>
+                      <div style={styles.announcementActions}>
+                        <button onClick={() => openEditAnnouncement(ann)} style={styles.editBtn}>Edit</button>
+                        <button onClick={() => deleteAnnouncement(ann.id)} style={styles.deleteBtn}>Delete</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        {activeTab === 'customers' && (
+          <div style={styles.panelSection}>
+            <div style={styles.sectionHeaderRow}>
+              <h2 style={styles.sectionTitle}>Customers</h2>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={() => setShowMessageHistory(true)} style={styles.cancelBtnSmall}>Message history</button>
+                <button onClick={() => openMessageForm(null)} style={styles.newBtnAlt}>✉️ Message all</button>
+                <button onClick={openNewCustomer} style={styles.newBtn}>+ New customer</button>
+              </div>
+            </div>
+            <p style={styles.sectionSubtitle}>Buyers on file — used for contracts and payment history.</p>
+
+            <input
+              style={{ ...styles.input, marginBottom: 16 }}
+              value={customerSearch}
+              onChange={e => setCustomerSearch(e.target.value)}
+              placeholder="Search by name, phone, or email…"
+            />
+
+            {customers.length === 0 ? (
+              <div style={styles.emptyState}>
+                {customerSearch ? 'No customers match your search.' : 'No customers yet — add your first buyer.'}
+              </div>
+            ) : (
+              <div style={styles.cardList}>
+                {customers.map(c => (
+                  <div key={c.public_id} style={styles.recordCard}>
+                    <div style={styles.recordInfo}>
+                      <div style={styles.recordTitle}>{c.name}</div>
+                      <div style={styles.recordMeta}>
+                        {[c.phone, c.email].filter(Boolean).join(' · ') || 'No contact info on file'}
+                      </div>
+                      {c.address && <div style={styles.recordMetaSub}>{c.address}</div>}
+                      {c.id_number && <div style={styles.recordMetaSub}>ID: {c.id_number}</div>}
+                      {c.notes && <div style={styles.recordMetaSub}>{c.notes}</div>}
+                    </div>
+                    <div style={styles.recordActions}>
+                      <button onClick={() => showCustomerQR(c)} style={styles.editBtn}>QR</button>
+                      <button onClick={() => openCustomerHistory(c)} style={styles.editBtn}>History</button>
+                      <button onClick={() => openMessageForm(c)} style={styles.editBtn}>Message</button>
+                      <button onClick={() => openEditCustomer(c)} style={styles.editBtn}>Edit</button>
+                      <button onClick={() => deleteCustomer(c)} style={styles.deleteBtn}>Delete</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {activeTab === 'inventory' && (
+          <div style={styles.panelSection}>
+            <div style={styles.sectionHeaderRow}>
+              <h2 style={styles.sectionTitle}>Vehicle inventory</h2>
+              <button onClick={openNewVehicle} style={styles.newBtn}>+ Add vehicle</button>
+            </div>
+            <p style={styles.sectionSubtitle}>Showroom stock — status updates automatically once contracts land.</p>
+
+            <select
+              style={{ ...styles.select, marginBottom: 16 }}
+              value={vehicleStatusFilter}
+              onChange={e => setVehicleStatusFilter(e.target.value)}
+            >
+              <option value="">All statuses</option>
+              <option value="available">Available</option>
+              <option value="reserved">Reserved</option>
+              <option value="financed">Financed</option>
+              <option value="sold">Sold</option>
+            </select>
+
+            {vehicles.length === 0 ? (
+              <div style={styles.emptyState}>
+                {vehicleStatusFilter ? `No vehicles with status "${vehicleStatusFilter}".` : 'No vehicles yet — add your first unit.'}
+              </div>
+            ) : (
+              <div style={styles.cardList}>
+                {vehicles.map(v => (
+                  <div key={v.public_id} style={styles.recordCard}>
+                    {v.image_url && <img src={v.image_url} alt="" style={styles.vehicleThumb} />}
+                    <div style={styles.recordInfo}>
+                      <div style={styles.recordTitleRow}>
+                        <span style={styles.recordTitle}>{v.year ? `${v.year} ` : ''}{v.make} {v.model}</span>
+                        <span style={{ ...styles.statusBadge, ...(STATUS_BADGE_STYLES[v.status] || {}) }}>
+                          {v.status}
+                        </span>
+                      </div>
+                      <div style={styles.recordMeta}>
+                        {[v.color, v.plate_number ? `Plate ${v.plate_number}` : null, v.mileage != null ? `${v.mileage.toLocaleString()} km` : null].filter(Boolean).join(' · ')}
+                      </div>
+                      <div style={styles.recordMetaSub}>₱{Number(v.price || 0).toLocaleString()}</div>
+                    </div>
+                    <div style={styles.recordActions}>
+                      <button onClick={() => openEditVehicle(v)} style={styles.editBtn}>Edit</button>
+                      <button onClick={() => deleteVehicle(v)} style={styles.deleteBtn}>Delete</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {activeTab === 'contracts' && (
+          <div style={styles.panelSection}>
+            <div style={styles.sectionHeaderRow}>
+              <h2 style={styles.sectionTitle}>Contracts</h2>
+              <button onClick={openNewContract} style={styles.newBtn}>+ New contract</button>
+            </div>
+            <p style={styles.sectionSubtitle}>
+              Cash sales and financed deals. Use "existing loan" when creating one to transfer a car already mid-payment from before this dashboard existed.
+            </p>
+
+            <select
+              style={{ ...styles.select, marginBottom: 16 }}
+              value={contractStatusFilter}
+              onChange={e => setContractStatusFilter(e.target.value)}
+            >
+              <option value="">All statuses</option>
+              <option value="active">Active</option>
+              <option value="overdue">Overdue</option>
+              <option value="completed">Completed</option>
+              <option value="repossessed">Repossessed</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+
+            {contracts.length === 0 ? (
+              <div style={styles.emptyState}>
+                {contractStatusFilter ? `No contracts with status "${contractStatusFilter}".` : 'No contracts yet — create your first deal.'}
+              </div>
+            ) : (
+              <div style={styles.cardList}>
+                {contracts.map(c => (
+                  <div key={c.public_id} style={styles.recordCard}>
+                    <div style={styles.recordInfo}>
+                      <div style={styles.recordTitleRow}>
+                        <span style={styles.recordTitle}>
+                          {c.customer?.name || 'Unknown customer'} — {c.vehicle ? `${c.vehicle.year ? c.vehicle.year + ' ' : ''}${c.vehicle.make} ${c.vehicle.model}` : 'Unknown vehicle'}
+                        </span>
+                        <span style={{ ...styles.statusBadge, ...(CONTRACT_STATUS_BADGE_STYLES[c.status] || {}) }}>
+                          {c.status}
+                        </span>
+                      </div>
+                      <div style={styles.recordMeta}>
+                        {c.sale_type === 'cash' ? 'Cash sale' : `Financed · ${c.term_months}mo · ${c.payment_frequency}`}
+                        {' · '}₱{Number(c.total_payable || 0).toLocaleString()} total
+                      </div>
+                      <div style={styles.recordMetaSub}>
+                        Balance: ₱{Number(c.balance_remaining || 0).toLocaleString()}
+                        {c.next_due_date && ` · Next due ${c.next_due_date}`}
+                      </div>
+                      {c.vehicle?.plate_number && <div style={styles.recordMetaSub}>Plate: {c.vehicle.plate_number}</div>}
+                    </div>
+                    <div style={styles.recordActions}>
+                      <button onClick={() => openEditContract(c)} style={styles.editBtn}>Edit</button>
+                      <button onClick={() => deleteContract(c)} style={styles.deleteBtn}>Delete</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {activeTab === 'payments' && (
+          <div style={styles.panelSection}>
+            <div style={styles.sectionHeaderRow}>
+              <h2 style={styles.sectionTitle}>Payments</h2>
+              <button onClick={openScanModal} style={styles.newBtn}>📷 Scan QR</button>
+            </div>
+            <p style={styles.sectionSubtitle}>
+              Open loans, soonest due first. Log a payment directly, or scan a buyer's QR code (Customers tab → QR) to jump to theirs.
+            </p>
+
+            {(() => {
+              const openLoans = contracts
+                .filter(c => c.status === 'active' || c.status === 'overdue')
+                .slice()
+                .sort((a, b) => (a.next_due_date || '9999').localeCompare(b.next_due_date || '9999'))
+              if (openLoans.length === 0) {
+                return <div style={styles.emptyState}>No open loans right now.</div>
+              }
+              const today = new Date().toISOString().slice(0, 10)
+              return (
+                <div style={styles.cardList}>
+                  {openLoans.map(c => {
+                    const daysUntil = c.next_due_date
+                      ? Math.round((new Date(c.next_due_date) - new Date(today)) / 86400000)
+                      : null
+                    return (
+                      <div key={c.public_id} style={styles.recordCard}>
+                        <div style={styles.recordInfo}>
+                          <div style={styles.recordTitleRow}>
+                            <span style={styles.recordTitle}>
+                              {c.customer?.name || 'Unknown customer'} — {c.vehicle ? `${c.vehicle.year ? c.vehicle.year + ' ' : ''}${c.vehicle.make} ${c.vehicle.model}` : 'Unknown vehicle'}
+                            </span>
+                            <span style={{ ...styles.statusBadge, ...(CONTRACT_STATUS_BADGE_STYLES[c.status] || {}) }}>
+                              {c.status === 'overdue' && daysUntil != null ? `${Math.abs(daysUntil)}d overdue` : c.status}
+                            </span>
+                          </div>
+                          <div style={styles.recordMeta}>
+                            ₱{Number(c.installment_amount || 0).toLocaleString()} due
+                            {c.next_due_date && ` on ${c.next_due_date}`}
+                            {c.status === 'active' && daysUntil != null && daysUntil >= 0 && ` (in ${daysUntil}d)`}
+                          </div>
+                          <div style={styles.recordMetaSub}>Balance remaining: ₱{Number(c.balance_remaining || 0).toLocaleString()}</div>
+                        </div>
+                        <div style={styles.recordActions}>
+                          <button onClick={() => openLogPayment(c)} style={styles.newBtn}>Log payment</button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )
+            })()}
+          </div>
+        )}
+      </div>
+
+      {showAnnForm && (
+        <div style={styles.modalOverlay} onClick={() => setShowAnnForm(false)}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>{editingAnn ? 'Edit announcement' : 'New announcement'}</h3>
+            <div style={styles.formGrid}>
+              <label style={styles.label}>Title</label>
+              <input
+                style={styles.input}
+                value={annForm.title}
+                onChange={e => setAnnForm({ ...annForm, title: e.target.value })}
+                placeholder="e.g. Holiday showroom hours"
+              />
+              <label style={styles.label}>Message</label>
+              <textarea
+                style={{ ...styles.input, minHeight: 80, resize: 'vertical' }}
+                value={annForm.message}
+                onChange={e => setAnnForm({ ...annForm, message: e.target.value })}
+                placeholder="e.g. We'll be closed Dec 25 and 26."
+              />
+              <label style={styles.label}>End date (optional)</label>
+              <input
+                type="date"
+                style={styles.input}
+                value={annForm.end_date}
+                onChange={e => setAnnForm({ ...annForm, end_date: e.target.value })}
+              />
+            </div>
+            <div style={styles.modalActions}>
+              <button onClick={() => setShowAnnForm(false)} style={styles.closeBtn}>Cancel</button>
+              <button onClick={saveAnnouncement} disabled={savingAnn} style={styles.saveBtn}>
+                {savingAnn ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCustomerForm && (
+        <div style={styles.modalOverlay} onClick={() => setShowCustomerForm(false)}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>{editingCustomer ? 'Edit customer' : 'New customer'}</h3>
+            <div style={styles.formGrid}>
+              <label style={styles.label}>Name</label>
+              <input
+                style={styles.input}
+                value={customerForm.name}
+                onChange={e => setCustomerForm({ ...customerForm, name: e.target.value })}
+                placeholder="e.g. Juan Dela Cruz"
+              />
+              <label style={styles.label}>Phone</label>
+              <input
+                style={styles.input}
+                value={customerForm.phone}
+                onChange={e => setCustomerForm({ ...customerForm, phone: e.target.value })}
+                placeholder="e.g. 09171234567"
+              />
+              <label style={styles.label}>Email</label>
+              <input
+                style={styles.input}
+                value={customerForm.email}
+                onChange={e => setCustomerForm({ ...customerForm, email: e.target.value })}
+                placeholder="e.g. juan@email.com"
+              />
+              <label style={styles.label}>Address</label>
+              <input
+                style={styles.input}
+                value={customerForm.address}
+                onChange={e => setCustomerForm({ ...customerForm, address: e.target.value })}
+                placeholder="Home or work address"
+              />
+              <label style={styles.label}>ID number</label>
+              <input
+                style={styles.input}
+                value={customerForm.id_number}
+                onChange={e => setCustomerForm({ ...customerForm, id_number: e.target.value })}
+                placeholder="Driver's license / gov ID — for the contract"
+              />
+              <label style={styles.label}>Notes</label>
+              <textarea
+                style={{ ...styles.input, minHeight: 70, resize: 'vertical' }}
+                value={customerForm.notes}
+                onChange={e => setCustomerForm({ ...customerForm, notes: e.target.value })}
+                placeholder="Optional"
+              />
+            </div>
+            {editingCustomer && (
+              <div style={{ marginTop: 4, marginBottom: 12, padding: 12, background: '#f8fafc', borderRadius: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 6 }}>
+                  Wallet card
+                </div>
+                <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>
+                  Share this link so they can add their loan card to Google/Apple Wallet — that's how
+                  they'll get payment reminders and your announcements. No login, no payment portal.
+                </div>
+                <button
+                  onClick={() => {
+                    navigator.clipboard?.writeText(`${API_BASE.replace(/\/api$/, '')}/cl-wallet/${editingCustomer.public_id}`)
+                    flash('Wallet link copied')
+                  }}
+                  style={{ ...styles.closeBtn, fontSize: 13 }}
+                >
+                  🔗 Copy wallet link
+                </button>
+              </div>
+            )}
+            <div style={styles.modalActions}>
+              <button onClick={() => setShowCustomerForm(false)} style={styles.closeBtn}>Cancel</button>
+              <button onClick={saveCustomer} disabled={savingCustomer} style={styles.saveBtn}>
+                {savingCustomer ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showVehicleForm && (
+        <div style={styles.modalOverlay} onClick={() => setShowVehicleForm(false)}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>{editingVehicle ? 'Edit vehicle' : 'Add vehicle'}</h3>
+            <div style={styles.formGrid}>
+              <label style={styles.label}>Make</label>
+              <input
+                style={styles.input}
+                value={vehicleForm.make}
+                onChange={e => setVehicleForm({ ...vehicleForm, make: e.target.value })}
+                placeholder="e.g. Toyota"
+              />
+              <label style={styles.label}>Model</label>
+              <input
+                style={styles.input}
+                value={vehicleForm.model}
+                onChange={e => setVehicleForm({ ...vehicleForm, model: e.target.value })}
+                placeholder="e.g. Vios"
+              />
+              <label style={styles.label}>Year</label>
+              <input
+                type="number"
+                style={styles.input}
+                value={vehicleForm.year}
+                onChange={e => setVehicleForm({ ...vehicleForm, year: e.target.value })}
+                placeholder="e.g. 2021"
+              />
+              <label style={styles.label}>Plate number</label>
+              <input
+                style={styles.input}
+                value={vehicleForm.plate_number}
+                onChange={e => setVehicleForm({ ...vehicleForm, plate_number: e.target.value })}
+                placeholder="e.g. ABC 1234"
+              />
+              <label style={styles.label}>Color</label>
+              <input
+                style={styles.input}
+                value={vehicleForm.color}
+                onChange={e => setVehicleForm({ ...vehicleForm, color: e.target.value })}
+              />
+              <label style={styles.label}>Mileage (km)</label>
+              <input
+                type="number"
+                style={styles.input}
+                value={vehicleForm.mileage}
+                onChange={e => setVehicleForm({ ...vehicleForm, mileage: e.target.value })}
+              />
+              <label style={styles.label}>Price (₱)</label>
+              <input
+                type="number"
+                style={styles.input}
+                value={vehicleForm.price}
+                onChange={e => setVehicleForm({ ...vehicleForm, price: e.target.value })}
+              />
+              <label style={styles.label}>Status</label>
+              <select
+                style={styles.select}
+                value={vehicleForm.status}
+                onChange={e => setVehicleForm({ ...vehicleForm, status: e.target.value })}
+              >
+                <option value="available">Available</option>
+                <option value="reserved">Reserved</option>
+                <option value="financed">Financed</option>
+                <option value="sold">Sold</option>
+              </select>
+              <label style={styles.label}>Image URL (optional)</label>
+              <input
+                style={styles.input}
+                value={vehicleForm.image_url}
+                onChange={e => setVehicleForm({ ...vehicleForm, image_url: e.target.value })}
+                placeholder="https://…"
+              />
+            </div>
+            <div style={styles.modalActions}>
+              <button onClick={() => setShowVehicleForm(false)} style={styles.closeBtn}>Cancel</button>
+              <button onClick={saveVehicle} disabled={savingVehicle} style={styles.saveBtn}>
+                {savingVehicle ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showContractForm && (
+        <div style={styles.modalOverlay} onClick={() => setShowContractForm(false)}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>{editingContract ? 'Edit contract' : 'New contract'}</h3>
+            <div style={styles.formGrid}>
+              <label style={styles.label}>Customer</label>
+              {editingContract ? (
+                <div style={styles.readOnlyValue}>{editingContract.customer?.name || '—'}</div>
+              ) : (
+                <select
+                  style={styles.select}
+                  value={contractForm.customer_public_id}
+                  onChange={e => setContractForm({ ...contractForm, customer_public_id: e.target.value })}
+                >
+                  <option value="">Select a customer…</option>
+                  {customers.map(c => (
+                    <option key={c.public_id} value={c.public_id}>{c.name}{c.phone ? ` (${c.phone})` : ''}</option>
+                  ))}
+                </select>
+              )}
+
+              <label style={styles.label}>Vehicle</label>
+              {editingContract ? (
+                <div style={styles.readOnlyValue}>
+                  {editingContract.vehicle ? `${editingContract.vehicle.year ? editingContract.vehicle.year + ' ' : ''}${editingContract.vehicle.make} ${editingContract.vehicle.model}` : '—'}
+                </div>
+              ) : (
+                <select
+                  style={styles.select}
+                  value={contractForm.vehicle_public_id}
+                  onChange={e => onSelectContractVehicle(e.target.value)}
+                >
+                  <option value="">Select a vehicle…</option>
+                  {vehicles.filter(v => v.status !== 'sold').map(v => (
+                    <option key={v.public_id} value={v.public_id}>
+                      {v.year ? `${v.year} ` : ''}{v.make} {v.model}{v.plate_number ? ` — ${v.plate_number}` : ''} ({v.status})
+                    </option>
+                  ))}
+                </select>
+              )}
+
+              <label style={styles.label}>Sale type</label>
+              <select
+                style={styles.select}
+                value={contractForm.sale_type}
+                onChange={e => setContractForm({ ...contractForm, sale_type: e.target.value })}
+              >
+                <option value="financed">Financed</option>
+                <option value="cash">Cash</option>
+              </select>
+
+              <label style={styles.label}>Vehicle price (₱)</label>
+              <input
+                type="number"
+                style={styles.input}
+                value={contractForm.vehicle_price}
+                onChange={e => setContractForm({ ...contractForm, vehicle_price: e.target.value })}
+              />
+
+              <label style={styles.label}>Down payment (₱)</label>
+              <input
+                type="number"
+                style={styles.input}
+                value={contractForm.down_payment}
+                onChange={e => setContractForm({ ...contractForm, down_payment: e.target.value })}
+              />
+
+              {contractForm.sale_type === 'financed' && (
+                <>
+                  <label style={styles.label}>Interest / markup (%)</label>
+                  <input
+                    type="number"
+                    style={styles.input}
+                    value={contractForm.interest_rate}
+                    onChange={e => setContractForm({ ...contractForm, interest_rate: e.target.value })}
+                  />
+
+                  <label style={styles.label}>Term (months, 0–36)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="36"
+                    style={styles.input}
+                    value={contractForm.term_months}
+                    onChange={e => setContractForm({ ...contractForm, term_months: e.target.value })}
+                  />
+
+                  <label style={styles.label}>Payment frequency</label>
+                  <select
+                    style={styles.select}
+                    value={contractForm.payment_frequency}
+                    onChange={e => setContractForm({ ...contractForm, payment_frequency: e.target.value })}
+                  >
+                    <option value="monthly">Monthly</option>
+                    <option value="biweekly">Biweekly</option>
+                    <option value="weekly">Weekly</option>
+                  </select>
+                </>
+              )}
+
+              <label style={styles.label}>Start date</label>
+              <input
+                type="date"
+                style={styles.input}
+                value={contractForm.start_date}
+                onChange={e => setContractForm({ ...contractForm, start_date: e.target.value })}
+              />
+
+              {!editingContract && (
+                <label style={styles.checkboxRow}>
+                  <input
+                    type="checkbox"
+                    checked={contractForm.is_existing_loan}
+                    onChange={e => setContractForm({ ...contractForm, is_existing_loan: e.target.checked })}
+                  />
+                  This is an existing loan already in progress (transferring from before)
+                </label>
+              )}
+
+              {(contractForm.is_existing_loan || editingContract) && (
+                <>
+                  <div style={styles.formDivider}>Current loan status</div>
+                  <label style={styles.label}>Balance remaining (₱)</label>
+                  <input
+                    type="number"
+                    style={styles.input}
+                    value={contractForm.balance_remaining}
+                    onChange={e => setContractForm({ ...contractForm, balance_remaining: e.target.value })}
+                    placeholder="Leave blank to auto-calculate"
+                  />
+                  <label style={styles.label}>Last paid date</label>
+                  <input
+                    type="date"
+                    style={styles.input}
+                    value={contractForm.last_paid_date}
+                    onChange={e => setContractForm({ ...contractForm, last_paid_date: e.target.value })}
+                  />
+                  <label style={styles.label}>Next due date</label>
+                  <input
+                    type="date"
+                    style={styles.input}
+                    value={contractForm.next_due_date}
+                    onChange={e => setContractForm({ ...contractForm, next_due_date: e.target.value })}
+                  />
+                  <label style={styles.label}>Status</label>
+                  <select
+                    style={styles.select}
+                    value={contractForm.status}
+                    onChange={e => setContractForm({ ...contractForm, status: e.target.value })}
+                  >
+                    <option value="active">Active</option>
+                    <option value="overdue">Overdue</option>
+                    <option value="completed">Completed</option>
+                    <option value="repossessed">Repossessed</option>
+                    <option value="cancelled">Cancelled</option>
+                  </select>
+                </>
+              )}
+            </div>
+            <div style={styles.modalActions}>
+              <button onClick={() => setShowContractForm(false)} style={styles.closeBtn}>Cancel</button>
+              <button onClick={saveContract} disabled={savingContract} style={styles.saveBtn}>
+                {savingContract ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {payingContract && (
+        <div style={styles.modalOverlay} onClick={() => setPayingContract(null)}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>Log payment</h3>
+            <div style={styles.readOnlyValue}>
+              {payingContract.customer?.name || 'Unknown customer'} — {payingContract.vehicle ? `${payingContract.vehicle.year ? payingContract.vehicle.year + ' ' : ''}${payingContract.vehicle.make} ${payingContract.vehicle.model}` : 'Unknown vehicle'}
+              <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>
+                Balance remaining: ₱{Number(payingContract.balance_remaining || 0).toLocaleString()}
+                {payingContract.next_due_date && ` · Next due ${payingContract.next_due_date}`}
+              </div>
+            </div>
+
+            <div style={styles.formGrid}>
+              <label style={styles.label}>Amount (₱)</label>
+              <input
+                type="number"
+                style={styles.input}
+                value={paymentForm.amount}
+                onChange={e => setPaymentForm({ ...paymentForm, amount: e.target.value })}
+              />
+              <label style={styles.label}>Payment date</label>
+              <input
+                type="date"
+                style={styles.input}
+                value={paymentForm.payment_date}
+                onChange={e => setPaymentForm({ ...paymentForm, payment_date: e.target.value })}
+              />
+              <label style={styles.label}>Method</label>
+              <select
+                style={styles.select}
+                value={paymentForm.method}
+                onChange={e => setPaymentForm({ ...paymentForm, method: e.target.value })}
+              >
+                <option value="cash">Cash</option>
+                <option value="bank_transfer">Bank transfer</option>
+                <option value="gcash">GCash</option>
+                <option value="other">Other</option>
+              </select>
+              <label style={styles.label}>Notes (optional)</label>
+              <input
+                style={styles.input}
+                value={paymentForm.notes}
+                onChange={e => setPaymentForm({ ...paymentForm, notes: e.target.value })}
+              />
+            </div>
+
+            <div style={styles.formDivider}>Payment history</div>
+            {loadingHistory ? (
+              <p style={styles.hint}>Loading…</p>
+            ) : paymentHistory.length === 0 ? (
+              <p style={styles.hint}>No payments logged yet.</p>
+            ) : (
+              <div style={{ ...styles.cardList, marginTop: 10, marginBottom: 10 }}>
+                {paymentHistory.map((p, i) => (
+                  <div key={p.public_id} style={{ ...styles.recordCard, padding: '8px 12px' }}>
+                    <div style={styles.recordInfo}>
+                      <div style={{ fontSize: 13.5, fontWeight: 600, color: '#0f172a' }}>₱{Number(p.amount).toLocaleString()} · {p.payment_date}</div>
+                      <div style={styles.recordMetaSub}>
+                        {p.method || 'no method noted'}{p.notes ? ` — ${p.notes}` : ''}
+                        {p.balance_after != null && ` · Balance after: ₱${Number(p.balance_after).toLocaleString()}`}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                      <button onClick={() => setViewingReceipt({ ...p, customer: payingContract.customer, vehicle: payingContract.vehicle })} style={styles.editBtn}>Receipt</button>
+                      {i === 0 && (
+                        <button onClick={() => undoPayment(p)} style={styles.deleteBtn}>Undo</button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={styles.modalActions}>
+              <button onClick={() => setPayingContract(null)} style={styles.closeBtn}>Cancel</button>
+              <button onClick={savePayment} disabled={savingPayment} style={styles.saveBtn}>
+                {savingPayment ? 'Saving…' : 'Log payment'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showScanModal && (
+        <div style={styles.modalOverlay} onClick={closeScanModal}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>Scan buyer QR</h3>
+            {scanSupported ? (
+              <video ref={scanVideoRef} style={styles.scanVideo} muted playsInline />
+            ) : (
+              <p style={styles.hint}>Live camera scanning isn't supported on this browser/device. Type or paste the code from the buyer's QR instead:</p>
+            )}
+            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+              <input
+                style={{ ...styles.input, flex: 1 }}
+                value={scanManualInput}
+                onChange={e => setScanManualInput(e.target.value)}
+                placeholder="Buyer code"
+              />
+              <button onClick={() => scanManualInput.trim() && handleScanResult(scanManualInput.trim())} style={styles.saveBtn}>Find</button>
+            </div>
+            <div style={styles.modalActions}>
+              <button onClick={closeScanModal} style={styles.closeBtn}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {scanPickList && (
+        <div style={styles.modalOverlay} onClick={() => setScanPickList(null)}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>{scanPickList.customer.name} has more than one open loan</h3>
+            <div style={styles.cardList}>
+              {scanPickList.contracts.map(c => (
+                <div key={c.public_id} style={styles.recordCard}>
+                  <div style={styles.recordInfo}>
+                    <div style={styles.recordTitle}>
+                      {c.vehicle ? `${c.vehicle.year ? c.vehicle.year + ' ' : ''}${c.vehicle.make} ${c.vehicle.model}` : 'Unknown vehicle'}
+                    </div>
+                    <div style={styles.recordMetaSub}>Balance: ₱{Number(c.balance_remaining || 0).toLocaleString()}</div>
+                  </div>
+                  <button onClick={() => { setScanPickList(null); openLogPayment(c) }} style={styles.newBtn}>Select</button>
+                </div>
+              ))}
+            </div>
+            <div style={styles.modalActions}>
+              <button onClick={() => setScanPickList(null)} style={styles.closeBtn}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {historyCustomer && (
+        <div style={styles.modalOverlay} onClick={() => setHistoryCustomer(null)}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>{historyCustomer.name} — payment history</h3>
+            <p style={styles.hint}>Every payment logged across all of this buyer's contracts, newest first.</p>
+
+            {loadingCustomerHistory ? (
+              <p style={styles.hint}>Loading…</p>
+            ) : customerHistory.length === 0 ? (
+              <div style={styles.emptyState}>No payments logged for this buyer yet.</div>
+            ) : (
+              <div style={{ ...styles.cardList, marginTop: 10 }}>
+                {customerHistory.map(p => (
+                  <div key={p.public_id} style={{ ...styles.recordCard, padding: '8px 12px' }}>
+                    <div style={styles.recordInfo}>
+                      <div style={{ fontSize: 13.5, fontWeight: 600, color: '#0f172a' }}>
+                        ₱{Number(p.amount).toLocaleString()} · {p.payment_date}
+                      </div>
+                      <div style={styles.recordMetaSub}>
+                        {p.vehicle ? `${p.vehicle.year ? p.vehicle.year + ' ' : ''}${p.vehicle.make} ${p.vehicle.model}` : 'Unknown vehicle'}
+                        {' · '}{p.method || 'no method noted'}
+                        {p.balance_after != null && ` · Balance after: ₱${Number(p.balance_after).toLocaleString()}`}
+                      </div>
+                      {p.receipt_number && <div style={styles.recordMetaSub}>{p.receipt_number}</div>}
+                    </div>
+                    <button onClick={() => setViewingReceipt({ ...p, customer: historyCustomer })} style={{ ...styles.editBtn, flexShrink: 0 }}>Receipt</button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={styles.modalActions}>
+              <button onClick={() => setHistoryCustomer(null)} style={styles.closeBtn}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {viewingReceipt && (
+        <div style={styles.modalOverlay} onClick={() => setViewingReceipt(null)}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+            <div className="cl-receipt-print">
+              <h3 style={styles.modalTitle}>Payment receipt</h3>
+              <div style={{ fontSize: 13, color: '#64748b', marginBottom: 12 }}>{business?.name || 'Dealer'}</div>
+              <div style={styles.formGrid}>
+                <span style={styles.label}>Receipt #</span>
+                <span style={styles.readOnlyValue}>{viewingReceipt.receipt_number || viewingReceipt.public_id}</span>
+                <span style={styles.label}>Buyer</span>
+                <span style={styles.readOnlyValue}>{viewingReceipt.customer?.name || 'Unknown customer'}</span>
+                {viewingReceipt.vehicle && (
+                  <>
+                    <span style={styles.label}>Vehicle</span>
+                    <span style={styles.readOnlyValue}>
+                      {viewingReceipt.vehicle.year ? `${viewingReceipt.vehicle.year} ` : ''}{viewingReceipt.vehicle.make} {viewingReceipt.vehicle.model}
+                    </span>
+                  </>
+                )}
+                <span style={styles.label}>Date</span>
+                <span style={styles.readOnlyValue}>{viewingReceipt.payment_date}</span>
+                <span style={styles.label}>Amount</span>
+                <span style={styles.readOnlyValue}>₱{Number(viewingReceipt.amount).toLocaleString()}</span>
+                <span style={styles.label}>Method</span>
+                <span style={styles.readOnlyValue}>{viewingReceipt.method || '—'}</span>
+                {viewingReceipt.balance_after != null && (
+                  <>
+                    <span style={styles.label}>Balance after</span>
+                    <span style={styles.readOnlyValue}>₱{Number(viewingReceipt.balance_after).toLocaleString()}</span>
+                  </>
+                )}
+                {viewingReceipt.notes && (
+                  <>
+                    <span style={styles.label}>Notes</span>
+                    <span style={styles.readOnlyValue}>{viewingReceipt.notes}</span>
+                  </>
+                )}
+              </div>
+            </div>
+            <div style={styles.modalActions}>
+              <button onClick={() => setViewingReceipt(null)} style={styles.closeBtn}>Close</button>
+              <button onClick={() => window.print()} style={styles.saveBtn}>Print</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {customerQR && (
+        <div style={styles.modalOverlay} onClick={() => setCustomerQR(null)}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>{customerQR.customer_name}'s QR code</h3>
+            <p style={styles.hint}>Show this on the buyer's phone (or print it) — scan it from the Payments tab to log their payment.</p>
+            <div style={styles.qrWrap} dangerouslySetInnerHTML={{ __html: customerQR.svg }} />
+            <div style={styles.modalActions}>
+              <button onClick={() => setCustomerQR(null)} style={styles.closeBtn}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showMessageForm && (
+        <div style={styles.modalOverlay} onClick={() => setShowMessageForm(false)}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>{messageTarget ? `Message ${messageTarget.name}` : 'Message all customers'}</h3>
+            <p style={styles.hint}>{messageTarget ? 'Pushed to this buyer\'s wallet card. They only get it if they\'ve added it.' : 'Pushed to every buyer\'s wallet card at once — including buyers with no active loan.'}</p>
+            <div style={styles.formGrid}>
+              <label style={styles.label}>Title</label>
+              <input
+                style={styles.input}
+                value={messageForm.title}
+                onChange={e => setMessageForm({ ...messageForm, title: e.target.value })}
+                placeholder="e.g. Payment reminder"
+              />
+              <label style={styles.label}>Message</label>
+              <textarea
+                style={{ ...styles.input, minHeight: 90, resize: 'vertical' }}
+                value={messageForm.message}
+                onChange={e => setMessageForm({ ...messageForm, message: e.target.value })}
+              />
+            </div>
+            <div style={styles.modalActions}>
+              <button onClick={() => setShowMessageForm(false)} style={styles.closeBtn}>Cancel</button>
+              <button onClick={sendMessage} disabled={savingMessage} style={styles.saveBtn}>
+                {savingMessage ? 'Sending…' : 'Send'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showMessageHistory && (
+        <div style={styles.modalOverlay} onClick={() => setShowMessageHistory(false)}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>Message history</h3>
+            {clAnnouncements.length === 0 ? (
+              <p style={styles.hint}>No messages sent yet.</p>
+            ) : (
+              <div style={styles.cardList}>
+                {clAnnouncements.map(m => (
+                  <div key={m.id} style={{ ...styles.recordCard, flexDirection: 'column', alignItems: 'stretch' }}>
+                    <div style={styles.recordTitle}>{m.title}</div>
+                    <div style={styles.recordMetaSub}>{m.customer ? `To ${m.customer.name}` : 'Broadcast to all'} · sent to {m.sent_count}/{m.recipient_count}</div>
+                    <div style={styles.recordMeta}>{m.message}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={styles.modalActions}>
+              <button onClick={() => setShowMessageHistory(false)} style={styles.closeBtn}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+const STATUS_BADGE_STYLES = {
+  available: { background: '#dcfce7', color: '#15803d' },
+  reserved: { background: '#fef9c3', color: '#a16207' },
+  financed: { background: '#dbeafe', color: '#1d4ed8' },
+  sold: { background: '#f1f5f9', color: '#64748b' },
+}
+
+const CONTRACT_STATUS_BADGE_STYLES = {
+  active: { background: '#dbeafe', color: '#1d4ed8' },
+  overdue: { background: '#fee2e2', color: '#dc2626' },
+  completed: { background: '#dcfce7', color: '#15803d' },
+  repossessed: { background: '#fef3c7', color: '#b45309' },
+  cancelled: { background: '#f1f5f9', color: '#64748b' },
+}
+
+function StatCard({ label, value, accent, hint }) {
+  return (
+    <div style={styles.statCard}>
+      <div style={{ ...styles.statValue, color: accent || '#0f172a' }}>{value}</div>
+      <div style={styles.statLabel}>{label}</div>
+      {hint && <div style={styles.statHint}>{hint}</div>}
+    </div>
+  )
+}
+
+const styles = {
+  loadingScreen: {
+    minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    color: '#64748b', fontSize: 16, fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+  },
+  container: {
+    minHeight: '100vh',
+    background: '#f8fafc',
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+  },
+  header: {
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    padding: '16px 24px', background: '#0f172a', color: 'white',
+    position: 'sticky', top: 0, zIndex: 100,
+  },
+  brand: { display: 'flex', alignItems: 'center', gap: 12 },
+  brandName: { margin: 0, fontSize: 18, fontWeight: 700, color: 'white' },
+  brandTagline: { margin: 0, fontSize: 12, color: '#94a3b8' },
+  logoutBtn: {
+    padding: '8px 16px', background: 'transparent', color: '#cbd5e1',
+    border: '1px solid #334155', borderRadius: 8, fontSize: 13, cursor: 'pointer',
+  },
+  toast: {
+    position: 'fixed', top: 80, right: 24, padding: '12px 20px', background: '#0d9488',
+    color: 'white', borderRadius: 12, fontSize: 14, fontWeight: 500,
+    boxShadow: '0 4px 12px rgba(0,0,0,0.15)', zIndex: 200,
+  },
+  tabBar: {
+    display: 'flex', gap: 4, padding: '0 24px', background: 'white',
+    borderBottom: '1px solid #e2e8f0', position: 'sticky', top: 57, zIndex: 90, overflowX: 'auto',
+  },
+  tabBtn: {
+    padding: '14px 16px', background: 'transparent', border: 'none', borderBottom: '2px solid transparent',
+    color: '#64748b', fontSize: 14, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap',
+  },
+  tabBtnActive: { color: '#0f172a', borderBottom: '2px solid #0f172a' },
+  body: { padding: '24px', maxWidth: 1200, margin: '0 auto' },
+  statsGrid: {
+    display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+    gap: 12, marginBottom: 24,
+  },
+  statCard: { background: 'white', borderRadius: 12, padding: '16px 18px', border: '1px solid #e2e8f0' },
+  statValue: { fontSize: 24, fontWeight: 700 },
+  statLabel: { fontSize: 12, color: '#64748b', marginTop: 4 },
+  statHint: { fontSize: 11, color: '#cbd5e1', marginTop: 6 },
+  placeholder: {
+    background: 'white', border: '1px dashed #cbd5e1', borderRadius: 12,
+    padding: 40, textAlign: 'center', color: '#94a3b8', fontSize: 14,
+  },
+  panelSection: { background: 'white', borderRadius: 12, border: '1px solid #e2e8f0', padding: '18px 20px' },
+  select: {
+    padding: '10px 12px', border: '1px solid #e2e8f0', borderRadius: 8,
+    fontSize: 13, background: 'white', cursor: 'pointer',
+  },
+  cardList: { display: 'flex', flexDirection: 'column', gap: 10 },
+  recordCard: {
+    display: 'flex', gap: 12, alignItems: 'flex-start', justifyContent: 'space-between',
+    border: '1px solid #f1f5f9', borderRadius: 10, padding: '12px 14px', flexWrap: 'wrap',
+  },
+  recordInfo: { flex: 1, minWidth: 200 },
+  recordTitleRow: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+  recordTitle: { fontWeight: 600, fontSize: 14, color: '#0f172a' },
+  recordMeta: { fontSize: 13, color: '#475569', marginTop: 4 },
+  recordMetaSub: { fontSize: 12, color: '#94a3b8', marginTop: 2 },
+  recordActions: { display: 'flex', gap: 8, flexShrink: 0 },
+  vehicleThumb: { width: 56, height: 56, borderRadius: 8, objectFit: 'cover', flexShrink: 0 },
+  statusBadge: {
+    fontSize: 10, fontWeight: 700, borderRadius: 999, padding: '3px 9px',
+    textTransform: 'uppercase', letterSpacing: 0.3,
+  },
+  announcementsSection: { background: 'white', borderRadius: 12, border: '1px solid #e2e8f0', padding: '18px 20px' },
+  sectionHeaderRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
+  sectionTitle: { margin: 0, fontSize: 16, fontWeight: 700, color: '#0f172a' },
+  sectionSubtitle: { margin: '4px 0 16px', fontSize: 13, color: '#64748b' },
+  newBtn: {
+    padding: '8px 14px', background: '#0f172a', color: 'white',
+    border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer',
+  },
+  newBtnAlt: {
+    padding: '8px 14px', background: '#0d9488', color: 'white',
+    border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer',
+  },
+  cancelBtnSmall: {
+    padding: '8px 14px', background: 'white', color: '#475569',
+    border: '1.5px solid #e2e8f0', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer',
+  },
+  scanVideo: {
+    width: '100%', borderRadius: 12, background: '#0f172a', maxHeight: 320, objectFit: 'cover',
+  },
+  qrWrap: {
+    display: 'flex', justifyContent: 'center', padding: 16, background: 'white',
+  },
+  emptyState: { color: '#94a3b8', fontSize: 13, padding: '20px 0', textAlign: 'center' },
+  announcementsList: { display: 'flex', flexDirection: 'column', gap: 10 },
+  announcementCard: {
+    display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start',
+    border: '1px solid #f1f5f9', borderRadius: 10, padding: '12px 14px', flexWrap: 'wrap',
+  },
+  announcementInfo: { flex: 1, minWidth: 200 },
+  announcementTitleRow: { display: 'flex', alignItems: 'center', gap: 8 },
+  announcementTitle: { fontWeight: 600, fontSize: 14, color: '#0f172a' },
+  inactiveBadge: {
+    fontSize: 10, fontWeight: 700, color: '#94a3b8', background: '#f1f5f9',
+    borderRadius: 999, padding: '2px 8px',
+  },
+  announcementMessage: { fontSize: 13, color: '#475569', marginTop: 4 },
+  announcementMeta: { fontSize: 11, color: '#94a3b8', marginTop: 6 },
+  announcementActions: { display: 'flex', gap: 8, flexShrink: 0 },
+  editBtn: {
+    padding: '6px 12px', background: 'transparent', color: '#0d9488',
+    border: '1px solid #a7f3d0', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+  },
+  deleteBtn: {
+    padding: '6px 12px', background: 'transparent', color: '#dc2626',
+    border: '1px solid #fecaca', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+  },
+  modalOverlay: {
+    position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300, padding: 16,
+  },
+  modal: {
+    background: 'white', borderRadius: 16, padding: 28, width: 440,
+    maxHeight: '85vh', overflow: 'auto',
+  },
+  modalTitle: { margin: '0 0 16px', fontSize: 18, fontWeight: 700, color: '#0f172a' },
+  formGrid: { display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 20 },
+  label: { fontSize: 12, fontWeight: 600, color: '#64748b', marginTop: 8 },
+  input: {
+    padding: '10px 12px', border: '1px solid #e2e8f0', borderRadius: 8,
+    fontSize: 14, outline: 'none', width: '100%', boxSizing: 'border-box', fontFamily: 'inherit',
+  },
+  modalActions: { display: 'flex', gap: 10, justifyContent: 'flex-end' },
+  readOnlyValue: {
+    padding: '10px 12px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8,
+    fontSize: 14, color: '#334155',
+  },
+  checkboxRow: {
+    display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#334155',
+    marginTop: 10, cursor: 'pointer',
+  },
+  formDivider: {
+    fontSize: 11, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase',
+    letterSpacing: 0.5, marginTop: 14, borderTop: '1px solid #f1f5f9', paddingTop: 12,
+  },
+  closeBtn: {
+    padding: '10px 16px', background: '#f1f5f9', color: '#334155',
+    border: 'none', borderRadius: 8, fontSize: 13, cursor: 'pointer',
+  },
+  saveBtn: {
+    padding: '10px 16px', background: '#0f172a', color: 'white',
+    border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer',
+  },
+}
+
+export default CarLendingDashboard

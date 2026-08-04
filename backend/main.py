@@ -21,6 +21,7 @@ from qrcode.image.svg import SvgImage
 from io import BytesIO
 from PIL import Image
 import zipfile
+import calendar
 
 # Environment
 SUPABASE_URL = os.getenv('SUPABASE_URL', '')
@@ -480,6 +481,101 @@ class BranchUpdate(BaseModel):
     address: Optional[str] = None
     is_active: Optional[bool] = None
 
+# --- Car Lending / Showroom: buyer records (cl_customers table - kept
+# separate from the loyalty `customers` table on purpose, see
+# car_lending_schema.sql) ---
+class CLCustomerCreate(BaseModel):
+    name: str
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    address: Optional[str] = None
+    id_number: Optional[str] = None  # driver's license / gov ID, for the contract
+    notes: Optional[str] = None
+
+class CLCustomerUpdate(BaseModel):
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    address: Optional[str] = None
+    id_number: Optional[str] = None
+    notes: Optional[str] = None
+
+# --- Car Lending / Showroom: vehicle inventory ---
+VEHICLE_STATUS_OPTIONS = ['available', 'reserved', 'sold', 'financed']
+
+class VehicleCreate(BaseModel):
+    make: str
+    model: str
+    year: Optional[int] = Field(default=None, ge=1900, le=2100)
+    plate_number: Optional[str] = None
+    color: Optional[str] = None
+    mileage: Optional[int] = Field(default=None, ge=0)
+    price: float = Field(default=0, ge=0)
+    status: Optional[Literal['available', 'reserved', 'sold', 'financed']] = 'available'
+    image_url: Optional[str] = None
+
+class VehicleUpdate(BaseModel):
+    make: Optional[str] = None
+    model: Optional[str] = None
+    year: Optional[int] = Field(default=None, ge=1900, le=2100)
+    plate_number: Optional[str] = None
+    color: Optional[str] = None
+    mileage: Optional[int] = Field(default=None, ge=0)
+    price: Optional[float] = Field(default=None, ge=0)
+    status: Optional[Literal['available', 'reserved', 'sold', 'financed']] = None
+    image_url: Optional[str] = None
+
+# --- Car Lending / Showroom: contracts (the deal - cash sale or financed) ---
+class ContractCreate(BaseModel):
+    customer_public_id: str
+    vehicle_public_id: str
+    sale_type: Literal['cash', 'financed'] = 'financed'
+    vehicle_price: float = Field(gt=0)
+    down_payment: float = Field(default=0, ge=0)
+    interest_rate: float = Field(default=0, ge=0)  # flat markup %, e.g. 12.5
+    term_months: int = Field(default=0, ge=0, le=36)
+    payment_frequency: Literal['weekly', 'biweekly', 'monthly'] = 'monthly'
+    start_date: Optional[str] = None  # 'YYYY-MM-DD' - defaults to today if omitted
+
+    # Manual overrides - the fields above still describe the ORIGINAL deal
+    # terms (used to compute principal/total payable/installment for the
+    # record), but these three let the owner state where the loan actually
+    # stands TODAY. This is what makes it possible to transfer an
+    # already-in-progress loan (an existing customer/car already mid-payment
+    # before this system existed) straight into LoyaltyTree instead of only
+    # supporting brand-new deals starting from zero.
+    balance_remaining: Optional[float] = Field(default=None, ge=0)
+    last_paid_date: Optional[str] = None  # 'YYYY-MM-DD'
+    next_due_date: Optional[str] = None  # 'YYYY-MM-DD'
+    status: Optional[Literal['active', 'overdue', 'completed', 'repossessed', 'cancelled']] = None
+
+class ContractUpdate(BaseModel):
+    sale_type: Optional[Literal['cash', 'financed']] = None
+    vehicle_price: Optional[float] = Field(default=None, gt=0)
+    down_payment: Optional[float] = Field(default=None, ge=0)
+    interest_rate: Optional[float] = Field(default=None, ge=0)
+    term_months: Optional[int] = Field(default=None, ge=0, le=36)
+    payment_frequency: Optional[Literal['weekly', 'biweekly', 'monthly']] = None
+    start_date: Optional[str] = None
+    installment_amount: Optional[float] = Field(default=None, ge=0)  # rare manual override
+    balance_remaining: Optional[float] = Field(default=None, ge=0)
+    last_paid_date: Optional[str] = None
+    next_due_date: Optional[str] = None
+    status: Optional[Literal['active', 'overdue', 'completed', 'repossessed', 'cancelled']] = None
+
+# --- Car Lending / Showroom: payments against a contract ---
+class CLPaymentCreate(BaseModel):
+    amount: float = Field(gt=0)
+    payment_date: Optional[str] = None  # 'YYYY-MM-DD' - defaults to today
+    method: Optional[str] = None        # e.g. 'cash', 'bank_transfer', 'gcash', 'other'
+    notes: Optional[str] = None
+
+# --- Car Lending / Showroom: owner -> buyer messages (one buyer, or all) ---
+class CLAnnouncementCreate(BaseModel):
+    title: str
+    message: str
+    customer_public_id: Optional[str] = None  # None = broadcast to every buyer with an email on file
+
 
 class PointsPrize(BaseModel):
     # id is client-generated (uuid4 hex) so the owner can reorder/edit
@@ -490,7 +586,7 @@ class PointsPrize(BaseModel):
     description: Optional[str] = Field(default=None, max_length=140)
 
 class LoyaltyConfig(BaseModel):
-    card_type: Literal['stamp', 'points', 'multipass'] = 'stamp'  # a business runs ONE active card at a time
+    card_type: Literal['stamp', 'points', 'multipass', 'membership'] = 'stamp'  # a business runs ONE active card at a time
     stamp_goal: int = Field(default=8, ge=3, le=20)
     reward_name: str = 'Free Service'
     primary_color: str = '#3b82f6'
@@ -507,6 +603,8 @@ class LoyaltyConfig(BaseModel):
     # --- Multipass card only ---
     multipass_session_count: Optional[int] = Field(default=12, ge=2, le=200)  # sessions issued per pass, e.g. 12 sessions sold at the price of 10
     multipass_validity_days: Optional[int] = Field(default=90, ge=1)          # days a freshly-issued pass stays valid before it expires unused
+    # --- Membership card only ---
+    membership_services: Optional[List[str]] = None  # preset list of service names (e.g. "Cleaning", "Whitening") shown as quick-select chips at the cashier - cashier can still type a custom note per visit
 
 class CustomerSignup(BaseModel):
     name: str
@@ -564,6 +662,24 @@ class MultipassUseRequest(BaseModel):
     staff_pin: Optional[str] = None
     as_owner: Optional[bool] = False
 
+class MembershipNoteRequest(BaseModel):
+    # Membership-card equivalent of a stamp/session: the cashier logs what
+    # service the member came in for today, so the owner can later pull up
+    # a full activity history per member (think: a dentist's per-patient
+    # chart) - see 'leaves' on the member's record.
+    customer_public_id: str
+    service_name: str = Field(max_length=120)  # what was done, e.g. "Teeth cleaning", "Root canal - session 1"
+    note: Optional[str] = Field(default=None, max_length=500)  # optional longer note - observations, follow-up needed, etc.
+    service_date: Optional[str] = None  # 'YYYY-MM-DD' - defaults to today if omitted; lets a cashier log a visit entered late
+    staff_pin: Optional[str] = None
+    as_owner: Optional[bool] = False
+
+class MembershipLeafUpdate(BaseModel):
+    # Lets the owner correct a mistaken/typo'd leaf from the dashboard.
+    service_name: Optional[str] = Field(default=None, max_length=120)
+    note: Optional[str] = Field(default=None, max_length=500)
+    service_date: Optional[str] = None  # 'YYYY-MM-DD'
+
 class PinVerify(BaseModel):
     email: str
     pin: str
@@ -616,6 +732,20 @@ class AdminBusinessUpdate(BaseModel):
     business_type: Optional[str] = None
     logo_url: Optional[str] = None
     announcement_limit_adjustment: Optional[int] = None  # +/- adjustment to the plan's announcements_per_month for this business only
+
+class AdminBusinessCreate(BaseModel):
+    """Admin-provisioned business account - used for invite-only business
+    types (e.g. car_lending) that don't go through the public signup form.
+    Skips duplicate self-serve trial logic: goes straight to ACTIVE with a
+    full billing cycle, since there's no free-trial funnel to start from."""
+    name: str
+    email: str
+    password: str
+    phone: Optional[str] = None
+    business_type: str = 'other'
+    address: Optional[str] = None
+    branch_count: int = Field(default=1, ge=1, le=50)
+    plan: Optional[str] = None
 
 class RedeemRequest(BaseModel):
     customer_public_id: str
@@ -695,11 +825,56 @@ def safe_get_branch(public_id: str):
     except Exception:
         return None
 
+def safe_get_cl_customer(public_id: str):
+    if not supabase:
+        return None
+    try:
+        res = supabase.table("cl_customers").select("*").eq("public_id", public_id).maybe_single().execute()
+        return res.data
+    except Exception:
+        return None
+
+def safe_get_vehicle(public_id: str):
+    if not supabase:
+        return None
+    try:
+        res = supabase.table("vehicles").select("*").eq("public_id", public_id).maybe_single().execute()
+        return res.data
+    except Exception:
+        return None
+
+def safe_get_contract(public_id: str):
+    if not supabase:
+        return None
+    try:
+        res = supabase.table("contracts").select("*").eq("public_id", public_id).maybe_single().execute()
+        return res.data
+    except Exception:
+        return None
+
+def safe_get_cl_customer_by_id(customer_id: int):
+    if not supabase:
+        return None
+    try:
+        res = supabase.table("cl_customers").select("*").eq("id", customer_id).maybe_single().execute()
+        return res.data
+    except Exception:
+        return None
+
 def safe_get_business_by_id(business_id: int):
     if not supabase:
         return None
     try:
         res = supabase.table("businesses").select("*").eq("id", business_id).maybe_single().execute()
+        return res.data
+    except Exception:
+        return None
+
+def safe_get_customer_by_id(customer_id: int):
+    if not supabase:
+        return None
+    try:
+        res = supabase.table("customers").select("*").eq("id", customer_id).maybe_single().execute()
         return res.data
     except Exception:
         return None
@@ -788,6 +963,34 @@ def find_customer_duplicate(business_id: int, phone: Optional[str], email: Optio
         if email:
             res = (
                 supabase.table("customers").select("id")
+                .eq("business_id", business_id).ilike("email", email).execute()
+            )
+            for row in (res.data or []):
+                if exclude_id is None or row.get('id') != exclude_id:
+                    return "email"
+    except Exception:
+        return None
+    return None
+
+def find_cl_customer_duplicate(business_id: int, phone: Optional[str], email: Optional[str], exclude_id: Optional[int] = None) -> Optional[str]:
+    """Same idea as find_customer_duplicate but scoped to cl_customers (Car
+    Lending buyers) - a separate table from the loyalty `customers` one."""
+    if not supabase:
+        return None
+    phone = (phone or '').strip()
+    email = (email or '').strip()
+    try:
+        if phone:
+            res = (
+                supabase.table("cl_customers").select("id")
+                .eq("business_id", business_id).eq("phone", phone).execute()
+            )
+            for row in (res.data or []):
+                if exclude_id is None or row.get('id') != exclude_id:
+                    return "phone"
+        if email:
+            res = (
+                supabase.table("cl_customers").select("id")
                 .eq("business_id", business_id).ilike("email", email).execute()
             )
             for row in (res.data or []):
@@ -1019,6 +1222,8 @@ def generate_personalized_hero_image_bytes(
     points_balance: int = 0,
     sessions_remaining: int = 0,
     sessions_total: int = 0,
+    total_visits: int = 0,
+    last_service_name: Optional[str] = None,
 ) -> bytes:
     """Same gradient as generate_hero_image_bytes, but with a bottom banner
     burned in showing the reward/progress and short description - the
@@ -1055,6 +1260,9 @@ def generate_personalized_hero_image_bytes(
         reward_line = 'Session Pass'
         progress_line = (f'{sessions_remaining} of {sessions_total} sessions left' if sessions_remaining > 0
                          else 'All sessions used')
+    elif card_type == 'membership':
+        reward_line = f'{total_visits} visit{"s" if total_visits != 1 else ""}'
+        progress_line = f'Last visit: {last_service_name}' if last_service_name else 'Welcome!'
     else:
         reward_line = (reward_name or 'Reward')[:60]
         progress_line = f'{stamps} of {stamp_goal} stamps'
@@ -1163,6 +1371,9 @@ def build_loyalty_class(business: dict, program: dict, review_status: str = 'UND
     if card_type == 'multipass':
         session_count = program.get('multipass_session_count', 12) if program else 12
         reward_module_body = f'{session_count}-session pass'
+    elif card_type == 'membership':
+        services = (program.get('membership_services') if program else None) or []
+        reward_module_body = ', '.join(services) if services else 'Membership'
     else:
         reward_module_body = reward_name
 
@@ -1215,6 +1426,10 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     sessions_total = customer.get('multipass_total_sessions', 0) or (program.get('multipass_session_count', 12) if program else 12)
     cust_name = customer.get('name', 'Member')
     biz_name = business.get('name', '')
+    membership_summary = (
+        get_membership_summary(business.get('id'), customer.get('id'))
+        if card_type == 'membership' else None
+    )
 
     if card_type == 'points':
         loyalty_points_label = 'Points'
@@ -1226,6 +1441,12 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         loyalty_points_balance = f'{sessions_remaining}/{sessions_total}'
         progress_body = f'{sessions_remaining} of {sessions_total} sessions left'
         reward_body = (program.get('description') if program else None) or 'Session pass'
+    elif card_type == 'membership':
+        total_visits = membership_summary['total_visits']
+        loyalty_points_label = 'Visits'
+        loyalty_points_balance = str(total_visits)
+        progress_body = f'{total_visits} visit{"s" if total_visits != 1 else ""}'
+        reward_body = membership_summary['last_service_name'] or (program.get('description') if program else None) or 'Member services'
     else:
         loyalty_points_label = 'Stamps'
         loyalty_points_balance = f'{stamps}/{stamp_goal}'
@@ -1270,6 +1491,8 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
             progress_key = points_balance
         elif card_type == 'multipass':
             progress_key = sessions_remaining
+        elif card_type == 'membership':
+            progress_key = membership_summary['total_visits']
         else:
             progress_key = stamps
         hero_url = (
@@ -1498,6 +1721,10 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     reward_unlocked = bool(customer.get('reward_unlocked'))
     primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
     r, g, b = _hex_to_rgb(primary_color)
+    membership_summary = (
+        get_membership_summary(business.get('id'), customer.get('id'))
+        if card_type == 'membership' else None
+    )
 
     # Announcement field: always present (rather than added/removed) so the
     # field's value - not its existence - is what changes between rebuilds.
@@ -1553,6 +1780,8 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                 if card_type == 'points' else
                 {'key': 'sessions', 'label': 'SESSIONS', 'value': f'{sessions_remaining}/{sessions_total}', 'changeMessage': 'Session used! %@ sessions left.'}
                 if card_type == 'multipass' else
+                {'key': 'visits', 'label': 'VISITS', 'value': str(membership_summary['total_visits']), 'changeMessage': 'Visit logged! You now have %@ visits.'}
+                if card_type == 'membership' else
                 {'key': 'stamps', 'label': 'STAMPS', 'value': f'{stamps}/{stamp_goal}', 'changeMessage': 'Stamp added! You now have %@ stamps.'}
             ],
             'secondaryFields': [
@@ -1560,6 +1789,8 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                 if card_type == 'points' else
                 {'key': 'reward', 'label': 'EXPIRES', 'value': (multipass_expires_at or 'No expiry set'), 'changeMessage': '%@'}
                 if card_type == 'multipass' else
+                {'key': 'reward', 'label': 'LAST VISIT', 'value': (membership_summary['last_service_name'] or 'No visits yet')[:30], 'changeMessage': '%@'}
+                if card_type == 'membership' else
                 {'key': 'reward', 'label': 'REWARD', 'value': ('🎉 Ready to redeem!' if reward_unlocked else reward_name)[:30], 'changeMessage': '%@'}
             ],
             'backFields': back_fields
@@ -1858,6 +2089,329 @@ def send_wallet_object_message(object_id: str, header: str, body: str, message_i
         print(f"WALLET PUSH (object) error: {e}")
         return False
 
+# CAR LENDING / SHOWROOM - WALLET PASSES
+#
+# Separate pass type from the loyalty stamp/points/multipass/membership
+# cards above: a car-lending buyer's pass shows their loan BALANCE and
+# NEXT DUE DATE instead of a stamp/points count. Reuses all the same
+# plumbing (Google Wallet REST API creds, Apple PassKit signing cert,
+# apple_wallet_registrations table, the generic send_wallet_class_message /
+# send_wallet_object_message / push_apple_wallet_update primitives above) -
+# no new credentials or tables needed. The only thing that distinguishes a
+# car-lending pass from a loyalty one at the infra level is:
+#   - Google: its own loyaltyClass, id'd `{ISSUER_ID}.cl-{business.public_id}`
+#     (stored on businesses.cl_google_wallet_class_id), separate from the
+#     loyalty class on the same business.
+#   - Apple: its own serialNumber, `cl-{customer.public_id}` (prefixed so
+#     apple_get_updated_pass can tell which table to look the pass up in) -
+#     same passTypeIdentifier/cert as loyalty, since Apple doesn't require a
+#     distinct Pass Type ID per pass "shape", only per signing identity.
+#
+# A buyer with no active loan still gets a pass (0 / 0) - see
+# build_cl_wallet_object/build_cl_apple_pass_json below - specifically so
+# every member can receive dealership-wide announcements (send_wallet_class_
+# message / push_cl_apple_wallet_announcement) even before their first deal,
+# or after their loan is paid off.
+
+def get_active_contract_for_cl_customer(customer_id: int) -> Optional[dict]:
+    """The contract that should drive this buyer's wallet pass: their
+    active or overdue loan if they have one, else the most recently
+    completed one (so a paid-off buyer's pass still shows the deal they
+    just finished for a beat), else None (never financed - 0/0 pass)."""
+    if not supabase:
+        return None
+    try:
+        rows = (
+            supabase.table("contracts")
+            .select("*")
+            .eq("customer_id", customer_id)
+            .in_("status", ["active", "overdue"])
+            .order("next_due_date")
+            .limit(1)
+            .execute()
+        ).data or []
+        if rows:
+            return rows[0]
+        rows = (
+            supabase.table("contracts")
+            .select("*")
+            .eq("customer_id", customer_id)
+            .order("updated_at", desc=True)
+            .limit(1)
+            .execute()
+        ).data or []
+        return rows[0] if rows else None
+    except Exception:
+        return None
+
+def get_latest_cl_announcement(business_id: int) -> Optional[dict]:
+    """Latest dealership-wide (broadcast, not single-buyer) announcement,
+    used as the back-of-pass 'Announcement' field - same role
+    get_latest_active_announcement() plays for loyalty passes."""
+    if not supabase:
+        return None
+    try:
+        rows = (
+            supabase.table("cl_announcements")
+            .select("*")
+            .eq("business_id", business_id)
+            .is_("customer_id", "null")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        ).data or []
+        return rows[0] if rows else None
+    except Exception:
+        return None
+
+def build_cl_wallet_class(business: dict) -> dict:
+    biz_public_id = business.get('public_id', '')
+    class_id = business.get('cl_google_wallet_class_id') or f'{GOOGLE_WALLET_ISSUER_ID}.cl-{biz_public_id}'
+    biz_name = business.get('name', 'Financing')
+
+    loyalty_class = {
+        'id': class_id,
+        'issuerName': biz_name,
+        'programName': f'{biz_name} Loan Card',
+        'reviewStatus': 'UNDER_REVIEW',
+        'hexBackgroundColor': '#0f172a',
+        'textModulesData': [
+            {'header': 'About', 'body': 'Your loan balance and next payment due date, always up to date.'},
+        ],
+    }
+    logo_url = business.get('logo_url') or DEFAULT_LOGO_URL
+    loyalty_class['programLogo'] = {'sourceUri': {'uri': logo_url}}
+    return loyalty_class
+
+def build_cl_wallet_object(customer: dict, business: dict, contract: Optional[dict]) -> dict:
+    cust_public_id = customer.get('public_id', '')
+    class_id = business.get('cl_google_wallet_class_id') or f'{GOOGLE_WALLET_ISSUER_ID}.cl-{business.get("public_id", "")}'
+    object_id = f'{GOOGLE_WALLET_ISSUER_ID}.cl-{cust_public_id}'
+    cust_name = customer.get('name', 'Member')
+    biz_name = business.get('name', '')
+
+    if contract and contract.get('status') in ('active', 'overdue'):
+        balance = float(contract.get('balance_remaining') or 0)
+        total = float(contract.get('installment_amount') or 0) * float(contract.get('term_months') or 1)
+        # total_payable isn't stored on the row - installment*term is a
+        # reasonable approximation for the "X / Y" display; balance itself
+        # (the field that matters for the notification) is always exact.
+        balance_str = f'₱{balance:,.0f} / ₱{total:,.0f}'
+        due = contract.get('next_due_date') or '—'
+        status_body = 'Overdue' if contract.get('status') == 'overdue' else f'Due {due}'
+    else:
+        balance_str = '0/0'
+        due = '—'
+        status_body = 'No active loan'
+
+    return {
+        'id': object_id,
+        'classId': class_id,
+        'state': 'active',
+        'barcode': {
+            'type': 'QR_CODE',
+            'value': cust_public_id,  # raw public_id, not a URL - read by
+            # the owner's own "Scan QR" lookup (see get_cl_customer_qr_code)
+            # the exact same way a printed QR card would be, since there's
+            # no payment portal for a URL to point at.
+            'alternateText': cust_name,
+        },
+        'accountId': cust_public_id,
+        'accountName': cust_name,
+        'loyaltyPoints': {
+            'label': 'Balance',
+            'balance': {'string': balance_str},
+        },
+        'textModulesData': [
+            {'header': 'Business', 'body': biz_name},
+            {'header': 'Status', 'body': status_body},
+            {'header': 'Next Due', 'body': due},
+        ],
+    }
+
+def sync_cl_wallet_object(customer: dict, business: dict, contract: Optional[dict],
+                           notify_header: str = None, notify_body: str = None,
+                           notify_message_id: str = None):
+    """Car-lending equivalent of sync_wallet_object() - PATCHes the buyer's
+    Google Wallet loan card with their current balance/due date, optionally
+    firing a TEXT_AND_NOTIFY push alongside it. Best-effort, never raises."""
+    access_token = get_google_access_token()
+    if not access_token:
+        return
+    try:
+        import httpx
+        cl_object = build_cl_wallet_object(customer, business, contract)
+        object_id = cl_object['id']
+        with httpx.Client() as client:
+            resp = client.patch(
+                f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyObject/{object_id}',
+                headers={"Authorization": f"Bearer {access_token}"},
+                json=cl_object
+            )
+            if resp.status_code in (200, 201):
+                print(f"CL WALLET SYNC: updated {object_id}")
+                if notify_header and notify_message_id:
+                    send_wallet_object_message(object_id, notify_header, notify_body or '', notify_message_id)
+            elif resp.status_code == 404:
+                print(f"CL WALLET SYNC: {object_id} not found - buyer hasn't added it to their wallet yet")
+            else:
+                print(f"CL WALLET SYNC: failed {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"CL WALLET SYNC error: {e}")
+
+def build_cl_apple_pass_json(customer: dict, business: dict, contract: Optional[dict],
+                              announcement: Optional[dict] = None, reminder_text: Optional[str] = None) -> dict:
+    cust_public_id = customer.get('public_id', '')
+    serial = f'cl-{cust_public_id}'
+    cust_name = customer.get('name', 'Member')
+    biz_name = business.get('name', 'Financing')
+
+    if contract and contract.get('status') in ('active', 'overdue'):
+        balance = float(contract.get('balance_remaining') or 0)
+        due = contract.get('next_due_date') or '—'
+        balance_value = f'₱{balance:,.0f}'
+        due_value = due
+    else:
+        balance_value = '0/0'
+        due_value = '—'
+
+    ann_title = (announcement or {}).get('title', '') or ''
+    ann_message = (announcement or {}).get('message', '') or ''
+    announcement_value = ann_title.strip() or ann_message.strip() or 'Check back for updates'
+
+    # Value (not existence) is what PassKit diffs to decide whether to fire
+    # a lock-screen notification on refetch - see build_apple_pass_json's
+    # comment above for the full explanation. reminder_text is passed in by
+    # the payment-reminder cron with a stage-specific message ("Due in 7
+    # days", "Overdue", etc.) so each new stage is a genuinely new value.
+    reminder_value = reminder_text or due_value
+
+    back_fields = [
+        {'key': 'about', 'label': 'About', 'value': 'Your loan balance and next payment due date.'},
+        {
+            'key': 'announcement',
+            'label': '📢 ANNOUNCEMENT',
+            'value': announcement_value[:150],
+            'changeMessage': '%@',
+        },
+    ]
+    if ann_message.strip() and ann_message.strip() != announcement_value:
+        back_fields.append({'key': 'announcement_detail', 'label': ' ', 'value': ann_message.strip()[:400]})
+
+    return {
+        'formatVersion': 1,
+        'passTypeIdentifier': APPLE_PASS_TYPE_IDENTIFIER,
+        'teamIdentifier': APPLE_TEAM_IDENTIFIER,
+        'organizationName': biz_name,
+        'serialNumber': serial,
+        'description': f'{biz_name} Loan Card',
+        'logoText': biz_name[:20],
+        'backgroundColor': 'rgb(15, 23, 42)',
+        'foregroundColor': 'rgb(255, 255, 255)',
+        'labelColor': 'rgba(255, 255, 255, 0.75)',
+        'webServiceURL': APPLE_PASS_WEB_SERVICE_URL,
+        'authenticationToken': apple_pass_auth_token(serial),
+        'storeCard': {
+            'headerFields': [
+                {'key': 'member', 'label': 'MEMBER', 'value': cust_name[:20]}
+            ],
+            'primaryFields': [
+                {'key': 'balance', 'label': 'BALANCE', 'value': balance_value, 'changeMessage': 'Balance updated: %@'}
+            ],
+            'secondaryFields': [
+                {'key': 'reminder', 'label': 'NEXT DUE', 'value': reminder_value[:30], 'changeMessage': '%@'}
+            ],
+            'backFields': back_fields,
+        },
+        'barcodes': [
+            {
+                'format': 'PKBarcodeFormatQR',
+                'message': cust_public_id,
+                'messageEncoding': 'iso-8859-1',
+                'altText': cust_name,
+            }
+        ],
+    }
+
+def build_cl_pkpass_bytes(customer: dict, business: dict, contract: Optional[dict],
+                           announcement: Optional[dict] = None, reminder_text: Optional[str] = None) -> Optional[bytes]:
+    if not APPLE_PASS_TYPE_IDENTIFIER or not APPLE_TEAM_IDENTIFIER:
+        return None
+    if get_apple_pass_credentials() is None:
+        return None
+
+    biz_name = business.get('name', 'Financing')
+    pass_json = build_cl_apple_pass_json(customer, business, contract, announcement, reminder_text)
+
+    files = {
+        'pass.json': json.dumps(pass_json).encode('utf-8'),
+        'icon.png': generate_apple_icon_bytes('#0f172a', biz_name, 29),
+        'icon@2x.png': generate_apple_icon_bytes('#0f172a', biz_name, 58),
+        'icon@3x.png': generate_apple_icon_bytes('#0f172a', biz_name, 87),
+        'logo.png': generate_apple_logo_bytes(biz_name, 160, 50),
+        'logo@2x.png': generate_apple_logo_bytes(biz_name, 320, 100),
+        'logo@3x.png': generate_apple_logo_bytes(biz_name, 480, 150),
+    }
+    manifest = {name: hashlib.sha1(content).hexdigest() for name, content in files.items()}
+    manifest_bytes = json.dumps(manifest).encode('utf-8')
+    signature = sign_pkpass_manifest(manifest_bytes)
+    if signature is None:
+        return None
+
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for name, content in files.items():
+            zf.writestr(name, content)
+        zf.writestr('manifest.json', manifest_bytes)
+        zf.writestr('signature', signature)
+    return buffer.getvalue()
+
+def push_cl_apple_wallet_announcement(business_id: int) -> int:
+    """Car-lending equivalent of push_apple_wallet_announcement() - fans a
+    push out to every buyer's registered Apple Wallet loan card for this
+    business, including ones with no active loan (0/0 pass), so a
+    dealership-wide announcement reaches everyone. Best-effort, never
+    raises; 0 is a normal outcome."""
+    if not supabase or not APPLE_PASS_TYPE_IDENTIFIER:
+        return 0
+    try:
+        customer_rows = (
+            supabase.table("cl_customers")
+            .select("public_id")
+            .eq("business_id", business_id)
+            .execute()
+        ).data or []
+    except Exception:
+        return 0
+    serial_numbers = [f"cl-{r['public_id']}" for r in customer_rows if r.get('public_id')]
+    if not serial_numbers:
+        return 0
+    push_tokens = []
+    try:
+        CHUNK_SIZE = 200
+        for i in range(0, len(serial_numbers), CHUNK_SIZE):
+            chunk = serial_numbers[i:i + CHUNK_SIZE]
+            rows = (
+                supabase.table("apple_wallet_registrations")
+                .select("push_token")
+                .in_("serial_number", chunk)
+                .eq("pass_type_identifier", APPLE_PASS_TYPE_IDENTIFIER)
+                .execute()
+            ).data or []
+            push_tokens.extend(row.get('push_token') for row in rows)
+    except Exception as e:
+        print(f"CL APPLE WALLET announcement lookup error: {e}")
+        return 0
+    return _send_apple_wallet_pushes(push_tokens)
+
+def sync_cl_apple_wallet_pass(customer: dict):
+    """Companion to sync_cl_wallet_object() - call alongside it wherever a
+    buyer's balance/due date changes. Never raises."""
+    try:
+        push_apple_wallet_update(f"cl-{customer.get('public_id', '')}")
+    except Exception as e:
+        print(f"CL APPLE WALLET sync error: {e}")
+
 def log_stamp_event(business_id: int, customer_id: int, staff_id: Optional[int] = None, branch_id: Optional[int] = None):
     """Best-effort event log powering the Analytics dashboard's trend and
     peak-activity charts, and the per-cashier/per-branch stamp counters.
@@ -1943,6 +2497,61 @@ def log_multipass_event(business_id: int, customer_id: int, action: str, session
         supabase.table("multipass_events").insert(event).execute()
     except Exception as e:
         print(f"MULTIPASS EVENT LOG error: {e}")
+
+def log_membership_event(business_id: int, customer_id: int, service_name: str, note: Optional[str],
+                          service_date: str, staff_id: Optional[int] = None, branch_id: Optional[int] = None):
+    """Records one 'leaf' on a membership-card member's activity history -
+    e.g. a dentist noting a patient came in for a cleaning on a given date.
+    Unlike stamp/points/multipass, membership has no running balance on the
+    customer row - the full history in membership_events IS the card.
+    Returns the inserted row (so callers can hand back its id), or None on
+    failure. Best-effort - never raises."""
+    try:
+        event = {
+            'business_id': business_id,
+            'customer_id': customer_id,
+            'service_name': service_name,
+            'note': note,
+            'service_date': service_date,
+            'created_at': datetime.utcnow().isoformat(),
+        }
+        if staff_id is not None:
+            event['staff_id'] = staff_id
+        if branch_id is not None:
+            event['branch_id'] = branch_id
+        res = supabase.table("membership_events").insert(event).execute()
+        return (res.data or [None])[0]
+    except Exception as e:
+        print(f"MEMBERSHIP EVENT LOG error: {e}")
+        return None
+
+def get_membership_summary(business_id: int, customer_id: int) -> dict:
+    """Membership cards have no running balance on the customer row (see
+    log_membership_event) - the Wallet pass, hero image, and pass_data JSON
+    all need a stand-in for 'progress', so this derives one from
+    membership_events on demand: how many visits total, and what/when the
+    most recent one was. Best-effort - never raises, returns zeros/None on
+    any failure (including the table not existing yet) so a Wallet pass
+    request never 500s over this."""
+    summary = {'total_visits': 0, 'last_service_name': None, 'last_service_date': None}
+    try:
+        res = (
+            supabase.table("membership_events")
+            .select("service_name,service_date")
+            .eq("business_id", business_id)
+            .eq("customer_id", customer_id)
+            .order("service_date", desc=True)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        rows = res.data or []
+        summary['total_visits'] = len(rows)
+        if rows:
+            summary['last_service_name'] = rows[0].get('service_name')
+            summary['last_service_date'] = rows[0].get('service_date')
+    except Exception as e:
+        print(f"MEMBERSHIP SUMMARY error: {e}")
+    return summary
 
 # FastAPI App
 app = FastAPI(title='LoyaltyTree API')
@@ -2056,6 +2665,7 @@ async def login(req: LoginRequest):
                     "name": business.get("name", ""),
                     "role": "owner",
                     "logo_url": business.get("logo_url"),
+                    "business_type": business.get("business_type", "other"),
                     "user": {
                         "business_slug": business.get("public_id", ""),
                         "business_name": business.get("name", ""),
@@ -2063,6 +2673,7 @@ async def login(req: LoginRequest):
                         "email": business.get("email", ""),
                         "role": "owner",
                         "logo_url": business.get("logo_url"),
+                        "business_type": business.get("business_type", "other"),
                     }
                 }
     except HTTPException:
@@ -2118,6 +2729,16 @@ async def login(req: LoginRequest):
 async def register(biz: BusinessCreate):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database not connected")
+
+    # Some business types are invite-only / admin-provisioned (specialized
+    # dashboards set up by us, not self-serve) - block them here rather than
+    # just hiding the option in the UI, since this endpoint is public.
+    INVITE_ONLY_BUSINESS_TYPES = {'car_lending'}
+    if biz.business_type in INVITE_ONLY_BUSINESS_TYPES:
+        raise HTTPException(
+            status_code=403,
+            detail="This business type is set up by invitation only. Please contact us to get started."
+        )
 
     dup_field = find_business_duplicate(biz.email, biz.phone)
     if dup_field:
@@ -2212,6 +2833,7 @@ async def register(biz: BusinessCreate):
         "business_name": biz.name,
         "token": "owner-token-" + public_id,
         "logo_url": biz.logo_url,
+        "business_type": biz.business_type,
         "plan": plan,
         "branch_count": biz.branch_count,
         "price_month": price_month,
@@ -2390,6 +3012,79 @@ async def admin_list_businesses(status: Optional[str] = None, plan: Optional[str
         return [business_summary(b) for b in businesses]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load businesses: {str(e)}")
+
+@app.post("/api/v1/admin/businesses")
+async def admin_create_business(biz: AdminBusinessCreate, _: bool = Depends(require_admin)):
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Database not connected")
+
+    dup_field = find_business_duplicate(biz.email, biz.phone)
+    if dup_field:
+        raise HTTPException(status_code=400, detail=f"An account with this {dup_field} already exists.")
+
+    public_id = generate_business_public_id(biz.name)
+    if biz.plan:
+        if biz.plan not in SUBSCRIPTION_PLANS:
+            raise HTTPException(status_code=400, detail=f"Unknown plan '{biz.plan}'. Valid plans: {list(SUBSCRIPTION_PLANS.keys())}")
+        max_branches = SUBSCRIPTION_PLANS[biz.plan].get('max_branches')
+        if max_branches is not None and biz.branch_count > max_branches:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{SUBSCRIPTION_PLANS[biz.plan]['label']} supports up to {max_branches} branch{'es' if max_branches != 1 else ''}. Choose a higher plan or reduce branch count."
+            )
+        plan = biz.plan
+    else:
+        plan = determine_plan_from_branch_count(biz.branch_count)
+
+    business_data = {
+        'public_id': public_id,
+        'name': biz.name,
+        'email': biz.email,
+        'phone': biz.phone,
+        'password_hash': hash_password(biz.password),
+        'business_type': biz.business_type,
+        'address': biz.address,
+        'plan': plan,
+        'status': 'ACTIVE',
+        'subscription_expires_at': (datetime.utcnow() + timedelta(days=SUBSCRIPTION_PERIOD_DAYS)).date().isoformat(),
+        'created_at': datetime.utcnow().isoformat(),
+    }
+
+    try:
+        insert_res = supabase.table("businesses").insert(business_data).execute()
+        business_id = insert_res.data[0]['id'] if insert_res.data else None
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Creation failed: {str(e)}")
+
+    # Same placeholder-branch seeding as public registration.
+    if business_id:
+        try:
+            if biz.branch_count <= 1:
+                branch_names = ['Main Branch']
+            else:
+                branch_names = [f'Branch {i + 1}' for i in range(biz.branch_count)]
+            branch_rows = [
+                {
+                    'business_id': business_id,
+                    'public_id': generate_public_id(),
+                    'name': name,
+                    'is_active': True,
+                    'created_at': datetime.utcnow().isoformat(),
+                }
+                for name in branch_names
+            ]
+            supabase.table("branches").insert(branch_rows).execute()
+        except Exception as e:
+            print(f"BRANCH SEED error: {e}")
+
+    return {
+        "success": True,
+        "public_id": public_id,
+        "name": biz.name,
+        "email": biz.email,
+        "business_type": biz.business_type,
+        "plan": plan,
+    }
 
 @app.get("/api/v1/admin/businesses/{public_id}")
 async def admin_get_business(public_id: str, _: bool = Depends(require_admin)):
@@ -3613,6 +4308,7 @@ async def get_loyalty_config(public_id: str):
             "points_per_amount": 10,
             "points_amount_pesos": 100,
             "points_prizes": [],
+            "membership_services": [],
         }
     return program
 
@@ -3654,6 +4350,8 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
                 'description': p.description,
             })
         data['points_prizes'] = prizes
+    if config.card_type == 'membership' and config.membership_services is not None:
+        data['membership_services'] = [s.strip() for s in config.membership_services if s and s.strip()]
     if config.google_review_url is not None:
         features = get_plan_features(business.get('plan'))
         if not features.get('google_review_prompt'):
@@ -3688,6 +4386,827 @@ def friendly_db_error(e: Exception) -> str:
     if 'does not exist' in msg.lower() or 'could not find the table' in msg.lower():
         return f"{msg} — has the matching Supabase migration (SQL script) been run yet?"
     return msg
+
+def add_months(d, months: int):
+    """Calendar-correct month addition (handles month-end overflow, e.g. Jan
+    31 + 1 month -> Feb 28/29, not Mar 3)."""
+    month_index = d.month - 1 + months
+    year = d.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(d.day, calendar.monthrange(year, month)[1])
+    return d.replace(year=year, month=month, day=day)
+
+def compute_next_due_date(start, frequency: str):
+    if frequency == 'weekly':
+        return start + timedelta(days=7)
+    if frequency == 'biweekly':
+        return start + timedelta(days=14)
+    return add_months(start, 1)  # monthly
+
+def compute_contract_financials(vehicle_price: float, down_payment: float, interest_rate: float, term_months: int):
+    """principal = price minus down payment; total_payable = principal plus
+    a flat interest markup (NOT amortized/compounding - matches the schema's
+    'flat markup %' comment on contracts.interest_rate); installment is that
+    total spread evenly over the term, or paid in one lump sum if term_months
+    is 0 (cash / paid-in-full deals)."""
+    principal_amount = round(max(vehicle_price - down_payment, 0), 2)
+    total_payable = round(principal_amount + (principal_amount * (interest_rate or 0) / 100), 2)
+    if term_months and term_months > 0:
+        installment_amount = round(total_payable / term_months, 2)
+    else:
+        installment_amount = total_payable
+    return principal_amount, total_payable, installment_amount
+
+def compute_reminder_stage(next_due, today) -> Optional[str]:
+    """Which of the 7-day / 3-day / due-today / overdue touchpoints (if any)
+    today matches for a contract's next_due_date."""
+    if not next_due:
+        return None
+    days = (next_due - today).days
+    if days == 7:
+        return '7_day'
+    if days == 3:
+        return '3_day'
+    if days == 0:
+        return 'due_today'
+    if days < 0:
+        return 'overdue'
+    return None
+
+def build_payment_reminder_email(business: dict, customer: dict, contract: dict, stage: str) -> tuple:
+    name = html_lib.escape(customer.get('name') or 'there')
+    biz_name = html_lib.escape(business.get('name') or 'us')
+    amount = float(contract.get('installment_amount') or 0)
+    due = html_lib.escape(str(contract.get('next_due_date') or ''))
+    if stage == '7_day':
+        subject = f"Payment reminder: due in 7 days - {biz_name}"
+        lede = f"Your next payment of ₱{amount:,.2f} is due on {due} (7 days from now)."
+    elif stage == '3_day':
+        subject = f"Payment reminder: due in 3 days - {biz_name}"
+        lede = f"Your next payment of ₱{amount:,.2f} is due on {due} (3 days from now)."
+    elif stage == 'due_today':
+        subject = f"Payment due today - {biz_name}"
+        lede = f"Your payment of ₱{amount:,.2f} is due today ({due})."
+    else:  # overdue
+        subject = f"Payment overdue - {biz_name}"
+        lede = f"Your payment of ₱{amount:,.2f} was due on {due} and hasn't been received yet. Please settle it as soon as you can."
+    body = f"<p>Hi {name},</p><p>{lede}</p><p>Contact {biz_name} if you have questions about your account.</p>"
+    return subject, body
+
+def build_cl_wallet_reminder_text(contract: dict, stage: str) -> tuple:
+    """Wallet-push equivalent of build_payment_reminder_email() - short
+    header/body for Google's addMessage, plus a compact string for Apple's
+    NEXT DUE field (that field's *value* has to actually change stage to
+    stage for PassKit to fire a notification - see build_cl_apple_pass_json).
+    Returns (header, body, short_display)."""
+    amount = float(contract.get('installment_amount') or 0)
+    due = contract.get('next_due_date') or ''
+    if stage == '7_day':
+        return ('Payment due in 7 days', f'Your next payment of ₱{amount:,.2f} is due on {due}.', f'Due in 7 days ({due})')
+    if stage == '3_day':
+        return ('Payment due in 3 days', f'Your next payment of ₱{amount:,.2f} is due on {due}.', f'Due in 3 days ({due})')
+    if stage == 'due_today':
+        return ('Payment due today', f'Your payment of ₱{amount:,.2f} is due today.', 'Due today')
+    return ('Payment overdue', f'Your payment of ₱{amount:,.2f} was due on {due} and is now overdue.', f'Overdue since {due}')
+
+def build_cl_announcement_email(business: dict, title: str, message: str) -> tuple:
+    biz_name = html_lib.escape(business.get('name') or 'Your dealer')
+    safe_title = html_lib.escape(title)
+    safe_message = html_lib.escape(message).replace('\n', '<br>')
+    subject = f"{biz_name}: {title}"
+    body = (
+        f"<p><strong>{safe_title}</strong></p>"
+        f"<p>{safe_message}</p>"
+        f"<p style='color:#94a3b8;font-size:12px;'>Sent by {biz_name} via LoyaltyTree.</p>"
+    )
+    return subject, body
+
+# CAR LENDING / SHOWROOM - CUSTOMERS (BUYERS)
+
+@app.get("/api/v1/business/{public_id}/cl-customers")
+async def list_cl_customers(public_id: str, search: Optional[str] = None):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    try:
+        query = supabase.table("cl_customers").select("*").eq("business_id", business.get("id"))
+        if search:
+            # or_() takes a single comma-separated filter string - matches
+            # name OR phone OR email against the same search term.
+            like = f"%{search}%"
+            query = query.or_(f"name.ilike.{like},phone.ilike.{like},email.ilike.{like}")
+        res = query.order("created_at", desc=True).execute()
+        return res.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.post("/api/v1/business/{public_id}/cl-customers")
+async def create_cl_customer(public_id: str, customer: CLCustomerCreate):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    if customer.phone or customer.email:
+        dup_field = find_cl_customer_duplicate(business.get('id'), customer.phone, customer.email)
+        if dup_field:
+            raise HTTPException(status_code=400, detail=f"Another customer already uses this {dup_field}.")
+
+    customer_data = {
+        'business_id': business.get('id'),
+        'public_id': generate_public_id(),
+        'name': customer.name,
+        'phone': customer.phone,
+        'email': customer.email,
+        'address': customer.address,
+        'id_number': customer.id_number,
+        'notes': customer.notes,
+    }
+    try:
+        res = supabase.table("cl_customers").insert(customer_data).execute()
+        return res.data[0] if res.data else customer_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.patch("/api/v1/business/{public_id}/cl-customers/{customer_public_id}")
+async def update_cl_customer(public_id: str, customer_public_id: str, update: CLCustomerUpdate):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    customer = safe_get_cl_customer(customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+
+    update_data = {k: v for k, v in update.dict(exclude_unset=True).items() if v is not None}
+    if not update_data:
+        return customer
+
+    if 'phone' in update_data or 'email' in update_data:
+        dup_field = find_cl_customer_duplicate(
+            business.get('id'),
+            update_data.get('phone'),
+            update_data.get('email'),
+            exclude_id=customer.get('id'),
+        )
+        if dup_field:
+            raise HTTPException(status_code=400, detail=f"Another customer already uses this {dup_field}.")
+
+    update_data['updated_at'] = datetime.utcnow().isoformat()
+    try:
+        res = supabase.table("cl_customers").update(update_data).eq("id", customer.get("id")).execute()
+        return res.data[0] if res.data else {**customer, **update_data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.delete("/api/v1/business/{public_id}/cl-customers/{customer_public_id}")
+async def delete_cl_customer(public_id: str, customer_public_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    customer = safe_get_cl_customer(customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+
+    # contracts.customer_id has no ON DELETE for this FK path being safe by
+    # accident - it's ON DELETE CASCADE in the schema, so deleting a buyer
+    # with an existing contract would silently wipe their deal/payment
+    # history too. Block that here instead, same spirit as the vehicle
+    # RESTRICT check below - once Step 4/5 land, an owner should close out
+    # or transfer a contract before removing the customer record.
+    try:
+        existing = supabase.table("contracts").select("id").eq("customer_id", customer.get("id")).limit(1).execute()
+        if existing.data:
+            raise HTTPException(status_code=400, detail="This customer has a contract on file - resolve or remove it first.")
+    except HTTPException:
+        raise
+    except Exception:
+        pass  # contracts table not present yet (pre-Step 4) - nothing to block on
+
+    try:
+        supabase.table("cl_customers").delete().eq("id", customer.get("id")).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+    return {"success": True, "deleted": customer_public_id}
+
+@app.get("/api/v1/business/{public_id}/cl-customers/{customer_public_id}/qr-code")
+async def get_cl_customer_qr_code(public_id: str, customer_public_id: str):
+    """Encodes just the buyer's public_id (not a URL) - there's no payment
+    portal for it to link to. It only ever gets read back by this same
+    owner's own "Scan QR" button on the Payments tab, to look the buyer's
+    contract up quickly instead of searching by name."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    customer = safe_get_cl_customer(customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+    svg = generate_qr_svg(customer.get('public_id'))
+    return JSONResponse({
+        "svg": svg,
+        "customer_public_id": customer.get('public_id'),
+        "customer_name": customer.get('name', ''),
+    })
+
+# CAR LENDING / SHOWROOM - VEHICLE INVENTORY
+
+@app.get("/api/v1/business/{public_id}/vehicles")
+async def list_vehicles(public_id: str, status: Optional[str] = None):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    try:
+        query = supabase.table("vehicles").select("*").eq("business_id", business.get("id"))
+        if status:
+            query = query.eq("status", status)
+        res = query.order("created_at", desc=True).execute()
+        return res.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.post("/api/v1/business/{public_id}/vehicles")
+async def create_vehicle(public_id: str, vehicle: VehicleCreate):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    vehicle_data = {
+        'business_id': business.get('id'),
+        'public_id': generate_public_id(),
+        'make': vehicle.make,
+        'model': vehicle.model,
+        'year': vehicle.year,
+        'plate_number': vehicle.plate_number,
+        'color': vehicle.color,
+        'mileage': vehicle.mileage,
+        'price': vehicle.price,
+        'status': vehicle.status or 'available',
+        'image_url': vehicle.image_url,
+    }
+    try:
+        res = supabase.table("vehicles").insert(vehicle_data).execute()
+        return res.data[0] if res.data else vehicle_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.patch("/api/v1/business/{public_id}/vehicles/{vehicle_public_id}")
+async def update_vehicle(public_id: str, vehicle_public_id: str, update: VehicleUpdate):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    vehicle = safe_get_vehicle(vehicle_public_id)
+    if not vehicle or vehicle.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Vehicle not found for this business")
+
+    update_data = {k: v for k, v in update.dict(exclude_unset=True).items() if v is not None}
+    if not update_data:
+        return vehicle
+
+    update_data['updated_at'] = datetime.utcnow().isoformat()
+    try:
+        res = supabase.table("vehicles").update(update_data).eq("id", vehicle.get("id")).execute()
+        return res.data[0] if res.data else {**vehicle, **update_data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.delete("/api/v1/business/{public_id}/vehicles/{vehicle_public_id}")
+async def delete_vehicle(public_id: str, vehicle_public_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    vehicle = safe_get_vehicle(vehicle_public_id)
+    if not vehicle or vehicle.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Vehicle not found for this business")
+
+    try:
+        supabase.table("vehicles").delete().eq("id", vehicle.get("id")).execute()
+    except Exception as e:
+        error_msg = str(e)
+        # contracts.vehicle_id is ON DELETE RESTRICT - Postgres will refuse
+        # the delete outright once a contract references this vehicle.
+        if 'foreign key' in error_msg.lower() or 'violates' in error_msg.lower():
+            raise HTTPException(status_code=400, detail="This vehicle is linked to a contract - it can't be deleted while that contract exists.")
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+    return {"success": True, "deleted": vehicle_public_id}
+
+# CAR LENDING / SHOWROOM - CONTRACTS (DEALS)
+
+@app.get("/api/v1/business/{public_id}/contracts")
+async def list_contracts(public_id: str, status: Optional[str] = None):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    try:
+        query = supabase.table("contracts").select("*").eq("business_id", business.get("id"))
+        if status:
+            query = query.eq("status", status)
+        res = query.order("created_at", desc=True).execute()
+        contracts = res.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    # Attach lightweight customer/vehicle summaries so the dashboard can show
+    # "who" and "what car" per contract without an N+1 request per row.
+    try:
+        customer_ids = list({c.get('customer_id') for c in contracts if c.get('customer_id')})
+        vehicle_ids = list({c.get('vehicle_id') for c in contracts if c.get('vehicle_id')})
+        customers_by_id, vehicles_by_id = {}, {}
+        if customer_ids:
+            rows = supabase.table("cl_customers").select("id,public_id,name,phone").in_("id", customer_ids).execute().data or []
+            customers_by_id = {r['id']: r for r in rows}
+        if vehicle_ids:
+            rows = supabase.table("vehicles").select("id,public_id,make,model,year,plate_number").in_("id", vehicle_ids).execute().data or []
+            vehicles_by_id = {r['id']: r for r in rows}
+        for c in contracts:
+            c['customer'] = customers_by_id.get(c.get('customer_id'))
+            c['vehicle'] = vehicles_by_id.get(c.get('vehicle_id'))
+    except Exception:
+        pass  # best-effort - list still returns fine without the joined summaries
+
+    return contracts
+
+@app.post("/api/v1/business/{public_id}/contracts")
+async def create_contract(public_id: str, contract: ContractCreate):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    customer = safe_get_cl_customer(contract.customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+
+    vehicle = safe_get_vehicle(contract.vehicle_public_id)
+    if not vehicle or vehicle.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Vehicle not found for this business")
+    if vehicle.get('status') == 'sold':
+        raise HTTPException(status_code=400, detail="This vehicle is already marked sold.")
+
+    try:
+        start = datetime.fromisoformat(contract.start_date).date() if contract.start_date else datetime.utcnow().date()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid start_date - use YYYY-MM-DD")
+
+    principal_amount, total_payable, installment_amount = compute_contract_financials(
+        contract.vehicle_price, contract.down_payment, contract.interest_rate, contract.term_months
+    )
+
+    # next_due_date: an explicit override wins (used when transferring an
+    # already-in-progress loan); otherwise compute it fresh from the start
+    # date, unless this is a 0-month (paid-in-full) deal with nothing left
+    # to schedule.
+    next_due = None
+    if contract.next_due_date:
+        try:
+            next_due = datetime.fromisoformat(contract.next_due_date).date()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid next_due_date - use YYYY-MM-DD")
+    elif contract.term_months and contract.term_months > 0:
+        next_due = compute_next_due_date(start, contract.payment_frequency)
+
+    balance_remaining = contract.balance_remaining if contract.balance_remaining is not None else total_payable
+    status = contract.status or ('completed' if balance_remaining <= 0 else 'active')
+
+    contract_data = {
+        'business_id': business.get('id'),
+        'public_id': generate_public_id(),
+        'customer_id': customer.get('id'),
+        'vehicle_id': vehicle.get('id'),
+        'sale_type': contract.sale_type,
+        'vehicle_price': contract.vehicle_price,
+        'down_payment': contract.down_payment,
+        'principal_amount': principal_amount,
+        'interest_rate': contract.interest_rate,
+        'total_payable': total_payable,
+        'term_months': contract.term_months,
+        'payment_frequency': contract.payment_frequency,
+        'installment_amount': installment_amount,
+        'start_date': start.isoformat(),
+        'last_paid_date': contract.last_paid_date,
+        'next_due_date': next_due.isoformat() if next_due else None,
+        'balance_remaining': balance_remaining,
+        'status': status,
+    }
+
+    try:
+        res = supabase.table("contracts").insert(contract_data).execute()
+        created = res.data[0] if res.data else contract_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    # Reflect the deal on the vehicle's inventory status right away.
+    try:
+        new_status = 'sold' if contract.sale_type == 'cash' else 'financed'
+        supabase.table("vehicles").update({'status': new_status, 'updated_at': datetime.utcnow().isoformat()}).eq("id", vehicle.get("id")).execute()
+    except Exception:
+        pass
+
+    created['customer'] = customer
+    created['vehicle'] = vehicle
+    return created
+
+@app.patch("/api/v1/business/{public_id}/contracts/{contract_public_id}")
+async def update_contract(public_id: str, contract_public_id: str, update: ContractUpdate):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    contract = safe_get_contract(contract_public_id)
+    if not contract or contract.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Contract not found for this business")
+
+    update_data = {k: v for k, v in update.dict(exclude_unset=True).items() if v is not None}
+    if not update_data:
+        return contract
+
+    # If any of the deal's underlying inputs changed, recompute the derived
+    # financial fields from the (possibly mixed new/existing) values - unless
+    # this same request also passed an explicit installment_amount, which
+    # wins over the recomputed one (a manual correction).
+    recompute_keys = {'vehicle_price', 'down_payment', 'interest_rate', 'term_months'}
+    if recompute_keys & update_data.keys():
+        vehicle_price = update_data.get('vehicle_price', contract.get('vehicle_price'))
+        down_payment = update_data.get('down_payment', contract.get('down_payment'))
+        interest_rate = update_data.get('interest_rate', contract.get('interest_rate'))
+        term_months = update_data.get('term_months', contract.get('term_months'))
+        principal_amount, total_payable, installment_amount = compute_contract_financials(
+            vehicle_price, down_payment, interest_rate, term_months
+        )
+        update_data['principal_amount'] = principal_amount
+        update_data['total_payable'] = total_payable
+        update_data.setdefault('installment_amount', installment_amount)
+
+    update_data['updated_at'] = datetime.utcnow().isoformat()
+    try:
+        res = supabase.table("contracts").update(update_data).eq("id", contract.get("id")).execute()
+        updated = res.data[0] if res.data else {**contract, **update_data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    # Keep the linked vehicle's inventory status in sync with a status
+    # change that closes out or reopens the deal.
+    try:
+        if updated.get('status') == 'completed':
+            supabase.table("vehicles").update({'status': 'sold', 'updated_at': datetime.utcnow().isoformat()}).eq("id", contract.get('vehicle_id')).execute()
+        elif updated.get('status') in ('repossessed', 'cancelled'):
+            supabase.table("vehicles").update({'status': 'available', 'updated_at': datetime.utcnow().isoformat()}).eq("id", contract.get('vehicle_id')).execute()
+    except Exception:
+        pass
+
+    return updated
+
+@app.delete("/api/v1/business/{public_id}/contracts/{contract_public_id}")
+async def delete_contract(public_id: str, contract_public_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    contract = safe_get_contract(contract_public_id)
+    if not contract or contract.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Contract not found for this business")
+
+    try:
+        supabase.table("cl_payments").delete().eq("contract_id", contract.get("id")).execute()  # future-proof once Step 5 exists
+    except Exception:
+        pass
+    try:
+        supabase.table("contracts").delete().eq("id", contract.get("id")).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    # Deleting the deal frees the vehicle back up for sale.
+    try:
+        supabase.table("vehicles").update({'status': 'available', 'updated_at': datetime.utcnow().isoformat()}).eq("id", contract.get('vehicle_id')).execute()
+    except Exception:
+        pass
+
+    return {"success": True, "deleted": contract_public_id}
+
+# CAR LENDING / SHOWROOM - PAYMENTS
+
+@app.get("/api/v1/business/{public_id}/contracts/{contract_public_id}/payments")
+async def list_contract_payments(public_id: str, contract_public_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    contract = safe_get_contract(contract_public_id)
+    if not contract or contract.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Contract not found for this business")
+    try:
+        res = (
+            supabase.table("cl_payments")
+            .select("*")
+            .eq("contract_id", contract.get("id"))
+            .order("payment_date", desc=True)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return res.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.post("/api/v1/business/{public_id}/contracts/{contract_public_id}/payments")
+async def log_contract_payment(public_id: str, contract_public_id: str, payment: CLPaymentCreate):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    contract = safe_get_contract(contract_public_id)
+    if not contract or contract.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Contract not found for this business")
+    if contract.get('status') in ('completed', 'cancelled'):
+        raise HTTPException(status_code=400, detail=f"This contract is {contract.get('status')} - no more payments to log.")
+
+    try:
+        pay_date = datetime.fromisoformat(payment.payment_date).date() if payment.payment_date else datetime.utcnow().date()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid payment_date - use YYYY-MM-DD")
+
+    prior_balance = float(contract.get('balance_remaining') or 0)
+    new_balance = round(max(prior_balance - payment.amount, 0), 2)
+    is_paid_off = new_balance <= 0
+
+    payment_public_id = generate_public_id()
+    payment_data = {
+        'business_id': business.get('id'),
+        'contract_id': contract.get('id'),
+        'public_id': payment_public_id,
+        'amount': payment.amount,
+        'payment_date': pay_date.isoformat(),
+        'method': payment.method,
+        'notes': payment.notes,
+        'balance_after': new_balance,
+        # Short, human-readable receipt number derived from the payment's own
+        # public_id - unique without a separate counter/sequence table, and
+        # stable even if two payments are logged in the same second.
+        'receipt_number': f"RCPT-{payment_public_id[:8].upper()}",
+    }
+    try:
+        res = supabase.table("cl_payments").insert(payment_data).execute()
+        created_payment = res.data[0] if res.data else payment_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    # Roll the payment into the contract: clear any overdue flag, push the
+    # due date forward one cycle, and close the loan out once fully paid.
+    # A fresh payment also resets the reminder cycle for the new due date.
+    contract_update = {
+        'balance_remaining': new_balance,
+        'last_paid_date': pay_date.isoformat(),
+        'last_reminder_stage': None,
+        'updated_at': datetime.utcnow().isoformat(),
+    }
+    if is_paid_off:
+        contract_update['status'] = 'completed'
+        contract_update['next_due_date'] = None
+    else:
+        contract_update['status'] = 'active'
+        contract_update['next_due_date'] = compute_next_due_date(
+            pay_date, contract.get('payment_frequency') or 'monthly'
+        ).isoformat()
+
+    try:
+        res = supabase.table("contracts").update(contract_update).eq("id", contract.get("id")).execute()
+        updated_contract = res.data[0] if res.data else {**contract, **contract_update}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    if is_paid_off:
+        try:
+            supabase.table("vehicles").update(
+                {'status': 'sold', 'updated_at': datetime.utcnow().isoformat()}
+            ).eq("id", contract.get('vehicle_id')).execute()
+        except Exception:
+            pass
+
+    created_payment['contract'] = updated_contract
+    return created_payment
+
+@app.delete("/api/v1/business/{public_id}/contracts/{contract_public_id}/payments/{payment_public_id}")
+async def delete_contract_payment(public_id: str, contract_public_id: str, payment_public_id: str):
+    """Undo a payment logged by mistake. Only the most recent payment on the
+    contract can be undone, so balance_remaining never drifts out of sync
+    with the payment log - correcting an older one means undoing everything
+    after it, in order."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    contract = safe_get_contract(contract_public_id)
+    if not contract or contract.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Contract not found for this business")
+
+    try:
+        pay_res = (
+            supabase.table("cl_payments")
+            .select("*")
+            .eq("public_id", payment_public_id)
+            .eq("contract_id", contract.get("id"))
+            .maybe_single()
+            .execute()
+        )
+        payment = pay_res.data
+    except Exception:
+        payment = None
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found for this contract")
+
+    try:
+        latest = (
+            supabase.table("cl_payments")
+            .select("public_id")
+            .eq("contract_id", contract.get("id"))
+            .order("payment_date", desc=True)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+    if not latest.data or latest.data[0].get('public_id') != payment_public_id:
+        raise HTTPException(status_code=400, detail="Only the most recent payment on this contract can be undone.")
+
+    restored_balance = round(float(contract.get('balance_remaining') or 0) + float(payment.get('amount') or 0), 2)
+    contract_update = {
+        'balance_remaining': restored_balance,
+        'status': 'active',
+        'updated_at': datetime.utcnow().isoformat(),
+    }
+    try:
+        supabase.table("cl_payments").delete().eq("id", payment.get("id")).execute()
+        res = supabase.table("contracts").update(contract_update).eq("id", contract.get("id")).execute()
+        updated_contract = res.data[0] if res.data else {**contract, **contract_update}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    return {"success": True, "deleted": payment_public_id, "contract": updated_contract}
+
+@app.get("/api/v1/business/{public_id}/cl-customers/{customer_public_id}/payments")
+async def list_customer_payment_history(public_id: str, customer_public_id: str):
+    """Step 6: full receipt/payment history for one buyer across ALL of
+    their contracts (not just the currently-open one) - what the Payments
+    tab's per-contract history (Step 5) doesn't show, since that view only
+    lists active/overdue loans. Ordered newest-first; each row carries
+    enough of its parent contract + vehicle to render a standalone receipt
+    (business name is looked up client-side from the already-loaded
+    business object)."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    customer = safe_get_cl_customer(customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+
+    try:
+        contracts = (
+            supabase.table("contracts")
+            .select("id,public_id,vehicle_id,sale_type,status")
+            .eq("customer_id", customer.get("id"))
+            .execute()
+        ).data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    if not contracts:
+        return []
+
+    contract_ids = [c['id'] for c in contracts]
+    contracts_by_id = {c['id']: c for c in contracts}
+
+    vehicle_ids = list({c.get('vehicle_id') for c in contracts if c.get('vehicle_id')})
+    vehicles_by_id = {}
+    if vehicle_ids:
+        try:
+            rows = supabase.table("vehicles").select("id,public_id,make,model,year,plate_number").in_("id", vehicle_ids).execute().data or []
+            vehicles_by_id = {r['id']: r for r in rows}
+        except Exception:
+            pass
+
+    try:
+        payments = (
+            supabase.table("cl_payments")
+            .select("*")
+            .in_("contract_id", contract_ids)
+            .order("payment_date", desc=True)
+            .order("created_at", desc=True)
+            .execute()
+        ).data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    for p in payments:
+        contract = contracts_by_id.get(p.get('contract_id')) or {}
+        p['contract'] = {
+            'public_id': contract.get('public_id'),
+            'sale_type': contract.get('sale_type'),
+            'status': contract.get('status'),
+        }
+        p['vehicle'] = vehicles_by_id.get(contract.get('vehicle_id'))
+
+    return payments
+
+# CAR LENDING / SHOWROOM - OWNER -> BUYER MESSAGES
+# Distinct from the generic /announcements below (which push to Google/Apple
+# Wallet card holders) - car-lending buyers don't have a wallet pass, so
+# these go by email instead, either to one buyer or broadcast to everyone.
+
+@app.get("/api/v1/business/{public_id}/cl-announcements")
+async def list_cl_announcements(public_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    try:
+        res = (
+            supabase.table("cl_announcements")
+            .select("*")
+            .eq("business_id", business.get("id"))
+            .order("created_at", desc=True)
+            .execute()
+        )
+        items = res.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    customer_ids = list({i.get('customer_id') for i in items if i.get('customer_id')})
+    if customer_ids:
+        try:
+            rows = supabase.table("cl_customers").select("id,public_id,name").in_("id", customer_ids).execute().data or []
+            by_id = {r['id']: r for r in rows}
+            for i in items:
+                i['customer'] = by_id.get(i.get('customer_id'))
+        except Exception:
+            pass
+    return items
+
+@app.post("/api/v1/business/{public_id}/cl-announcements")
+async def create_cl_announcement(public_id: str, ann: CLAnnouncementCreate):
+    """Wallet-push only, no email - see build_cl_wallet_reminder_text's
+    sibling logic below. A single buyer (ann.customer_public_id set) gets a
+    personalized push via their own Wallet object/pass. Omitting it
+    broadcasts to every buyer's Wallet card for this business in one call
+    each to Google/Apple - including buyers with no active loan (0/0 pass),
+    so the whole membership can be reached regardless of loan status, same
+    as requested. A buyer only receives this if they've added the wallet
+    pass; there's no email fallback."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    target_customer = None
+    if ann.customer_public_id:
+        target_customer = safe_get_cl_customer(ann.customer_public_id)
+        if not target_customer or target_customer.get('business_id') != business.get('id'):
+            raise HTTPException(status_code=404, detail="Customer not found for this business")
+        recipient_count = 1
+    else:
+        try:
+            recipient_count = (
+                supabase.table("cl_customers")
+                .select("id", count="exact")
+                .eq("business_id", business.get("id"))
+                .execute()
+            ).count or 0
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    record = {
+        'business_id': business.get('id'),
+        'customer_id': target_customer.get('id') if target_customer else None,
+        'title': ann.title,
+        'message': ann.message,
+        'recipient_count': recipient_count,
+        'sent_count': 0,
+    }
+    try:
+        res = supabase.table("cl_announcements").insert(record).execute()
+        created = res.data[0] if res.data else record
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    message_id = f"cl-announcement-{created.get('id', generate_public_id())}"
+    apple_accepted = 0
+    google_sent = False
+
+    if target_customer:
+        contract = get_active_contract_for_cl_customer(target_customer.get('id'))
+        # sync_cl_wallet_object PATCHes the pass's live data AND (since
+        # notify_message_id is given) fires the TEXT_AND_NOTIFY push in the
+        # same call - no separate send_wallet_object_message call needed.
+        sync_cl_wallet_object(target_customer, business, contract, notify_header=ann.title, notify_body=ann.message, notify_message_id=message_id)
+        google_sent = bool(get_google_access_token())
+        sync_cl_apple_wallet_pass(target_customer)
+        apple_accepted = 1 if APPLE_PASS_TYPE_IDENTIFIER else 0
+    else:
+        cl_class_id = business.get('cl_google_wallet_class_id') or f'{GOOGLE_WALLET_ISSUER_ID}.cl-{business.get("public_id", "")}'
+        google_sent = send_wallet_class_message(cl_class_id, ann.title, ann.message, message_id)
+        apple_accepted = push_cl_apple_wallet_announcement(business.get('id'))
+
+    sent_count = apple_accepted + (1 if google_sent else 0)
+    try:
+        supabase.table("cl_announcements").update({'sent_count': sent_count}).eq("id", created.get("id")).execute()
+    except Exception:
+        pass
+
+    created['sent_count'] = sent_count
+    created['recipient_count'] = recipient_count
+    created['google_sent'] = google_sent
+    created['apple_pushes_accepted'] = apple_accepted
+    if target_customer:
+        created['customer'] = target_customer
+    return created
 
 # ANNOUNCEMENTS
 
@@ -4478,6 +5997,213 @@ async def use_multipass_session(public_id: str, req: MultipassUseRequest, author
         "sessions_total": customer.get('multipass_total_sessions', 0),
     }
 
+# MEMBERSHIP CARD - visit notes ("leaves")
+#
+# Unlike stamp/points/multipass, a membership card has no running balance -
+# there's nothing on the customer row to increment. Every cashier visit just
+# appends a dated note (service_name + optional note) to membership_events,
+# and the owner dashboard reads that history back per member - like a
+# patient chart. Wallet-pass sync, cashier UI, and analytics wiring come later;
+# this is just the record-keeping backbone.
+
+@app.post("/api/v1/business/{public_id}/membership/note")
+async def add_membership_note(public_id: str, req: MembershipNoteRequest, authorization: str = Header(default="")):
+    """Cashier logs one visit: what service the member came in for, and
+    (usually) today's date. This is the membership-card equivalent of
+    /stamp - the thing a cashier does at every visit."""
+    print(f"MEMBERSHIP NOTE REQUEST: business={public_id}, customer={req.customer_public_id}")
+
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    customer = safe_get_customer(req.customer_public_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    if customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+
+    program = safe_get_loyalty_program(business.get('id'))
+    if not program or program.get('card_type') != 'membership':
+        raise HTTPException(status_code=400, detail="This business is not on a membership card")
+
+    noting_staff_id = None
+    noting_branch_id = None
+
+    # Same staff-session / owner / legacy-PIN auth pattern as /stamp, /points-sale, /multipass.
+    session_claims = get_staff_session_claims(public_id, authorization)
+
+    if session_claims:
+        noting_staff_id = session_claims.get('staff_id')
+    elif req.as_owner:
+        pass
+    else:
+        if not req.staff_pin:
+            raise HTTPException(status_code=400, detail="Staff PIN required")
+        try:
+            staff_res = supabase.table("staff").select("*").eq("business_id", business.get("id")).eq("pin", req.staff_pin).execute()
+            if not staff_res.data:
+                raise HTTPException(status_code=403, detail="Invalid staff PIN")
+            noting_staff_id = staff_res.data[0].get('id')
+            noting_branch_id = staff_res.data[0].get('branch_id')
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
+
+    service_date = req.service_date or datetime.utcnow().date().isoformat()
+
+    try:
+        leaf = log_membership_event(
+            business.get('id'), customer.get('id'), req.service_name.strip(),
+            (req.note or '').strip() or None, service_date, noting_staff_id, noting_branch_id,
+        )
+        if leaf is None:
+            raise Exception("insert failed")
+        sync_wallet_object(
+            customer, business, program,
+            notify_header="Visit logged ✅",
+            notify_body=f"Thanks for visiting! Service: {req.service_name.strip()}",
+            notify_message_id=f"membership-{customer.get('id')}-{leaf.get('id')}-{int(datetime.utcnow().timestamp())}",
+        )
+        sync_apple_wallet_pass(customer)
+    except Exception as e:
+        error_msg = str(e)
+        is_schema_mismatch = (
+            'PGRST204' in error_msg
+            or ('relation' in error_msg.lower() and 'does not exist' in error_msg.lower())
+            or ('could not find' in error_msg.lower() and ('table' in error_msg.lower() or 'column' in error_msg.lower()))
+        )
+        if is_schema_mismatch:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"Database schema mismatch: {error_msg}. Create a 'membership_events' table in "
+                    f"Supabase (business_id, customer_id, service_name, note, service_date, staff_id, "
+                    f"branch_id, created_at) and run NOTIFY pgrst, 'reload schema'; before retrying."
+                ),
+            )
+        raise HTTPException(status_code=500, detail=error_msg)
+
+    return {
+        "message": "Visit noted",
+        "leaf": leaf,
+    }
+
+@app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/leaves")
+async def get_membership_leaves(public_id: str, customer_public_id: str):
+    """Owner dashboard: the full, dated activity history for one member -
+    every service they've come in for, most recent first. This is the
+    membership card's equivalent of a patient chart."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    customer = safe_get_customer(customer_public_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    if customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+
+    try:
+        res = (
+            supabase.table("membership_events")
+            .select("*")
+            .eq("business_id", business.get("id"))
+            .eq("customer_id", customer.get("id"))
+            .order("service_date", desc=True)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        leaves = res.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    # Attach staff/branch names for display, same best-effort spirit as the
+    # last_stamp_at attachment in get_customers - a lookup failure shouldn't
+    # take the whole history down.
+    try:
+        staff_ids = {l.get('staff_id') for l in leaves if l.get('staff_id')}
+        branch_ids = {l.get('branch_id') for l in leaves if l.get('branch_id')}
+        staff_by_id, branch_by_id = {}, {}
+        if staff_ids:
+            staff_rows = supabase.table("staff").select("id,name").in_("id", list(staff_ids)).execute().data or []
+            staff_by_id = {s.get('id'): s.get('name') for s in staff_rows}
+        if branch_ids:
+            branch_rows = supabase.table("branches").select("id,name").in_("id", list(branch_ids)).execute().data or []
+            branch_by_id = {b.get('id'): b.get('name') for b in branch_rows}
+        for l in leaves:
+            l['staff_name'] = staff_by_id.get(l.get('staff_id'))
+            l['branch_name'] = branch_by_id.get(l.get('branch_id'))
+    except Exception:
+        for l in leaves:
+            l.setdefault('staff_name', None)
+            l.setdefault('branch_name', None)
+
+    return leaves
+
+@app.api_route("/api/v1/business/{public_id}/leaves/{leaf_id}", methods=["PUT", "PATCH"])
+async def update_membership_leaf(public_id: str, leaf_id: int, update: MembershipLeafUpdate):
+    """Lets the owner fix a typo'd or mistaken visit note from the dashboard."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    update_data = {k: v for k, v in update.dict(exclude_unset=True).items() if v is not None}
+    if not update_data:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+
+    try:
+        existing = supabase.table("membership_events").select("id,customer_id").eq("id", leaf_id).eq("business_id", business.get("id")).maybe_single().execute()
+        if not existing or not existing.data:
+            raise HTTPException(status_code=404, detail="Leaf not found")
+        res = supabase.table("membership_events").update(update_data).eq("id", leaf_id).execute()
+        updated_leaf = (res.data or [None])[0]
+        # Only the most recent leaf drives what the Wallet pass currently
+        # shows (see get_membership_summary), so an edit only needs a
+        # re-sync when it could have touched that leaf - best-effort, a
+        # sync failure here shouldn't fail the edit itself.
+        try:
+            customer = safe_get_customer_by_id(existing.data.get('customer_id'))
+            if customer:
+                program = safe_get_loyalty_program(business.get('id'))
+                sync_wallet_object(customer, business, program)
+                sync_apple_wallet_pass(customer)
+        except Exception as sync_err:
+            print(f"MEMBERSHIP LEAF EDIT sync error: {sync_err}")
+        return updated_leaf
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.delete("/api/v1/business/{public_id}/leaves/{leaf_id}")
+async def delete_membership_leaf(public_id: str, leaf_id: int):
+    """Lets the owner remove a mistakenly-logged visit note."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    try:
+        existing = supabase.table("membership_events").select("id,customer_id").eq("id", leaf_id).eq("business_id", business.get("id")).maybe_single().execute()
+        if not existing or not existing.data:
+            raise HTTPException(status_code=404, detail="Leaf not found")
+        supabase.table("membership_events").delete().eq("id", leaf_id).execute()
+        try:
+            customer = safe_get_customer_by_id(existing.data.get('customer_id'))
+            if customer:
+                program = safe_get_loyalty_program(business.get('id'))
+                sync_wallet_object(customer, business, program)
+                sync_apple_wallet_pass(customer)
+        except Exception as sync_err:
+            print(f"MEMBERSHIP LEAF DELETE sync error: {sync_err}")
+        return {"message": "Leaf deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
 @app.post("/api/v1/business/{public_id}/staff/verify-pin")
 async def verify_staff_pin(public_id: str, req: PinVerify):
     business = safe_get_business(public_id)
@@ -4785,11 +6511,17 @@ async def get_customer_hero_image(customer_public_id: str, s: Optional[str] = No
     points_balance = customer.get('points_balance', 0)
     sessions_remaining = customer.get('multipass_sessions_remaining', 0) or 0
     sessions_total = customer.get('multipass_total_sessions', 0) or (program.get('multipass_session_count', 12) if program else 12)
+    membership_summary = (
+        get_membership_summary(business.get('id'), customer.get('id'))
+        if card_type == 'membership' else None
+    )
 
     png_bytes = generate_personalized_hero_image_bytes(
         primary_color, reward_name, stamps, stamp_goal, description,
         card_type=card_type, points_balance=points_balance,
         sessions_remaining=sessions_remaining, sessions_total=sessions_total,
+        total_visits=(membership_summary['total_visits'] if membership_summary else 0),
+        last_service_name=(membership_summary['last_service_name'] if membership_summary else None),
     )
     return Response(
         content=png_bytes,
@@ -4926,6 +6658,247 @@ async def create_or_update_wallet_class(public_id: str):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+# CAR LENDING / SHOWROOM - GOOGLE WALLET CLASS MANAGEMENT
+# Same PUT-then-fall-back-to-POST pattern as the loyalty version above,
+# just persisted to businesses.cl_google_wallet_class_id instead of
+# loyalty_programs.google_wallet_class_id (car lending has no "program"
+# row - the class lives one level up, straight on the business).
+
+@app.get("/api/v1/business/{public_id}/cl-wallet-class")
+async def get_cl_wallet_class(public_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    class_id = business.get('cl_google_wallet_class_id') or f'{GOOGLE_WALLET_ISSUER_ID}.cl-{business.get("public_id", "")}'
+
+    access_token = get_google_access_token()
+    google_data = None
+    if access_token:
+        try:
+            import httpx
+            with httpx.Client() as client:
+                resp = client.get(
+                    f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}',
+                    headers={"Authorization": f"Bearer {access_token}"}
+                )
+                if resp.status_code == 200:
+                    google_data = resp.json()
+        except Exception as e:
+            print(f"CL Google class fetch error: {e}")
+
+    return {
+        "class_id": class_id,
+        "business_name": business.get("name", ""),
+        "google_class_exists": google_data is not None,
+        "google_class_data": google_data,
+    }
+
+@app.post("/api/v1/business/{public_id}/cl-wallet-class")
+async def create_or_update_cl_wallet_class(public_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    if not GOOGLE_WALLET_ISSUER_ID:
+        raise HTTPException(
+            status_code=500,
+            detail="GOOGLE_WALLET_ISSUER_ID is not set in environment variables. Set it to your Google Wallet Issuer ID and redeploy."
+        )
+
+    class_id = business.get('cl_google_wallet_class_id') or f'{GOOGLE_WALLET_ISSUER_ID}.cl-{business.get("public_id", "")}'
+    loyalty_class = build_cl_wallet_class(business)
+
+    access_token = get_google_access_token()
+    if not access_token:
+        raise HTTPException(status_code=500, detail="Could not get Google access token. Check GOOGLE_WALLET_CREDENTIALS.")
+
+    def parse_response(resp):
+        try:
+            return resp.json()
+        except Exception:
+            return {"raw_response": resp.text[:2000]}
+
+    try:
+        import httpx
+        with httpx.Client() as client:
+            resp = client.put(
+                f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}',
+                headers={"Authorization": f"Bearer {access_token}"},
+                json=loyalty_class
+            )
+            result = parse_response(resp)
+            if resp.status_code == 404:
+                resp = client.post(
+                    'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass',
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    json=loyalty_class
+                )
+                result = parse_response(resp)
+
+            if resp.status_code in (200, 201):
+                supabase.table("businesses").update({
+                    'cl_google_wallet_class_id': class_id,
+                    'updated_at': datetime.utcnow().isoformat(),
+                }).eq("id", business.get("id")).execute()
+                return {
+                    "success": True,
+                    "message": "Car-lending wallet class created/updated successfully",
+                    "class_id": class_id,
+                    "google_response": result,
+                }
+            else:
+                error_detail = result.get('error', result) if isinstance(result, dict) else result
+                raise HTTPException(status_code=500, detail=f"Google API error ({resp.status_code}): {error_detail}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"CL wallet class creation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# CAR LENDING / SHOWROOM - BUYER WALLET PASS
+# Mirrors get_wallet_pass()/get_apple_wallet_pass() below, but for
+# cl_customers + their current contract instead of loyalty customers.
+
+@app.get("/api/v1/cl-customer/{customer_public_id}/wallet-pass")
+async def get_cl_wallet_pass(customer_public_id: str):
+    customer = safe_get_cl_customer(customer_public_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Buyer not found")
+    business = safe_get_business_by_id(customer.get('business_id'))
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    contract = get_active_contract_for_cl_customer(customer.get('id'))
+    has_active_loan = bool(contract and contract.get('status') in ('active', 'overdue'))
+
+    cl_object = build_cl_wallet_object(customer, business, contract)
+    jwt_token = create_google_wallet_jwt(cl_object)
+    save_url = f"https://pay.google.com/gp/v/save/{jwt_token}" if jwt_token else None
+
+    return {
+        "pass_data": {
+            "business_name": business.get('name', ''),
+            "customer_name": customer.get('name', ''),
+            "customer_id": customer_public_id,
+            "has_active_loan": has_active_loan,
+            "balance_remaining": float(contract.get('balance_remaining') or 0) if has_active_loan else 0,
+            "next_due_date": contract.get('next_due_date') if has_active_loan else None,
+            "status": contract.get('status') if contract else None,
+            "qr_code": customer_public_id,
+        },
+        "save_url": save_url,
+        "apple_pass_url": f"{BASE_URL}/api/v1/cl-customer/{customer_public_id}/apple-wallet-pass",
+        "cl_object": cl_object,
+    }
+
+@app.get("/api/v1/cl-customer/{customer_public_id}/apple-wallet-pass")
+async def get_cl_apple_wallet_pass(customer_public_id: str):
+    customer = safe_get_cl_customer(customer_public_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Buyer not found")
+    business = safe_get_business_by_id(customer.get('business_id'))
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    contract = get_active_contract_for_cl_customer(customer.get('id'))
+    announcement = get_latest_cl_announcement(business.get('id'))
+
+    pkpass_bytes = build_cl_pkpass_bytes(customer, business, contract, announcement)
+    if pkpass_bytes is None:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Apple Wallet is not configured. Set APPLE_PASS_TYPE_IDENTIFIER, "
+                "APPLE_TEAM_IDENTIFIER, APPLE_PASS_CERTIFICATE, APPLE_PASS_PRIVATE_KEY "
+                "(or APPLE_PASS_CERTIFICATE_PASSWORD if using a .p12), "
+                "APPLE_WWDR_CERTIFICATE and APPLE_PASS_AUTH_SECRET in your "
+                "environment and redeploy."
+            ),
+        )
+    return Response(
+        content=pkpass_bytes,
+        media_type="application/vnd.apple.pkpass",
+        headers={"Content-Disposition": f'attachment; filename="cl-{customer_public_id}.pkpass"'},
+    )
+
+@app.get("/cl-wallet/{customer_public_id}", response_class=HTMLResponse)
+async def cl_customer_wallet_page(customer_public_id: str):
+    """Simple 'Add to Wallet' page for a car-lending buyer - shares to the
+    buyer once (SMS/email/in person) alongside their contract, or the owner
+    hands them a QR code that points here. No payment portal, no login:
+    just the two Wallet buttons, matching the loyalty wallet page's pattern
+    at /wallet/{customer_public_id}."""
+    customer = safe_get_cl_customer(customer_public_id)
+    if not customer:
+        return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Card not found</h1></div>")
+    business = safe_get_business_by_id(customer.get('business_id'))
+    if not business:
+        return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Business not found</h1></div>")
+
+    contract = get_active_contract_for_cl_customer(customer.get('id'))
+    has_active_loan = bool(contract and contract.get('status') in ('active', 'overdue'))
+    balance = float(contract.get('balance_remaining') or 0) if has_active_loan else 0
+    due = contract.get('next_due_date') if has_active_loan else None
+    biz_name = business.get('name', '')
+    logo_url = business.get('logo_url')
+
+    cl_object = build_cl_wallet_object(customer, business, contract)
+    google_jwt = create_google_wallet_jwt(cl_object)
+    google_wallet_html = ''
+    if google_jwt:
+        google_wallet_html = (
+            '<a href="https://pay.google.com/gp/v/save/' + google_jwt + '" class="wallet-btn google-btn">'
+            '&#127903; Add to Google Wallet</a>'
+        )
+    apple_wallet_html = (
+        '<a href="' + BASE_URL + '/api/v1/cl-customer/' + customer_public_id + '/apple-wallet-pass" class="wallet-btn apple-btn">'
+        '&#63743; Add to Apple Wallet</a>'
+    )
+    logo_html = ''
+    if logo_url:
+        logo_html = '<img src="' + logo_url + '" style="width:64px;height:64px;border-radius:16px;object-fit:cover;margin-bottom:12px;" alt="Logo"/>'
+    balance_html = (
+        '<div style="text-align:center;margin:16px 0;">'
+        '<div style="font-size:36px;font-weight:800;color:white;">₱' + f'{balance:,.0f}' + '</div>'
+        '<div style="font-size:13px;color:rgba(255,255,255,0.85);margin-top:2px;">balance remaining</div>'
+        + ('<div style="font-size:13px;color:rgba(255,255,255,0.85);margin-top:8px;">Next due: ' + html_lib.escape(str(due)) + '</div>' if due else '')
+        + '</div>'
+        if has_active_loan else
+        '<div style="text-align:center;margin:16px 0;">'
+        '<div style="font-size:15px;color:rgba(255,255,255,0.85);">No active loan yet</div>'
+        '<div style="font-size:12px;color:rgba(255,255,255,0.7);margin-top:4px;">Add this card to get dealership updates</div>'
+        '</div>'
+    )
+
+    html = (
+        '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+        '<title>' + html_lib.escape(biz_name) + ' Loan Card</title>'
+        '<style>*{box-sizing:border-box;margin:0;padding:0}'
+        'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;'
+        'background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%);'
+        'min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}'
+        '.card{background:white;border-radius:24px;padding:32px;max-width:400px;width:100%;'
+        'box-shadow:0 20px 60px rgba(0,0,0,0.3);text-align:center}'
+        '.loan-card{background:linear-gradient(135deg,#0f172a 0%,#334155 100%);'
+        'border-radius:16px;padding:24px;color:white;margin-bottom:20px}'
+        '.loan-card h2{font-size:20px;margin-bottom:4px}'
+        '.loan-card h3{font-size:16px;opacity:0.9;margin-bottom:8px}'
+        '.wallet-btn{display:block;width:100%;padding:14px;background:#1a73e8;color:white;'
+        'text-decoration:none;border-radius:10px;font-weight:600;margin-bottom:12px;text-align:center}'
+        '.apple-btn{background:#000000}'
+        '</style></head><body>'
+        '<div class="card"><div class="loan-card">'
+        + logo_html +
+        '<h2>' + html_lib.escape(biz_name) + '</h2>'
+        '<h3>' + html_lib.escape(customer.get('name', '')) + '</h3>'
+        + balance_html +
+        '</div>'
+        + apple_wallet_html + google_wallet_html +
+        '</div></body></html>'
+    )
+    return HTMLResponse(html)
 
 # CUSTOMER JOIN PAGE
 
@@ -5811,6 +7784,11 @@ async def get_wallet_pass(customer_public_id: str):
     sessions_total = customer.get('multipass_total_sessions', 0) or (program.get('multipass_session_count', 12) if program else 12)
     multipass_expires_at = customer.get('multipass_expires_at')
     multipass_expired = bool(multipass_expires_at and multipass_expires_at < datetime.utcnow().date().isoformat())
+    membership_services = (program.get('membership_services') if program else None) or []
+    membership_summary = (
+        get_membership_summary(business.get('id'), customer.get('id'))
+        if card_type == 'membership' else None
+    )
 
     loyalty_object = build_loyalty_object(customer, business, program)
     jwt_token = create_google_wallet_jwt(loyalty_object)
@@ -5842,6 +7820,11 @@ async def get_wallet_pass(customer_public_id: str):
             "multipass_description": multipass_description,
             "multipass_expires_at": multipass_expires_at,
             "multipass_expired": multipass_expired,
+            # --- Membership-only fields ---
+            "membership_services": membership_services,
+            "total_visits": (membership_summary['total_visits'] if membership_summary else 0),
+            "last_service_name": (membership_summary['last_service_name'] if membership_summary else None),
+            "last_service_date": (membership_summary['last_service_date'] if membership_summary else None),
             "primary_color": primary_color,
             "reward_unlocked": bool(customer.get('reward_unlocked')),
             "qr_code": f"{BASE_URL}/stamp/{customer_public_id}",
@@ -5975,6 +7958,62 @@ async def apple_list_updated_serials(device_library_identifier: str, pass_type_i
 async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, authorization: Optional[str] = Header(None), if_modified_since: Optional[str] = Header(None, alias="If-Modified-Since")):
     if not apple_auth_ok(serial_number, authorization):
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # Car-lending passes use a 'cl-' prefixed serial number (see
+    # build_cl_apple_pass_json) so this one shared web-service route can
+    # tell which table - and which pass-building logic - a refetch belongs
+    # to, without needing a second passTypeIdentifier/webServiceURL.
+    if serial_number.startswith('cl-'):
+        cust_public_id = serial_number[len('cl-'):]
+        customer = safe_get_cl_customer(cust_public_id)
+        if not customer:
+            raise HTTPException(status_code=404, detail="Not found")
+        business = safe_get_business_by_id(customer.get('business_id'))
+        if not business:
+            raise HTTPException(status_code=404, detail="Not found")
+
+        contract = get_active_contract_for_cl_customer(customer.get('id'))
+        announcement = get_latest_cl_announcement(business.get('id'))
+        reminder_text = None
+        if contract and contract.get('status') in ('active', 'overdue') and contract.get('next_due_date'):
+            try:
+                next_due = datetime.fromisoformat(contract['next_due_date']).date()
+                stage = compute_reminder_stage(next_due, datetime.utcnow().date()) or (
+                    'overdue' if contract.get('status') == 'overdue' else None
+                )
+                if stage:
+                    _, _, reminder_text = build_cl_wallet_reminder_text(contract, stage)
+            except Exception:
+                pass
+
+        contract_ts = _parse_ts((contract or {}).get('updated_at'))
+        customer_ts = _parse_ts(customer.get('updated_at'))
+        ann_ts_raw = (announcement or {}).get('updated_at') or (announcement or {}).get('created_at')
+        ann_ts = _parse_ts(ann_ts_raw)
+        candidates = [t for t in (contract_ts, customer_ts, ann_ts) if t]
+        if not candidates:
+            last_modified = datetime.utcnow().isoformat()
+            last_modified_ts = None
+        elif ann_ts and ann_ts == max(candidates):
+            last_modified, last_modified_ts = ann_ts_raw, ann_ts
+        elif contract_ts and contract_ts == max(candidates):
+            last_modified, last_modified_ts = (contract or {}).get('updated_at'), contract_ts
+        else:
+            last_modified, last_modified_ts = customer.get('updated_at'), customer_ts
+
+        since_ts = _parse_ts(if_modified_since)
+        if last_modified_ts and since_ts and last_modified_ts <= since_ts:
+            return Response(status_code=304)
+
+        pkpass_bytes = build_cl_pkpass_bytes(customer, business, contract, announcement, reminder_text)
+        if pkpass_bytes is None:
+            raise HTTPException(status_code=500, detail="Could not build pass")
+        return Response(
+            content=pkpass_bytes,
+            media_type="application/vnd.apple.pkpass",
+            headers={"Last-Modified": last_modified or datetime.utcnow().isoformat()},
+        )
+
     customer = safe_get_customer(serial_number)
     if not customer:
         raise HTTPException(status_code=404, detail="Not found")
@@ -6208,6 +8247,90 @@ async def run_subscription_reminders(_: bool = Depends(require_cron)):
             errors += 1
 
     return {"sent": sent, "skipped_recently_sent": skipped, "errors": errors}
+
+@app.post("/api/v1/cron/loan-payment-reminders")
+async def run_loan_payment_reminders(_: bool = Depends(require_cron)):
+    """Pushes a Google/Apple Wallet notification to car-lending buyers 7
+    days before, 3 days before, and on the day a payment is due; flags the
+    contract 'overdue' and sends one more notice the moment it slips past
+    due. Wallet push only - no email. Each of the 4 touchpoints only ever
+    fires once per due-date cycle - contracts.last_reminder_stage dedupes
+    it, and gets reset to null whenever a new payment lands (see
+    /contracts/{id}/payments), which starts the cycle over for the new due
+    date. Safe to run more than once a day. Point an external scheduler at
+    this daily, same as the crons above.
+
+    Note: a buyer only receives these if they've added the wallet pass
+    (via /cl-wallet/{public_id} or the QR/link the owner shares with them) -
+    there's no email fallback, so a buyer who never added the card gets no
+    reminder at all. contract/status/last_reminder_stage still update
+    either way, so 'flagged_overdue' and the dashboard stay accurate
+    regardless of whether the push itself lands."""
+    today = datetime.utcnow().date()
+    sent, skipped, flagged_overdue, errors = 0, 0, 0, 0
+
+    try:
+        active = supabase.table("contracts").select("*").eq("status", "active").execute().data or []
+        overdue = supabase.table("contracts").select("*").eq("status", "overdue").execute().data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    for contract in active + overdue:
+        next_due_raw = contract.get('next_due_date')
+        if not next_due_raw:
+            continue
+        try:
+            next_due = datetime.fromisoformat(next_due_raw).date()
+        except Exception:
+            continue
+
+        stage = compute_reminder_stage(next_due, today)
+        if not stage:
+            continue
+
+        # Flip to overdue the moment it slips past due, independent of
+        # whether the push below succeeds.
+        if stage == 'overdue' and contract.get('status') != 'overdue':
+            try:
+                supabase.table("contracts").update(
+                    {'status': 'overdue', 'updated_at': datetime.utcnow().isoformat()}
+                ).eq("id", contract.get("id")).execute()
+                contract['status'] = 'overdue'
+            except Exception:
+                pass
+            flagged_overdue += 1
+
+        if contract.get('last_reminder_stage') == stage:
+            skipped += 1
+            continue
+
+        business = safe_get_business_by_id(contract.get('business_id'))
+        customer = safe_get_cl_customer_by_id(contract.get('customer_id'))
+        if not business or not customer:
+            continue
+
+        header, body, _short = build_cl_wallet_reminder_text(contract, stage)
+        message_id = f"cl-reminder-{contract.get('id')}-{next_due_raw}-{stage}"
+
+        # Google: PATCH the pass's live balance/due-date fields, then fire a
+        # TEXT_AND_NOTIFY push on that same call - one round trip.
+        sync_cl_wallet_object(customer, business, contract, notify_header=header, notify_body=body, notify_message_id=message_id)
+        # Apple: no server-triggered "send this text" call exists - a push
+        # just tells the device to refetch, and the NEXT DUE field's new
+        # value (computed fresh in apple_get_updated_pass) is what actually
+        # triggers the lock-screen notification on that refetch.
+        sync_cl_apple_wallet_pass(customer)
+
+        sent += 1
+        try:
+            supabase.table("contracts").update({
+                'last_reminder_stage': stage,
+                'last_reminder_at': datetime.utcnow().isoformat(),
+            }).eq("id", contract.get("id")).execute()
+        except Exception:
+            errors += 1
+
+    return {"sent": sent, "skipped_already_sent": skipped, "flagged_overdue": flagged_overdue, "errors": errors}
 
 # Run
 
