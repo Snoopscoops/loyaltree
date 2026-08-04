@@ -7738,15 +7738,15 @@ html{scroll-behavior:smooth}
 body{font-family:'Inter',-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--paper);color:var(--ink);padding-bottom:48px;-webkit-font-smoothing:antialiased}
 a{color:inherit}
 
-.hero{position:relative;height:340px;background-size:cover;background-position:center;background-color:var(--ink);isolation:isolate}
+.hero{position:relative;height:460px;background-size:cover;background-position:center;background-color:var(--ink);isolation:isolate}
 .hero-fallback{background:radial-gradient(120% 140% at 20% 0%,#1e293b 0%,#0f172a 55%,#020617 100%)}
 .hero-overlay{position:absolute;inset:0;background:linear-gradient(180deg,rgba(2,6,23,0.25) 0%,rgba(2,6,23,0.55) 55%,rgba(2,6,23,0.92) 100%);
   display:flex;flex-direction:column;align-items:center;justify-content:flex-end;text-align:center;color:#fff;padding:28px 20px 26px}
 .hero-eyebrow{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;
   color:#5eead4;background:rgba(13,148,136,0.16);border:1px solid rgba(94,234,212,0.3);padding:5px 12px;border-radius:999px;margin-bottom:14px}
 .hero-eyebrow .dot{width:6px;height:6px;border-radius:50%;background:#2dd4bf;box-shadow:0 0 0 3px rgba(45,212,191,0.25)}
-.hero-logo img{width:56px;height:56px;border-radius:14px;object-fit:cover;margin-bottom:10px;box-shadow:0 6px 18px rgba(0,0,0,0.35);border:2px solid rgba(255,255,255,0.15)}
-.hero-logo{font-size:36px;margin-bottom:6px}
+.hero-logo img{width:224px;height:224px;border-radius:32px;object-fit:cover;margin-bottom:10px;box-shadow:0 10px 32px rgba(0,0,0,0.4);border:3px solid rgba(255,255,255,0.15)}
+.hero-logo{font-size:96px;margin-bottom:6px}
 .hero h1{font-size:clamp(24px,5vw,34px);font-weight:800;letter-spacing:-0.02em}
 .hero p{font-size:14px;opacity:0.78;margin-top:6px;max-width:440px}
 
@@ -7841,7 +7841,9 @@ a{color:inherit}
   background:rgba(255,255,255,0.1);padding:5px 14px;border-radius:999px;letter-spacing:0.02em}
 
 @media(max-width:520px){
-  .hero{height:300px}
+  .hero{height:340px}
+  .hero-logo img{width:140px;height:140px;border-radius:24px}
+  .hero-logo{font-size:60px}
   .lightbox-nav{width:40px;height:40px;font-size:15px}
   .lightbox-nav.prev{left:8px}.lightbox-nav.next{right:8px}
 }
@@ -8119,11 +8121,11 @@ async def showroom_page(business_public_id: str):
         )
 
         # Search bar - only shown once the inventory is big enough that
-        # scrolling/chip-tapping alone gets tedious (20+ live units).
+        # scrolling/chip-tapping alone gets tedious (5+ live units).
         search_html = (
             '<div class="search-wrap"><input type="text" id="car-search" class="search-input" '
             'placeholder="Search by make, model, or year..." autocomplete="off"></div>'
-        ) if len(vehicles) >= 20 else ''
+        ) if len(vehicles) >= 5 else ''
 
         chips = ['<button class="filter-chip active" data-status="all">All (' + str(len(vehicles)) + ')</button>']
         if n_available:
@@ -8238,7 +8240,7 @@ async def showroom_page(business_public_id: str):
             grid_html = '<div class="car-grid">' + ''.join(cards) + '</div>' + (
                 '<div id="no-results" class="empty-state" style="display:none">'
                 '<div class="icon">&#128269;</div><p>No vehicles match your search.</p></div>'
-                if len(vehicles) >= 20 else ''
+                if len(vehicles) >= 5 else ''
             )
             cars_json = json.dumps(cars_data).replace('</', '<\\/')
         else:
