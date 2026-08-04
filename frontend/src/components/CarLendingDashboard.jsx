@@ -108,6 +108,18 @@ const TABS = [
   { key: 'payments', label: 'Payments' },
 ]
 
+// Renders backend-generated QR SVGs as an <img> (data URI) instead of
+// injecting the raw markup into the DOM via dangerouslySetInnerHTML. Inline
+// SVG injected that way is part of the page's own DOM and inherits the
+// page's CSS cascade, so a global style rule elsewhere (fill/color resets
+// etc.) can silently blank out the QR modules while the white background
+// still shows through. An <img> renders the SVG in an isolated document
+// context that the page's CSS can't reach, and if the SVG were ever
+// malformed you'd see an honest broken-image icon instead of a blank box.
+function svgToDataUri(svg) {
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
+}
+
 function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const [activeTab, setActiveTab] = useState('overview')
   const [business, setBusiness] = useState(null)
@@ -1721,7 +1733,9 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
           <div style={styles.modal} onClick={e => e.stopPropagation()}>
             <h3 style={styles.modalTitle}>{customerQR.customer_name}'s QR code</h3>
             <p style={styles.hint}>Show this on the buyer's phone (or print it) — scan it from the Payments tab to log their payment.</p>
-            <div style={styles.qrWrap} dangerouslySetInnerHTML={{ __html: customerQR.svg }} />
+            <div style={styles.qrWrap}>
+              <img src={svgToDataUri(customerQR.svg)} alt={`${customerQR.customer_name}'s QR code`} style={styles.qrImg} />
+            </div>
             <div style={styles.modalActions}>
               <button onClick={() => setCustomerQR(null)} style={styles.closeBtn}>Close</button>
             </div>
@@ -1734,7 +1748,9 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
           <div style={styles.modal} onClick={e => e.stopPropagation()}>
             <h3 style={styles.modalTitle}>Share {walletShare.customer_name}'s wallet card</h3>
             <p style={styles.hint}>For buyers already on the books who never scanned the Join QR themselves — let them scan this (or send the link) to add their Loan Card to their own phone's wallet.</p>
-            <div style={styles.qrWrap} dangerouslySetInnerHTML={{ __html: walletShare.svg }} />
+            <div style={styles.qrWrap}>
+              <img src={svgToDataUri(walletShare.svg)} alt={`${walletShare.customer_name}'s wallet QR code`} style={styles.qrImg} />
+            </div>
             <div style={{ ...styles.readOnlyValue, wordBreak: 'break-all', fontSize: 12 }}>{walletShare.wallet_url}</div>
             <div style={styles.modalActions}>
               <button onClick={() => setWalletShare(null)} style={styles.closeBtn}>Close</button>
@@ -1749,7 +1765,9 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
           <div style={styles.modal} onClick={e => e.stopPropagation()}>
             <h3 style={styles.modalTitle}>Buyer self-signup QR</h3>
             <p style={styles.hint}>Print or display this in the showroom. Scanning it lets a new buyer register themselves and add their Loan Card straight to Google/Apple Wallet — no dashboard data entry needed.</p>
-            <div style={styles.qrWrap} dangerouslySetInnerHTML={{ __html: joinQR.svg }} />
+            <div style={styles.qrWrap}>
+              <img src={svgToDataUri(joinQR.svg)} alt="Buyer self-signup QR code" style={styles.qrImg} />
+            </div>
             <div style={{ ...styles.readOnlyValue, wordBreak: 'break-all', fontSize: 12 }}>{joinQR.join_url}</div>
             <div style={styles.modalActions}>
               <button onClick={() => setJoinQR(null)} style={styles.closeBtn}>Close</button>
@@ -1980,6 +1998,9 @@ const styles = {
   },
   qrWrap: {
     display: 'flex', justifyContent: 'center', padding: 16, background: 'white',
+  },
+  qrImg: {
+    width: 220, height: 220, imageRendering: 'pixelated',
   },
   emptyState: { color: '#94a3b8', fontSize: 13, padding: '20px 0', textAlign: 'center' },
   announcementsList: { display: 'flex', flexDirection: 'column', gap: 10 },
