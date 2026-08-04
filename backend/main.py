@@ -521,8 +521,11 @@ class VehicleCreate(BaseModel):
     model: str
     year: Optional[int] = Field(default=None, ge=1900, le=2100)
     plate_number: Optional[str] = None
+    plate_end_in: Optional[str] = None  # last digit of the plate number, kept as its own field (number-coding/color-coding schemes) rather than parsed off plate_number
     color: Optional[str] = None
     mileage: Optional[int] = Field(default=None, ge=0)
+    transmission: Optional[Literal['automatic', 'manual']] = None
+    fuel_type: Optional[Literal['gasoline', 'diesel', 'hybrid', 'electric']] = None
     price: float = Field(default=0, ge=0)  # "price to sell" - the only price shown publicly on the showroom
     total_cost: float = Field(default=0, ge=0)  # what the business paid to acquire this unit - NEVER shown on the showroom, used only for the owner's profit/loss (net income) computation on the dashboard
     agent_name: Optional[str] = None  # which agent is handling/sourced this unit - used to roll up "top agent" on the dashboard
@@ -535,8 +538,11 @@ class VehicleUpdate(BaseModel):
     model: Optional[str] = None
     year: Optional[int] = Field(default=None, ge=1900, le=2100)
     plate_number: Optional[str] = None
+    plate_end_in: Optional[str] = None
     color: Optional[str] = None
     mileage: Optional[int] = Field(default=None, ge=0)
+    transmission: Optional[Literal['automatic', 'manual']] = None
+    fuel_type: Optional[Literal['gasoline', 'diesel', 'hybrid', 'electric']] = None
     price: Optional[float] = Field(default=None, ge=0)
     total_cost: Optional[float] = Field(default=None, ge=0)
     agent_name: Optional[str] = None
@@ -4899,8 +4905,11 @@ async def create_vehicle(public_id: str, vehicle: VehicleCreate):
         'model': vehicle.model,
         'year': vehicle.year,
         'plate_number': vehicle.plate_number,
+        'plate_end_in': vehicle.plate_end_in,
         'color': vehicle.color,
         'mileage': vehicle.mileage,
+        'transmission': vehicle.transmission,
+        'fuel_type': vehicle.fuel_type,
         'price': vehicle.price,
         'total_cost': vehicle.total_cost,
         'agent_name': vehicle.agent_name,
@@ -7841,6 +7850,10 @@ a{color:inherit}
 .vehicle-modal-body{padding:20px 22px 24px}
 .vehicle-modal-body h3{font-size:19px;font-weight:800;letter-spacing:-0.01em;margin-bottom:4px}
 .vehicle-modal-meta{font-size:13px;color:var(--muted);margin-bottom:14px}
+.vehicle-modal-specs{display:grid;grid-template-columns:1fr 1fr;gap:10px 16px;margin-bottom:16px}
+.vehicle-modal-spec{display:flex;flex-direction:column;gap:2px}
+.vehicle-modal-spec-label{font-size:10.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em}
+.vehicle-modal-spec-value{font-size:13.5px;font-weight:600;color:var(--ink)}
 .vehicle-modal-price-row{display:flex;align-items:center;gap:10px;padding-top:14px;border-top:1px dashed var(--line);margin-bottom:16px}
 .vehicle-modal-price{font-size:22px;font-weight:800;color:var(--ink);letter-spacing:-0.01em}
 .vehicle-modal-call-btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;
@@ -7855,6 +7868,11 @@ a{color:inherit}
 
 SHOWROOM_JS = """
 (function(){
+  function escapeHtml(s){
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+      return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
+    });
+  }
   document.querySelectorAll('.car-gallery').forEach(function(gallery){
     var track = gallery.querySelector('.gal-track');
     if (!track) return;
@@ -7953,6 +7971,7 @@ SHOWROOM_JS = """
   var vImg = document.getElementById('vehicle-modal-img');
   var vTitle = document.getElementById('vehicle-modal-title');
   var vMeta = document.getElementById('vehicle-modal-meta');
+  var vSpecs = document.getElementById('vehicle-modal-specs');
   var vPrice = document.getElementById('vehicle-modal-price');
   var vBadge = document.getElementById('vehicle-modal-badge');
   var vCall = document.getElementById('vehicle-modal-call');
@@ -7971,6 +7990,14 @@ SHOWROOM_JS = """
     if (vImg) vImg.alt = vCurCar.title || 'Vehicle photo';
     if (vTitle) vTitle.textContent = vCurCar.title || '';
     if (vMeta) { vMeta.textContent = vCurCar.meta || ''; vMeta.style.display = vCurCar.meta ? '' : 'none'; }
+    if (vSpecs) {
+      var specs = vCurCar.specs || [];
+      vSpecs.innerHTML = specs.map(function(s){
+        return '<div class="vehicle-modal-spec"><span class="vehicle-modal-spec-label">' + escapeHtml(s.label) +
+          '</span><span class="vehicle-modal-spec-value">' + escapeHtml(s.value) + '</span></div>';
+      }).join('');
+      vSpecs.style.display = specs.length ? '' : 'none';
+    }
     if (vPrice) vPrice.textContent = vCurCar.price || '';
     if (vBadge) vBadge.style.display = (vCurCar.status === 'reserved') ? '' : 'none';
     if (vPrev) vPrev.style.display = multi ? '' : 'none';
@@ -8131,6 +8158,22 @@ async def showroom_page(business_public_id: str):
                 meta = ' &middot; '.join(meta_bits)
                 meta_plain = ' · '.join(meta_bits_plain)
 
+                # Fuller spec sheet shown only in the tap-to-view details
+                # modal (kept off the grid card itself so cards stay compact).
+                specs_data = []
+                if v.get('transmission'):
+                    specs_data.append({'label': 'Transmission', 'value': str(v.get('transmission')).capitalize()})
+                if v.get('fuel_type'):
+                    specs_data.append({'label': 'Fuel type', 'value': str(v.get('fuel_type')).capitalize()})
+                if v.get('mileage') is not None:
+                    specs_data.append({'label': 'Mileage', 'value': f"{v.get('mileage'):,} km"})
+                if v.get('color'):
+                    specs_data.append({'label': 'Color', 'value': str(v.get('color'))})
+                if v.get('plate_number'):
+                    specs_data.append({'label': 'Plate number', 'value': str(v.get('plate_number'))})
+                if v.get('plate_end_in'):
+                    specs_data.append({'label': 'Plate ends in', 'value': str(v.get('plate_end_in'))})
+
                 cards.append(
                     '<div class="car-card" data-idx="' + str(idx) + '" data-status="' + html_lib.escape(v.get('status') or '') +
                     '" data-make="' + html_lib.escape((v.get('make') or '').strip()) + '">' +
@@ -8148,6 +8191,7 @@ async def showroom_page(business_public_id: str):
                 cars_data.append({
                     'title': title_plain,
                     'meta': meta_plain,
+                    'specs': specs_data,
                     'price': price_str,
                     'status': v.get('status') or '',
                     'imgs': raw_imgs,
@@ -8185,6 +8229,7 @@ async def showroom_page(business_public_id: str):
             '<div class="vehicle-modal-body">'
             '<h3 id="vehicle-modal-title"></h3>'
             '<p id="vehicle-modal-meta" class="vehicle-modal-meta"></p>'
+            '<div id="vehicle-modal-specs" class="vehicle-modal-specs"></div>'
             '<div class="vehicle-modal-price-row">'
             '<span id="vehicle-modal-price" class="vehicle-modal-price"></span>'
             '<span id="vehicle-modal-badge" class="badge reserved" style="display:none;position:static">Reserved</span>'

@@ -179,7 +179,7 @@ async function uploadImageToCloudinary(apiBase, businessId, file) {
 const VEHICLE_MAX_PHOTOS = 10
 
 function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved }) {
-  const emptyForm = { make: '', model: '', year: '', plate_number: '', color: '', mileage: '', price: '', total_cost: '', agent_name: '', status: 'available' }
+  const emptyForm = { make: '', model: '', year: '', plate_number: '', plate_end_in: '', color: '', mileage: '', transmission: '', fuel_type: '', price: '', total_cost: '', agent_name: '', status: 'available' }
   const [form, setForm] = useState(emptyForm)
   const [imageUrls, setImageUrls] = useState([]) // up to VEHICLE_MAX_PHOTOS Cloudinary URLs, shown as a gallery on the showroom card
   const [uploading, setUploading] = useState(false)
@@ -196,8 +196,11 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
         model: vehicle.model || '',
         year: vehicle.year ?? '',
         plate_number: vehicle.plate_number || '',
+        plate_end_in: vehicle.plate_end_in || '',
         color: vehicle.color || '',
         mileage: vehicle.mileage ?? '',
+        transmission: vehicle.transmission || '',
+        fuel_type: vehicle.fuel_type || '',
         price: vehicle.price ?? '',
         total_cost: vehicle.total_cost ?? '',
         agent_name: vehicle.agent_name || '',
@@ -276,8 +279,11 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
           model: form.model,
           year: form.year !== '' ? Number(form.year) : null,
           plate_number: form.plate_number || null,
+          plate_end_in: form.plate_end_in || null,
           color: form.color || null,
           mileage: form.mileage !== '' ? Number(form.mileage) : null,
+          transmission: form.transmission || null,
+          fuel_type: form.fuel_type || null,
           price: form.price !== '' ? Number(form.price) : 0,
           total_cost: form.total_cost !== '' ? Number(form.total_cost) : 0,
           agent_name: form.agent_name || null,
@@ -369,6 +375,14 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
             onChange={e => setForm({ ...form, plate_number: e.target.value })}
             placeholder="e.g. ABC 1234"
           />
+          <label style={styles.label}>Plate ends in</label>
+          <input
+            style={styles.input}
+            value={form.plate_end_in}
+            onChange={e => setForm({ ...form, plate_end_in: e.target.value })}
+            placeholder="e.g. 4 - for number coding"
+            maxLength={4}
+          />
           <label style={styles.label}>Color</label>
           <input
             style={styles.input}
@@ -382,6 +396,28 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
             value={form.mileage}
             onChange={e => setForm({ ...form, mileage: e.target.value })}
           />
+          <label style={styles.label}>Transmission</label>
+          <select
+            style={styles.select}
+            value={form.transmission}
+            onChange={e => setForm({ ...form, transmission: e.target.value })}
+          >
+            <option value="">Select…</option>
+            <option value="automatic">Automatic</option>
+            <option value="manual">Manual</option>
+          </select>
+          <label style={styles.label}>Fuel type</label>
+          <select
+            style={styles.select}
+            value={form.fuel_type}
+            onChange={e => setForm({ ...form, fuel_type: e.target.value })}
+          >
+            <option value="">Select…</option>
+            <option value="gasoline">Gasoline</option>
+            <option value="diesel">Diesel</option>
+            <option value="hybrid">Hybrid</option>
+            <option value="electric">Electric</option>
+          </select>
           <label style={styles.label}>Price to sell (₱)</label>
           <input
             type="number"
@@ -1453,7 +1489,14 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                         </span>
                       </div>
                       <div style={styles.recordMeta}>
-                        {[v.color, v.plate_number ? `Plate ${v.plate_number}` : null, v.mileage != null ? `${v.mileage.toLocaleString()} km` : null].filter(Boolean).join(' · ')}
+                        {[
+                          v.color,
+                          v.plate_number ? `Plate ${v.plate_number}` : null,
+                          v.plate_end_in ? `Ends in ${v.plate_end_in}` : null,
+                          v.mileage != null ? `${v.mileage.toLocaleString()} km` : null,
+                          v.transmission ? (v.transmission === 'automatic' ? 'Automatic' : 'Manual') : null,
+                          v.fuel_type ? v.fuel_type.charAt(0).toUpperCase() + v.fuel_type.slice(1) : null,
+                        ].filter(Boolean).join(' · ')}
                       </div>
                       <div style={styles.recordMetaSub}>₱{Number(v.price || 0).toLocaleString()}</div>
                     </div>
