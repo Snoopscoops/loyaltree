@@ -44,12 +44,13 @@ import React, { useState, useEffect } from 'react'
 //     recent payment (older ones must be undone-and-relogged, so
 //     balance_remaining never silently drifts).
 
-// Buyers' wallet-pass QR (and their printed/lookup QR) encodes just their
-// own public_id as plain text - never a URL, since there's no payment
-// portal for a URL to point at. It's read back by this same owner's
-// "Scan QR" button below to jump to their contract, and it's the same
-// barcode baked into their Google/Apple Wallet pass, so scanning their
-// phone works identically to scanning a printed card.
+// Buyers' wallet-pass QR encodes a full /cl-wallet/{public_id} URL, so
+// scanning it with any ordinary camera app opens their "check your card"
+// page (balance, next due date, Browse Showroom). Their printed/lookup QR
+// (get_cl_customer_qr_code) still encodes the bare public_id. Either one
+// read back by this same owner's "Scan QR" button below jumps straight to
+// their contract - handleScanResult accepts both formats, pulling the id
+// out of the URL when it's a URL.
 function useBarcodeScanner(onResult) {
   const videoRef = React.useRef(null)
   const streamRef = React.useRef(null)
@@ -1024,9 +1025,20 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   // Scan a buyer's QR code (their public_id) and jump to the matching
   // contract's "Log payment" modal. If they have more than one open
   // contract, show a small picker instead of guessing which one.
+  // The buyer's wallet-pass barcode now encodes a full /cl-wallet/{id} URL
+  // (so scanning it with an ordinary camera app opens their "check your
+  // card" page) instead of a bare public_id - so this pulls the id back out
+  // of the last path segment when the scan is a URL, and still accepts a
+  // bare public_id as-is (e.g. from an older printed lookup card).
+  const extractCustomerPublicId = (rawValue) => {
+    const trimmed = rawValue.trim()
+    const match = trimmed.match(/\/cl-wallet\/([^/?#]+)/)
+    return match ? match[1] : trimmed
+  }
+
   const handleScanResult = (rawValue) => {
     setShowScanModal(false)
-    const customer = customers.find(c => c.public_id === rawValue.trim())
+    const customer = customers.find(c => c.public_id === extractCustomerPublicId(rawValue))
     if (!customer) {
       flash('No customer matches that code')
       return

@@ -2258,10 +2258,14 @@ def build_cl_wallet_object(customer: dict, business: dict, contract: Optional[di
         'state': 'active',
         'barcode': {
             'type': 'QR_CODE',
-            'value': cust_public_id,  # raw public_id, not a URL - read by
-            # the owner's own "Scan QR" lookup (see get_cl_customer_qr_code)
-            # the exact same way a printed QR card would be, since there's
-            # no payment portal for a URL to point at.
+            # A URL, not a bare public_id - scanning the card with any
+            # ordinary camera app now opens the buyer's own "check your
+            # card" page (balance, next due date, Browse Showroom button)
+            # instead of just displaying plain text. The owner's own
+            # in-store "Scan QR" lookup (handleScanResult in the dashboard)
+            # still works off the same barcode - it pulls the public_id
+            # back out of the URL's last path segment.
+            'value': f'{BASE_URL}/cl-wallet/{cust_public_id}',
             'alternateText': cust_name,
         },
         'accountId': cust_public_id,
@@ -2275,10 +2279,9 @@ def build_cl_wallet_object(customer: dict, business: dict, contract: Optional[di
             {'header': 'Status', 'body': status_body},
             {'header': 'Next Due', 'body': due},
         ],
-        # Tappable link on the card itself - opens the public showroom
-        # (browse current inventory / payment methods link). Separate from
-        # the barcode above on purpose: the barcode stays a bare public_id
-        # for the owner's own scan-to-lookup workflow.
+        # Tappable link on the card itself, in addition to the barcode
+        # above - opens the public showroom directly (browse current
+        # inventory) without going through the "check your card" page.
         'linksModuleData': {
             'uris': [{'uri': f'{BASE_URL}/showroom/{business.get("public_id", "")}', 'description': 'Browse Showroom'}]
         },
@@ -2389,7 +2392,9 @@ def build_cl_apple_pass_json(customer: dict, business: dict, contract: Optional[
         'barcodes': [
             {
                 'format': 'PKBarcodeFormatQR',
-                'message': cust_public_id,
+                # Same URL as the Google Wallet barcode above - see that
+                # comment for why this changed from a bare public_id.
+                'message': f'{BASE_URL}/cl-wallet/{cust_public_id}',
                 'messageEncoding': 'iso-8859-1',
                 'altText': cust_name,
             }
