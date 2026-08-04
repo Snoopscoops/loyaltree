@@ -1436,15 +1436,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                 )}
               </div>
 
-              <label style={styles.label}>Inquiries / contact note</label>
-              <textarea
-                style={{ ...styles.input, minHeight: 70, resize: 'vertical', fontFamily: 'inherit' }}
-                value={showroomForm.contact_text}
-                onChange={e => setShowroomForm({ ...showroomForm, contact_text: e.target.value })}
-                placeholder="e.g. For inquiries, call 0917-123-4567 or visit us at..."
-                maxLength={280}
-              />
-              <div style={styles.photoCountHint}>{showroomForm.contact_text.length}/280 · shown as plain text below the hero banner on the showroom page</div>
+              <div style={styles.photoCountHint}>The showroom page now shows a fixed "Connect with us?" section (Facebook message button + phone numbers) below the hero banner — no owner editing needed.</div>
 
               <div style={{ ...styles.modalActions, marginTop: 14, justifyContent: 'flex-start' }}>
                 <button onClick={saveShowroomConfig} disabled={savingShowroom || uploadingHero || uploadingLogo} style={styles.newBtnAlt}>

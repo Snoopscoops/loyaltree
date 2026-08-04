@@ -7752,8 +7752,15 @@ a{color:inherit}
 
 .contact-wrap{display:flex;justify-content:center;margin-top:-16px;position:relative;z-index:5;padding:0 20px}
 .contact-note{max-width:520px;text-align:center;background:#fff;border:1px solid var(--line);color:var(--ink);
-  font-size:13.5px;line-height:1.5;padding:14px 22px;border-radius:16px;box-shadow:0 10px 24px rgba(15,23,42,0.08)}
+  font-size:13.5px;line-height:1.5;padding:18px 22px;border-radius:16px;box-shadow:0 10px 24px rgba(15,23,42,0.08)}
 .contact-note b{font-weight:700}
+.connect-title{font-size:15px;font-weight:800;letter-spacing:-0.01em;margin-bottom:10px}
+.connect-fb-btn{display:inline-flex;align-items:center;gap:8px;background:#1877f2;color:#fff;font-weight:700;
+  font-size:13.5px;padding:10px 20px;border-radius:999px;text-decoration:none;box-shadow:0 6px 16px rgba(24,119,242,0.28)}
+.connect-fb-btn:hover{background:#166fe0}
+.connect-phones{margin-top:10px;font-size:13px;color:var(--muted)}
+.connect-phones a{color:var(--ink);font-weight:700;text-decoration:none}
+.connect-phones a:hover{text-decoration:underline}
 
 .stats-strip{max-width:1080px;margin:30px auto 0;padding:0 20px;display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .stats-strip h2{font-size:19px;font-weight:800;letter-spacing:-0.01em}
@@ -8050,7 +8057,6 @@ async def showroom_page(business_public_id: str):
         biz_name = business.get('name', '')
         logo_url = business.get('logo_url')
         hero_url = business.get('showroom_hero_image_url')
-        contact_text = business.get('showroom_contact_text')
 
         try:
             vehicles = supabase.table("vehicles").select("*").eq("business_id", business.get("id")) \
@@ -8070,14 +8076,17 @@ async def showroom_page(business_public_id: str):
             '</div></div>'
         )
 
-        if contact_text and contact_text.strip():
-            # Free text, not a link - preserve the owner's own line breaks
-            # (e.g. "For inquiries, call 0917-xxx-xxxx" on one line, a second
-            # line for an address) by turning them into <br> after escaping.
-            escaped = html_lib.escape(contact_text.strip()).replace('\n', '<br>')
-            payment_html = '<div class="contact-wrap"><div class="contact-note">' + escaped + '</div></div>'
-        else:
-            payment_html = ''
+        # Fixed "Connect with us?" block (Facebook message button + phone
+        # numbers) - replaces the old owner-editable inquiries/contact note.
+        payment_html = (
+            '<div class="contact-wrap"><div class="contact-note">'
+            '<div class="connect-title">Connect with us?</div>'
+            '<a class="connect-fb-btn" href="https://www.facebook.com/wolfcarsmain08" target="_blank" rel="noopener noreferrer">'
+            '&#128172; Message our Facebook page</a>'
+            '<div class="connect-phones">or call us at <a href="tel:09551996574">0955-199-6574</a> or '
+            '<a href="tel:09097030170">0909-703-0170</a></div>'
+            '</div></div>'
+        )
 
         n_available = sum(1 for v in vehicles if v.get('status') == 'available')
         n_reserved = sum(1 for v in vehicles if v.get('status') == 'reserved')
