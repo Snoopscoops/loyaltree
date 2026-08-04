@@ -7854,6 +7854,11 @@ a{color:inherit}
 .vehicle-modal-spec{display:flex;flex-direction:column;gap:2px}
 .vehicle-modal-spec-label{font-size:10.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em}
 .vehicle-modal-spec-value{font-size:13.5px;font-weight:600;color:var(--ink)}
+.vehicle-modal-requirements{padding-top:14px;border-top:1px dashed var(--line);margin-bottom:16px}
+.vehicle-modal-requirements h4{font-size:10.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:8px}
+.vehicle-modal-requirements ul{list-style:none;display:flex;flex-direction:column;gap:6px}
+.vehicle-modal-requirements li{font-size:13.5px;font-weight:600;color:var(--ink);display:flex;align-items:center;gap:8px}
+.vehicle-modal-requirements li::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--accent);flex-shrink:0}
 .vehicle-modal-price-row{display:flex;align-items:center;gap:10px;padding-top:14px;border-top:1px dashed var(--line);margin-bottom:16px}
 .vehicle-modal-price{font-size:22px;font-weight:800;color:var(--ink);letter-spacing:-0.01em}
 .vehicle-modal-call-btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;
@@ -8230,6 +8235,14 @@ async def showroom_page(business_public_id: str):
             '<h3 id="vehicle-modal-title"></h3>'
             '<p id="vehicle-modal-meta" class="vehicle-modal-meta"></p>'
             '<div id="vehicle-modal-specs" class="vehicle-modal-specs"></div>'
+            '<div class="vehicle-modal-requirements">'
+            '<h4>Requirements</h4>'
+            '<ul>'
+            '<li>2 valid IDs</li>'
+            '<li>Proof of income</li>'
+            '<li>Downpayment</li>'
+            '</ul>'
+            '</div>'
             '<div class="vehicle-modal-price-row">'
             '<span id="vehicle-modal-price" class="vehicle-modal-price"></span>'
             '<span id="vehicle-modal-badge" class="badge reserved" style="display:none;position:static">Reserved</span>'
