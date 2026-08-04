@@ -36,6 +36,13 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
   const [walletClassId, setWalletClassId] = useState(null)
   const [error, setError] = useState('')
   const [saved, setSaved] = useState(false)
+  // Photo upload state, keyed by form field ('program_logo_url' /
+  // 'hero_image_url'). Same signed-Cloudinary-upload flow the vehicle
+  // photo uploader (AddVehicleModal) uses - see uploadImage() below.
+  const [imageUpload, setImageUpload] = useState({
+    program_logo_url: { uploading: false, error: '' },
+    hero_image_url: { uploading: false, error: '' },
+  })
   // 'picker' shows the Stamp vs Points choice first; 'form' shows the
   // full editor for whichever type is selected. Always starts on the
   // picker so the owner explicitly confirms the type every time they
@@ -89,6 +96,54 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
   const update = (key, value) => {
     setForm(f => ({ ...f, [key]: value }))
     setSaved(false)
+  }
+
+  const IMAGE_UPLOAD_MAX_MB = 8
+
+  // Uploads a photo picked from the device to Cloudinary and stores the
+  // resulting URL in the given form field. Same two-step flow as
+  // AddVehicleModal's vehicle photo uploader: (1) ask our server for a
+  // short-lived signature scoped to this business, (2) upload the file
+  // straight to Cloudinary using that signature - the file itself never
+  // passes through our server.
+  const uploadImage = async (field, file) => {
+    if (!file) return
+    if (!file.type.startsWith('image/')) {
+      setImageUpload(u => ({ ...u, [field]: { uploading: false, error: 'Please choose an image file' } }))
+      return
+    }
+    if (file.size > IMAGE_UPLOAD_MAX_MB * 1024 * 1024) {
+      setImageUpload(u => ({ ...u, [field]: { uploading: false, error: `Image must be under ${IMAGE_UPLOAD_MAX_MB}MB` } }))
+      return
+    }
+    setImageUpload(u => ({ ...u, [field]: { uploading: true, error: '' } }))
+    try {
+      const sigRes = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/cloudinary-signature?purpose=branding`, {
+        method: 'POST',
+      })
+      const sig = await sigRes.json()
+      if (!sigRes.ok) throw new Error(sig.detail || 'Could not start upload')
+
+      const body = new FormData()
+      body.append('file', file)
+      body.append('api_key', sig.api_key)
+      body.append('timestamp', sig.timestamp)
+      body.append('signature', sig.signature)
+      body.append('upload_preset', sig.upload_preset)
+      body.append('folder', sig.folder)
+
+      const uploadRes = await fetch(`https://api.cloudinary.com/v1_1/${sig.cloud_name}/image/upload`, {
+        method: 'POST',
+        body,
+      })
+      const uploaded = await uploadRes.json()
+      if (!uploadRes.ok || !uploaded.secure_url) throw new Error((uploaded.error && uploaded.error.message) || 'Upload failed')
+
+      update(field, uploaded.secure_url)
+      setImageUpload(u => ({ ...u, [field]: { uploading: false, error: '' } }))
+    } catch (err) {
+      setImageUpload(u => ({ ...u, [field]: { uploading: false, error: err.message || 'Upload failed, try again' } }))
+    }
   }
 
   const buildPayload = () => ({
@@ -572,25 +627,57 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
           </div>
 
           <div style={styles.fieldGroup}>
-            <label style={styles.label}>Logo URL</label>
-            <input
-              style={styles.input}
-              placeholder="https://..."
-              value={form.program_logo_url}
-              onChange={e => update('program_logo_url', e.target.value)}
-            />
-            <p style={styles.hint}>Square image works best. Shown on the wallet pass and join page.</p>
+            <label style={styles.label}>Logo</label>
+            <div style={styles.uploadRow}>
+              <input
+                style={styles.input}
+                placeholder="https://..."
+                value={form.program_logo_url}
+                onChange={e => update('program_logo_url', e.target.value)}
+              />
+              <label style={{...styles.uploadBtn, ...(imageUpload.program_logo_url.uploading ? styles.uploadBtnDisabled : {})}}>
+                {imageUpload.program_logo_url.uploading ? 'Uploading…' : '📤 Upload'}
+                <input
+                  type="file"
+                  accept="image/*"
+                  style={styles.uploadInputHidden}
+                  disabled={imageUpload.program_logo_url.uploading}
+                  onChange={e => { uploadImage('program_logo_url', e.target.files[0]); e.target.value = '' }}
+                />
+              </label>
+            </div>
+            {form.program_logo_url && (
+              <img src={form.program_logo_url} alt="" style={styles.uploadPreview} onError={e => { e.target.style.display = 'none' }} />
+            )}
+            {imageUpload.program_logo_url.error && <p style={styles.uploadError}>{imageUpload.program_logo_url.error}</p>}
+            <p style={styles.hint}>Square image works best. Shown on the wallet pass and join page. Paste a URL or upload a photo.</p>
           </div>
 
           <div style={styles.fieldGroup}>
-            <label style={styles.label}>Hero / banner image URL</label>
-            <input
-              style={styles.input}
-              placeholder="https://..."
-              value={form.hero_image_url}
-              onChange={e => update('hero_image_url', e.target.value)}
-            />
-            <p style={styles.hint}>Wide banner image shown at the top of the Google Wallet pass. Optional.</p>
+            <label style={styles.label}>Hero / banner image</label>
+            <div style={styles.uploadRow}>
+              <input
+                style={styles.input}
+                placeholder="https://..."
+                value={form.hero_image_url}
+                onChange={e => update('hero_image_url', e.target.value)}
+              />
+              <label style={{...styles.uploadBtn, ...(imageUpload.hero_image_url.uploading ? styles.uploadBtnDisabled : {})}}>
+                {imageUpload.hero_image_url.uploading ? 'Uploading…' : '📤 Upload'}
+                <input
+                  type="file"
+                  accept="image/*"
+                  style={styles.uploadInputHidden}
+                  disabled={imageUpload.hero_image_url.uploading}
+                  onChange={e => { uploadImage('hero_image_url', e.target.files[0]); e.target.value = '' }}
+                />
+              </label>
+            </div>
+            {form.hero_image_url && (
+              <img src={form.hero_image_url} alt="" style={styles.uploadPreviewWide} onError={e => { e.target.style.display = 'none' }} />
+            )}
+            {imageUpload.hero_image_url.error && <p style={styles.uploadError}>{imageUpload.hero_image_url.error}</p>}
+            <p style={styles.hint}>Wide banner image shown at the top of the Google Wallet pass. Optional. Paste a URL or upload a photo.</p>
           </div>
 
           <div style={styles.fieldGroup}>
@@ -799,6 +886,55 @@ const styles = {
     margin: 0,
     fontSize: 12,
     color: '#94a3b8',
+    lineHeight: 1.5,
+  },
+  uploadRow: {
+    display: 'flex',
+    gap: 8,
+    alignItems: 'stretch',
+  },
+  uploadBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '0 16px',
+    border: '1.5px solid #e2e8f0',
+    borderRadius: 10,
+    fontSize: 13,
+    fontWeight: 700,
+    color: '#0d9488',
+    background: '#f0fdfa',
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+    flexShrink: 0,
+  },
+  uploadBtnDisabled: {
+    opacity: 0.6,
+    cursor: 'default',
+  },
+  uploadInputHidden: {
+    display: 'none',
+  },
+  uploadPreview: {
+    marginTop: 4,
+    width: 64,
+    height: 64,
+    objectFit: 'cover',
+    borderRadius: 10,
+    border: '1.5px solid #e2e8f0',
+  },
+  uploadPreviewWide: {
+    marginTop: 4,
+    width: '100%',
+    maxHeight: 120,
+    objectFit: 'cover',
+    borderRadius: 10,
+    border: '1.5px solid #e2e8f0',
+  },
+  uploadError: {
+    margin: 0,
+    fontSize: 12,
+    color: '#dc2626',
     lineHeight: 1.5,
   },
   colorRow: {

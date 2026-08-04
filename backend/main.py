@@ -4827,15 +4827,20 @@ async def get_showroom_qr_code(public_id: str):
 # CAR LENDING / SHOWROOM - VEHICLE INVENTORY
 
 @app.post("/api/v1/business/{public_id}/cloudinary-signature")
-async def get_cloudinary_signature(public_id: str):
-    """Signs a Cloudinary upload for AddVehicleModal. The preset
-    (LoyaltyTree_Images) is a SIGNED preset, so the browser can't hit
-    Cloudinary directly - only params listed here are covered by the
-    signature, so the frontend must send exactly these same params (plus
-    file + api_key, which are never part of the signature) on the actual
-    upload. Cloudinary's signing rule: sort params alphabetically by key,
-    join as key=value&key2=value2 (no api_secret in that string), then
-    sha1(that_string + api_secret)."""
+async def get_cloudinary_signature(public_id: str, purpose: Optional[str] = None):
+    """Signs a Cloudinary upload. Used by AddVehicleModal (vehicle photos)
+    and by LoyaltyCardCustomizer (program logo / hero banner photos) - both
+    follow the same flow. The preset (LoyaltyTree_Images) is a SIGNED
+    preset, so the browser can't hit Cloudinary directly - only params
+    listed here are covered by the signature, so the frontend must send
+    exactly these same params (plus file + api_key, which are never part of
+    the signature) on the actual upload. Cloudinary's signing rule: sort
+    params alphabetically by key, join as key=value&key2=value2 (no
+    api_secret in that string), then sha1(that_string + api_secret).
+
+    `purpose=branding` (sent by LoyaltyCardCustomizer) signs into a
+    business-scoped branding/ folder instead of the default vehicles/
+    folder, so logo/banner uploads don't get mixed in with vehicle photos."""
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -4843,7 +4848,7 @@ async def get_cloudinary_signature(public_id: str):
         raise HTTPException(status_code=503, detail="Cloudinary is not configured on this server")
 
     timestamp = int(datetime.utcnow().timestamp())
-    folder = f'vehicles/{public_id}'
+    folder = f'branding/{public_id}' if purpose == 'branding' else f'vehicles/{public_id}'
     params_to_sign = {
         'folder': folder,
         'timestamp': timestamp,
