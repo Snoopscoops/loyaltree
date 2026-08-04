@@ -147,14 +147,15 @@ function svgToDataUri(svg) {
 // backend first to get a short-lived signature (POST .../cloudinary-signature)
 // before uploading straight to Cloudinary. Throws on any failure; caller
 // decides how to surface it.
-async function uploadImageToCloudinary(apiBase, businessId, file) {
+async function uploadImageToCloudinary(apiBase, businessId, file, purpose) {
   if (!file.type.startsWith('image/')) {
     throw new Error('Please choose an image file')
   }
   if (file.size > 10 * 1024 * 1024) {
     throw new Error('Image must be smaller than 10MB')
   }
-  const sigRes = await fetch(`${apiBase}/api/v1/business/${businessId}/cloudinary-signature`, { method: 'POST' })
+  const sigUrl = `${apiBase}/api/v1/business/${businessId}/cloudinary-signature${purpose ? `?purpose=${purpose}` : ''}`
+  const sigRes = await fetch(sigUrl, { method: 'POST' })
   const sig = await sigRes.json().catch(() => ({}))
   if (!sigRes.ok) throw new Error(sig.detail || 'Could not get upload signature')
 
@@ -179,6 +180,7 @@ async function uploadImageToCloudinary(apiBase, businessId, file) {
 }
 
 const VEHICLE_MAX_PHOTOS = 10
+const CONTRACT_MAX_IMAGES = 5
 
 function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved }) {
   const emptyForm = { make: '', model: '', year: '', plate_number: '', plate_end_in: '', color: '', mileage: '', transmission: '', fuel_type: '', price: '', total_cost: '', agent_name: '', status: 'available' }
@@ -505,6 +507,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     vehicle_price: '', down_payment: '', installment_amount: '', term_months: '12',
     payment_frequency: 'monthly', start_date: new Date().toISOString().slice(0, 10),
     is_existing_loan: false, balance_remaining: '', last_paid_date: '', next_due_date: '', status: 'active',
+    image_urls: [], // up to CONTRACT_MAX_IMAGES - signed contract pages, buyer ID, etc
   }
   const [contracts, setContracts] = useState([])
   const [contractStatusFilter, setContractStatusFilter] = useState('')
@@ -512,6 +515,9 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const [editingContract, setEditingContract] = useState(null) // contract being edited, or null for "new"
   const [contractForm, setContractForm] = useState(emptyContractForm)
   const [savingContract, setSavingContract] = useState(false)
+  const [uploadingContractFile, setUploadingContractFile] = useState(false)
+  const [contractFileError, setContractFileError] = useState('')
+  const contractFileInputRef = React.useRef(null)
 
   // ---------- Payments (Step 5) state ----------
   const [payingContract, setPayingContract] = useState(null) // contract currently open in the "Log payment" modal
@@ -843,6 +849,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const openNewContract = () => {
     setEditingContract(null)
     setContractForm(emptyContractForm)
+    setContractFileError('')
     setShowContractForm(true)
   }
 
@@ -863,7 +870,9 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
       last_paid_date: c.last_paid_date || '',
       next_due_date: c.next_due_date || '',
       status: c.status || 'active',
+      image_urls: c.image_urls && c.image_urls.length ? c.image_urls : [],
     })
+    setContractFileError('')
     setShowContractForm(true)
   }
 
@@ -877,6 +886,39 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
       vehicle_public_id: vehiclePublicId,
       vehicle_price: f.vehicle_price || (v ? String(v.price) : f.vehicle_price),
     }))
+  }
+
+  // Uploads as many of the given files as fit within the CONTRACT_MAX_IMAGES
+  // cap, one at a time (keeps upload order == display order).
+  const uploadContractFiles = async (fileList) => {
+    const files = Array.from(fileList || []).filter(Boolean)
+    if (!files.length) return
+    const slotsLeft = CONTRACT_MAX_IMAGES - contractForm.image_urls.length
+    if (slotsLeft <= 0) {
+      setContractFileError(`You can add up to ${CONTRACT_MAX_IMAGES} files per contract`)
+      return
+    }
+    setContractFileError('')
+    const toUpload = files.slice(0, slotsLeft)
+    const skipped = files.length - toUpload.length
+    setUploadingContractFile(true)
+    const uploaded = []
+    try {
+      for (const file of toUpload) {
+        const url = await uploadImageToCloudinary(API_BASE, businessId, file, 'contract')
+        uploaded.push(url)
+      }
+      if (uploaded.length) setContractForm(f => ({ ...f, image_urls: [...f.image_urls, ...uploaded] }))
+      if (skipped > 0) setContractFileError(`Only added ${uploaded.length} file${uploaded.length === 1 ? '' : 's'} - limit is ${CONTRACT_MAX_IMAGES} per contract`)
+    } catch (err) {
+      if (uploaded.length) setContractForm(f => ({ ...f, image_urls: [...f.image_urls, ...uploaded] }))
+      setContractFileError(err.message)
+    }
+    setUploadingContractFile(false)
+  }
+
+  const removeContractFile = (idx) => {
+    setContractForm(f => ({ ...f, image_urls: f.image_urls.filter((_, i) => i !== idx) }))
   }
 
   const saveContract = async () => {
@@ -897,6 +939,10 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
       flash('Vehicle price is required')
       return
     }
+    if (uploadingContractFile) {
+      flash('Please wait for files to finish uploading')
+      return
+    }
     setSavingContract(true)
     try {
       const body = {
@@ -904,6 +950,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
         down_payment: contractForm.down_payment !== '' ? Number(contractForm.down_payment) : 0,
         payment_frequency: contractForm.payment_frequency,
         start_date: contractForm.start_date || null,
+        image_urls: contractForm.image_urls,
       }
       if (contractForm.sale_type === 'financed') {
         // Vehicle price is left out on purpose - the server derives it from
@@ -1782,6 +1829,43 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
         <div style={styles.modalOverlay} onClick={() => setShowContractForm(false)}>
           <div style={styles.modal} onClick={e => e.stopPropagation()}>
             <h3 style={styles.modalTitle}>{editingContract ? 'Edit contract' : 'New contract'}</h3>
+
+            <div style={styles.photoGrid}>
+              {contractForm.image_urls.map((url, idx) => (
+                <div key={url + idx} style={styles.photoThumbWrap}>
+                  <img src={url} alt={`Contract file ${idx + 1}`} style={styles.photoThumb} />
+                  <button
+                    type="button"
+                    onClick={() => removeContractFile(idx)}
+                    style={styles.photoRemoveBtn}
+                    aria-label="Remove file"
+                  >×</button>
+                </div>
+              ))}
+              {contractForm.image_urls.length < CONTRACT_MAX_IMAGES && (
+                <div
+                  style={styles.photoAddTile}
+                  onClick={() => !uploadingContractFile && contractFileInputRef.current && contractFileInputRef.current.click()}
+                >
+                  <input
+                    ref={contractFileInputRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    style={{ display: 'none' }}
+                    onChange={e => uploadContractFiles(e.target.files)}
+                  />
+                  {uploadingContractFile ? (
+                    <div style={styles.uploadHint}>Uploading…</div>
+                  ) : (
+                    <div style={styles.uploadHint}>📎 Add file</div>
+                  )}
+                </div>
+              )}
+            </div>
+            <div style={styles.photoCountHint}>{contractForm.image_urls.length}/{CONTRACT_MAX_IMAGES} files · signed contract, ID, receipts, etc</div>
+            {contractFileError && <div style={styles.uploadError}>{contractFileError}</div>}
+
             <div style={styles.formGrid}>
               <label style={styles.label}>Customer</label>
               {editingContract ? (

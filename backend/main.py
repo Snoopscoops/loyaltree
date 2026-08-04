@@ -564,6 +564,8 @@ class ShowroomConfigUpdate(BaseModel):
     logo_url: Optional[str] = None
 
 # --- Car Lending / Showroom: contracts (the deal - cash sale or financed) ---
+CONTRACT_MAX_IMAGES = 5  # signed IDs, signed contract pages, official receipts, etc - private, never shown on the public showroom
+
 class ContractCreate(BaseModel):
     customer_public_id: str
     vehicle_public_id: str
@@ -579,6 +581,7 @@ class ContractCreate(BaseModel):
     term_months: int = Field(default=0, ge=0, le=120)
     payment_frequency: Literal['weekly', 'biweekly', 'monthly'] = 'monthly'
     start_date: Optional[str] = None  # 'YYYY-MM-DD' - defaults to today if omitted
+    image_urls: Optional[List[str]] = None  # up to CONTRACT_MAX_IMAGES Cloudinary URLs - signed contract pages, buyer ID, etc
 
     # Manual overrides - the fields above still describe the ORIGINAL deal
     # terms (used to compute principal/total payable/installment for the
@@ -604,6 +607,7 @@ class ContractUpdate(BaseModel):
     # The buyer's payment per period. Editing this (without also editing
     # vehicle_price in the same request) re-derives vehicle_price from it.
     installment_amount: Optional[float] = Field(default=None, gt=0)
+    image_urls: Optional[List[str]] = None  # up to CONTRACT_MAX_IMAGES Cloudinary URLs; send [] to clear
     balance_remaining: Optional[float] = Field(default=None, ge=0)
     last_paid_date: Optional[str] = None
     next_due_date: Optional[str] = None
@@ -4869,7 +4873,12 @@ async def get_cloudinary_signature(public_id: str, purpose: Optional[str] = None
 
     `purpose=branding` (sent by LoyaltyCardCustomizer) signs into a
     business-scoped branding/ folder instead of the default vehicles/
-    folder, so logo/banner uploads don't get mixed in with vehicle photos."""
+    folder, so logo/banner uploads don't get mixed in with vehicle photos.
+    `purpose=contract` (sent by the Contracts tab's file attachments) signs
+    into a business-scoped contracts/ folder instead - these are private
+    deal documents (signed pages, buyer ID, etc), never shown on the public
+    showroom, so keeping them out of vehicles/ also keeps them out of
+    anything that lists a vehicle's showroom photos by folder."""
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -4877,7 +4886,12 @@ async def get_cloudinary_signature(public_id: str, purpose: Optional[str] = None
         raise HTTPException(status_code=503, detail="Cloudinary is not configured on this server")
 
     timestamp = int(datetime.utcnow().timestamp())
-    folder = f'branding/{public_id}' if purpose == 'branding' else f'vehicles/{public_id}'
+    if purpose == 'branding':
+        folder = f'branding/{public_id}'
+    elif purpose == 'contract':
+        folder = f'contracts/{public_id}'
+    else:
+        folder = f'vehicles/{public_id}'
     params_to_sign = {
         'folder': folder,
         'timestamp': timestamp,
@@ -5100,6 +5114,7 @@ async def create_contract(public_id: str, contract: ContractCreate):
         'next_due_date': next_due.isoformat() if next_due else None,
         'balance_remaining': balance_remaining,
         'status': status,
+        'image_urls': [u for u in (contract.image_urls or []) if u][:CONTRACT_MAX_IMAGES],
     }
 
     try:
@@ -5131,6 +5146,9 @@ async def update_contract(public_id: str, contract_public_id: str, update: Contr
     update_data = {k: v for k, v in update.dict(exclude_unset=True).items() if v is not None}
     if not update_data:
         return contract
+
+    if 'image_urls' in update_data:
+        update_data['image_urls'] = [u for u in (update_data.get('image_urls') or []) if u][:CONTRACT_MAX_IMAGES]
 
     # If any of the deal's underlying inputs changed, recompute the derived
     # financial fields from the (possibly mixed new/existing) values.
