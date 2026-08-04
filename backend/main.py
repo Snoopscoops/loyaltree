@@ -7766,6 +7766,13 @@ a{color:inherit}
 .stats-strip h2{font-size:19px;font-weight:800;letter-spacing:-0.01em}
 .stats-strip span{font-size:13px;color:var(--muted)}
 
+.search-wrap{max-width:1080px;margin:14px auto 0;padding:0 20px}
+.search-input{width:100%;box-sizing:border-box;padding:12px 16px 12px 42px;border:1px solid var(--line);border-radius:12px;
+  font-size:14px;font-family:inherit;color:var(--ink);background:#fff url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="%2394a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>') no-repeat 14px center/16px 16px;
+  outline:none;transition:border-color .15s ease}
+.search-input:focus{border-color:var(--accent)}
+.search-input::placeholder{color:#94a3b8}
+
 .filter-bar{max-width:1080px;margin:14px auto 0;padding:0 20px;display:flex;gap:8px;flex-wrap:wrap}
 .filter-chip{border:1px solid var(--line);background:#fff;color:var(--muted);font-size:12.5px;font-weight:600;
   padding:8px 14px;border-radius:999px;cursor:pointer;transition:all .15s ease;display:inline-flex;align-items:center;gap:7px}
@@ -7942,12 +7949,27 @@ SHOWROOM_JS = """
   var cards = document.querySelectorAll('.car-card');
   var activeStatus = 'all';
   var activeMake = 'all';
+  var searchTerm = '';
+  var noResultsEl = document.getElementById('no-results');
 
   function applyFilters(){
+    var visibleCount = 0;
     cards.forEach(function(card){
       var statusOk = (activeStatus === 'all' || card.getAttribute('data-status') === activeStatus);
       var makeOk = (activeMake === 'all' || card.getAttribute('data-make') === activeMake);
-      card.style.display = (statusOk && makeOk) ? '' : 'none';
+      var searchOk = (!searchTerm || (card.getAttribute('data-search') || '').indexOf(searchTerm) !== -1);
+      var show = statusOk && makeOk && searchOk;
+      card.style.display = show ? '' : 'none';
+      if (show) visibleCount++;
+    });
+    if (noResultsEl) noResultsEl.style.display = visibleCount === 0 ? '' : 'none';
+  }
+
+  var searchInput = document.getElementById('car-search');
+  if (searchInput) {
+    searchInput.addEventListener('input', function(){
+      searchTerm = searchInput.value.trim().toLowerCase();
+      applyFilters();
     });
   }
 
@@ -8096,6 +8118,13 @@ async def showroom_page(business_public_id: str):
             '<span>' + str(len(vehicles)) + (' unit' if len(vehicles) == 1 else ' units') + ' listed</span></div>'
         )
 
+        # Search bar - only shown once the inventory is big enough that
+        # scrolling/chip-tapping alone gets tedious (20+ live units).
+        search_html = (
+            '<div class="search-wrap"><input type="text" id="car-search" class="search-input" '
+            'placeholder="Search by make, model, or year..." autocomplete="off"></div>'
+        ) if len(vehicles) >= 20 else ''
+
         chips = ['<button class="filter-chip active" data-status="all">All (' + str(len(vehicles)) + ')</button>']
         if n_available:
             chips.append('<button class="filter-chip" data-status="available">Available (' + str(n_available) + ')</button>')
@@ -8185,7 +8214,8 @@ async def showroom_page(business_public_id: str):
 
                 cards.append(
                     '<div class="car-card" data-idx="' + str(idx) + '" data-status="' + html_lib.escape(v.get('status') or '') +
-                    '" data-make="' + html_lib.escape((v.get('make') or '').strip()) + '">' +
+                    '" data-make="' + html_lib.escape((v.get('make') or '').strip()) +
+                    '" data-search="' + html_lib.escape((title_plain + ' ' + meta_plain).lower()) + '">' +
                     gallery_html +
                     '<div class="car-info">' +
                     '<h3>' + title + '</h3>' +
@@ -8205,7 +8235,11 @@ async def showroom_page(business_public_id: str):
                     'status': v.get('status') or '',
                     'imgs': raw_imgs,
                 })
-            grid_html = '<div class="car-grid">' + ''.join(cards) + '</div>'
+            grid_html = '<div class="car-grid">' + ''.join(cards) + '</div>' + (
+                '<div id="no-results" class="empty-state" style="display:none">'
+                '<div class="icon">&#128269;</div><p>No vehicles match your search.</p></div>'
+                if len(vehicles) >= 20 else ''
+            )
             cars_json = json.dumps(cars_data).replace('</', '<\\/')
         else:
             grid_html = '<div class="empty-state"><div class="icon">&#128663;</div><p>No vehicles available right now - check back soon!</p></div>'
@@ -8266,7 +8300,7 @@ async def showroom_page(business_public_id: str):
             '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
             '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">'
             '<style>' + SHOWROOM_CSS + '</style></head><body>'
-            + hero_html + payment_html + stats_html + filter_html + make_filter_html + grid_html + footer_html + lightbox_html + vehicle_modal_html +
+            + hero_html + payment_html + stats_html + search_html + filter_html + make_filter_html + grid_html + footer_html + lightbox_html + vehicle_modal_html +
             '<script>' + SHOWROOM_JS + '</script>'
             '</body></html>'
         )
