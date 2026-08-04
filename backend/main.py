@@ -4575,9 +4575,21 @@ async def update_cl_customer(public_id: str, customer_public_id: str, update: CL
     update_data['updated_at'] = datetime.utcnow().isoformat()
     try:
         res = supabase.table("cl_customers").update(update_data).eq("id", customer.get("id")).execute()
-        return res.data[0] if res.data else {**customer, **update_data}
+        updated_customer = res.data[0] if res.data else {**customer, **update_data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    # Name is the only field that shows on the pass face (accountName) -
+    # publish it if it changed, silently.
+    if 'name' in update_data:
+        try:
+            contract = get_active_contract_for_cl_customer(updated_customer.get('id'))
+            sync_cl_wallet_object(updated_customer, business, contract)
+            sync_cl_apple_wallet_pass(updated_customer)
+        except Exception:
+            pass
+
+    return updated_customer
 
 @app.delete("/api/v1/business/{public_id}/cl-customers/{customer_public_id}")
 async def delete_cl_customer(public_id: str, customer_public_id: str):
@@ -4624,6 +4636,31 @@ async def get_cl_customer_qr_code(public_id: str, customer_public_id: str):
     svg = generate_qr_svg(customer.get('public_id'))
     return JSONResponse({
         "svg": svg,
+        "customer_public_id": customer.get('public_id'),
+        "customer_name": customer.get('name', ''),
+    })
+
+@app.get("/api/v1/business/{public_id}/cl-customers/{customer_public_id}/wallet-qr-code")
+async def get_cl_customer_wallet_qr_code(public_id: str, customer_public_id: str):
+    """For buyers the owner already had on the books before this system
+    existed (an imported, already-in-progress loan created via the
+    'existing loan' toggle on the Contracts tab) - they never went through
+    /cl-join, so they have no Wallet card yet. This encodes the actual
+    /cl-wallet/{public_id} URL (unlike get_cl_customer_qr_code above, which
+    encodes just the bare public_id for the owner's own payment-lookup
+    scan) so the owner can show/print/share it and the buyer's own phone
+    camera opens the Add-to-Wallet page directly."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    customer = safe_get_cl_customer(customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+    wallet_url = f'{BASE_URL}/cl-wallet/{customer.get("public_id")}'
+    svg = generate_qr_svg(wallet_url)
+    return JSONResponse({
+        "svg": svg,
+        "wallet_url": wallet_url,
         "customer_public_id": customer.get('public_id'),
         "customer_name": customer.get('name', ''),
     })
@@ -5013,6 +5050,30 @@ async def log_contract_payment(public_id: str, contract_public_id: str, payment:
         except Exception:
             pass
 
+    # Publish the new balance/due date straight to whatever Wallet card this
+    # buyer already added - same "sync after the thing that changed the
+    # balance" pattern as the loyalty side's stamp/points endpoints. This is
+    # the only place the buyer ever sees the payment reflect - there's no
+    # payment portal for them to check.
+    try:
+        cl_customer = safe_get_cl_customer_by_id(contract.get('customer_id'))
+        if cl_customer:
+            notify_header = "Loan paid off! 🎉" if is_paid_off else "Payment received ✅"
+            notify_body = (
+                "Your loan is fully paid off - thanks for financing with us!"
+                if is_paid_off else
+                f"₱{payment.amount:,.0f} received. New balance: ₱{new_balance:,.0f}"
+            )
+            sync_cl_wallet_object(
+                cl_customer, business, updated_contract,
+                notify_header=notify_header,
+                notify_body=notify_body,
+                notify_message_id=f"cl-payment-{payment_public_id}",
+            )
+            sync_cl_apple_wallet_pass(cl_customer)
+    except Exception:
+        pass  # best-effort - a wallet push failing should never block the payment itself
+
     created_payment['contract'] = updated_contract
     return created_payment
 
@@ -5071,6 +5132,17 @@ async def delete_contract_payment(public_id: str, contract_public_id: str, payme
         updated_contract = res.data[0] if res.data else {**contract, **contract_update}
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    # Undoing a payment moves the balance back up - publish that to the
+    # Wallet card too, silently (no push banner - this is a correction, not
+    # news worth notifying the buyer about).
+    try:
+        cl_customer = safe_get_cl_customer_by_id(contract.get('customer_id'))
+        if cl_customer:
+            sync_cl_wallet_object(cl_customer, business, updated_contract)
+            sync_cl_apple_wallet_pass(cl_customer)
+    except Exception:
+        pass
 
     return {"success": True, "deleted": payment_public_id, "contract": updated_contract}
 
@@ -5168,6 +5240,16 @@ async def update_contract_payment(public_id: str, contract_public_id: str, payme
             updated_contract = res.data[0] if res.data else {**contract, **contract_update}
         except Exception as e:
             raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    # Amount/date edits can move the balance - publish it if they did.
+    if contract_update:
+        try:
+            cl_customer = safe_get_cl_customer_by_id(contract.get('customer_id'))
+            if cl_customer:
+                sync_cl_wallet_object(cl_customer, business, updated_contract)
+                sync_cl_apple_wallet_pass(cl_customer)
+        except Exception:
+            pass
 
     updated_payment['contract'] = updated_contract
     return updated_payment

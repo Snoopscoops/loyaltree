@@ -175,6 +175,11 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   // ---------- Dealership self-signup "Join" QR (Step: buyer self-join) state ----------
   const [joinQR, setJoinQR] = useState(null) // { svg, join_url }, or null
 
+  // ---------- Share a specific buyer's wallet-add link/QR (for buyers
+  // imported with an already-in-progress loan, who never went through
+  // /cl-join themselves) state ----------
+  const [walletShare, setWalletShare] = useState(null) // { svg, wallet_url, customer_name }, or null
+
   // ---------- Owner -> buyer messages (Step 5) state ----------
   const [clAnnouncements, setClAnnouncements] = useState([])
   const [showMessageForm, setShowMessageForm] = useState(false)
@@ -718,6 +723,31 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     }
   }
 
+  // For a buyer already on the books (imported with an existing loan, or
+  // just added by the owner directly) who never went through the Join QR
+  // themselves - show/share the same "Add to Wallet" page as a QR they can
+  // scan with their own phone, or a link the owner can copy/text/share.
+  const showWalletShare = async (customer) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-customers/${customer.public_id}/wallet-qr-code`)
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.svg) throw new Error(data.detail || 'Could not load wallet share code')
+      setWalletShare(data)
+    } catch (err) {
+      flash(err.message)
+    }
+  }
+
+  const shareWalletLink = () => {
+    if (!walletShare) return
+    if (navigator.share) {
+      navigator.share({ title: `${walletShare.customer_name}'s Loan Card`, url: walletShare.wallet_url }).catch(() => {})
+    } else {
+      navigator.clipboard?.writeText(walletShare.wallet_url)
+      flash('Wallet link copied')
+    }
+  }
+
   // ---------- Editing a logged payment (owner correction) ----------
   // method/notes are always editable; amount/payment_date only take effect
   // on the contract's most recent payment (the backend enforces this and
@@ -919,6 +949,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                     </div>
                     <div style={styles.recordActions}>
                       <button onClick={() => showCustomerQR(c)} style={styles.editBtn}>QR</button>
+                      <button onClick={() => showWalletShare(c)} style={styles.editBtn}>Share</button>
                       <button onClick={() => openCustomerHistory(c)} style={styles.editBtn}>History</button>
                       <button onClick={() => openMessageForm(c)} style={styles.editBtn}>Message</button>
                       <button onClick={() => openEditCustomer(c)} style={styles.editBtn}>Edit</button>
@@ -1693,6 +1724,21 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
             <div style={styles.qrWrap} dangerouslySetInnerHTML={{ __html: customerQR.svg }} />
             <div style={styles.modalActions}>
               <button onClick={() => setCustomerQR(null)} style={styles.closeBtn}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {walletShare && (
+        <div style={styles.modalOverlay} onClick={() => setWalletShare(null)}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>Share {walletShare.customer_name}'s wallet card</h3>
+            <p style={styles.hint}>For buyers already on the books who never scanned the Join QR themselves — let them scan this (or send the link) to add their Loan Card to their own phone's wallet.</p>
+            <div style={styles.qrWrap} dangerouslySetInnerHTML={{ __html: walletShare.svg }} />
+            <div style={{ ...styles.readOnlyValue, wordBreak: 'break-all', fontSize: 12 }}>{walletShare.wallet_url}</div>
+            <div style={styles.modalActions}>
+              <button onClick={() => setWalletShare(null)} style={styles.closeBtn}>Close</button>
+              <button onClick={shareWalletLink} style={styles.saveBtn}>🔗 Share link</button>
             </div>
           </div>
         </div>
