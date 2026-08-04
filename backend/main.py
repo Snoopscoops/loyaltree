@@ -1911,11 +1911,18 @@ def get_apple_push_cert_files():
     creds = get_apple_pass_credentials()
     if not creds:
         return None, None
-    private_key, certificate, _wwdr = creds
+    private_key, certificate, wwdr_cert = creds
     try:
         import tempfile
         from cryptography.hazmat.primitives import serialization
-        cert_pem = certificate.public_bytes(serialization.Encoding.PEM)
+        # APNs' mTLS handshake needs the full chain - our leaf pass-signing
+        # cert PLUS the Apple WWDR intermediate - or Apple can't build a
+        # trust path to its root and silently drops the connection. Without
+        # this, pushes fail inside _send_apple_wallet_pushes' try/except and
+        # get swallowed: passes still issue fine (that path doesn't use this
+        # file), but no device ever gets woken up to refetch.
+        cert_pem = certificate.public_bytes(serialization.Encoding.PEM) + \
+            wwdr_cert.public_bytes(serialization.Encoding.PEM)
         key_pem = private_key.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.TraditionalOpenSSL,
