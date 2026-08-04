@@ -1,10 +1,13 @@
 import React, { useState, useEffect } from 'react'
 
 // Car Lending / Showroom dashboard build, step by step:
-//   - Step 1 (done): Header + tab nav, Announcements panel (existing
-//     generic announcements endpoints, no backend changes needed)
+//   - Step 1 (done): Header + tab nav
 //   - Step 2 (done): Customers tab - cl_customers CRUD
-//   - Step 3 (done): Inventory tab - vehicles CRUD
+//   - Step 3 (done): Inventory tab - vehicles CRUD. Add/Edit vehicle
+//     captures "Price to sell" (shown on the public showroom) separately
+//     from "Total cost to buy" (what the business paid to acquire the
+//     unit - internal only, never sent to the showroom) plus which Agent
+//     is handling the unit.
 //   - Step 4 (done): Contracts tab - link customer + vehicle, auto-compute
 //     installment from price/down payment/interest/term. Also supports
 //     transferring an already-in-progress loan (an existing customer/car
@@ -24,12 +27,13 @@ import React, { useState, useEffect } from 'react'
 //     overdue reminders push straight to that Wallet card server-side via
 //     the /api/v1/cron/loan-payment-reminders cron job - wallet push only,
 //     no email. Owner -> buyer messages (one buyer, or broadcast to
-//     everyone) below also push to the Wallet card the same way -
-//     dealership-wide broadcasts reach every buyer's card at once,
-//     including ones with no active loan, so the whole membership can be
-//     reached regardless of loan status. Separate from the Overview
-//     "Announcements" panel above, which is for the loyalty side of the
-//     business.
+//     everyone, "Message all" under the Customers tab) also push to the
+//     Wallet card the same way - dealership-wide broadcasts reach every
+//     buyer's card at once, including ones with no active loan, so the
+//     whole membership can be reached regardless of loan status. This is
+//     the dashboard's one messaging surface - the Overview tab used to
+//     have its own separate "Announcements" panel (generic loyalty
+//     endpoints) but it was removed as redundant with Message all.
 //   - Step 6 (done): Per-customer payment history/receipts - a "History"
 //     button on each customer card pulls every payment across ALL of their
 //     contracts (not just the currently-open one), each with a printable
@@ -43,6 +47,11 @@ import React, { useState, useEffect } from 'react'
 //     at any time; amount/date are editable only on the contract's most
 //     recent payment (older ones must be undone-and-relogged, so
 //     balance_remaining never silently drifts).
+//   - Net income + top agent (Overview tab): each contract's profit is its
+//     sale price minus the vehicle's total_cost. Summed into This week /
+//     month / quarter / year cards, and rolled up per agent (via the
+//     vehicle's agent_name) into a ranked list with a top-agent badge.
+
 
 // Buyers' wallet-pass QR encodes a full /cl-wallet/{public_id} URL, so
 // scanning it with any ordinary camera app opens their "check your card"
@@ -170,7 +179,7 @@ async function uploadImageToCloudinary(apiBase, businessId, file) {
 const VEHICLE_MAX_PHOTOS = 5
 
 function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved }) {
-  const emptyForm = { make: '', model: '', year: '', plate_number: '', color: '', mileage: '', price: '', status: 'available' }
+  const emptyForm = { make: '', model: '', year: '', plate_number: '', color: '', mileage: '', price: '', total_cost: '', agent_name: '', status: 'available' }
   const [form, setForm] = useState(emptyForm)
   const [imageUrls, setImageUrls] = useState([]) // up to VEHICLE_MAX_PHOTOS Cloudinary URLs, shown as a gallery on the showroom card
   const [uploading, setUploading] = useState(false)
@@ -190,6 +199,8 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
         color: vehicle.color || '',
         mileage: vehicle.mileage ?? '',
         price: vehicle.price ?? '',
+        total_cost: vehicle.total_cost ?? '',
+        agent_name: vehicle.agent_name || '',
         status: vehicle.status || 'available',
       })
       setImageUrls(vehicle.image_urls && vehicle.image_urls.length ? vehicle.image_urls : (vehicle.image_url ? [vehicle.image_url] : []))
@@ -268,6 +279,8 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
           color: form.color || null,
           mileage: form.mileage !== '' ? Number(form.mileage) : null,
           price: form.price !== '' ? Number(form.price) : 0,
+          total_cost: form.total_cost !== '' ? Number(form.total_cost) : 0,
+          agent_name: form.agent_name || null,
           status: form.status,
           image_urls: imageUrls,
         }),
@@ -369,12 +382,27 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
             value={form.mileage}
             onChange={e => setForm({ ...form, mileage: e.target.value })}
           />
-          <label style={styles.label}>Price (₱)</label>
+          <label style={styles.label}>Price to sell (₱)</label>
           <input
             type="number"
             style={styles.input}
             value={form.price}
             onChange={e => setForm({ ...form, price: e.target.value })}
+          />
+          <label style={styles.label}>Total cost to buy (₱)</label>
+          <input
+            type="number"
+            style={styles.input}
+            value={form.total_cost}
+            onChange={e => setForm({ ...form, total_cost: e.target.value })}
+            placeholder="Acquisition cost - not shown on the showroom"
+          />
+          <label style={styles.label}>Agent</label>
+          <input
+            style={styles.input}
+            value={form.agent_name}
+            onChange={e => setForm({ ...form, agent_name: e.target.value })}
+            placeholder="e.g. Juan Dela Cruz"
           />
           <label style={styles.label}>Status</label>
           <select
@@ -407,13 +435,6 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const [business, setBusiness] = useState(null)
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState('')
-
-  // ---------- Announcements state ----------
-  const [announcements, setAnnouncements] = useState([])
-  const [showAnnForm, setShowAnnForm] = useState(false)
-  const [editingAnn, setEditingAnn] = useState(null) // announcement being edited, or null for "new"
-  const [annForm, setAnnForm] = useState({ title: '', message: '', type: 'info', end_date: '' })
-  const [savingAnn, setSavingAnn] = useState(false)
 
   // ---------- Customers (buyers) state ----------
   const [customers, setCustomers] = useState([])
@@ -497,9 +518,8 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
 
   const loadData = async () => {
     try {
-      const [bizRes, annRes, custRes, vehRes, conRes, msgRes, showroomRes] = await Promise.all([
+      const [bizRes, custRes, vehRes, conRes, msgRes, showroomRes] = await Promise.all([
         fetch(`${API_BASE}/api/v1/business/${businessId}`),
-        fetch(`${API_BASE}/api/v1/business/${businessId}/announcements`),
         fetch(`${API_BASE}/api/v1/business/${businessId}/cl-customers`),
         fetch(`${API_BASE}/api/v1/business/${businessId}/vehicles`),
         fetch(`${API_BASE}/api/v1/business/${businessId}/contracts`),
@@ -507,7 +527,6 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
         fetch(`${API_BASE}/api/v1/business/${businessId}/showroom-config`),
       ])
       setBusiness(await bizRes.json().catch(() => null))
-      setAnnouncements(await annRes.json().catch(() => []))
       setCustomers(await custRes.json().catch(() => []))
       setVehicles(await vehRes.json().catch(() => []))
       setContracts(await conRes.json().catch(() => []))
@@ -625,66 +644,6 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     }
     await loadWalletClassInfo()
     setPublishingWallet(false)
-  }
-
-  // ---------- Announcements CRUD ----------
-  const openNewAnnouncement = () => {
-    setEditingAnn(null)
-    setAnnForm({ title: '', message: '', type: 'info', end_date: '' })
-    setShowAnnForm(true)
-  }
-
-  const openEditAnnouncement = (ann) => {
-    setEditingAnn(ann)
-    setAnnForm({
-      title: ann.title || '',
-      message: ann.message || '',
-      type: ann.type || 'info',
-      end_date: ann.end_date || '',
-    })
-    setShowAnnForm(true)
-  }
-
-  const saveAnnouncement = async () => {
-    if (!annForm.title.trim() || !annForm.message.trim()) {
-      flash('Title and message are required')
-      return
-    }
-    setSavingAnn(true)
-    try {
-      const url = editingAnn
-        ? `${API_BASE}/api/v1/business/${businessId}/announcements/${editingAnn.id}`
-        : `${API_BASE}/api/v1/business/${businessId}/announcements`
-      const res = await fetch(url, {
-        method: editingAnn ? 'PUT' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: annForm.title,
-          message: annForm.message,
-          type: annForm.type,
-          end_date: annForm.end_date || null,
-        }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.detail || 'Save failed')
-      flash(editingAnn ? 'Announcement updated' : 'Announcement created')
-      setShowAnnForm(false)
-      loadData()
-    } catch (err) {
-      flash(err.message)
-    }
-    setSavingAnn(false)
-  }
-
-  const deleteAnnouncement = async (id) => {
-    try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/announcements/${id}`, { method: 'DELETE' })
-      if (!res.ok) throw new Error('Delete failed')
-      flash('Announcement removed')
-      loadData()
-    } catch (err) {
-      flash(err.message)
-    }
   }
 
   // ---------- Customers CRUD ----------
@@ -1206,6 +1165,16 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     return <div style={styles.loadingScreen}>Loading dashboard…</div>
   }
 
+  // ---------- Profit/loss (net income) + top agent, computed from
+  // vehicles + contracts already loaded above. Each contract's profit is
+  // its sale price minus the vehicle's total_cost (what it cost to buy) -
+  // total_cost is never sent to the showroom, it only feeds this
+  // computation. A deal counts on its start_date (falling back to when the
+  // contract record was created for older/transferred loans). ----------
+  const deals = computeDealProfits(vehicles, contracts)
+  const netIncome = netIncomeByPeriod(deals)
+  const agentRanking = rankAgents(deals)
+
   return (
     <div style={styles.container}>
       <header style={styles.header}>
@@ -1247,30 +1216,37 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
               <StatCard label="Customers" value={customers.length} />
             </div>
 
+            <div style={styles.sectionHeaderRow}>
+              <h2 style={styles.sectionTitle}>Net income</h2>
+            </div>
+            <p style={styles.sectionSubtitle}>
+              Price to sell minus total cost to buy, counted on each deal's start date. Total cost never shows on the showroom — it's for this computation only.
+            </p>
+            <div style={styles.statsGrid}>
+              <StatCard label="This week" value={formatPeso(netIncome.week)} accent={netIncome.week < 0 ? '#dc2626' : '#16a34a'} />
+              <StatCard label="This month" value={formatPeso(netIncome.month)} accent={netIncome.month < 0 ? '#dc2626' : '#16a34a'} />
+              <StatCard label="This quarter" value={formatPeso(netIncome.quarter)} accent={netIncome.quarter < 0 ? '#dc2626' : '#16a34a'} />
+              <StatCard label="This year" value={formatPeso(netIncome.year)} accent={netIncome.year < 0 ? '#dc2626' : '#16a34a'} />
+            </div>
+
             <div style={styles.announcementsSection}>
               <div style={styles.sectionHeaderRow}>
-                <h2 style={styles.sectionTitle}>Announcements</h2>
-                <button onClick={openNewAnnouncement} style={styles.newBtn}>+ New announcement</button>
+                <h2 style={styles.sectionTitle}>Agents</h2>
               </div>
-              <p style={styles.sectionSubtitle}>Shown to your customers — reminders, promos, or notices.</p>
+              <p style={styles.sectionSubtitle}>Ranked by total net income from the deals on cars they're assigned to.</p>
 
-              {announcements.length === 0 ? (
-                <div style={styles.emptyState}>No announcements yet.</div>
+              {agentRanking.length === 0 ? (
+                <div style={styles.emptyState}>No deals with an assigned agent yet.</div>
               ) : (
                 <div style={styles.announcementsList}>
-                  {announcements.map(ann => (
-                    <div key={ann.id} style={styles.announcementCard}>
+                  {agentRanking.map((a, idx) => (
+                    <div key={a.agent} style={styles.announcementCard}>
                       <div style={styles.announcementInfo}>
                         <div style={styles.announcementTitleRow}>
-                          <span style={styles.announcementTitle}>{ann.title}</span>
-                          {!ann.is_active && <span style={styles.inactiveBadge}>Inactive</span>}
+                          <span style={styles.announcementTitle}>{idx === 0 ? '🏆 ' : ''}{a.agent}</span>
+                          {idx === 0 && <span style={styles.inactiveBadge}>Top agent</span>}
                         </div>
-                        <div style={styles.announcementMessage}>{ann.message}</div>
-                        {ann.end_date && <div style={styles.announcementMeta}>Ends {ann.end_date}</div>}
-                      </div>
-                      <div style={styles.announcementActions}>
-                        <button onClick={() => openEditAnnouncement(ann)} style={styles.editBtn}>Edit</button>
-                        <button onClick={() => deleteAnnouncement(ann.id)} style={styles.deleteBtn}>Delete</button>
+                        <div style={styles.announcementMessage}>{a.deals} deal{a.deals === 1 ? '' : 's'} · {formatPeso(a.profit)} net income</div>
                       </div>
                     </div>
                   ))}
@@ -1615,42 +1591,6 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
         )}
       </div>
 
-      {showAnnForm && (
-        <div style={styles.modalOverlay} onClick={() => setShowAnnForm(false)}>
-          <div style={styles.modal} onClick={e => e.stopPropagation()}>
-            <h3 style={styles.modalTitle}>{editingAnn ? 'Edit announcement' : 'New announcement'}</h3>
-            <div style={styles.formGrid}>
-              <label style={styles.label}>Title</label>
-              <input
-                style={styles.input}
-                value={annForm.title}
-                onChange={e => setAnnForm({ ...annForm, title: e.target.value })}
-                placeholder="e.g. Holiday showroom hours"
-              />
-              <label style={styles.label}>Message</label>
-              <textarea
-                style={{ ...styles.input, minHeight: 80, resize: 'vertical' }}
-                value={annForm.message}
-                onChange={e => setAnnForm({ ...annForm, message: e.target.value })}
-                placeholder="e.g. We'll be closed Dec 25 and 26."
-              />
-              <label style={styles.label}>End date (optional)</label>
-              <input
-                type="date"
-                style={styles.input}
-                value={annForm.end_date}
-                onChange={e => setAnnForm({ ...annForm, end_date: e.target.value })}
-              />
-            </div>
-            <div style={styles.modalActions}>
-              <button onClick={() => setShowAnnForm(false)} style={styles.closeBtn}>Cancel</button>
-              <button onClick={saveAnnouncement} disabled={savingAnn} style={styles.saveBtn}>
-                {savingAnn ? 'Saving…' : 'Save'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {showCustomerForm && (
         <div style={styles.modalOverlay} onClick={() => setShowCustomerForm(false)}>
@@ -2315,6 +2255,72 @@ const CONTRACT_STATUS_BADGE_STYLES = {
   completed: { background: '#dcfce7', color: '#15803d' },
   repossessed: { background: '#fef3c7', color: '#b45309' },
   cancelled: { background: '#f1f5f9', color: '#64748b' },
+}
+
+// ---------- Net income / top agent helpers (Overview tab) ----------
+// price - total_cost per deal is the definition of profit used here; the
+// buyer's actual price on a given deal (contract.vehicle_price) is used
+// over the vehicle's current listed price since the two can drift (owner
+// negotiated, or edited the listing after the sale).
+function formatPeso(n) {
+  const v = Number(n || 0)
+  const sign = v < 0 ? '-' : ''
+  return `${sign}₱${Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+}
+
+function startOfWeek(d) {
+  const date = new Date(d)
+  date.setHours(0, 0, 0, 0)
+  const day = date.getDay() // 0 = Sun
+  const diffToMonday = (day + 6) % 7
+  date.setDate(date.getDate() - diffToMonday)
+  return date
+}
+function startOfMonth(d) { const date = new Date(d); return new Date(date.getFullYear(), date.getMonth(), 1) }
+function startOfQuarter(d) { const date = new Date(d); const q = Math.floor(date.getMonth() / 3); return new Date(date.getFullYear(), q * 3, 1) }
+function startOfYear(d) { const date = new Date(d); return new Date(date.getFullYear(), 0, 1) }
+
+// Builds one { profit, dealDate, agent } entry per contract, matching each
+// contract back to its full vehicle record (for total_cost/agent_name) by
+// public_id since the contracts list only embeds a lightweight vehicle
+// summary.
+function computeDealProfits(vehicles, contracts) {
+  const vehicleByPublicId = {}
+  vehicles.forEach(v => { vehicleByPublicId[v.public_id] = v })
+  return (contracts || [])
+    .map(c => {
+      const linked = (c.vehicle && c.vehicle.public_id && vehicleByPublicId[c.vehicle.public_id]) || c.vehicle || {}
+      const totalCost = Number(linked.total_cost || 0)
+      const sellPrice = Number(c.vehicle_price != null ? c.vehicle_price : (linked.price || 0))
+      const dealDate = c.start_date || c.created_at
+      return {
+        profit: sellPrice - totalCost,
+        dealDate,
+        agent: (linked.agent_name && linked.agent_name.trim()) || 'Unassigned',
+      }
+    })
+    .filter(d => d.dealDate)
+}
+
+function netIncomeByPeriod(deals) {
+  const now = new Date()
+  const since = (start) => deals.filter(d => new Date(d.dealDate) >= start).reduce((sum, d) => sum + d.profit, 0)
+  return {
+    week: since(startOfWeek(now)),
+    month: since(startOfMonth(now)),
+    quarter: since(startOfQuarter(now)),
+    year: since(startOfYear(now)),
+  }
+}
+
+function rankAgents(deals) {
+  const byAgent = {}
+  deals.forEach(d => {
+    if (!byAgent[d.agent]) byAgent[d.agent] = { agent: d.agent, profit: 0, deals: 0 }
+    byAgent[d.agent].profit += d.profit
+    byAgent[d.agent].deals += 1
+  })
+  return Object.values(byAgent).sort((a, b) => b.profit - a.profit)
 }
 
 function StatCard({ label, value, accent, hint }) {

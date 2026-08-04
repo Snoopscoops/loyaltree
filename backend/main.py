@@ -523,7 +523,9 @@ class VehicleCreate(BaseModel):
     plate_number: Optional[str] = None
     color: Optional[str] = None
     mileage: Optional[int] = Field(default=None, ge=0)
-    price: float = Field(default=0, ge=0)
+    price: float = Field(default=0, ge=0)  # "price to sell" - the only price shown publicly on the showroom
+    total_cost: float = Field(default=0, ge=0)  # what the business paid to acquire this unit - NEVER shown on the showroom, used only for the owner's profit/loss (net income) computation on the dashboard
+    agent_name: Optional[str] = None  # which agent is handling/sourced this unit - used to roll up "top agent" on the dashboard
     status: Optional[Literal['available', 'reserved', 'sold', 'financed']] = 'available'
     image_url: Optional[str] = None  # legacy single-photo field - kept in sync as image_urls[0] for old readers
     image_urls: Optional[List[str]] = None  # up to VEHICLE_MAX_PHOTOS photos, shown as a gallery on the showroom card
@@ -536,6 +538,8 @@ class VehicleUpdate(BaseModel):
     color: Optional[str] = None
     mileage: Optional[int] = Field(default=None, ge=0)
     price: Optional[float] = Field(default=None, ge=0)
+    total_cost: Optional[float] = Field(default=None, ge=0)
+    agent_name: Optional[str] = None
     status: Optional[Literal['available', 'reserved', 'sold', 'financed']] = None
     image_url: Optional[str] = None
     image_urls: Optional[List[str]] = None
@@ -4853,6 +4857,8 @@ async def create_vehicle(public_id: str, vehicle: VehicleCreate):
         'color': vehicle.color,
         'mileage': vehicle.mileage,
         'price': vehicle.price,
+        'total_cost': vehicle.total_cost,
+        'agent_name': vehicle.agent_name,
         'status': vehicle.status or 'available',
         'image_url': image_urls[0] if image_urls else None,
         'image_urls': image_urls,
@@ -4938,7 +4944,10 @@ async def list_contracts(public_id: str, status: Optional[str] = None):
             rows = supabase.table("cl_customers").select("id,public_id,name,phone").in_("id", customer_ids).execute().data or []
             customers_by_id = {r['id']: r for r in rows}
         if vehicle_ids:
-            rows = supabase.table("vehicles").select("id,public_id,make,model,year,plate_number").in_("id", vehicle_ids).execute().data or []
+            # total_cost/agent_name included so the dashboard can compute
+            # per-contract profit (price - total_cost) and roll it up by
+            # agent without a second round-trip per vehicle.
+            rows = supabase.table("vehicles").select("id,public_id,make,model,year,plate_number,total_cost,agent_name").in_("id", vehicle_ids).execute().data or []
             vehicles_by_id = {r['id']: r for r in rows}
         for c in contracts:
             c['customer'] = customers_by_id.get(c.get('customer_id'))
