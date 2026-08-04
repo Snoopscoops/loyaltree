@@ -30,8 +30,19 @@ import React, { useState, useEffect } from 'react'
 //     reached regardless of loan status. Separate from the Overview
 //     "Announcements" panel above, which is for the loyalty side of the
 //     business.
-//   - Step 6+ (later): Per-customer payment history/receipts view, Overview
-//     stat cards going fully live.
+//   - Step 6 (done): Per-customer payment history/receipts - a "History"
+//     button on each customer card pulls every payment across ALL of their
+//     contracts (not just the currently-open one), each with a printable
+//     receipt (business, buyer, vehicle, amount, method, balance after,
+//     receipt #). Overview stat cards are live (not placeholders).
+//   - Buyer self-signup: a dealership-wide "Join QR" (Customers tab) opens
+//     /cl-join/{business_public_id} - a buyer scans it, registers
+//     themselves (name/phone/email/address), and adds their Loan Card to
+//     Google/Apple Wallet on the spot, no owner data entry required.
+//   - Payment editing: the owner can edit a logged payment's method/notes
+//     at any time; amount/date are editable only on the contract's most
+//     recent payment (older ones must be undone-and-relogged, so
+//     balance_remaining never silently drifts).
 
 // Buyers' wallet-pass QR (and their printed/lookup QR) encodes just their
 // own public_id as plain text - never a URL, since there's no payment
@@ -155,6 +166,14 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const [customerHistory, setCustomerHistory] = useState([])
   const [loadingCustomerHistory, setLoadingCustomerHistory] = useState(false)
   const [viewingReceipt, setViewingReceipt] = useState(null) // a single payment row, shown in the printable receipt modal
+
+  // ---------- Editing a logged payment (owner correction) state ----------
+  const [editingPayment, setEditingPayment] = useState(null) // { payment, contract } currently open in the edit modal, or null
+  const [editPaymentForm, setEditPaymentForm] = useState({ amount: '', payment_date: '', method: 'cash', notes: '' })
+  const [savingEditPayment, setSavingEditPayment] = useState(false)
+
+  // ---------- Dealership self-signup "Join" QR (Step: buyer self-join) state ----------
+  const [joinQR, setJoinQR] = useState(null) // { svg, join_url }, or null
 
   // ---------- Owner -> buyer messages (Step 5) state ----------
   const [clAnnouncements, setClAnnouncements] = useState([])
@@ -684,6 +703,68 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     }
   }
 
+  // Dealership's own self-signup QR - one per business, print/display it so
+  // new buyers can register themselves and add the Loan Card to their own
+  // wallet without any dashboard data entry.
+  const showJoinQR = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-join-qr-code`)
+      const data = await res.json()
+      setJoinQR(data)
+    } catch (err) {
+      flash('Could not load join QR code')
+    }
+  }
+
+  // ---------- Editing a logged payment (owner correction) ----------
+  // method/notes are always editable; amount/payment_date only take effect
+  // on the contract's most recent payment (the backend enforces this and
+  // returns a clear error otherwise - see CLPaymentUpdate).
+  const openEditPayment = (payment, contract) => {
+    setEditingPayment({ payment, contract })
+    setEditPaymentForm({
+      amount: payment.amount ?? '',
+      payment_date: payment.payment_date || '',
+      method: payment.method || 'cash',
+      notes: payment.notes || '',
+    })
+  }
+
+  const saveEditPayment = async () => {
+    if (!editPaymentForm.amount || Number(editPaymentForm.amount) <= 0) {
+      flash('Enter a payment amount')
+      return
+    }
+    setSavingEditPayment(true)
+    try {
+      const { payment, contract } = editingPayment
+      const res = await fetch(
+        `${API_BASE}/api/v1/business/${businessId}/contracts/${contract.public_id}/payments/${payment.public_id}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            amount: Number(editPaymentForm.amount),
+            payment_date: editPaymentForm.payment_date || null,
+            method: editPaymentForm.method || null,
+            notes: editPaymentForm.notes || null,
+          }),
+        }
+      )
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Update failed')
+      flash('Payment updated')
+      setEditingPayment(null)
+      // Refresh whichever history view(s) might be showing this payment.
+      if (payingContract?.public_id === contract.public_id) loadPaymentHistory(payingContract)
+      if (historyCustomer) loadCustomerHistory(historyCustomer)
+      loadData()
+    } catch (err) {
+      flash(err.message)
+    }
+    setSavingEditPayment(false)
+  }
+
   // ---------- Owner -> buyer messages (Step 5) ----------
   const openMessageForm = (customer) => {
     setMessageTarget(customer || null)
@@ -804,6 +885,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
               <div style={{ display: 'flex', gap: 8 }}>
                 <button onClick={() => setShowMessageHistory(true)} style={styles.cancelBtnSmall}>Message history</button>
                 <button onClick={() => openMessageForm(null)} style={styles.newBtnAlt}>✉️ Message all</button>
+                <button onClick={showJoinQR} style={styles.cancelBtnSmall}>📱 Join QR</button>
                 <button onClick={openNewCustomer} style={styles.newBtn}>+ New customer</button>
               </div>
             </div>
@@ -1444,6 +1526,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                     </div>
                     <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
                       <button onClick={() => setViewingReceipt({ ...p, customer: payingContract.customer, vehicle: payingContract.vehicle })} style={styles.editBtn}>Receipt</button>
+                      <button onClick={() => openEditPayment(p, payingContract)} style={styles.editBtn}>Edit</button>
                       {i === 0 && (
                         <button onClick={() => undoPayment(p)} style={styles.deleteBtn}>Undo</button>
                       )}
@@ -1537,7 +1620,10 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                       </div>
                       {p.receipt_number && <div style={styles.recordMetaSub}>{p.receipt_number}</div>}
                     </div>
-                    <button onClick={() => setViewingReceipt({ ...p, customer: historyCustomer })} style={{ ...styles.editBtn, flexShrink: 0 }}>Receipt</button>
+                    <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                      <button onClick={() => setViewingReceipt({ ...p, customer: historyCustomer })} style={styles.editBtn}>Receipt</button>
+                      <button onClick={() => openEditPayment(p, { public_id: p.contract?.public_id })} style={styles.editBtn}>Edit</button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1605,6 +1691,69 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
             <div style={styles.qrWrap} dangerouslySetInnerHTML={{ __html: customerQR.svg }} />
             <div style={styles.modalActions}>
               <button onClick={() => setCustomerQR(null)} style={styles.closeBtn}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {joinQR && (
+        <div style={styles.modalOverlay} onClick={() => setJoinQR(null)}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>Buyer self-signup QR</h3>
+            <p style={styles.hint}>Print or display this in the showroom. Scanning it lets a new buyer register themselves and add their Loan Card straight to Google/Apple Wallet — no dashboard data entry needed.</p>
+            <div style={styles.qrWrap} dangerouslySetInnerHTML={{ __html: joinQR.svg }} />
+            <div style={{ ...styles.readOnlyValue, wordBreak: 'break-all', fontSize: 12 }}>{joinQR.join_url}</div>
+            <div style={styles.modalActions}>
+              <button onClick={() => setJoinQR(null)} style={styles.closeBtn}>Close</button>
+              <button onClick={() => window.print()} style={styles.saveBtn}>Print</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editingPayment && (
+        <div style={styles.modalOverlay} onClick={() => setEditingPayment(null)}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>Edit payment</h3>
+            <p style={styles.hint}>Amount and date can only be changed on the contract's most recent payment — the backend will reject it otherwise. Method and notes can always be edited.</p>
+            <div style={styles.formGrid}>
+              <label style={styles.label}>Amount (₱)</label>
+              <input
+                type="number"
+                style={styles.input}
+                value={editPaymentForm.amount}
+                onChange={e => setEditPaymentForm({ ...editPaymentForm, amount: e.target.value })}
+              />
+              <label style={styles.label}>Payment date</label>
+              <input
+                type="date"
+                style={styles.input}
+                value={editPaymentForm.payment_date}
+                onChange={e => setEditPaymentForm({ ...editPaymentForm, payment_date: e.target.value })}
+              />
+              <label style={styles.label}>Method</label>
+              <select
+                style={styles.select}
+                value={editPaymentForm.method}
+                onChange={e => setEditPaymentForm({ ...editPaymentForm, method: e.target.value })}
+              >
+                <option value="cash">Cash</option>
+                <option value="bank_transfer">Bank transfer</option>
+                <option value="gcash">GCash</option>
+                <option value="other">Other</option>
+              </select>
+              <label style={styles.label}>Notes (optional)</label>
+              <input
+                style={styles.input}
+                value={editPaymentForm.notes}
+                onChange={e => setEditPaymentForm({ ...editPaymentForm, notes: e.target.value })}
+              />
+            </div>
+            <div style={styles.modalActions}>
+              <button onClick={() => setEditingPayment(null)} style={styles.closeBtn}>Cancel</button>
+              <button onClick={saveEditPayment} disabled={savingEditPayment} style={styles.saveBtn}>
+                {savingEditPayment ? 'Saving…' : 'Save'}
+              </button>
             </div>
           </div>
         </div>

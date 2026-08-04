@@ -570,7 +570,29 @@ class CLPaymentCreate(BaseModel):
     method: Optional[str] = None        # e.g. 'cash', 'bank_transfer', 'gcash', 'other'
     notes: Optional[str] = None
 
-# --- Car Lending / Showroom: owner -> buyer messages (one buyer, or all) ---
+class CLPaymentUpdate(BaseModel):
+    """Owner correcting a logged payment. method/notes can be edited on any
+    payment. amount/payment_date can only be changed on the CONTRACT'S MOST
+    RECENT payment - same rule as the existing undo/delete endpoint - since
+    those two are what balance_remaining/next_due_date were derived from;
+    changing an older payment's amount would silently drift every payment
+    logged after it. To correct an older payment's amount, undo forward to
+    it and re-log."""
+    amount: Optional[float] = Field(default=None, gt=0)
+    payment_date: Optional[str] = None
+    method: Optional[str] = None
+    notes: Optional[str] = None
+
+
+# --- Car Lending / Showroom: self-service signup (buyer scans the
+# dealership's "Join" QR and registers themselves, mirrors CustomerSignup
+# below but for cl_customers - no loyalty-specific fields) ---
+class CLCustomerSelfSignup(BaseModel):
+    name: str
+    phone: str
+    email: Optional[str] = None
+    address: Optional[str] = None
+
 class CLAnnouncementCreate(BaseModel):
     title: str
     message: str
@@ -4606,6 +4628,24 @@ async def get_cl_customer_qr_code(public_id: str, customer_public_id: str):
         "customer_name": customer.get('name', ''),
     })
 
+@app.get("/api/v1/business/{public_id}/cl-join-qr-code")
+async def get_cl_join_qr_code(public_id: str):
+    """The dealership's own self-signup QR (one per business, not per
+    buyer) - print it or display it in the showroom. Scanning it opens
+    /cl-join/{public_id}, where a new buyer registers themselves and adds
+    the Loan Card straight to Google/Apple Wallet, no owner data entry
+    needed. Mirrors get_qr_code() for the loyalty side's /join page."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    join_url = f'{BASE_URL}/cl-join/{public_id}'
+    svg = generate_qr_svg(join_url)
+    return JSONResponse({
+        "svg": svg,
+        "join_url": join_url,
+        "business_name": business.get("name", ""),
+    })
+
 # CAR LENDING / SHOWROOM - VEHICLE INVENTORY
 
 @app.get("/api/v1/business/{public_id}/vehicles")
@@ -5033,6 +5073,104 @@ async def delete_contract_payment(public_id: str, contract_public_id: str, payme
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
     return {"success": True, "deleted": payment_public_id, "contract": updated_contract}
+
+@app.patch("/api/v1/business/{public_id}/contracts/{contract_public_id}/payments/{payment_public_id}")
+async def update_contract_payment(public_id: str, contract_public_id: str, payment_public_id: str, update: CLPaymentUpdate):
+    """Owner-side correction of a logged payment - see CLPaymentUpdate for
+    why amount/payment_date are restricted to the most recent payment."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    contract = safe_get_contract(contract_public_id)
+    if not contract or contract.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Contract not found for this business")
+
+    try:
+        pay_res = (
+            supabase.table("cl_payments")
+            .select("*")
+            .eq("public_id", payment_public_id)
+            .eq("contract_id", contract.get("id"))
+            .maybe_single()
+            .execute()
+        )
+        payment = pay_res.data
+    except Exception:
+        payment = None
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found for this contract")
+
+    update_data = {k: v for k, v in update.dict(exclude_unset=True).items() if v is not None}
+    if not update_data:
+        return payment
+
+    amount_changed = 'amount' in update_data and round(float(update_data['amount']), 2) != round(float(payment.get('amount') or 0), 2)
+    date_changed = 'payment_date' in update_data and update_data['payment_date'] != payment.get('payment_date')
+
+    if amount_changed or date_changed:
+        try:
+            latest = (
+                supabase.table("cl_payments")
+                .select("public_id")
+                .eq("contract_id", contract.get("id"))
+                .order("payment_date", desc=True)
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=friendly_db_error(e))
+        if not latest.data or latest.data[0].get('public_id') != payment_public_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Only the most recent payment on this contract can have its amount or date edited. Undo it (and any payments after it) and re-log instead, or edit the method/notes only."
+            )
+
+    if 'payment_date' in update_data:
+        try:
+            new_pay_date = datetime.fromisoformat(update_data['payment_date']).date()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid payment_date - use YYYY-MM-DD")
+        update_data['payment_date'] = new_pay_date.isoformat()
+
+    contract_update = {}
+    if amount_changed:
+        amount_diff = round(float(update_data['amount']) - float(payment.get('amount') or 0), 2)
+        new_balance = round(max(float(contract.get('balance_remaining') or 0) - amount_diff, 0), 2)
+        update_data['balance_after'] = new_balance
+        contract_update['balance_remaining'] = new_balance
+
+        is_paid_off = new_balance <= 0
+        if is_paid_off:
+            contract_update['status'] = 'completed'
+            contract_update['next_due_date'] = None
+        elif contract.get('status') == 'completed':
+            # Editing the amount down reopened a loan that was previously
+            # paid off - restart the due-date cycle from this payment.
+            contract_update['status'] = 'active'
+            base_date = datetime.fromisoformat(update_data.get('payment_date', payment.get('payment_date'))).date()
+            contract_update['next_due_date'] = compute_next_due_date(base_date, contract.get('payment_frequency') or 'monthly').isoformat()
+
+    if date_changed:
+        contract_update['last_paid_date'] = update_data['payment_date']
+
+    try:
+        res = supabase.table("cl_payments").update(update_data).eq("id", payment.get("id")).execute()
+        updated_payment = res.data[0] if res.data else {**payment, **update_data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    updated_contract = contract
+    if contract_update:
+        contract_update['updated_at'] = datetime.utcnow().isoformat()
+        try:
+            res = supabase.table("contracts").update(contract_update).eq("id", contract.get("id")).execute()
+            updated_contract = res.data[0] if res.data else {**contract, **contract_update}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    updated_payment['contract'] = updated_contract
+    return updated_payment
 
 @app.get("/api/v1/business/{public_id}/cl-customers/{customer_public_id}/payments")
 async def list_customer_payment_history(public_id: str, customer_public_id: str):
@@ -7146,6 +7284,171 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup):
         "public_id": customer_public_id,
         "name": signup.name,
         "message": "Welcome to the loyalty program!",
+    }
+
+# CAR LENDING / SHOWROOM - SELF-SERVICE BUYER JOIN PAGE
+# Mirrors /join/{business_public_id} + POST /api/v1/join/{business_public_id}
+# above, but registers a cl_customers row instead of a loyalty customer, and
+# the success screen offers the Loan Card wallet buttons (built from
+# get_cl_wallet_pass / get_cl_apple_wallet_pass) instead of a stamp QR.
+# The owner prints/displays the QR from GET .../cl-join-qr-code so new
+# buyers can register themselves without any dashboard data entry.
+
+@app.get("/cl-join/{business_public_id}", response_class=HTMLResponse)
+async def cl_customer_join_page(business_public_id: str):
+    try:
+        business = safe_get_business(business_public_id)
+        if not business:
+            return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Business not found</h1><p>This link is invalid.</p></div>")
+        if business.get('status', '').upper() != 'ACTIVE':
+            return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Business not active</h1><p>This dealership isn't accepting new members yet.</p></div>")
+
+        biz_name = business.get('name', '')
+        logo_url = business.get('logo_url')
+        biz_name_json = json.dumps(biz_name)
+
+        if logo_url:
+            logo_html = '<img src="' + logo_url + '" style="width:80px;height:80px;border-radius:20px;object-fit:cover;margin:0 auto 20px;display:block;" alt="Logo"/>'
+        else:
+            logo_html = '<div style="width:80px;height:80px;border-radius:20px;background:linear-gradient(135deg,#0f172a 0%,#334155 100%);display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:36px;">&#128663;</div>'
+
+        html = (
+            '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+            '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+            '<title>Join ' + html_lib.escape(biz_name) + '</title>'
+            '<style>'
+            '*{box-sizing:border-box;margin:0;padding:0}'
+            'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;'
+            'background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%);'
+            'min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}'
+            '.card{background:white;border-radius:24px;padding:32px;max-width:400px;width:100%;'
+            'box-shadow:0 20px 60px rgba(0,0,0,0.3);text-align:center}'
+            'h1{font-size:24px;color:#1e293b;margin-bottom:8px}'
+            '.subtitle{color:#64748b;margin-bottom:24px;font-size:14px}'
+            'input{width:100%;padding:14px 16px;border:2px solid #e2e8f0;border-radius:12px;'
+            'font-size:16px;margin-bottom:12px;outline:none}'
+            'input:focus{border-color:#0f172a}'
+            'button{width:100%;padding:16px;background:linear-gradient(135deg,#0f172a 0%,#334155 100%);'
+            'color:white;border:none;border-radius:12px;font-size:16px;font-weight:700;cursor:pointer;margin-top:8px}'
+            '.member-id{background:#f8fafc;border-radius:12px;padding:16px;margin-bottom:16px}'
+            '.member-id p{margin:0;font-weight:600;color:#1e293b}'
+            '.member-id code{display:block;margin-top:8px;font-family:monospace;font-size:14px;color:#64748b;word-break:break-all}'
+            '.wallet-btn{display:block;width:100%;padding:14px;background:#1a73e8;color:white;text-decoration:none;'
+            'border-radius:10px;font-weight:600;margin-bottom:12px;text-align:center}'
+            '.apple-btn{background:#000000}'
+            '</style></head><body>'
+            '<div class="card" id="card">'
+            + logo_html +
+            '<h1>' + html_lib.escape(biz_name) + '</h1>'
+            '<p class="subtitle">Register as a buyer/member — add your Loan Card to your phone\'s wallet for balance, due-date reminders, and dealership updates.</p>'
+            '<form id="signupForm">'
+            '<input type="text" id="name" placeholder="Full name" required>'
+            '<input type="tel" id="phone" placeholder="Phone number" required>'
+            '<input type="email" id="email" placeholder="Email (optional)">'
+            '<input type="text" id="address" placeholder="Address (optional)">'
+            '<button type="submit">Join &amp; Add to Wallet</button>'
+            '</form></div>'
+            '<script>'
+            '(function(){'
+            'const API_BASE=' + json.dumps(BASE_URL) + ';'
+            'const BIZ_ID=' + json.dumps(business_public_id) + ';'
+            'const BIZ_NAME=' + biz_name_json + ';'
+            'document.getElementById("signupForm").addEventListener("submit",async function(e){'
+            'e.preventDefault();'
+            'const name=document.getElementById("name").value;'
+            'const phone=document.getElementById("phone").value;'
+            'const email=document.getElementById("email").value;'
+            'const address=document.getElementById("address").value;'
+            'try{'
+            'const res=await fetch(API_BASE+"/api/v1/cl-join/"+BIZ_ID,{'
+            'method:"POST",'
+            'headers:{"Content-Type":"application/json"},'
+            'body:JSON.stringify({name:name,phone:phone,email:email||null,address:address||null})'
+            '});'
+            'const data=await res.json();'
+            'if(res.ok){'
+            'var cardHtml='
+            '"<div style=\'font-size:48px;margin-bottom:16px;\'>&#127881;</div>"+'
+            '"<h1>Welcome, "+escapeHtml(data.name)+"!</h1>"+'
+            '"<p style=\'color:#64748b;margin-bottom:24px;\'>You\'re registered with "+escapeHtml(BIZ_NAME)+"</p>"+'
+            '"<div class=\'member-id\'><p>Your Member ID</p>"+'
+            '"<code>"+escapeHtml(data.public_id)+"</code></div>"+'
+            '"<a href=\'"+API_BASE+"/api/v1/cl-customer/"+escapeHtml(data.public_id)+"/apple-wallet-pass\' class=\'wallet-btn apple-btn\'>&#63743; Add to Apple Wallet</a>"+'
+            '"<div id=\'wallet-btn-container\' style=\'margin-bottom:12px;\'>"+'
+            '"<p style=\'color:#94a3b8;font-size:13px;\'>Loading Google Wallet...</p></div>"+'
+            '"<p style=\'font-size:12px;color:#94a3b8;margin-top:16px;\'>Show this card to the dealership when you make a payment.</p>";'
+            'document.getElementById("card").innerHTML=cardHtml;'
+            'fetch(API_BASE+"/api/v1/cl-customer/"+data.public_id+"/wallet-pass")'
+            '.then(function(r){return r.json();})'
+            '.then(function(walletData){'
+            'var container=document.getElementById("wallet-btn-container");'
+            'if(walletData.save_url){'
+            'container.innerHTML="<a href=\'"+escapeHtml(walletData.save_url)+"\' class=\'wallet-btn\' target=\'_blank\'>&#127903; Add to Google Wallet</a>";'
+            '}else{'
+            'container.innerHTML="<div style=\'background:#fef3c7;color:#92400e;padding:12px;border-radius:10px;font-size:13px;\'>&#9888; Could not generate Google Wallet link</div>";'
+            '}'
+            '})'
+            '.catch(function(err){'
+            'var container=document.getElementById("wallet-btn-container");'
+            'container.innerHTML="<div style=\'background:#fef3c7;color:#92400e;padding:12px;border-radius:10px;font-size:13px;\'>&#9888; Google Wallet error: "+escapeHtml(err.message||"Network error")+"</div>";'
+            '});'
+            '}else{'
+            'alert(data.detail||"Signup failed");'
+            '}'
+            '}catch(err){'
+            'console.error(err);'
+            'alert("Network error. Please try again.");'
+            '}'
+            '});'
+            'function escapeHtml(text){'
+            'const div=document.createElement("div");'
+            'div.textContent=text;'
+            'return div.innerHTML;'
+            '}'
+            '})();'
+            '</script></body></html>'
+        )
+        return HTMLResponse(html)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Error</h1><p>Could not load join page: " + str(e) + "</p></div>")
+
+@app.post("/api/v1/cl-join/{business_public_id}")
+async def cl_customer_self_signup(business_public_id: str, signup: CLCustomerSelfSignup):
+    business = safe_get_business(business_public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    if business.get('status', '').upper() != 'ACTIVE':
+        raise HTTPException(status_code=400, detail="Business not active")
+
+    dup_field = find_cl_customer_duplicate(business.get('id'), signup.phone, signup.email)
+    if dup_field:
+        raise HTTPException(
+            status_code=400,
+            detail=f"This {dup_field} is already registered with this dealership."
+        )
+
+    customer_public_id = generate_public_id()
+    customer_data = {
+        'business_id': business.get('id'),
+        'public_id': customer_public_id,
+        'name': signup.name,
+        'phone': signup.phone,
+        'email': signup.email,
+        'address': signup.address,
+        'created_at': datetime.utcnow().isoformat(),
+        'updated_at': datetime.utcnow().isoformat(),
+    }
+    try:
+        supabase.table("cl_customers").insert(customer_data).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    return {
+        "public_id": customer_public_id,
+        "name": signup.name,
+        "message": "Registered - add your Loan Card to your wallet.",
     }
 
 # WALLET PAGE
