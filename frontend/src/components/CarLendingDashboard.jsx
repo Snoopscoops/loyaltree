@@ -8,8 +8,10 @@ import React, { useState, useEffect } from 'react'
 //     from "Total cost to buy" (what the business paid to acquire the
 //     unit - internal only, never sent to the showroom) plus which Agent
 //     is handling the unit.
-//   - Step 4 (done): Contracts tab - link customer + vehicle, auto-compute
-//     installment from price/down payment/interest/term. Also supports
+//   - Step 4 (done): Contracts tab - link customer + vehicle. No
+//     markup/interest - for financed deals the owner enters the monthly
+//     payment and term directly, and vehicle price auto-computes from those
+//     (down payment + monthly payment x term). Also supports
 //     transferring an already-in-progress loan (an existing customer/car
 //     already mid-payment before this dashboard existed) via the "existing
 //     loan" toggle, which reveals manual overrides for balance remaining,
@@ -500,7 +502,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   // ---------- Contracts (deals) state ----------
   const emptyContractForm = {
     customer_public_id: '', vehicle_public_id: '', sale_type: 'financed',
-    vehicle_price: '', down_payment: '', interest_rate: '', term_months: '12',
+    vehicle_price: '', down_payment: '', installment_amount: '', term_months: '12',
     payment_frequency: 'monthly', start_date: new Date().toISOString().slice(0, 10),
     is_existing_loan: false, balance_remaining: '', last_paid_date: '', next_due_date: '', status: 'active',
   }
@@ -852,7 +854,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
       sale_type: c.sale_type || 'financed',
       vehicle_price: c.vehicle_price ?? '',
       down_payment: c.down_payment ?? '',
-      interest_rate: c.interest_rate ?? '',
+      installment_amount: c.installment_amount ?? '',
       term_months: c.term_months ?? '',
       payment_frequency: c.payment_frequency || 'monthly',
       start_date: c.start_date || '',
@@ -882,7 +884,16 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
       flash('Pick a customer and a vehicle')
       return
     }
-    if (!contractForm.vehicle_price || Number(contractForm.vehicle_price) <= 0) {
+    if (contractForm.sale_type === 'financed') {
+      if (!contractForm.installment_amount || Number(contractForm.installment_amount) <= 0) {
+        flash('Monthly payment is required')
+        return
+      }
+      if (!contractForm.term_months || Number(contractForm.term_months) <= 0) {
+        flash('Term (months) is required')
+        return
+      }
+    } else if (!contractForm.vehicle_price || Number(contractForm.vehicle_price) <= 0) {
       flash('Vehicle price is required')
       return
     }
@@ -890,12 +901,18 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     try {
       const body = {
         sale_type: contractForm.sale_type,
-        vehicle_price: Number(contractForm.vehicle_price),
         down_payment: contractForm.down_payment !== '' ? Number(contractForm.down_payment) : 0,
-        interest_rate: contractForm.interest_rate !== '' ? Number(contractForm.interest_rate) : 0,
-        term_months: contractForm.term_months !== '' ? Number(contractForm.term_months) : 0,
         payment_frequency: contractForm.payment_frequency,
         start_date: contractForm.start_date || null,
+      }
+      if (contractForm.sale_type === 'financed') {
+        // Vehicle price is left out on purpose - the server derives it from
+        // down payment + monthly payment x term.
+        body.installment_amount = Number(contractForm.installment_amount)
+        body.term_months = Number(contractForm.term_months)
+      } else {
+        body.vehicle_price = Number(contractForm.vehicle_price)
+        body.term_months = 0
       }
       // Only send the "current state" overrides when transferring an
       // existing loan (new deals compute these automatically) or when
@@ -1812,14 +1829,6 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                 <option value="cash">Cash</option>
               </select>
 
-              <label style={styles.label}>Vehicle price (₱)</label>
-              <input
-                type="number"
-                style={styles.input}
-                value={contractForm.vehicle_price}
-                onChange={e => setContractForm({ ...contractForm, vehicle_price: e.target.value })}
-              />
-
               <label style={styles.label}>Down payment (₱)</label>
               <input
                 type="number"
@@ -1828,21 +1837,21 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                 onChange={e => setContractForm({ ...contractForm, down_payment: e.target.value })}
               />
 
-              {contractForm.sale_type === 'financed' && (
+              {contractForm.sale_type === 'financed' ? (
                 <>
-                  <label style={styles.label}>Interest / markup (%)</label>
+                  <label style={styles.label}>Monthly payment (₱)</label>
                   <input
                     type="number"
                     style={styles.input}
-                    value={contractForm.interest_rate}
-                    onChange={e => setContractForm({ ...contractForm, interest_rate: e.target.value })}
+                    value={contractForm.installment_amount}
+                    onChange={e => setContractForm({ ...contractForm, installment_amount: e.target.value })}
                   />
 
-                  <label style={styles.label}>Term (months, 0–36)</label>
+                  <label style={styles.label}>Term (months, 1–120)</label>
                   <input
                     type="number"
-                    min="0"
-                    max="36"
+                    min="1"
+                    max="120"
                     style={styles.input}
                     value={contractForm.term_months}
                     onChange={e => setContractForm({ ...contractForm, term_months: e.target.value })}
@@ -1858,6 +1867,25 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                     <option value="biweekly">Biweekly</option>
                     <option value="weekly">Weekly</option>
                   </select>
+
+                  <label style={styles.label}>Vehicle price (₱)</label>
+                  <div style={styles.readOnlyValue}>
+                    ₱{(
+                      (Number(contractForm.down_payment) || 0) +
+                      (Number(contractForm.installment_amount) || 0) * (Number(contractForm.term_months) || 0)
+                    ).toLocaleString()}
+                    <span style={{ opacity: 0.6, fontWeight: 400 }}> (down payment + monthly payment × term)</span>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <label style={styles.label}>Vehicle price (₱)</label>
+                  <input
+                    type="number"
+                    style={styles.input}
+                    value={contractForm.vehicle_price}
+                    onChange={e => setContractForm({ ...contractForm, vehicle_price: e.target.value })}
+                  />
                 </>
               )}
 

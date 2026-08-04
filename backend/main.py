@@ -568,10 +568,15 @@ class ContractCreate(BaseModel):
     customer_public_id: str
     vehicle_public_id: str
     sale_type: Literal['cash', 'financed'] = 'financed'
-    vehicle_price: float = Field(gt=0)
+    # Required for cash sales. For financed deals, leave this unset and
+    # provide installment_amount + term_months instead - the server derives
+    # vehicle_price from those (down_payment + installment_amount * term_months).
+    vehicle_price: Optional[float] = Field(default=None, gt=0)
     down_payment: float = Field(default=0, ge=0)
-    interest_rate: float = Field(default=0, ge=0)  # flat markup %, e.g. 12.5
-    term_months: int = Field(default=0, ge=0, le=36)
+    # The buyer's fixed payment per period - no markup/interest added on top,
+    # this number IS what they pay each time. Required for financed deals.
+    installment_amount: Optional[float] = Field(default=None, gt=0)
+    term_months: int = Field(default=0, ge=0, le=120)
     payment_frequency: Literal['weekly', 'biweekly', 'monthly'] = 'monthly'
     start_date: Optional[str] = None  # 'YYYY-MM-DD' - defaults to today if omitted
 
@@ -589,13 +594,16 @@ class ContractCreate(BaseModel):
 
 class ContractUpdate(BaseModel):
     sale_type: Optional[Literal['cash', 'financed']] = None
+    # Editing this directly wins over re-deriving it from installment_amount
+    # in this same request - see the recompute logic in update_contract().
     vehicle_price: Optional[float] = Field(default=None, gt=0)
     down_payment: Optional[float] = Field(default=None, ge=0)
-    interest_rate: Optional[float] = Field(default=None, ge=0)
-    term_months: Optional[int] = Field(default=None, ge=0, le=36)
+    term_months: Optional[int] = Field(default=None, ge=0, le=120)
     payment_frequency: Optional[Literal['weekly', 'biweekly', 'monthly']] = None
     start_date: Optional[str] = None
-    installment_amount: Optional[float] = Field(default=None, ge=0)  # rare manual override
+    # The buyer's payment per period. Editing this (without also editing
+    # vehicle_price in the same request) re-derives vehicle_price from it.
+    installment_amount: Optional[float] = Field(default=None, gt=0)
     balance_remaining: Optional[float] = Field(default=None, ge=0)
     last_paid_date: Optional[str] = None
     next_due_date: Optional[str] = None
@@ -4504,19 +4512,34 @@ def compute_next_due_date(start, frequency: str):
         return start + timedelta(days=14)
     return add_months(start, 1)  # monthly
 
-def compute_contract_financials(vehicle_price: float, down_payment: float, interest_rate: float, term_months: int):
-    """principal = price minus down payment; total_payable = principal plus
-    a flat interest markup (NOT amortized/compounding - matches the schema's
-    'flat markup %' comment on contracts.interest_rate); installment is that
-    total spread evenly over the term, or paid in one lump sum if term_months
-    is 0 (cash / paid-in-full deals)."""
-    principal_amount = round(max(vehicle_price - down_payment, 0), 2)
-    total_payable = round(principal_amount + (principal_amount * (interest_rate or 0) / 100), 2)
-    if term_months and term_months > 0:
-        installment_amount = round(total_payable / term_months, 2)
+def compute_contract_financials(vehicle_price: Optional[float], down_payment: float, installment_amount: Optional[float], term_months: int, prefer_installment: bool = True):
+    """No markup/interest - a financed deal's buyer-facing payment amount IS
+    the loan math, nothing is added on top of it.
+
+    prefer_installment=True (contract creation, and edits that only touch
+    installment_amount): if installment_amount and term_months are both set,
+    vehicle_price is DERIVED from them (down_payment + installment_amount *
+    term_months). This is the normal financed-deal path.
+
+    prefer_installment=False (edits that touch vehicle_price directly, or
+    any case with no usable installment_amount/term_months - e.g. cash
+    sales): vehicle_price is the source of truth, and installment_amount is
+    computed from it instead (spread evenly over the term, or paid in one
+    lump sum if term_months is 0).
+
+    Returns (vehicle_price, principal_amount, total_payable, installment_amount).
+    """
+    down_payment = down_payment or 0
+    if prefer_installment and installment_amount and term_months and term_months > 0:
+        total_payable = round(installment_amount * term_months, 2)
+        vehicle_price = round(down_payment + total_payable, 2)
+        installment_amount = round(installment_amount, 2)
     else:
-        installment_amount = total_payable
-    return principal_amount, total_payable, installment_amount
+        vehicle_price = vehicle_price or 0
+        total_payable = round(max(vehicle_price - down_payment, 0), 2)
+        installment_amount = round(total_payable / term_months, 2) if term_months and term_months > 0 else total_payable
+    principal_amount = round(max(vehicle_price - down_payment, 0), 2)
+    return vehicle_price, principal_amount, total_payable, installment_amount
 
 def compute_reminder_stage(next_due, today) -> Optional[str]:
     """Which of the 7-day / 3-day / due-today / overdue touchpoints (if any)
@@ -5032,8 +5055,14 @@ async def create_contract(public_id: str, contract: ContractCreate):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid start_date - use YYYY-MM-DD")
 
-    principal_amount, total_payable, installment_amount = compute_contract_financials(
-        contract.vehicle_price, contract.down_payment, contract.interest_rate, contract.term_months
+    if contract.vehicle_price is None and not (contract.installment_amount and contract.term_months and contract.term_months > 0):
+        raise HTTPException(
+            status_code=400,
+            detail="Provide a vehicle price, or a monthly payment and term (months) so it can be calculated"
+        )
+
+    vehicle_price, principal_amount, total_payable, installment_amount = compute_contract_financials(
+        contract.vehicle_price, contract.down_payment, contract.installment_amount, contract.term_months
     )
 
     # next_due_date: an explicit override wins (used when transferring an
@@ -5058,10 +5087,10 @@ async def create_contract(public_id: str, contract: ContractCreate):
         'customer_id': customer.get('id'),
         'vehicle_id': vehicle.get('id'),
         'sale_type': contract.sale_type,
-        'vehicle_price': contract.vehicle_price,
+        'vehicle_price': vehicle_price,
         'down_payment': contract.down_payment,
         'principal_amount': principal_amount,
-        'interest_rate': contract.interest_rate,
+        'interest_rate': 0,
         'total_payable': total_payable,
         'term_months': contract.term_months,
         'payment_frequency': contract.payment_frequency,
@@ -5104,21 +5133,24 @@ async def update_contract(public_id: str, contract_public_id: str, update: Contr
         return contract
 
     # If any of the deal's underlying inputs changed, recompute the derived
-    # financial fields from the (possibly mixed new/existing) values - unless
-    # this same request also passed an explicit installment_amount, which
-    # wins over the recomputed one (a manual correction).
-    recompute_keys = {'vehicle_price', 'down_payment', 'interest_rate', 'term_months'}
+    # financial fields from the (possibly mixed new/existing) values.
+    # Editing vehicle_price directly always wins for that request - it's
+    # only DERIVED from installment_amount when the owner is editing the
+    # monthly payment without also touching vehicle_price.
+    recompute_keys = {'vehicle_price', 'down_payment', 'installment_amount', 'term_months'}
     if recompute_keys & update_data.keys():
         vehicle_price = update_data.get('vehicle_price', contract.get('vehicle_price'))
         down_payment = update_data.get('down_payment', contract.get('down_payment'))
-        interest_rate = update_data.get('interest_rate', contract.get('interest_rate'))
+        installment_amount = update_data.get('installment_amount', contract.get('installment_amount'))
         term_months = update_data.get('term_months', contract.get('term_months'))
-        principal_amount, total_payable, installment_amount = compute_contract_financials(
-            vehicle_price, down_payment, interest_rate, term_months
+        prefer_installment = 'installment_amount' in update_data and 'vehicle_price' not in update_data
+        vehicle_price, principal_amount, total_payable, installment_amount = compute_contract_financials(
+            vehicle_price, down_payment, installment_amount, term_months, prefer_installment=prefer_installment
         )
+        update_data['vehicle_price'] = vehicle_price
         update_data['principal_amount'] = principal_amount
         update_data['total_payable'] = total_payable
-        update_data.setdefault('installment_amount', installment_amount)
+        update_data['installment_amount'] = installment_amount
 
     update_data['updated_at'] = datetime.utcnow().isoformat()
     try:
