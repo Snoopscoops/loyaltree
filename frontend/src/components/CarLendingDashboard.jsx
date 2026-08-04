@@ -432,6 +432,7 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
 
 function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const [activeTab, setActiveTab] = useState('overview')
+  const [incomePeriod, setIncomePeriod] = useState('week') // which bucket the Overview net-income card shows
   const [business, setBusiness] = useState(null)
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState('')
@@ -1208,6 +1209,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
             <div style={styles.statsGrid}>
               <StatCard label="Active contracts" value={contracts.filter(c => c.status === 'active').length} />
               <StatCard label="Vehicles in stock" value={vehicles.filter(v => v.status === 'available').length} />
+              <StatCard label="Vehicles sold" value={vehicles.filter(v => v.status === 'sold' || v.status === 'financed').length} />
               <StatCard
                 label="Overdue payments"
                 value={contracts.filter(c => c.status === 'overdue').length}
@@ -1222,11 +1224,8 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
             <p style={styles.sectionSubtitle}>
               Price to sell minus total cost to buy, counted on each deal's start date. Total cost never shows on the showroom — it's for this computation only.
             </p>
-            <div style={styles.statsGrid}>
-              <StatCard label="This week" value={formatPeso(netIncome.week)} accent={netIncome.week < 0 ? '#dc2626' : '#16a34a'} />
-              <StatCard label="This month" value={formatPeso(netIncome.month)} accent={netIncome.month < 0 ? '#dc2626' : '#16a34a'} />
-              <StatCard label="This quarter" value={formatPeso(netIncome.quarter)} accent={netIncome.quarter < 0 ? '#dc2626' : '#16a34a'} />
-              <StatCard label="This year" value={formatPeso(netIncome.year)} accent={netIncome.year < 0 ? '#dc2626' : '#16a34a'} />
+            <div style={{ maxWidth: 220, marginBottom: 24 }}>
+              <NetIncomeCard period={incomePeriod} onPeriodChange={setIncomePeriod} stats={netIncome} />
             </div>
 
             <div style={styles.announcementsSection}>
@@ -2302,14 +2301,21 @@ function computeDealProfits(vehicles, contracts) {
     .filter(d => d.dealDate)
 }
 
+// Returns { profit, count } for each period bucket - count is the number
+// of deals (vehicles sold/financed) whose date falls in that bucket, so
+// the Overview card can show both net income and units sold for whichever
+// period the owner has selected.
 function netIncomeByPeriod(deals) {
   const now = new Date()
-  const since = (start) => deals.filter(d => new Date(d.dealDate) >= start).reduce((sum, d) => sum + d.profit, 0)
+  const bucket = (start) => {
+    const inRange = deals.filter(d => new Date(d.dealDate) >= start)
+    return { profit: inRange.reduce((sum, d) => sum + d.profit, 0), count: inRange.length }
+  }
   return {
-    week: since(startOfWeek(now)),
-    month: since(startOfMonth(now)),
-    quarter: since(startOfQuarter(now)),
-    year: since(startOfYear(now)),
+    week: bucket(startOfWeek(now)),
+    month: bucket(startOfMonth(now)),
+    quarter: bucket(startOfQuarter(now)),
+    year: bucket(startOfYear(now)),
   }
 }
 
@@ -2321,6 +2327,31 @@ function rankAgents(deals) {
     byAgent[d.agent].deals += 1
   })
   return Object.values(byAgent).sort((a, b) => b.profit - a.profit)
+}
+
+const INCOME_PERIOD_LABELS = { week: 'This week', month: 'This month', quarter: 'This quarter', year: 'This year' }
+
+// Single net-income card with a period dropdown (week/month/quarter/year)
+// instead of 4 separate cards - swaps the figure + units-sold count shown
+// underneath based on the selected period.
+function NetIncomeCard({ period, onPeriodChange, stats }) {
+  const val = stats[period] || { profit: 0, count: 0 }
+  return (
+    <div style={styles.statCard}>
+      <select
+        value={period}
+        onChange={e => onPeriodChange(e.target.value)}
+        style={styles.periodSelect}
+      >
+        {Object.entries(INCOME_PERIOD_LABELS).map(([key, label]) => (
+          <option key={key} value={key}>{label}</option>
+        ))}
+      </select>
+      <div style={{ ...styles.statValue, color: val.profit < 0 ? '#dc2626' : '#16a34a' }}>{formatPeso(val.profit)}</div>
+      <div style={styles.statLabel}>Net income</div>
+      <div style={styles.statHint}>{val.count} vehicle{val.count === 1 ? '' : 's'} sold</div>
+    </div>
+  )
 }
 
 function StatCard({ label, value, accent, hint }) {
@@ -2386,6 +2417,11 @@ const styles = {
   select: {
     padding: '10px 12px', border: '1px solid #e2e8f0', borderRadius: 8,
     fontSize: 13, background: 'white', cursor: 'pointer',
+  },
+  periodSelect: {
+    padding: '4px 8px', border: '1px solid #e2e8f0', borderRadius: 6,
+    fontSize: 11, background: '#f8fafc', cursor: 'pointer', color: '#64748b',
+    marginBottom: 8, fontWeight: 600,
   },
   cardList: { display: 'flex', flexDirection: 'column', gap: 10 },
   recordCard: {
