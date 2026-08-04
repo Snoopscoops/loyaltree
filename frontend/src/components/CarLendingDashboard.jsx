@@ -430,7 +430,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
 
   // ---------- Showroom settings (hero banner + payment methods link shown
   // on the public /showroom page) ----------
-  const [showroomForm, setShowroomForm] = useState({ hero_image_url: '', payment_methods_url: '', payment_methods_label: 'Payment Methods' })
+  const [showroomForm, setShowroomForm] = useState({ hero_image_url: '', contact_text: '' })
   const [uploadingHero, setUploadingHero] = useState(false)
   const [savingShowroom, setSavingShowroom] = useState(false)
   const [showroomQR, setShowroomQR] = useState(null) // { svg, showroom_url }, or null
@@ -515,8 +515,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
       if (showroomData) {
         setShowroomForm({
           hero_image_url: showroomData.hero_image_url || '',
-          payment_methods_url: showroomData.payment_methods_url || '',
-          payment_methods_label: showroomData.payment_methods_label || 'Payment Methods',
+          contact_text: showroomData.contact_text || '',
         })
       }
     } catch (err) {
@@ -800,8 +799,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           hero_image_url: showroomForm.hero_image_url || null,
-          payment_methods_url: showroomForm.payment_methods_url || null,
-          payment_methods_label: showroomForm.payment_methods_label || null,
+          contact_text: showroomForm.contact_text,
         }),
       })
       const data = await res.json().catch(() => ({}))
@@ -1101,7 +1099,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const shareWalletLink = () => {
     if (!walletShare) return
     if (navigator.share) {
-      navigator.share({ title: `${walletShare.customer_name}'s Loan Card`, url: walletShare.wallet_url }).catch(() => {})
+      navigator.share({ title: `${walletShare.customer_name}'s card`, url: walletShare.wallet_url }).catch(() => {})
     } else {
       navigator.clipboard?.writeText(walletShare.wallet_url)
       flash('Wallet link copied')
@@ -1367,20 +1365,15 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                 )}
               </div>
 
-              <label style={styles.label}>Payment methods link</label>
-              <input
-                style={styles.input}
-                value={showroomForm.payment_methods_url}
-                onChange={e => setShowroomForm({ ...showroomForm, payment_methods_url: e.target.value })}
-                placeholder="https://… (GCash QR, bank details page, etc.)"
+              <label style={styles.label}>Inquiries / contact note</label>
+              <textarea
+                style={{ ...styles.input, minHeight: 70, resize: 'vertical', fontFamily: 'inherit' }}
+                value={showroomForm.contact_text}
+                onChange={e => setShowroomForm({ ...showroomForm, contact_text: e.target.value })}
+                placeholder="e.g. For inquiries, call 0917-123-4567 or visit us at..."
+                maxLength={280}
               />
-              <label style={styles.label}>Button label</label>
-              <input
-                style={styles.input}
-                value={showroomForm.payment_methods_label}
-                onChange={e => setShowroomForm({ ...showroomForm, payment_methods_label: e.target.value })}
-                placeholder="Payment Methods"
-              />
+              <div style={styles.photoCountHint}>{showroomForm.contact_text.length}/280 · shown as plain text below the hero banner on the showroom page</div>
 
               <div style={{ ...styles.modalActions, marginTop: 14, justifyContent: 'flex-start' }}>
                 <button onClick={saveShowroomConfig} disabled={savingShowroom || uploadingHero} style={styles.newBtnAlt}>
@@ -2143,7 +2136,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
         <div style={styles.modalOverlay} onClick={() => setWalletShare(null)}>
           <div style={styles.modal} onClick={e => e.stopPropagation()}>
             <h3 style={styles.modalTitle}>Share {walletShare.customer_name}'s wallet card</h3>
-            <p style={styles.hint}>For buyers already on the books who never scanned the Join QR themselves — let them scan this (or send the link) to add their Loan Card to their own phone's wallet.</p>
+            <p style={styles.hint}>For buyers already on the books who never scanned the Join QR themselves — let them scan this (or send the link) to add their card to their own phone's wallet.</p>
             <div style={styles.qrWrap}>
               <img src={svgToDataUri(walletShare.svg)} alt={`${walletShare.customer_name}'s wallet QR code`} style={styles.qrImg} />
             </div>
@@ -2160,7 +2153,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
         <div style={styles.modalOverlay} onClick={() => setJoinQR(null)}>
           <div style={styles.modal} onClick={e => e.stopPropagation()}>
             <h3 style={styles.modalTitle}>Buyer self-signup QR</h3>
-            <p style={styles.hint}>Print or display this in the showroom. Scanning it lets a new buyer register themselves and add their Loan Card straight to Google/Apple Wallet — no dashboard data entry needed.</p>
+            <p style={styles.hint}>Print or display this in the showroom. Scanning it lets a new buyer register themselves and add their card straight to Google/Apple Wallet — no dashboard data entry needed.</p>
             <div style={styles.qrWrap}>
               <img src={svgToDataUri(joinQR.svg)} alt="Buyer self-signup QR code" style={styles.qrImg} />
             </div>

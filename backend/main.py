@@ -541,15 +541,15 @@ class VehicleUpdate(BaseModel):
     image_urls: Optional[List[str]] = None
 
 # --- Car Lending / Showroom: public showroom page settings (one row per
-# business - hero banner shown at the top of /showroom/{public_id} and the
-# "Payment Methods" link shown just below it). Stored directly on the
-# businesses table (see showroom_hero_image_url / showroom_payment_methods_url
-# / showroom_payment_methods_label columns) since it's a single settings
-# object per business, same spirit as logo_url. ---
+# business - hero banner shown at the top of /showroom/{public_id} and an
+# owner-editable inquiries/contact note shown just below it, e.g. "For
+# inquiries, call 0917-xxx-xxxx" - free text, not a link). Stored directly
+# on the businesses table (see showroom_hero_image_url /
+# showroom_contact_text columns) since it's a single settings object per
+# business, same spirit as logo_url. ---
 class ShowroomConfigUpdate(BaseModel):
     hero_image_url: Optional[str] = None
-    payment_methods_url: Optional[str] = None
-    payment_methods_label: Optional[str] = Field(default=None, max_length=40)
+    contact_text: Optional[str] = Field(default=None, max_length=280)
 
 # --- Car Lending / Showroom: contracts (the deal - cash sale or financed) ---
 class ContractCreate(BaseModel):
@@ -2220,7 +2220,7 @@ def build_cl_wallet_class(business: dict) -> dict:
     loyalty_class = {
         'id': class_id,
         'issuerName': biz_name,
-        'programName': f'{biz_name} Loan Card',
+        'programName': biz_name,
         'reviewStatus': 'UNDER_REVIEW',
         'hexBackgroundColor': '#0f172a',
         'textModulesData': [
@@ -2367,7 +2367,7 @@ def build_cl_apple_pass_json(customer: dict, business: dict, contract: Optional[
         'teamIdentifier': APPLE_TEAM_IDENTIFIER,
         'organizationName': biz_name,
         'serialNumber': serial,
-        'description': f'{biz_name} Loan Card',
+        'description': biz_name,
         'logoText': biz_name[:20],
         'backgroundColor': 'rgb(15, 23, 42)',
         'foregroundColor': 'rgb(255, 255, 255)',
@@ -4726,16 +4726,15 @@ async def get_cl_join_qr_code(public_id: str):
 
 @app.get("/api/v1/business/{public_id}/showroom-config")
 async def get_showroom_config(public_id: str):
-    """Hero banner + payment-methods link shown on the public /showroom
-    page. Read straight off the businesses row - no separate table, same as
-    logo_url."""
+    """Hero banner + owner-editable contact/inquiries note shown on the
+    public /showroom page. Read straight off the businesses row - no
+    separate table, same as logo_url."""
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
     return {
         "hero_image_url": business.get("showroom_hero_image_url"),
-        "payment_methods_url": business.get("showroom_payment_methods_url"),
-        "payment_methods_label": business.get("showroom_payment_methods_label") or "Payment Methods",
+        "contact_text": business.get("showroom_contact_text") or "",
     }
 
 @app.post("/api/v1/business/{public_id}/showroom-config")
@@ -4746,8 +4745,7 @@ async def save_showroom_config(public_id: str, config: ShowroomConfigUpdate):
 
     update_data = {k: v for k, v in {
         'showroom_hero_image_url': config.hero_image_url,
-        'showroom_payment_methods_url': config.payment_methods_url,
-        'showroom_payment_methods_label': config.payment_methods_label,
+        'showroom_contact_text': config.contact_text,
     }.items() if v is not None}
     if not update_data:
         return await get_showroom_config(public_id)
@@ -4763,7 +4761,7 @@ async def get_showroom_qr_code(public_id: str):
     """QR that opens the public showroom page (/showroom/{public_id}) -
     print it, display it in the physical showroom, or drop it into
     marketing material. This is also the link surfaced inside the buyer's
-    Google/Apple Wallet loan card (see build_cl_wallet_object /
+    Google/Apple Wallet card (see build_cl_wallet_object /
     build_cl_apple_pass_json) so tapping through from the wallet pass lands
     here too."""
     business = safe_get_business(public_id)
@@ -7232,6 +7230,10 @@ async def cl_customer_wallet_page(customer_public_id: str):
         '<a href="' + BASE_URL + '/api/v1/cl-customer/' + customer_public_id + '/apple-wallet-pass" class="wallet-btn apple-btn">'
         '&#63743; Add to Apple Wallet</a>'
     )
+    showroom_html = (
+        '<a href="' + BASE_URL + '/showroom/' + html_lib.escape(business.get('public_id', '')) + '" class="wallet-btn showroom-btn">'
+        '&#128663; Browse Showroom</a>'
+    )
     logo_html = ''
     if logo_url:
         logo_html = '<img src="' + logo_url + '" style="width:64px;height:64px;border-radius:16px;object-fit:cover;margin-bottom:12px;" alt="Logo"/>'
@@ -7251,7 +7253,7 @@ async def cl_customer_wallet_page(customer_public_id: str):
     html = (
         '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
-        '<title>' + html_lib.escape(biz_name) + ' Loan Card</title>'
+        '<title>' + html_lib.escape(biz_name) + '</title>'
         '<style>*{box-sizing:border-box;margin:0;padding:0}'
         'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;'
         'background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%);'
@@ -7265,6 +7267,7 @@ async def cl_customer_wallet_page(customer_public_id: str):
         '.wallet-btn{display:block;width:100%;padding:14px;background:#1a73e8;color:white;'
         'text-decoration:none;border-radius:10px;font-weight:600;margin-bottom:12px;text-align:center}'
         '.apple-btn{background:#000000}'
+        '.showroom-btn{background:#0d9488}'
         '</style></head><body>'
         '<div class="card"><div class="loan-card">'
         + logo_html +
@@ -7272,7 +7275,7 @@ async def cl_customer_wallet_page(customer_public_id: str):
         '<h3>' + html_lib.escape(customer.get('name', '')) + '</h3>'
         + balance_html +
         '</div>'
-        + apple_wallet_html + google_wallet_html +
+        + apple_wallet_html + google_wallet_html + showroom_html +
         '</div></body></html>'
     )
     return HTMLResponse(html)
@@ -7579,7 +7582,7 @@ async def cl_customer_join_page(business_public_id: str):
             '<div class="card" id="card">'
             + logo_html +
             '<h1>' + html_lib.escape(biz_name) + '</h1>'
-            '<p class="subtitle">Register as a buyer/member — add your Loan Card to your phone\'s wallet for balance, due-date reminders, and dealership updates.</p>'
+            '<p class="subtitle">Register as a buyer/member — add your card to your phone\'s wallet for balance, due-date reminders, and dealership updates.</p>'
             '<form id="signupForm">'
             '<input type="text" id="name" placeholder="Full name" required>'
             '<input type="tel" id="phone" placeholder="Phone number" required>'
@@ -7679,11 +7682,10 @@ a{color:inherit}
 .hero h1{font-size:clamp(24px,5vw,34px);font-weight:800;letter-spacing:-0.02em}
 .hero p{font-size:14px;opacity:0.78;margin-top:6px;max-width:440px}
 
-.payment-wrap{display:flex;justify-content:center;margin-top:-22px;position:relative;z-index:5;padding:0 16px}
-.payment-link{display:inline-flex;align-items:center;gap:8px;text-align:center;
-  background:linear-gradient(135deg,var(--accent) 0%,var(--accent-dark) 100%);color:#fff;text-decoration:none;font-weight:700;font-size:14px;
-  padding:14px 26px;border-radius:999px;box-shadow:0 12px 24px rgba(13,148,136,0.32);transition:transform .15s ease,box-shadow .15s ease}
-.payment-link:hover{transform:translateY(-2px);box-shadow:0 16px 30px rgba(13,148,136,0.4)}
+.contact-wrap{display:flex;justify-content:center;margin-top:-16px;position:relative;z-index:5;padding:0 20px}
+.contact-note{max-width:520px;text-align:center;background:#fff;border:1px solid var(--line);color:var(--ink);
+  font-size:13.5px;line-height:1.5;padding:14px 22px;border-radius:16px;box-shadow:0 10px 24px rgba(15,23,42,0.08)}
+.contact-note b{font-weight:700}
 
 .stats-strip{max-width:1080px;margin:30px auto 0;padding:0 20px;display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .stats-strip h2{font-size:19px;font-weight:800;letter-spacing:-0.01em}
@@ -7839,8 +7841,7 @@ async def showroom_page(business_public_id: str):
         biz_name = business.get('name', '')
         logo_url = business.get('logo_url')
         hero_url = business.get('showroom_hero_image_url')
-        pay_url = business.get('showroom_payment_methods_url')
-        pay_label = business.get('showroom_payment_methods_label') or 'Payment Methods'
+        contact_text = business.get('showroom_contact_text')
 
         try:
             vehicles = supabase.table("vehicles").select("*").eq("business_id", business.get("id")) \
@@ -7861,11 +7862,12 @@ async def showroom_page(business_public_id: str):
             '</div></div>'
         )
 
-        if pay_url:
-            payment_html = (
-                '<div class="payment-wrap"><a class="payment-link" href="' + html_lib.escape(pay_url) + '" target="_blank" rel="noopener">'
-                '&#128179; ' + html_lib.escape(pay_label) + '</a></div>'
-            )
+        if contact_text and contact_text.strip():
+            # Free text, not a link - preserve the owner's own line breaks
+            # (e.g. "For inquiries, call 0917-xxx-xxxx" on one line, a second
+            # line for an address) by turning them into <br> after escaping.
+            escaped = html_lib.escape(contact_text.strip()).replace('\n', '<br>')
+            payment_html = '<div class="contact-wrap"><div class="contact-note">' + escaped + '</div></div>'
         else:
             payment_html = ''
 
@@ -7999,7 +8001,7 @@ async def cl_customer_self_signup(business_public_id: str, signup: CLCustomerSel
     return {
         "public_id": customer_public_id,
         "name": signup.name,
-        "message": "Registered - add your Loan Card to your wallet.",
+        "message": "Registered - add your card to your wallet.",
     }
 
 # WALLET PAGE
