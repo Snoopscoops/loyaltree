@@ -76,6 +76,17 @@ SUPER_ADMIN_PASSWORD = os.getenv('SUPER_ADMIN_PASSWORD', '')
 PAYMONGO_SECRET_KEY = os.getenv('PAYMONGO_SECRET_KEY', '')
 PAYMONGO_WEBHOOK_SECRET = os.getenv('PAYMONGO_WEBHOOK_SECRET', '')
 PAYMONGO_API_BASE = 'https://api.paymongo.com/v1'
+
+# Cloudinary (vehicle photo uploads from the Inventory / AddVehicleModal).
+# Upload preset is SIGNED, so the browser can't upload straight to
+# Cloudinary on its own - it first calls
+# POST /api/v1/business/{public_id}/cloudinary-signature to get a
+# short-lived signature from this server (the only place CLOUDINARY_API_SECRET
+# ever lives), then uploads directly to Cloudinary using that signature.
+CLOUDINARY_CLOUD_NAME = os.getenv('CLOUDINARY_CLOUD_NAME', 'du72linxf')
+CLOUDINARY_API_KEY = os.getenv('CLOUDINARY_API_KEY', '')
+CLOUDINARY_API_SECRET = os.getenv('CLOUDINARY_API_SECRET', '')
+CLOUDINARY_UPLOAD_PRESET = os.getenv('CLOUDINARY_UPLOAD_PRESET', 'LoyaltyTree_Images')
 SUBSCRIPTION_PERIOD_DAYS = 30  # how long a successful payment extends access for
 TRIAL_PERIOD_DAYS = 7  # free trial length granted automatically on signup, no payment/approval needed
 
@@ -524,6 +535,17 @@ class VehicleUpdate(BaseModel):
     price: Optional[float] = Field(default=None, ge=0)
     status: Optional[Literal['available', 'reserved', 'sold', 'financed']] = None
     image_url: Optional[str] = None
+
+# --- Car Lending / Showroom: public showroom page settings (one row per
+# business - hero banner shown at the top of /showroom/{public_id} and the
+# "Payment Methods" link shown just below it). Stored directly on the
+# businesses table (see showroom_hero_image_url / showroom_payment_methods_url
+# / showroom_payment_methods_label columns) since it's a single settings
+# object per business, same spirit as logo_url. ---
+class ShowroomConfigUpdate(BaseModel):
+    hero_image_url: Optional[str] = None
+    payment_methods_url: Optional[str] = None
+    payment_methods_label: Optional[str] = Field(default=None, max_length=40)
 
 # --- Car Lending / Showroom: contracts (the deal - cash sale or financed) ---
 class ContractCreate(BaseModel):
@@ -2249,6 +2271,13 @@ def build_cl_wallet_object(customer: dict, business: dict, contract: Optional[di
             {'header': 'Status', 'body': status_body},
             {'header': 'Next Due', 'body': due},
         ],
+        # Tappable link on the card itself - opens the public showroom
+        # (browse current inventory / payment methods link). Separate from
+        # the barcode above on purpose: the barcode stays a bare public_id
+        # for the owner's own scan-to-lookup workflow.
+        'linksModuleData': {
+            'uris': [{'uri': f'{BASE_URL}/showroom/{business.get("public_id", "")}', 'description': 'Browse Showroom'}]
+        },
     }
 
 def sync_cl_wallet_object(customer: dict, business: dict, contract: Optional[dict],
@@ -2310,6 +2339,14 @@ def build_cl_apple_pass_json(customer: dict, business: dict, contract: Optional[
 
     back_fields = [
         {'key': 'about', 'label': 'About', 'value': 'Your loan balance and next payment due date.'},
+        {
+            'key': 'showroom',
+            'label': 'Browse Showroom',
+            # Apple Wallet auto-links a bare URL in a back field's value, so
+            # this renders as a tappable link straight to the public
+            # inventory page - no extra "links module" concept on PassKit.
+            'value': f'{BASE_URL}/showroom/{business.get("public_id", "")}',
+        },
         {
             'key': 'announcement',
             'label': '📢 ANNOUNCEMENT',
@@ -4683,7 +4720,95 @@ async def get_cl_join_qr_code(public_id: str):
         "business_name": business.get("name", ""),
     })
 
+@app.get("/api/v1/business/{public_id}/showroom-config")
+async def get_showroom_config(public_id: str):
+    """Hero banner + payment-methods link shown on the public /showroom
+    page. Read straight off the businesses row - no separate table, same as
+    logo_url."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    return {
+        "hero_image_url": business.get("showroom_hero_image_url"),
+        "payment_methods_url": business.get("showroom_payment_methods_url"),
+        "payment_methods_label": business.get("showroom_payment_methods_label") or "Payment Methods",
+    }
+
+@app.post("/api/v1/business/{public_id}/showroom-config")
+async def save_showroom_config(public_id: str, config: ShowroomConfigUpdate):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    update_data = {k: v for k, v in {
+        'showroom_hero_image_url': config.hero_image_url,
+        'showroom_payment_methods_url': config.payment_methods_url,
+        'showroom_payment_methods_label': config.payment_methods_label,
+    }.items() if v is not None}
+    if not update_data:
+        return await get_showroom_config(public_id)
+
+    try:
+        supabase.table("businesses").update(update_data).eq("id", business.get("id")).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+    return await get_showroom_config(public_id)
+
+@app.get("/api/v1/business/{public_id}/showroom-qr-code")
+async def get_showroom_qr_code(public_id: str):
+    """QR that opens the public showroom page (/showroom/{public_id}) -
+    print it, display it in the physical showroom, or drop it into
+    marketing material. This is also the link surfaced inside the buyer's
+    Google/Apple Wallet loan card (see build_cl_wallet_object /
+    build_cl_apple_pass_json) so tapping through from the wallet pass lands
+    here too."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    showroom_url = f'{BASE_URL}/showroom/{public_id}'
+    svg = generate_qr_svg(showroom_url)
+    return JSONResponse({
+        "svg": svg,
+        "showroom_url": showroom_url,
+        "business_name": business.get("name", ""),
+    })
+
 # CAR LENDING / SHOWROOM - VEHICLE INVENTORY
+
+@app.post("/api/v1/business/{public_id}/cloudinary-signature")
+async def get_cloudinary_signature(public_id: str):
+    """Signs a Cloudinary upload for AddVehicleModal. The preset
+    (LoyaltyTree_Images) is a SIGNED preset, so the browser can't hit
+    Cloudinary directly - only params listed here are covered by the
+    signature, so the frontend must send exactly these same params (plus
+    file + api_key, which are never part of the signature) on the actual
+    upload. Cloudinary's signing rule: sort params alphabetically by key,
+    join as key=value&key2=value2 (no api_secret in that string), then
+    sha1(that_string + api_secret)."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    if not CLOUDINARY_API_KEY or not CLOUDINARY_API_SECRET:
+        raise HTTPException(status_code=503, detail="Cloudinary is not configured on this server")
+
+    timestamp = int(datetime.utcnow().timestamp())
+    folder = f'vehicles/{public_id}'
+    params_to_sign = {
+        'folder': folder,
+        'timestamp': timestamp,
+        'upload_preset': CLOUDINARY_UPLOAD_PRESET,
+    }
+    to_sign = '&'.join(f'{k}={v}' for k, v in sorted(params_to_sign.items()))
+    signature = hashlib.sha1((to_sign + CLOUDINARY_API_SECRET).encode('utf-8')).hexdigest()
+
+    return {
+        "signature": signature,
+        "timestamp": timestamp,
+        "api_key": CLOUDINARY_API_KEY,
+        "cloud_name": CLOUDINARY_CLOUD_NAME,
+        "upload_preset": CLOUDINARY_UPLOAD_PRESET,
+        "folder": folder,
+    }
 
 @app.get("/api/v1/business/{public_id}/vehicles")
 async def list_vehicles(public_id: str, status: Optional[str] = None):
@@ -7507,6 +7632,122 @@ async def cl_customer_join_page(business_public_id: str):
         import traceback
         traceback.print_exc()
         return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Error</h1><p>Could not load join page: " + str(e) + "</p></div>")
+
+# Public showroom - lists every vehicle currently for sale (status
+# 'available' or 'reserved'). A vehicle appears here the moment it's added
+# via POST /vehicles and disappears the moment a contract is written against
+# it (create_contract flips it to 'sold'/'financed') - no separate sync step
+# needed, this just reads live off the vehicles table. Scanning the
+# showroom QR (GET .../showroom-qr-code) or tapping the link on a buyer's
+# Wallet loan card both land here.
+@app.get("/showroom/{business_public_id}", response_class=HTMLResponse)
+async def showroom_page(business_public_id: str):
+    try:
+        business = safe_get_business(business_public_id)
+        if not business:
+            return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Business not found</h1><p>This link is invalid.</p></div>")
+
+        biz_name = business.get('name', '')
+        logo_url = business.get('logo_url')
+        hero_url = business.get('showroom_hero_image_url')
+        pay_url = business.get('showroom_payment_methods_url')
+        pay_label = business.get('showroom_payment_methods_label') or 'Payment Methods'
+
+        try:
+            vehicles = supabase.table("vehicles").select("*").eq("business_id", business.get("id")) \
+                .in_("status", ["available", "reserved"]).order("created_at", desc=True).execute().data or []
+        except Exception:
+            vehicles = []
+
+        if hero_url:
+            hero_html = (
+                '<div class="hero" style="background-image:url(\'' + html_lib.escape(hero_url) + '\')">'
+                '<div class="hero-overlay"><div class="hero-logo">' +
+                ('<img src="' + html_lib.escape(logo_url) + '" alt="Logo"/>' if logo_url else '') +
+                '</div><h1>' + html_lib.escape(biz_name) + '</h1><p>Browse our current inventory</p></div></div>'
+            )
+        else:
+            hero_html = (
+                '<div class="hero hero-fallback"><div class="hero-overlay"><div class="hero-logo">' +
+                ('<img src="' + html_lib.escape(logo_url) + '" alt="Logo"/>' if logo_url else '&#128663;') +
+                '</div><h1>' + html_lib.escape(biz_name) + '</h1><p>Browse our current inventory</p></div></div>'
+            )
+
+        if pay_url:
+            payment_html = (
+                '<a class="payment-link" href="' + html_lib.escape(pay_url) + '" target="_blank" rel="noopener">'
+                '&#128179; ' + html_lib.escape(pay_label) + '</a>'
+            )
+        else:
+            payment_html = ''
+
+        if vehicles:
+            cards = []
+            for v in vehicles:
+                img = v.get('image_url')
+                img_html = ('<img src="' + html_lib.escape(img) + '" alt="' + html_lib.escape(v.get('make', '')) + '"/>') if img \
+                    else '<div class="no-image">&#128663;</div>'
+                title = html_lib.escape(f"{v.get('year') or ''} {v.get('make', '')} {v.get('model', '')}".strip())
+                price = v.get('price') or 0
+                price_str = f"₱{price:,.0f}"
+                badge = '<span class="badge reserved">Reserved</span>' if v.get('status') == 'reserved' else ''
+                meta_bits = []
+                if v.get('color'):
+                    meta_bits.append(html_lib.escape(str(v.get('color'))))
+                if v.get('mileage') is not None:
+                    meta_bits.append(f"{v.get('mileage'):,} km")
+                meta = ' &middot; '.join(meta_bits)
+                cards.append(
+                    '<div class="car-card">' + img_html +
+                    '<div class="car-info">' + badge +
+                    '<h3>' + title + '</h3>' +
+                    ('<p class="car-meta">' + meta + '</p>' if meta else '') +
+                    '<p class="car-price">' + price_str + '</p>'
+                    '</div></div>'
+                )
+            grid_html = '<div class="car-grid">' + ''.join(cards) + '</div>'
+        else:
+            grid_html = '<div class="empty-state"><p>No vehicles available right now - check back soon!</p></div>'
+
+        html = (
+            '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+            '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+            '<title>' + html_lib.escape(biz_name) + ' Showroom</title>'
+            '<style>'
+            '*{box-sizing:border-box;margin:0;padding:0}'
+            'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#f8fafc;color:#1e293b;padding-bottom:40px}'
+            '.hero{position:relative;height:260px;background-size:cover;background-position:center;'
+            'background-color:#0f172a}'
+            '.hero-fallback{background:linear-gradient(135deg,#0f172a 0%,#334155 100%)}'
+            '.hero-overlay{position:absolute;inset:0;background:linear-gradient(180deg,rgba(15,23,42,0.35) 0%,rgba(15,23,42,0.75) 100%);'
+            'display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:#fff;padding:20px}'
+            '.hero-logo img{width:64px;height:64px;border-radius:16px;object-fit:cover;margin-bottom:12px}'
+            '.hero-logo{font-size:40px;margin-bottom:8px}'
+            '.hero h1{font-size:26px;font-weight:800}'
+            '.hero p{font-size:14px;opacity:0.85;margin-top:4px}'
+            '.payment-link{display:block;max-width:480px;margin:16px auto 0;text-align:center;'
+            'background:#16a34a;color:#fff;text-decoration:none;font-weight:700;padding:14px 20px;border-radius:12px;'
+            'box-shadow:0 8px 20px rgba(22,163,74,0.25)}'
+            '.car-grid{max-width:960px;margin:28px auto 0;padding:0 16px;display:grid;'
+            'grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px}'
+            '.car-card{background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 14px rgba(0,0,0,0.06)}'
+            '.car-card img{width:100%;height:150px;object-fit:cover;display:block}'
+            '.no-image{width:100%;height:150px;background:#e2e8f0;display:flex;align-items:center;justify-content:center;font-size:40px;color:#94a3b8}'
+            '.car-info{padding:14px}'
+            '.car-info h3{font-size:16px;margin:4px 0 2px}'
+            '.car-meta{font-size:12px;color:#64748b}'
+            '.car-price{font-size:16px;font-weight:800;color:#0f172a;margin-top:6px}'
+            '.badge{display:inline-block;font-size:11px;font-weight:700;padding:3px 8px;border-radius:999px;background:#fef3c7;color:#92400e}'
+            '.empty-state{max-width:480px;margin:60px auto;text-align:center;color:#64748b;padding:0 20px}'
+            '</style></head><body>'
+            + hero_html + payment_html + grid_html +
+            '</body></html>'
+        )
+        return HTMLResponse(html)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Error</h1><p>Could not load showroom: " + str(e) + "</p></div>")
 
 @app.post("/api/v1/cl-join/{business_public_id}")
 async def cl_customer_self_signup(business_public_id: str, signup: CLCustomerSelfSignup):

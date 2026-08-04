@@ -120,6 +120,253 @@ function svgToDataUri(svg) {
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
 }
 
+// Add/Edit vehicle modal. Owns its own form + photo-upload state so it can
+// be dropped in anywhere without the parent wiring up a vehicleForm object.
+// Photo upload goes through Cloudinary's SIGNED upload flow (preset
+// "LoyaltyTree_Images" is signed, not unsigned) - the browser can't sign
+// the request itself, so it first asks our backend for a short-lived
+// signature (POST /cloudinary-signature, the only place holding the API
+// secret), then uploads straight to Cloudinary using that signature.
+// Saving the vehicle (POST/PATCH .../vehicles) is what makes it show up
+// on (or drop off) the public showroom - see backend comments.
+// Shared Cloudinary signed-upload helper - used by AddVehicleModal (vehicle
+// photos) and the Showroom settings panel (hero banner). Preset
+// "LoyaltyTree_Images" is signed, so this always goes through our own
+// backend first to get a short-lived signature (POST .../cloudinary-signature)
+// before uploading straight to Cloudinary. Throws on any failure; caller
+// decides how to surface it.
+async function uploadImageToCloudinary(apiBase, businessId, file) {
+  if (!file.type.startsWith('image/')) {
+    throw new Error('Please choose an image file')
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    throw new Error('Image must be smaller than 10MB')
+  }
+  const sigRes = await fetch(`${apiBase}/api/v1/business/${businessId}/cloudinary-signature`, { method: 'POST' })
+  const sig = await sigRes.json().catch(() => ({}))
+  if (!sigRes.ok) throw new Error(sig.detail || 'Could not get upload signature')
+
+  // Must match exactly what the backend signed: folder, timestamp,
+  // upload_preset - plus file/api_key/signature, which are never part of
+  // the signed string itself.
+  const uploadData = new FormData()
+  uploadData.append('file', file)
+  uploadData.append('api_key', sig.api_key)
+  uploadData.append('timestamp', sig.timestamp)
+  uploadData.append('signature', sig.signature)
+  uploadData.append('upload_preset', sig.upload_preset)
+  uploadData.append('folder', sig.folder)
+
+  const cloudRes = await fetch(`https://api.cloudinary.com/v1_1/${sig.cloud_name}/image/upload`, {
+    method: 'POST',
+    body: uploadData,
+  })
+  const cloudData = await cloudRes.json().catch(() => ({}))
+  if (!cloudRes.ok) throw new Error((cloudData.error && cloudData.error.message) || 'Image upload failed')
+  return cloudData.secure_url
+}
+
+function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved }) {
+  const emptyForm = { make: '', model: '', year: '', plate_number: '', color: '', mileage: '', price: '', status: 'available' }
+  const [form, setForm] = useState(emptyForm)
+  const [imageUrl, setImageUrl] = useState('')
+  const [uploading, setUploading] = useState(false)
+  const [dragActive, setDragActive] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const fileInputRef = React.useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    if (vehicle) {
+      setForm({
+        make: vehicle.make || '',
+        model: vehicle.model || '',
+        year: vehicle.year ?? '',
+        plate_number: vehicle.plate_number || '',
+        color: vehicle.color || '',
+        mileage: vehicle.mileage ?? '',
+        price: vehicle.price ?? '',
+        status: vehicle.status || 'available',
+      })
+      setImageUrl(vehicle.image_url || '')
+    } else {
+      setForm(emptyForm)
+      setImageUrl('')
+    }
+    setError('')
+    setUploading(false)
+  }, [open, vehicle])
+
+  if (!open) return null
+
+  const uploadFile = async (file) => {
+    if (!file) return
+    setError('')
+    setUploading(true)
+    try {
+      const url = await uploadImageToCloudinary(apiBase, businessId, file)
+      setImageUrl(url)
+    } catch (err) {
+      setError(err.message)
+    }
+    setUploading(false)
+  }
+
+  const handleDrop = (e) => {
+    e.preventDefault()
+    setDragActive(false)
+    const file = e.dataTransfer.files && e.dataTransfer.files[0]
+    if (file) uploadFile(file)
+  }
+
+  const handleSave = async () => {
+    if (!form.make.trim() || !form.model.trim()) {
+      setError('Make and model are required')
+      return
+    }
+    if (uploading) {
+      setError('Please wait for the photo to finish uploading')
+      return
+    }
+    setSaving(true)
+    setError('')
+    try {
+      const url = vehicle
+        ? `${apiBase}/api/v1/business/${businessId}/vehicles/${vehicle.public_id}`
+        : `${apiBase}/api/v1/business/${businessId}/vehicles`
+      const res = await fetch(url, {
+        method: vehicle ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          make: form.make,
+          model: form.model,
+          year: form.year !== '' ? Number(form.year) : null,
+          plate_number: form.plate_number || null,
+          color: form.color || null,
+          mileage: form.mileage !== '' ? Number(form.mileage) : null,
+          price: form.price !== '' ? Number(form.price) : 0,
+          status: form.status,
+          image_url: imageUrl || null,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Save failed')
+      onSaved(vehicle ? 'Vehicle updated' : 'Vehicle added')
+      onClose()
+    } catch (err) {
+      setError(err.message)
+    }
+    setSaving(false)
+  }
+
+  return (
+    <div style={styles.modalOverlay} onClick={onClose}>
+      <div style={styles.modal} onClick={e => e.stopPropagation()}>
+        <h3 style={styles.modalTitle}>{vehicle ? 'Edit vehicle' : 'Add vehicle'}</h3>
+
+        <div
+          style={{ ...styles.uploadZone, ...(dragActive ? styles.uploadZoneActive : {}) }}
+          onClick={() => !uploading && fileInputRef.current && fileInputRef.current.click()}
+          onDragOver={e => { e.preventDefault(); setDragActive(true) }}
+          onDragLeave={() => setDragActive(false)}
+          onDrop={handleDrop}
+        >
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            style={{ display: 'none' }}
+            onChange={e => uploadFile(e.target.files && e.target.files[0])}
+          />
+          {uploading ? (
+            <div style={styles.uploadHint}>Uploading…</div>
+          ) : imageUrl ? (
+            <>
+              <img src={imageUrl} alt="Vehicle" style={styles.uploadPreview} />
+              <div style={styles.uploadHint}>Click or drop to replace photo</div>
+            </>
+          ) : (
+            <div style={styles.uploadHint}>📷 Click or drag a photo here</div>
+          )}
+        </div>
+
+        <div style={styles.formGrid}>
+          <label style={styles.label}>Make</label>
+          <input
+            style={styles.input}
+            value={form.make}
+            onChange={e => setForm({ ...form, make: e.target.value })}
+            placeholder="e.g. Toyota"
+          />
+          <label style={styles.label}>Model</label>
+          <input
+            style={styles.input}
+            value={form.model}
+            onChange={e => setForm({ ...form, model: e.target.value })}
+            placeholder="e.g. Vios"
+          />
+          <label style={styles.label}>Year</label>
+          <input
+            type="number"
+            style={styles.input}
+            value={form.year}
+            onChange={e => setForm({ ...form, year: e.target.value })}
+            placeholder="e.g. 2021"
+          />
+          <label style={styles.label}>Plate number</label>
+          <input
+            style={styles.input}
+            value={form.plate_number}
+            onChange={e => setForm({ ...form, plate_number: e.target.value })}
+            placeholder="e.g. ABC 1234"
+          />
+          <label style={styles.label}>Color</label>
+          <input
+            style={styles.input}
+            value={form.color}
+            onChange={e => setForm({ ...form, color: e.target.value })}
+          />
+          <label style={styles.label}>Mileage (km)</label>
+          <input
+            type="number"
+            style={styles.input}
+            value={form.mileage}
+            onChange={e => setForm({ ...form, mileage: e.target.value })}
+          />
+          <label style={styles.label}>Price (₱)</label>
+          <input
+            type="number"
+            style={styles.input}
+            value={form.price}
+            onChange={e => setForm({ ...form, price: e.target.value })}
+          />
+          <label style={styles.label}>Status</label>
+          <select
+            style={styles.select}
+            value={form.status}
+            onChange={e => setForm({ ...form, status: e.target.value })}
+          >
+            <option value="available">Available</option>
+            <option value="reserved">Reserved</option>
+            <option value="financed">Financed</option>
+            <option value="sold">Sold</option>
+          </select>
+        </div>
+
+        {error && <div style={styles.uploadError}>{error}</div>}
+
+        <div style={styles.modalActions}>
+          <button onClick={onClose} style={styles.closeBtn}>Cancel</button>
+          <button onClick={handleSave} disabled={saving || uploading} style={styles.saveBtn}>
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const [activeTab, setActiveTab] = useState('overview')
   const [business, setBusiness] = useState(null)
@@ -145,9 +392,15 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const [vehicles, setVehicles] = useState([])
   const [vehicleStatusFilter, setVehicleStatusFilter] = useState('')
   const [showVehicleForm, setShowVehicleForm] = useState(false)
-  const [editingVehicle, setEditingVehicle] = useState(null) // vehicle being edited, or null for "new"
-  const [vehicleForm, setVehicleForm] = useState({ make: '', model: '', year: '', plate_number: '', color: '', mileage: '', price: '', status: 'available', image_url: '' })
-  const [savingVehicle, setSavingVehicle] = useState(false)
+  const [editingVehicle, setEditingVehicle] = useState(null) // vehicle being edited, or null for "new" - AddVehicleModal reads its form straight off this
+
+  // ---------- Showroom settings (hero banner + payment methods link shown
+  // on the public /showroom page) ----------
+  const [showroomForm, setShowroomForm] = useState({ hero_image_url: '', payment_methods_url: '', payment_methods_label: 'Payment Methods' })
+  const [uploadingHero, setUploadingHero] = useState(false)
+  const [savingShowroom, setSavingShowroom] = useState(false)
+  const [showroomQR, setShowroomQR] = useState(null) // { svg, showroom_url }, or null
+  const heroFileInputRef = React.useRef(null)
 
   // ---------- Contracts (deals) state ----------
   const emptyContractForm = {
@@ -209,13 +462,14 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
 
   const loadData = async () => {
     try {
-      const [bizRes, annRes, custRes, vehRes, conRes, msgRes] = await Promise.all([
+      const [bizRes, annRes, custRes, vehRes, conRes, msgRes, showroomRes] = await Promise.all([
         fetch(`${API_BASE}/api/v1/business/${businessId}`),
         fetch(`${API_BASE}/api/v1/business/${businessId}/announcements`),
         fetch(`${API_BASE}/api/v1/business/${businessId}/cl-customers`),
         fetch(`${API_BASE}/api/v1/business/${businessId}/vehicles`),
         fetch(`${API_BASE}/api/v1/business/${businessId}/contracts`),
         fetch(`${API_BASE}/api/v1/business/${businessId}/cl-announcements`),
+        fetch(`${API_BASE}/api/v1/business/${businessId}/showroom-config`),
       ])
       setBusiness(await bizRes.json().catch(() => null))
       setAnnouncements(await annRes.json().catch(() => []))
@@ -223,6 +477,14 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
       setVehicles(await vehRes.json().catch(() => []))
       setContracts(await conRes.json().catch(() => []))
       setClAnnouncements(await msgRes.json().catch(() => []))
+      const showroomData = await showroomRes.json().catch(() => null)
+      if (showroomData) {
+        setShowroomForm({
+          hero_image_url: showroomData.hero_image_url || '',
+          payment_methods_url: showroomData.payment_methods_url || '',
+          payment_methods_label: showroomData.payment_methods_label || 'Payment Methods',
+        })
+      }
     } catch (err) {
       console.error('Car lending dashboard load error:', err)
     }
@@ -458,62 +720,16 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   }
 
   // ---------- Vehicles CRUD ----------
+  // Add/edit form + Cloudinary photo upload now live inside AddVehicleModal
+  // - this just opens it with the right vehicle (or null for "new").
   const openNewVehicle = () => {
     setEditingVehicle(null)
-    setVehicleForm({ make: '', model: '', year: '', plate_number: '', color: '', mileage: '', price: '', status: 'available', image_url: '' })
     setShowVehicleForm(true)
   }
 
   const openEditVehicle = (v) => {
     setEditingVehicle(v)
-    setVehicleForm({
-      make: v.make || '',
-      model: v.model || '',
-      year: v.year ?? '',
-      plate_number: v.plate_number || '',
-      color: v.color || '',
-      mileage: v.mileage ?? '',
-      price: v.price ?? '',
-      status: v.status || 'available',
-      image_url: v.image_url || '',
-    })
     setShowVehicleForm(true)
-  }
-
-  const saveVehicle = async () => {
-    if (!vehicleForm.make.trim() || !vehicleForm.model.trim()) {
-      flash('Make and model are required')
-      return
-    }
-    setSavingVehicle(true)
-    try {
-      const url = editingVehicle
-        ? `${API_BASE}/api/v1/business/${businessId}/vehicles/${editingVehicle.public_id}`
-        : `${API_BASE}/api/v1/business/${businessId}/vehicles`
-      const res = await fetch(url, {
-        method: editingVehicle ? 'PATCH' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          make: vehicleForm.make,
-          model: vehicleForm.model,
-          year: vehicleForm.year !== '' ? Number(vehicleForm.year) : null,
-          plate_number: vehicleForm.plate_number || null,
-          color: vehicleForm.color || null,
-          mileage: vehicleForm.mileage !== '' ? Number(vehicleForm.mileage) : null,
-          price: vehicleForm.price !== '' ? Number(vehicleForm.price) : 0,
-          status: vehicleForm.status,
-          image_url: vehicleForm.image_url || null,
-        }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.detail || 'Save failed')
-      flash(editingVehicle ? 'Vehicle updated' : 'Vehicle added')
-      setShowVehicleForm(false)
-      loadData()
-    } catch (err) {
-      flash(err.message)
-    }
-    setSavingVehicle(false)
   }
 
   const deleteVehicle = async (v) => {
@@ -524,6 +740,53 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
       if (!res.ok) throw new Error(data.detail || 'Delete failed')
       flash('Vehicle removed')
       loadData()
+    } catch (err) {
+      flash(err.message)
+    }
+  }
+
+  // ---------- Showroom settings (hero banner + payment methods link) ----------
+  const uploadShowroomHero = async (file) => {
+    if (!file) return
+    setUploadingHero(true)
+    try {
+      const url = await uploadImageToCloudinary(API_BASE, businessId, file)
+      setShowroomForm({ ...showroomForm, hero_image_url: url })
+    } catch (err) {
+      flash(err.message)
+    }
+    setUploadingHero(false)
+  }
+
+  const saveShowroomConfig = async () => {
+    setSavingShowroom(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/showroom-config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          hero_image_url: showroomForm.hero_image_url || null,
+          payment_methods_url: showroomForm.payment_methods_url || null,
+          payment_methods_label: showroomForm.payment_methods_label || null,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Save failed')
+      flash('Showroom settings saved')
+    } catch (err) {
+      flash(err.message)
+    }
+    setSavingShowroom(false)
+  }
+
+  // Public showroom QR - print/display it, or it's the same link surfaced
+  // on a buyer's Wallet loan card ("Browse Showroom").
+  const showShowroomQR = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/showroom-qr-code`)
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.svg) throw new Error(data.detail || 'Could not load showroom QR code')
+      setShowroomQR(data)
     } catch (err) {
       flash(err.message)
     }
@@ -1028,9 +1291,69 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
           <div style={styles.panelSection}>
             <div style={styles.sectionHeaderRow}>
               <h2 style={styles.sectionTitle}>Vehicle inventory</h2>
-              <button onClick={openNewVehicle} style={styles.newBtn}>+ Add vehicle</button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={showShowroomQR} style={styles.cancelBtnSmall}>🔗 Showroom QR</button>
+                <button onClick={openNewVehicle} style={styles.newBtn}>+ Add vehicle</button>
+              </div>
             </div>
             <p style={styles.sectionSubtitle}>Showroom stock — status updates automatically once contracts land.</p>
+
+            <div style={styles.walletSetupCard}>
+              <h3 style={styles.walletSetupTitle}>Showroom settings</h3>
+              <p style={styles.walletSetupSubtitle}>
+                The hero banner and payment methods link shown at the top of your public showroom page.
+              </p>
+
+              <div
+                style={{ ...styles.uploadZone, marginBottom: 12 }}
+                onClick={() => !uploadingHero && heroFileInputRef.current && heroFileInputRef.current.click()}
+                onDragOver={e => e.preventDefault()}
+                onDrop={e => {
+                  e.preventDefault()
+                  const file = e.dataTransfer.files && e.dataTransfer.files[0]
+                  if (file) uploadShowroomHero(file)
+                }}
+              >
+                <input
+                  ref={heroFileInputRef}
+                  type="file"
+                  accept="image/*"
+                  style={{ display: 'none' }}
+                  onChange={e => uploadShowroomHero(e.target.files && e.target.files[0])}
+                />
+                {uploadingHero ? (
+                  <div style={styles.uploadHint}>Uploading…</div>
+                ) : showroomForm.hero_image_url ? (
+                  <>
+                    <img src={showroomForm.hero_image_url} alt="Showroom hero" style={styles.uploadPreview} />
+                    <div style={styles.uploadHint}>Click or drop to replace banner</div>
+                  </>
+                ) : (
+                  <div style={styles.uploadHint}>🖼️ Click or drag a hero banner image here</div>
+                )}
+              </div>
+
+              <label style={styles.label}>Payment methods link</label>
+              <input
+                style={styles.input}
+                value={showroomForm.payment_methods_url}
+                onChange={e => setShowroomForm({ ...showroomForm, payment_methods_url: e.target.value })}
+                placeholder="https://… (GCash QR, bank details page, etc.)"
+              />
+              <label style={styles.label}>Button label</label>
+              <input
+                style={styles.input}
+                value={showroomForm.payment_methods_label}
+                onChange={e => setShowroomForm({ ...showroomForm, payment_methods_label: e.target.value })}
+                placeholder="Payment Methods"
+              />
+
+              <div style={{ ...styles.modalActions, marginTop: 14, justifyContent: 'flex-start' }}>
+                <button onClick={saveShowroomConfig} disabled={savingShowroom || uploadingHero} style={styles.newBtnAlt}>
+                  {savingShowroom ? 'Saving…' : 'Save showroom settings'}
+                </button>
+              </div>
+            </div>
 
             <select
               style={{ ...styles.select, marginBottom: 16 }}
@@ -1360,88 +1683,14 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
         </div>
       )}
 
-      {showVehicleForm && (
-        <div style={styles.modalOverlay} onClick={() => setShowVehicleForm(false)}>
-          <div style={styles.modal} onClick={e => e.stopPropagation()}>
-            <h3 style={styles.modalTitle}>{editingVehicle ? 'Edit vehicle' : 'Add vehicle'}</h3>
-            <div style={styles.formGrid}>
-              <label style={styles.label}>Make</label>
-              <input
-                style={styles.input}
-                value={vehicleForm.make}
-                onChange={e => setVehicleForm({ ...vehicleForm, make: e.target.value })}
-                placeholder="e.g. Toyota"
-              />
-              <label style={styles.label}>Model</label>
-              <input
-                style={styles.input}
-                value={vehicleForm.model}
-                onChange={e => setVehicleForm({ ...vehicleForm, model: e.target.value })}
-                placeholder="e.g. Vios"
-              />
-              <label style={styles.label}>Year</label>
-              <input
-                type="number"
-                style={styles.input}
-                value={vehicleForm.year}
-                onChange={e => setVehicleForm({ ...vehicleForm, year: e.target.value })}
-                placeholder="e.g. 2021"
-              />
-              <label style={styles.label}>Plate number</label>
-              <input
-                style={styles.input}
-                value={vehicleForm.plate_number}
-                onChange={e => setVehicleForm({ ...vehicleForm, plate_number: e.target.value })}
-                placeholder="e.g. ABC 1234"
-              />
-              <label style={styles.label}>Color</label>
-              <input
-                style={styles.input}
-                value={vehicleForm.color}
-                onChange={e => setVehicleForm({ ...vehicleForm, color: e.target.value })}
-              />
-              <label style={styles.label}>Mileage (km)</label>
-              <input
-                type="number"
-                style={styles.input}
-                value={vehicleForm.mileage}
-                onChange={e => setVehicleForm({ ...vehicleForm, mileage: e.target.value })}
-              />
-              <label style={styles.label}>Price (₱)</label>
-              <input
-                type="number"
-                style={styles.input}
-                value={vehicleForm.price}
-                onChange={e => setVehicleForm({ ...vehicleForm, price: e.target.value })}
-              />
-              <label style={styles.label}>Status</label>
-              <select
-                style={styles.select}
-                value={vehicleForm.status}
-                onChange={e => setVehicleForm({ ...vehicleForm, status: e.target.value })}
-              >
-                <option value="available">Available</option>
-                <option value="reserved">Reserved</option>
-                <option value="financed">Financed</option>
-                <option value="sold">Sold</option>
-              </select>
-              <label style={styles.label}>Image URL (optional)</label>
-              <input
-                style={styles.input}
-                value={vehicleForm.image_url}
-                onChange={e => setVehicleForm({ ...vehicleForm, image_url: e.target.value })}
-                placeholder="https://…"
-              />
-            </div>
-            <div style={styles.modalActions}>
-              <button onClick={() => setShowVehicleForm(false)} style={styles.closeBtn}>Cancel</button>
-              <button onClick={saveVehicle} disabled={savingVehicle} style={styles.saveBtn}>
-                {savingVehicle ? 'Saving…' : 'Save'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <AddVehicleModal
+        open={showVehicleForm}
+        vehicle={editingVehicle}
+        apiBase={API_BASE}
+        businessId={businessId}
+        onClose={() => setShowVehicleForm(false)}
+        onSaved={(msg) => { flash(msg); loadData() }}
+      />
 
       {showContractForm && (
         <div style={styles.modalOverlay} onClick={() => setShowContractForm(false)}>
@@ -1882,6 +2131,25 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
         </div>
       )}
 
+      {showroomQR && (
+        <div style={styles.modalOverlay} onClick={() => setShowroomQR(null)}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>Showroom QR</h3>
+            <p style={styles.hint}>Print or display this so buyers can scan straight into your public showroom. It's also the "Browse Showroom" link on every buyer's Wallet loan card.</p>
+            <div style={styles.qrWrap}>
+              <img src={svgToDataUri(showroomQR.svg)} alt="Showroom QR code" style={styles.qrImg} />
+            </div>
+            <div style={{ ...styles.readOnlyValue, wordBreak: 'break-all', fontSize: 12 }}>{showroomQR.showroom_url}</div>
+            <div style={styles.modalActions}>
+              <button onClick={() => setShowroomQR(null)} style={styles.closeBtn}>Close</button>
+              <button onClick={() => window.open(showroomQR.showroom_url, '_blank')} style={styles.cancelBtnSmall}>Open</button>
+              <button onClick={() => window.print()} style={styles.saveBtn}>Print</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+
       {editingPayment && (
         <div style={styles.modalOverlay} onClick={() => setEditingPayment(null)}>
           <div style={styles.modal} onClick={e => e.stopPropagation()}>
@@ -2151,6 +2419,17 @@ const styles = {
     maxHeight: '85vh', overflow: 'auto',
   },
   modalTitle: { margin: '0 0 16px', fontSize: 18, fontWeight: 700, color: '#0f172a' },
+  uploadZone: {
+    border: '2px dashed #cbd5e1', borderRadius: 12, padding: '18px 12px', textAlign: 'center',
+    cursor: 'pointer', marginBottom: 16, background: '#f8fafc', transition: 'border-color 0.15s, background 0.15s',
+  },
+  uploadZoneActive: { borderColor: '#0d9488', background: '#f0fdfa' },
+  uploadPreview: { width: '100%', maxHeight: 160, objectFit: 'cover', borderRadius: 8, marginBottom: 8 },
+  uploadHint: { fontSize: 13, color: '#64748b' },
+  uploadError: {
+    background: '#fef2f2', color: '#dc2626', fontSize: 12.5, padding: '8px 12px',
+    borderRadius: 8, marginBottom: 12,
+  },
   formGrid: { display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 20 },
   label: { fontSize: 12, fontWeight: 600, color: '#64748b', marginTop: 8 },
   input: {
