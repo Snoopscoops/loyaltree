@@ -8157,9 +8157,6 @@ async def showroom_page(business_public_id: str):
                 if v.get('mileage') is not None:
                     meta_bits.append(f"{v.get('mileage'):,} km")
                     meta_bits_plain.append(f"{v.get('mileage'):,} km")
-                if v.get('plate_number'):
-                    meta_bits.append(html_lib.escape(str(v.get('plate_number'))))
-                    meta_bits_plain.append(str(v.get('plate_number')))
                 meta = ' &middot; '.join(meta_bits)
                 meta_plain = ' · '.join(meta_bits_plain)
 
@@ -8174,8 +8171,6 @@ async def showroom_page(business_public_id: str):
                     specs_data.append({'label': 'Mileage', 'value': f"{v.get('mileage'):,} km"})
                 if v.get('color'):
                     specs_data.append({'label': 'Color', 'value': str(v.get('color'))})
-                if v.get('plate_number'):
-                    specs_data.append({'label': 'Plate number', 'value': str(v.get('plate_number'))})
                 if v.get('plate_end_in'):
                     specs_data.append({'label': 'Plate ends in', 'value': str(v.get('plate_end_in'))})
 
