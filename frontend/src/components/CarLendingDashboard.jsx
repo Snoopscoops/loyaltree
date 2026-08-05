@@ -2273,12 +2273,14 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
 
       {reviewingApplication && (
         <div style={styles.modalOverlay} onClick={() => setReviewingApplication(null)}>
-          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+          <div style={{ ...styles.modal, width: 480 }} onClick={e => e.stopPropagation()}>
             <h3 style={styles.modalTitle}>Review application</h3>
 
-            <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
+            <div style={{ display: 'flex', gap: 12, marginBottom: 16, alignItems: 'center' }}>
               {reviewingApplication.selfie_url ? (
-                <img src={reviewingApplication.selfie_url} alt={reviewingApplication.name} style={styles.agentAvatarLg} />
+                <a href={reviewingApplication.selfie_url} target="_blank" rel="noreferrer">
+                  <img src={reviewingApplication.selfie_url} alt={reviewingApplication.name} style={styles.agentAvatarLg} />
+                </a>
               ) : (
                 <div style={{ ...styles.agentAvatarLg, ...styles.agentAvatarPlaceholder }}>
                   {(reviewingApplication.name || '?').charAt(0).toUpperCase()}
@@ -2286,17 +2288,73 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
               )}
               <div>
                 <div style={styles.recordTitle}>{reviewingApplication.name}</div>
-                <div style={styles.recordMeta}>
-                  {[reviewingApplication.phone, reviewingApplication.email].filter(Boolean).join(' · ') || 'No contact info on file'}
+                <div style={{ ...styles.statusBadge, ...(APPLICATION_STATUS_BADGE_STYLES[reviewingApplication.status] || {}), marginTop: 4, display: 'inline-block' }}>
+                  {reviewingApplication.status}
                 </div>
-                {reviewingApplication.id_photo_url && (
-                  <div style={styles.recordMetaSub}>
-                    <a href={reviewingApplication.id_photo_url} target="_blank" rel="noreferrer">View ID photo ↗</a>
-                  </div>
-                )}
-                {reviewingApplication.notes && <div style={styles.recordMetaSub}>{reviewingApplication.notes}</div>}
               </div>
             </div>
+
+            <div style={{ ...styles.formGrid, marginBottom: 12, gap: 4 }}>
+              <div style={styles.recordMeta}>
+                <strong>Role:</strong> {APPLICATION_ROLES.find(r => r.key === reviewingApplication.role)?.label.replace(' Application', '') || reviewingApplication.role}
+              </div>
+              <div style={styles.recordMeta}>
+                <strong>Phone:</strong> {reviewingApplication.phone || '—'}
+              </div>
+              <div style={styles.recordMeta}>
+                <strong>Email:</strong> {reviewingApplication.email || '—'}
+              </div>
+              {reviewingApplication.notes && (
+                <div style={styles.recordMeta}>
+                  <strong>Applicant notes:</strong> {reviewingApplication.notes}
+                </div>
+              )}
+              {reviewingApplication.created_at && (
+                <div style={styles.recordMetaSub}>
+                  Submitted {new Date(reviewingApplication.created_at).toLocaleString()}
+                </div>
+              )}
+              {reviewingApplication.decided_at && (
+                <div style={styles.recordMetaSub}>
+                  Decided {new Date(reviewingApplication.decided_at).toLocaleString()}
+                </div>
+              )}
+              {reviewingApplication.review_note && (
+                <div style={styles.recordMetaSub}>
+                  Previous note: {reviewingApplication.review_note}
+                </div>
+              )}
+            </div>
+
+            {(reviewingApplication.selfie_url || reviewingApplication.id_photo_url) && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 8 }}>
+                  KYC photos — tap to view full size
+                </div>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  {reviewingApplication.selfie_url && (
+                    <a href={reviewingApplication.selfie_url} target="_blank" rel="noreferrer" style={{ flex: 1, textDecoration: 'none' }}>
+                      <img
+                        src={reviewingApplication.selfie_url}
+                        alt="Selfie"
+                        style={styles.kycPhoto}
+                      />
+                      <div style={styles.kycPhotoLabel}>Selfie</div>
+                    </a>
+                  )}
+                  {reviewingApplication.id_photo_url && (
+                    <a href={reviewingApplication.id_photo_url} target="_blank" rel="noreferrer" style={{ flex: 1, textDecoration: 'none' }}>
+                      <img
+                        src={reviewingApplication.id_photo_url}
+                        alt="ID photo"
+                        style={styles.kycPhoto}
+                      />
+                      <div style={styles.kycPhotoLabel}>ID photo</div>
+                    </a>
+                  )}
+                </div>
+              </div>
+            )}
 
             {reviewingApplication.role === 'agent' && reviewingApplication.selfie_url && (
               <p style={{ fontSize: 12, color: '#94a3b8', margin: '0 0 12px' }}>
@@ -3190,6 +3248,11 @@ const styles = {
     display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f1f5f9',
     color: '#94a3b8', fontWeight: 700, fontSize: 18,
   },
+  kycPhoto: {
+    width: '100%', height: 150, borderRadius: 10, objectFit: 'cover',
+    border: '1px solid #e2e8f0', display: 'block', cursor: 'zoom-in',
+  },
+  kycPhotoLabel: { fontSize: 11, color: '#94a3b8', marginTop: 4, textAlign: 'center' },
   statusBadge: {
     fontSize: 10, fontWeight: 700, borderRadius: 999, padding: '3px 9px',
     textTransform: 'uppercase', letterSpacing: 0.3,
