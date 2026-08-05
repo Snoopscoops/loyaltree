@@ -669,6 +669,22 @@ class CLApplicationSelfSignup(BaseModel):
     notes: Optional[str] = None
 
 
+# --- Car Lending / Showroom: agent accounts (self-service login/signup
+# from the "Agent Login" button on the public /showroom page). Separate
+# from cl_applications above - an approved application is how someone
+# becomes an agent in the owner's eyes (agent_name on a vehicle), this
+# table is just their own login credentials. Login is still a UI-only
+# placeholder for now (see the showroom's SHOWROOM_JS) - there's no
+# session/token issued yet and nothing server-side checks a password
+# against it, so no route here reads one back out for verification.
+# Signup is real and does create the row with a hashed password. ---
+class CLAgentSignup(BaseModel):
+    name: str
+    phone: Optional[str] = None
+    email: str
+    password: str = Field(min_length=6)
+
+
 # --- Car Lending / Showroom: self-service signup (buyer scans the
 # dealership's "Join" QR and registers themselves, mirrors CustomerSignup
 # below but for cl_customers - no loyalty-specific fields) ---
@@ -8209,6 +8225,41 @@ a{color:inherit}
 @media(max-width:520px){
   .vehicle-modal-card{max-height:92vh}
 }
+
+.agent-login-btn{position:absolute;top:16px;right:16px;z-index:6;background:rgba(255,255,255,0.12);
+  backdrop-filter:blur(6px);border:1px solid rgba(255,255,255,0.35);color:#fff;font-size:12.5px;font-weight:700;
+  padding:9px 16px;border-radius:999px;cursor:pointer;transition:background .15s ease}
+.agent-login-btn:hover{background:rgba(255,255,255,0.22)}
+
+.agent-modal{display:none;position:fixed;inset:0;background:rgba(2,6,23,0.6);z-index:950;
+  align-items:center;justify-content:center;padding:20px}
+.agent-modal.open{display:flex}
+.agent-modal-card{background:#fff;border-radius:20px;max-width:380px;width:100%;padding:30px 26px 26px;
+  box-shadow:0 24px 60px rgba(2,6,23,0.35);position:relative;text-align:center}
+.agent-modal-close{position:absolute;top:12px;right:12px;width:32px;height:32px;border-radius:50%;
+  border:none;background:#f1f5f9;color:var(--ink);font-size:18px;line-height:1;cursor:pointer}
+.agent-modal-close:hover{background:#e2e8f0}
+.agent-modal-title{font-size:19px;font-weight:800;letter-spacing:-0.01em;margin-bottom:4px}
+.agent-modal-sub{font-size:13px;color:var(--muted);margin-bottom:18px}
+.agent-modal-view input{width:100%;box-sizing:border-box;padding:12px 14px;border:1.5px solid var(--line);
+  border-radius:11px;font-size:14px;margin-bottom:10px;outline:none;font-family:inherit}
+.agent-modal-view input:focus{border-color:var(--accent)}
+.agent-modal-submit{width:100%;padding:13px;background:var(--ink);color:#fff;border:none;border-radius:11px;
+  font-size:14px;font-weight:700;cursor:pointer;margin-top:4px}
+.agent-modal-submit:hover{opacity:0.9}
+.agent-modal-secondary{background:#f1f5f9;color:var(--ink)}
+.agent-modal-switch{margin-top:16px;font-size:12.5px;color:var(--muted)}
+.agent-modal-switch a{color:var(--accent-dark);font-weight:700;text-decoration:none}
+.agent-modal-switch a:hover{text-decoration:underline}
+.agent-modal-error{background:#fef2f2;color:#b91c1c;font-size:12.5px;padding:9px 12px;border-radius:9px;
+  margin-bottom:10px;text-align:left}
+.agent-modal-success-icon{font-size:38px;margin-bottom:8px}
+.agent-modal-hint{font-size:12.5px;color:var(--muted);margin-bottom:18px}
+
+@media(max-width:520px){
+  .agent-login-btn{top:12px;right:12px;font-size:11.5px;padding:7px 12px}
+  .agent-modal-card{padding:26px 20px 22px}
+}
 """
 
 SHOWROOM_JS = """
@@ -8392,6 +8443,104 @@ SHOWROOM_JS = """
       if (idx !== null) openVehicleModal(parseInt(idx, 10));
     });
   });
+
+  // ---- Agent Login / Sign Up popup ----
+  var agentConfig = {};
+  try {
+    var agentConfigEl = document.getElementById('agent-config');
+    agentConfig = agentConfigEl ? JSON.parse(agentConfigEl.textContent || '{}') : {};
+  } catch (e) { agentConfig = {}; }
+
+  var agentModal = document.getElementById('agent-modal');
+  var agentLoginBtn = document.getElementById('agent-login-btn');
+  var agentModalClose = document.getElementById('agent-modal-close');
+  var agentLoginView = document.getElementById('agent-login-view');
+  var agentSignupView = document.getElementById('agent-signup-view');
+  var agentLoggedinView = document.getElementById('agent-loggedin-view');
+  var agentLoggedIn = false;
+
+  function showAgentView(view){
+    [agentLoginView, agentSignupView, agentLoggedinView].forEach(function(v){ if (v) v.style.display = 'none'; });
+    if (view) view.style.display = '';
+  }
+  function openAgentModal(){
+    if (!agentModal) return;
+    agentModal.classList.add('open');
+    showAgentView(agentLoggedIn ? agentLoggedinView : agentLoginView);
+  }
+  function closeAgentModal(){ if (agentModal) agentModal.classList.remove('open'); }
+
+  if (agentLoginBtn) agentLoginBtn.addEventListener('click', openAgentModal);
+  if (agentModalClose) agentModalClose.addEventListener('click', closeAgentModal);
+  if (agentModal) agentModal.addEventListener('click', function(e){ if (e.target === agentModal) closeAgentModal(); });
+  document.addEventListener('keydown', function(e){
+    if (agentModal && agentModal.classList.contains('open') && e.key === 'Escape') closeAgentModal();
+  });
+
+  var agentShowSignup = document.getElementById('agent-show-signup');
+  var agentShowLogin = document.getElementById('agent-show-login');
+  if (agentShowSignup) agentShowSignup.addEventListener('click', function(e){ e.preventDefault(); showAgentView(agentSignupView); });
+  if (agentShowLogin) agentShowLogin.addEventListener('click', function(e){ e.preventDefault(); showAgentView(agentLoginView); });
+
+  // Placeholder only - no backend call, no session/token yet. Swap this
+  // for a real POST to a login endpoint once agent auth (and an agent
+  // dashboard to send them to) is actually built.
+  var agentLoginForm = document.getElementById('agent-login-form');
+  if (agentLoginForm) agentLoginForm.addEventListener('submit', function(e){
+    e.preventDefault();
+    var email = document.getElementById('agent-login-email').value.trim();
+    var errEl = document.getElementById('agent-login-error');
+    if (errEl) errEl.style.display = 'none';
+    if (!email) return;
+    agentLoggedIn = true;
+    var nameEl = document.getElementById('agent-loggedin-name');
+    if (nameEl) nameEl.textContent = email;
+    if (agentLoginBtn) agentLoginBtn.textContent = 'Agent';
+    showAgentView(agentLoggedinView);
+  });
+
+  // Real signup - creates an actual cl_agents row with a hashed password.
+  var agentSignupForm = document.getElementById('agent-signup-form');
+  if (agentSignupForm) agentSignupForm.addEventListener('submit', async function(e){
+    e.preventDefault();
+    var name = document.getElementById('agent-signup-name').value.trim();
+    var phone = document.getElementById('agent-signup-phone').value.trim();
+    var email = document.getElementById('agent-signup-email').value.trim();
+    var password = document.getElementById('agent-signup-password').value;
+    var errEl = document.getElementById('agent-signup-error');
+    if (errEl) errEl.style.display = 'none';
+    if (!agentConfig.api_base || !agentConfig.business_public_id) {
+      if (errEl) { errEl.textContent = 'Sign up is unavailable right now.'; errEl.style.display = ''; }
+      return;
+    }
+    try {
+      var res = await fetch(agentConfig.api_base + '/api/v1/business/' + agentConfig.business_public_id + '/cl-agent-signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name, phone: phone || null, email: email, password: password })
+      });
+      var data = await res.json();
+      if (res.ok) {
+        var loginEmailEl = document.getElementById('agent-login-email');
+        if (loginEmailEl) loginEmailEl.value = email;
+        agentSignupForm.reset();
+        showAgentView(agentLoginView);
+      } else {
+        if (errEl) { errEl.textContent = data.detail || 'Sign up failed'; errEl.style.display = ''; }
+      }
+    } catch (err) {
+      if (errEl) { errEl.textContent = 'Network error. Please try again.'; errEl.style.display = ''; }
+    }
+  });
+
+  var agentLogoutBtn = document.getElementById('agent-logout-btn');
+  if (agentLogoutBtn) agentLogoutBtn.addEventListener('click', function(){
+    agentLoggedIn = false;
+    if (agentLoginBtn) agentLoginBtn.textContent = 'Agent Login';
+    if (agentLoginForm) agentLoginForm.reset();
+    showAgentView(agentLoginView);
+    closeAgentModal();
+  });
 })();
 """
 
@@ -8417,6 +8566,7 @@ async def showroom_page(business_public_id: str):
         hero_style = (" style=\"background-image:url('" + html_lib.escape(hero_url) + "')\"") if hero_url else ''
         hero_html = (
             '<div class="' + hero_class + '"' + hero_style + '>'
+            '<button id="agent-login-btn" class="agent-login-btn" type="button">Agent Login</button>'
             '<div class="hero-overlay">'
             '<div class="hero-eyebrow"><span class="dot"></span>Live inventory</div>'
             '<div class="hero-logo">' + logo_html + '</div>'
@@ -8625,6 +8775,56 @@ async def showroom_page(business_public_id: str):
             '<script id="cars-data" type="application/json">' + cars_json + '</script>'
         )
 
+        # Agent Login / Sign Up popup - opened from the "Agent Login" button
+        # top-right of the hero. Three views toggled by SHOWROOM_JS: login
+        # form, sign-up form (posts to POST /api/v1/business/{id}/cl-agent-
+        # signup, which creates real credentials in cl_agents), and a
+        # logged-in placeholder (no real session/agent dashboard yet).
+        agent_modal_html = (
+            '<div id="agent-modal" class="agent-modal">'
+            '<div class="agent-modal-card">'
+            '<button id="agent-modal-close" class="agent-modal-close" type="button" aria-label="Close">&times;</button>'
+
+            '<div id="agent-login-view" class="agent-modal-view">'
+            '<h3 class="agent-modal-title">Agent Login</h3>'
+            '<p class="agent-modal-sub">Log in to your agent account.</p>'
+            '<form id="agent-login-form">'
+            '<input type="email" id="agent-login-email" placeholder="Email" required autocomplete="username">'
+            '<input type="password" id="agent-login-password" placeholder="Password" required autocomplete="current-password">'
+            '<div id="agent-login-error" class="agent-modal-error" style="display:none"></div>'
+            '<button type="submit" class="agent-modal-submit">Log in</button>'
+            '</form>'
+            '<div class="agent-modal-switch">New agent? <a href="#" id="agent-show-signup">Sign up</a></div>'
+            '</div>'
+
+            '<div id="agent-signup-view" class="agent-modal-view" style="display:none">'
+            '<h3 class="agent-modal-title">Agent Sign Up</h3>'
+            '<p class="agent-modal-sub">Create your agent account.</p>'
+            '<form id="agent-signup-form">'
+            '<input type="text" id="agent-signup-name" placeholder="Full name" required autocomplete="name">'
+            '<input type="tel" id="agent-signup-phone" placeholder="Phone number" autocomplete="tel">'
+            '<input type="email" id="agent-signup-email" placeholder="Email" required autocomplete="email">'
+            '<input type="password" id="agent-signup-password" placeholder="Password (min 6 characters)" required minlength="6" autocomplete="new-password">'
+            '<div id="agent-signup-error" class="agent-modal-error" style="display:none"></div>'
+            '<button type="submit" class="agent-modal-submit">Create account</button>'
+            '</form>'
+            '<div class="agent-modal-switch">Already have an account? <a href="#" id="agent-show-login">Log in</a></div>'
+            '</div>'
+
+            '<div id="agent-loggedin-view" class="agent-modal-view" style="display:none">'
+            '<div class="agent-modal-success-icon">&#9989;</div>'
+            '<h3 class="agent-modal-title">You&rsquo;re logged in</h3>'
+            '<p class="agent-modal-sub" id="agent-loggedin-name"></p>'
+            '<p class="agent-modal-hint">Your agent dashboard is coming soon.</p>'
+            '<button type="button" id="agent-logout-btn" class="agent-modal-submit agent-modal-secondary">Log out</button>'
+            '</div>'
+
+            '</div></div>'
+            '<script id="agent-config" type="application/json">'
+            + json.dumps({'api_base': BASE_URL, 'business_public_id': business_public_id}) +
+            '</script>'
+        )
+
         footer_html = '<div class="footer">Powered by LoyaltyTree &middot; listings update in real time</div>'
 
         showroom_address = "WOLFCARS, Saint Francis Subdivision, 129 Diamond Dr, Meycauayan, 3020 Bulacan"
@@ -8649,7 +8849,7 @@ async def showroom_page(business_public_id: str):
             '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
             '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">'
             '<style>' + SHOWROOM_CSS + '</style></head><body>'
-            + hero_html + payment_html + stats_html + search_html + filter_html + make_filter_html + grid_html + location_html + footer_html + lightbox_html + vehicle_modal_html +
+            + hero_html + payment_html + stats_html + search_html + filter_html + make_filter_html + grid_html + location_html + footer_html + lightbox_html + vehicle_modal_html + agent_modal_html +
             '<script>' + SHOWROOM_JS + '</script>'
             '</body></html>'
         )
@@ -8725,6 +8925,56 @@ async def cl_application_self_signup(business_public_id: str, application: CLApp
     return {
         "success": True,
         "message": "Application received - we'll be in touch once it's reviewed.",
+    }
+
+@app.post("/api/v1/business/{business_public_id}/cl-agent-signup")
+async def cl_agent_signup(business_public_id: str, signup: CLAgentSignup):
+    """Public, unauthenticated endpoint the showroom's Agent Login popup
+    submits its "Sign up" form to. Creates real login credentials in
+    cl_agents (hashed password) - unlike cl-apply above, this doesn't need
+    the owner's approval to exist, it's just an account. Logging in with
+    it is still a front-end placeholder for now (see SHOWROOM_JS)."""
+    business = safe_get_business(business_public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    if business.get('status', '').upper() != 'ACTIVE':
+        raise HTTPException(status_code=400, detail="This dealership isn't accepting agent signups yet.")
+
+    email = signup.email.strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required.")
+
+    try:
+        existing = supabase.table("cl_agents").select("id") \
+            .eq("business_id", business.get("id")).eq("email", email).maybe_single().execute()
+        if existing.data:
+            raise HTTPException(status_code=400, detail="An agent account with this email already exists.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"cl_agent_signup lookup error: {e}")
+
+    agent_public_id = generate_public_id()
+    agent_data = {
+        'business_id': business.get('id'),
+        'public_id': agent_public_id,
+        'name': signup.name,
+        'phone': signup.phone,
+        'email': email,
+        'password_hash': hash_password(signup.password),
+        'created_at': datetime.utcnow().isoformat(),
+        'updated_at': datetime.utcnow().isoformat(),
+    }
+    try:
+        supabase.table("cl_agents").insert(agent_data).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    return {
+        "success": True,
+        "public_id": agent_public_id,
+        "name": signup.name,
+        "message": "Account created - you can now log in.",
     }
 
 # WALLET PAGE
