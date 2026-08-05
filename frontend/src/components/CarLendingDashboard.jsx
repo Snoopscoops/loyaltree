@@ -191,7 +191,7 @@ const VEHICLE_MAX_PHOTOS = 10
 const CONTRACT_MAX_IMAGES = 5
 
 function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved }) {
-  const emptyForm = { make: '', model: '', year: '', plate_number: '', plate_end_in: '', color: '', mileage: '', transmission: '', fuel_type: '', price: '', total_cost: '', agent_name: '', status: 'available', payment_type: '', location: '', notes: '', downpayment: '', amortization_due_date: '', amortization_next_due: '', amortization_months_remaining: '' }
+  const emptyForm = { make: '', model: '', year: '', plate_number: '', plate_end_in: '', color: '', mileage: '', transmission: '', fuel_type: '', price: '', total_cost: '', agent_name: '', status: 'available', payment_type: '', location: '', notes: '', downpayment: '', monthly_amortization_amount: '', amortization_due_date: '', amortization_next_due: '', amortization_months_remaining: '' }
   const [form, setForm] = useState(emptyForm)
   const [imageUrls, setImageUrls] = useState([]) // up to VEHICLE_MAX_PHOTOS Cloudinary URLs, shown as a gallery on the showroom card
   const [uploading, setUploading] = useState(false)
@@ -221,6 +221,7 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
         location: vehicle.location || '',
         notes: vehicle.notes || '',
         downpayment: vehicle.downpayment ?? '',
+        monthly_amortization_amount: vehicle.monthly_amortization_amount ?? '',
         amortization_due_date: vehicle.amortization_due_date || '',
         amortization_next_due: vehicle.amortization_next_due || '',
         amortization_months_remaining: vehicle.amortization_months_remaining ?? '',
@@ -311,6 +312,7 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
           location: form.location || null,
           notes: form.notes || null,
           downpayment: (form.payment_type === 'monthly_amortization' && form.downpayment !== '') ? Number(form.downpayment) : null,
+          monthly_amortization_amount: (form.payment_type === 'monthly_amortization' && form.monthly_amortization_amount !== '') ? Number(form.monthly_amortization_amount) : null,
           amortization_due_date: form.payment_type === 'monthly_amortization' ? (form.amortization_due_date || null) : null,
           amortization_next_due: form.payment_type === 'monthly_amortization' ? (form.amortization_next_due || null) : null,
           amortization_months_remaining: (form.payment_type === 'monthly_amortization' && form.amortization_months_remaining !== '') ? Number(form.amortization_months_remaining) : null,
@@ -489,6 +491,14 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
           </select>
           {form.payment_type === 'monthly_amortization' && (
             <>
+              <label style={styles.label}>Monthly amortization (₱)</label>
+              <input
+                type="number"
+                style={styles.input}
+                value={form.monthly_amortization_amount}
+                onChange={e => setForm({ ...form, monthly_amortization_amount: e.target.value })}
+                placeholder="Shown on the showroom as the price per month"
+              />
               <label style={styles.label}>Downpayment (₱)</label>
               <input
                 type="number"
@@ -1923,7 +1933,9 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                       </div>
                       <div style={styles.recordMetaSub}>
                         {[
-                          `₱${Number(v.price || 0).toLocaleString()}`,
+                          v.payment_type === 'monthly_amortization'
+                            ? (v.monthly_amortization_amount != null ? `₱${Number(v.monthly_amortization_amount).toLocaleString()}/month` : 'Monthly amortization')
+                            : `₱${Number(v.price || 0).toLocaleString()}`,
                           v.payment_type ? (v.payment_type === 'cash' ? 'Cash' : 'Monthly amortization') : null,
                           v.location || null,
                         ].filter(Boolean).join(' · ')}

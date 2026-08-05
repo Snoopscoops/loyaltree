@@ -516,6 +516,16 @@ VEHICLE_STATUS_OPTIONS = ['available', 'reserved', 'sold', 'financed']
 
 VEHICLE_MAX_PHOTOS = 10
 
+def format_showroom_date(value: str) -> str:
+    """Renders a YYYY-MM-DD date (as stored for a vehicle's amortization
+    due dates) as something readable on the public showroom, e.g.
+    'Aug 15, 2026'. Falls back to the raw stored value if it's not in
+    the expected format, rather than failing the whole page."""
+    try:
+        return datetime.strptime(str(value)[:10], '%Y-%m-%d').strftime('%b %-d, %Y')
+    except Exception:
+        return str(value)
+
 class VehicleCreate(BaseModel):
     make: str
     model: str
@@ -534,6 +544,7 @@ class VehicleCreate(BaseModel):
     location: Optional[str] = None  # where the physical unit currently is - dashboard-only
     notes: Optional[str] = None  # free-text internal note (e.g. agent fee) - dashboard-only, never shown on the showroom
     downpayment: Optional[float] = Field(default=None, ge=0)  # only meaningful when payment_type = 'monthly_amortization'
+    monthly_amortization_amount: Optional[float] = Field(default=None, ge=0)  # the "how much per month" figure shown on the showroom - only meaningful when payment_type = 'monthly_amortization'
     amortization_due_date: Optional[str] = None      # YYYY-MM-DD, recurring monthly due date - only meaningful when payment_type = 'monthly_amortization'
     amortization_next_due: Optional[str] = None       # YYYY-MM-DD, next actual due date coming up - only meaningful when payment_type = 'monthly_amortization'
     amortization_months_remaining: Optional[int] = Field(default=None, ge=0)  # only meaningful when payment_type = 'monthly_amortization'
@@ -558,6 +569,7 @@ class VehicleUpdate(BaseModel):
     location: Optional[str] = None
     notes: Optional[str] = None
     downpayment: Optional[float] = Field(default=None, ge=0)
+    monthly_amortization_amount: Optional[float] = Field(default=None, ge=0)
     amortization_due_date: Optional[str] = None
     amortization_next_due: Optional[str] = None
     amortization_months_remaining: Optional[int] = Field(default=None, ge=0)
@@ -5133,6 +5145,7 @@ async def create_vehicle(public_id: str, vehicle: VehicleCreate):
         'location': vehicle.location,
         'notes': vehicle.notes,
         'downpayment': vehicle.downpayment,
+        'monthly_amortization_amount': vehicle.monthly_amortization_amount,
         'amortization_due_date': vehicle.amortization_due_date,
         'amortization_next_due': vehicle.amortization_next_due,
         'amortization_months_remaining': vehicle.amortization_months_remaining,
@@ -9534,7 +9547,12 @@ async def showroom_page(business_public_id: str):
                     gallery_html = '<div style="position:relative">' + badge + '<div class="no-image">&#128663;</div></div>'
 
                 price = v.get('price') or 0
-                price_str = f"₱{price:,.0f}"
+                payment_type = v.get('payment_type')
+                monthly_amount = v.get('monthly_amortization_amount')
+                if payment_type == 'monthly_amortization':
+                    price_str = (f"₱{monthly_amount:,.0f}/month" if monthly_amount else "Contact us for pricing")
+                else:
+                    price_str = f"₱{price:,.0f}"
                 meta_bits = []
                 meta_bits_plain = []
                 if v.get('color'):
@@ -9543,6 +9561,9 @@ async def showroom_page(business_public_id: str):
                 if v.get('mileage') is not None:
                     meta_bits.append(f"{v.get('mileage'):,} km")
                     meta_bits_plain.append(f"{v.get('mileage'):,} km")
+                if v.get('location'):
+                    meta_bits.append(html_lib.escape(str(v.get('location'))))
+                    meta_bits_plain.append(str(v.get('location')))
                 meta = ' &middot; '.join(meta_bits)
                 meta_plain = ' · '.join(meta_bits_plain)
 
@@ -9559,6 +9580,24 @@ async def showroom_page(business_public_id: str):
                     specs_data.append({'label': 'Color', 'value': str(v.get('color'))})
                 if v.get('plate_end_in'):
                     specs_data.append({'label': 'Plate ends in', 'value': str(v.get('plate_end_in'))})
+                if v.get('location'):
+                    specs_data.append({'label': 'Location', 'value': str(v.get('location'))})
+
+                # Financing details - only shown (and only meaningful) when
+                # this unit is offered on monthly amortization rather than
+                # a straight cash sale.
+                if payment_type == 'monthly_amortization':
+                    specs_data.append({'label': 'Payment type', 'value': 'Monthly amortization'})
+                    if v.get('downpayment') is not None:
+                        specs_data.append({'label': 'Downpayment', 'value': f"₱{v.get('downpayment'):,.0f}"})
+                    if v.get('amortization_due_date'):
+                        specs_data.append({'label': 'Due date', 'value': format_showroom_date(v.get('amortization_due_date'))})
+                    if v.get('amortization_next_due'):
+                        specs_data.append({'label': 'Next due', 'value': format_showroom_date(v.get('amortization_next_due'))})
+                    if v.get('amortization_months_remaining') is not None:
+                        specs_data.append({'label': 'Months remaining', 'value': str(v.get('amortization_months_remaining'))})
+                elif payment_type == 'cash':
+                    specs_data.append({'label': 'Payment type', 'value': 'Cash'})
 
                 cards.append(
                     '<div class="car-card" data-idx="' + str(idx) + '" data-status="' + html_lib.escape(v.get('status') or '') +
