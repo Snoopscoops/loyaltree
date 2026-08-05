@@ -571,14 +571,19 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const emptyApplicationForm = { name: '', phone: '', email: '', notes: '' }
   const [applicationForm, setApplicationForm] = useState(emptyApplicationForm)
   const [savingApplication, setSavingApplication] = useState(false)
+  // Review modal - the owner's approve/reject decision, with an optional
+  // note, on any application (used most for agent applications that came
+  // in through the showroom's Agent Login sign-up and carry KYC photos,
+  // but works the same for a plain buyer/seller/manually-logged one).
+  const [reviewingApplication, setReviewingApplication] = useState(null)
+  const [reviewNote, setReviewNote] = useState('')
+  const [decidingApplication, setDecidingApplication] = useState(false)
 
-  // ---------- Agent accounts (cl_agents sign-ups, next to Customers) state ----------
+  // ---------- Agent roster (approved cl_agents accounts, next to
+  // Customers) state - read-only besides basic contact edits and removal;
+  // approval itself happens on the Applications tab above. ----------
   const [agents, setAgents] = useState([])
   const [loadingAgents, setLoadingAgents] = useState(false)
-  const [agentStatusFilter, setAgentStatusFilter] = useState('')
-  const [reviewingAgent, setReviewingAgent] = useState(null) // agent being approved/rejected, or null
-  const [reviewNote, setReviewNote] = useState('')
-  const [decidingAgent, setDecidingAgent] = useState(false)
 
   // ---------- Owner -> buyer messages (Step 5) state ----------
   const [clAnnouncements, setClAnnouncements] = useState([])
@@ -701,16 +706,15 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     })()
   }, [activeTab, applicationRoleTab, applicationStatusFilter, businessId])
 
-  // Re-fetch agent sign-ups whenever the Agents tab is open and its status
-  // filter changes - same server-side-filtered pattern as applications above.
+  // Re-fetch the approved agent roster whenever the Agents tab is opened.
+  // No status filter - everyone in cl_agents is already approved (see
+  // update_cl_application, which is the only thing that ever inserts here).
   useEffect(() => {
     if (!businessId || activeTab !== 'agents') return
     (async () => {
       setLoadingAgents(true)
       try {
-        const params = new URLSearchParams()
-        if (agentStatusFilter) params.set('status', agentStatusFilter)
-        const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-agents?${params.toString()}`)
+        const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-agents`)
         const data = await res.json().catch(() => [])
         if (!res.ok) {
           console.error('Agent list error:', data.detail || res.status)
@@ -719,12 +723,12 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
           setAgents(Array.isArray(data) ? data : [])
         }
       } catch (err) {
-        console.error('Agent filter error:', err)
+        console.error('Agent list error:', err)
         setAgents([])
       }
       setLoadingAgents(false)
     })()
-  }, [activeTab, agentStatusFilter, businessId])
+  }, [activeTab, businessId])
 
   const flash = (text) => {
     setMessage(text)
@@ -915,23 +919,44 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     setSavingApplication(false)
   }
 
-  // Approve/reject - the only way status ever changes; there's no
-  // applicant-facing endpoint that can set it, so this dashboard button
-  // is the sole path to either state.
-  const decideApplication = async (a, status) => {
+  // Opens the review modal for a pending (or previously-decided)
+  // application - approve/reject/reopen all go through here so the owner
+  // can leave a note either way before it's saved. Same modal is used
+  // whether or not the application carries KYC photos (agent sign-ups
+  // via cl-agent-signup do; buyer/seller/manually-logged ones don't).
+  const openApplicationReview = (a) => {
+    setReviewingApplication(a)
+    setReviewNote(a.review_note || '')
+  }
+
+  // Approve/reject (or reopen back to pending) - the only way status ever
+  // changes; there's no applicant-facing endpoint that can set it, so this
+  // dashboard action is the sole path to any of the three states.
+  // Approving an agent application that came from the KYC sign-up flow is
+  // what provisions the real cl_agents account server-side - see
+  // update_cl_application() in main.py.
+  const decideApplication = async (status) => {
+    if (!reviewingApplication) return
+    setDecidingApplication(true)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/applications/${a.public_id}`, {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/applications/${reviewingApplication.public_id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status }),
+        body: JSON.stringify({ status, review_note: reviewNote || null }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Update failed')
-      flash(status === 'approved' ? 'Application approved' : 'Application rejected')
+      flash(
+        status === 'approved' ? 'Application approved' + (reviewingApplication.role === 'agent' && reviewingApplication.selfie_url ? ' — agent account created' : '')
+        : status === 'rejected' ? 'Application rejected'
+        : 'Application reopened'
+      )
+      setReviewingApplication(null)
       reloadApplications()
     } catch (err) {
       flash(err.message)
     }
+    setDecidingApplication(false)
   }
 
   const deleteApplication = async (a) => {
@@ -947,12 +972,10 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     }
   }
 
-  // ---------- Agent accounts (cl_agents sign-ups) CRUD ----------
+  // ---------- Agent roster (approved cl_agents accounts) ----------
   const reloadAgents = async () => {
     try {
-      const params = new URLSearchParams()
-      if (agentStatusFilter) params.set('status', agentStatusFilter)
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-agents?${params.toString()}`)
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-agents`)
       const data = await res.json().catch(() => [])
       if (!res.ok) {
         console.error('Agent reload error:', data.detail || res.status)
@@ -963,37 +986,6 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     } catch (err) {
       console.error('Agent reload error:', err)
     }
-  }
-
-  // Opens the review modal for a pending (or previously-decided) sign-up -
-  // approve/reject both go through here so the owner can leave a note
-  // either way before it's saved.
-  const openAgentReview = (a) => {
-    setReviewingAgent(a)
-    setReviewNote(a.review_note || '')
-  }
-
-  // Approve/reject (or reopen back to pending) - the only way status ever
-  // changes; there's no applicant-facing endpoint that can set it, so this
-  // dashboard action is the sole path to any of the three states.
-  const decideAgent = async (status) => {
-    if (!reviewingAgent) return
-    setDecidingAgent(true)
-    try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-agents/${reviewingAgent.public_id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status, review_note: reviewNote || null }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.detail || 'Update failed')
-      flash(status === 'approved' ? 'Agent approved' : status === 'rejected' ? 'Agent rejected' : 'Agent reopened')
-      setReviewingAgent(null)
-      reloadAgents()
-    } catch (err) {
-      flash(err.message)
-    }
-    setDecidingAgent(false)
   }
 
   const deleteAgent = async (a) => {
@@ -1689,26 +1681,13 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
               <h2 style={styles.sectionTitle}>Agents</h2>
             </div>
             <p style={styles.sectionSubtitle}>
-              Accounts created from the showroom's Agent Login sign-up — review each one's photo and ID before approving.
+              Approved agents — to review a new sign-up, go to Applications → Agents Application.
             </p>
-
-            <select
-              style={{ ...styles.select, marginBottom: 16 }}
-              value={agentStatusFilter}
-              onChange={e => setAgentStatusFilter(e.target.value)}
-            >
-              <option value="">All statuses</option>
-              <option value="pending">Pending</option>
-              <option value="approved">Approved</option>
-              <option value="rejected">Rejected</option>
-            </select>
 
             {loadingAgents ? (
               <div style={styles.emptyState}>Loading…</div>
             ) : agents.length === 0 ? (
-              <div style={styles.emptyState}>
-                {agentStatusFilter ? `No ${agentStatusFilter} agents.` : 'No agent sign-ups yet.'}
-              </div>
+              <div style={styles.emptyState}>No approved agents yet.</div>
             ) : (
               <div style={styles.cardList}>
                 {agents.map(a => (
@@ -1721,12 +1700,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                       </div>
                     )}
                     <div style={styles.recordInfo}>
-                      <div style={styles.recordTitleRow}>
-                        <span style={styles.recordTitle}>{a.name}</span>
-                        <span style={{ ...styles.statusBadge, ...(APPLICATION_STATUS_BADGE_STYLES[a.status] || {}) }}>
-                          {a.status}
-                        </span>
-                      </div>
+                      <div style={styles.recordTitle}>{a.name}</div>
                       <div style={styles.recordMeta}>
                         {[a.phone, a.email].filter(Boolean).join(' · ') || 'No contact info on file'}
                       </div>
@@ -1735,14 +1709,8 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                           <a href={a.id_photo_url} target="_blank" rel="noreferrer">View ID photo ↗</a>
                         </div>
                       )}
-                      {a.review_note && <div style={styles.recordMetaSub}>Note: {a.review_note}</div>}
                     </div>
                     <div style={styles.recordActions}>
-                      {a.status === 'pending' ? (
-                        <button onClick={() => openAgentReview(a)} style={styles.newBtnAlt}>Review</button>
-                      ) : (
-                        <button onClick={() => openAgentReview(a)} style={styles.cancelBtnSmall}>Re-review</button>
-                      )}
                       <button onClick={() => deleteAgent(a)} style={styles.deleteBtn}>Delete</button>
                     </div>
                   </div>
@@ -2134,6 +2102,9 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
               <div style={styles.cardList}>
                 {applications.map(a => (
                   <div key={a.public_id} style={styles.recordCard}>
+                    {a.selfie_url && (
+                      <img src={a.selfie_url} alt={a.name} style={styles.agentAvatar} />
+                    )}
                     <div style={styles.recordInfo}>
                       <div style={styles.recordTitleRow}>
                         <span style={styles.recordTitle}>{a.name}</span>
@@ -2144,16 +2115,19 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                       <div style={styles.recordMeta}>
                         {[a.phone, a.email].filter(Boolean).join(' · ') || 'No contact info on file'}
                       </div>
+                      {a.id_photo_url && (
+                        <div style={styles.recordMetaSub}>
+                          <a href={a.id_photo_url} target="_blank" rel="noreferrer">View ID photo ↗</a>
+                        </div>
+                      )}
                       {a.notes && <div style={styles.recordMetaSub}>{a.notes}</div>}
+                      {a.review_note && <div style={styles.recordMetaSub}>Note: {a.review_note}</div>}
                     </div>
                     <div style={styles.recordActions}>
                       {a.status === 'pending' ? (
-                        <>
-                          <button onClick={() => decideApplication(a, 'approved')} style={styles.newBtnAlt}>Approve</button>
-                          <button onClick={() => decideApplication(a, 'rejected')} style={styles.deleteBtn}>Reject</button>
-                        </>
+                        <button onClick={() => openApplicationReview(a)} style={styles.newBtnAlt}>Review</button>
                       ) : (
-                        <button onClick={() => decideApplication(a, 'pending')} style={styles.cancelBtnSmall}>Reopen</button>
+                        <button onClick={() => openApplicationReview(a)} style={styles.cancelBtnSmall}>Re-review</button>
                       )}
                       <button onClick={() => openEditApplication(a)} style={styles.editBtn}>Edit</button>
                       <button onClick={() => deleteApplication(a)} style={styles.deleteBtn}>Delete</button>
@@ -2297,31 +2271,38 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
         </div>
       )}
 
-      {reviewingAgent && (
-        <div style={styles.modalOverlay} onClick={() => setReviewingAgent(null)}>
+      {reviewingApplication && (
+        <div style={styles.modalOverlay} onClick={() => setReviewingApplication(null)}>
           <div style={styles.modal} onClick={e => e.stopPropagation()}>
-            <h3 style={styles.modalTitle}>Review agent sign-up</h3>
+            <h3 style={styles.modalTitle}>Review application</h3>
 
             <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
-              {reviewingAgent.selfie_url ? (
-                <img src={reviewingAgent.selfie_url} alt={reviewingAgent.name} style={styles.agentAvatarLg} />
+              {reviewingApplication.selfie_url ? (
+                <img src={reviewingApplication.selfie_url} alt={reviewingApplication.name} style={styles.agentAvatarLg} />
               ) : (
                 <div style={{ ...styles.agentAvatarLg, ...styles.agentAvatarPlaceholder }}>
-                  {(reviewingAgent.name || '?').charAt(0).toUpperCase()}
+                  {(reviewingApplication.name || '?').charAt(0).toUpperCase()}
                 </div>
               )}
               <div>
-                <div style={styles.recordTitle}>{reviewingAgent.name}</div>
+                <div style={styles.recordTitle}>{reviewingApplication.name}</div>
                 <div style={styles.recordMeta}>
-                  {[reviewingAgent.phone, reviewingAgent.email].filter(Boolean).join(' · ') || 'No contact info on file'}
+                  {[reviewingApplication.phone, reviewingApplication.email].filter(Boolean).join(' · ') || 'No contact info on file'}
                 </div>
-                {reviewingAgent.id_photo_url && (
+                {reviewingApplication.id_photo_url && (
                   <div style={styles.recordMetaSub}>
-                    <a href={reviewingAgent.id_photo_url} target="_blank" rel="noreferrer">View ID photo ↗</a>
+                    <a href={reviewingApplication.id_photo_url} target="_blank" rel="noreferrer">View ID photo ↗</a>
                   </div>
                 )}
+                {reviewingApplication.notes && <div style={styles.recordMetaSub}>{reviewingApplication.notes}</div>}
               </div>
             </div>
+
+            {reviewingApplication.role === 'agent' && reviewingApplication.selfie_url && (
+              <p style={{ fontSize: 12, color: '#94a3b8', margin: '0 0 12px' }}>
+                Approving this creates the agent's real login account. Rejecting discards it.
+              </p>
+            )}
 
             <div style={styles.formGrid}>
               <label style={styles.label}>Note (optional)</label>
@@ -2334,17 +2315,17 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
             </div>
 
             <div style={styles.modalActions}>
-              <button onClick={() => setReviewingAgent(null)} style={styles.closeBtn}>Cancel</button>
-              {reviewingAgent.status !== 'pending' && (
-                <button onClick={() => decideAgent('pending')} disabled={decidingAgent} style={styles.cancelBtnSmall}>
+              <button onClick={() => setReviewingApplication(null)} style={styles.closeBtn}>Cancel</button>
+              {reviewingApplication.status !== 'pending' && (
+                <button onClick={() => decideApplication('pending')} disabled={decidingApplication} style={styles.cancelBtnSmall}>
                   Reopen
                 </button>
               )}
-              <button onClick={() => decideAgent('rejected')} disabled={decidingAgent} style={styles.deleteBtn}>
+              <button onClick={() => decideApplication('rejected')} disabled={decidingApplication} style={styles.deleteBtn}>
                 Reject
               </button>
-              <button onClick={() => decideAgent('approved')} disabled={decidingAgent} style={styles.saveBtn}>
-                {decidingAgent ? 'Saving…' : 'Approve'}
+              <button onClick={() => decideApplication('approved')} disabled={decidingApplication} style={styles.saveBtn}>
+                {decidingApplication ? 'Saving…' : 'Approve'}
               </button>
             </div>
           </div>

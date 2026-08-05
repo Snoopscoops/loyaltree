@@ -636,15 +636,13 @@ class CLPaymentUpdate(BaseModel):
 # --- Car Lending / Showroom: agent/buyer/seller applications. One table,
 # distinguished by `role` - only the business owner ("admin" of their own
 # dashboard) can move status from pending to approved/rejected; there's no
-# self-service path for an applicant to approve themselves. ---
+# self-service path for an applicant to approve themselves. As of the
+# cl-agent-signup rework below, this is also where the showroom's "Agent
+# Login" sign-up popup lands (role='agent', with password_hash/selfie_url/
+# id_photo_url filled in) - see CLApplicationUpdate/update_cl_application
+# for how approving one of those provisions the real cl_agents account. ---
 CL_APPLICATION_ROLES = ['agent', 'buyer', 'seller']
 CL_APPLICATION_STATUSES = ['pending', 'approved', 'rejected']
-
-# --- Car Lending / Showroom: agent SIGN-UP accounts (cl_agents) go
-# through this same pending/approved/rejected cycle, decided by the
-# business owner on the dashboard's Agents tab - see CLAgentSignup/
-# CLAgentUpdate below. ---
-CL_AGENT_STATUSES = ['pending', 'approved', 'rejected']
 
 class CLApplicationCreate(BaseModel):
     role: Literal['agent', 'buyer', 'seller']
@@ -662,6 +660,10 @@ class CLApplicationUpdate(BaseModel):
     # one with a UI path that calls this endpoint, so no separate
     # approve/reject endpoints are needed.
     status: Optional[Literal['pending', 'approved', 'rejected']] = None
+    # The owner's note on the decision itself (e.g. why it was rejected) -
+    # distinct from `notes` above, which is the applicant's own info.
+    # Optional either way, settable in the same request as `status`.
+    review_note: Optional[str] = None
 
 # Public, unauthenticated self-service version - what the /apply page
 # submits. No `status` field: every self-submitted application always
@@ -675,19 +677,17 @@ class CLApplicationSelfSignup(BaseModel):
     notes: Optional[str] = None
 
 
-# --- Car Lending / Showroom: agent accounts (self-service login/signup
-# from the "Agent Login" button on the public /showroom page). Separate
-# from cl_applications above - this table is the agent's own login
-# credentials + KYC photos, not a role application. Every sign-up lands as
-# 'pending' (same spirit as CLApplicationSelfSignup) - the business owner
-# reviews it on the dashboard's Agents tab (next to Customers) and
-# approves or rejects it, optionally with a note (CLAgentUpdate below).
-# Only an 'approved' row should be treated as a real agent. Login itself
-# is still a UI-only placeholder for now (see the showroom's SHOWROOM_JS)
-# - there's no session/token issued yet and nothing server-side checks a
-# password against it, so no route here reads one back out for
-# verification; sign-up is real and does create the row with a hashed
-# password. ---
+# --- Car Lending / Showroom: the showroom's "Agent Login" sign-up popup
+# (password + camera-captured KYC photos) submits this. It does NOT create
+# a cl_agents account directly - it lands as a pending row in
+# cl_applications (role='agent'), same as any other agent application, and
+# waits for the business owner to approve or reject it (with an optional
+# review_note) on the dashboard's Applications tab. Only on approval does
+# update_cl_application() provision the real cl_agents login account from
+# the stored password_hash/selfie_url/id_photo_url - see that function.
+# Login itself is still a UI-only placeholder for now (see the showroom's
+# SHOWROOM_JS) - there's no session/token issued yet and nothing
+# server-side checks a password against it. ---
 class CLAgentSignup(BaseModel):
     name: str
     phone: Optional[str] = None
@@ -696,16 +696,14 @@ class CLAgentSignup(BaseModel):
     selfie_url: str  # camera-captured selfie, uploaded to Cloudinary before this is submitted - see cl-agent-signup
     id_photo_url: str  # camera-captured photo of a government ID, same flow as selfie_url
 
-# Dashboard-only edits to an agent sign-up, plus the owner's approve/reject
-# decision - status and review_note go through this same field, mirroring
-# CLApplicationUpdate. review_note is the owner's note on the decision
-# (e.g. why a sign-up was rejected); optional either way.
+# Dashboard-only edits to an approved agent's own contact details - name/
+# phone/email only. Approval itself never happens here: an agent only
+# exists in this table once their cl_applications row has been approved
+# (see update_cl_application), so there's no status to set on it.
 class CLAgentUpdate(BaseModel):
     name: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
-    status: Optional[Literal['pending', 'approved', 'rejected']] = None
-    review_note: Optional[str] = None
 
 
 # --- Car Lending / Showroom: self-service signup (buyer scans the
@@ -5698,7 +5696,9 @@ async def list_cl_applications(public_id: str, role: Optional[str] = None, statu
         if status:
             query = query.eq("status", status)
         res = query.order("created_at", desc=True).execute()
-        return res.data or []
+        # password_hash is only ever set on agent applications submitted via
+        # cl-agent-signup (see CLAgentSignup) - never send it back out.
+        return [{k: v for k, v in a.items() if k != 'password_hash'} for a in (res.data or [])]
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
@@ -5726,10 +5726,15 @@ async def create_cl_application(public_id: str, application: CLApplicationCreate
 
 @app.patch("/api/v1/business/{public_id}/applications/{application_public_id}")
 async def update_cl_application(public_id: str, application_public_id: str, update: CLApplicationUpdate):
-    """Covers both plain edits (name/phone/email/notes) and the owner's
-    approve/reject decision (status) - the dashboard is the only caller, so
-    there's no separate applicant-facing endpoint that could set status
-    itself."""
+    """Covers plain edits (name/phone/email/notes), the owner's
+    approve/reject decision (status + review_note), and - specifically for
+    an agent application that came in through the showroom's Agent Login
+    sign-up (role='agent' with a password_hash already attached) - actually
+    provisioning the real cl_agents login account the moment it's approved.
+    Rejecting, or approving a manually-logged agent application with no
+    password_hash (owner heard about them by phone/message), never touches
+    cl_agents. The dashboard is the only caller of this endpoint, so
+    there's no applicant-facing path that could set status itself."""
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -5739,17 +5744,54 @@ async def update_cl_application(public_id: str, application_public_id: str, upda
 
     update_data = {k: v for k, v in update.dict(exclude_unset=True).items() if v is not None}
     if not update_data:
-        return application
+        return {k: v for k, v in application.items() if k != 'password_hash'}
 
     update_data['updated_at'] = datetime.utcnow().isoformat()
-    if 'status' in update_data and update_data['status'] != 'pending':
+    newly_decided = 'status' in update_data and update_data['status'] != application.get('status')
+    if newly_decided and update_data['status'] != 'pending':
         update_data['decided_at'] = datetime.utcnow().isoformat()
 
     try:
         res = supabase.table("cl_applications").update(update_data).eq("id", application.get("id")).execute()
-        return res.data[0] if res.data else {**application, **update_data}
+        updated = res.data[0] if res.data else {**application, **update_data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    # Provision the real agent account, but only the moment status first
+    # becomes 'approved' on an agent application that actually came from
+    # the KYC sign-up flow (has a password_hash) - never on a plain
+    # owner-logged agent application, and never twice for the same one.
+    if (newly_decided and updated.get('status') == 'approved'
+            and updated.get('role') == 'agent' and updated.get('password_hash')):
+        try:
+            email = (updated.get('email') or '').strip().lower()
+            existing = supabase.table("cl_agents").select("id") \
+                .eq("business_id", business.get("id")).eq("email", email).maybe_single().execute()
+            if not existing.data:
+                supabase.table("cl_agents").insert({
+                    'business_id': business.get('id'),
+                    'public_id': generate_public_id(),
+                    'name': updated.get('name'),
+                    'phone': updated.get('phone'),
+                    'email': email,
+                    'password_hash': updated.get('password_hash'),
+                    'selfie_url': updated.get('selfie_url'),
+                    'id_photo_url': updated.get('id_photo_url'),
+                    'created_at': datetime.utcnow().isoformat(),
+                    'updated_at': datetime.utcnow().isoformat(),
+                }).execute()
+            # The hash has done its job migrating into cl_agents - no need
+            # to keep a second copy sitting on the application row.
+            supabase.table("cl_applications").update({'password_hash': None}) \
+                .eq("id", application.get("id")).execute()
+            updated['password_hash'] = None
+        except Exception as e:
+            # The application is already marked approved at this point;
+            # surface the account-creation failure rather than silently
+            # losing it, so the owner knows to retry or investigate.
+            raise HTTPException(status_code=500, detail=f"Application approved, but creating the agent account failed: {friendly_db_error(e)}")
+
+    return {k: v for k, v in updated.items() if k != 'password_hash'}
 
 @app.delete("/api/v1/business/{public_id}/applications/{application_public_id}")
 async def delete_cl_application(public_id: str, application_public_id: str):
@@ -5765,13 +5807,12 @@ async def delete_cl_application(public_id: str, application_public_id: str):
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
     return {"success": True, "deleted": application_public_id}
 
-# CAR LENDING / SHOWROOM - AGENT ACCOUNTS (owner review)
-# Sign-up itself happens through the public cl-agent-signup endpoint
-# further down - these are the business owner's dashboard endpoints to
-# list agent sign-ups (shown on the Agents tab, next to Customers) and
-# approve/reject them with an optional note. Same approve/reject-via-PATCH
-# pattern as cl_applications above: no separate applicant-facing endpoint
-# can set status itself.
+# CAR LENDING / SHOWROOM - AGENT ACCOUNTS (approved roster)
+# An agent only ever lands here once their cl_applications row has been
+# approved (see update_cl_application above, which provisions this row) -
+# there's no separate approval step here, this is just the roster shown on
+# the dashboard's Agents tab (next to Customers): details + KYC photo for
+# whoever the owner has already let in.
 
 def _cl_agent_public(agent: dict) -> dict:
     """Strips password_hash before an agent row goes back to the
@@ -5780,27 +5821,22 @@ def _cl_agent_public(agent: dict) -> dict:
     return {k: v for k, v in agent.items() if k != 'password_hash'}
 
 @app.get("/api/v1/business/{public_id}/cl-agents")
-async def list_cl_agents(public_id: str, status: Optional[str] = None):
+async def list_cl_agents(public_id: str):
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
-    if status and status not in CL_AGENT_STATUSES:
-        raise HTTPException(status_code=400, detail=f"status must be one of {CL_AGENT_STATUSES}")
     try:
-        query = supabase.table("cl_agents").select("*").eq("business_id", business.get("id"))
-        if status:
-            query = query.eq("status", status)
-        res = query.order("created_at", desc=True).execute()
+        res = supabase.table("cl_agents").select("*").eq("business_id", business.get("id")) \
+            .order("created_at", desc=True).execute()
         return [_cl_agent_public(a) for a in (res.data or [])]
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
 @app.patch("/api/v1/business/{public_id}/cl-agents/{agent_public_id}")
 async def update_cl_agent(public_id: str, agent_public_id: str, update: CLAgentUpdate):
-    """Covers both plain edits (name/phone/email) and the owner's
-    approve/reject decision (status + review_note) - the dashboard is the
-    only caller, so there's no applicant-facing endpoint that could set
-    status itself."""
+    """Editing an already-approved agent's own contact details only -
+    name/phone/email. There's no status here to approve/reject; that
+    decision already happened on the cl_applications row."""
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -5811,10 +5847,7 @@ async def update_cl_agent(public_id: str, agent_public_id: str, update: CLAgentU
     update_data = {k: v for k, v in update.dict(exclude_unset=True).items() if v is not None}
     if not update_data:
         return _cl_agent_public(agent)
-
     update_data['updated_at'] = datetime.utcnow().isoformat()
-    if 'status' in update_data and update_data['status'] != 'pending':
-        update_data['decided_at'] = datetime.utcnow().isoformat()
 
     try:
         res = supabase.table("cl_agents").update(update_data).eq("id", agent.get("id")).execute()
@@ -5825,6 +5858,9 @@ async def update_cl_agent(public_id: str, agent_public_id: str, update: CLAgentU
 
 @app.delete("/api/v1/business/{public_id}/cl-agents/{agent_public_id}")
 async def delete_cl_agent(public_id: str, agent_public_id: str):
+    """Revokes an approved agent's account. Does not touch the original
+    cl_applications row it was provisioned from - that stays as a record
+    that it was once approved."""
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -9235,15 +9271,18 @@ async def cl_application_self_signup(business_public_id: str, application: CLApp
 @app.post("/api/v1/business/{business_public_id}/cl-agent-signup")
 async def cl_agent_signup(business_public_id: str, signup: CLAgentSignup):
     """Public, unauthenticated endpoint the showroom's Agent Login popup
-    submits its "Sign up" form to. Creates real login credentials in
-    cl_agents (hashed password), same spirit as cl-apply above - it always
-    lands as 'pending' and only the owner's dashboard (Agents tab, next to
-    Customers) can move it to approved/rejected. Requires a selfie_url and
-    id_photo_url, both camera-captured (no file picker) and already
-    uploaded to Cloudinary (purpose=agent_kyc on the signature endpoint)
-    by the time this is called - see the agent-signup-view JS in
-    SHOWROOM_JS. Logging in with the resulting account is still a
-    front-end placeholder for now (see SHOWROOM_JS)."""
+    submits its "Sign up" form to. Does NOT create a cl_agents account
+    directly - it lands as a pending row in cl_applications (role='agent'),
+    same as any other agent application, carrying the hashed password and
+    both KYC photos along with it. Only the owner's dashboard (Applications
+    tab -> Agents Application) can approve or reject it; approving is what
+    actually provisions the real cl_agents login account - see
+    update_cl_application(). Requires a selfie_url and id_photo_url, both
+    camera-captured (no file picker) and already uploaded to Cloudinary
+    (purpose=agent_kyc on the signature endpoint) by the time this is
+    called - see the agent-signup-view JS in SHOWROOM_JS. Logging in with
+    the resulting account is still a front-end placeholder for now (see
+    SHOWROOM_JS)."""
     business = safe_get_business(business_public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -9257,19 +9296,25 @@ async def cl_agent_signup(business_public_id: str, signup: CLAgentSignup):
         raise HTTPException(status_code=400, detail="A camera-captured selfie and ID photo are both required.")
 
     try:
-        existing = supabase.table("cl_agents").select("id") \
+        existing_agent = supabase.table("cl_agents").select("id") \
             .eq("business_id", business.get("id")).eq("email", email).maybe_single().execute()
-        if existing.data:
+        if existing_agent.data:
             raise HTTPException(status_code=400, detail="An agent account with this email already exists.")
+        existing_application = supabase.table("cl_applications").select("id") \
+            .eq("business_id", business.get("id")).eq("role", "agent") \
+            .eq("email", email).eq("status", "pending").maybe_single().execute()
+        if existing_application.data:
+            raise HTTPException(status_code=400, detail="An application with this email is already pending review.")
     except HTTPException:
         raise
     except Exception as e:
         print(f"cl_agent_signup lookup error: {e}")
 
-    agent_public_id = generate_public_id()
-    agent_data = {
+    application_public_id = generate_public_id()
+    application_data = {
         'business_id': business.get('id'),
-        'public_id': agent_public_id,
+        'public_id': application_public_id,
+        'role': 'agent',
         'name': signup.name,
         'phone': signup.phone,
         'email': email,
@@ -9277,19 +9322,17 @@ async def cl_agent_signup(business_public_id: str, signup: CLAgentSignup):
         'selfie_url': signup.selfie_url,
         'id_photo_url': signup.id_photo_url,
         'status': 'pending',
-        'created_at': datetime.utcnow().isoformat(),
-        'updated_at': datetime.utcnow().isoformat(),
     }
     try:
-        supabase.table("cl_agents").insert(agent_data).execute()
+        supabase.table("cl_applications").insert(application_data).execute()
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
     return {
         "success": True,
-        "public_id": agent_public_id,
+        "public_id": application_public_id,
         "name": signup.name,
-        "message": "Account created - pending the dealership's review before you can log in.",
+        "message": "Application received - pending the dealership's review before you can log in.",
     }
 
 # WALLET PAGE
