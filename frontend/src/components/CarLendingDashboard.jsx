@@ -1033,7 +1033,12 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
       )
       setReviewingApplication(null)
       reloadApplications()
-      if (reviewingApplication.role === 'agent' && status === 'approved') reloadAgents()
+      if (reviewingApplication.role === 'agent' && status === 'approved') {
+        await reloadAgents()
+        // The application has been deleted server-side and is now a real
+        // cl_agents account, so take the owner directly to the new roster.
+        setActiveTab('agents')
+      }
     } catch (err) {
       flash(err.message)
     }
