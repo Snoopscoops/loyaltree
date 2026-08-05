@@ -10323,6 +10323,7 @@ AGENT_JS = """
   var modalNote = document.getElementById('agent-modal-note');
   var modalPrice = document.getElementById('agent-modal-price');
   var copyBtn = document.getElementById('agent-copy-btn');
+  var saveImagesBtn = document.getElementById('agent-save-images-btn');
   var currentCar = null;
   var currentImgIndex = 0;
 
@@ -10355,7 +10356,11 @@ AGENT_JS = """
       modalNote.style.display = 'none';
     }
     copyBtn.classList.remove('copied');
-    copyBtn.textContent = 'Copy details to post';
+    copyBtn.textContent = 'Copy Agent Post';
+    saveImagesBtn.disabled = !car.imgs || car.imgs.length === 0;
+    saveImagesBtn.textContent = car.imgs && car.imgs.length
+      ? 'Save Images (' + car.imgs.length + ')'
+      : 'Save Images';
     renderModalImage();
     modal.classList.add('open');
   }
@@ -10379,14 +10384,65 @@ AGENT_JS = """
     renderModalImage();
   });
 
-  // ---- Copy-to-post ----
+  // ---- Agent-ready copy and image download tools ----
+  function specValue(car, label){
+    var item = (car.specs || []).find(function(s){ return s.label === label; });
+    return item ? String(item.value || '') : '';
+  }
+
+  function dateDayOnly(value){
+    if (!value) return '';
+    var d = new Date(value + (String(value).length === 10 ? 'T00:00:00' : ''));
+    if (isNaN(d.getTime())) return String(value).replace(/^0+/, '');
+    return String(d.getDate());
+  }
+
+  function monthAndDay(value){
+    if (!value) return '';
+    var d = new Date(value + (String(value).length === 10 ? 'T00:00:00' : ''));
+    if (isNaN(d.getTime())) return String(value);
+    return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
+  }
+
+  function money(value){
+    var n = Number(value || 0);
+    return '₱' + n.toLocaleString('en-PH', { maximumFractionDigits: 0 });
+  }
+
   function buildPostText(car){
+    var monthly = car.payment_type === 'monthly_amortization';
     var lines = [];
-    lines.push((car.status === 'available' ? 'FOR SALE: ' : '') + car.title);
-    lines.push(car.price);
-    car.specs.forEach(function(s){ lines.push(s.label + ': ' + s.value); });
+    lines.push('Unit update: ' + new Date().toLocaleDateString('en-US', {
+      month: 'long', day: 'numeric', year: 'numeric'
+    }));
     lines.push('');
-    lines.push('Interested? Message us now!');
+    lines.push(monthly ? 'Tuloy hulog/ Rent to own' : 'For sale!!');
+    lines.push('');
+    lines.push(car.title || '');
+    if (car.transmission) lines.push(String(car.transmission).toUpperCase());
+    if (car.color) lines.push(String(car.color));
+    if (car.plate_ending) lines.push('Plate ending: ' + car.plate_ending);
+
+    if (monthly){
+      lines.push('');
+      if (car.amortization_due_date) lines.push('Due date: ' + dateDayOnly(car.amortization_due_date));
+      if (car.amortization_next_due) lines.push('Next due: ' + monthAndDay(car.amortization_next_due));
+      if (car.amortization_months_remaining !== null && car.amortization_months_remaining !== undefined && car.amortization_months_remaining !== ''){
+        lines.push('Months remaining: ' + car.amortization_months_remaining);
+      }
+    }
+
+    lines.push('');
+    lines.push('Net price: ' + money(monthly ? car.downpayment : car.sale_price) + (monthly ? ' All in DP!!' : ''));
+    lines.push('');
+    lines.push('✅ no need bank approval');
+    lines.push('✅ ready to deliver for sure buyer');
+    lines.push('✅ 5 mins approval only');
+    lines.push('✅ we accept trade in upgrade or downgrade');
+    if (car.note){
+      lines.push('');
+      lines.push('Agent fee / Admin note: ' + car.note);
+    }
     return lines.join('\\n');
   }
 
@@ -10396,10 +10452,10 @@ AGENT_JS = """
     var done = function(){
       copyBtn.classList.add('copied');
       copyBtn.textContent = 'Copied!';
-      showToast('Details copied - ready to paste');
+      showToast('Agent post copied - ready to paste');
       setTimeout(function(){
         copyBtn.classList.remove('copied');
-        copyBtn.textContent = 'Copy details to post';
+        copyBtn.textContent = 'Copy Agent Post';
       }, 1800);
     };
     if (navigator.clipboard && navigator.clipboard.writeText){
@@ -10407,6 +10463,26 @@ AGENT_JS = """
     } else {
       fallbackCopy(text, done);
     }
+  });
+
+  saveImagesBtn.addEventListener('click', function(){
+    if (!currentCar || !currentCar.imgs || !currentCar.imgs.length) return;
+    var baseName = String(currentCar.title || 'vehicle')
+      .replace(/[^a-z0-9]+/gi, '-')
+      .replace(/^-+|-+$/g, '');
+    currentCar.imgs.forEach(function(url, index){
+      setTimeout(function(){
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = baseName + '-' + (index + 1) + '.jpg';
+        a.target = '_blank';
+        a.rel = 'noopener';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }, index * 250);
+    });
+    showToast('Saving ' + currentCar.imgs.length + ' image' + (currentCar.imgs.length === 1 ? '' : 's'));
   });
 
   function fallbackCopy(text, done){
@@ -10571,6 +10647,15 @@ async def agent_inventory_page(business_public_id: str):
                 'status': status,
                 'imgs': raw_imgs,
                 'note': v.get('notes') or '',
+                'payment_type': payment_type,
+                'transmission': v.get('transmission') or '',
+                'color': v.get('color') or '',
+                'plate_ending': v.get('plate_end_in') or (str(v.get('plate_number') or '')[-1:] if v.get('plate_number') else ''),
+                'downpayment': float(v.get('downpayment') or 0),
+                'sale_price': float(v.get('price') or 0),
+                'amortization_due_date': str(v.get('amortization_due_date') or ''),
+                'amortization_next_due': str(v.get('amortization_next_due') or ''),
+                'amortization_months_remaining': v.get('amortization_months_remaining'),
                 'search': (title_plain + ' ' + meta_plain + ' ' + str(v.get('plate_number') or '')).lower(),
             })
         grid_html = '<div class="agent-grid" id="agent-grid">' + ''.join(cards) + '</div>'
@@ -10602,7 +10687,10 @@ async def agent_inventory_page(business_public_id: str):
         '<div class="agent-modal-price-row">'
         '<span id="agent-modal-price" class="agent-modal-price"></span>'
         '</div>'
-        '<button type="button" id="agent-copy-btn" class="agent-copy-btn">Copy details to post</button>'
+        '<div style="display:flex;gap:10px;flex-wrap:wrap">'
+        '<button type="button" id="agent-copy-btn" class="agent-copy-btn" style="flex:1;min-width:180px">Copy Agent Post</button>'
+        '<button type="button" id="agent-save-images-btn" class="agent-copy-btn" style="flex:1;min-width:160px">Save Images</button>'
+        '</div>'
         '</div></div></div>'
         '<script id="agent-cars-data" type="application/json">' + cars_json + '</script>'
     )
