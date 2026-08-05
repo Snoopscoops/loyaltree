@@ -9015,101 +9015,49 @@ body{background:#fbfbfa;color:var(--ink)}
 }
 
 
-
-/* ===== Showroom Clean V3 overrides ===== */
-:root{--gold:#b58a2b;--gold-dark:#8d6719;--black:#141414;--soft:#f7f7f5;--line2:#e8e6e1}
-body{background:#fff;color:var(--black);padding-bottom:0;overflow-x:hidden}
-.site-nav{position:sticky;top:0;z-index:80;background:rgba(255,255,255,.96);border-bottom:1px solid var(--line2);backdrop-filter:blur(14px)}
-.site-nav-inner{max-width:1180px;height:76px;margin:auto;padding:0 28px;display:flex;align-items:center;justify-content:space-between}
-.site-brand{display:flex;align-items:center;gap:11px;text-decoration:none;font-weight:800;letter-spacing:.02em}
-.site-brand-mark{width:46px;height:46px;border-radius:50%;overflow:hidden;display:grid;place-items:center;background:#fff}
-.site-brand-mark img{width:100%;height:100%;object-fit:contain}
-.site-brand-name{font-size:16px;text-transform:uppercase}
-.site-nav-links{display:flex;align-items:center;gap:28px;font-size:13px;font-weight:700}
-.site-nav-links a,.nav-text-btn{background:none;border:0;text-decoration:none;color:#383838;cursor:pointer;font:inherit;padding:10px 0}
-.site-nav-links a:hover,.nav-text-btn:hover{color:var(--gold-dark)}
-.site-nav-cta{border:1px solid #1b1b1b;background:#1b1b1b;color:#fff;border-radius:8px;padding:11px 17px;font-weight:800;cursor:pointer}
-.mobile-menu-btn{display:none;border:0;background:#111;color:#fff;border-radius:8px;width:42px;height:42px;font-size:21px}
-.hero.hero-clean{height:auto;min-height:610px;background:#fff}
-.hero-overlay{position:relative;inset:auto;max-width:1180px;min-height:610px;margin:auto;padding:72px 28px 60px;display:grid;grid-template-columns:minmax(0,.95fr) minmax(420px,1.05fr);align-items:center;gap:58px;color:var(--black);text-align:left;background:none}
-.hero-copy{max-width:590px}
-.hero-eyebrow{color:var(--gold-dark);background:#fbf5e8;border:1px solid #ead7a5;border-radius:999px;padding:8px 12px;width:max-content;margin-bottom:20px}
-.hero-eyebrow .dot{background:var(--gold)}
-.hero-logo{display:flex;align-items:center;gap:10px;margin-bottom:18px;font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:.1em;color:#545454}
-.hero-logo img{width:34px;height:34px;object-fit:contain;border-radius:50%}
-.hero h1{font-size:clamp(46px,5vw,72px);line-height:.99;letter-spacing:-.055em;color:#111;margin:0 0 24px;max-width:650px}
-.hero-subtitle{font-size:18px;line-height:1.72;color:#636363;max-width:570px;margin:0 0 30px}
-.hero-cta-row{display:flex;gap:12px;flex-wrap:wrap}
-.hero-primary-btn,.hero-secondary-btn{min-height:50px;border-radius:8px;padding:0 22px;display:inline-flex;align-items:center;justify-content:center;font-size:14px;font-weight:800;text-decoration:none;cursor:pointer}
-.hero-primary-btn{background:var(--gold);color:#111;border:1px solid var(--gold)}
-.hero-primary-btn:hover{background:#c49a3b}
-.hero-secondary-btn{background:#fff;color:#171717;border:1px solid #d5d2cb}
-.hero-secondary-btn:hover{border-color:#111}
-.hero-visual{min-width:0}
-.hero-car-stage{position:relative;min-height:420px;border-radius:28px;background:linear-gradient(145deg,#fafafa,#efefec);overflow:hidden;display:flex;align-items:center;justify-content:center;padding:30px;box-shadow:0 30px 80px rgba(20,20,20,.11)}
-.hero-car-stage:after{content:"";position:absolute;left:8%;right:8%;bottom:44px;height:26px;border-radius:50%;background:rgba(0,0,0,.16);filter:blur(20px)}
-.hero-car-image{position:relative;z-index:2;width:100%;height:350px;object-fit:contain;filter:drop-shadow(0 22px 20px rgba(0,0,0,.18))}
-.hero-car-placeholder{position:relative;z-index:2;font-size:150px}
-.hero-plate{position:absolute;z-index:4;left:50%;bottom:104px;transform:translateX(-50%);display:flex;align-items:center;gap:6px;padding:5px 10px;background:#fff;border:2px solid #222;border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,.22);font-size:10px;font-weight:900;letter-spacing:.08em;white-space:nowrap}
-.hero-plate-mark{width:20px;height:20px;display:grid;place-items:center;overflow:hidden}
-.hero-plate-mark img{width:100%;height:100%;object-fit:contain}
-.hero-live-caption{position:absolute;z-index:4;left:24px;bottom:20px;max-width:calc(100% - 48px);background:rgba(255,255,255,.94);border:1px solid #dedbd4;border-radius:999px;padding:10px 14px;font-size:12px;font-weight:700;display:flex;align-items:center;gap:8px;box-shadow:0 8px 25px rgba(0,0,0,.09)}
-.hero-live-dot{width:8px;height:8px;border-radius:50%;background:#16a34a;box-shadow:0 0 0 4px rgba(22,163,74,.13)}
-.benefit-strip{background:#fff;border-top:1px solid var(--line2);border-bottom:1px solid var(--line2)}
-.benefit-strip-inner{max-width:1180px;margin:auto;min-height:88px;padding:20px 28px;display:grid;grid-template-columns:1fr auto 1fr auto 1fr auto 1fr;align-items:center}
-.benefit-chip{display:flex;align-items:center;justify-content:center;gap:10px;text-transform:uppercase;letter-spacing:.05em;font-size:12px;color:#292929;text-align:center}
-.benefit-icon{width:30px;height:30px;border-radius:50%;background:#fbf5e8;color:var(--gold-dark);display:grid;place-items:center;font-weight:900}
-.benefit-divider{width:1px;height:32px;background:#e4e1da}
-.inventory-shell{max-width:1180px;margin:0 auto;padding:78px 28px 92px}
-.inventory-toolbar{margin-bottom:28px}
-.stats-strip{display:flex;align-items:end;justify-content:space-between;border:0;padding:0;margin-bottom:24px}
-.stats-strip h2{font-size:34px;letter-spacing:-.035em}
-.stats-strip span{color:#777;font-size:13px}
-.search-wrap{max-width:none;margin-bottom:14px}
-.search-input{height:52px;border:1px solid #dedcd6;border-radius:10px;background:#fff;padding:0 17px;font-size:14px}
-.filter-bar{display:flex;gap:8px;overflow-x:auto;padding:0 0 6px;scrollbar-width:none}
-.filter-bar::-webkit-scrollbar{display:none}
-.filter-chip{flex:0 0 auto;border:1px solid #dedcd6;background:#fff;color:#555;border-radius:999px;padding:10px 16px;font-weight:700}
-.filter-chip.active{background:#171717;color:#fff;border-color:#171717}
-.car-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:22px}
-.car-card{border:1px solid #e3e1db;border-radius:15px;background:#fff;overflow:hidden;box-shadow:0 8px 24px rgba(20,20,20,.055);transition:transform .22s ease,box-shadow .22s ease,border-color .22s ease}
-.car-card:hover{transform:translateY(-4px);box-shadow:0 18px 38px rgba(20,20,20,.11);border-color:#d2c08e}
-.car-gallery{height:230px;background:#f2f2ef}
-.car-gallery img{height:230px;object-fit:cover}
-.no-image{height:230px;background:#f1f1ee}
-.car-info{padding:20px}
-.car-info h3{font-size:19px;letter-spacing:-.02em;margin-bottom:10px}
-.car-meta{font-size:13px;color:#777;line-height:1.5}
-.car-price-row{margin-top:18px;padding-top:15px;border-top:1px solid #eceae5}
-.car-price{font-size:20px;color:var(--gold-dark);font-weight:900}
-.agent-cta-section{max-width:1124px;margin:0 auto 78px;border-radius:22px;background:#181818;color:#fff;padding:48px 54px;display:flex;align-items:center;justify-content:space-between;gap:34px}
-.agent-cta-section .home-kicker{color:#d8b45c}.agent-cta-section .home-heading{color:#fff}.agent-cta-section .home-copy{color:#c9c9c9}
-.connect-section{background:#f6f5f2;padding:76px 28px}
-.contact-wrap{max-width:1124px;margin:auto}
-.contact-note{background:#fff;border:1px solid #e1ded7;border-radius:18px;padding:38px;text-align:center;box-shadow:0 12px 35px rgba(20,20,20,.05)}
-.location-wrap{max-width:1124px;margin:0 auto;padding:74px 28px}
-.footer{background:#171717;color:#aaa;padding:26px;text-align:center}
-
-@media(max-width:900px){
-  .site-nav-links{display:none}.mobile-menu-btn{display:block}
-  body.mobile-nav-open .site-nav-links{display:flex;position:absolute;left:16px;right:16px;top:68px;background:#fff;border:1px solid #e3e1dc;border-radius:14px;box-shadow:0 18px 45px rgba(0,0,0,.14);padding:14px;flex-direction:column;align-items:stretch;gap:0}
-  body.mobile-nav-open .site-nav-links a,body.mobile-nav-open .nav-text-btn,body.mobile-nav-open .site-nav-cta{width:100%;text-align:left;padding:14px;border-radius:8px}
-  .hero-overlay{grid-template-columns:1fr;gap:34px;padding-top:50px}.hero-copy{max-width:680px}.hero-car-stage{min-height:360px}.hero-car-image{height:300px}
-  .benefit-strip-inner{grid-template-columns:1fr 1fr;gap:0;padding:10px 20px}.benefit-divider{display:none}.benefit-chip{justify-content:flex-start;padding:14px}
-  .car-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+/* ================= SHOWROOM V2 — WOLF CARS ================= */
+:root{--wc-gold:#c79a2b;--wc-gold-dark:#9f7720;--wc-gold-soft:#fbf6e8;--wc-ink:#171717;--wc-muted:#6f6f6f;--wc-line:#e9e7e1;--wc-bg:#fafaf8}
+body{background:var(--wc-bg)!important;color:var(--wc-ink)!important;padding-bottom:0!important;overflow-x:hidden}
+.site-nav-v2{position:sticky;top:0;z-index:80;background:rgba(255,255,255,.96);border-bottom:1px solid var(--wc-line);backdrop-filter:blur(14px)}
+.site-nav-v2-inner{max-width:1180px;margin:auto;height:76px;padding:0 24px;display:flex;align-items:center;justify-content:space-between;gap:24px}
+.site-brand-v2{display:flex;align-items:center;gap:12px;text-decoration:none;min-width:0}
+.site-logo-v2{width:48px;height:48px;display:flex;align-items:center;justify-content:center;overflow:hidden;flex:0 0 auto}
+.site-logo-v2 img{width:100%;height:100%;object-fit:contain}.site-logo-v2 .logo-fallback{font-weight:900;color:var(--wc-gold)}
+.site-brand-v2>span:last-child{display:flex;flex-direction:column;line-height:1.05}.site-brand-v2 strong{font-size:16px;letter-spacing:.08em;text-transform:uppercase}.site-brand-v2 small{font-size:10px;color:#8a8a8a;margin-top:5px;letter-spacing:.04em;text-transform:uppercase}
+.site-links-v2{display:flex;align-items:center;gap:25px}.site-links-v2 a{font-size:13px;font-weight:700;color:#4e4e4e;text-decoration:none;white-space:nowrap}.site-links-v2 a:hover{color:var(--wc-gold-dark)}
+.nav-agent-btn{border:1px solid #d8d4ca;background:#fff;color:var(--wc-ink);padding:10px 16px;border-radius:10px;font:700 13px inherit;cursor:pointer}.nav-agent-btn:hover{border-color:var(--wc-gold);background:var(--wc-gold-soft)}
+.hero-v2{background:#fff;border-bottom:1px solid var(--wc-line)}
+.hero-v2-inner{max-width:1180px;margin:auto;min-height:610px;padding:72px 24px 64px;display:grid;grid-template-columns:minmax(0,.92fr) minmax(460px,1.08fr);align-items:center;gap:66px}
+.hero-v2-copy{min-width:0}.hero-eyebrow-v2{display:inline-flex;align-items:center;gap:9px;color:var(--wc-gold-dark);font-size:11px;font-weight:800;letter-spacing:.11em;text-transform:uppercase;margin-bottom:20px}.hero-eyebrow-v2 span{width:7px;height:7px;border-radius:50%;background:var(--wc-gold);box-shadow:0 0 0 5px rgba(199,154,43,.13)}
+.hero-v2 h1{font-size:clamp(43px,5vw,70px);line-height:1.02;letter-spacing:-.055em;font-weight:850;max-width:650px}.hero-v2 h1 em{font-style:normal;color:var(--wc-gold)}
+.hero-v2-copy>p{font-size:16px;line-height:1.75;color:var(--wc-muted);max-width:590px;margin-top:24px}
+.hero-cta-row-v2{display:flex;gap:12px;margin-top:30px}.btn-gold,.btn-outline{min-height:50px;padding:0 23px;border-radius:11px;font:800 14px inherit;display:inline-flex;align-items:center;justify-content:center;text-decoration:none;cursor:pointer;transition:.18s ease}.btn-gold{background:var(--wc-gold);color:#111;border:1px solid var(--wc-gold)}.btn-gold:hover{background:var(--wc-gold-dark);border-color:var(--wc-gold-dark);color:#fff;transform:translateY(-1px)}.btn-outline{background:#fff;color:var(--wc-ink);border:1px solid #d8d4ca}.btn-outline:hover{border-color:var(--wc-gold);background:var(--wc-gold-soft)}
+.hero-proof{display:flex;gap:20px;flex-wrap:wrap;margin-top:24px}.hero-proof span{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:700;color:#4f4f4f}.hero-proof i{font-style:normal;color:var(--wc-gold-dark);font-size:14px}
+.hero-stats-v2{display:grid;grid-template-columns:repeat(3,1fr);gap:0;margin-top:38px;padding-top:25px;border-top:1px solid var(--wc-line);max-width:600px}.hero-stats-v2>div{padding-right:18px}.hero-stats-v2>div+div{padding-left:18px;border-left:1px solid var(--wc-line)}.hero-stats-v2 strong{display:block;font-size:21px;line-height:1.1}.hero-stats-v2 span{display:block;font-size:10.5px;line-height:1.35;color:#898989;text-transform:uppercase;letter-spacing:.06em;margin-top:6px}
+.hero-v2-visual{min-width:0}.hero-car-frame{position:relative;min-height:430px;border-radius:28px;overflow:hidden;background:linear-gradient(145deg,#f1f1ee,#e5e3dc);box-shadow:0 32px 70px rgba(29,26,19,.16)}.hero-car-image{width:100%;height:100%;min-height:430px;display:block;object-fit:cover}.hero-car-frame:after{content:'';position:absolute;inset:0;background:linear-gradient(180deg,transparent 52%,rgba(0,0,0,.68));pointer-events:none}.hero-plate{position:absolute;z-index:2;left:50%;top:61%;transform:translate(-50%,-50%);width:92px;height:44px;border:3px solid rgba(255,255,255,.8);border-radius:6px;background:#111;display:flex;align-items:center;justify-content:center;overflow:hidden;box-shadow:0 4px 12px rgba(0,0,0,.35)}.hero-plate img{width:100%;height:100%;object-fit:contain}.hero-plate .logo-fallback{color:var(--wc-gold);font-weight:900;font-size:19px}
+.hero-car-caption{position:absolute;z-index:3;left:24px;right:24px;bottom:20px;color:#fff;display:flex;align-items:flex-end;justify-content:space-between;gap:18px}.hero-car-caption div{display:flex;flex-direction:column}.hero-car-caption span{font-size:10px;text-transform:uppercase;letter-spacing:.12em;color:#e7d59e}.hero-car-caption strong{font-size:17px;margin-top:5px}.hero-car-caption>b{font-size:14px;color:#f5d675;text-align:right}.hero-car-empty{display:flex;align-items:center;justify-content:center}.hero-empty-mark{width:160px;height:160px;display:flex;align-items:center;justify-content:center}.hero-empty-mark img{max-width:100%;max-height:100%;object-fit:contain}
+.trust-strip{background:#fff!important;border-bottom:1px solid var(--wc-line)}.trust-grid{max-width:1180px!important;padding:0 24px!important}.trust-item{padding:28px 24px!important}.trust-icon{color:var(--wc-gold-dark)!important}.trust-title{color:var(--wc-ink)!important}.trust-text{color:var(--wc-muted)!important}
+.home-section{max-width:1180px!important;margin-top:78px!important;padding:0 24px!important}.home-kicker{color:var(--wc-gold-dark)!important}.home-heading{color:var(--wc-ink)!important}.home-copy{color:var(--wc-muted)!important}
+.inventory-shell{padding-bottom:28px}.inventory-toolbar{max-width:1180px!important;margin-top:42px!important;padding:0 24px!important}.stats-strip h2{font-size:30px!important;letter-spacing:-.035em}.stats-strip span{color:var(--wc-muted)!important}
+.search-input{border-color:var(--wc-line)!important;border-radius:12px!important;box-shadow:0 8px 24px rgba(30,26,18,.04)}.search-input:focus{border-color:var(--wc-gold)!important;box-shadow:0 0 0 3px rgba(199,154,43,.12)}
+.filter-chip{border-color:var(--wc-line)!important;color:#686868!important}.filter-chip.active{background:var(--wc-ink)!important;border-color:var(--wc-ink)!important;color:#fff!important}.filter-chip:hover{border-color:var(--wc-gold)!important;color:var(--wc-ink)!important}
+.car-grid{max-width:1180px!important;padding:0 24px!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:24px!important;margin-top:24px!important}.car-card{border:1px solid var(--wc-line)!important;border-radius:18px!important;box-shadow:0 8px 26px rgba(29,26,19,.055)!important;background:#fff!important}.car-card:hover{transform:translateY(-5px)!important;box-shadow:0 22px 48px rgba(29,26,19,.13)!important;border-color:#ddd3b5!important}.car-gallery,.no-image{aspect-ratio:16/10!important}.car-info{padding:18px 18px 17px!important}.car-info h3{font-size:17px!important}.car-meta{color:var(--wc-muted)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.car-price-row{border-top:1px solid var(--wc-line)!important;margin-top:15px!important;padding-top:15px!important;gap:12px}.car-price{color:var(--wc-gold-dark)!important;font-size:18px!important}.car-view-btn{margin-left:auto;border:0;background:var(--wc-ink);color:#fff;border-radius:9px;padding:9px 13px;font:800 11.5px inherit;cursor:pointer;white-space:nowrap}.car-view-btn:hover{background:var(--wc-gold-dark)}
+.process-card{border-color:var(--wc-line)!important;box-shadow:0 8px 25px rgba(29,26,19,.04)}.process-n{background:var(--wc-gold-soft)!important;color:var(--wc-gold-dark)!important}.agent-cta-section{background:var(--wc-ink)!important;border:0!important;box-shadow:none!important}.agent-cta-section .home-kicker{color:#dfbf69!important}.agent-cta-section .home-heading,.agent-cta-section .home-copy,.agent-cta-benefits{color:#fff!important}.agent-cta-section .hero-primary-btn{background:var(--wc-gold)!important;color:#111!important;border:0!important}
+.connect-section{margin-top:80px!important;background:#f3f1eb!important;padding:70px 0!important}.contact-wrap{margin:0!important}.contact-note{max-width:760px!important;width:100%;border-color:var(--wc-line)!important;border-radius:22px!important;box-shadow:none!important;padding:34px!important}.connect-title{font-size:25px!important}.connect-fb-btn{background:var(--wc-ink)!important;box-shadow:none!important}.connect-apply-link{background:#fff!important;border:1px solid var(--wc-line)!important}.connect-apply-link:hover{border-color:var(--wc-gold)!important;background:var(--wc-gold-soft)!important}
+.location-wrap{max-width:1180px!important;padding:0 24px!important;margin-top:78px!important}.location-map{border-color:var(--wc-line)!important}.location-directions-btn{background:var(--wc-gold)!important;color:#111!important}.footer{max-width:none!important;margin-top:70px!important;padding:28px 20px!important;background:var(--wc-ink);color:#aaa!important;border:0!important}
+.vehicle-modal-call-btn,.agent-modal-submit{background:var(--wc-gold)!important;color:#111!important}.vehicle-modal-requirements li::before{background:var(--wc-gold)!important}.agent-modal-view input:focus{border-color:var(--wc-gold)!important}.agent-modal-switch a{color:var(--wc-gold-dark)!important}
+@media(max-width:980px){.site-links-v2 a{display:none}.hero-v2-inner{grid-template-columns:1fr 1fr;gap:34px;padding-top:54px}.hero-v2 h1{font-size:48px}.car-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
+@media(max-width:700px){
+  .site-nav-v2-inner{height:64px;padding:0 16px}.site-logo-v2{width:40px;height:40px}.site-brand-v2 strong{font-size:13px}.site-brand-v2 small{display:none}.nav-agent-btn{padding:9px 12px;font-size:11px}
+  .hero-v2-inner{display:flex;flex-direction:column;min-height:0;padding:38px 16px 42px;gap:30px}.hero-v2-copy,.hero-v2-visual{width:100%}.hero-eyebrow-v2{font-size:9.5px;margin-bottom:14px}.hero-v2 h1{font-size:clamp(36px,11vw,50px);line-height:1.04}.hero-v2-copy>p{font-size:14px;line-height:1.6;margin-top:18px}.hero-cta-row-v2{display:grid;grid-template-columns:1fr;margin-top:24px}.btn-gold,.btn-outline{width:100%;min-height:50px}.hero-proof{display:grid;grid-template-columns:1fr;gap:9px;margin-top:20px}.hero-stats-v2{grid-template-columns:repeat(3,minmax(0,1fr));margin-top:26px;padding-top:20px}.hero-stats-v2>div{padding-right:8px}.hero-stats-v2>div+div{padding-left:10px}.hero-stats-v2 strong{font-size:16px}.hero-stats-v2 span{font-size:8px}.hero-car-frame,.hero-car-image{min-height:250px}.hero-car-frame{border-radius:19px}.hero-plate{width:68px;height:33px;top:60%}.hero-car-caption{left:15px;right:15px;bottom:13px}.hero-car-caption strong{font-size:13px}.hero-car-caption>b{font-size:11px}
+  .trust-grid{grid-template-columns:1fr 1fr!important;padding:0!important}.trust-item{padding:20px 14px!important;min-width:0}.trust-item:nth-child(2){border-right:0!important}.trust-item:nth-child(-n+2){border-bottom:1px solid var(--wc-line)}.trust-title{font-size:11.5px!important}.trust-text{font-size:10px!important}
+  .home-section{margin-top:54px!important;padding:0 16px!important}.home-heading{font-size:29px!important}.inventory-toolbar{padding:0 16px!important;margin-top:32px!important}.stats-strip{padding:0!important}.stats-strip h2{font-size:25px!important}.search-wrap{padding:0!important}.filter-bar{padding:0!important;flex-wrap:nowrap!important;overflow-x:auto!important;scrollbar-width:none}.filter-bar::-webkit-scrollbar{display:none}.filter-chip{flex:0 0 auto!important}
+  .car-grid{grid-template-columns:1fr!important;padding:0 16px!important;gap:18px!important}.car-card{width:100%!important;min-width:0!important}.car-gallery,.no-image{aspect-ratio:16/10!important}.car-info{padding:15px!important}.car-price-row{align-items:center}.car-view-btn{padding:9px 12px}
+  .process-grid{grid-template-columns:1fr!important}.agent-cta-section{margin-left:16px!important;margin-right:16px!important;padding:28px 22px!important}.agent-cta-benefits{display:grid!important;grid-template-columns:1fr!important}.agent-cta-btn{width:100%!important;margin-top:20px!important}
+  .connect-section{margin-top:58px!important;padding:44px 16px!important}.contact-wrap{padding:0!important}.contact-note{padding:25px 18px!important}.connect-apply-row{display:grid!important;grid-template-columns:1fr!important}.connect-apply-link{width:100%;min-height:44px}.location-wrap{padding:0 16px!important;margin-top:54px!important}.location-map iframe{height:245px!important}
+  .vehicle-modal,.agent-modal{padding:0!important;align-items:flex-end!important}.vehicle-modal-card,.agent-modal-card{border-radius:20px 20px 0 0!important;max-height:92vh!important}.agent-modal-scroll{max-height:92vh!important}.vehicle-modal-specs{grid-template-columns:1fr 1fr!important}
 }
-@media(max-width:600px){
-  .site-nav-inner{height:66px;padding:0 16px}.site-brand-mark{width:40px;height:40px}.site-brand-name{font-size:14px}
-  .hero.hero-clean{min-height:0}.hero-overlay{min-height:0;padding:38px 18px 34px;gap:28px}.hero-logo{margin-bottom:12px}.hero h1{font-size:43px;line-height:1.02}.hero-subtitle{font-size:15px;line-height:1.62;margin-bottom:24px}
-  .hero-cta-row{display:grid;grid-template-columns:1fr}.hero-primary-btn,.hero-secondary-btn{width:100%;min-height:52px}
-  .hero-car-stage{min-height:285px;border-radius:18px;padding:14px}.hero-car-image{height:245px}.hero-car-placeholder{font-size:95px}.hero-plate{bottom:70px;transform:translateX(-50%) scale(.86)}.hero-live-caption{left:12px;right:12px;bottom:10px;max-width:none;border-radius:10px}
-  .benefit-strip-inner{grid-template-columns:1fr 1fr;padding:10px}.benefit-chip{padding:12px 8px;justify-content:flex-start;font-size:10px;letter-spacing:.02em}.benefit-icon{width:27px;height:27px;flex:0 0 auto}
-  .inventory-shell{padding:52px 16px 66px}.stats-strip{align-items:flex-start;gap:6px;flex-direction:column}.stats-strip h2{font-size:29px}.car-grid{grid-template-columns:1fr;gap:18px}.car-gallery,.car-gallery img,.no-image{height:245px}
-  .agent-cta-section{margin:0 16px 54px;padding:32px 24px;display:block;border-radius:17px}.agent-cta-btn{width:100%;margin-top:24px}
-  .connect-section{padding:54px 16px}.contact-note{padding:28px 18px}.connect-apply-row{display:grid;grid-template-columns:1fr;gap:10px}.connect-apply-link{width:100%}
-  .location-wrap{padding:54px 16px}.location-map{height:280px}
-  .agent-modal-card,.vehicle-modal-card{width:100%;max-height:92vh;border-radius:20px 20px 0 0;position:absolute;bottom:0}.agent-modal,.vehicle-modal{align-items:flex-end;padding:0}
-}
+@media(max-width:380px){.hero-v2 h1{font-size:34px}.hero-stats-v2{grid-template-columns:1fr;gap:12px}.hero-stats-v2>div,.hero-stats-v2>div+div{padding:0;border:0}.hero-stats-v2 span{font-size:9px}.trust-grid{grid-template-columns:1fr!important}.trust-item{border-right:0!important;border-bottom:1px solid var(--wc-line)!important}.trust-item:last-child{border-bottom:0!important}.vehicle-modal-specs{grid-template-columns:1fr!important}}
 
 """
 
@@ -9634,9 +9582,6 @@ SHOWROOM_JS = """
 
   var agentModal = document.getElementById('agent-modal');
   var agentLoginBtn = document.getElementById('agent-login-btn');
-  var navAgentLoginBtn = document.getElementById('nav-agent-login-btn');
-  var navSellCarBtn = document.getElementById('nav-sell-car-btn');
-  var mobileMenuBtn = document.getElementById('mobile-menu-btn');
   var agentModalClose = document.getElementById('agent-modal-close');
   var agentLoginView = document.getElementById('agent-login-view');
   var agentSignupView = document.getElementById('agent-signup-view');
@@ -9885,10 +9830,6 @@ SHOWROOM_JS = """
     }
   });
 
-  if (navAgentLoginBtn) navAgentLoginBtn.addEventListener('click', openAgentModal);
-  if (navSellCarBtn) navSellCarBtn.addEventListener('click', openSellModal);
-  if (mobileMenuBtn) mobileMenuBtn.addEventListener('click', function(){ document.body.classList.toggle('mobile-nav-open'); });
-
   var agentLogoutBtn = document.getElementById('agent-logout-btn');
   if (agentLogoutBtn) agentLogoutBtn.addEventListener('click', function(){
     agentLoggedIn = false;
@@ -9899,6 +9840,24 @@ SHOWROOM_JS = """
   });
 })();
 """
+
+SHOWROOM_CSS += r'''
+
+/* Clean showroom v4: compact benefits strip and inventory-first flow */
+.benefit-strip{background:#fff;border-top:1px solid #eee8db;border-bottom:1px solid #eee8db}
+.benefit-strip-inner{max-width:1180px;margin:0 auto;padding:20px 24px;display:grid;grid-template-columns:1fr auto 1fr auto 1fr auto 1fr;align-items:center;gap:18px}
+.benefit-chip{display:flex;align-items:center;justify-content:center;gap:10px;color:#181818;font-size:14px;letter-spacing:.01em;text-align:center}
+.benefit-icon{width:28px;height:28px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;background:#f6edda;color:#a97d1d;font-weight:900;flex:0 0 auto}
+.benefit-divider{width:1px;height:30px;background:#e8ddc6}
+@media(max-width:760px){
+  .benefit-strip-inner{grid-template-columns:1fr 1fr;gap:10px;padding:14px 16px}
+  .benefit-divider{display:none}
+  .benefit-chip{justify-content:flex-start;border:1px solid #eee8db;border-radius:12px;padding:12px;background:#fff;font-size:12px;min-width:0}
+  .benefit-icon{width:24px;height:24px}
+}
+@media(max-width:380px){.benefit-strip-inner{grid-template-columns:1fr}.benefit-chip{font-size:13px}}
+
+'''
 
 @app.get("/showroom/{business_public_id}", response_class=HTMLResponse)
 async def showroom_page(business_public_id: str):
@@ -9917,39 +9876,62 @@ async def showroom_page(business_public_id: str):
         except Exception:
             vehicles = []
 
-        logo_html = ('<img src="' + html_lib.escape(logo_url) + '" alt="Logo"/>') if logo_url else '&#128663;'
-        featured_vehicle = vehicles[0] if vehicles else None
+        logo_html = ('<img src="' + html_lib.escape(logo_url) + '" alt="' + html_lib.escape(biz_name) + ' logo"/>') if logo_url else '<span class="logo-fallback">WC</span>'
+
+        # Showroom V2 uses a real live inventory image in the hero. Nothing is
+        # duplicated or hard-coded outside the existing vehicles query: when
+        # inventory changes, this visual changes with it automatically.
+        featured_vehicle = next((v for v in vehicles if v.get('status') == 'available'), vehicles[0] if vehicles else None)
         featured_images = []
         if featured_vehicle:
             featured_images = featured_vehicle.get('image_urls') or ([featured_vehicle.get('image_url')] if featured_vehicle.get('image_url') else [])
-            featured_images = [img for img in featured_images if img]
-        featured_image_url = featured_images[0] if featured_images else ''
-        featured_title = (f"{featured_vehicle.get('year') or ''} {featured_vehicle.get('make') or ''} {featured_vehicle.get('model') or ''}".strip() if featured_vehicle else 'Live dealership inventory')
-        # Clean dealership hero using the newest live vehicle as the visual.
-        hero_class = 'hero hero-home hero-fallback hero-clean'
-        hero_style = ''
-        featured_visual_html = (
-            '<div class="hero-car-stage">'
-            + ('<img class="hero-car-image" src="' + html_lib.escape(featured_image_url) + '" alt="' + html_lib.escape(featured_title) + '">' if featured_image_url else '<div class="hero-car-placeholder">&#128663;</div>')
-            + '<div class="hero-plate"><span class="hero-plate-mark">' + logo_html + '</span><span>WOLF CARS</span></div>'
-            + '<div class="hero-live-caption"><span class="hero-live-dot"></span>' + html_lib.escape(featured_title) + '</div>'
-            + '</div>'
-        )
-        hero_html = (
-            '<section class="' + hero_class + '">'
-            '<div class="hero-overlay"><div class="hero-copy">'
-            '<div class="hero-eyebrow"><span class="dot"></span>Verified live inventory</div>'
-            '<div class="hero-logo">' + logo_html + '<span>' + html_lib.escape(biz_name) + '</span></div>'
-            '<h1>Drive home your next vehicle.</h1>'
-            '<p class="hero-subtitle">Browse ready-to-deliver cash and monthly-amortization units, review complete details, and inquire online.</p>'
-            '<div class="hero-cta-row">'
-            '<a href="#inventory" class="hero-primary-btn">Browse Available Cars</a>'
-            '<button id="sell-car-btn" class="hero-secondary-btn" type="button">Sell a Car</button>'
-            '</div>'
-            '</div><div class="hero-visual">' + featured_visual_html + '</div></div>'
-            '</section>'
-        )
+            featured_images = [u for u in featured_images if u]
+        featured_image_url = featured_images[0] if featured_images else None
+        featured_title = ''
+        featured_price = ''
+        if featured_vehicle:
+            featured_title = f"{featured_vehicle.get('year') or ''} {featured_vehicle.get('make') or ''} {featured_vehicle.get('model') or ''}".strip()
+            if featured_vehicle.get('payment_type') == 'monthly_amortization':
+                dp = featured_vehicle.get('downpayment')
+                monthly = featured_vehicle.get('monthly_amortization_amount')
+                featured_price = (f"₱{dp:,.0f} DP" if dp is not None else '') + (f" · ₱{monthly:,.0f}/month" if monthly else '')
+            else:
+                featured_price = f"₱{(featured_vehicle.get('price') or 0):,.0f}"
 
+        if featured_image_url:
+            featured_visual_html = (
+                '<div class="hero-car-frame">'
+                '<img class="hero-car-image" src="' + html_lib.escape(featured_image_url) + '" alt="' + html_lib.escape(featured_title or 'Featured vehicle') + '">'
+                '<div class="hero-plate">' + logo_html + '</div>'
+                '<div class="hero-car-caption"><div><span>Featured unit</span><strong>' + html_lib.escape(featured_title) + '</strong></div>'
+                + ('<b>' + html_lib.escape(featured_price) + '</b>' if featured_price else '') + '</div>'
+                '</div>'
+            )
+        else:
+            featured_visual_html = (
+                '<div class="hero-car-frame hero-car-empty"><div class="hero-empty-mark">' + logo_html + '</div>'
+                '<div class="hero-car-caption"><div><span>Live inventory</span><strong>New units coming soon</strong></div></div></div>'
+            )
+
+        hero_html = (
+            '<main class="hero-v2">'
+            '<div class="hero-v2-inner">'
+            '<div class="hero-v2-copy">'
+            '<div class="hero-eyebrow-v2"><span></span>Verified dealership inventory</div>'
+            '<h1>Drive home your next car—<em>without the usual delays.</em></h1>'
+            '<p>Browse ready-to-deliver cash and rent-to-own vehicles, review complete details, and send your inquiry online.</p>'
+            '<div class="hero-cta-row-v2">'
+            '<a href="#inventory" class="btn-gold">Browse Available Cars</a>'
+            '<button id="sell-car-btn" class="btn-outline" type="button">Sell a Car</button>'
+            '</div>'
+            '<div class="hero-proof">'
+            '<span><i>&#10003;</i>No bank approval required</span>'
+            '<span><i>&#10003;</i>Ready to deliver for sure buyers</span>'
+            '</div>'
+            '</div>'
+            '<div class="hero-v2-visual">' + featured_visual_html + '</div>'
+            '</div></main>'
+        )
 
         # Fixed "Connect with us?" block (Facebook message button + phone
         # numbers) - replaces the old owner-editable inquiries/contact note.
@@ -10032,14 +10014,403 @@ async def showroom_page(business_public_id: str):
                 if imgs:
                     gal_imgs_html = ''.join('<img src="' + i + '" alt="' + title + '" loading="lazy">' for i in imgs)
                     multi = len(imgs) > 1
-                    nav_html = (
-            '<nav class="site-nav"><div class="site-nav-inner">'
-            '<a class="site-brand" href="#top"><span class="site-brand-mark">' + logo_html + '</span>'
-            '<span class="site-brand-name">' + html_lib.escape(biz_name) + '</span></a>'
-            '<div class="site-nav-links">'
-            '<a href="#inventory">Available Cars</a><button id="nav-sell-car-btn" class="nav-text-btn" type="button">Sell a Car</button>'
-            '<a href="#location">Location</a><button id="nav-agent-login-btn" class="site-nav-cta" type="button">Agent Login</button>'
-            '</div><button id="mobile-menu-btn" class="mobile-menu-btn" type="button" aria-label="Open menu">&#9776;</button></div></nav>'
+                    nav_html = ('<button class="gal-btn prev" aria-label="Previous photo">&#10094;</button>'
+                                '<button class="gal-btn next" aria-label="Next photo">&#10095;</button>') if multi else ''
+                    dots_html = ('<div class="gal-dots">' + ''.join(
+                        '<span class="dot' + (' active' if i == 0 else '') + '"></span>' for i in range(len(imgs))
+                    ) + '</div>') if multi else ''
+                    count_html = ('<span class="gal-count">1/' + str(len(imgs)) + '</span>') if multi else ''
+                    badge = '<span class="badge reserved">Reserved</span>' if v.get('status') == 'reserved' else ''
+                    gallery_html = (
+                        '<div class="car-gallery">' + badge +
+                        '<div class="gal-track">' + gal_imgs_html + '</div>' +
+                        nav_html + dots_html + count_html +
+                        '</div>'
+                    )
+                else:
+                    badge = '<span class="badge reserved">Reserved</span>' if v.get('status') == 'reserved' else ''
+                    gallery_html = '<div style="position:relative">' + badge + '<div class="no-image">&#128663;</div></div>'
+
+                price = v.get('price') or 0
+                payment_type = v.get('payment_type')
+                monthly_amount = v.get('monthly_amortization_amount')
+                if payment_type == 'monthly_amortization':
+                    price_str = (f"₱{monthly_amount:,.0f}/month" if monthly_amount else "Contact us for pricing")
+                else:
+                    price_str = f"₱{price:,.0f}"
+                meta_bits = []
+                meta_bits_plain = []
+                if v.get('color'):
+                    meta_bits.append(html_lib.escape(str(v.get('color'))))
+                    meta_bits_plain.append(str(v.get('color')))
+                if v.get('mileage') is not None:
+                    meta_bits.append(f"{v.get('mileage'):,} km")
+                    meta_bits_plain.append(f"{v.get('mileage'):,} km")
+                if v.get('location'):
+                    meta_bits.append(html_lib.escape(str(v.get('location'))))
+                    meta_bits_plain.append(str(v.get('location')))
+                meta = ' &middot; '.join(meta_bits)
+                meta_plain = ' · '.join(meta_bits_plain)
+
+                # Fuller spec sheet shown only in the tap-to-view details
+                # modal (kept off the grid card itself so cards stay compact).
+                specs_data = []
+                if v.get('transmission'):
+                    specs_data.append({'label': 'Transmission', 'value': str(v.get('transmission')).capitalize()})
+                if v.get('fuel_type'):
+                    specs_data.append({'label': 'Fuel type', 'value': str(v.get('fuel_type')).capitalize()})
+                if v.get('mileage') is not None:
+                    specs_data.append({'label': 'Mileage', 'value': f"{v.get('mileage'):,} km"})
+                if v.get('color'):
+                    specs_data.append({'label': 'Color', 'value': str(v.get('color'))})
+                if v.get('plate_end_in'):
+                    specs_data.append({'label': 'Plate ends in', 'value': str(v.get('plate_end_in'))})
+                if v.get('location'):
+                    specs_data.append({'label': 'Location', 'value': str(v.get('location'))})
+
+                # Financing details - only shown (and only meaningful) when
+                # this unit is offered on monthly amortization rather than
+                # a straight cash sale.
+                if payment_type == 'monthly_amortization':
+                    specs_data.append({'label': 'Payment type', 'value': 'Monthly amortization'})
+                    if v.get('downpayment') is not None:
+                        specs_data.append({'label': 'Downpayment', 'value': f"₱{v.get('downpayment'):,.0f}"})
+                    if v.get('amortization_due_date'):
+                        specs_data.append({'label': 'Due date', 'value': format_showroom_date(v.get('amortization_due_date'))})
+                    if v.get('amortization_next_due'):
+                        specs_data.append({'label': 'Next due', 'value': format_showroom_date(v.get('amortization_next_due'))})
+                    if v.get('amortization_months_remaining') is not None:
+                        specs_data.append({'label': 'Months remaining', 'value': str(v.get('amortization_months_remaining'))})
+                elif payment_type == 'cash':
+                    specs_data.append({'label': 'Payment type', 'value': 'Cash'})
+
+                cards.append(
+                    '<div class="car-card" data-idx="' + str(idx) + '" data-status="' + html_lib.escape(v.get('status') or '') +
+                    '" data-make="' + html_lib.escape((v.get('make') or '').strip()) +
+                    '" data-search="' + html_lib.escape((title_plain + ' ' + meta_plain).lower()) + '">' +
+                    gallery_html +
+                    '<div class="car-info">' +
+                    '<h3>' + title + '</h3>' +
+                    ('<p class="car-meta">' + meta + '</p>' if meta else '') +
+                    '<div class="car-price-row"><span class="car-price">' + price_str + '</span>'
+                    '<button type="button" class="car-view-btn">View details</button></div>'
+                    '</div></div>'
+                )
+
+                # Plain (unescaped) copy for the tap-to-view details modal - the
+                # JS sets these via textContent/img.src, not innerHTML, so no
+                # HTML-escaping is needed here, only JSON-escaping below.
+                cars_data.append({
+                    'public_id': v.get('public_id'),
+                    'title': title_plain,
+                    'meta': meta_plain,
+                    'specs': specs_data,
+                    'price': price_str,
+                    'status': v.get('status') or '',
+                    'imgs': raw_imgs,
+                })
+            grid_html = '<div class="car-grid">' + ''.join(cards) + '</div>' + (
+                '<div id="no-results" class="empty-state" style="display:none">'
+                '<div class="icon">&#128269;</div><p>No vehicles match your search.</p></div>'
+                if len(vehicles) >= 5 else ''
+            )
+            cars_json = json.dumps(cars_data).replace('</', '<\\/')
+        else:
+            grid_html = '<div class="empty-state"><div class="icon">&#128663;</div><p>No vehicles available right now - check back soon!</p></div>'
+            cars_json = '[]'
+
+        lightbox_html = (
+            '<div id="lightbox" class="lightbox">'
+            '<button id="lightbox-close" class="lightbox-close" aria-label="Close">&times;</button>'
+            '<button id="lightbox-prev" class="lightbox-nav prev" aria-label="Previous">&#10094;</button>'
+            '<img id="lightbox-img" class="lightbox-img" src="" alt="Vehicle photo">'
+            '<button id="lightbox-next" class="lightbox-nav next" aria-label="Next">&#10095;</button>'
+            '<div id="lightbox-counter" class="lightbox-counter"></div>'
+            '</div>'
+        )
+
+        inquire_btn_html = (
+            '<button type="button" id="vehicle-modal-inquire" class="vehicle-modal-call-btn">Inquire to buy this car</button>'
+        )
+        vehicle_modal_html = (
+            '<div id="vehicle-modal" class="vehicle-modal">'
+            '<div class="vehicle-modal-card">'
+            '<button id="vehicle-modal-close" class="vehicle-modal-close" aria-label="Close">&times;</button>'
+            '<div class="vehicle-modal-gallery">'
+            '<img id="vehicle-modal-img" src="" alt="Vehicle photo">'
+            '<button id="vehicle-modal-prev" class="vehicle-modal-nav prev" aria-label="Previous photo">&#10094;</button>'
+            '<button id="vehicle-modal-next" class="vehicle-modal-nav next" aria-label="Next photo">&#10095;</button>'
+            '<span id="vehicle-modal-count" class="vehicle-modal-count"></span>'
+            '</div>'
+            '<div class="vehicle-modal-body">'
+            '<h3 id="vehicle-modal-title"></h3>'
+            '<p id="vehicle-modal-meta" class="vehicle-modal-meta"></p>'
+            '<div id="vehicle-modal-specs" class="vehicle-modal-specs"></div>'
+            '<div class="vehicle-modal-requirements">'
+            '<h4>Requirements</h4>'
+            '<ul>'
+            '<li>2 valid IDs</li>'
+            '<li>Proof of income</li>'
+            '<li>Downpayment</li>'
+            '</ul>'
+            '</div>'
+            '<div class="vehicle-modal-price-row">'
+            '<span id="vehicle-modal-price" class="vehicle-modal-price"></span>'
+            '<span id="vehicle-modal-badge" class="badge reserved" style="display:none;position:static">Reserved</span>'
+            '</div>'
+            + inquire_btn_html +
+            '</div></div></div>'
+            '<script id="cars-data" type="application/json">' + cars_json + '</script>'
+        )
+
+        # Agent Login / Sign Up popup - opened from the "Agent Login" button
+        # top-right of the hero. Three views toggled by SHOWROOM_JS: login
+        # form, sign-up form (posts to POST /api/v1/business/{id}/cl-agent-
+        # signup, which creates real credentials in cl_agents), and a
+        # logged-in placeholder (no real session/agent dashboard yet).
+        agent_modal_html = (
+            '<div id="agent-modal" class="agent-modal">'
+            '<div class="agent-modal-card">'
+            '<button id="agent-modal-close" class="agent-modal-close" type="button" aria-label="Close">&times;</button>'
+            '<div class="agent-modal-scroll">'
+
+            '<div id="agent-login-view" class="agent-modal-view">'
+            '<h3 class="agent-modal-title">Agent Login</h3>'
+            '<p class="agent-modal-sub">Log in to your agent account.</p>'
+            '<form id="agent-login-form">'
+            '<input type="email" id="agent-login-email" placeholder="Email" required autocomplete="username">'
+            '<input type="password" id="agent-login-password" placeholder="Password" required autocomplete="current-password">'
+            '<div id="agent-login-error" class="agent-modal-error" style="display:none"></div>'
+            '<button type="submit" class="agent-modal-submit">Log in</button>'
+            '</form>'
+            '<div class="agent-modal-switch">New agent? <a href="#" id="agent-show-signup">Sign up</a></div>'
+            '</div>'
+
+            '<div id="agent-signup-view" class="agent-modal-view" style="display:none">'
+            '<h3 class="agent-modal-title">Agent Sign Up</h3>'
+            '<p class="agent-modal-sub">Create your agent account.</p>'
+            '<form id="agent-signup-form">'
+            '<input type="text" id="agent-signup-name" placeholder="Full name" required autocomplete="name">'
+            '<input type="tel" id="agent-signup-phone" placeholder="Phone number" autocomplete="tel">'
+            '<input type="text" id="agent-signup-address" placeholder="Address" autocomplete="street-address">'
+            '<input type="email" id="agent-signup-email" placeholder="Email" required autocomplete="email">'
+            '<input type="password" id="agent-signup-password" placeholder="Password (min 6 characters)" required minlength="6" autocomplete="new-password">'
+
+            '<div class="agent-camera-block">'
+            '<label class="agent-camera-label">Selfie &mdash; camera only, no uploads</label>'
+            '<div class="agent-camera-frame" id="agent-selfie-frame">'
+            '<div class="agent-camera-placeholder" id="agent-selfie-placeholder">&#128247;</div>'
+            '<video id="agent-selfie-video" class="agent-camera-video" style="display:none" autoplay playsinline muted></video>'
+            '<img id="agent-selfie-preview" class="agent-camera-preview" style="display:none" alt="Selfie preview">'
+            '</div>'
+            '<canvas id="agent-selfie-canvas" style="display:none"></canvas>'
+            '<div class="agent-camera-actions">'
+            '<button type="button" id="agent-selfie-start" class="agent-camera-btn">Open camera</button>'
+            '<button type="button" id="agent-selfie-capture" class="agent-camera-btn" style="display:none">Take photo</button>'
+            '<button type="button" id="agent-selfie-retake" class="agent-camera-btn agent-camera-btn-secondary" style="display:none">Retake</button>'
+            '</div>'
+            '<div id="agent-selfie-status" class="agent-camera-status"></div>'
+            '</div>'
+
+            '<div class="agent-camera-block">'
+            '<label class="agent-camera-label">Photo of a valid ID &mdash; camera only, no uploads</label>'
+            '<div class="agent-camera-frame" id="agent-id-frame">'
+            '<div class="agent-camera-placeholder" id="agent-id-placeholder">&#128247;</div>'
+            '<video id="agent-id-video" class="agent-camera-video" style="display:none" autoplay playsinline muted></video>'
+            '<img id="agent-id-preview" class="agent-camera-preview" style="display:none" alt="ID photo preview">'
+            '</div>'
+            '<canvas id="agent-id-canvas" style="display:none"></canvas>'
+            '<div class="agent-camera-actions">'
+            '<button type="button" id="agent-id-start" class="agent-camera-btn">Open camera</button>'
+            '<button type="button" id="agent-id-capture" class="agent-camera-btn" style="display:none">Take photo</button>'
+            '<button type="button" id="agent-id-retake" class="agent-camera-btn agent-camera-btn-secondary" style="display:none">Retake</button>'
+            '</div>'
+            '<div id="agent-id-status" class="agent-camera-status"></div>'
+            '</div>'
+
+            '<div id="agent-signup-error" class="agent-modal-error" style="display:none"></div>'
+            '<button type="submit" id="agent-signup-submit" class="agent-modal-submit">Create account</button>'
+            '</form>'
+            '<div class="agent-modal-switch">Already have an account? <a href="#" id="agent-show-login">Log in</a></div>'
+            '</div>'
+
+            '<div id="agent-loggedin-view" class="agent-modal-view" style="display:none">'
+            '<div class="agent-modal-success-icon">&#9989;</div>'
+            '<h3 class="agent-modal-title">You&rsquo;re logged in</h3>'
+            '<p class="agent-modal-sub" id="agent-loggedin-name"></p>'
+            '<p class="agent-modal-hint">Your agent dashboard is coming soon.</p>'
+            '<button type="button" id="agent-logout-btn" class="agent-modal-submit agent-modal-secondary">Log out</button>'
+            '</div>'
+
+            '</div></div></div>'
+            '<script id="agent-config" type="application/json">'
+            + json.dumps({'api_base': BASE_URL, 'business_public_id': business_public_id}) +
+            '</script>'
+        )
+
+        # "Inquire to buy this car" popup - opened from the vehicle detail
+        # modal's "Inquire to buy this car" button (see inquire_btn_html
+        # above). Posts to POST /api/v1/business/{id}/cl-buyer-inquiry
+        # (see CLBuyerInquiry) which lands it directly in cl_applications
+        # (role='buyer') for the owner to approve/reject on the
+        # dashboard's Applications tab. Reuses the agent-modal-* CSS
+        # classes for layout/input styling so it matches the Agent Login
+        # popup. The trade-in block only shows once "Make an offer" is
+        # checked - see the inquiry-* JS in SHOWROOM_JS.
+        inquiry_modal_html = (
+            '<div id="inquiry-modal" class="agent-modal">'
+            '<div class="agent-modal-card" style="max-width:420px">'
+            '<button id="inquiry-modal-close" class="agent-modal-close" type="button" aria-label="Close">&times;</button>'
+            '<div class="agent-modal-scroll">'
+
+            '<div id="inquiry-form-view" class="agent-modal-view">'
+            '<h3 class="agent-modal-title">Inquire to buy this car</h3>'
+            '<p class="agent-modal-sub" id="inquiry-vehicle-title"></p>'
+            '<form id="inquiry-form">'
+            '<input type="text" id="inquiry-name" placeholder="Full name" required autocomplete="name">'
+            '<input type="tel" id="inquiry-phone" placeholder="Phone number" required autocomplete="tel">'
+            '<input type="text" id="inquiry-address" placeholder="Address" autocomplete="street-address">'
+
+            '<div class="inquiry-field-label">Valid ID #1</div>'
+            '<input type="file" id="inquiry-id1" accept="image/*" required>'
+            '<div class="inquiry-field-label">Valid ID #2</div>'
+            '<input type="file" id="inquiry-id2" accept="image/*" required>'
+            '<div class="inquiry-field-label">Proof of billing</div>'
+            '<input type="file" id="inquiry-billing" accept="image/*" required>'
+            '<div class="inquiry-field-label">Proof of income</div>'
+            '<input type="file" id="inquiry-income" accept="image/*" required>'
+
+            '<div class="inquiry-field-label">Agent</div>'
+            '<input type="text" id="inquiry-agent" placeholder="Which agent recommended you? (optional)">'
+
+            '<label class="inquiry-checkbox-row">'
+            '<input type="checkbox" id="inquiry-make-offer"> Make an offer'
+            '</label>'
+
+            '<div id="inquiry-tradein" class="inquiry-tradein">'
+            '<input type="text" id="inquiry-tradein-make" placeholder="Trade-in make">'
+            '<input type="text" id="inquiry-tradein-model" placeholder="Trade-in model">'
+            '<input type="text" id="inquiry-tradein-year" placeholder="Year">'
+            '<input type="number" id="inquiry-tradein-mileage" placeholder="Mileage (km)" min="0">'
+            '<input type="number" id="inquiry-add-cash" placeholder="Add cash amount (₱)" min="0" step="0.01">'
+            '<div class="inquiry-field-label">Who adds cash?</div>'
+            '<div class="inquiry-radio-row">'
+            '<label><input type="radio" name="inquiry-add-cash-by" value="buyer"> Buyer</label>'
+            '<label><input type="radio" name="inquiry-add-cash-by" value="seller"> Seller</label>'
+            '</div>'
+            '</div>'
+
+            '<div id="inquiry-error" class="agent-modal-error" style="display:none"></div>'
+            '<button type="submit" id="inquiry-submit" class="agent-modal-submit">Submit</button>'
+            '<button type="button" id="inquiry-reserve" class="agent-modal-submit agent-modal-secondary">Reserve this car</button>'
+            '</form>'
+            '<p class="inquiry-contact-line">Call us at '
+            '<a href="tel:09551996574">0955-199-6574</a> or '
+            '<a href="tel:09097030170">0909-703-0170</a></p>'
+            '</div>'
+
+            '<div id="inquiry-success-view" class="agent-modal-view" style="display:none">'
+            '<div class="agent-modal-success-icon">&#9989;</div>'
+            '<h3 class="agent-modal-title">Application submitted</h3>'
+            '<p class="agent-modal-sub">Your application is pending review. The dealership will contact you once it&rsquo;s approved.</p>'
+            '<button type="button" id="inquiry-success-close" class="agent-modal-submit agent-modal-secondary">Close</button>'
+            '</div>'
+
+            '</div></div></div>'
+        )
+
+        # "Sell your car" popup - opened from the "Sell your car" button in
+        # the hero (see hero_html above), not tied to any vehicle already
+        # in inventory. Posts to POST /api/v1/business/{id}/cl-sell-your-
+        # car (see CLSellerInquiry) which lands it directly in
+        # cl_applications (role='seller') for the owner to approve/reject
+        # on the dashboard's Applications tab -> Sellers Application.
+        # Reuses the agent-modal-*/inquiry-* CSS classes for layout/input
+        # styling so it matches the other popups. The photo picker lets the
+        # visitor pick up to VEHICLE_MAX_PHOTOS images (not the camera,
+        # same as the buyer inquiry's documents) - see the sell-* JS in
+        # SHOWROOM_JS. The amortization block only shows once "Monthly
+        # amortization" is checked.
+        sell_modal_html = (
+            '<div id="sell-modal" class="agent-modal">'
+            '<div class="agent-modal-card" style="max-width:420px">'
+            '<button id="sell-modal-close" class="agent-modal-close" type="button" aria-label="Close">&times;</button>'
+            '<div class="agent-modal-scroll">'
+
+            '<div id="sell-form-view" class="agent-modal-view">'
+            '<h3 class="agent-modal-title">Sell your car</h3>'
+            '<p class="agent-modal-sub">Tell us about your vehicle and we&rsquo;ll get back to you.</p>'
+            '<form id="sell-form">'
+            '<input type="text" id="sell-name" placeholder="Full name" required autocomplete="name">'
+            '<input type="tel" id="sell-phone" placeholder="Phone number" required autocomplete="tel">'
+            '<input type="text" id="sell-address" placeholder="Address" autocomplete="street-address">'
+
+            '<div class="inquiry-field-label">Photos of the vehicle (up to 10)</div>'
+            '<div class="sell-photo-count" id="sell-photo-count">0 / 10 photos added</div>'
+            '<div class="sell-photos-grid" id="sell-photos-grid">'
+            '<button type="button" id="sell-photo-add" class="sell-photo-add">+ Add<br>photo</button>'
+            '</div>'
+            '<input type="file" id="sell-photos-input" accept="image/*" multiple style="display:none">'
+
+            '<input type="text" id="sell-make" placeholder="Make">'
+            '<input type="text" id="sell-model" placeholder="Model">'
+            '<input type="text" id="sell-year" placeholder="Year">'
+
+            '<div class="inquiry-field-label">Transmission</div>'
+            '<div class="inquiry-radio-row">'
+            '<label><input type="radio" name="sell-transmission" value="automatic"> Automatic</label>'
+            '<label><input type="radio" name="sell-transmission" value="manual"> Manual</label>'
+            '</div>'
+
+            '<input type="number" id="sell-mileage" placeholder="Mileage (km)" min="0">'
+            '<input type="number" id="sell-price" placeholder="Cash / downpayment offer (₱)" min="0" step="0.01">'
+
+            '<div class="inquiry-field-label">Who&rsquo;s selling?</div>'
+            '<div class="inquiry-radio-row">'
+            '<label><input type="radio" name="sell-type" value="owner" required> Owner</label>'
+            '<label><input type="radio" name="sell-type" value="third_party" required> 3rd party</label>'
+            '</div>'
+
+            '<label class="inquiry-checkbox-row">'
+            '<input type="checkbox" id="sell-has-amortization"> Monthly amortization'
+            '</label>'
+
+            '<div id="sell-amortization" class="inquiry-tradein">'
+            '<input type="number" id="sell-amortization-amount" placeholder="Monthly amortization (₱)" min="0" step="0.01">'
+            '<div class="inquiry-field-label">Due date</div>'
+            '<input type="date" id="sell-amortization-due-date">'
+            '<div class="inquiry-field-label">Next due</div>'
+            '<input type="date" id="sell-amortization-next-due">'
+            '<input type="number" id="sell-amortization-months-remaining" placeholder="Months remaining" min="0">'
+            '</div>'
+
+            '<div id="sell-error" class="agent-modal-error" style="display:none"></div>'
+            '<button type="submit" id="sell-submit" class="agent-modal-submit">Submit</button>'
+            '</form>'
+            '<p class="inquiry-contact-line">Call us at '
+            '<a href="tel:09551996574">0955-199-6574</a> or '
+            '<a href="tel:09097030170">0909-703-0170</a></p>'
+            '</div>'
+
+            '<div id="sell-success-view" class="agent-modal-view" style="display:none">'
+            '<div class="agent-modal-success-icon">&#9989;</div>'
+            '<h3 class="agent-modal-title">Application submitted</h3>'
+            '<p class="agent-modal-sub">Your application is pending review. The dealership will contact you once it&rsquo;s approved.</p>'
+            '<button type="button" id="sell-success-close" class="agent-modal-submit agent-modal-secondary">Close</button>'
+            '</div>'
+
+            '</div></div></div>'
+        )
+
+        nav_html = (
+            '<nav class="site-nav-v2"><div class="site-nav-v2-inner">'
+            '<a class="site-brand-v2" href="#top"><span class="site-logo-v2">' + logo_html + '</span>'
+            '<span><strong>' + html_lib.escape(biz_name) + '</strong><small>Premium pre-owned vehicles</small></span></a>'
+            '<div class="site-links-v2">'
+            '<a href="#inventory">Available Cars</a><a href="#how-it-works">How It Works</a>'
+            '<a href="#location">Visit Us</a><a href="#connect">Contact</a>'
+            '<button id="agent-login-btn" class="nav-agent-btn" type="button">Agent Login</button>'
+            '</div></div></nav>'
         )
         trust_html = (
             '<section class="benefit-strip" aria-label="Dealership advantages"><div class="benefit-strip-inner">'
@@ -10050,6 +10421,20 @@ async def showroom_page(business_public_id: str):
             '<div class="benefit-chip"><span class="benefit-icon">&#128663;</span><strong>Ready to Deliver</strong></div>'
             '<div class="benefit-divider"></div>'
             '<div class="benefit-chip"><span class="benefit-icon">&#128260;</span><strong>Trade-ins Accepted</strong></div>'
+            '</div></section>'
+        )
+        intro_html = (
+            '<section class="home-section"><div class="home-kicker">Your next vehicle</div>'
+            '<h2 class="home-heading">Cars ready for serious buyers</h2>'
+            '<p class="home-copy">Choose from cash-sale and monthly-amortization vehicles. Tap any unit to review its photos, specifications, price, payment details, and application requirements.</p></section>'
+        )
+        process_html = (
+            '<section id="how-it-works" class="home-section process-section"><div class="home-kicker">Simple process</div>'
+            '<h2 class="home-heading">From browsing to your next car</h2>'
+            '<div class="process-grid">'
+            '<div class="process-card"><div class="process-n">1</div><h3>Browse available units</h3><p>Filter the live inventory and open a vehicle to review its photos, specifications, price, and payment terms.</p></div>'
+            '<div class="process-card"><div class="process-n">2</div><h3>Inquire about a car</h3><p>Submit your details directly from the selected vehicle. You may also include a trade-in upgrade or downgrade offer.</p></div>'
+            '<div class="process-card"><div class="process-n">3</div><h3>Complete the deal</h3><p>Our team reviews serious inquiries, confirms availability, and assists with approval and delivery.</p></div>'
             '</div></section>'
         )
         agent_cta_html = (
