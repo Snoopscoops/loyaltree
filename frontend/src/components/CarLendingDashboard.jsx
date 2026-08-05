@@ -2115,6 +2115,11 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                       <div style={styles.recordMeta}>
                         {[a.phone, a.email].filter(Boolean).join(' · ') || 'No contact info on file'}
                       </div>
+                      {a.vehicle_label && (
+                        <div style={styles.recordMetaSub}>
+                          Inquiring about: {a.vehicle_label}{a.make_offer ? ' · trade-in offer' : ''}
+                        </div>
+                      )}
                       {a.id_photo_url && (
                         <div style={styles.recordMetaSub}>
                           <a href={a.id_photo_url} target="_blank" rel="noreferrer">View ID photo ↗</a>
@@ -2304,6 +2309,14 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
               <div style={styles.recordMeta}>
                 <strong>Email:</strong> {reviewingApplication.email || '—'}
               </div>
+              <div style={styles.recordMeta}>
+                <strong>Address:</strong> {reviewingApplication.address || '—'}
+              </div>
+              {reviewingApplication.vehicle_label && (
+                <div style={styles.recordMeta}>
+                  <strong>Inquiring about:</strong> {reviewingApplication.vehicle_label}
+                </div>
+              )}
               {reviewingApplication.notes && (
                 <div style={styles.recordMeta}>
                   <strong>Applicant notes:</strong> {reviewingApplication.notes}
@@ -2326,32 +2339,43 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
               )}
             </div>
 
-            {(reviewingApplication.selfie_url || reviewingApplication.id_photo_url) && (
-              <div style={{ marginBottom: 16 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 8 }}>
-                  KYC photos — tap to view full size
+            {(() => {
+              const photos = [
+                { url: reviewingApplication.selfie_url, label: 'Selfie' },
+                { url: reviewingApplication.id_photo_url, label: reviewingApplication.role === 'buyer' ? 'Valid ID #1' : 'ID photo' },
+                { url: reviewingApplication.id_photo_2_url, label: 'Valid ID #2' },
+                { url: reviewingApplication.proof_of_billing_url, label: 'Proof of billing' },
+                { url: reviewingApplication.proof_of_income_url, label: 'Proof of income' },
+              ].filter(p => p.url)
+              if (!photos.length) return null
+              return (
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 8 }}>
+                    Documents — tap to view full size
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                    {photos.map(p => (
+                      <a key={p.label} href={p.url} target="_blank" rel="noreferrer" style={{ width: 'calc(50% - 5px)', textDecoration: 'none' }}>
+                        <img src={p.url} alt={p.label} style={styles.kycPhoto} />
+                        <div style={styles.kycPhotoLabel}>{p.label}</div>
+                      </a>
+                    ))}
+                  </div>
                 </div>
-                <div style={{ display: 'flex', gap: 10 }}>
-                  {reviewingApplication.selfie_url && (
-                    <a href={reviewingApplication.selfie_url} target="_blank" rel="noreferrer" style={{ flex: 1, textDecoration: 'none' }}>
-                      <img
-                        src={reviewingApplication.selfie_url}
-                        alt="Selfie"
-                        style={styles.kycPhoto}
-                      />
-                      <div style={styles.kycPhotoLabel}>Selfie</div>
-                    </a>
-                  )}
-                  {reviewingApplication.id_photo_url && (
-                    <a href={reviewingApplication.id_photo_url} target="_blank" rel="noreferrer" style={{ flex: 1, textDecoration: 'none' }}>
-                      <img
-                        src={reviewingApplication.id_photo_url}
-                        alt="ID photo"
-                        style={styles.kycPhoto}
-                      />
-                      <div style={styles.kycPhotoLabel}>ID photo</div>
-                    </a>
-                  )}
+              )
+            })()}
+
+            {reviewingApplication.make_offer && (
+              <div style={{ ...styles.walletSetupCard, marginBottom: 16 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#0f172a', marginBottom: 8 }}>Trade-in offer</div>
+                <div style={styles.recordMetaSub}>Make: {reviewingApplication.trade_in_make || '—'}</div>
+                <div style={styles.recordMetaSub}>Year model: {reviewingApplication.trade_in_year || '—'}</div>
+                <div style={styles.recordMetaSub}>
+                  Mileage: {reviewingApplication.trade_in_mileage != null ? `${Number(reviewingApplication.trade_in_mileage).toLocaleString()} km` : '—'}
+                </div>
+                <div style={styles.recordMetaSub}>
+                  Add cash: {reviewingApplication.add_cash_amount != null ? `₱${Number(reviewingApplication.add_cash_amount).toLocaleString()}` : '—'}
+                  {reviewingApplication.add_cash_by ? ` (by ${reviewingApplication.add_cash_by})` : ''}
                 </div>
               </div>
             )}

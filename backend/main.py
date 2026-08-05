@@ -711,32 +711,32 @@ class CLAgentUpdate(BaseModel):
 
 # --- Car Lending / Showroom: "Inquire to buy this car" popup, opened
 # from a vehicle's detail modal on the public showroom. Public,
-# unauthenticated, same spirit as CLApplicationSelfSignup - always lands
-# as 'pending' for the owner to review, no self-approval path. The 4
-# document photos (2 valid IDs, proof of billing, proof of income) are
-# uploaded client-side to Cloudinary (purpose=purchase_inquiry) before
-# this is called, same pattern as the agent KYC photos - see
-# uploadInquiryPhoto in SHOWROOM_JS. Trade-in fields are only meaningful
-# when make_offer is true; the frontend hides them otherwise. ---
-class CLPurchaseInquiryCreate(BaseModel):
-    vehicle_public_id: Optional[str] = None
-    full_name: str
+# unauthenticated, same spirit as CLApplicationSelfSignup/CLAgentSignup -
+# lands as a normal 'pending' row in cl_applications (role='buyer'), NOT
+# a separate table, so it shows up on the dashboard's existing
+# Applications tab -> Buyers Application, and goes through the same
+# owner approve/reject flow (see update_cl_application). The 4 document
+# photos (2 valid IDs, proof of billing, proof of income) are uploaded
+# client-side to Cloudinary (purpose=purchase_inquiry) before this is
+# called, same pattern as the agent KYC photos - see uploadInquiryPhoto
+# in SHOWROOM_JS. Trade-in fields are only meaningful when make_offer is
+# true; the frontend hides them otherwise, and this endpoint blanks them
+# server-side too if make_offer is false. ---
+class CLBuyerInquiry(BaseModel):
+    name: str
     phone: str
     address: Optional[str] = None
-    id_photo_1_url: Optional[str] = None
-    id_photo_2_url: Optional[str] = None
-    proof_of_billing_url: Optional[str] = None
-    proof_of_income_url: Optional[str] = None
+    vehicle_public_id: Optional[str] = None
+    id_photo_url: str        # ID #1 - reuses the same column agent KYC uses
+    id_photo_2_url: str      # ID #2
+    proof_of_billing_url: str
+    proof_of_income_url: str
     make_offer: bool = False
     trade_in_make: Optional[str] = None
     trade_in_year: Optional[str] = None
     trade_in_mileage: Optional[int] = Field(default=None, ge=0)
     add_cash_amount: Optional[float] = Field(default=None, ge=0)
     add_cash_by: Optional[Literal['buyer', 'seller']] = None
-
-class CLPurchaseInquiryUpdate(BaseModel):
-    status: Optional[Literal['pending', 'contacted', 'closed', 'rejected']] = None
-    review_note: Optional[str] = None
 
 
 # --- Car Lending / Showroom: self-service signup (buyer scans the
@@ -5841,79 +5841,57 @@ async def delete_cl_application(public_id: str, application_public_id: str):
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
     return {"success": True, "deleted": application_public_id}
 
-# CAR LENDING / SHOWROOM - PURCHASE INQUIRIES ("Inquire to buy this car")
-@app.get("/api/v1/business/{public_id}/inquiries")
-async def list_purchase_inquiries(public_id: str, status: Optional[str] = None):
-    business = safe_get_business(public_id)
-    if not business:
-        raise HTTPException(status_code=404, detail="Business not found")
-    try:
-        query = supabase.table("cl_purchase_inquiries").select("*").eq("business_id", business.get("id"))
-        if status:
-            query = query.eq("status", status)
-        res = query.order("created_at", desc=True).execute()
-        return res.data or []
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=friendly_db_error(e))
-
-@app.post("/api/v1/business/{public_id}/inquiries")
-async def create_purchase_inquiry(public_id: str, inquiry: CLPurchaseInquiryCreate):
+# CAR LENDING / SHOWROOM - "Inquire to buy this car" -> lands directly in
+# cl_applications (role='buyer'), NOT a separate table, so it shows up on
+# the dashboard's existing Applications tab (Buyers Application) and goes
+# through the normal approve/reject flow. No separate list/update
+# endpoints needed - GET/PATCH .../applications already cover it.
+@app.post("/api/v1/business/{public_id}/cl-buyer-inquiry")
+async def cl_buyer_inquiry(public_id: str, inquiry: CLBuyerInquiry):
     """Public, unauthenticated - submitted by the "Inquire to buy this
     car" form on the vehicle detail popup of the public showroom. Always
-    lands as 'pending'; only the owner's dashboard moves it forward."""
+    lands as a 'pending' cl_applications row with role='buyer'; only the
+    owner's dashboard (Applications tab) can approve or reject it."""
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
     if business.get('status', '').upper() != 'ACTIVE':
         raise HTTPException(status_code=400, detail="This dealership isn't accepting inquiries right now.")
+    if not inquiry.id_photo_url or not inquiry.id_photo_2_url or not inquiry.proof_of_billing_url or not inquiry.proof_of_income_url:
+        raise HTTPException(status_code=400, detail="Both IDs, proof of billing, and proof of income are all required.")
 
     vehicle_id = None
+    vehicle_label = None
     if inquiry.vehicle_public_id:
         vehicle = safe_get_vehicle(inquiry.vehicle_public_id)
         if vehicle and vehicle.get('business_id') == business.get('id'):
             vehicle_id = vehicle.get('id')
+            vehicle_label = f"{vehicle.get('year') or ''} {vehicle.get('make', '')} {vehicle.get('model', '')}".strip()
 
-    data = inquiry.dict(exclude={'vehicle_public_id'})
-    if not data.get('make_offer'):
-        data['trade_in_make'] = None
-        data['trade_in_year'] = None
-        data['trade_in_mileage'] = None
-        data['add_cash_amount'] = None
-        data['add_cash_by'] = None
-    data['vehicle_id'] = vehicle_id
-    data['business_id'] = business.get('id')
-    data['public_id'] = generate_public_id()
-    data['status'] = 'pending'
-
+    application_data = {
+        'business_id': business.get('id'),
+        'public_id': generate_public_id(),
+        'role': 'buyer',
+        'name': inquiry.name,
+        'phone': inquiry.phone,
+        'address': inquiry.address,
+        'vehicle_id': vehicle_id,
+        'vehicle_label': vehicle_label,
+        'id_photo_url': inquiry.id_photo_url,
+        'id_photo_2_url': inquiry.id_photo_2_url,
+        'proof_of_billing_url': inquiry.proof_of_billing_url,
+        'proof_of_income_url': inquiry.proof_of_income_url,
+        'make_offer': inquiry.make_offer,
+        'trade_in_make': inquiry.trade_in_make if inquiry.make_offer else None,
+        'trade_in_year': inquiry.trade_in_year if inquiry.make_offer else None,
+        'trade_in_mileage': inquiry.trade_in_mileage if inquiry.make_offer else None,
+        'add_cash_amount': inquiry.add_cash_amount if inquiry.make_offer else None,
+        'add_cash_by': inquiry.add_cash_by if inquiry.make_offer else None,
+        'status': 'pending',
+    }
     try:
-        res = supabase.table("cl_purchase_inquiries").insert(data).execute()
-        return res.data[0] if res.data else data
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=friendly_db_error(e))
-
-@app.patch("/api/v1/business/{public_id}/inquiries/{inquiry_public_id}")
-async def update_purchase_inquiry(public_id: str, inquiry_public_id: str, update: CLPurchaseInquiryUpdate):
-    business = safe_get_business(public_id)
-    if not business:
-        raise HTTPException(status_code=404, detail="Business not found")
-    try:
-        existing = supabase.table("cl_purchase_inquiries").select("*") \
-            .eq("public_id", inquiry_public_id).maybe_single().execute()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=friendly_db_error(e))
-    inquiry = existing.data if existing else None
-    if not inquiry or inquiry.get('business_id') != business.get('id'):
-        raise HTTPException(status_code=404, detail="Inquiry not found for this business")
-
-    update_data = {k: v for k, v in update.dict(exclude_unset=True).items() if v is not None}
-    if not update_data:
-        return inquiry
-    update_data['updated_at'] = datetime.utcnow().isoformat()
-    if 'status' in update_data and update_data['status'] != inquiry.get('status'):
-        update_data['decided_at'] = datetime.utcnow().isoformat()
-    try:
-        res = supabase.table("cl_purchase_inquiries").update(update_data).eq("id", inquiry.get("id")).execute()
-        return res.data[0] if res.data else {**inquiry, **update_data}
+        res = supabase.table("cl_applications").insert(application_data).execute()
+        return res.data[0] if res.data else application_data
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
@@ -8732,7 +8710,10 @@ SHOWROOM_JS = """
 
   // ---- Inquire to buy this car popup (opened from the vehicle detail
   // modal's "Inquire to buy this car" button). Posts to POST /api/v1/
-  // business/{id}/inquiries (see CLPurchaseInquiryCreate in main.py).
+  // business/{id}/cl-buyer-inquiry (see CLBuyerInquiry in main.py) - it
+  // lands as a normal 'pending' cl_applications row with role='buyer',
+  // so it shows up on the dashboard's Applications tab (Buyers
+  // Application) for the owner to approve/reject like any other.
   // The 4 document photos are picked from the file system (not the
   // camera) and uploaded to Cloudinary first, same signed-upload
   // pattern as the agent KYC photos - see uploadInquiryPhoto below. ----
@@ -8844,13 +8825,13 @@ SHOWROOM_JS = """
       var incomeUrl = await uploadInquiryPhoto(incomeFile, sig);
 
       if (inquirySubmit) inquirySubmit.textContent = 'Submitting…';
-      var res = await fetch(inquiryConfig.api_base + '/api/v1/business/' + inquiryConfig.business_public_id + '/inquiries', {
+      var res = await fetch(inquiryConfig.api_base + '/api/v1/business/' + inquiryConfig.business_public_id + '/cl-buyer-inquiry', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           vehicle_public_id: inquiryCurVehiclePublicId,
-          full_name: name, phone: phone, address: address || null,
-          id_photo_1_url: id1Url, id_photo_2_url: id2Url,
+          name: name, phone: phone, address: address || null,
+          id_photo_url: id1Url, id_photo_2_url: id2Url,
           proof_of_billing_url: billingUrl, proof_of_income_url: incomeUrl,
           make_offer: !!makeOffer,
           trade_in_make: makeOffer ? (tradeMake || null) : null,
@@ -9439,11 +9420,13 @@ async def showroom_page(business_public_id: str):
 
         # "Inquire to buy this car" popup - opened from the vehicle detail
         # modal's "Inquire to buy this car" button (see inquire_btn_html
-        # above). Posts to POST /api/v1/business/{id}/inquiries (see
-        # CLPurchaseInquiryCreate). Reuses the agent-modal-* CSS classes
-        # for layout/input styling so it matches the Agent Login popup.
-        # The trade-in block only shows once "Make an offer" is checked -
-        # see the inquiry-* JS in SHOWROOM_JS.
+        # above). Posts to POST /api/v1/business/{id}/cl-buyer-inquiry
+        # (see CLBuyerInquiry) which lands it directly in cl_applications
+        # (role='buyer') for the owner to approve/reject on the
+        # dashboard's Applications tab. Reuses the agent-modal-* CSS
+        # classes for layout/input styling so it matches the Agent Login
+        # popup. The trade-in block only shows once "Make an offer" is
+        # checked - see the inquiry-* JS in SHOWROOM_JS.
         inquiry_modal_html = (
             '<div id="inquiry-modal" class="agent-modal">'
             '<div class="agent-modal-card" style="max-width:420px">'
@@ -9490,8 +9473,8 @@ async def showroom_page(business_public_id: str):
 
             '<div id="inquiry-success-view" class="agent-modal-view" style="display:none">'
             '<div class="agent-modal-success-icon">&#9989;</div>'
-            '<h3 class="agent-modal-title">Inquiry sent</h3>'
-            '<p class="agent-modal-sub">Someone from the dealership will reach out to you shortly.</p>'
+            '<h3 class="agent-modal-title">Application submitted</h3>'
+            '<p class="agent-modal-sub">Your application is pending review. The dealership will contact you once it&rsquo;s approved.</p>'
             '<button type="button" id="inquiry-success-close" class="agent-modal-submit agent-modal-secondary">Close</button>'
             '</div>'
 
