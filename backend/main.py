@@ -8862,6 +8862,17 @@ a{color:inherit}
   .hero-clean .hero-metrics{grid-template-columns:1fr;gap:12px}
   .hero-clean .hero-metric{display:flex;align-items:baseline;justify-content:space-between;border-bottom:1px solid rgba(255,255,255,.08);padding:0 0 10px}
 }
+/* Agent conversion section */
+.agent-cta-section{display:flex;align-items:center;justify-content:space-between;gap:32px;background:linear-gradient(135deg,#0f172a,#111827);color:#fff;border-radius:24px;margin-top:34px;margin-bottom:54px;padding:36px 40px;box-shadow:0 20px 55px rgba(15,23,42,.16)}
+.agent-cta-section .home-heading,.agent-cta-section .home-copy{color:#fff}
+.agent-cta-section .home-copy{max-width:720px;color:#cbd5e1}
+.agent-cta-benefits{display:flex;flex-wrap:wrap;gap:10px 20px;margin-top:20px;color:#e2e8f0;font-size:14px;font-weight:700}
+.agent-cta-btn{border:0;white-space:nowrap;min-width:190px}
+.hero-secondary-btn{font-family:inherit;cursor:pointer}
+.connect-apply-row{justify-content:center}
+button,a{touch-action:manipulation}
+@media(max-width:720px){.agent-cta-section{margin:26px 16px 42px;padding:26px 20px;display:block;border-radius:20px}.agent-cta-benefits{display:grid;grid-template-columns:1fr;gap:10px;margin-bottom:22px}.agent-cta-btn{width:100%}.hero-actions{padding:12px 14px}.hero-cta-row .hero-secondary-btn{width:100%}}
+
 """
 
 SHOWROOM_JS = """
@@ -9642,9 +9653,6 @@ SHOWROOM_JS = """
     closeAgentModal();
   });
 })();
-
-.agent-cta-section{display:flex;align-items:center;justify-content:space-between;gap:32px;background:linear-gradient(135deg,#0f172a,#111827);color:#fff;border-radius:24px;margin-top:34px;margin-bottom:54px;padding:36px 40px}.agent-cta-section .home-heading,.agent-cta-section .home-copy{color:#fff}.agent-cta-section .home-copy{max-width:720px;color:#cbd5e1}.agent-cta-benefits{display:flex;flex-wrap:wrap;gap:10px 20px;margin-top:20px;color:#e2e8f0;font-size:14px;font-weight:700}.agent-cta-btn{border:0;white-space:nowrap;min-width:190px}.hero-secondary-btn{font-family:inherit;cursor:pointer}.connect-apply-row{justify-content:center}
-@media(max-width:720px){.agent-cta-section{margin:26px 16px 42px;padding:26px 20px;display:block;border-radius:20px}.agent-cta-benefits{display:grid;grid-template-columns:1fr;gap:10px;margin-bottom:22px}.agent-cta-btn{width:100%}.hero-actions{padding:12px 14px}.hero-cta-row .hero-secondary-btn{width:100%}}
 """
 
 @app.get("/showroom/{business_public_id}", response_class=HTMLResponse)
