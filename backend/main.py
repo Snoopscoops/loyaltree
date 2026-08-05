@@ -727,12 +727,14 @@ class CLBuyerInquiry(BaseModel):
     phone: str
     address: Optional[str] = None
     vehicle_public_id: Optional[str] = None
+    referring_agent: Optional[str] = None  # free-text name of the agent the buyer says referred them - not validated against cl_agents
     id_photo_url: str        # ID #1 - reuses the same column agent KYC uses
     id_photo_2_url: str      # ID #2
     proof_of_billing_url: str
     proof_of_income_url: str
     make_offer: bool = False
     trade_in_make: Optional[str] = None
+    trade_in_model: Optional[str] = None
     trade_in_year: Optional[str] = None
     trade_in_mileage: Optional[int] = Field(default=None, ge=0)
     add_cash_amount: Optional[float] = Field(default=None, ge=0)
@@ -5875,6 +5877,7 @@ async def cl_buyer_inquiry(public_id: str, inquiry: CLBuyerInquiry):
         'name': inquiry.name,
         'phone': inquiry.phone,
         'address': inquiry.address,
+        'referring_agent': inquiry.referring_agent,
         'vehicle_id': vehicle_id,
         'vehicle_label': vehicle_label,
         'id_photo_url': inquiry.id_photo_url,
@@ -5883,6 +5886,7 @@ async def cl_buyer_inquiry(public_id: str, inquiry: CLBuyerInquiry):
         'proof_of_income_url': inquiry.proof_of_income_url,
         'make_offer': inquiry.make_offer,
         'trade_in_make': inquiry.trade_in_make if inquiry.make_offer else None,
+        'trade_in_model': inquiry.trade_in_model if inquiry.make_offer else None,
         'trade_in_year': inquiry.trade_in_year if inquiry.make_offer else None,
         'trade_in_mileage': inquiry.trade_in_mileage if inquiry.make_offer else None,
         'add_cash_amount': inquiry.add_cash_amount if inquiry.make_offer else None,
@@ -8515,6 +8519,9 @@ a{color:inherit}
 .inquiry-radio-row{display:flex;gap:18px;font-size:13px;margin:6px 0 14px}
 .inquiry-radio-row label{display:flex;align-items:center;gap:6px;font-weight:500;cursor:pointer}
 .inquiry-radio-row input{width:auto!important;padding:0!important;margin:0}
+.inquiry-contact-line{font-size:12.5px;color:var(--muted);text-align:center;margin-top:14px}
+.inquiry-contact-line a{color:var(--accent-dark);font-weight:700;text-decoration:none}
+.inquiry-contact-line a:hover{text-decoration:underline}
 
 @media(max-width:520px){
   .agent-login-btn{top:12px;right:12px;font-size:11.5px;padding:7px 12px}
@@ -8793,8 +8800,10 @@ SHOWROOM_JS = """
     var id2File = document.getElementById('inquiry-id2').files[0];
     var billingFile = document.getElementById('inquiry-billing').files[0];
     var incomeFile = document.getElementById('inquiry-income').files[0];
+    var referringAgent = document.getElementById('inquiry-agent').value.trim();
     var makeOffer = inquiryMakeOffer && inquiryMakeOffer.checked;
     var tradeMake = document.getElementById('inquiry-tradein-make').value.trim();
+    var tradeModel = document.getElementById('inquiry-tradein-model').value.trim();
     var tradeYear = document.getElementById('inquiry-tradein-year').value.trim();
     var tradeMileage = document.getElementById('inquiry-tradein-mileage').value;
     var addCash = document.getElementById('inquiry-add-cash').value;
@@ -8831,10 +8840,12 @@ SHOWROOM_JS = """
         body: JSON.stringify({
           vehicle_public_id: inquiryCurVehiclePublicId,
           name: name, phone: phone, address: address || null,
+          referring_agent: referringAgent || null,
           id_photo_url: id1Url, id_photo_2_url: id2Url,
           proof_of_billing_url: billingUrl, proof_of_income_url: incomeUrl,
           make_offer: !!makeOffer,
           trade_in_make: makeOffer ? (tradeMake || null) : null,
+          trade_in_model: makeOffer ? (tradeModel || null) : null,
           trade_in_year: makeOffer ? (tradeYear || null) : null,
           trade_in_mileage: (makeOffer && tradeMileage) ? parseInt(tradeMileage, 10) : null,
           add_cash_amount: (makeOffer && addCash) ? parseFloat(addCash) : null,
@@ -9450,13 +9461,17 @@ async def showroom_page(business_public_id: str):
             '<div class="inquiry-field-label">Proof of income</div>'
             '<input type="file" id="inquiry-income" accept="image/*" required>'
 
+            '<div class="inquiry-field-label">Agent</div>'
+            '<input type="text" id="inquiry-agent" placeholder="Which agent recommended you? (optional)">'
+
             '<label class="inquiry-checkbox-row">'
             '<input type="checkbox" id="inquiry-make-offer"> Make an offer'
             '</label>'
 
             '<div id="inquiry-tradein" class="inquiry-tradein">'
             '<input type="text" id="inquiry-tradein-make" placeholder="Trade-in make">'
-            '<input type="text" id="inquiry-tradein-year" placeholder="Year model">'
+            '<input type="text" id="inquiry-tradein-model" placeholder="Trade-in model">'
+            '<input type="text" id="inquiry-tradein-year" placeholder="Year">'
             '<input type="number" id="inquiry-tradein-mileage" placeholder="Mileage (km)" min="0">'
             '<input type="number" id="inquiry-add-cash" placeholder="Add cash amount (₱)" min="0" step="0.01">'
             '<div class="inquiry-field-label">Who adds cash?</div>'
@@ -9468,7 +9483,11 @@ async def showroom_page(business_public_id: str):
 
             '<div id="inquiry-error" class="agent-modal-error" style="display:none"></div>'
             '<button type="submit" id="inquiry-submit" class="agent-modal-submit">Submit</button>'
+            '<button type="button" id="inquiry-reserve" class="agent-modal-submit agent-modal-secondary">Reserve this car</button>'
             '</form>'
+            '<p class="inquiry-contact-line">Call us at '
+            '<a href="tel:09551996574">0955-199-6574</a> or '
+            '<a href="tel:09097030170">0909-703-0170</a></p>'
             '</div>'
 
             '<div id="inquiry-success-view" class="agent-modal-view" style="display:none">'

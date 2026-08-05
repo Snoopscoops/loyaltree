@@ -2117,7 +2117,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                       </div>
                       {a.vehicle_label && (
                         <div style={styles.recordMetaSub}>
-                          Inquiring about: {a.vehicle_label}{a.make_offer ? ' · trade-in offer' : ''}
+                          Inquiring about: {a.vehicle_label}{a.make_offer ? ' · trade-in offer' : ''}{a.referring_agent ? ` · via ${a.referring_agent}` : ''}
                         </div>
                       )}
                       {a.id_photo_url && (
@@ -2317,6 +2317,11 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                   <strong>Inquiring about:</strong> {reviewingApplication.vehicle_label}
                 </div>
               )}
+              {reviewingApplication.referring_agent && (
+                <div style={styles.recordMeta}>
+                  <strong>Referred by agent:</strong> {reviewingApplication.referring_agent}
+                </div>
+              )}
               {reviewingApplication.notes && (
                 <div style={styles.recordMeta}>
                   <strong>Applicant notes:</strong> {reviewingApplication.notes}
@@ -2369,7 +2374,8 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
               <div style={{ ...styles.walletSetupCard, marginBottom: 16 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: '#0f172a', marginBottom: 8 }}>Trade-in offer</div>
                 <div style={styles.recordMetaSub}>Make: {reviewingApplication.trade_in_make || '—'}</div>
-                <div style={styles.recordMetaSub}>Year model: {reviewingApplication.trade_in_year || '—'}</div>
+                <div style={styles.recordMetaSub}>Model: {reviewingApplication.trade_in_model || '—'}</div>
+                <div style={styles.recordMetaSub}>Year: {reviewingApplication.trade_in_year || '—'}</div>
                 <div style={styles.recordMetaSub}>
                   Mileage: {reviewingApplication.trade_in_mileage != null ? `${Number(reviewingApplication.trade_in_mileage).toLocaleString()} km` : '—'}
                 </div>
