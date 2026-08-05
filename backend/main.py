@@ -654,6 +654,7 @@ class CLApplicationCreate(BaseModel):
 class CLApplicationUpdate(BaseModel):
     name: Optional[str] = None
     phone: Optional[str] = None
+    address: Optional[str] = None
     email: Optional[str] = None
     notes: Optional[str] = None
     # Approve/reject goes through this same field - the owner is the only
@@ -691,19 +692,51 @@ class CLApplicationSelfSignup(BaseModel):
 class CLAgentSignup(BaseModel):
     name: str
     phone: Optional[str] = None
+    address: Optional[str] = None
     email: str
     password: str = Field(min_length=6)
     selfie_url: str  # camera-captured selfie, uploaded to Cloudinary before this is submitted - see cl-agent-signup
     id_photo_url: str  # camera-captured photo of a government ID, same flow as selfie_url
 
 # Dashboard-only edits to an approved agent's own contact details - name/
-# phone/email only. Approval itself never happens here: an agent only
-# exists in this table once their cl_applications row has been approved
-# (see update_cl_application), so there's no status to set on it.
+# phone/email/address only. Approval itself never happens here: an agent
+# only exists in this table once their cl_applications row has been
+# approved (see update_cl_application), so there's no status to set on it.
 class CLAgentUpdate(BaseModel):
     name: Optional[str] = None
     phone: Optional[str] = None
+    address: Optional[str] = None
     email: Optional[str] = None
+
+
+# --- Car Lending / Showroom: "Inquire to buy this car" popup, opened
+# from a vehicle's detail modal on the public showroom. Public,
+# unauthenticated, same spirit as CLApplicationSelfSignup - always lands
+# as 'pending' for the owner to review, no self-approval path. The 4
+# document photos (2 valid IDs, proof of billing, proof of income) are
+# uploaded client-side to Cloudinary (purpose=purchase_inquiry) before
+# this is called, same pattern as the agent KYC photos - see
+# uploadInquiryPhoto in SHOWROOM_JS. Trade-in fields are only meaningful
+# when make_offer is true; the frontend hides them otherwise. ---
+class CLPurchaseInquiryCreate(BaseModel):
+    vehicle_public_id: Optional[str] = None
+    full_name: str
+    phone: str
+    address: Optional[str] = None
+    id_photo_1_url: Optional[str] = None
+    id_photo_2_url: Optional[str] = None
+    proof_of_billing_url: Optional[str] = None
+    proof_of_income_url: Optional[str] = None
+    make_offer: bool = False
+    trade_in_make: Optional[str] = None
+    trade_in_year: Optional[str] = None
+    trade_in_mileage: Optional[int] = Field(default=None, ge=0)
+    add_cash_amount: Optional[float] = Field(default=None, ge=0)
+    add_cash_by: Optional[Literal['buyer', 'seller']] = None
+
+class CLPurchaseInquiryUpdate(BaseModel):
+    status: Optional[Literal['pending', 'contacted', 'closed', 'rejected']] = None
+    review_note: Optional[str] = None
 
 
 # --- Car Lending / Showroom: self-service signup (buyer scans the
@@ -5773,6 +5806,7 @@ async def update_cl_application(public_id: str, application_public_id: str, upda
                     'public_id': generate_public_id(),
                     'name': updated.get('name'),
                     'phone': updated.get('phone'),
+                    'address': updated.get('address'),
                     'email': email,
                     'password_hash': updated.get('password_hash'),
                     'selfie_url': updated.get('selfie_url'),
@@ -5806,6 +5840,82 @@ async def delete_cl_application(public_id: str, application_public_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
     return {"success": True, "deleted": application_public_id}
+
+# CAR LENDING / SHOWROOM - PURCHASE INQUIRIES ("Inquire to buy this car")
+@app.get("/api/v1/business/{public_id}/inquiries")
+async def list_purchase_inquiries(public_id: str, status: Optional[str] = None):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    try:
+        query = supabase.table("cl_purchase_inquiries").select("*").eq("business_id", business.get("id"))
+        if status:
+            query = query.eq("status", status)
+        res = query.order("created_at", desc=True).execute()
+        return res.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.post("/api/v1/business/{public_id}/inquiries")
+async def create_purchase_inquiry(public_id: str, inquiry: CLPurchaseInquiryCreate):
+    """Public, unauthenticated - submitted by the "Inquire to buy this
+    car" form on the vehicle detail popup of the public showroom. Always
+    lands as 'pending'; only the owner's dashboard moves it forward."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    if business.get('status', '').upper() != 'ACTIVE':
+        raise HTTPException(status_code=400, detail="This dealership isn't accepting inquiries right now.")
+
+    vehicle_id = None
+    if inquiry.vehicle_public_id:
+        vehicle = safe_get_vehicle(inquiry.vehicle_public_id)
+        if vehicle and vehicle.get('business_id') == business.get('id'):
+            vehicle_id = vehicle.get('id')
+
+    data = inquiry.dict(exclude={'vehicle_public_id'})
+    if not data.get('make_offer'):
+        data['trade_in_make'] = None
+        data['trade_in_year'] = None
+        data['trade_in_mileage'] = None
+        data['add_cash_amount'] = None
+        data['add_cash_by'] = None
+    data['vehicle_id'] = vehicle_id
+    data['business_id'] = business.get('id')
+    data['public_id'] = generate_public_id()
+    data['status'] = 'pending'
+
+    try:
+        res = supabase.table("cl_purchase_inquiries").insert(data).execute()
+        return res.data[0] if res.data else data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.patch("/api/v1/business/{public_id}/inquiries/{inquiry_public_id}")
+async def update_purchase_inquiry(public_id: str, inquiry_public_id: str, update: CLPurchaseInquiryUpdate):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    try:
+        existing = supabase.table("cl_purchase_inquiries").select("*") \
+            .eq("public_id", inquiry_public_id).maybe_single().execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+    inquiry = existing.data if existing else None
+    if not inquiry or inquiry.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Inquiry not found for this business")
+
+    update_data = {k: v for k, v in update.dict(exclude_unset=True).items() if v is not None}
+    if not update_data:
+        return inquiry
+    update_data['updated_at'] = datetime.utcnow().isoformat()
+    if 'status' in update_data and update_data['status'] != inquiry.get('status'):
+        update_data['decided_at'] = datetime.utcnow().isoformat()
+    try:
+        res = supabase.table("cl_purchase_inquiries").update(update_data).eq("id", inquiry.get("id")).execute()
+        return res.data[0] if res.data else {**inquiry, **update_data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
 # CAR LENDING / SHOWROOM - AGENT ACCOUNTS (approved roster)
 # An agent only ever lands here once their cl_applications row has been
@@ -8417,6 +8527,17 @@ a{color:inherit}
 .agent-camera-status.error{color:#b91c1c}
 .agent-camera-status.success{color:#0b7c72}
 
+.inquiry-field-label{font-size:11.5px;font-weight:700;color:var(--ink);margin:12px 0 6px}
+.agent-modal-view input[type=file]{padding:9px 10px;font-size:12px}
+.inquiry-checkbox-row{display:flex;align-items:center;gap:8px;margin:16px 0 4px;font-size:13.5px;
+  font-weight:700;cursor:pointer}
+.inquiry-checkbox-row input{width:auto!important;padding:0!important;margin:0}
+.inquiry-tradein{display:none;border-top:1px solid var(--line);padding-top:12px;margin-top:10px}
+.inquiry-tradein.open{display:block}
+.inquiry-radio-row{display:flex;gap:18px;font-size:13px;margin:6px 0 14px}
+.inquiry-radio-row label{display:flex;align-items:center;gap:6px;font-weight:500;cursor:pointer}
+.inquiry-radio-row input{width:auto!important;padding:0!important;margin:0}
+
 @media(max-width:520px){
   .agent-login-btn{top:12px;right:12px;font-size:11.5px;padding:7px 12px}
   .agent-modal-card{max-height:92vh}
@@ -8547,7 +8668,7 @@ SHOWROOM_JS = """
   var vSpecs = document.getElementById('vehicle-modal-specs');
   var vPrice = document.getElementById('vehicle-modal-price');
   var vBadge = document.getElementById('vehicle-modal-badge');
-  var vCall = document.getElementById('vehicle-modal-call');
+  var vInquireBtn = document.getElementById('vehicle-modal-inquire');
   var vCount = document.getElementById('vehicle-modal-count');
   var vPrev = document.getElementById('vehicle-modal-prev');
   var vNext = document.getElementById('vehicle-modal-next');
@@ -8594,6 +8715,9 @@ SHOWROOM_JS = """
   if (vImg) vImg.addEventListener('click', function(){
     if (vCurCar && vCurCar.imgs && vCurCar.imgs.length) openLightbox(vCurCar.imgs, vCurIdx);
   });
+  if (vInquireBtn) vInquireBtn.addEventListener('click', function(){
+    if (vCurCar) openInquiryModal(vCurCar);
+  });
   document.addEventListener('keydown', function(e){
     if (!vModal || !vModal.classList.contains('open')) return;
     if (e.key === 'Escape') closeVehicleModal();
@@ -8604,6 +8728,151 @@ SHOWROOM_JS = """
       var idx = card.getAttribute('data-idx');
       if (idx !== null) openVehicleModal(parseInt(idx, 10));
     });
+  });
+
+  // ---- Inquire to buy this car popup (opened from the vehicle detail
+  // modal's "Inquire to buy this car" button). Posts to POST /api/v1/
+  // business/{id}/inquiries (see CLPurchaseInquiryCreate in main.py).
+  // The 4 document photos are picked from the file system (not the
+  // camera) and uploaded to Cloudinary first, same signed-upload
+  // pattern as the agent KYC photos - see uploadInquiryPhoto below. ----
+  var inquiryConfig = {};
+  try {
+    var inquiryConfigEl = document.getElementById('agent-config');
+    inquiryConfig = inquiryConfigEl ? JSON.parse(inquiryConfigEl.textContent || '{}') : {};
+  } catch (e) { inquiryConfig = {}; }
+
+  var inquiryModal = document.getElementById('inquiry-modal');
+  var inquiryModalClose = document.getElementById('inquiry-modal-close');
+  var inquiryFormView = document.getElementById('inquiry-form-view');
+  var inquirySuccessView = document.getElementById('inquiry-success-view');
+  var inquirySuccessClose = document.getElementById('inquiry-success-close');
+  var inquiryVehicleTitle = document.getElementById('inquiry-vehicle-title');
+  var inquiryForm = document.getElementById('inquiry-form');
+  var inquirySubmit = document.getElementById('inquiry-submit');
+  var inquiryError = document.getElementById('inquiry-error');
+  var inquiryMakeOffer = document.getElementById('inquiry-make-offer');
+  var inquiryTradein = document.getElementById('inquiry-tradein');
+  var inquiryCurVehiclePublicId = null;
+
+  function showInquiryView(view){
+    if (inquiryFormView) inquiryFormView.style.display = (view === 'form') ? '' : 'none';
+    if (inquirySuccessView) inquirySuccessView.style.display = (view === 'success') ? '' : 'none';
+  }
+
+  function openInquiryModal(car){
+    if (!inquiryModal) return;
+    inquiryCurVehiclePublicId = (car && car.public_id) || null;
+    if (inquiryVehicleTitle) inquiryVehicleTitle.textContent = car && car.title ? ('For: ' + car.title) : '';
+    if (inquiryError) inquiryError.style.display = 'none';
+    showInquiryView('form');
+    inquiryModal.classList.add('open');
+  }
+  function closeInquiryModal(){ if (inquiryModal) inquiryModal.classList.remove('open'); }
+
+  if (inquiryModalClose) inquiryModalClose.addEventListener('click', closeInquiryModal);
+  if (inquirySuccessClose) inquirySuccessClose.addEventListener('click', closeInquiryModal);
+  if (inquiryModal) inquiryModal.addEventListener('click', function(e){ if (e.target === inquiryModal) closeInquiryModal(); });
+  document.addEventListener('keydown', function(e){
+    if (!inquiryModal || !inquiryModal.classList.contains('open')) return;
+    if (e.key === 'Escape') closeInquiryModal();
+  });
+
+  if (inquiryMakeOffer) inquiryMakeOffer.addEventListener('change', function(){
+    if (inquiryTradein) inquiryTradein.classList.toggle('open', inquiryMakeOffer.checked);
+  });
+
+  // Uploads a picked file (not a data URL) to Cloudinary using a
+  // short-lived signature from our own backend - same signed-upload
+  // pattern as the agent KYC photos, just from a file input instead of
+  // the camera.
+  async function uploadInquiryPhoto(file, sig){
+    var form = new FormData();
+    form.append('file', file);
+    form.append('api_key', sig.api_key);
+    form.append('timestamp', sig.timestamp);
+    form.append('signature', sig.signature);
+    form.append('upload_preset', sig.upload_preset);
+    form.append('folder', sig.folder);
+    var res = await fetch('https://api.cloudinary.com/v1_1/' + sig.cloud_name + '/image/upload', {
+      method: 'POST',
+      body: form
+    });
+    var data = await res.json();
+    if (!res.ok || !data.secure_url) throw new Error(data.error && data.error.message ? data.error.message : 'Photo upload failed');
+    return data.secure_url;
+  }
+
+  if (inquiryForm) inquiryForm.addEventListener('submit', async function(e){
+    e.preventDefault();
+    var name = document.getElementById('inquiry-name').value.trim();
+    var phone = document.getElementById('inquiry-phone').value.trim();
+    var address = document.getElementById('inquiry-address').value.trim();
+    var id1File = document.getElementById('inquiry-id1').files[0];
+    var id2File = document.getElementById('inquiry-id2').files[0];
+    var billingFile = document.getElementById('inquiry-billing').files[0];
+    var incomeFile = document.getElementById('inquiry-income').files[0];
+    var makeOffer = inquiryMakeOffer && inquiryMakeOffer.checked;
+    var tradeMake = document.getElementById('inquiry-tradein-make').value.trim();
+    var tradeYear = document.getElementById('inquiry-tradein-year').value.trim();
+    var tradeMileage = document.getElementById('inquiry-tradein-mileage').value;
+    var addCash = document.getElementById('inquiry-add-cash').value;
+    var addCashByEl = document.querySelector('input[name="inquiry-add-cash-by"]:checked');
+    var addCashBy = addCashByEl ? addCashByEl.value : null;
+
+    if (inquiryError) inquiryError.style.display = 'none';
+    if (!id1File || !id2File || !billingFile || !incomeFile) {
+      if (inquiryError) { inquiryError.textContent = 'Please upload both IDs, proof of billing, and proof of income.'; inquiryError.style.display = ''; }
+      return;
+    }
+    if (!inquiryConfig.api_base || !inquiryConfig.business_public_id) {
+      if (inquiryError) { inquiryError.textContent = 'This form is unavailable right now.'; inquiryError.style.display = ''; }
+      return;
+    }
+
+    if (inquirySubmit) { inquirySubmit.disabled = true; inquirySubmit.textContent = 'Uploading documents…'; }
+    try {
+      var sigRes = await fetch(inquiryConfig.api_base + '/api/v1/business/' + inquiryConfig.business_public_id + '/cloudinary-signature?purpose=purchase_inquiry', {
+        method: 'POST'
+      });
+      var sig = await sigRes.json();
+      if (!sigRes.ok) throw new Error(sig.detail || 'Could not prepare document upload');
+
+      var id1Url = await uploadInquiryPhoto(id1File, sig);
+      var id2Url = await uploadInquiryPhoto(id2File, sig);
+      var billingUrl = await uploadInquiryPhoto(billingFile, sig);
+      var incomeUrl = await uploadInquiryPhoto(incomeFile, sig);
+
+      if (inquirySubmit) inquirySubmit.textContent = 'Submitting…';
+      var res = await fetch(inquiryConfig.api_base + '/api/v1/business/' + inquiryConfig.business_public_id + '/inquiries', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          vehicle_public_id: inquiryCurVehiclePublicId,
+          full_name: name, phone: phone, address: address || null,
+          id_photo_1_url: id1Url, id_photo_2_url: id2Url,
+          proof_of_billing_url: billingUrl, proof_of_income_url: incomeUrl,
+          make_offer: !!makeOffer,
+          trade_in_make: makeOffer ? (tradeMake || null) : null,
+          trade_in_year: makeOffer ? (tradeYear || null) : null,
+          trade_in_mileage: (makeOffer && tradeMileage) ? parseInt(tradeMileage, 10) : null,
+          add_cash_amount: (makeOffer && addCash) ? parseFloat(addCash) : null,
+          add_cash_by: makeOffer ? addCashBy : null
+        })
+      });
+      var data = await res.json();
+      if (res.ok) {
+        inquiryForm.reset();
+        if (inquiryTradein) inquiryTradein.classList.remove('open');
+        showInquiryView('success');
+      } else {
+        if (inquiryError) { inquiryError.textContent = data.detail || 'Submission failed'; inquiryError.style.display = ''; }
+      }
+    } catch (err) {
+      if (inquiryError) { inquiryError.textContent = (err && err.message) || 'Network error. Please try again.'; inquiryError.style.display = ''; }
+    } finally {
+      if (inquirySubmit) { inquirySubmit.disabled = false; inquirySubmit.textContent = 'Submit'; }
+    }
   });
 
   // ---- Agent Login / Sign Up popup ----
@@ -8786,6 +9055,7 @@ SHOWROOM_JS = """
     e.preventDefault();
     var name = document.getElementById('agent-signup-name').value.trim();
     var phone = document.getElementById('agent-signup-phone').value.trim();
+    var address = document.getElementById('agent-signup-address').value.trim();
     var email = document.getElementById('agent-signup-email').value.trim();
     var password = document.getElementById('agent-signup-password').value;
     var errEl = document.getElementById('agent-signup-error');
@@ -8818,7 +9088,7 @@ SHOWROOM_JS = """
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: name, phone: phone || null, email: email, password: password,
+          name: name, phone: phone || null, address: address || null, email: email, password: password,
           selfie_url: selfieUrl, id_photo_url: idPhotoUrl
         })
       });
@@ -9020,6 +9290,7 @@ async def showroom_page(business_public_id: str):
                 # JS sets these via textContent/img.src, not innerHTML, so no
                 # HTML-escaping is needed here, only JSON-escaping below.
                 cars_data.append({
+                    'public_id': v.get('public_id'),
                     'title': title_plain,
                     'meta': meta_plain,
                     'specs': specs_data,
@@ -9047,10 +9318,9 @@ async def showroom_page(business_public_id: str):
             '</div>'
         )
 
-        biz_phone_digits = re.sub(r'[^0-9+]', '', business.get('phone') or '')
-        call_btn_html = (
-            '<a id="vehicle-modal-call" class="vehicle-modal-call-btn" href="tel:' + html_lib.escape(biz_phone_digits) + '">&#128222; Call to inquire</a>'
-        ) if biz_phone_digits else ''
+        inquire_btn_html = (
+            '<button type="button" id="vehicle-modal-inquire" class="vehicle-modal-call-btn">Inquire to buy this car</button>'
+        )
         vehicle_modal_html = (
             '<div id="vehicle-modal" class="vehicle-modal">'
             '<div class="vehicle-modal-card">'
@@ -9077,7 +9347,7 @@ async def showroom_page(business_public_id: str):
             '<span id="vehicle-modal-price" class="vehicle-modal-price"></span>'
             '<span id="vehicle-modal-badge" class="badge reserved" style="display:none;position:static">Reserved</span>'
             '</div>'
-            + call_btn_html +
+            + inquire_btn_html +
             '</div></div></div>'
             '<script id="cars-data" type="application/json">' + cars_json + '</script>'
         )
@@ -9111,6 +9381,7 @@ async def showroom_page(business_public_id: str):
             '<form id="agent-signup-form">'
             '<input type="text" id="agent-signup-name" placeholder="Full name" required autocomplete="name">'
             '<input type="tel" id="agent-signup-phone" placeholder="Phone number" autocomplete="tel">'
+            '<input type="text" id="agent-signup-address" placeholder="Address" autocomplete="street-address">'
             '<input type="email" id="agent-signup-email" placeholder="Email" required autocomplete="email">'
             '<input type="password" id="agent-signup-password" placeholder="Password (min 6 characters)" required minlength="6" autocomplete="new-password">'
 
@@ -9166,6 +9437,67 @@ async def showroom_page(business_public_id: str):
             '</script>'
         )
 
+        # "Inquire to buy this car" popup - opened from the vehicle detail
+        # modal's "Inquire to buy this car" button (see inquire_btn_html
+        # above). Posts to POST /api/v1/business/{id}/inquiries (see
+        # CLPurchaseInquiryCreate). Reuses the agent-modal-* CSS classes
+        # for layout/input styling so it matches the Agent Login popup.
+        # The trade-in block only shows once "Make an offer" is checked -
+        # see the inquiry-* JS in SHOWROOM_JS.
+        inquiry_modal_html = (
+            '<div id="inquiry-modal" class="agent-modal">'
+            '<div class="agent-modal-card" style="max-width:420px">'
+            '<button id="inquiry-modal-close" class="agent-modal-close" type="button" aria-label="Close">&times;</button>'
+            '<div class="agent-modal-scroll">'
+
+            '<div id="inquiry-form-view" class="agent-modal-view">'
+            '<h3 class="agent-modal-title">Inquire to buy this car</h3>'
+            '<p class="agent-modal-sub" id="inquiry-vehicle-title"></p>'
+            '<form id="inquiry-form">'
+            '<input type="text" id="inquiry-name" placeholder="Full name" required autocomplete="name">'
+            '<input type="tel" id="inquiry-phone" placeholder="Phone number" required autocomplete="tel">'
+            '<input type="text" id="inquiry-address" placeholder="Address" autocomplete="street-address">'
+
+            '<div class="inquiry-field-label">Valid ID #1</div>'
+            '<input type="file" id="inquiry-id1" accept="image/*" required>'
+            '<div class="inquiry-field-label">Valid ID #2</div>'
+            '<input type="file" id="inquiry-id2" accept="image/*" required>'
+            '<div class="inquiry-field-label">Proof of billing</div>'
+            '<input type="file" id="inquiry-billing" accept="image/*" required>'
+            '<div class="inquiry-field-label">Proof of income</div>'
+            '<input type="file" id="inquiry-income" accept="image/*" required>'
+
+            '<label class="inquiry-checkbox-row">'
+            '<input type="checkbox" id="inquiry-make-offer"> Make an offer'
+            '</label>'
+
+            '<div id="inquiry-tradein" class="inquiry-tradein">'
+            '<input type="text" id="inquiry-tradein-make" placeholder="Trade-in make">'
+            '<input type="text" id="inquiry-tradein-year" placeholder="Year model">'
+            '<input type="number" id="inquiry-tradein-mileage" placeholder="Mileage (km)" min="0">'
+            '<input type="number" id="inquiry-add-cash" placeholder="Add cash amount (₱)" min="0" step="0.01">'
+            '<div class="inquiry-field-label">Who adds cash?</div>'
+            '<div class="inquiry-radio-row">'
+            '<label><input type="radio" name="inquiry-add-cash-by" value="buyer"> Buyer</label>'
+            '<label><input type="radio" name="inquiry-add-cash-by" value="seller"> Seller</label>'
+            '</div>'
+            '</div>'
+
+            '<div id="inquiry-error" class="agent-modal-error" style="display:none"></div>'
+            '<button type="submit" id="inquiry-submit" class="agent-modal-submit">Submit</button>'
+            '</form>'
+            '</div>'
+
+            '<div id="inquiry-success-view" class="agent-modal-view" style="display:none">'
+            '<div class="agent-modal-success-icon">&#9989;</div>'
+            '<h3 class="agent-modal-title">Inquiry sent</h3>'
+            '<p class="agent-modal-sub">Someone from the dealership will reach out to you shortly.</p>'
+            '<button type="button" id="inquiry-success-close" class="agent-modal-submit agent-modal-secondary">Close</button>'
+            '</div>'
+
+            '</div></div></div>'
+        )
+
         footer_html = '<div class="footer">Powered by LoyaltyTree &middot; listings update in real time</div>'
 
         showroom_address = "WOLFCARS, Saint Francis Subdivision, 129 Diamond Dr, Meycauayan, 3020 Bulacan"
@@ -9190,7 +9522,7 @@ async def showroom_page(business_public_id: str):
             '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
             '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">'
             '<style>' + SHOWROOM_CSS + '</style></head><body>'
-            + hero_html + payment_html + stats_html + search_html + filter_html + make_filter_html + grid_html + location_html + footer_html + lightbox_html + vehicle_modal_html + agent_modal_html +
+            + hero_html + payment_html + stats_html + search_html + filter_html + make_filter_html + grid_html + location_html + footer_html + lightbox_html + vehicle_modal_html + agent_modal_html + inquiry_modal_html +
             '<script>' + SHOWROOM_JS + '</script>'
             '</body></html>'
         )
@@ -9317,6 +9649,7 @@ async def cl_agent_signup(business_public_id: str, signup: CLAgentSignup):
         'role': 'agent',
         'name': signup.name,
         'phone': signup.phone,
+        'address': signup.address,
         'email': email,
         'password_hash': hash_password(signup.password),
         'selfie_url': signup.selfie_url,
