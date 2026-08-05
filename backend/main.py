@@ -8791,6 +8791,77 @@ a{color:inherit}
 .car-card:hover{transform:translateY(-3px);box-shadow:0 18px 42px rgba(15,23,42,.10)}
 @media(max-width:900px){.hero-clean .hero-overlay{grid-template-columns:1fr;gap:38px;padding-top:104px}.hero-visual{display:none}.hero-clean h1{font-size:clamp(38px,9vw,62px)}}
 @media(max-width:640px){.hero-clean{min-height:auto}.hero-clean .hero-overlay{min-height:auto;padding:100px 20px 58px}.hero-clean h1{font-size:40px}.hero-assurance-list{grid-template-columns:1fr}.hero-clean .hero-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.hero-clean .hero-metric{padding-right:4px}.hero-clean .hero-metric strong{font-size:20px}.hero-clean .hero-metric span{font-size:10px}.hero-actions{top:14px;right:14px}.trust-strip{margin-top:0;padding-top:16px}.trust-grid{grid-template-columns:1fr 1fr;border-radius:16px}.trust-item{padding:20px 16px}}
+
+/* Mobile-first polish v3 */
+.process-section{padding-bottom:72px!important;margin-bottom:0!important}
+.connect-section{background:#0f172a;padding:72px 20px;margin-top:0}
+.connect-section .contact-wrap{margin:0;padding:0}
+.connect-section .contact-note{width:100%;max-width:760px;padding:34px;border:none;border-radius:22px;box-shadow:0 24px 60px rgba(2,6,23,.24)}
+.connect-section .connect-title{font-size:24px;margin-bottom:16px}
+.connect-section .connect-fb-btn{min-height:46px;padding:12px 22px}
+
+@media(max-width:760px){
+  body{padding-bottom:24px;overflow-x:hidden}
+  .hero-actions{position:static;display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:0 0 24px;width:100%}
+  .hero-clean .hero-overlay{display:block;padding:22px 16px 44px}
+  .hero-clean .hero-copy{max-width:none}
+  .hero-clean .hero-logo{font-size:18px;margin-bottom:18px}
+  .hero-clean .hero-logo img{width:46px;height:46px;border-radius:12px}
+  .hero-clean h1{font-size:clamp(34px,10.5vw,46px);line-height:1.04;letter-spacing:-.045em}
+  .hero-clean .hero-subtitle{font-size:15px;line-height:1.65;margin-top:16px}
+  .hero-cta-row{display:grid!important;grid-template-columns:1fr;gap:10px;margin-top:22px}
+  .hero-primary-btn,.hero-secondary-btn{width:100%;justify-content:center;text-align:center;min-height:48px}
+  .hero-assurance-list{gap:10px;margin-top:24px}
+  .hero-assurance-list div{align-items:flex-start;font-size:12.5px;line-height:1.45}
+  .hero-clean .hero-metrics{grid-template-columns:repeat(3,minmax(0,1fr));gap:0;margin-top:24px;padding-top:20px}
+  .hero-clean .hero-metric{min-width:0}
+  .hero-clean .hero-metric strong{font-size:19px}
+  .hero-clean .hero-metric span{font-size:9.5px;line-height:1.25}
+  .trust-strip{padding:14px 14px 0}
+  .trust-grid{grid-template-columns:1fr!important;gap:0;border-radius:18px;overflow:hidden}
+  .trust-item{display:grid;grid-template-columns:42px 1fr;column-gap:12px;padding:17px 16px;border-bottom:1px solid #eef2f7}
+  .trust-item:last-child{border-bottom:none}
+  .trust-icon{grid-row:1/3;margin:0!important}
+  .trust-title,.trust-text{text-align:left}
+  .home-section{padding-left:16px!important;padding-right:16px!important}
+  .home-heading{font-size:28px!important;line-height:1.12}
+  .home-copy{font-size:14px!important;line-height:1.65}
+  .inventory-shell{padding-top:10px;margin-top:0}
+  .stats-strip,.search-wrap,.filter-bar,.car-grid,.location-wrap{padding-left:14px;padding-right:14px}
+  .stats-strip{margin-top:20px}
+  .stats-strip h2{font-size:18px}
+  .filter-bar{flex-wrap:nowrap;overflow-x:auto;padding-bottom:5px;scrollbar-width:none}
+  .filter-bar::-webkit-scrollbar{display:none}
+  .filter-chip{flex:0 0 auto}
+  .car-grid{grid-template-columns:1fr;gap:16px;margin-top:15px}
+  .car-card{border-radius:16px}
+  .car-gallery{aspect-ratio:16/11}
+  .gal-btn{opacity:1;width:34px;height:34px}
+  .car-info{padding:15px}
+  .car-info h3{font-size:17px}
+  .car-price{font-size:18px}
+  .process-section{padding-top:54px!important;padding-bottom:58px!important}
+  .process-grid{grid-template-columns:1fr!important;gap:12px!important}
+  .process-card{padding:20px!important}
+  .connect-section{padding:50px 14px}
+  .connect-section .contact-note{padding:26px 18px;border-radius:18px}
+  .connect-section .connect-title{font-size:22px}
+  .connect-fb-btn{display:flex;width:100%;justify-content:center;border-radius:12px}
+  .connect-phones{font-size:12.5px;line-height:1.7}
+  .connect-apply-row{display:grid;grid-template-columns:1fr;gap:8px}
+  .connect-apply-link{width:100%;border-radius:10px;padding:11px 12px}
+  .location-wrap{margin-top:50px}
+  .location-map iframe{height:240px}
+  .location-directions-btn{width:100%;justify-content:center;border-radius:12px}
+  .footer{margin-top:34px;padding-left:16px;padding-right:16px}
+}
+
+@media(max-width:380px){
+  .hero-actions{grid-template-columns:1fr}
+  .hero-clean h1{font-size:32px}
+  .hero-clean .hero-metrics{grid-template-columns:1fr;gap:12px}
+  .hero-clean .hero-metric{display:flex;align-items:baseline;justify-content:space-between;border-bottom:1px solid rgba(255,255,255,.08);padding:0 0 10px}
+}
 """
 
 SHOWROOM_JS = """
@@ -9331,7 +9402,17 @@ SHOWROOM_JS = """
   }
   function closeAgentModal(){ if (agentModal) agentModal.classList.remove('open'); }
 
+  function openAgentSignup(){
+    if (!agentModal) return;
+    agentModal.classList.add('open');
+    showAgentView(agentSignupView);
+  }
+
   if (agentLoginBtn) agentLoginBtn.addEventListener('click', openAgentModal);
+  ['hero-become-agent-btn', 'section-become-agent-btn', 'connect-become-agent-btn'].forEach(function(id){
+    var btn = document.getElementById(id);
+    if (btn) btn.addEventListener('click', openAgentSignup);
+  });
   if (agentModalClose) agentModalClose.addEventListener('click', function(){ closeAgentModal(); stopAgentCameras(); });
   if (agentModal) agentModal.addEventListener('click', function(e){ if (e.target === agentModal) { closeAgentModal(); stopAgentCameras(); } });
   document.addEventListener('keydown', function(e){
@@ -9561,6 +9642,9 @@ SHOWROOM_JS = """
     closeAgentModal();
   });
 })();
+
+.agent-cta-section{display:flex;align-items:center;justify-content:space-between;gap:32px;background:linear-gradient(135deg,#0f172a,#111827);color:#fff;border-radius:24px;margin-top:34px;margin-bottom:54px;padding:36px 40px}.agent-cta-section .home-heading,.agent-cta-section .home-copy{color:#fff}.agent-cta-section .home-copy{max-width:720px;color:#cbd5e1}.agent-cta-benefits{display:flex;flex-wrap:wrap;gap:10px 20px;margin-top:20px;color:#e2e8f0;font-size:14px;font-weight:700}.agent-cta-btn{border:0;white-space:nowrap;min-width:190px}.hero-secondary-btn{font-family:inherit;cursor:pointer}.connect-apply-row{justify-content:center}
+@media(max-width:720px){.agent-cta-section{margin:26px 16px 42px;padding:26px 20px;display:block;border-radius:20px}.agent-cta-benefits{display:grid;grid-template-columns:1fr;gap:10px;margin-bottom:22px}.agent-cta-btn{width:100%}.hero-actions{padding:12px 14px}.hero-cta-row .hero-secondary-btn{width:100%}}
 """
 
 @app.get("/showroom/{business_public_id}", response_class=HTMLResponse)
@@ -9588,7 +9672,6 @@ async def showroom_page(business_public_id: str):
         hero_html = (
             '<div class="' + hero_class + '">'
             '<div class="hero-actions">'
-            '<button id="sell-car-btn" class="agent-login-btn" type="button">Sell your car</button>'
             '<button id="agent-login-btn" class="agent-login-btn" type="button">Agent Login</button>'
             '</div>'
             '<div class="hero-overlay"><div class="hero-copy">'
@@ -9597,8 +9680,8 @@ async def showroom_page(business_public_id: str):
             '<h1>Drive home your next car—without the usual delays.</h1>'
             '<p class="hero-subtitle">Explore ready-to-deliver cash and rent-to-own vehicles, review complete details, and send your application online.</p>'
             '<div class="hero-cta-row">'
-            '<a href="#inventory" class="hero-primary-btn">View available cars</a>'
-            '<a href="#connect" class="hero-secondary-btn">Talk to our team</a>'
+            '<a href="#inventory" class="hero-primary-btn">Browse Available Cars</a>'
+            '<button id="hero-become-agent-btn" class="hero-secondary-btn" type="button">Become an Agent</button>'
             '</div>'
             '<div class="hero-assurance-list">'
             '<div><span>&#10003;</span><b>No bank approval required</b></div>'
@@ -9627,22 +9710,19 @@ async def showroom_page(business_public_id: str):
         # The 'seller' entry opens the richer "Sell your car" popup (photos,
         # vehicle specs, amortization - see sell_modal_html) instead of
         # linking to the plain /apply page like agent/buyer do.
-        apply_links_html = ''.join(
-            ('<button type="button" id="connect-sell-link" class="connect-apply-link">' + html_lib.escape(v[0]) + '</button>')
-            if k == 'seller' else
-            ('<a class="connect-apply-link" href="/apply/' + quote(business_public_id) + '?role=' + k + '">'
-             + html_lib.escape(v[0]) + '</a>')
-            for k, v in APPLY_ROLE_LABELS.items()
+        apply_links_html = (
+            '<button type="button" id="connect-become-agent-btn" class="connect-apply-link">Become an Agent</button>'
+            '<button type="button" id="connect-sell-link" class="connect-apply-link">Sell your car</button>'
         )
         payment_html = (
-            '<div id="connect" class="contact-wrap"><div class="contact-note">'
+            '<section id="connect" class="connect-section"><div class="contact-wrap"><div class="contact-note">'
             '<div class="connect-title">Connect with us?</div>'
             '<a class="connect-fb-btn" href="https://www.facebook.com/wolfcarsmain08" target="_blank" rel="noopener noreferrer">'
             '&#128172; Message our Facebook page</a>'
             '<div class="connect-phones">or call us at <a href="tel:09551996574">0955-199-6574</a> or '
             '<a href="tel:09097030170">0909-703-0170</a></div>'
             '<div class="connect-apply-row">' + apply_links_html + '</div>'
-            '</div></div>'
+            '</div></div></section>'
         )
 
         n_available = sum(1 for v in vehicles if v.get('status') == 'available')
@@ -10113,13 +10193,22 @@ async def showroom_page(business_public_id: str):
             '<p class="home-copy">Choose from cash-sale and monthly-amortization vehicles. Tap any unit to review its photos, specifications, price, payment details, and application requirements.</p></section>'
         )
         process_html = (
-            '<section id="how-it-works" class="home-section"><div class="home-kicker">Simple process</div>'
-            '<h2 class="home-heading">From browsing to application</h2>'
+            '<section id="how-it-works" class="home-section process-section"><div class="home-kicker">Simple process</div>'
+            '<h2 class="home-heading">From browsing to your next car</h2>'
             '<div class="process-grid">'
-            '<div class="process-card"><div class="process-n">1</div><h3>Browse available units</h3><p>Filter by availability and vehicle make, then open a car to see the complete details.</p></div>'
-            '<div class="process-card"><div class="process-n">2</div><h3>Send your inquiry</h3><p>Apply for the vehicle, reserve it, or include your trade-in offer directly from the car page.</p></div>'
-            '<div class="process-card"><div class="process-n">3</div><h3>Talk with the dealership</h3><p>The dealership reviews the application and contacts serious buyers for the next step.</p></div>'
+            '<div class="process-card"><div class="process-n">1</div><h3>Browse available units</h3><p>Filter the live inventory and open a vehicle to review its photos, specifications, price, and payment terms.</p></div>'
+            '<div class="process-card"><div class="process-n">2</div><h3>Inquire about a car</h3><p>Submit your details directly from the selected vehicle. You may also include a trade-in upgrade or downgrade offer.</p></div>'
+            '<div class="process-card"><div class="process-n">3</div><h3>Complete the deal</h3><p>Our team reviews serious inquiries, confirms availability, and assists with approval and delivery.</p></div>'
             '</div></section>'
+        )
+        agent_cta_html = (
+            '<section class="home-section agent-cta-section">'
+            '<div class="agent-cta-copy"><div class="home-kicker">Join our sales network</div>'
+            '<h2 class="home-heading">Become a Sales Agent</h2>'
+            '<p class="home-copy">Help buyers find the right vehicle and earn through successful referrals and sales. Submit your application online and start after approval.</p>'
+            '<div class="agent-cta-benefits"><span>&#10003; Flexible selling</span><span>&#10003; Dealership inventory access</span><span>&#10003; Agent support</span><span>&#10003; Start after approval</span></div></div>'
+            '<button id="section-become-agent-btn" class="hero-primary-btn agent-cta-btn" type="button">Become an Agent</button>'
+            '</section>'
         )
         footer_html = '<div class="footer">Powered by LoyaltyTree &middot; listings update in real time</div>'
 
@@ -10145,7 +10234,7 @@ async def showroom_page(business_public_id: str):
             '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
             '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">'
             '<style>' + SHOWROOM_CSS + '</style></head><body id="top">'
-            + nav_html + hero_html + trust_html + intro_html + '<section id="inventory" class="inventory-shell"><div class="inventory-toolbar">' + stats_html + search_html + filter_html + make_filter_html + '</div>' + grid_html + '</section>' + process_html + payment_html + location_html + footer_html + lightbox_html + vehicle_modal_html + agent_modal_html + inquiry_modal_html + sell_modal_html +
+            + hero_html + trust_html + intro_html + '<section id="inventory" class="inventory-shell"><div class="inventory-toolbar">' + stats_html + search_html + filter_html + make_filter_html + '</div>' + grid_html + '</section>' + process_html + agent_cta_html + payment_html + location_html + footer_html + lightbox_html + vehicle_modal_html + agent_modal_html + inquiry_modal_html + sell_modal_html +
             '<script>' + SHOWROOM_JS + '</script>'
             '</body></html>'
         )
