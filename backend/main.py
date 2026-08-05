@@ -9071,7 +9071,7 @@ SHOWROOM_JS = """
 
     if (sellError) sellError.style.display = 'none';
     if (!sellerType) {
-      if (sellError) { sellError.textContent = 'Please tell us whether you\'re the owner or a 3rd party.'; sellError.style.display = ''; }
+      if (sellError) { sellError.textContent = 'Please tell us whether you\\'re the owner or a 3rd party.'; sellError.style.display = ''; }
       return;
     }
     if (!inquiryConfig.api_base || !inquiryConfig.business_public_id) {
