@@ -118,6 +118,13 @@ const TABS = [
   { key: 'inventory', label: 'Inventory' },
   { key: 'contracts', label: 'Contracts' },
   { key: 'payments', label: 'Payments' },
+  { key: 'applications', label: 'Applications' },
+]
+
+const APPLICATION_ROLES = [
+  { key: 'agent', label: 'Agents Application' },
+  { key: 'buyer', label: 'Buyers Application' },
+  { key: 'seller', label: 'Sellers Application' },
 ]
 
 // Renders backend-generated QR SVGs as an <img> (data URI) instead of
@@ -553,6 +560,17 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const [loadingWalletInfo, setLoadingWalletInfo] = useState(false)
   const [publishingWallet, setPublishingWallet] = useState(false)
 
+  // ---------- Agent / Buyer / Seller applications state ----------
+  const [applications, setApplications] = useState([])
+  const [loadingApplications, setLoadingApplications] = useState(false)
+  const [applicationRoleTab, setApplicationRoleTab] = useState('agent') // 'agent' | 'buyer' | 'seller'
+  const [applicationStatusFilter, setApplicationStatusFilter] = useState('')
+  const [showApplicationForm, setShowApplicationForm] = useState(false)
+  const [editingApplication, setEditingApplication] = useState(null) // application being edited, or null for "new"
+  const emptyApplicationForm = { name: '', phone: '', email: '', notes: '' }
+  const [applicationForm, setApplicationForm] = useState(emptyApplicationForm)
+  const [savingApplication, setSavingApplication] = useState(false)
+
   // ---------- Owner -> buyer messages (Step 5) state ----------
   const [clAnnouncements, setClAnnouncements] = useState([])
   const [showMessageForm, setShowMessageForm] = useState(false)
@@ -642,6 +660,27 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
       }
     })()
   }, [contractStatusFilter])
+
+  // Re-fetch applications whenever the Applications tab is open and its
+  // role sub-tab or status filter changes (mirrors the contracts pattern
+  // above - server-side filtered rather than fetched once and sliced
+  // client-side).
+  useEffect(() => {
+    if (!businessId || activeTab !== 'applications') return
+    (async () => {
+      setLoadingApplications(true)
+      try {
+        const params = new URLSearchParams()
+        params.set('role', applicationRoleTab)
+        if (applicationStatusFilter) params.set('status', applicationStatusFilter)
+        const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/applications?${params.toString()}`)
+        setApplications(await res.json().catch(() => []))
+      } catch (err) {
+        console.error('Application filter error:', err)
+      }
+      setLoadingApplications(false)
+    })()
+  }, [activeTab, applicationRoleTab, applicationStatusFilter, businessId])
 
   const flash = (text) => {
     setMessage(text)
@@ -755,6 +794,104 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
       if (!res.ok) throw new Error(data.detail || 'Delete failed')
       flash('Customer removed')
       loadData()
+    } catch (err) {
+      flash(err.message)
+    }
+  }
+
+  // ---------- Agent / Buyer / Seller applications CRUD ----------
+  const reloadApplications = async () => {
+    try {
+      const params = new URLSearchParams()
+      params.set('role', applicationRoleTab)
+      if (applicationStatusFilter) params.set('status', applicationStatusFilter)
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/applications?${params.toString()}`)
+      setApplications(await res.json().catch(() => []))
+    } catch (err) {
+      console.error('Application reload error:', err)
+    }
+  }
+
+  const openNewApplication = () => {
+    setEditingApplication(null)
+    setApplicationForm(emptyApplicationForm)
+    setShowApplicationForm(true)
+  }
+
+  const openEditApplication = (a) => {
+    setEditingApplication(a)
+    setApplicationForm({
+      name: a.name || '',
+      phone: a.phone || '',
+      email: a.email || '',
+      notes: a.notes || '',
+    })
+    setShowApplicationForm(true)
+  }
+
+  const saveApplication = async () => {
+    if (!applicationForm.name.trim()) {
+      flash('Name is required')
+      return
+    }
+    setSavingApplication(true)
+    try {
+      const url = editingApplication
+        ? `${API_BASE}/api/v1/business/${businessId}/applications/${editingApplication.public_id}`
+        : `${API_BASE}/api/v1/business/${businessId}/applications`
+      const body = {
+        name: applicationForm.name,
+        phone: applicationForm.phone || null,
+        email: applicationForm.email || null,
+        notes: applicationForm.notes || null,
+      }
+      // role is fixed by whichever sub-tab (Agents/Buyers/Sellers) the
+      // owner had open when they clicked "New" - only sent on create,
+      // since it can't be changed on an existing application.
+      if (!editingApplication) body.role = applicationRoleTab
+      const res = await fetch(url, {
+        method: editingApplication ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Save failed')
+      flash(editingApplication ? 'Application updated' : 'Application added')
+      setShowApplicationForm(false)
+      reloadApplications()
+    } catch (err) {
+      flash(err.message)
+    }
+    setSavingApplication(false)
+  }
+
+  // Approve/reject - the only way status ever changes; there's no
+  // applicant-facing endpoint that can set it, so this dashboard button
+  // is the sole path to either state.
+  const decideApplication = async (a, status) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/applications/${a.public_id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Update failed')
+      flash(status === 'approved' ? 'Application approved' : 'Application rejected')
+      reloadApplications()
+    } catch (err) {
+      flash(err.message)
+    }
+  }
+
+  const deleteApplication = async (a) => {
+    if (!window.confirm(`Remove ${a.name}'s application?`)) return
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/applications/${a.public_id}`, { method: 'DELETE' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Delete failed')
+      flash('Application removed')
+      reloadApplications()
     } catch (err) {
       flash(err.message)
     }
@@ -1771,6 +1908,82 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
             })()}
           </div>
         )}
+
+        {activeTab === 'applications' && (
+          <div style={styles.panelSection}>
+            <div style={styles.sectionHeaderRow}>
+              <h2 style={styles.sectionTitle}>
+                {APPLICATION_ROLES.find(r => r.key === applicationRoleTab)?.label}
+              </h2>
+              <button onClick={openNewApplication} style={styles.newBtn}>+ New application</button>
+            </div>
+            <p style={styles.sectionSubtitle}>
+              Only you can approve or reject an application here — there's no self-approval path for applicants.
+            </p>
+
+            <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+              {APPLICATION_ROLES.map(r => (
+                <button
+                  key={r.key}
+                  onClick={() => setApplicationRoleTab(r.key)}
+                  style={{ ...styles.tabBtn, ...(applicationRoleTab === r.key ? styles.tabBtnActive : {}) }}
+                >
+                  {r.label}
+                </button>
+              ))}
+            </div>
+
+            <select
+              style={{ ...styles.select, marginBottom: 16 }}
+              value={applicationStatusFilter}
+              onChange={e => setApplicationStatusFilter(e.target.value)}
+            >
+              <option value="">All statuses</option>
+              <option value="pending">Pending</option>
+              <option value="approved">Approved</option>
+              <option value="rejected">Rejected</option>
+            </select>
+
+            {loadingApplications ? (
+              <div style={styles.emptyState}>Loading…</div>
+            ) : applications.length === 0 ? (
+              <div style={styles.emptyState}>
+                {applicationStatusFilter ? `No ${applicationStatusFilter} applications.` : 'No applications yet.'}
+              </div>
+            ) : (
+              <div style={styles.cardList}>
+                {applications.map(a => (
+                  <div key={a.public_id} style={styles.recordCard}>
+                    <div style={styles.recordInfo}>
+                      <div style={styles.recordTitleRow}>
+                        <span style={styles.recordTitle}>{a.name}</span>
+                        <span style={{ ...styles.statusBadge, ...(APPLICATION_STATUS_BADGE_STYLES[a.status] || {}) }}>
+                          {a.status}
+                        </span>
+                      </div>
+                      <div style={styles.recordMeta}>
+                        {[a.phone, a.email].filter(Boolean).join(' · ') || 'No contact info on file'}
+                      </div>
+                      {a.notes && <div style={styles.recordMetaSub}>{a.notes}</div>}
+                    </div>
+                    <div style={styles.recordActions}>
+                      {a.status === 'pending' ? (
+                        <>
+                          <button onClick={() => decideApplication(a, 'approved')} style={styles.newBtnAlt}>Approve</button>
+                          <button onClick={() => decideApplication(a, 'rejected')} style={styles.deleteBtn}>Reject</button>
+                        </>
+                      ) : (
+                        <button onClick={() => decideApplication(a, 'pending')} style={styles.cancelBtnSmall}>Reopen</button>
+                      )}
+                      <button onClick={() => openEditApplication(a)} style={styles.editBtn}>Edit</button>
+                      <button onClick={() => deleteApplication(a)} style={styles.deleteBtn}>Delete</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
 
@@ -1846,6 +2059,58 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
               <button onClick={() => setShowCustomerForm(false)} style={styles.closeBtn}>Cancel</button>
               <button onClick={saveCustomer} disabled={savingCustomer} style={styles.saveBtn}>
                 {savingCustomer ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showApplicationForm && (
+        <div style={styles.modalOverlay} onClick={() => setShowApplicationForm(false)}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>
+              {editingApplication
+                ? `Edit application`
+                : `New ${APPLICATION_ROLES.find(r => r.key === applicationRoleTab)?.label.replace(' Application', '')} application`}
+            </h3>
+            <div style={styles.formGrid}>
+              <label style={styles.label}>Name</label>
+              <input
+                style={styles.input}
+                value={applicationForm.name}
+                onChange={e => setApplicationForm({ ...applicationForm, name: e.target.value })}
+                placeholder="e.g. Juan Dela Cruz"
+              />
+              <label style={styles.label}>Phone</label>
+              <input
+                style={styles.input}
+                value={applicationForm.phone}
+                onChange={e => setApplicationForm({ ...applicationForm, phone: e.target.value })}
+                placeholder="e.g. 09171234567"
+              />
+              <label style={styles.label}>Email</label>
+              <input
+                style={styles.input}
+                value={applicationForm.email}
+                onChange={e => setApplicationForm({ ...applicationForm, email: e.target.value })}
+                placeholder="e.g. juan@email.com"
+              />
+              <label style={styles.label}>Notes</label>
+              <textarea
+                style={{ ...styles.input, minHeight: 70, resize: 'vertical' }}
+                value={applicationForm.notes}
+                onChange={e => setApplicationForm({ ...applicationForm, notes: e.target.value })}
+                placeholder={
+                  applicationRoleTab === 'agent' ? 'Coverage area, experience, etc.'
+                  : applicationRoleTab === 'buyer' ? 'Budget, preferred vehicle, etc.'
+                  : 'Vehicle they want to list (make/model/year/asking price), etc.'
+                }
+              />
+            </div>
+            <div style={styles.modalActions}>
+              <button onClick={() => setShowApplicationForm(false)} style={styles.closeBtn}>Cancel</button>
+              <button onClick={saveApplication} disabled={savingApplication} style={styles.saveBtn}>
+                {savingApplication ? 'Saving…' : 'Save'}
               </button>
             </div>
           </div>
@@ -2517,6 +2782,12 @@ const CONTRACT_STATUS_BADGE_STYLES = {
   completed: { background: '#dcfce7', color: '#15803d' },
   repossessed: { background: '#fef3c7', color: '#b45309' },
   cancelled: { background: '#f1f5f9', color: '#64748b' },
+}
+
+const APPLICATION_STATUS_BADGE_STYLES = {
+  pending: { background: '#fef9c3', color: '#a16207' },
+  approved: { background: '#dcfce7', color: '#15803d' },
+  rejected: { background: '#fee2e2', color: '#dc2626' },
 }
 
 // ---------- Net income / top agent helpers (Overview tab) ----------

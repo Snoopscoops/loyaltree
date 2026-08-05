@@ -633,6 +633,41 @@ class CLPaymentUpdate(BaseModel):
     method: Optional[str] = None
     notes: Optional[str] = None
 
+# --- Car Lending / Showroom: agent/buyer/seller applications. One table,
+# distinguished by `role` - only the business owner ("admin" of their own
+# dashboard) can move status from pending to approved/rejected; there's no
+# self-service path for an applicant to approve themselves. ---
+CL_APPLICATION_ROLES = ['agent', 'buyer', 'seller']
+CL_APPLICATION_STATUSES = ['pending', 'approved', 'rejected']
+
+class CLApplicationCreate(BaseModel):
+    role: Literal['agent', 'buyer', 'seller']
+    name: str
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    notes: Optional[str] = None  # agent: coverage area/experience; buyer: budget/preferred unit; seller: vehicle they want to list
+
+class CLApplicationUpdate(BaseModel):
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    notes: Optional[str] = None
+    # Approve/reject goes through this same field - the owner is the only
+    # one with a UI path that calls this endpoint, so no separate
+    # approve/reject endpoints are needed.
+    status: Optional[Literal['pending', 'approved', 'rejected']] = None
+
+# Public, unauthenticated self-service version - what the /apply page
+# submits. No `status` field: every self-submitted application always
+# lands as 'pending', same spirit as CLCustomerSelfSignup below never
+# letting the submitter set their own approval state.
+class CLApplicationSelfSignup(BaseModel):
+    role: Literal['agent', 'buyer', 'seller']
+    name: str
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    notes: Optional[str] = None
+
 
 # --- Car Lending / Showroom: self-service signup (buyer scans the
 # dealership's "Join" QR and registers themselves, mirrors CustomerSignup
@@ -920,6 +955,15 @@ def safe_get_contract(public_id: str):
         return None
     try:
         res = supabase.table("contracts").select("*").eq("public_id", public_id).maybe_single().execute()
+        return res.data
+    except Exception:
+        return None
+
+def safe_get_cl_application(public_id: str):
+    if not supabase:
+        return None
+    try:
+        res = supabase.table("cl_applications").select("*").eq("public_id", public_id).maybe_single().execute()
         return res.data
     except Exception:
         return None
@@ -5579,6 +5623,95 @@ async def list_customer_payment_history(public_id: str, customer_public_id: str)
 
     return payments
 
+# CAR LENDING / SHOWROOM - AGENT / BUYER / SELLER APPLICATIONS
+# One shared table (cl_applications), split by `role`. Only the business
+# owner's dashboard can create/edit/approve/reject these - there's no public
+# self-service form yet, so every application here is logged by the owner
+# (e.g. after receiving one by call/message) and then approved or rejected.
+
+@app.get("/api/v1/business/{public_id}/applications")
+async def list_cl_applications(public_id: str, role: Optional[str] = None, status: Optional[str] = None):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    if role and role not in CL_APPLICATION_ROLES:
+        raise HTTPException(status_code=400, detail=f"role must be one of {CL_APPLICATION_ROLES}")
+    if status and status not in CL_APPLICATION_STATUSES:
+        raise HTTPException(status_code=400, detail=f"status must be one of {CL_APPLICATION_STATUSES}")
+    try:
+        query = supabase.table("cl_applications").select("*").eq("business_id", business.get("id"))
+        if role:
+            query = query.eq("role", role)
+        if status:
+            query = query.eq("status", status)
+        res = query.order("created_at", desc=True).execute()
+        return res.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.post("/api/v1/business/{public_id}/applications")
+async def create_cl_application(public_id: str, application: CLApplicationCreate):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    application_data = {
+        'business_id': business.get('id'),
+        'public_id': generate_public_id(),
+        'role': application.role,
+        'name': application.name,
+        'phone': application.phone,
+        'email': application.email,
+        'notes': application.notes,
+        'status': 'pending',
+    }
+    try:
+        res = supabase.table("cl_applications").insert(application_data).execute()
+        return res.data[0] if res.data else application_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.patch("/api/v1/business/{public_id}/applications/{application_public_id}")
+async def update_cl_application(public_id: str, application_public_id: str, update: CLApplicationUpdate):
+    """Covers both plain edits (name/phone/email/notes) and the owner's
+    approve/reject decision (status) - the dashboard is the only caller, so
+    there's no separate applicant-facing endpoint that could set status
+    itself."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    application = safe_get_cl_application(application_public_id)
+    if not application or application.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Application not found for this business")
+
+    update_data = {k: v for k, v in update.dict(exclude_unset=True).items() if v is not None}
+    if not update_data:
+        return application
+
+    update_data['updated_at'] = datetime.utcnow().isoformat()
+    if 'status' in update_data and update_data['status'] != 'pending':
+        update_data['decided_at'] = datetime.utcnow().isoformat()
+
+    try:
+        res = supabase.table("cl_applications").update(update_data).eq("id", application.get("id")).execute()
+        return res.data[0] if res.data else {**application, **update_data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.delete("/api/v1/business/{public_id}/applications/{application_public_id}")
+async def delete_cl_application(public_id: str, application_public_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    application = safe_get_cl_application(application_public_id)
+    if not application or application.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Application not found for this business")
+    try:
+        supabase.table("cl_applications").delete().eq("id", application.get("id")).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+    return {"success": True, "deleted": application_public_id}
+
 # CAR LENDING / SHOWROOM - OWNER -> BUYER MESSAGES
 # Distinct from the generic /announcements below (which push to Google/Apple
 # Wallet card holders) - car-lending buyers don't have a wallet pass, so
@@ -7774,6 +7907,133 @@ async def cl_customer_join_page(business_public_id: str):
         traceback.print_exc()
         return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Error</h1><p>Could not load join page: " + str(e) + "</p></div>")
 
+# Public "apply to become an agent/buyer/seller" page - linked from the
+# showroom's contact block. Submits to POST /api/v1/cl-apply/{public_id},
+# which always creates the row as 'pending' (see CLApplicationSelfSignup) -
+# approval only ever happens from the owner's dashboard Applications tab.
+APPLY_ROLE_LABELS = {
+    'agent': ('Become an Agent', 'Tell us about your coverage area and experience.'),
+    'buyer': ('Apply as a Buyer', 'Tell us your budget and what you\'re looking for.'),
+    'seller': ('Sell Your Car', 'Tell us about the vehicle you want to list.'),
+}
+
+@app.get("/apply/{business_public_id}", response_class=HTMLResponse)
+async def cl_application_page(business_public_id: str, role: Optional[str] = None):
+    try:
+        business = safe_get_business(business_public_id)
+        if not business:
+            return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Business not found</h1><p>This link is invalid.</p></div>")
+        if business.get('status', '').upper() != 'ACTIVE':
+            return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Not accepting applications</h1><p>This dealership isn't accepting applications yet.</p></div>")
+
+        biz_name = business.get('name', '')
+        logo_url = business.get('logo_url')
+        default_role = role if role in APPLY_ROLE_LABELS else 'buyer'
+
+        if logo_url:
+            logo_html = '<img src="' + html_lib.escape(logo_url) + '" style="width:80px;height:80px;border-radius:20px;object-fit:cover;margin:0 auto 20px;display:block;" alt="Logo"/>'
+        else:
+            logo_html = '<div style="width:80px;height:80px;border-radius:20px;background:linear-gradient(135deg,#0f172a 0%,#334155 100%);display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:36px;">&#128663;</div>'
+
+        role_tabs_html = ''.join(
+            '<button type="button" class="role-tab' + (' active' if k == default_role else '') + '" data-role="' + k + '">'
+            + html_lib.escape(v[0]) + '</button>'
+            for k, v in APPLY_ROLE_LABELS.items()
+        )
+
+        html = (
+            '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+            '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+            '<title>Apply — ' + html_lib.escape(biz_name) + '</title>'
+            '<style>'
+            '*{box-sizing:border-box;margin:0;padding:0}'
+            'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;'
+            'background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%);'
+            'min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}'
+            '.card{background:white;border-radius:24px;padding:32px;max-width:420px;width:100%;'
+            'box-shadow:0 20px 60px rgba(0,0,0,0.3);text-align:center}'
+            'h1{font-size:22px;color:#1e293b;margin-bottom:4px}'
+            '.subtitle{color:#64748b;margin-bottom:20px;font-size:14px}'
+            '.role-tabs{display:flex;gap:6px;margin-bottom:20px;background:#f1f5f9;border-radius:12px;padding:4px}'
+            '.role-tab{flex:1;padding:10px 6px;border:none;border-radius:9px;background:transparent;'
+            'font-size:12px;font-weight:600;color:#64748b;cursor:pointer}'
+            '.role-tab.active{background:#0f172a;color:white}'
+            'input,textarea{width:100%;padding:14px 16px;border:2px solid #e2e8f0;border-radius:12px;'
+            'font-size:16px;margin-bottom:12px;outline:none;font-family:inherit}'
+            'textarea{min-height:80px;resize:vertical}'
+            'input:focus,textarea:focus{border-color:#0f172a}'
+            'button.submit-btn{width:100%;padding:16px;background:linear-gradient(135deg,#0f172a 0%,#334155 100%);'
+            'color:white;border:none;border-radius:12px;font-size:16px;font-weight:700;cursor:pointer;margin-top:8px}'
+            '</style></head><body>'
+            '<div class="card" id="card">'
+            + logo_html +
+            '<h1>' + html_lib.escape(biz_name) + '</h1>'
+            '<p class="subtitle" id="role-subtitle">' + html_lib.escape(APPLY_ROLE_LABELS[default_role][1]) + '</p>'
+            '<div class="role-tabs">' + role_tabs_html + '</div>'
+            '<form id="applyForm">'
+            '<input type="text" id="name" placeholder="Full name" required>'
+            '<input type="tel" id="phone" placeholder="Phone number">'
+            '<input type="email" id="email" placeholder="Email (optional)">'
+            '<textarea id="notes" placeholder="Details"></textarea>'
+            '<button type="submit" class="submit-btn">Submit application</button>'
+            '</form></div>'
+            '<script>'
+            '(function(){'
+            'const API_BASE=' + json.dumps(BASE_URL) + ';'
+            'const BIZ_ID=' + json.dumps(business_public_id) + ';'
+            'const ROLE_LABELS=' + json.dumps({k: v for k, v in APPLY_ROLE_LABELS.items()}) + ';'
+            'let currentRole=' + json.dumps(default_role) + ';'
+            'const tabs=document.querySelectorAll(".role-tab");'
+            'const notesEl=document.getElementById("notes");'
+            'const subtitleEl=document.getElementById("role-subtitle");'
+            'function applyRoleUI(role){'
+            'tabs.forEach(function(t){t.classList.toggle("active",t.dataset.role===role);});'
+            'subtitleEl.textContent=ROLE_LABELS[role][1];'
+            'notesEl.placeholder=role==="agent"?"Coverage area, experience, etc."'
+            ':role==="seller"?"Vehicle make/model/year and asking price":"Budget, preferred vehicle, etc.";'
+            '}'
+            'applyRoleUI(currentRole);'
+            'tabs.forEach(function(t){t.addEventListener("click",function(){currentRole=t.dataset.role;applyRoleUI(currentRole);});});'
+            'document.getElementById("applyForm").addEventListener("submit",async function(e){'
+            'e.preventDefault();'
+            'const name=document.getElementById("name").value;'
+            'const phone=document.getElementById("phone").value;'
+            'const email=document.getElementById("email").value;'
+            'const notes=notesEl.value;'
+            'try{'
+            'const res=await fetch(API_BASE+"/api/v1/cl-apply/"+BIZ_ID,{'
+            'method:"POST",'
+            'headers:{"Content-Type":"application/json"},'
+            'body:JSON.stringify({role:currentRole,name:name,phone:phone||null,email:email||null,notes:notes||null})'
+            '});'
+            'const data=await res.json();'
+            'if(res.ok){'
+            'document.getElementById("card").innerHTML='
+            '"<div style=\'font-size:48px;margin-bottom:16px;\'>&#9989;</div>"+'
+            '"<h1>Application received!</h1>"+'
+            '"<p style=\'color:#64748b;margin-top:8px;\'>"+escapeHtml(data.message||"We\'ll be in touch once it\'s reviewed.")+"</p>";'
+            '}else{'
+            'alert(data.detail||"Submission failed");'
+            '}'
+            '}catch(err){'
+            'console.error(err);'
+            'alert("Network error. Please try again.");'
+            '}'
+            '});'
+            'function escapeHtml(text){'
+            'const div=document.createElement("div");'
+            'div.textContent=text;'
+            'return div.innerHTML;'
+            '}'
+            '})();'
+            '</script></body></html>'
+        )
+        return HTMLResponse(html)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Error</h1><p>Could not load application page: " + str(e) + "</p></div>")
+
 # Public showroom - lists every vehicle currently for sale (status
 # 'available' or 'reserved'). A vehicle appears here the moment it's added
 # via POST /vehicles and disappears the moment a contract is written against
@@ -7811,6 +8071,11 @@ a{color:inherit}
 .connect-phones{margin-top:10px;font-size:13px;color:var(--muted)}
 .connect-phones a{color:var(--ink);font-weight:700;text-decoration:none}
 .connect-phones a:hover{text-decoration:underline}
+.connect-apply-row{margin-top:14px;padding-top:14px;border-top:1px solid var(--line);
+  display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
+.connect-apply-link{font-size:12.5px;font-weight:700;color:var(--ink);text-decoration:none;
+  background:#f1f5f9;padding:8px 14px;border-radius:999px}
+.connect-apply-link:hover{background:#e2e8f0}
 
 .stats-strip{max-width:1080px;margin:30px auto 0;padding:0 20px;display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .stats-strip h2{font-size:19px;font-weight:800;letter-spacing:-0.01em}
@@ -8161,6 +8426,14 @@ async def showroom_page(business_public_id: str):
 
         # Fixed "Connect with us?" block (Facebook message button + phone
         # numbers) - replaces the old owner-editable inquiries/contact note.
+        # The apply-links row at the bottom sends visitors to the public
+        # /apply page (POST /api/v1/cl-apply/...) for the three roles the
+        # owner reviews from the dashboard's Applications tab.
+        apply_links_html = ''.join(
+            '<a class="connect-apply-link" href="/apply/' + quote(business_public_id) + '?role=' + k + '">'
+            + html_lib.escape(v[0]) + '</a>'
+            for k, v in APPLY_ROLE_LABELS.items()
+        )
         payment_html = (
             '<div class="contact-wrap"><div class="contact-note">'
             '<div class="connect-title">Connect with us?</div>'
@@ -8168,6 +8441,7 @@ async def showroom_page(business_public_id: str):
             '&#128172; Message our Facebook page</a>'
             '<div class="connect-phones">or call us at <a href="tel:09551996574">0955-199-6574</a> or '
             '<a href="tel:09097030170">0909-703-0170</a></div>'
+            '<div class="connect-apply-row">' + apply_links_html + '</div>'
             '</div></div>'
         )
 
@@ -8420,6 +8694,37 @@ async def cl_customer_self_signup(business_public_id: str, signup: CLCustomerSel
         "public_id": customer_public_id,
         "name": signup.name,
         "message": "Registered - add your card to your wallet.",
+    }
+
+@app.post("/api/v1/cl-apply/{business_public_id}")
+async def cl_application_self_signup(business_public_id: str, application: CLApplicationSelfSignup):
+    """Public, unauthenticated endpoint the /apply page submits to. Always
+    lands as 'pending' - only the owner's dashboard (see the Applications
+    tab, after Payments) can move it to approved/rejected."""
+    business = safe_get_business(business_public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    if business.get('status', '').upper() != 'ACTIVE':
+        raise HTTPException(status_code=400, detail="This dealership isn't accepting applications yet.")
+
+    application_data = {
+        'business_id': business.get('id'),
+        'public_id': generate_public_id(),
+        'role': application.role,
+        'name': application.name,
+        'phone': application.phone,
+        'email': application.email,
+        'notes': application.notes,
+        'status': 'pending',
+    }
+    try:
+        supabase.table("cl_applications").insert(application_data).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    return {
+        "success": True,
+        "message": "Application received - we'll be in touch once it's reviewed.",
     }
 
 # WALLET PAGE
