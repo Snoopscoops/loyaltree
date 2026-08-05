@@ -191,7 +191,7 @@ const VEHICLE_MAX_PHOTOS = 10
 const CONTRACT_MAX_IMAGES = 5
 
 function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved }) {
-  const emptyForm = { make: '', model: '', year: '', plate_number: '', plate_end_in: '', color: '', mileage: '', transmission: '', fuel_type: '', price: '', total_cost: '', agent_name: '', status: 'available' }
+  const emptyForm = { make: '', model: '', year: '', plate_number: '', plate_end_in: '', color: '', mileage: '', transmission: '', fuel_type: '', price: '', total_cost: '', agent_name: '', status: 'available', payment_type: '', location: '', notes: '' }
   const [form, setForm] = useState(emptyForm)
   const [imageUrls, setImageUrls] = useState([]) // up to VEHICLE_MAX_PHOTOS Cloudinary URLs, shown as a gallery on the showroom card
   const [uploading, setUploading] = useState(false)
@@ -217,6 +217,9 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
         total_cost: vehicle.total_cost ?? '',
         agent_name: vehicle.agent_name || '',
         status: vehicle.status || 'available',
+        payment_type: vehicle.payment_type || '',
+        location: vehicle.location || '',
+        notes: vehicle.notes || '',
       })
       setImageUrls(vehicle.image_urls && vehicle.image_urls.length ? vehicle.image_urls : (vehicle.image_url ? [vehicle.image_url] : []))
     } else {
@@ -300,6 +303,9 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
           total_cost: form.total_cost !== '' ? Number(form.total_cost) : 0,
           agent_name: form.agent_name || null,
           status: form.status,
+          payment_type: form.payment_type || null,
+          location: form.location || null,
+          notes: form.notes || null,
           image_urls: imageUrls,
         }),
       })
@@ -463,6 +469,30 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
             <option value="financed">Financed</option>
             <option value="sold">Sold</option>
           </select>
+          <label style={styles.label}>Payment type</label>
+          <select
+            style={styles.select}
+            value={form.payment_type}
+            onChange={e => setForm({ ...form, payment_type: e.target.value })}
+          >
+            <option value="">Select…</option>
+            <option value="cash">Cash</option>
+            <option value="monthly_amortization">Monthly amortization</option>
+          </select>
+          <label style={styles.label}>Location</label>
+          <input
+            style={styles.input}
+            value={form.location}
+            onChange={e => setForm({ ...form, location: e.target.value })}
+            placeholder="e.g. Main lot, or with agent Juan"
+          />
+          <label style={styles.label}>Note (optional)</label>
+          <textarea
+            style={{ ...styles.input, minHeight: 60, resize: 'vertical' }}
+            value={form.notes}
+            onChange={e => setForm({ ...form, notes: e.target.value })}
+            placeholder="e.g. Agent fee: ₱5,000 — internal only, not shown on the showroom"
+          />
         </div>
 
         {error && <div style={styles.uploadError}>{error}</div>}
@@ -1851,7 +1881,14 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                           v.fuel_type ? v.fuel_type.charAt(0).toUpperCase() + v.fuel_type.slice(1) : null,
                         ].filter(Boolean).join(' · ')}
                       </div>
-                      <div style={styles.recordMetaSub}>₱{Number(v.price || 0).toLocaleString()}</div>
+                      <div style={styles.recordMetaSub}>
+                        {[
+                          `₱${Number(v.price || 0).toLocaleString()}`,
+                          v.payment_type ? (v.payment_type === 'cash' ? 'Cash' : 'Monthly amortization') : null,
+                          v.location || null,
+                        ].filter(Boolean).join(' · ')}
+                      </div>
+                      {v.notes && <div style={{ ...styles.recordMetaSub, fontStyle: 'italic' }}>📝 {v.notes}</div>}
                     </div>
                     <div style={styles.recordActions}>
                       <button onClick={() => openEditVehicle(v)} style={styles.editBtn}>Edit</button>

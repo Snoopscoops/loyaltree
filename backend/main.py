@@ -530,6 +530,9 @@ class VehicleCreate(BaseModel):
     total_cost: float = Field(default=0, ge=0)  # what the business paid to acquire this unit - NEVER shown on the showroom, used only for the owner's profit/loss (net income) computation on the dashboard
     agent_name: Optional[str] = None  # which agent is handling/sourced this unit - used to roll up "top agent" on the dashboard
     status: Optional[Literal['available', 'reserved', 'sold', 'financed']] = 'available'
+    payment_type: Optional[Literal['cash', 'monthly_amortization']] = None  # how this unit is being sold - cash sale or financed/monthly amortization
+    location: Optional[str] = None  # where the physical unit currently is - dashboard-only
+    notes: Optional[str] = None  # free-text internal note (e.g. agent fee) - dashboard-only, never shown on the showroom
     image_url: Optional[str] = None  # legacy single-photo field - kept in sync as image_urls[0] for old readers
     image_urls: Optional[List[str]] = None  # up to VEHICLE_MAX_PHOTOS photos, shown as a gallery on the showroom card
 
@@ -547,6 +550,9 @@ class VehicleUpdate(BaseModel):
     total_cost: Optional[float] = Field(default=None, ge=0)
     agent_name: Optional[str] = None
     status: Optional[Literal['available', 'reserved', 'sold', 'financed']] = None
+    payment_type: Optional[Literal['cash', 'monthly_amortization']] = None
+    location: Optional[str] = None
+    notes: Optional[str] = None
     image_url: Optional[str] = None
     image_urls: Optional[List[str]] = None
 
@@ -5115,6 +5121,9 @@ async def create_vehicle(public_id: str, vehicle: VehicleCreate):
         'total_cost': vehicle.total_cost,
         'agent_name': vehicle.agent_name,
         'status': vehicle.status or 'available',
+        'payment_type': vehicle.payment_type,
+        'location': vehicle.location,
+        'notes': vehicle.notes,
         'image_url': image_urls[0] if image_urls else None,
         'image_urls': image_urls,
     }
