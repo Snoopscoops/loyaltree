@@ -1581,21 +1581,12 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     return <div style={styles.loadingScreen}>Loading dashboard…</div>
   }
 
-  // ---------- Profit/loss (net income) + top agent, computed from
-  // vehicles + contracts already loaded above. Each contract's profit is
-  // its sale price minus the vehicle's total_cost (what it cost to buy) -
-  // total_cost is never sent to the showroom, it only feeds this
-  // computation. A deal counts on its start_date (falling back to when the
-  // contract record was created for older/transferred loans). ----------
-  const deals = computeDealProfits(vehicles, contracts)
-  const netIncome = netIncomeByPeriod(deals)
-  const agentRanking = rankAgents(deals)
 
   return (
     <div style={styles.container}>
       <header style={styles.header}>
         <div style={styles.brand}>
-          <span style={{ fontSize: 26 }}>🚗</span>
+          <span style={{ fontSize: 24, width: 42, height: 42, borderRadius: 999, background: '#171717', color: '#d4af37', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>🚗</span>
           <div>
             <h1 style={styles.brandName}>{business?.name || 'Dealer Dashboard'}</h1>
             <p style={styles.brandTagline}>Car Lending & Showroom</p>
@@ -1633,40 +1624,6 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
               <StatCard label="Customers" value={customers.length} />
             </div>
 
-            <div style={styles.sectionHeaderRow}>
-              <h2 style={styles.sectionTitle}>Net income</h2>
-            </div>
-            <p style={styles.sectionSubtitle}>
-              Price to sell minus total cost to buy, counted on each deal's start date. Total cost never shows on the showroom — it's for this computation only.
-            </p>
-            <div style={{ maxWidth: 220, marginBottom: 24 }}>
-              <NetIncomeCard period={incomePeriod} onPeriodChange={setIncomePeriod} stats={netIncome} />
-            </div>
-
-            <div style={styles.announcementsSection}>
-              <div style={styles.sectionHeaderRow}>
-                <h2 style={styles.sectionTitle}>Agents</h2>
-              </div>
-              <p style={styles.sectionSubtitle}>Ranked by total net income from the deals on cars they're assigned to.</p>
-
-              {agentRanking.length === 0 ? (
-                <div style={styles.emptyState}>No deals with an assigned agent yet.</div>
-              ) : (
-                <div style={styles.announcementsList}>
-                  {agentRanking.map((a, idx) => (
-                    <div key={a.agent} style={styles.announcementCard}>
-                      <div style={styles.announcementInfo}>
-                        <div style={styles.announcementTitleRow}>
-                          <span style={styles.announcementTitle}>{idx === 0 ? '🏆 ' : ''}{a.agent}</span>
-                          {idx === 0 && <span style={styles.inactiveBadge}>Top agent</span>}
-                        </div>
-                        <div style={styles.announcementMessage}>{a.deals} deal{a.deals === 1 ? '' : 's'} · {formatPeso(a.profit)} net income</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
           </>
         )}
 
@@ -2195,11 +2152,11 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
               />
             </div>
             {editingCustomer && (
-              <div style={{ marginTop: 4, marginBottom: 12, padding: 12, background: '#f8fafc', borderRadius: 10 }}>
+              <div style={{ marginTop: 4, marginBottom: 12, padding: 12, background: '#f7f7f5', borderRadius: 10 }}>
                 <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 6 }}>
                   Wallet card
                 </div>
-                <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>
+                <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 8 }}>
                   Share this link so they can add their loan card to Google/Apple Wallet — that's how
                   they'll get payment reminders and your announcements. No login, no payment portal.
                 </div>
@@ -2387,7 +2344,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
 
             {reviewingApplication.role === 'seller' && (
               <div style={{ ...styles.walletSetupCard, marginBottom: 16 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: '#0f172a', marginBottom: 8 }}>Vehicle for sale</div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#171717', marginBottom: 8 }}>Vehicle for sale</div>
                 <div style={styles.recordMetaSub}>Make: {reviewingApplication.seller_make || '—'}</div>
                 <div style={styles.recordMetaSub}>Model: {reviewingApplication.seller_model || '—'}</div>
                 <div style={styles.recordMetaSub}>Year: {reviewingApplication.seller_year || '—'}</div>
@@ -2408,7 +2365,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
 
             {reviewingApplication.has_amortization && (
               <div style={{ ...styles.walletSetupCard, marginBottom: 16 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: '#0f172a', marginBottom: 8 }}>Monthly amortization</div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#171717', marginBottom: 8 }}>Monthly amortization</div>
                 <div style={styles.recordMetaSub}>
                   Amount: {reviewingApplication.amortization_amount != null ? `₱${Number(reviewingApplication.amortization_amount).toLocaleString()}` : '—'}
                 </div>
@@ -2426,7 +2383,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
 
             {reviewingApplication.make_offer && (
               <div style={{ ...styles.walletSetupCard, marginBottom: 16 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: '#0f172a', marginBottom: 8 }}>Trade-in offer</div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#171717', marginBottom: 8 }}>Trade-in offer</div>
                 <div style={styles.recordMetaSub}>Make: {reviewingApplication.trade_in_make || '—'}</div>
                 <div style={styles.recordMetaSub}>Model: {reviewingApplication.trade_in_model || '—'}</div>
                 <div style={styles.recordMetaSub}>Year: {reviewingApplication.trade_in_year || '—'}</div>
@@ -2441,7 +2398,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
             )}
 
             {reviewingApplication.role === 'agent' && reviewingApplication.selfie_url && (
-              <p style={{ fontSize: 12, color: '#94a3b8', margin: '0 0 12px' }}>
+              <p style={{ fontSize: 12, color: '#8a8a8a', margin: '0 0 12px' }}>
                 Approving this creates the agent's real login account. Rejecting discards it.
               </p>
             )}
@@ -2738,7 +2695,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
             <h3 style={styles.modalTitle}>Log payment</h3>
             <div style={styles.readOnlyValue}>
               {payingContract.customer?.name || 'Unknown customer'} — {payingContract.vehicle ? `${payingContract.vehicle.year ? payingContract.vehicle.year + ' ' : ''}${payingContract.vehicle.make} ${payingContract.vehicle.model}` : 'Unknown vehicle'}
-              <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>
+              <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>
                 Balance remaining: ₱{Number(payingContract.balance_remaining || 0).toLocaleString()}
                 {payingContract.next_due_date && ` · Next due ${payingContract.next_due_date}`}
               </div>
@@ -2788,7 +2745,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                 {paymentHistory.map((p, i) => (
                   <div key={p.public_id} style={{ ...styles.recordCard, padding: '8px 12px' }}>
                     <div style={styles.recordInfo}>
-                      <div style={{ fontSize: 13.5, fontWeight: 600, color: '#0f172a' }}>₱{Number(p.amount).toLocaleString()} · {p.payment_date}</div>
+                      <div style={{ fontSize: 13.5, fontWeight: 600, color: '#171717' }}>₱{Number(p.amount).toLocaleString()} · {p.payment_date}</div>
                       <div style={styles.recordMetaSub}>
                         {p.method || 'no method noted'}{p.notes ? ` — ${p.notes}` : ''}
                         {p.balance_after != null && ` · Balance after: ₱${Number(p.balance_after).toLocaleString()}`}
@@ -2880,7 +2837,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                 {customerHistory.map(p => (
                   <div key={p.public_id} style={{ ...styles.recordCard, padding: '8px 12px' }}>
                     <div style={styles.recordInfo}>
-                      <div style={{ fontSize: 13.5, fontWeight: 600, color: '#0f172a' }}>
+                      <div style={{ fontSize: 13.5, fontWeight: 600, color: '#171717' }}>
                         ₱{Number(p.amount).toLocaleString()} · {p.payment_date}
                       </div>
                       <div style={styles.recordMetaSub}>
@@ -2911,7 +2868,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
           <div style={styles.modal} onClick={e => e.stopPropagation()}>
             <div className="cl-receipt-print">
               <h3 style={styles.modalTitle}>Payment receipt</h3>
-              <div style={{ fontSize: 13, color: '#64748b', marginBottom: 12 }}>{business?.name || 'Dealer'}</div>
+              <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 12 }}>{business?.name || 'Dealer'}</div>
               <div style={styles.formGrid}>
                 <span style={styles.label}>Receipt #</span>
                 <span style={styles.readOnlyValue}>{viewingReceipt.receipt_number || viewingReceipt.public_id}</span>
@@ -3130,7 +3087,7 @@ const STATUS_BADGE_STYLES = {
   available: { background: '#dcfce7', color: '#15803d' },
   reserved: { background: '#fef9c3', color: '#a16207' },
   financed: { background: '#dbeafe', color: '#1d4ed8' },
-  sold: { background: '#f1f5f9', color: '#64748b' },
+  sold: { background: '#f5f5f4', color: '#6b7280' },
 }
 
 const CONTRACT_STATUS_BADGE_STYLES = {
@@ -3138,7 +3095,7 @@ const CONTRACT_STATUS_BADGE_STYLES = {
   overdue: { background: '#fee2e2', color: '#dc2626' },
   completed: { background: '#dcfce7', color: '#15803d' },
   repossessed: { background: '#fef3c7', color: '#b45309' },
-  cancelled: { background: '#f1f5f9', color: '#64748b' },
+  cancelled: { background: '#f5f5f4', color: '#6b7280' },
 }
 
 const APPLICATION_STATUS_BADGE_STYLES = {
@@ -3248,7 +3205,7 @@ function NetIncomeCard({ period, onPeriodChange, stats }) {
 function StatCard({ label, value, accent, hint }) {
   return (
     <div style={styles.statCard}>
-      <div style={{ ...styles.statValue, color: accent || '#0f172a' }}>{value}</div>
+      <div style={{ ...styles.statValue, color: accent || '#171717' }}>{value}</div>
       <div style={styles.statLabel}>{label}</div>
       {hint && <div style={styles.statHint}>{hint}</div>}
     </div>
@@ -3258,107 +3215,107 @@ function StatCard({ label, value, accent, hint }) {
 const styles = {
   loadingScreen: {
     minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
-    color: '#64748b', fontSize: 16, fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+    color: '#6b7280', fontSize: 16, fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
   },
   container: {
     minHeight: '100vh',
-    background: '#f8fafc',
+    background: '#f7f7f5',
     fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
   },
   header: {
     display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-    padding: '16px 24px', background: '#0f172a', color: 'white',
+    padding: '14px 24px', background: '#ffffff', color: '#171717', borderBottom: '1px solid #e7e5e4',
     position: 'sticky', top: 0, zIndex: 100,
   },
   brand: { display: 'flex', alignItems: 'center', gap: 12 },
-  brandName: { margin: 0, fontSize: 18, fontWeight: 700, color: 'white' },
-  brandTagline: { margin: 0, fontSize: 12, color: '#94a3b8' },
+  brandName: { margin: 0, fontSize: 18, fontWeight: 800, color: '#171717', letterSpacing: '-0.01em' },
+  brandTagline: { margin: 0, fontSize: 12, color: '#8a8a8a' },
   logoutBtn: {
-    padding: '8px 16px', background: 'transparent', color: '#cbd5e1',
-    border: '1px solid #334155', borderRadius: 8, fontSize: 13, cursor: 'pointer',
+    padding: '8px 16px', background: '#ffffff', color: '#171717',
+    border: '1px solid #d8cfba', borderRadius: 8, fontSize: 13, cursor: 'pointer',
   },
   toast: {
-    position: 'fixed', top: 80, right: 24, padding: '12px 20px', background: '#0d9488',
-    color: 'white', borderRadius: 12, fontSize: 14, fontWeight: 500,
+    position: 'fixed', top: 80, right: 24, padding: '12px 20px', background: '#c99a1a',
+    color: '#171717', borderRadius: 12, fontSize: 14, fontWeight: 500,
     boxShadow: '0 4px 12px rgba(0,0,0,0.15)', zIndex: 200,
   },
   tabBar: {
-    display: 'flex', gap: 4, padding: '0 24px', background: 'white',
-    borderBottom: '1px solid #e2e8f0', position: 'sticky', top: 57, zIndex: 90, overflowX: 'auto',
+    display: 'flex', gap: 4, padding: '0 24px', background: '#ffffff',
+    borderBottom: '1px solid #e7e5e4', position: 'sticky', top: 57, zIndex: 90, overflowX: 'auto',
   },
   tabBtn: {
     padding: '14px 16px', background: 'transparent', border: 'none', borderBottom: '2px solid transparent',
-    color: '#64748b', fontSize: 14, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap',
+    color: '#6b7280', fontSize: 14, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap',
   },
-  tabBtnActive: { color: '#0f172a', borderBottom: '2px solid #0f172a' },
-  body: { padding: '24px', maxWidth: 1200, margin: '0 auto' },
+  tabBtnActive: { color: '#171717', borderBottom: '2px solid #c99a1a' },
+  body: { padding: '28px 24px 48px', maxWidth: 1240, margin: '0 auto' },
   statsGrid: {
     display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
     gap: 12, marginBottom: 24,
   },
-  statCard: { background: 'white', borderRadius: 12, padding: '16px 18px', border: '1px solid #e2e8f0' },
-  statValue: { fontSize: 24, fontWeight: 700 },
-  statLabel: { fontSize: 12, color: '#64748b', marginTop: 4 },
-  statHint: { fontSize: 11, color: '#cbd5e1', marginTop: 6 },
+  statCard: { background: '#ffffff', borderRadius: 16, padding: '18px 20px', border: '1px solid #e7e5e4', boxShadow: '0 8px 24px rgba(23,23,23,0.04)' },
+  statValue: { fontSize: 26, fontWeight: 800, color: '#171717' },
+  statLabel: { fontSize: 12, color: '#6b7280', marginTop: 4 },
+  statHint: { fontSize: 11, color: '#d6d3d1', marginTop: 6 },
   placeholder: {
-    background: 'white', border: '1px dashed #cbd5e1', borderRadius: 12,
-    padding: 40, textAlign: 'center', color: '#94a3b8', fontSize: 14,
+    background: 'white', border: '1px dashed #d6d3d1', borderRadius: 12,
+    padding: 40, textAlign: 'center', color: '#8a8a8a', fontSize: 14,
   },
-  panelSection: { background: 'white', borderRadius: 12, border: '1px solid #e2e8f0', padding: '18px 20px' },
+  panelSection: { background: '#ffffff', borderRadius: 18, border: '1px solid #e7e5e4', padding: '20px 22px', boxShadow: '0 10px 28px rgba(23,23,23,0.04)' },
   select: {
-    padding: '10px 12px', border: '1px solid #e2e8f0', borderRadius: 8,
+    padding: '10px 12px', border: '1px solid #e7e5e4', borderRadius: 8,
     fontSize: 13, background: 'white', cursor: 'pointer',
   },
   periodSelect: {
-    padding: '4px 8px', border: '1px solid #e2e8f0', borderRadius: 6,
-    fontSize: 11, background: '#f8fafc', cursor: 'pointer', color: '#64748b',
+    padding: '4px 8px', border: '1px solid #e7e5e4', borderRadius: 6,
+    fontSize: 11, background: '#f7f7f5', cursor: 'pointer', color: '#6b7280',
     marginBottom: 8, fontWeight: 600,
   },
   cardList: { display: 'flex', flexDirection: 'column', gap: 10 },
   recordCard: {
     display: 'flex', gap: 12, alignItems: 'flex-start', justifyContent: 'space-between',
-    border: '1px solid #f1f5f9', borderRadius: 10, padding: '12px 14px', flexWrap: 'wrap',
+    border: '1px solid #f5f5f4', borderRadius: 10, padding: '12px 14px', flexWrap: 'wrap',
   },
   recordInfo: { flex: 1, minWidth: 200 },
   recordTitleRow: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
-  recordTitle: { fontWeight: 600, fontSize: 14, color: '#0f172a' },
+  recordTitle: { fontWeight: 600, fontSize: 14, color: '#171717' },
   recordMeta: { fontSize: 13, color: '#475569', marginTop: 4 },
-  recordMetaSub: { fontSize: 12, color: '#94a3b8', marginTop: 2 },
+  recordMetaSub: { fontSize: 12, color: '#8a8a8a', marginTop: 2 },
   recordActions: { display: 'flex', gap: 8, flexShrink: 0 },
   vehicleThumb: { width: 56, height: 56, borderRadius: 8, objectFit: 'cover', flexShrink: 0 },
   agentAvatar: { width: 48, height: 48, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 },
   agentAvatarLg: { width: 72, height: 72, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 },
   agentAvatarPlaceholder: {
-    display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f1f5f9',
-    color: '#94a3b8', fontWeight: 700, fontSize: 18,
+    display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f5f5f4',
+    color: '#8a8a8a', fontWeight: 700, fontSize: 18,
   },
   kycPhoto: {
     width: '100%', height: 150, borderRadius: 10, objectFit: 'cover',
-    border: '1px solid #e2e8f0', display: 'block', cursor: 'zoom-in',
+    border: '1px solid #e7e5e4', display: 'block', cursor: 'zoom-in',
   },
-  kycPhotoLabel: { fontSize: 11, color: '#94a3b8', marginTop: 4, textAlign: 'center' },
+  kycPhotoLabel: { fontSize: 11, color: '#8a8a8a', marginTop: 4, textAlign: 'center' },
   statusBadge: {
     fontSize: 10, fontWeight: 700, borderRadius: 999, padding: '3px 9px',
     textTransform: 'uppercase', letterSpacing: 0.3,
   },
-  announcementsSection: { background: 'white', borderRadius: 12, border: '1px solid #e2e8f0', padding: '18px 20px' },
+  announcementsSection: { background: 'white', borderRadius: 12, border: '1px solid #e7e5e4', padding: '18px 20px' },
   sectionHeaderRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
-  sectionTitle: { margin: 0, fontSize: 16, fontWeight: 700, color: '#0f172a' },
-  sectionSubtitle: { margin: '4px 0 16px', fontSize: 13, color: '#64748b' },
+  sectionTitle: { margin: 0, fontSize: 16, fontWeight: 700, color: '#171717' },
+  sectionSubtitle: { margin: '4px 0 16px', fontSize: 13, color: '#6b7280' },
   newBtn: {
-    padding: '8px 14px', background: '#0f172a', color: 'white',
+    padding: '8px 14px', background: '#171717', color: 'white',
     border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer',
   },
   newBtnAlt: {
-    padding: '8px 14px', background: '#0d9488', color: 'white',
+    padding: '8px 14px', background: '#c99a1a', color: 'white',
     border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer',
   },
   cancelBtnSmall: {
     padding: '8px 14px', background: 'white', color: '#475569',
-    border: '1.5px solid #e2e8f0', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer',
+    border: '1.5px solid #e7e5e4', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer',
   },
   scanVideo: {
-    width: '100%', borderRadius: 12, background: '#0f172a', maxHeight: 320, objectFit: 'cover',
+    width: '100%', borderRadius: 12, background: '#171717', maxHeight: 320, objectFit: 'cover',
   },
   qrWrap: {
     display: 'flex', justifyContent: 'center', padding: 16, background: 'white',
@@ -3366,35 +3323,35 @@ const styles = {
   qrImg: {
     width: 220, height: 220, imageRendering: 'pixelated',
   },
-  emptyState: { color: '#94a3b8', fontSize: 13, padding: '20px 0', textAlign: 'center' },
+  emptyState: { color: '#8a8a8a', fontSize: 13, padding: '20px 0', textAlign: 'center' },
   walletSetupCard: {
-    background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10,
+    background: '#f7f7f5', border: '1px solid #e7e5e4', borderRadius: 10,
     padding: '14px 16px', marginBottom: 18,
   },
-  walletSetupTitle: { margin: 0, fontSize: 14, fontWeight: 700, color: '#0f172a' },
-  walletSetupHint: { fontSize: 12, color: '#94a3b8' },
-  walletSetupSubtitle: { margin: '4px 0 14px', fontSize: 12.5, color: '#64748b' },
+  walletSetupTitle: { margin: 0, fontSize: 14, fontWeight: 700, color: '#171717' },
+  walletSetupHint: { fontSize: 12, color: '#8a8a8a' },
+  walletSetupSubtitle: { margin: '4px 0 14px', fontSize: 12.5, color: '#6b7280' },
   walletRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' },
   walletRowInfo: { display: 'flex', alignItems: 'center', gap: 10 },
-  walletRowLabel: { fontSize: 13.5, fontWeight: 600, color: '#0f172a' },
-  walletSetupNote: { margin: '8px 0 0', fontSize: 12, color: '#94a3b8' },
+  walletRowLabel: { fontSize: 13.5, fontWeight: 600, color: '#171717' },
+  walletSetupNote: { margin: '8px 0 0', fontSize: 12, color: '#8a8a8a' },
   announcementsList: { display: 'flex', flexDirection: 'column', gap: 10 },
   announcementCard: {
     display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start',
-    border: '1px solid #f1f5f9', borderRadius: 10, padding: '12px 14px', flexWrap: 'wrap',
+    border: '1px solid #f5f5f4', borderRadius: 10, padding: '12px 14px', flexWrap: 'wrap',
   },
   announcementInfo: { flex: 1, minWidth: 200 },
   announcementTitleRow: { display: 'flex', alignItems: 'center', gap: 8 },
-  announcementTitle: { fontWeight: 600, fontSize: 14, color: '#0f172a' },
+  announcementTitle: { fontWeight: 600, fontSize: 14, color: '#171717' },
   inactiveBadge: {
-    fontSize: 10, fontWeight: 700, color: '#94a3b8', background: '#f1f5f9',
+    fontSize: 10, fontWeight: 700, color: '#8a8a8a', background: '#f5f5f4',
     borderRadius: 999, padding: '2px 8px',
   },
   announcementMessage: { fontSize: 13, color: '#475569', marginTop: 4 },
-  announcementMeta: { fontSize: 11, color: '#94a3b8', marginTop: 6 },
+  announcementMeta: { fontSize: 11, color: '#8a8a8a', marginTop: 6 },
   announcementActions: { display: 'flex', gap: 8, flexShrink: 0 },
   editBtn: {
-    padding: '6px 12px', background: 'transparent', color: '#0d9488',
+    padding: '6px 12px', background: 'transparent', color: '#c99a1a',
     border: '1px solid #a7f3d0', borderRadius: 6, fontSize: 12, cursor: 'pointer',
   },
   deleteBtn: {
@@ -3409,19 +3366,19 @@ const styles = {
     background: 'white', borderRadius: 16, padding: 28, width: 440,
     maxHeight: '85vh', overflow: 'auto',
   },
-  modalTitle: { margin: '0 0 16px', fontSize: 18, fontWeight: 700, color: '#0f172a' },
+  modalTitle: { margin: '0 0 16px', fontSize: 18, fontWeight: 700, color: '#171717' },
   uploadZone: {
-    border: '2px dashed #cbd5e1', borderRadius: 12, padding: '18px 12px', textAlign: 'center',
-    cursor: 'pointer', marginBottom: 16, background: '#f8fafc', transition: 'border-color 0.15s, background 0.15s',
+    border: '2px dashed #d6d3d1', borderRadius: 12, padding: '18px 12px', textAlign: 'center',
+    cursor: 'pointer', marginBottom: 16, background: '#f7f7f5', transition: 'border-color 0.15s, background 0.15s',
   },
-  uploadZoneActive: { borderColor: '#0d9488', background: '#f0fdfa' },
+  uploadZoneActive: { borderColor: '#c99a1a', background: '#f0fdfa' },
   uploadPreview: { width: '100%', maxHeight: 160, objectFit: 'cover', borderRadius: 8, marginBottom: 8 },
-  uploadHint: { fontSize: 13, color: '#64748b' },
+  uploadHint: { fontSize: 13, color: '#6b7280' },
   photoGrid: {
     display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 6,
   },
   photoThumbWrap: {
-    position: 'relative', borderRadius: 10, overflow: 'hidden', aspectRatio: '1 / 1', background: '#f1f5f9',
+    position: 'relative', borderRadius: 10, overflow: 'hidden', aspectRatio: '1 / 1', background: '#f5f5f4',
   },
   photoThumb: { width: '100%', height: '100%', objectFit: 'cover', display: 'block' },
   photoMainBadge: {
@@ -3433,25 +3390,25 @@ const styles = {
     background: 'rgba(15,23,42,0.75)', color: 'white', fontSize: 14, lineHeight: '20px', cursor: 'pointer', padding: 0,
   },
   photoAddTile: {
-    aspectRatio: '1 / 1', border: '2px dashed #cbd5e1', borderRadius: 10, display: 'flex',
+    aspectRatio: '1 / 1', border: '2px dashed #d6d3d1', borderRadius: 10, display: 'flex',
     alignItems: 'center', justifyContent: 'center', textAlign: 'center', cursor: 'pointer',
-    background: '#f8fafc', transition: 'border-color 0.15s, background 0.15s', padding: 4,
+    background: '#f7f7f5', transition: 'border-color 0.15s, background 0.15s', padding: 4,
   },
-  photoCountHint: { fontSize: 11.5, color: '#94a3b8', marginBottom: 16 },
+  photoCountHint: { fontSize: 11.5, color: '#8a8a8a', marginBottom: 16 },
   uploadError: {
     background: '#fef2f2', color: '#dc2626', fontSize: 12.5, padding: '8px 12px',
     borderRadius: 8, marginBottom: 12,
   },
   formGrid: { display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 20 },
-  label: { fontSize: 12, fontWeight: 600, color: '#64748b', marginTop: 8 },
-  optionalLabel: { fontSize: 11, fontWeight: 500, color: '#94a3b8' },
+  label: { fontSize: 12, fontWeight: 600, color: '#6b7280', marginTop: 8 },
+  optionalLabel: { fontSize: 11, fontWeight: 500, color: '#8a8a8a' },
   input: {
-    padding: '10px 12px', border: '1px solid #e2e8f0', borderRadius: 8,
+    padding: '10px 12px', border: '1px solid #e7e5e4', borderRadius: 8,
     fontSize: 14, outline: 'none', width: '100%', boxSizing: 'border-box', fontFamily: 'inherit',
   },
   modalActions: { display: 'flex', gap: 10, justifyContent: 'flex-end' },
   readOnlyValue: {
-    padding: '10px 12px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8,
+    padding: '10px 12px', background: '#f7f7f5', border: '1px solid #e7e5e4', borderRadius: 8,
     fontSize: 14, color: '#334155',
   },
   checkboxRow: {
@@ -3459,15 +3416,15 @@ const styles = {
     marginTop: 10, cursor: 'pointer',
   },
   formDivider: {
-    fontSize: 11, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase',
-    letterSpacing: 0.5, marginTop: 14, borderTop: '1px solid #f1f5f9', paddingTop: 12,
+    fontSize: 11, fontWeight: 700, color: '#8a8a8a', textTransform: 'uppercase',
+    letterSpacing: 0.5, marginTop: 14, borderTop: '1px solid #f5f5f4', paddingTop: 12,
   },
   closeBtn: {
-    padding: '10px 16px', background: '#f1f5f9', color: '#334155',
+    padding: '10px 16px', background: '#f5f5f4', color: '#334155',
     border: 'none', borderRadius: 8, fontSize: 13, cursor: 'pointer',
   },
   saveBtn: {
-    padding: '10px 16px', background: '#0f172a', color: 'white',
+    padding: '10px 16px', background: '#171717', color: 'white',
     border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer',
   },
 }
