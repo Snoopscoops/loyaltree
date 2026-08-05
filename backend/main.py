@@ -8758,6 +8758,39 @@ a{color:inherit}
   .agent-modal-card{max-height:92vh}
   .agent-modal-scroll{max-height:92vh;padding:26px 20px 22px}
 }
+
+
+/* Premium showroom v2 */
+.hero-clean{min-height:620px;background:#0b1220;overflow:hidden}
+.hero-clean:before{content:"";position:absolute;inset:-20% -10% auto 45%;height:680px;background:radial-gradient(circle,rgba(13,148,136,.22),transparent 64%);pointer-events:none}
+.hero-clean:after{content:"";position:absolute;inset:auto auto -260px -180px;width:620px;height:620px;border:1px solid rgba(255,255,255,.06);border-radius:50%;box-shadow:0 0 0 90px rgba(255,255,255,.02),0 0 0 180px rgba(255,255,255,.015);pointer-events:none}
+.hero-clean .hero-overlay{position:relative;min-height:620px;display:grid;grid-template-columns:minmax(0,1.25fr) minmax(300px,.75fr);align-items:center;gap:70px;max-width:1180px;margin:0 auto;padding:88px 20px 72px;background:none;text-align:left}
+.hero-clean .hero-copy{max-width:720px}
+.hero-clean .hero-logo{font-size:20px;margin-bottom:22px}
+.hero-clean .hero-logo img{width:54px;height:54px;border-radius:14px}
+.hero-clean h1{font-size:clamp(40px,5.8vw,72px);line-height:1.02;letter-spacing:-.055em;max-width:820px}
+.hero-clean .hero-subtitle{font-size:17px;line-height:1.7;max-width:650px;margin-top:20px;color:#cbd5e1;opacity:1}
+.hero-assurance-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px 18px;margin-top:28px}
+.hero-assurance-list div{display:flex;align-items:center;gap:10px;font-size:13px;color:#e2e8f0}
+.hero-assurance-list span{width:24px;height:24px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;background:rgba(45,212,191,.12);border:1px solid rgba(94,234,212,.28);color:#5eead4;font-weight:900;flex:0 0 auto}
+.hero-assurance-list b{font-weight:650}
+.hero-clean .hero-metrics{margin-top:30px;padding-top:26px;border-top:1px solid rgba(255,255,255,.1)}
+.hero-visual{display:flex;justify-content:flex-end}
+.hero-visual-card{width:min(100%,360px);padding:34px;border:1px solid rgba(255,255,255,.12);border-radius:28px;background:linear-gradient(145deg,rgba(255,255,255,.1),rgba(255,255,255,.035));box-shadow:0 30px 80px rgba(0,0,0,.3);backdrop-filter:blur(20px)}
+.hero-visual-mark{width:70px;height:70px;border-radius:22px;display:flex;align-items:center;justify-content:center;background:#fff;color:#0f172a;font-size:34px;margin-bottom:34px}
+.hero-visual-label{font-size:12px;text-transform:uppercase;letter-spacing:.13em;color:#94a3b8;font-weight:800}
+.hero-visual-number{font-size:84px;line-height:1;font-weight:850;letter-spacing:-.07em;margin-top:8px;color:#fff}
+.hero-visual-copy{font-size:14px;line-height:1.65;color:#cbd5e1;margin-top:16px}
+.hero-actions{top:20px;right:max(20px,calc((100vw - 1180px)/2))}
+.trust-strip{margin-top:-34px;position:relative;z-index:6}
+.trust-grid{box-shadow:0 18px 50px rgba(15,23,42,.10);border-radius:22px;background:#fff}
+.trust-item{padding:26px 24px}
+.trust-icon{background:#ecfdf5!important;color:#0f766e!important;border-radius:12px;width:42px;height:42px;display:flex;align-items:center;justify-content:center;font-size:18px!important;margin-bottom:14px}
+.inventory-shell{background:#fff;border-top:1px solid #eef2f7;border-bottom:1px solid #eef2f7;padding:18px 0 54px;margin-top:14px}
+.car-card{border-radius:16px;box-shadow:none}
+.car-card:hover{transform:translateY(-3px);box-shadow:0 18px 42px rgba(15,23,42,.10)}
+@media(max-width:900px){.hero-clean .hero-overlay{grid-template-columns:1fr;gap:38px;padding-top:104px}.hero-visual{display:none}.hero-clean h1{font-size:clamp(38px,9vw,62px)}}
+@media(max-width:640px){.hero-clean{min-height:auto}.hero-clean .hero-overlay{min-height:auto;padding:100px 20px 58px}.hero-clean h1{font-size:40px}.hero-assurance-list{grid-template-columns:1fr}.hero-clean .hero-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.hero-clean .hero-metric{padding-right:4px}.hero-clean .hero-metric strong{font-size:20px}.hero-clean .hero-metric span{font-size:10px}.hero-actions{top:14px;right:14px}.trust-strip{margin-top:0;padding-top:16px}.trust-grid{grid-template-columns:1fr 1fr;border-radius:16px}.trust-item{padding:20px 16px}}
 """
 
 SHOWROOM_JS = """
@@ -9548,29 +9581,42 @@ async def showroom_page(business_public_id: str):
             vehicles = []
 
         logo_html = ('<img src="' + html_lib.escape(logo_url) + '" alt="Logo"/>') if logo_url else '&#128663;'
-        hero_class = 'hero hero-home' if hero_url else 'hero hero-home hero-fallback'
-        hero_style = (" style=\"background-image:url('" + html_lib.escape(hero_url) + "')\"") if hero_url else ''
+        # Clean, image-free dealership hero. The public showroom should feel
+        # like a professional automotive site, not a social-media cover page.
+        hero_class = 'hero hero-home hero-fallback hero-clean'
+        hero_style = ''
         hero_html = (
-            '<div class="' + hero_class + '"' + hero_style + '>'
+            '<div class="' + hero_class + '">'
             '<div class="hero-actions">'
             '<button id="sell-car-btn" class="agent-login-btn" type="button">Sell your car</button>'
             '<button id="agent-login-btn" class="agent-login-btn" type="button">Agent Login</button>'
             '</div>'
             '<div class="hero-overlay"><div class="hero-copy">'
-            '<div class="hero-eyebrow"><span class="dot"></span>Updated dealership inventory</div>'
+            '<div class="hero-eyebrow"><span class="dot"></span>Verified dealership inventory</div>'
             '<div class="hero-logo">' + logo_html + '<span>' + html_lib.escape(biz_name) + '</span></div>'
-            '<h1>Find your next car with confidence.</h1>'
-            '<p class="hero-subtitle">Browse available cash and rent-to-own units, view complete vehicle details, and submit your application online.</p>'
+            '<h1>Drive home your next car—without the usual delays.</h1>'
+            '<p class="hero-subtitle">Explore ready-to-deliver cash and rent-to-own vehicles, review complete details, and send your application online.</p>'
             '<div class="hero-cta-row">'
-            '<a href="#inventory" class="hero-primary-btn">Browse available cars</a>'
-            '<a href="#location" class="hero-secondary-btn">Visit the showroom</a>'
+            '<a href="#inventory" class="hero-primary-btn">View available cars</a>'
+            '<a href="#connect" class="hero-secondary-btn">Talk to our team</a>'
+            '</div>'
+            '<div class="hero-assurance-list">'
+            '<div><span>&#10003;</span><b>No bank approval required</b></div>'
+            '<div><span>&#10003;</span><b>Ready to deliver for sure buyers</b></div>'
+            '<div><span>&#10003;</span><b>Approval in as fast as 5 minutes</b></div>'
+            '<div><span>&#10003;</span><b>Trade-in upgrade or downgrade accepted</b></div>'
             '</div>'
             '<div class="hero-metrics">'
             '<div class="hero-metric"><strong>' + str(len(vehicles)) + '</strong><span>Listed vehicles</span></div>'
             '<div class="hero-metric"><strong>' + str(sum(1 for x in vehicles if x.get('status') == 'available')) + '</strong><span>Available now</span></div>'
-            '<div class="hero-metric"><strong>5 min</strong><span>Application process</span></div>'
+            '<div class="hero-metric"><strong>5 min</strong><span>Fast approval</span></div>'
             '</div>'
-            '</div></div></div>'
+            '</div><div class="hero-visual">'
+            '<div class="hero-visual-card"><div class="hero-visual-mark">&#128663;</div>'
+            '<div class="hero-visual-label">Available today</div>'
+            '<div class="hero-visual-number">' + str(sum(1 for x in vehicles if x.get('status') == 'available')) + '</div>'
+            '<div class="hero-visual-copy">Browse current units and inquire directly from each listing.</div>'
+            '</div></div></div></div>'
         )
 
         # Fixed "Connect with us?" block (Facebook message button + phone
@@ -10055,10 +10101,10 @@ async def showroom_page(business_public_id: str):
         )
         trust_html = (
             '<section class="trust-strip"><div class="trust-grid">'
-            '<div class="trust-item"><div class="trust-icon">&#128663;</div><div class="trust-title">Real inventory</div><div class="trust-text">Live available and reserved units</div></div>'
-            '<div class="trust-item"><div class="trust-icon">&#9989;</div><div class="trust-title">Fast application</div><div class="trust-text">Submit buyer details online</div></div>'
-            '<div class="trust-item"><div class="trust-icon">&#128260;</div><div class="trust-title">Trade-ins welcome</div><div class="trust-text">Upgrade or downgrade your car</div></div>'
-            '<div class="trust-item"><div class="trust-icon">&#128222;</div><div class="trust-title">Direct assistance</div><div class="trust-text">Talk directly with the dealership</div></div>'
+            '<div class="trust-item"><div class="trust-icon">&#10003;</div><div class="trust-title">No bank approval</div><div class="trust-text">A more direct and convenient application process</div></div>'
+            '<div class="trust-item"><div class="trust-icon">&#128663;</div><div class="trust-title">Ready to deliver</div><div class="trust-text">Available units for qualified, sure buyers</div></div>'
+            '<div class="trust-item"><div class="trust-icon">&#9889;</div><div class="trust-title">5-minute approval</div><div class="trust-text">Fast initial review for complete applications</div></div>'
+            '<div class="trust-item"><div class="trust-icon">&#128260;</div><div class="trust-title">Trade-ins accepted</div><div class="trust-text">Upgrade or downgrade your current vehicle</div></div>'
             '</div></section>'
         )
         intro_html = (
