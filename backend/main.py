@@ -683,6 +683,8 @@ class CLAgentSignup(BaseModel):
     phone: Optional[str] = None
     email: str
     password: str = Field(min_length=6)
+    selfie_url: str  # camera-captured selfie, uploaded to Cloudinary before this is submitted - see cl-agent-signup
+    id_photo_url: str  # camera-captured photo of a government ID, same flow as selfie_url
 
 
 # --- Car Lending / Showroom: self-service signup (buyer scans the
@@ -4938,7 +4940,10 @@ async def get_cloudinary_signature(public_id: str, purpose: Optional[str] = None
     into a business-scoped contracts/ folder instead - these are private
     deal documents (signed pages, buyer ID, etc), never shown on the public
     showroom, so keeping them out of vehicles/ also keeps them out of
-    anything that lists a vehicle's showroom photos by folder."""
+    anything that lists a vehicle's showroom photos by folder.
+    `purpose=agent_kyc` (sent by the showroom's Agent Sign Up popup) signs
+    into a business-scoped agent-kyc/ folder for the camera-captured selfie
+    + ID photo - also private, never shown on the public showroom."""
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -4950,6 +4955,8 @@ async def get_cloudinary_signature(public_id: str, purpose: Optional[str] = None
         folder = f'branding/{public_id}'
     elif purpose == 'contract':
         folder = f'contracts/{public_id}'
+    elif purpose == 'agent_kyc':
+        folder = f'agent-kyc/{public_id}'
     else:
         folder = f'vehicles/{public_id}'
     params_to_sign = {
@@ -8256,6 +8263,21 @@ a{color:inherit}
 .agent-modal-success-icon{font-size:38px;margin-bottom:8px}
 .agent-modal-hint{font-size:12.5px;color:var(--muted);margin-bottom:18px}
 
+.agent-camera-block{margin-bottom:14px;text-align:left}
+.agent-camera-label{display:block;font-size:11.5px;font-weight:700;color:var(--ink);margin-bottom:6px}
+.agent-camera-frame{position:relative;width:100%;aspect-ratio:4/3;background:#0f172a;border-radius:12px;
+  overflow:hidden;display:flex;align-items:center;justify-content:center}
+.agent-camera-video,.agent-camera-preview{width:100%;height:100%;object-fit:cover;display:block}
+.agent-camera-placeholder{font-size:30px;opacity:0.35;color:#fff}
+.agent-camera-actions{display:flex;gap:8px;margin-top:8px}
+.agent-camera-btn{flex:1;padding:9px 6px;border:1.5px solid var(--line);background:#fff;border-radius:9px;
+  font-size:12px;font-weight:700;color:var(--ink);cursor:pointer;font-family:inherit}
+.agent-camera-btn:hover{border-color:#cbd5e1}
+.agent-camera-btn-secondary{background:#f8fafc}
+.agent-camera-status{font-size:11px;color:var(--muted);margin-top:6px;min-height:14px}
+.agent-camera-status.error{color:#b91c1c}
+.agent-camera-status.success{color:#0b7c72}
+
 @media(max-width:520px){
   .agent-login-btn{top:12px;right:12px;font-size:11.5px;padding:7px 12px}
   .agent-modal-card{padding:26px 20px 22px}
@@ -8471,16 +8493,132 @@ SHOWROOM_JS = """
   function closeAgentModal(){ if (agentModal) agentModal.classList.remove('open'); }
 
   if (agentLoginBtn) agentLoginBtn.addEventListener('click', openAgentModal);
-  if (agentModalClose) agentModalClose.addEventListener('click', closeAgentModal);
-  if (agentModal) agentModal.addEventListener('click', function(e){ if (e.target === agentModal) closeAgentModal(); });
+  if (agentModalClose) agentModalClose.addEventListener('click', function(){ closeAgentModal(); stopAgentCameras(); });
+  if (agentModal) agentModal.addEventListener('click', function(e){ if (e.target === agentModal) { closeAgentModal(); stopAgentCameras(); } });
   document.addEventListener('keydown', function(e){
-    if (agentModal && agentModal.classList.contains('open') && e.key === 'Escape') closeAgentModal();
+    if (agentModal && agentModal.classList.contains('open') && e.key === 'Escape') { closeAgentModal(); stopAgentCameras(); }
   });
 
   var agentShowSignup = document.getElementById('agent-show-signup');
   var agentShowLogin = document.getElementById('agent-show-login');
   if (agentShowSignup) agentShowSignup.addEventListener('click', function(e){ e.preventDefault(); showAgentView(agentSignupView); });
-  if (agentShowLogin) agentShowLogin.addEventListener('click', function(e){ e.preventDefault(); showAgentView(agentLoginView); });
+  if (agentShowLogin) agentShowLogin.addEventListener('click', function(e){ e.preventDefault(); showAgentView(agentLoginView); stopAgentCameras(); });
+
+  // Camera-only capture (no file picker) for the sign-up form's selfie and
+  // ID photo. facingMode is a soft preference, not `exact`, so it still
+  // works on devices without a matching front/back camera.
+  function setupAgentCamera(prefix, facingMode){
+    var frame = document.getElementById(prefix + '-frame');
+    var placeholder = document.getElementById(prefix + '-placeholder');
+    var video = document.getElementById(prefix + '-video');
+    var preview = document.getElementById(prefix + '-preview');
+    var canvas = document.getElementById(prefix + '-canvas');
+    var startBtn = document.getElementById(prefix + '-start');
+    var captureBtn = document.getElementById(prefix + '-capture');
+    var retakeBtn = document.getElementById(prefix + '-retake');
+    var statusEl = document.getElementById(prefix + '-status');
+    var stream = null;
+    var dataUrl = null;
+
+    function setStatus(msg, cls){
+      if (!statusEl) return;
+      statusEl.textContent = msg || '';
+      statusEl.className = 'agent-camera-status' + (cls ? ' ' + cls : '');
+    }
+
+    async function start(){
+      setStatus('');
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setStatus('Camera not available on this device/browser.', 'error');
+        return;
+      }
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facingMode }, audio: false });
+        if (video) { video.srcObject = stream; video.style.display = ''; }
+        if (placeholder) placeholder.style.display = 'none';
+        if (preview) preview.style.display = 'none';
+        if (startBtn) startBtn.style.display = 'none';
+        if (captureBtn) captureBtn.style.display = '';
+        if (retakeBtn) retakeBtn.style.display = 'none';
+      } catch (err) {
+        setStatus('Could not access the camera. Please allow camera permission and try again.', 'error');
+      }
+    }
+
+    function stop(){
+      if (stream) { stream.getTracks().forEach(function(t){ t.stop(); }); stream = null; }
+    }
+
+    function capture(){
+      if (!video || !video.videoWidth) return;
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+      dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+      if (preview) { preview.src = dataUrl; preview.style.display = ''; }
+      if (video) video.style.display = 'none';
+      stop();
+      if (captureBtn) captureBtn.style.display = 'none';
+      if (retakeBtn) retakeBtn.style.display = '';
+      setStatus('Photo captured.', 'success');
+    }
+
+    function retake(){
+      dataUrl = null;
+      setStatus('');
+      start();
+    }
+
+    function reset(){
+      dataUrl = null;
+      stop();
+      if (preview) preview.style.display = 'none';
+      if (video) video.style.display = 'none';
+      if (placeholder) placeholder.style.display = '';
+      if (startBtn) startBtn.style.display = '';
+      if (captureBtn) captureBtn.style.display = 'none';
+      if (retakeBtn) retakeBtn.style.display = 'none';
+      setStatus('');
+    }
+
+    if (startBtn) startBtn.addEventListener('click', start);
+    if (captureBtn) captureBtn.addEventListener('click', capture);
+    if (retakeBtn) retakeBtn.addEventListener('click', retake);
+
+    return {
+      getDataUrl: function(){ return dataUrl; },
+      stop: stop,
+      reset: reset,
+      setStatus: setStatus
+    };
+  }
+
+  var agentSelfieCam = setupAgentCamera('agent-selfie', 'user');
+  var agentIdCam = setupAgentCamera('agent-id', 'environment');
+  function stopAgentCameras(){
+    if (agentSelfieCam) agentSelfieCam.stop();
+    if (agentIdCam) agentIdCam.stop();
+  }
+
+  // Uploads one camera-captured photo (a data URL, never a picked file) to
+  // Cloudinary using a short-lived signature from our own backend.
+  async function uploadAgentPhoto(dataUrl, sig){
+    var blob = await (await fetch(dataUrl)).blob();
+    var form = new FormData();
+    form.append('file', blob, 'photo.jpg');
+    form.append('api_key', sig.api_key);
+    form.append('timestamp', sig.timestamp);
+    form.append('signature', sig.signature);
+    form.append('upload_preset', sig.upload_preset);
+    form.append('folder', sig.folder);
+    var res = await fetch('https://api.cloudinary.com/v1_1/' + sig.cloud_name + '/image/upload', {
+      method: 'POST',
+      body: form
+    });
+    var data = await res.json();
+    if (!res.ok || !data.secure_url) throw new Error(data.error && data.error.message ? data.error.message : 'Photo upload failed');
+    return data.secure_url;
+  }
 
   // Placeholder only - no backend call, no session/token yet. Swap this
   // for a real POST to a login endpoint once agent auth (and an agent
@@ -8499,8 +8637,11 @@ SHOWROOM_JS = """
     showAgentView(agentLoggedinView);
   });
 
-  // Real signup - creates an actual cl_agents row with a hashed password.
+  // Real signup - captures a selfie + ID photo live from the camera
+  // (never a file picker), uploads both to Cloudinary, then creates an
+  // actual cl_agents row with a hashed password.
   var agentSignupForm = document.getElementById('agent-signup-form');
+  var agentSignupSubmit = document.getElementById('agent-signup-submit');
   if (agentSignupForm) agentSignupForm.addEventListener('submit', async function(e){
     e.preventDefault();
     var name = document.getElementById('agent-signup-name').value.trim();
@@ -8509,27 +8650,53 @@ SHOWROOM_JS = """
     var password = document.getElementById('agent-signup-password').value;
     var errEl = document.getElementById('agent-signup-error');
     if (errEl) errEl.style.display = 'none';
+
+    var selfieData = agentSelfieCam.getDataUrl();
+    var idData = agentIdCam.getDataUrl();
+    if (!selfieData || !idData) {
+      if (errEl) { errEl.textContent = 'Please take both your selfie and ID photo using the camera.'; errEl.style.display = ''; }
+      return;
+    }
     if (!agentConfig.api_base || !agentConfig.business_public_id) {
       if (errEl) { errEl.textContent = 'Sign up is unavailable right now.'; errEl.style.display = ''; }
       return;
     }
+
+    if (agentSignupSubmit) { agentSignupSubmit.disabled = true; agentSignupSubmit.textContent = 'Uploading photos…'; }
     try {
+      var sigRes = await fetch(agentConfig.api_base + '/api/v1/business/' + agentConfig.business_public_id + '/cloudinary-signature?purpose=agent_kyc', {
+        method: 'POST'
+      });
+      var sig = await sigRes.json();
+      if (!sigRes.ok) throw new Error(sig.detail || 'Could not prepare photo upload');
+
+      var selfieUrl = await uploadAgentPhoto(selfieData, sig);
+      var idPhotoUrl = await uploadAgentPhoto(idData, sig);
+
+      if (agentSignupSubmit) agentSignupSubmit.textContent = 'Creating account…';
       var res = await fetch(agentConfig.api_base + '/api/v1/business/' + agentConfig.business_public_id + '/cl-agent-signup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name, phone: phone || null, email: email, password: password })
+        body: JSON.stringify({
+          name: name, phone: phone || null, email: email, password: password,
+          selfie_url: selfieUrl, id_photo_url: idPhotoUrl
+        })
       });
       var data = await res.json();
       if (res.ok) {
         var loginEmailEl = document.getElementById('agent-login-email');
         if (loginEmailEl) loginEmailEl.value = email;
         agentSignupForm.reset();
+        agentSelfieCam.reset();
+        agentIdCam.reset();
         showAgentView(agentLoginView);
       } else {
         if (errEl) { errEl.textContent = data.detail || 'Sign up failed'; errEl.style.display = ''; }
       }
     } catch (err) {
-      if (errEl) { errEl.textContent = 'Network error. Please try again.'; errEl.style.display = ''; }
+      if (errEl) { errEl.textContent = (err && err.message) || 'Network error. Please try again.'; errEl.style.display = ''; }
+    } finally {
+      if (agentSignupSubmit) { agentSignupSubmit.disabled = false; agentSignupSubmit.textContent = 'Create account'; }
     }
   });
 
@@ -8805,8 +8972,41 @@ async def showroom_page(business_public_id: str):
             '<input type="tel" id="agent-signup-phone" placeholder="Phone number" autocomplete="tel">'
             '<input type="email" id="agent-signup-email" placeholder="Email" required autocomplete="email">'
             '<input type="password" id="agent-signup-password" placeholder="Password (min 6 characters)" required minlength="6" autocomplete="new-password">'
+
+            '<div class="agent-camera-block">'
+            '<label class="agent-camera-label">Selfie &mdash; camera only, no uploads</label>'
+            '<div class="agent-camera-frame" id="agent-selfie-frame">'
+            '<div class="agent-camera-placeholder" id="agent-selfie-placeholder">&#128247;</div>'
+            '<video id="agent-selfie-video" class="agent-camera-video" style="display:none" autoplay playsinline muted></video>'
+            '<img id="agent-selfie-preview" class="agent-camera-preview" style="display:none" alt="Selfie preview">'
+            '</div>'
+            '<canvas id="agent-selfie-canvas" style="display:none"></canvas>'
+            '<div class="agent-camera-actions">'
+            '<button type="button" id="agent-selfie-start" class="agent-camera-btn">Open camera</button>'
+            '<button type="button" id="agent-selfie-capture" class="agent-camera-btn" style="display:none">Take photo</button>'
+            '<button type="button" id="agent-selfie-retake" class="agent-camera-btn agent-camera-btn-secondary" style="display:none">Retake</button>'
+            '</div>'
+            '<div id="agent-selfie-status" class="agent-camera-status"></div>'
+            '</div>'
+
+            '<div class="agent-camera-block">'
+            '<label class="agent-camera-label">Photo of a valid ID &mdash; camera only, no uploads</label>'
+            '<div class="agent-camera-frame" id="agent-id-frame">'
+            '<div class="agent-camera-placeholder" id="agent-id-placeholder">&#128247;</div>'
+            '<video id="agent-id-video" class="agent-camera-video" style="display:none" autoplay playsinline muted></video>'
+            '<img id="agent-id-preview" class="agent-camera-preview" style="display:none" alt="ID photo preview">'
+            '</div>'
+            '<canvas id="agent-id-canvas" style="display:none"></canvas>'
+            '<div class="agent-camera-actions">'
+            '<button type="button" id="agent-id-start" class="agent-camera-btn">Open camera</button>'
+            '<button type="button" id="agent-id-capture" class="agent-camera-btn" style="display:none">Take photo</button>'
+            '<button type="button" id="agent-id-retake" class="agent-camera-btn agent-camera-btn-secondary" style="display:none">Retake</button>'
+            '</div>'
+            '<div id="agent-id-status" class="agent-camera-status"></div>'
+            '</div>'
+
             '<div id="agent-signup-error" class="agent-modal-error" style="display:none"></div>'
-            '<button type="submit" class="agent-modal-submit">Create account</button>'
+            '<button type="submit" id="agent-signup-submit" class="agent-modal-submit">Create account</button>'
             '</form>'
             '<div class="agent-modal-switch">Already have an account? <a href="#" id="agent-show-login">Log in</a></div>'
             '</div>'
@@ -8932,8 +9132,12 @@ async def cl_agent_signup(business_public_id: str, signup: CLAgentSignup):
     """Public, unauthenticated endpoint the showroom's Agent Login popup
     submits its "Sign up" form to. Creates real login credentials in
     cl_agents (hashed password) - unlike cl-apply above, this doesn't need
-    the owner's approval to exist, it's just an account. Logging in with
-    it is still a front-end placeholder for now (see SHOWROOM_JS)."""
+    the owner's approval to exist, it's just an account. Requires a
+    selfie_url and id_photo_url, both camera-captured (no file picker) and
+    already uploaded to Cloudinary (purpose=agent_kyc on the signature
+    endpoint) by the time this is called - see the agent-signup-view JS in
+    SHOWROOM_JS. Logging in with the resulting account is still a
+    front-end placeholder for now (see SHOWROOM_JS)."""
     business = safe_get_business(business_public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -8943,6 +9147,8 @@ async def cl_agent_signup(business_public_id: str, signup: CLAgentSignup):
     email = signup.email.strip().lower()
     if not email:
         raise HTTPException(status_code=400, detail="Email is required.")
+    if not signup.selfie_url or not signup.id_photo_url:
+        raise HTTPException(status_code=400, detail="A camera-captured selfie and ID photo are both required.")
 
     try:
         existing = supabase.table("cl_agents").select("id") \
@@ -8962,6 +9168,8 @@ async def cl_agent_signup(business_public_id: str, signup: CLAgentSignup):
         'phone': signup.phone,
         'email': email,
         'password_hash': hash_password(signup.password),
+        'selfie_url': signup.selfie_url,
+        'id_photo_url': signup.id_photo_url,
         'created_at': datetime.utcnow().isoformat(),
         'updated_at': datetime.utcnow().isoformat(),
     }
