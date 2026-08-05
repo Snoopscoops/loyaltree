@@ -115,6 +115,7 @@ function useBarcodeScanner(onResult) {
 const TABS = [
   { key: 'overview', label: 'Overview' },
   { key: 'customers', label: 'Customers' },
+  { key: 'agents', label: 'Agents' },
   { key: 'inventory', label: 'Inventory' },
   { key: 'contracts', label: 'Contracts' },
   { key: 'payments', label: 'Payments' },
@@ -571,6 +572,14 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const [applicationForm, setApplicationForm] = useState(emptyApplicationForm)
   const [savingApplication, setSavingApplication] = useState(false)
 
+  // ---------- Agent accounts (cl_agents sign-ups, next to Customers) state ----------
+  const [agents, setAgents] = useState([])
+  const [loadingAgents, setLoadingAgents] = useState(false)
+  const [agentStatusFilter, setAgentStatusFilter] = useState('')
+  const [reviewingAgent, setReviewingAgent] = useState(null) // agent being approved/rejected, or null
+  const [reviewNote, setReviewNote] = useState('')
+  const [decidingAgent, setDecidingAgent] = useState(false)
+
   // ---------- Owner -> buyer messages (Step 5) state ----------
   const [clAnnouncements, setClAnnouncements] = useState([])
   const [showMessageForm, setShowMessageForm] = useState(false)
@@ -691,6 +700,31 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
       setLoadingApplications(false)
     })()
   }, [activeTab, applicationRoleTab, applicationStatusFilter, businessId])
+
+  // Re-fetch agent sign-ups whenever the Agents tab is open and its status
+  // filter changes - same server-side-filtered pattern as applications above.
+  useEffect(() => {
+    if (!businessId || activeTab !== 'agents') return
+    (async () => {
+      setLoadingAgents(true)
+      try {
+        const params = new URLSearchParams()
+        if (agentStatusFilter) params.set('status', agentStatusFilter)
+        const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-agents?${params.toString()}`)
+        const data = await res.json().catch(() => [])
+        if (!res.ok) {
+          console.error('Agent list error:', data.detail || res.status)
+          setAgents([])
+        } else {
+          setAgents(Array.isArray(data) ? data : [])
+        }
+      } catch (err) {
+        console.error('Agent filter error:', err)
+        setAgents([])
+      }
+      setLoadingAgents(false)
+    })()
+  }, [activeTab, agentStatusFilter, businessId])
 
   const flash = (text) => {
     setMessage(text)
@@ -908,6 +942,68 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
       if (!res.ok) throw new Error(data.detail || 'Delete failed')
       flash('Application removed')
       reloadApplications()
+    } catch (err) {
+      flash(err.message)
+    }
+  }
+
+  // ---------- Agent accounts (cl_agents sign-ups) CRUD ----------
+  const reloadAgents = async () => {
+    try {
+      const params = new URLSearchParams()
+      if (agentStatusFilter) params.set('status', agentStatusFilter)
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-agents?${params.toString()}`)
+      const data = await res.json().catch(() => [])
+      if (!res.ok) {
+        console.error('Agent reload error:', data.detail || res.status)
+        setAgents([])
+      } else {
+        setAgents(Array.isArray(data) ? data : [])
+      }
+    } catch (err) {
+      console.error('Agent reload error:', err)
+    }
+  }
+
+  // Opens the review modal for a pending (or previously-decided) sign-up -
+  // approve/reject both go through here so the owner can leave a note
+  // either way before it's saved.
+  const openAgentReview = (a) => {
+    setReviewingAgent(a)
+    setReviewNote(a.review_note || '')
+  }
+
+  // Approve/reject (or reopen back to pending) - the only way status ever
+  // changes; there's no applicant-facing endpoint that can set it, so this
+  // dashboard action is the sole path to any of the three states.
+  const decideAgent = async (status) => {
+    if (!reviewingAgent) return
+    setDecidingAgent(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-agents/${reviewingAgent.public_id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status, review_note: reviewNote || null }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Update failed')
+      flash(status === 'approved' ? 'Agent approved' : status === 'rejected' ? 'Agent rejected' : 'Agent reopened')
+      setReviewingAgent(null)
+      reloadAgents()
+    } catch (err) {
+      flash(err.message)
+    }
+    setDecidingAgent(false)
+  }
+
+  const deleteAgent = async (a) => {
+    if (!window.confirm(`Remove ${a.name}'s agent account?`)) return
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-agents/${a.public_id}`, { method: 'DELETE' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Delete failed')
+      flash('Agent removed')
+      reloadAgents()
     } catch (err) {
       flash(err.message)
     }
@@ -1587,6 +1683,74 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
             )}
           </div>
         )}
+        {activeTab === 'agents' && (
+          <div style={styles.panelSection}>
+            <div style={styles.sectionHeaderRow}>
+              <h2 style={styles.sectionTitle}>Agents</h2>
+            </div>
+            <p style={styles.sectionSubtitle}>
+              Accounts created from the showroom's Agent Login sign-up — review each one's photo and ID before approving.
+            </p>
+
+            <select
+              style={{ ...styles.select, marginBottom: 16 }}
+              value={agentStatusFilter}
+              onChange={e => setAgentStatusFilter(e.target.value)}
+            >
+              <option value="">All statuses</option>
+              <option value="pending">Pending</option>
+              <option value="approved">Approved</option>
+              <option value="rejected">Rejected</option>
+            </select>
+
+            {loadingAgents ? (
+              <div style={styles.emptyState}>Loading…</div>
+            ) : agents.length === 0 ? (
+              <div style={styles.emptyState}>
+                {agentStatusFilter ? `No ${agentStatusFilter} agents.` : 'No agent sign-ups yet.'}
+              </div>
+            ) : (
+              <div style={styles.cardList}>
+                {agents.map(a => (
+                  <div key={a.public_id} style={styles.recordCard}>
+                    {a.selfie_url ? (
+                      <img src={a.selfie_url} alt={a.name} style={styles.agentAvatar} />
+                    ) : (
+                      <div style={{ ...styles.agentAvatar, ...styles.agentAvatarPlaceholder }}>
+                        {(a.name || '?').charAt(0).toUpperCase()}
+                      </div>
+                    )}
+                    <div style={styles.recordInfo}>
+                      <div style={styles.recordTitleRow}>
+                        <span style={styles.recordTitle}>{a.name}</span>
+                        <span style={{ ...styles.statusBadge, ...(APPLICATION_STATUS_BADGE_STYLES[a.status] || {}) }}>
+                          {a.status}
+                        </span>
+                      </div>
+                      <div style={styles.recordMeta}>
+                        {[a.phone, a.email].filter(Boolean).join(' · ') || 'No contact info on file'}
+                      </div>
+                      {a.id_photo_url && (
+                        <div style={styles.recordMetaSub}>
+                          <a href={a.id_photo_url} target="_blank" rel="noreferrer">View ID photo ↗</a>
+                        </div>
+                      )}
+                      {a.review_note && <div style={styles.recordMetaSub}>Note: {a.review_note}</div>}
+                    </div>
+                    <div style={styles.recordActions}>
+                      {a.status === 'pending' ? (
+                        <button onClick={() => openAgentReview(a)} style={styles.newBtnAlt}>Review</button>
+                      ) : (
+                        <button onClick={() => openAgentReview(a)} style={styles.cancelBtnSmall}>Re-review</button>
+                      )}
+                      <button onClick={() => deleteAgent(a)} style={styles.deleteBtn}>Delete</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         {activeTab === 'inventory' && (
           <div style={styles.panelSection}>
             <div style={styles.sectionHeaderRow}>
@@ -2127,6 +2291,60 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
               <button onClick={() => setShowApplicationForm(false)} style={styles.closeBtn}>Cancel</button>
               <button onClick={saveApplication} disabled={savingApplication} style={styles.saveBtn}>
                 {savingApplication ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {reviewingAgent && (
+        <div style={styles.modalOverlay} onClick={() => setReviewingAgent(null)}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>Review agent sign-up</h3>
+
+            <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
+              {reviewingAgent.selfie_url ? (
+                <img src={reviewingAgent.selfie_url} alt={reviewingAgent.name} style={styles.agentAvatarLg} />
+              ) : (
+                <div style={{ ...styles.agentAvatarLg, ...styles.agentAvatarPlaceholder }}>
+                  {(reviewingAgent.name || '?').charAt(0).toUpperCase()}
+                </div>
+              )}
+              <div>
+                <div style={styles.recordTitle}>{reviewingAgent.name}</div>
+                <div style={styles.recordMeta}>
+                  {[reviewingAgent.phone, reviewingAgent.email].filter(Boolean).join(' · ') || 'No contact info on file'}
+                </div>
+                {reviewingAgent.id_photo_url && (
+                  <div style={styles.recordMetaSub}>
+                    <a href={reviewingAgent.id_photo_url} target="_blank" rel="noreferrer">View ID photo ↗</a>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div style={styles.formGrid}>
+              <label style={styles.label}>Note (optional)</label>
+              <textarea
+                style={{ ...styles.input, minHeight: 70, resize: 'vertical' }}
+                value={reviewNote}
+                onChange={e => setReviewNote(e.target.value)}
+                placeholder="Reason for approving or rejecting — kept on file, not shown to the applicant yet."
+              />
+            </div>
+
+            <div style={styles.modalActions}>
+              <button onClick={() => setReviewingAgent(null)} style={styles.closeBtn}>Cancel</button>
+              {reviewingAgent.status !== 'pending' && (
+                <button onClick={() => decideAgent('pending')} disabled={decidingAgent} style={styles.cancelBtnSmall}>
+                  Reopen
+                </button>
+              )}
+              <button onClick={() => decideAgent('rejected')} disabled={decidingAgent} style={styles.deleteBtn}>
+                Reject
+              </button>
+              <button onClick={() => decideAgent('approved')} disabled={decidingAgent} style={styles.saveBtn}>
+                {decidingAgent ? 'Saving…' : 'Approve'}
               </button>
             </div>
           </div>
@@ -2985,6 +3203,12 @@ const styles = {
   recordMetaSub: { fontSize: 12, color: '#94a3b8', marginTop: 2 },
   recordActions: { display: 'flex', gap: 8, flexShrink: 0 },
   vehicleThumb: { width: 56, height: 56, borderRadius: 8, objectFit: 'cover', flexShrink: 0 },
+  agentAvatar: { width: 48, height: 48, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 },
+  agentAvatarLg: { width: 72, height: 72, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 },
+  agentAvatarPlaceholder: {
+    display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f1f5f9',
+    color: '#94a3b8', fontWeight: 700, fontSize: 18,
+  },
   statusBadge: {
     fontSize: 10, fontWeight: 700, borderRadius: 999, padding: '3px 9px',
     textTransform: 'uppercase', letterSpacing: 0.3,

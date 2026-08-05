@@ -640,6 +640,12 @@ class CLPaymentUpdate(BaseModel):
 CL_APPLICATION_ROLES = ['agent', 'buyer', 'seller']
 CL_APPLICATION_STATUSES = ['pending', 'approved', 'rejected']
 
+# --- Car Lending / Showroom: agent SIGN-UP accounts (cl_agents) go
+# through this same pending/approved/rejected cycle, decided by the
+# business owner on the dashboard's Agents tab - see CLAgentSignup/
+# CLAgentUpdate below. ---
+CL_AGENT_STATUSES = ['pending', 'approved', 'rejected']
+
 class CLApplicationCreate(BaseModel):
     role: Literal['agent', 'buyer', 'seller']
     name: str
@@ -671,13 +677,17 @@ class CLApplicationSelfSignup(BaseModel):
 
 # --- Car Lending / Showroom: agent accounts (self-service login/signup
 # from the "Agent Login" button on the public /showroom page). Separate
-# from cl_applications above - an approved application is how someone
-# becomes an agent in the owner's eyes (agent_name on a vehicle), this
-# table is just their own login credentials. Login is still a UI-only
-# placeholder for now (see the showroom's SHOWROOM_JS) - there's no
-# session/token issued yet and nothing server-side checks a password
-# against it, so no route here reads one back out for verification.
-# Signup is real and does create the row with a hashed password. ---
+# from cl_applications above - this table is the agent's own login
+# credentials + KYC photos, not a role application. Every sign-up lands as
+# 'pending' (same spirit as CLApplicationSelfSignup) - the business owner
+# reviews it on the dashboard's Agents tab (next to Customers) and
+# approves or rejects it, optionally with a note (CLAgentUpdate below).
+# Only an 'approved' row should be treated as a real agent. Login itself
+# is still a UI-only placeholder for now (see the showroom's SHOWROOM_JS)
+# - there's no session/token issued yet and nothing server-side checks a
+# password against it, so no route here reads one back out for
+# verification; sign-up is real and does create the row with a hashed
+# password. ---
 class CLAgentSignup(BaseModel):
     name: str
     phone: Optional[str] = None
@@ -685,6 +695,17 @@ class CLAgentSignup(BaseModel):
     password: str = Field(min_length=6)
     selfie_url: str  # camera-captured selfie, uploaded to Cloudinary before this is submitted - see cl-agent-signup
     id_photo_url: str  # camera-captured photo of a government ID, same flow as selfie_url
+
+# Dashboard-only edits to an agent sign-up, plus the owner's approve/reject
+# decision - status and review_note go through this same field, mirroring
+# CLApplicationUpdate. review_note is the owner's note on the decision
+# (e.g. why a sign-up was rejected); optional either way.
+class CLAgentUpdate(BaseModel):
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    status: Optional[Literal['pending', 'approved', 'rejected']] = None
+    review_note: Optional[str] = None
 
 
 # --- Car Lending / Showroom: self-service signup (buyer scans the
@@ -982,6 +1003,15 @@ def safe_get_cl_application(public_id: str):
         return None
     try:
         res = supabase.table("cl_applications").select("*").eq("public_id", public_id).maybe_single().execute()
+        return res.data
+    except Exception:
+        return None
+
+def safe_get_cl_agent(public_id: str):
+    if not supabase:
+        return None
+    try:
+        res = supabase.table("cl_agents").select("*").eq("public_id", public_id).maybe_single().execute()
         return res.data
     except Exception:
         return None
@@ -5735,6 +5765,78 @@ async def delete_cl_application(public_id: str, application_public_id: str):
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
     return {"success": True, "deleted": application_public_id}
 
+# CAR LENDING / SHOWROOM - AGENT ACCOUNTS (owner review)
+# Sign-up itself happens through the public cl-agent-signup endpoint
+# further down - these are the business owner's dashboard endpoints to
+# list agent sign-ups (shown on the Agents tab, next to Customers) and
+# approve/reject them with an optional note. Same approve/reject-via-PATCH
+# pattern as cl_applications above: no separate applicant-facing endpoint
+# can set status itself.
+
+def _cl_agent_public(agent: dict) -> dict:
+    """Strips password_hash before an agent row goes back to the
+    dashboard - the list/update responses below have no other reason to
+    carry it."""
+    return {k: v for k, v in agent.items() if k != 'password_hash'}
+
+@app.get("/api/v1/business/{public_id}/cl-agents")
+async def list_cl_agents(public_id: str, status: Optional[str] = None):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    if status and status not in CL_AGENT_STATUSES:
+        raise HTTPException(status_code=400, detail=f"status must be one of {CL_AGENT_STATUSES}")
+    try:
+        query = supabase.table("cl_agents").select("*").eq("business_id", business.get("id"))
+        if status:
+            query = query.eq("status", status)
+        res = query.order("created_at", desc=True).execute()
+        return [_cl_agent_public(a) for a in (res.data or [])]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.patch("/api/v1/business/{public_id}/cl-agents/{agent_public_id}")
+async def update_cl_agent(public_id: str, agent_public_id: str, update: CLAgentUpdate):
+    """Covers both plain edits (name/phone/email) and the owner's
+    approve/reject decision (status + review_note) - the dashboard is the
+    only caller, so there's no applicant-facing endpoint that could set
+    status itself."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    agent = safe_get_cl_agent(agent_public_id)
+    if not agent or agent.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Agent not found for this business")
+
+    update_data = {k: v for k, v in update.dict(exclude_unset=True).items() if v is not None}
+    if not update_data:
+        return _cl_agent_public(agent)
+
+    update_data['updated_at'] = datetime.utcnow().isoformat()
+    if 'status' in update_data and update_data['status'] != 'pending':
+        update_data['decided_at'] = datetime.utcnow().isoformat()
+
+    try:
+        res = supabase.table("cl_agents").update(update_data).eq("id", agent.get("id")).execute()
+        updated = res.data[0] if res.data else {**agent, **update_data}
+        return _cl_agent_public(updated)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.delete("/api/v1/business/{public_id}/cl-agents/{agent_public_id}")
+async def delete_cl_agent(public_id: str, agent_public_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    agent = safe_get_cl_agent(agent_public_id)
+    if not agent or agent.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Agent not found for this business")
+    try:
+        supabase.table("cl_agents").delete().eq("id", agent.get("id")).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+    return {"success": True, "deleted": agent_public_id}
+
 # CAR LENDING / SHOWROOM - OWNER -> BUYER MESSAGES
 # Distinct from the generic /announcements below (which push to Google/Apple
 # Wallet card holders) - car-lending buyers don't have a wallet pass, so
@@ -9134,11 +9236,12 @@ async def cl_application_self_signup(business_public_id: str, application: CLApp
 async def cl_agent_signup(business_public_id: str, signup: CLAgentSignup):
     """Public, unauthenticated endpoint the showroom's Agent Login popup
     submits its "Sign up" form to. Creates real login credentials in
-    cl_agents (hashed password) - unlike cl-apply above, this doesn't need
-    the owner's approval to exist, it's just an account. Requires a
-    selfie_url and id_photo_url, both camera-captured (no file picker) and
-    already uploaded to Cloudinary (purpose=agent_kyc on the signature
-    endpoint) by the time this is called - see the agent-signup-view JS in
+    cl_agents (hashed password), same spirit as cl-apply above - it always
+    lands as 'pending' and only the owner's dashboard (Agents tab, next to
+    Customers) can move it to approved/rejected. Requires a selfie_url and
+    id_photo_url, both camera-captured (no file picker) and already
+    uploaded to Cloudinary (purpose=agent_kyc on the signature endpoint)
+    by the time this is called - see the agent-signup-view JS in
     SHOWROOM_JS. Logging in with the resulting account is still a
     front-end placeholder for now (see SHOWROOM_JS)."""
     business = safe_get_business(business_public_id)
@@ -9173,6 +9276,7 @@ async def cl_agent_signup(business_public_id: str, signup: CLAgentSignup):
         'password_hash': hash_password(signup.password),
         'selfie_url': signup.selfie_url,
         'id_photo_url': signup.id_photo_url,
+        'status': 'pending',
         'created_at': datetime.utcnow().isoformat(),
         'updated_at': datetime.utcnow().isoformat(),
     }
@@ -9185,7 +9289,7 @@ async def cl_agent_signup(business_public_id: str, signup: CLAgentSignup):
         "success": True,
         "public_id": agent_public_id,
         "name": signup.name,
-        "message": "Account created - you can now log in.",
+        "message": "Account created - pending the dealership's review before you can log in.",
     }
 
 # WALLET PAGE
