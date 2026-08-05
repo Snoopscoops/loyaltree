@@ -506,7 +506,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     customer_public_id: '', vehicle_public_id: '', sale_type: 'financed',
     vehicle_price: '', down_payment: '', installment_amount: '', term_months: '12',
     payment_frequency: 'monthly', start_date: new Date().toISOString().slice(0, 10),
-    is_existing_loan: false, balance_remaining: '', last_paid_date: '', next_due_date: '', status: 'active',
+    is_existing_loan: false, balance_remaining: '', terms_remaining: '', last_paid_date: '', next_due_date: '', status: 'active',
     image_urls: [], // up to CONTRACT_MAX_IMAGES - signed contract pages, buyer ID, etc
   }
   const [contracts, setContracts] = useState([])
@@ -867,6 +867,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
       start_date: c.start_date || '',
       is_existing_loan: true, // editing always shows the current-state fields
       balance_remaining: c.balance_remaining ?? '',
+      terms_remaining: contractTermsRemaining(c.balance_remaining, c.installment_amount) ?? '',
       last_paid_date: c.last_paid_date || '',
       next_due_date: c.next_due_date || '',
       status: c.status || 'active',
@@ -876,9 +877,10 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     setShowContractForm(true)
   }
 
-  // Terms remaining is derived, not stored - how many more payments are
-  // left at the current balance and payment amount. Works from either a
-  // saved contract record or the live in-progress form.
+  // Terms remaining isn't stored on the contract itself - only balance_remaining
+  // is. This derives a starting "terms remaining" value (from balance ÷ monthly
+  // payment) to seed the editable field below; from then on the two fields sync
+  // to each other as the owner edits either one.
   const contractTermsRemaining = (balanceRemaining, installmentAmount) => {
     const balance = Number(balanceRemaining) || 0
     const installment = Number(installmentAmount) || 0
@@ -2034,7 +2036,13 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                     type="number"
                     style={styles.input}
                     value={contractForm.balance_remaining}
-                    onChange={e => setContractForm({ ...contractForm, balance_remaining: e.target.value })}
+                    onChange={e => {
+                      const balance_remaining = e.target.value
+                      // Keep "terms remaining" in sync so it doesn't go stale
+                      // when the balance is edited directly.
+                      const terms_remaining = contractTermsRemaining(balance_remaining, contractForm.installment_amount)
+                      setContractForm({ ...contractForm, balance_remaining, terms_remaining: terms_remaining ?? '' })
+                    }}
                     placeholder="Leave blank to auto-calculate"
                   />
                   {contractForm.sale_type === 'financed' && (
@@ -2044,12 +2052,23 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                         ₱{(Number(contractForm.installment_amount) || 0).toLocaleString()}
                       </div>
                       <label style={styles.label}>Terms remaining</label>
-                      <div style={styles.readOnlyValue}>
-                        {(() => {
-                          const left = contractTermsRemaining(contractForm.balance_remaining, contractForm.installment_amount)
-                          return left != null ? `${left} payment${left === 1 ? '' : 's'}` : '—'
-                        })()}
-                      </div>
+                      <input
+                        type="number"
+                        min="0"
+                        style={styles.input}
+                        value={contractForm.terms_remaining}
+                        onChange={e => {
+                          const terms_remaining = e.target.value
+                          const installment = Number(contractForm.installment_amount) || 0
+                          // Auto-calculate the remaining balance from the
+                          // number of payments left x the monthly payment.
+                          const balance_remaining = terms_remaining !== ''
+                            ? String(Math.max(Math.round(Number(terms_remaining) * installment * 100) / 100, 0))
+                            : contractForm.balance_remaining
+                          setContractForm({ ...contractForm, terms_remaining, balance_remaining })
+                        }}
+                        placeholder="e.g. 8"
+                      />
                     </>
                   )}
                   <label style={styles.label}>Last paid date</label>
