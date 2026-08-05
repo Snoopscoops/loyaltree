@@ -876,6 +876,16 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     setShowContractForm(true)
   }
 
+  // Terms remaining is derived, not stored - how many more payments are
+  // left at the current balance and payment amount. Works from either a
+  // saved contract record or the live in-progress form.
+  const contractTermsRemaining = (balanceRemaining, installmentAmount) => {
+    const balance = Number(balanceRemaining) || 0
+    const installment = Number(installmentAmount) || 0
+    if (!installment || balance <= 0) return null
+    return Math.ceil(balance / installment)
+  }
+
   // Selecting a vehicle auto-fills its listed price as a starting point for
   // vehicle_price (still editable - the contract snapshots its own price
   // independently of whatever the vehicle's listing later changes to).
@@ -1611,10 +1621,27 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                         {c.sale_type === 'cash' ? 'Cash sale' : `Financed · ${c.term_months}mo · ${c.payment_frequency}`}
                         {' · '}₱{Number(c.total_payable || 0).toLocaleString()} total
                       </div>
-                      <div style={styles.recordMetaSub}>
-                        Balance: ₱{Number(c.balance_remaining || 0).toLocaleString()}
-                        {c.next_due_date && ` · Next due ${c.next_due_date}`}
-                      </div>
+                      {c.sale_type === 'financed' ? (
+                        <>
+                          <div style={styles.recordMetaSub}>
+                            Balance: ₱{Number(c.balance_remaining || 0).toLocaleString()}
+                            {' · '}₱{Number(c.installment_amount || 0).toLocaleString()}/{c.payment_frequency === 'monthly' ? 'mo' : c.payment_frequency}
+                            {(() => {
+                              const left = contractTermsRemaining(c.balance_remaining, c.installment_amount)
+                              return left != null ? ` · ${left} payment${left === 1 ? '' : 's'} left` : ''
+                            })()}
+                          </div>
+                          <div style={styles.recordMetaSub}>
+                            {c.last_paid_date ? `Last paid ${c.last_paid_date}` : 'No payments logged yet'}
+                            {c.next_due_date && ` · Next due ${c.next_due_date}`}
+                          </div>
+                        </>
+                      ) : (
+                        <div style={styles.recordMetaSub}>
+                          Balance: ₱{Number(c.balance_remaining || 0).toLocaleString()}
+                          {c.next_due_date && ` · Next due ${c.next_due_date}`}
+                        </div>
+                      )}
                       {c.vehicle?.plate_number && <div style={styles.recordMetaSub}>Plate: {c.vehicle.plate_number}</div>}
                     </div>
                     <div style={styles.recordActions}>
@@ -1722,7 +1749,14 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                             {c.next_due_date && ` on ${c.next_due_date}`}
                             {c.status === 'active' && daysUntil != null && daysUntil >= 0 && ` (in ${daysUntil}d)`}
                           </div>
-                          <div style={styles.recordMetaSub}>Balance remaining: ₱{Number(c.balance_remaining || 0).toLocaleString()}</div>
+                          <div style={styles.recordMetaSub}>
+                            Balance remaining: ₱{Number(c.balance_remaining || 0).toLocaleString()}
+                            {(() => {
+                              const left = contractTermsRemaining(c.balance_remaining, c.installment_amount)
+                              return left != null ? ` · ${left} payment${left === 1 ? '' : 's'} left` : ''
+                            })()}
+                            {c.last_paid_date && ` · Last paid ${c.last_paid_date}`}
+                          </div>
                         </div>
                         <div style={styles.recordActions}>
                           <button onClick={() => openLogPayment(c)} style={styles.newBtn}>Log payment</button>
@@ -2003,6 +2037,21 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                     onChange={e => setContractForm({ ...contractForm, balance_remaining: e.target.value })}
                     placeholder="Leave blank to auto-calculate"
                   />
+                  {contractForm.sale_type === 'financed' && (
+                    <>
+                      <label style={styles.label}>Monthly payment (₱)</label>
+                      <div style={styles.readOnlyValue}>
+                        ₱{(Number(contractForm.installment_amount) || 0).toLocaleString()}
+                      </div>
+                      <label style={styles.label}>Terms remaining</label>
+                      <div style={styles.readOnlyValue}>
+                        {(() => {
+                          const left = contractTermsRemaining(contractForm.balance_remaining, contractForm.installment_amount)
+                          return left != null ? `${left} payment${left === 1 ? '' : 's'}` : '—'
+                        })()}
+                      </div>
+                    </>
+                  )}
                   <label style={styles.label}>Last paid date</label>
                   <input
                     type="date"
