@@ -191,7 +191,7 @@ const VEHICLE_MAX_PHOTOS = 10
 const CONTRACT_MAX_IMAGES = 5
 
 function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved }) {
-  const emptyForm = { make: '', model: '', year: '', plate_number: '', plate_end_in: '', color: '', mileage: '', transmission: '', fuel_type: '', price: '', total_cost: '', agent_name: '', status: 'available', payment_type: '', location: '', notes: '', downpayment: '', monthly_amortization_amount: '', amortization_due_date: '', amortization_next_due: '', amortization_months_remaining: '' }
+  const emptyForm = { make: '', model: '', year: '', plate_number: '', plate_end_in: '', engine_number: '', chassis_number: '', color: '', mileage: '', transmission: '', fuel_type: '', price: '', total_cost: '', agent_name: '', status: 'available', payment_type: '', location: '', notes: '', downpayment: '', monthly_amortization_amount: '', amortization_due_date: '', amortization_next_due: '', amortization_months_remaining: '' }
   const [form, setForm] = useState(emptyForm)
   const [imageUrls, setImageUrls] = useState([]) // up to VEHICLE_MAX_PHOTOS Cloudinary URLs, shown as a gallery on the showroom card
   const [uploading, setUploading] = useState(false)
@@ -209,6 +209,8 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
         year: vehicle.year ?? '',
         plate_number: vehicle.plate_number || '',
         plate_end_in: vehicle.plate_end_in || '',
+        engine_number: vehicle.engine_number || '',
+        chassis_number: vehicle.chassis_number || '',
         color: vehicle.color || '',
         mileage: vehicle.mileage ?? '',
         transmission: vehicle.transmission || '',
@@ -300,6 +302,8 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
           year: form.year !== '' ? Number(form.year) : null,
           plate_number: form.plate_number || null,
           plate_end_in: form.plate_end_in || null,
+          engine_number: form.engine_number.trim() || null,
+          chassis_number: form.chassis_number.trim() || null,
           color: form.color || null,
           mileage: form.mileage !== '' ? Number(form.mileage) : null,
           transmission: form.transmission || null,
@@ -410,6 +414,22 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
             onChange={e => setForm({ ...form, plate_end_in: e.target.value })}
             placeholder="e.g. 4 - for number coding"
             maxLength={4}
+          />
+          <label style={styles.label}>Engine number <span style={styles.optionalLabel}>(optional · internal only)</span></label>
+          <input
+            style={styles.input}
+            value={form.engine_number}
+            onChange={e => setForm({ ...form, engine_number: e.target.value })}
+            placeholder="e.g. 1NZ-FE123456"
+            autoCapitalize="characters"
+          />
+          <label style={styles.label}>Chassis number <span style={styles.optionalLabel}>(optional · internal only)</span></label>
+          <input
+            style={styles.input}
+            value={form.chassis_number}
+            onChange={e => setForm({ ...form, chassis_number: e.target.value })}
+            placeholder="e.g. NCP150-0123456"
+            autoCapitalize="characters"
           />
           <label style={styles.label}>Color</label>
           <input
@@ -579,15 +599,10 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const [showVehicleForm, setShowVehicleForm] = useState(false)
   const [editingVehicle, setEditingVehicle] = useState(null) // vehicle being edited, or null for "new" - AddVehicleModal reads its form straight off this
 
-  // ---------- Showroom settings (hero banner + logo + payment methods
-  // link shown on the public /showroom page) ----------
-  const [showroomForm, setShowroomForm] = useState({ hero_image_url: '', contact_text: '', logo_url: '' })
-  const [uploadingHero, setUploadingHero] = useState(false)
-  const [uploadingLogo, setUploadingLogo] = useState(false)
-  const [savingShowroom, setSavingShowroom] = useState(false)
+  // Public showroom QR remains available from Inventory. The old logo/hero
+  // settings panel was removed because the redesigned showroom no longer
+  // depends on owner-managed banner settings here.
   const [showroomQR, setShowroomQR] = useState(null) // { svg, showroom_url }, or null
-  const heroFileInputRef = React.useRef(null)
-  const logoFileInputRef = React.useRef(null)
 
   // ---------- Contracts (deals) state ----------
   const emptyContractForm = {
@@ -677,27 +692,18 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
 
   const loadData = async () => {
     try {
-      const [bizRes, custRes, vehRes, conRes, msgRes, showroomRes] = await Promise.all([
+      const [bizRes, custRes, vehRes, conRes, msgRes] = await Promise.all([
         fetch(`${API_BASE}/api/v1/business/${businessId}`),
         fetch(`${API_BASE}/api/v1/business/${businessId}/cl-customers`),
         fetch(`${API_BASE}/api/v1/business/${businessId}/vehicles`),
         fetch(`${API_BASE}/api/v1/business/${businessId}/contracts`),
         fetch(`${API_BASE}/api/v1/business/${businessId}/cl-announcements`),
-        fetch(`${API_BASE}/api/v1/business/${businessId}/showroom-config`),
       ])
       setBusiness(await bizRes.json().catch(() => null))
       setCustomers(await custRes.json().catch(() => []))
       setVehicles(await vehRes.json().catch(() => []))
       setContracts(await conRes.json().catch(() => []))
       setClAnnouncements(await msgRes.json().catch(() => []))
-      const showroomData = await showroomRes.json().catch(() => null)
-      if (showroomData) {
-        setShowroomForm({
-          hero_image_url: showroomData.hero_image_url || '',
-          contact_text: showroomData.contact_text || '',
-          logo_url: showroomData.logo_url || '',
-        })
-      }
     } catch (err) {
       console.error('Car lending dashboard load error:', err)
     }
@@ -1111,52 +1117,6 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     } catch (err) {
       flash(err.message)
     }
-  }
-
-  // ---------- Showroom settings (hero banner + logo + payment methods link) ----------
-  const uploadShowroomHero = async (file) => {
-    if (!file) return
-    setUploadingHero(true)
-    try {
-      const url = await uploadImageToCloudinary(API_BASE, businessId, file)
-      setShowroomForm({ ...showroomForm, hero_image_url: url })
-    } catch (err) {
-      flash(err.message)
-    }
-    setUploadingHero(false)
-  }
-
-  const uploadShowroomLogo = async (file) => {
-    if (!file) return
-    setUploadingLogo(true)
-    try {
-      const url = await uploadImageToCloudinary(API_BASE, businessId, file)
-      setShowroomForm({ ...showroomForm, logo_url: url })
-    } catch (err) {
-      flash(err.message)
-    }
-    setUploadingLogo(false)
-  }
-
-  const saveShowroomConfig = async () => {
-    setSavingShowroom(true)
-    try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/showroom-config`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          hero_image_url: showroomForm.hero_image_url || null,
-          contact_text: showroomForm.contact_text,
-          logo_url: showroomForm.logo_url || null,
-        }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.detail || 'Save failed')
-      flash('Showroom settings saved')
-    } catch (err) {
-      flash(err.message)
-    }
-    setSavingShowroom(false)
   }
 
   // Public showroom QR - print/display it, or it's the same link surfaced
@@ -1815,82 +1775,6 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
               </div>
             </div>
             <p style={styles.sectionSubtitle}>Showroom stock — status updates automatically once contracts land.</p>
-
-            <div style={styles.walletSetupCard}>
-              <h3 style={styles.walletSetupTitle}>Showroom settings</h3>
-              <p style={styles.walletSetupSubtitle}>
-                The logo, hero banner, and contact note shown at the top of your public showroom page.
-              </p>
-
-              <label style={styles.label}>Logo</label>
-              <div
-                style={{ ...styles.uploadZone, marginBottom: 12, minHeight: 90 }}
-                onClick={() => !uploadingLogo && logoFileInputRef.current && logoFileInputRef.current.click()}
-                onDragOver={e => e.preventDefault()}
-                onDrop={e => {
-                  e.preventDefault()
-                  const file = e.dataTransfer.files && e.dataTransfer.files[0]
-                  if (file) uploadShowroomLogo(file)
-                }}
-              >
-                <input
-                  ref={logoFileInputRef}
-                  type="file"
-                  accept="image/*"
-                  style={{ display: 'none' }}
-                  onChange={e => uploadShowroomLogo(e.target.files && e.target.files[0])}
-                />
-                {uploadingLogo ? (
-                  <div style={styles.uploadHint}>Uploading…</div>
-                ) : showroomForm.logo_url ? (
-                  <>
-                    <img src={showroomForm.logo_url} alt="Business logo" style={{ ...styles.uploadPreview, width: 72, height: 72, objectFit: 'cover', borderRadius: 16 }} />
-                    <div style={styles.uploadHint}>Click or drop to replace logo</div>
-                  </>
-                ) : (
-                  <div style={styles.uploadHint}>🏷️ Click or drag a logo image here</div>
-                )}
-              </div>
-              <div style={styles.photoCountHint}>Shown inside the hero banner on the showroom page (and anywhere else your logo appears, e.g. loyalty/wallet cards).</div>
-
-              <label style={{ ...styles.label, marginTop: 14 }}>Hero banner</label>
-              <div
-                style={{ ...styles.uploadZone, marginBottom: 12 }}
-                onClick={() => !uploadingHero && heroFileInputRef.current && heroFileInputRef.current.click()}
-                onDragOver={e => e.preventDefault()}
-                onDrop={e => {
-                  e.preventDefault()
-                  const file = e.dataTransfer.files && e.dataTransfer.files[0]
-                  if (file) uploadShowroomHero(file)
-                }}
-              >
-                <input
-                  ref={heroFileInputRef}
-                  type="file"
-                  accept="image/*"
-                  style={{ display: 'none' }}
-                  onChange={e => uploadShowroomHero(e.target.files && e.target.files[0])}
-                />
-                {uploadingHero ? (
-                  <div style={styles.uploadHint}>Uploading…</div>
-                ) : showroomForm.hero_image_url ? (
-                  <>
-                    <img src={showroomForm.hero_image_url} alt="Showroom hero" style={styles.uploadPreview} />
-                    <div style={styles.uploadHint}>Click or drop to replace banner</div>
-                  </>
-                ) : (
-                  <div style={styles.uploadHint}>🖼️ Click or drag a hero banner image here</div>
-                )}
-              </div>
-
-              <div style={styles.photoCountHint}>The showroom page now shows a fixed "Connect with us?" section (Facebook message button + phone numbers) below the hero banner — no owner editing needed.</div>
-
-              <div style={{ ...styles.modalActions, marginTop: 14, justifyContent: 'flex-start' }}>
-                <button onClick={saveShowroomConfig} disabled={savingShowroom || uploadingHero || uploadingLogo} style={styles.newBtnAlt}>
-                  {savingShowroom ? 'Saving…' : 'Save showroom settings'}
-                </button>
-              </div>
-            </div>
 
             <select
               style={{ ...styles.select, marginBottom: 16 }}
@@ -3560,6 +3444,7 @@ const styles = {
   },
   formGrid: { display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 20 },
   label: { fontSize: 12, fontWeight: 600, color: '#64748b', marginTop: 8 },
+  optionalLabel: { fontSize: 11, fontWeight: 500, color: '#94a3b8' },
   input: {
     padding: '10px 12px', border: '1px solid #e2e8f0', borderRadius: 8,
     fontSize: 14, outline: 'none', width: '100%', boxSizing: 'border-box', fontFamily: 'inherit',

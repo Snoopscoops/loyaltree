@@ -532,6 +532,8 @@ class VehicleCreate(BaseModel):
     year: Optional[int] = Field(default=None, ge=1900, le=2100)
     plate_number: Optional[str] = None
     plate_end_in: Optional[str] = None  # last digit of the plate number, kept as its own field (number-coding/color-coding schemes) rather than parsed off plate_number
+    engine_number: Optional[str] = None  # internal admin record only; never rendered on the public showroom or agent listing
+    chassis_number: Optional[str] = None  # internal admin record only; never rendered on the public showroom or agent listing
     color: Optional[str] = None
     mileage: Optional[int] = Field(default=None, ge=0)
     transmission: Optional[Literal['automatic', 'manual']] = None
@@ -557,6 +559,8 @@ class VehicleUpdate(BaseModel):
     year: Optional[int] = Field(default=None, ge=1900, le=2100)
     plate_number: Optional[str] = None
     plate_end_in: Optional[str] = None
+    engine_number: Optional[str] = None
+    chassis_number: Optional[str] = None
     color: Optional[str] = None
     mileage: Optional[int] = Field(default=None, ge=0)
     transmission: Optional[Literal['automatic', 'manual']] = None
@@ -5179,6 +5183,8 @@ async def create_vehicle(public_id: str, vehicle: VehicleCreate):
         'year': vehicle.year,
         'plate_number': vehicle.plate_number,
         'plate_end_in': vehicle.plate_end_in,
+        'engine_number': vehicle.engine_number,
+        'chassis_number': vehicle.chassis_number,
         'color': vehicle.color,
         'mileage': vehicle.mileage,
         'transmission': vehicle.transmission,
@@ -12344,6 +12350,69 @@ async def run_loan_payment_reminders(_: bool = Depends(require_cron)):
     return {"sent": sent, "skipped_already_sent": skipped, "flagged_overdue": flagged_overdue, "errors": errors}
 
 # Run
+
+# Desktop-only polish for the public showroom's sales-agent callout.
+# Appended after the original stylesheet so phone behavior remains unchanged.
+SHOWROOM_CSS += r'''
+@media (min-width: 901px) {
+  .agent-cta-section {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) auto !important;
+    align-items: center !important;
+    gap: 56px !important;
+    max-width: 1180px !important;
+    width: calc(100% - 48px) !important;
+    box-sizing: border-box !important;
+    margin: 58px auto 64px !important;
+    padding: 38px 42px !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    border-radius: 24px !important;
+  }
+  .agent-cta-copy {
+    min-width: 0 !important;
+    max-width: 820px !important;
+  }
+  .agent-cta-section .home-kicker {
+    margin-bottom: 10px !important;
+  }
+  .agent-cta-section .home-heading {
+    margin: 0 0 14px !important;
+    font-size: clamp(34px, 3vw, 50px) !important;
+    line-height: 1.04 !important;
+  }
+  .agent-cta-section .home-copy {
+    max-width: 780px !important;
+    margin: 0 !important;
+    font-size: 17px !important;
+    line-height: 1.65 !important;
+  }
+  .agent-cta-benefits {
+    display: flex !important;
+    flex-wrap: wrap !important;
+    align-items: center !important;
+    gap: 10px 24px !important;
+    margin: 22px 0 0 !important;
+    padding: 0 !important;
+    font-size: 14px !important;
+    line-height: 1.4 !important;
+  }
+  .agent-cta-benefits span {
+    display: inline-flex !important;
+    align-items: center !important;
+    white-space: nowrap !important;
+  }
+  .agent-cta-btn {
+    width: 220px !important;
+    min-width: 220px !important;
+    min-height: 58px !important;
+    margin: 0 !important;
+    padding: 16px 24px !important;
+    align-self: center !important;
+  }
+}
+'''
+
 
 if __name__ == "__main__":
     import uvicorn
