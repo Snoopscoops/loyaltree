@@ -674,9 +674,19 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
         params.set('role', applicationRoleTab)
         if (applicationStatusFilter) params.set('status', applicationStatusFilter)
         const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/applications?${params.toString()}`)
-        setApplications(await res.json().catch(() => []))
+        const data = await res.json().catch(() => [])
+        // A non-2xx response's body is {detail: "..."} - not an array - so
+        // this must be checked before setApplications, or the list below
+        // crashes calling .map() on an object and blanks the whole tab.
+        if (!res.ok) {
+          console.error('Application list error:', data.detail || res.status)
+          setApplications([])
+        } else {
+          setApplications(Array.isArray(data) ? data : [])
+        }
       } catch (err) {
         console.error('Application filter error:', err)
+        setApplications([])
       }
       setLoadingApplications(false)
     })()
@@ -806,7 +816,13 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
       params.set('role', applicationRoleTab)
       if (applicationStatusFilter) params.set('status', applicationStatusFilter)
       const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/applications?${params.toString()}`)
-      setApplications(await res.json().catch(() => []))
+      const data = await res.json().catch(() => [])
+      if (!res.ok) {
+        console.error('Application reload error:', data.detail || res.status)
+        setApplications([])
+      } else {
+        setApplications(Array.isArray(data) ? data : [])
+      }
     } catch (err) {
       console.error('Application reload error:', err)
     }
