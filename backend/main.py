@@ -8873,6 +8873,53 @@ a{color:inherit}
 button,a{touch-action:manipulation}
 @media(max-width:720px){.agent-cta-section{margin:26px 16px 42px;padding:26px 20px;display:block;border-radius:20px}.agent-cta-benefits{display:grid;grid-template-columns:1fr;gap:10px;margin-bottom:22px}.agent-cta-btn{width:100%}.hero-actions{padding:12px 14px}.hero-cta-row .hero-secondary-btn{width:100%}}
 
+/* Phone layout repair v6 — desktop styles remain unchanged */
+@media (max-width:760px){
+  html,body{max-width:100%;overflow-x:hidden}
+  .hero-clean{min-height:auto!important}
+  .hero-clean .hero-overlay{display:block!important;min-height:auto!important;padding:18px 16px 42px!important;margin:0!important}
+  .hero-actions{position:static!important;display:flex!important;justify-content:flex-end!important;width:100%!important;margin:0 0 22px!important;padding:0!important;gap:8px!important}
+  .agent-login-btn{width:auto!important;min-height:42px;padding:10px 16px!important}
+  .hero-clean .hero-logo{display:flex!important;align-items:center!important;gap:10px!important;margin:0 0 18px!important;font-size:17px!important;line-height:1.25!important}
+  .hero-clean .hero-logo img{width:44px!important;height:44px!important;flex:0 0 44px!important}
+  .hero-clean h1{font-size:clamp(32px,9.5vw,44px)!important;line-height:1.06!important;max-width:100%!important;overflow-wrap:anywhere}
+  .hero-clean .hero-subtitle{font-size:15px!important;line-height:1.58!important;max-width:100%!important}
+  .hero-cta-row{display:grid!important;grid-template-columns:1fr 1fr!important;gap:10px!important;width:100%!important;margin-top:22px!important}
+  .hero-primary-btn,.hero-secondary-btn{box-sizing:border-box!important;width:100%!important;min-width:0!important;min-height:48px!important;padding:12px 10px!important;white-space:normal!important;line-height:1.25!important}
+  .hero-assurance-list{display:grid!important;grid-template-columns:1fr!important;gap:10px!important;width:100%!important}
+  .hero-assurance-list div{min-width:0!important}
+  .hero-clean .hero-metrics{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;width:100%!important;gap:8px!important}
+  .hero-clean .hero-metric{min-width:0!important;padding:0 4px!important}
+  .hero-clean .hero-metric strong,.hero-clean .hero-metric span{overflow-wrap:anywhere}
+  .trust-strip{margin:0!important;padding:14px 14px 0!important}
+  .trust-grid{display:grid!important;grid-template-columns:1fr!important;width:100%!important}
+  .trust-item{box-sizing:border-box!important;width:100%!important;border-right:0!important}
+  .home-section,.inventory-toolbar,.car-grid,.location-wrap{box-sizing:border-box!important;width:100%!important;max-width:100%!important;margin-left:auto!important;margin-right:auto!important}
+  .home-section{margin-top:46px!important;padding-left:16px!important;padding-right:16px!important}
+  .inventory-toolbar{margin-top:30px!important;padding-left:14px!important;padding-right:14px!important}
+  .stats-strip,.search-wrap,.filter-bar,.car-grid,.location-wrap{box-sizing:border-box!important;max-width:100%!important}
+  .search-wrap input{box-sizing:border-box!important;width:100%!important;min-width:0!important}
+  .filter-bar{display:flex!important;flex-wrap:nowrap!important;overflow-x:auto!important;overflow-y:hidden!important;gap:8px!important;-webkit-overflow-scrolling:touch}
+  .car-grid{display:grid!important;grid-template-columns:minmax(0,1fr)!important;padding-left:14px!important;padding-right:14px!important}
+  .car-card,.car-gallery,.car-info{min-width:0!important;max-width:100%!important}
+  .process-section{margin-bottom:0!important;padding-bottom:54px!important}
+  .process-grid{display:grid!important;grid-template-columns:minmax(0,1fr)!important}
+  .agent-cta-section{display:block!important;box-sizing:border-box!important;width:auto!important;margin:0 14px 46px!important;padding:26px 20px!important}
+  .agent-cta-benefits{display:grid!important;grid-template-columns:1fr!important}
+  .connect-section{clear:both!important;position:relative!important;margin:0!important;padding:48px 14px!important}
+  .connect-section .contact-wrap,.connect-section .contact-note{box-sizing:border-box!important;width:100%!important;max-width:100%!important;margin:0!important}
+  .connect-apply-row{display:grid!important;grid-template-columns:1fr!important;width:100%!important}
+  .connect-apply-link,.connect-fb-btn{box-sizing:border-box!important;width:100%!important}
+  .vehicle-modal,.agent-modal{padding:10px!important;align-items:flex-end!important}
+  .vehicle-modal-card,.agent-modal-card{width:100%!important;max-width:100%!important;max-height:92dvh!important;border-radius:20px 20px 0 0!important}
+}
+@media (max-width:430px){
+  .hero-cta-row{grid-template-columns:1fr!important}
+  .hero-clean .hero-metrics{grid-template-columns:1fr!important;gap:10px!important}
+  .hero-clean .hero-metric{display:flex!important;align-items:baseline!important;justify-content:space-between!important;border-bottom:1px solid rgba(255,255,255,.1)!important;padding:0 0 10px!important}
+}
+
+
 """
 
 SHOWROOM_JS = """
@@ -9689,7 +9736,7 @@ async def showroom_page(business_public_id: str):
             '<p class="hero-subtitle">Explore ready-to-deliver cash and rent-to-own vehicles, review complete details, and send your application online.</p>'
             '<div class="hero-cta-row">'
             '<a href="#inventory" class="hero-primary-btn">Browse Available Cars</a>'
-            '<button id="hero-become-agent-btn" class="hero-secondary-btn" type="button">Become an Agent</button>'
+            '<button id="sell-car-btn" class="hero-secondary-btn" type="button">Sell a Car</button>'
             '</div>'
             '<div class="hero-assurance-list">'
             '<div><span>&#10003;</span><b>No bank approval required</b></div>'
