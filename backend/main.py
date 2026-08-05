@@ -10086,6 +10086,461 @@ async def cl_agent_signup(business_public_id: str, signup: CLAgentSignup):
         "message": "Application received - pending the dealership's review before you can log in.",
     }
 
+# AGENT INVENTORY PAGE
+#
+# Simple, agent-facing page - separate from the owner's React dashboard and
+# from the public /showroom page. Agents open /agent/{business_public_id}
+# (link shared by the owner for now - there's no session/login gate wired
+# up yet, same "placeholder" state SHOWROOM_JS's Agent Login popup is
+# already in) and see every unit in inventory, any status, as a tappable
+# grid. Tapping a card opens a detail sheet with the full spec sheet and a
+# "Copy details" button that builds a ready-to-post listing (title, price/
+# financing line, specs, location) and copies it to the clipboard via
+# navigator.clipboard, so the agent can paste it straight into FB
+# Marketplace/groups/chat. `notes` (the internal-only field, e.g. agent fee)
+# is intentionally left out of the copied text - shown in the detail sheet
+# for the agent's own reference only, never in what gets pasted publicly.
+# Styling reuses the same --ink/--muted/--line/--accent tokens as
+# SHOWROOM_CSS so it feels like the same product, under agent-* class names
+# so nothing here collides with the showroom's CSS/JS if both are ever
+# embedded on the same page.
+
+AGENT_CSS = """
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--ink:#0f172a;--muted:#64748b;--line:#e7eaf0;--accent:#0d9488;--accent-dark:#0b7c72;--paper:#f6f7fb}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--paper);color:var(--ink);padding-bottom:48px;-webkit-font-smoothing:antialiased}
+
+.agent-header{background:var(--ink);color:#fff;padding:18px 20px;position:sticky;top:0;z-index:50;
+  display:flex;align-items:center;gap:12px}
+.agent-header img{width:36px;height:36px;border-radius:10px;object-fit:cover;flex-shrink:0}
+.agent-header-text{flex:1;min-width:0}
+.agent-header-text h1{font-size:15px;font-weight:700;letter-spacing:-0.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.agent-header-text p{font-size:11.5px;color:#94a3b8;margin-top:1px}
+
+.agent-toolbar{max-width:1080px;margin:16px auto 0;padding:0 20px}
+.agent-search{width:100%;padding:12px 16px 12px 42px;border:1px solid var(--line);border-radius:12px;
+  font-size:14px;font-family:inherit;color:var(--ink);background:#fff url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="%2394a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>') no-repeat 14px center/16px 16px;
+  outline:none}
+.agent-search:focus{border-color:var(--accent)}
+.agent-filter-bar{display:flex;gap:8px;flex-wrap:nowrap;overflow-x:auto;margin-top:12px;padding-bottom:4px;scrollbar-width:thin}
+.agent-filter-bar::-webkit-scrollbar{height:5px}
+.agent-filter-bar::-webkit-scrollbar-thumb{background:var(--line);border-radius:999px}
+.agent-chip{flex:0 0 auto;border:1px solid var(--line);background:#fff;color:var(--muted);font-size:12.5px;font-weight:600;
+  padding:8px 14px;border-radius:999px;cursor:pointer;transition:all .15s ease}
+.agent-chip:hover{border-color:#cbd5e1;color:var(--ink)}
+.agent-chip.active{background:var(--ink);border-color:var(--ink);color:#fff}
+
+.agent-grid{max-width:1080px;margin:16px auto 0;padding:0 20px;display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:16px}
+.agent-card{background:#fff;border-radius:16px;overflow:hidden;border:1px solid var(--line);cursor:pointer;
+  box-shadow:0 1px 3px rgba(15,23,42,0.04);transition:transform .15s ease,box-shadow .15s ease}
+.agent-card:hover{transform:translateY(-3px);box-shadow:0 12px 24px rgba(15,23,42,0.1)}
+.agent-card-img{position:relative;aspect-ratio:4/3;background:linear-gradient(135deg,#eef1f6,#e2e8f0)}
+.agent-card-img img{width:100%;height:100%;object-fit:cover;display:block}
+.agent-card-noimg{width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:38px;color:#b6c0cf}
+.agent-status-badge{position:absolute;top:9px;left:9px;font-size:10px;font-weight:700;text-transform:capitalize;
+  padding:4px 9px;border-radius:999px;letter-spacing:0.02em;box-shadow:0 4px 10px rgba(0,0,0,0.15)}
+.agent-status-available{background:#dcfce7;color:#15803d}
+.agent-status-reserved{background:#fef9c3;color:#a16207}
+.agent-status-financed{background:#dbeafe;color:#1d4ed8}
+.agent-status-sold{background:#f1f5f9;color:#64748b}
+.agent-card-info{padding:12px 14px 14px}
+.agent-card-info h3{font-size:14.5px;font-weight:700;letter-spacing:-0.01em;margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.agent-card-meta{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.agent-card-price{font-size:15px;font-weight:800;color:var(--accent-dark);margin-top:8px}
+
+.agent-empty{max-width:1080px;margin:60px auto;text-align:center;color:#94a3b8;padding:0 20px}
+.agent-empty .icon{font-size:40px;margin-bottom:10px}
+
+.agent-modal{display:none;position:fixed;inset:0;background:rgba(2,6,23,0.6);z-index:900;
+  align-items:flex-end;justify-content:center;padding:0}
+.agent-modal.open{display:flex}
+.agent-modal-card{background:#fff;border-radius:20px 20px 0 0;max-width:480px;width:100%;max-height:90vh;
+  overflow-y:auto;position:relative;-webkit-overflow-scrolling:touch}
+.agent-modal-close{position:absolute;top:12px;right:12px;z-index:3;width:34px;height:34px;border-radius:50%;
+  border:none;background:rgba(15,23,42,0.55);color:#fff;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.agent-modal-gallery{position:relative;aspect-ratio:4/3;background:#e2e8f0}
+.agent-modal-gallery img{width:100%;height:100%;object-fit:cover;display:block}
+.agent-modal-nav{position:absolute;top:50%;transform:translateY(-50%);width:34px;height:34px;border-radius:50%;
+  border:none;background:rgba(2,6,23,0.5);color:#fff;font-size:13px;cursor:pointer}
+.agent-modal-nav.prev{left:10px}.agent-modal-nav.next{right:10px}
+.agent-modal-count{position:absolute;bottom:10px;right:10px;background:rgba(2,6,23,0.55);color:#fff;font-size:11px;
+  font-weight:600;padding:3px 9px;border-radius:999px}
+.agent-modal-body{padding:20px 22px 24px}
+.agent-modal-body h3{font-size:19px;font-weight:800;letter-spacing:-0.01em;margin-bottom:4px}
+.agent-modal-meta{font-size:13px;color:var(--muted);margin-bottom:14px}
+.agent-modal-specs{display:grid;grid-template-columns:1fr 1fr;gap:10px 16px;margin-bottom:14px}
+.agent-modal-spec-label{font-size:10.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em}
+.agent-modal-spec-value{font-size:13.5px;font-weight:600;color:var(--ink)}
+.agent-modal-note{background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:10px 12px;font-size:12.5px;
+  color:#92400e;margin-bottom:14px}
+.agent-modal-note b{font-weight:700}
+.agent-modal-price-row{display:flex;align-items:center;gap:10px;padding-top:14px;border-top:1px dashed var(--line);margin-bottom:16px}
+.agent-modal-price{font-size:21px;font-weight:800;color:var(--ink);letter-spacing:-0.01em}
+.agent-copy-btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;
+  background:var(--accent);color:#fff;border:none;border-radius:12px;padding:14px;font-size:14.5px;font-weight:700;
+  font-family:inherit;cursor:pointer;transition:background .15s ease}
+.agent-copy-btn:hover{background:var(--accent-dark)}
+.agent-copy-btn.copied{background:#15803d}
+
+.agent-toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(0);background:var(--ink);
+  color:#fff;padding:11px 20px;border-radius:999px;font-size:13px;font-weight:600;z-index:1000;
+  box-shadow:0 10px 24px rgba(0,0,0,0.25);opacity:0;pointer-events:none;transition:opacity .2s ease,transform .2s ease}
+.agent-toast.show{opacity:1;transform:translateX(-50%) translateY(-6px)}
+
+@media(min-width:640px){
+  .agent-modal{align-items:center}
+  .agent-modal-card{border-radius:20px;max-height:88vh}
+}
+"""
+
+AGENT_JS = """
+(function(){
+  var cars = JSON.parse(document.getElementById('agent-cars-data').textContent);
+  var grid = document.getElementById('agent-grid');
+  var search = document.getElementById('agent-search');
+  var statusChips = document.querySelectorAll('.agent-chip[data-status]');
+  var activeStatus = 'all';
+
+  function escapeHtml(s){
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+      return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
+    });
+  }
+
+  function applyFilters(){
+    var q = (search ? search.value : '').trim().toLowerCase();
+    var cards = grid.querySelectorAll('.agent-card');
+    var visible = 0;
+    cards.forEach(function(card){
+      var idx = Number(card.getAttribute('data-idx'));
+      var car = cars[idx];
+      var matchesStatus = activeStatus === 'all' || car.status === activeStatus;
+      var matchesSearch = !q || car.search.indexOf(q) !== -1;
+      var show = matchesStatus && matchesSearch;
+      card.style.display = show ? '' : 'none';
+      if (show) visible++;
+    });
+    var empty = document.getElementById('agent-no-results');
+    if (empty) empty.style.display = visible === 0 ? 'block' : 'none';
+  }
+
+  statusChips.forEach(function(chip){
+    chip.addEventListener('click', function(){
+      statusChips.forEach(function(c){ c.classList.remove('active'); });
+      chip.classList.add('active');
+      activeStatus = chip.getAttribute('data-status');
+      applyFilters();
+    });
+  });
+  if (search) search.addEventListener('input', applyFilters);
+
+  // ---- Detail modal ----
+  var modal = document.getElementById('agent-modal');
+  var modalImg = document.getElementById('agent-modal-img');
+  var modalCount = document.getElementById('agent-modal-count');
+  var modalTitle = document.getElementById('agent-modal-title');
+  var modalMeta = document.getElementById('agent-modal-meta');
+  var modalSpecs = document.getElementById('agent-modal-specs');
+  var modalNote = document.getElementById('agent-modal-note');
+  var modalPrice = document.getElementById('agent-modal-price');
+  var copyBtn = document.getElementById('agent-copy-btn');
+  var currentCar = null;
+  var currentImgIndex = 0;
+
+  function renderModalImage(){
+    var imgs = currentCar.imgs;
+    if (imgs.length){
+      modalImg.src = imgs[currentImgIndex];
+      modalCount.style.display = imgs.length > 1 ? 'block' : 'none';
+      modalCount.textContent = (currentImgIndex + 1) + '/' + imgs.length;
+    } else {
+      modalImg.src = '';
+      modalCount.style.display = 'none';
+    }
+  }
+
+  function openModal(car){
+    currentCar = car;
+    currentImgIndex = 0;
+    modalTitle.textContent = car.title;
+    modalMeta.textContent = car.meta;
+    modalSpecs.innerHTML = car.specs.map(function(s){
+      return '<div><div class="agent-modal-spec-label">' + escapeHtml(s.label) + '</div>'
+        + '<div class="agent-modal-spec-value">' + escapeHtml(s.value) + '</div></div>';
+    }).join('');
+    modalPrice.textContent = car.price;
+    if (car.note){
+      modalNote.style.display = 'block';
+      modalNote.innerHTML = '<b>Internal note:</b> ' + escapeHtml(car.note);
+    } else {
+      modalNote.style.display = 'none';
+    }
+    copyBtn.classList.remove('copied');
+    copyBtn.textContent = 'Copy details to post';
+    renderModalImage();
+    modal.classList.add('open');
+  }
+  function closeModal(){ modal.classList.remove('open'); currentCar = null; }
+
+  grid.addEventListener('click', function(e){
+    var card = e.target.closest('.agent-card');
+    if (!card) return;
+    openModal(cars[Number(card.getAttribute('data-idx'))]);
+  });
+  document.getElementById('agent-modal-close').addEventListener('click', closeModal);
+  modal.addEventListener('click', function(e){ if (e.target === modal) closeModal(); });
+  document.getElementById('agent-modal-prev').addEventListener('click', function(){
+    if (!currentCar || !currentCar.imgs.length) return;
+    currentImgIndex = (currentImgIndex - 1 + currentCar.imgs.length) % currentCar.imgs.length;
+    renderModalImage();
+  });
+  document.getElementById('agent-modal-next').addEventListener('click', function(){
+    if (!currentCar || !currentCar.imgs.length) return;
+    currentImgIndex = (currentImgIndex + 1) % currentCar.imgs.length;
+    renderModalImage();
+  });
+
+  // ---- Copy-to-post ----
+  function buildPostText(car){
+    var lines = [];
+    lines.push((car.status === 'available' ? 'FOR SALE: ' : '') + car.title);
+    lines.push(car.price);
+    car.specs.forEach(function(s){ lines.push(s.label + ': ' + s.value); });
+    lines.push('');
+    lines.push('Interested? Message us now!');
+    return lines.join('\\n');
+  }
+
+  copyBtn.addEventListener('click', function(){
+    if (!currentCar) return;
+    var text = buildPostText(currentCar);
+    var done = function(){
+      copyBtn.classList.add('copied');
+      copyBtn.textContent = 'Copied!';
+      showToast('Details copied - ready to paste');
+      setTimeout(function(){
+        copyBtn.classList.remove('copied');
+        copyBtn.textContent = 'Copy details to post';
+      }, 1800);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(done).catch(function(){ fallbackCopy(text, done); });
+    } else {
+      fallbackCopy(text, done);
+    }
+  });
+
+  function fallbackCopy(text, done){
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); done(); } catch (e) {}
+    document.body.removeChild(ta);
+  }
+
+  var toastTimer = null;
+  function showToast(msg){
+    var toast = document.getElementById('agent-toast');
+    toast.textContent = msg;
+    toast.classList.add('show');
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function(){ toast.classList.remove('show'); }, 2200);
+  }
+})();
+"""
+
+@app.get("/agent/{business_public_id}", response_class=HTMLResponse)
+async def agent_inventory_page(business_public_id: str):
+    """Agent-facing inventory page - GET /agent/{business_public_id}.
+    Shows every vehicle regardless of status (agents need to see the whole
+    lot, not just what's publicly listed on /showroom). Tapping a card
+    opens a detail sheet with a "Copy details to post" button that copies a
+    ready-to-paste listing to the clipboard - see AGENT_JS's buildPostText.
+    No login/session yet - see the AGENT INVENTORY PAGE comment above this
+    route; that's a follow-up, not wired into this page yet."""
+    business = safe_get_business(business_public_id)
+    if not business:
+        return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Business not found</h1><p>This link is invalid.</p></div>")
+
+    biz_name = business.get('name', '')
+    logo_url = business.get('logo_url')
+
+    try:
+        vehicles = supabase.table("vehicles").select("*").eq("business_id", business.get("id")) \
+            .order("created_at", desc=True).execute().data or []
+    except Exception:
+        vehicles = []
+
+    logo_html = ('<img src="' + html_lib.escape(logo_url) + '" alt="Logo"/>') if logo_url else ''
+    header_html = (
+        '<div class="agent-header">' + logo_html +
+        '<div class="agent-header-text"><h1>' + html_lib.escape(biz_name) + '</h1>'
+        '<p>Agent Inventory · ' + str(len(vehicles)) + (' unit' if len(vehicles) == 1 else ' units') + '</p></div>'
+        '</div>'
+    )
+
+    status_counts = {}
+    for v in vehicles:
+        st = v.get('status') or ''
+        if st:
+            status_counts[st] = status_counts.get(st, 0) + 1
+    status_order = ['available', 'reserved', 'financed', 'sold']
+    chips = ['<button class="agent-chip active" data-status="all">All (' + str(len(vehicles)) + ')</button>']
+    for st in status_order:
+        if status_counts.get(st):
+            chips.append(
+                '<button class="agent-chip" data-status="' + st + '">'
+                + st.capitalize() + ' (' + str(status_counts[st]) + ')</button>'
+            )
+    filter_html = '<div class="agent-filter-bar">' + ''.join(chips) + '</div>' if vehicles else ''
+
+    search_html = (
+        '<input type="text" id="agent-search" class="agent-search" placeholder="Search by make, model, plate...">'
+    ) if len(vehicles) >= 5 else ''
+
+    toolbar_html = (
+        '<div class="agent-toolbar">' + search_html + filter_html + '</div>'
+    ) if vehicles else ''
+
+    if vehicles:
+        cards = []
+        cars_data = []
+        for idx, v in enumerate(vehicles):
+            raw_imgs = v.get('image_urls') or ([v.get('image_url')] if v.get('image_url') else [])
+            raw_imgs = [i for i in raw_imgs if i][:VEHICLE_MAX_PHOTOS]
+            imgs = [html_lib.escape(i) for i in raw_imgs]
+            title_plain = f"{v.get('year') or ''} {v.get('make', '')} {v.get('model', '')}".strip()
+            title = html_lib.escape(title_plain)
+            status = v.get('status') or ''
+
+            payment_type = v.get('payment_type')
+            monthly_amount = v.get('monthly_amortization_amount')
+            price = v.get('price') or 0
+            if payment_type == 'monthly_amortization':
+                price_str = (f"₱{monthly_amount:,.0f}/month" if monthly_amount else "Contact for pricing")
+            else:
+                price_str = f"₱{price:,.0f}"
+
+            meta_bits_plain = []
+            if v.get('color'):
+                meta_bits_plain.append(str(v.get('color')))
+            if v.get('mileage') is not None:
+                meta_bits_plain.append(f"{v.get('mileage'):,} km")
+            if v.get('plate_number'):
+                meta_bits_plain.append(f"Plate {v.get('plate_number')}")
+            meta_plain = ' · '.join(meta_bits_plain)
+            meta = html_lib.escape(meta_plain)
+
+            if imgs:
+                img_html = '<img src="' + imgs[0] + '" alt="' + title + '" loading="lazy">'
+            else:
+                img_html = '<div class="agent-card-noimg">&#128663;</div>'
+
+            cards.append(
+                '<div class="agent-card" data-idx="' + str(idx) + '">'
+                '<div class="agent-card-img">'
+                + ('<span class="agent-status-badge agent-status-' + status + '">' + status + '</span>' if status else '')
+                + img_html +
+                '</div>'
+                '<div class="agent-card-info">'
+                '<h3>' + title + '</h3>'
+                + ('<div class="agent-card-meta">' + meta + '</div>' if meta else '') +
+                '<div class="agent-card-price">' + price_str + '</div>'
+                '</div></div>'
+            )
+
+            # Fuller spec sheet + plain-text fields for the detail sheet and
+            # the copy-to-post button - unescaped since AGENT_JS sets these
+            # via textContent/escapeHtml, not innerHTML from raw strings.
+            specs_data = []
+            if v.get('transmission'):
+                specs_data.append({'label': 'Transmission', 'value': str(v.get('transmission')).capitalize()})
+            if v.get('fuel_type'):
+                specs_data.append({'label': 'Fuel type', 'value': str(v.get('fuel_type')).capitalize()})
+            if v.get('mileage') is not None:
+                specs_data.append({'label': 'Mileage', 'value': f"{v.get('mileage'):,} km"})
+            if v.get('color'):
+                specs_data.append({'label': 'Color', 'value': str(v.get('color'))})
+            if v.get('plate_number'):
+                specs_data.append({'label': 'Plate number', 'value': str(v.get('plate_number'))})
+            if v.get('plate_end_in'):
+                specs_data.append({'label': 'Plate ends in', 'value': str(v.get('plate_end_in'))})
+            if v.get('location'):
+                specs_data.append({'label': 'Location', 'value': str(v.get('location'))})
+            if payment_type == 'monthly_amortization':
+                specs_data.append({'label': 'Payment type', 'value': 'Monthly amortization'})
+                if v.get('downpayment') is not None:
+                    specs_data.append({'label': 'Downpayment', 'value': f"₱{v.get('downpayment'):,.0f}"})
+                if v.get('amortization_due_date'):
+                    specs_data.append({'label': 'Due date', 'value': format_showroom_date(v.get('amortization_due_date'))})
+                if v.get('amortization_next_due'):
+                    specs_data.append({'label': 'Next due', 'value': format_showroom_date(v.get('amortization_next_due'))})
+                if v.get('amortization_months_remaining') is not None:
+                    specs_data.append({'label': 'Months remaining', 'value': str(v.get('amortization_months_remaining'))})
+            elif payment_type == 'cash':
+                specs_data.append({'label': 'Payment type', 'value': 'Cash'})
+
+            cars_data.append({
+                'public_id': v.get('public_id'),
+                'title': title_plain,
+                'meta': meta_plain,
+                'specs': specs_data,
+                'price': price_str,
+                'status': status,
+                'imgs': raw_imgs,
+                'note': v.get('notes') or '',
+                'search': (title_plain + ' ' + meta_plain + ' ' + str(v.get('plate_number') or '')).lower(),
+            })
+        grid_html = '<div class="agent-grid" id="agent-grid">' + ''.join(cards) + '</div>'
+        no_results_html = (
+            '<div id="agent-no-results" class="agent-empty" style="display:none">'
+            '<div class="icon">&#128269;</div><p>No vehicles match your search.</p></div>'
+        )
+        cars_json = json.dumps(cars_data).replace('</', '<\\/')
+    else:
+        grid_html = '<div id="agent-grid" class="agent-grid"></div>'
+        no_results_html = '<div class="agent-empty"><div class="icon">&#128663;</div><p>No vehicles in inventory yet.</p></div>'
+        cars_json = '[]'
+
+    modal_html = (
+        '<div id="agent-modal" class="agent-modal">'
+        '<div class="agent-modal-card">'
+        '<button id="agent-modal-close" class="agent-modal-close" aria-label="Close">&times;</button>'
+        '<div class="agent-modal-gallery">'
+        '<img id="agent-modal-img" src="" alt="Vehicle photo">'
+        '<button id="agent-modal-prev" class="agent-modal-nav prev" aria-label="Previous photo">&#10094;</button>'
+        '<button id="agent-modal-next" class="agent-modal-nav next" aria-label="Next photo">&#10095;</button>'
+        '<span id="agent-modal-count" class="agent-modal-count"></span>'
+        '</div>'
+        '<div class="agent-modal-body">'
+        '<h3 id="agent-modal-title"></h3>'
+        '<p id="agent-modal-meta" class="agent-modal-meta"></p>'
+        '<div id="agent-modal-specs" class="agent-modal-specs"></div>'
+        '<div id="agent-modal-note" class="agent-modal-note" style="display:none"></div>'
+        '<div class="agent-modal-price-row">'
+        '<span id="agent-modal-price" class="agent-modal-price"></span>'
+        '</div>'
+        '<button type="button" id="agent-copy-btn" class="agent-copy-btn">Copy details to post</button>'
+        '</div></div></div>'
+        '<script id="agent-cars-data" type="application/json">' + cars_json + '</script>'
+    )
+
+    html = (
+        '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+        '<title>' + html_lib.escape(biz_name) + ' - Agent Inventory</title>'
+        '<style>' + AGENT_CSS + '</style></head><body>'
+        + header_html + toolbar_html + grid_html + no_results_html + modal_html +
+        '<div id="agent-toast" class="agent-toast"></div>'
+        '<script>' + AGENT_JS + '</script>'
+        '</body></html>'
+    )
+    return HTMLResponse(html)
+
 # WALLET PAGE
 
 @app.get("/wallet/{customer_public_id}", response_class=HTMLResponse)
