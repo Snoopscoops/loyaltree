@@ -741,6 +741,40 @@ class CLBuyerInquiry(BaseModel):
     add_cash_by: Optional[Literal['buyer', 'seller']] = None
 
 
+# --- Car Lending / Showroom: "Sell your car" popup, opened from a
+# standalone button on the public showroom (not tied to any vehicle
+# already in inventory - the visitor is offering to sell the dealership
+# their own car). Public, unauthenticated, same spirit as CLBuyerInquiry
+# above - lands as a normal 'pending' row in cl_applications
+# (role='seller') for the owner to review on the dashboard's
+# Applications tab -> Sellers Application, going through the same
+# approve/reject flow (see update_cl_application). Up to
+# VEHICLE_MAX_PHOTOS vehicle photos are uploaded client-side to
+# Cloudinary (purpose=sell_your_car) before this is called, same
+# signed-upload pattern as the buyer inquiry's documents - see
+# uploadSellPhoto in SHOWROOM_JS. Amortization fields are only
+# meaningful when has_amortization is true; the frontend hides them
+# otherwise, and this endpoint blanks them server-side too if
+# has_amortization is false. ---
+class CLSellerInquiry(BaseModel):
+    name: str
+    phone: str
+    address: Optional[str] = None
+    image_urls: List[str] = Field(default_factory=list)  # up to VEHICLE_MAX_PHOTOS photos of the vehicle being sold
+    seller_make: Optional[str] = None
+    seller_model: Optional[str] = None
+    seller_year: Optional[str] = None
+    seller_transmission: Optional[Literal['automatic', 'manual']] = None
+    seller_mileage: Optional[int] = Field(default=None, ge=0)
+    seller_price: Optional[float] = Field(default=None, ge=0)  # cash/downpayment offer the seller is asking for
+    seller_type: Literal['owner', 'third_party']  # required - who's submitting this on the vehicle's behalf
+    has_amortization: bool = False
+    amortization_amount: Optional[float] = Field(default=None, ge=0)
+    amortization_due_date: Optional[str] = None      # YYYY-MM-DD, recurring monthly due date on the existing loan
+    amortization_next_due: Optional[str] = None       # YYYY-MM-DD, next actual due date coming up
+    amortization_months_remaining: Optional[int] = Field(default=None, ge=0)
+
+
 # --- Car Lending / Showroom: self-service signup (buyer scans the
 # dealership's "Join" QR and registers themselves, mirrors CustomerSignup
 # below but for cl_customers - no loyalty-specific fields) ---
@@ -5899,6 +5933,48 @@ async def cl_buyer_inquiry(public_id: str, inquiry: CLBuyerInquiry):
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
+@app.post("/api/v1/business/{public_id}/cl-sell-your-car")
+async def cl_sell_your_car(public_id: str, inquiry: CLSellerInquiry):
+    """Public, unauthenticated - submitted by the "Sell your car" popup on
+    the public showroom. Always lands as a 'pending' cl_applications row
+    with role='seller'; only the owner's dashboard (Applications tab) can
+    approve or reject it."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    if business.get('status', '').upper() != 'ACTIVE':
+        raise HTTPException(status_code=400, detail="This dealership isn't accepting submissions right now.")
+
+    image_urls = [u for u in (inquiry.image_urls or []) if u][:VEHICLE_MAX_PHOTOS]
+
+    application_data = {
+        'business_id': business.get('id'),
+        'public_id': generate_public_id(),
+        'role': 'seller',
+        'name': inquiry.name,
+        'phone': inquiry.phone,
+        'address': inquiry.address,
+        'image_urls': image_urls,
+        'seller_make': inquiry.seller_make,
+        'seller_model': inquiry.seller_model,
+        'seller_year': inquiry.seller_year,
+        'seller_transmission': inquiry.seller_transmission,
+        'seller_mileage': inquiry.seller_mileage,
+        'seller_price': inquiry.seller_price,
+        'seller_type': inquiry.seller_type,
+        'has_amortization': inquiry.has_amortization,
+        'amortization_amount': inquiry.amortization_amount if inquiry.has_amortization else None,
+        'amortization_due_date': inquiry.amortization_due_date if inquiry.has_amortization else None,
+        'amortization_next_due': inquiry.amortization_next_due if inquiry.has_amortization else None,
+        'amortization_months_remaining': inquiry.amortization_months_remaining if inquiry.has_amortization else None,
+        'status': 'pending',
+    }
+    try:
+        res = supabase.table("cl_applications").insert(application_data).execute()
+        return res.data[0] if res.data else application_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
 # CAR LENDING / SHOWROOM - AGENT ACCOUNTS (approved roster)
 # An agent only ever lands here once their cl_applications row has been
 # approved (see update_cl_application above, which provisions this row) -
@@ -8327,7 +8403,7 @@ a{color:inherit}
 .connect-apply-row{margin-top:14px;padding-top:14px;border-top:1px solid var(--line);
   display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
 .connect-apply-link{font-size:12.5px;font-weight:700;color:var(--ink);text-decoration:none;
-  background:#f1f5f9;padding:8px 14px;border-radius:999px}
+  background:#f1f5f9;padding:8px 14px;border-radius:999px;border:none;cursor:pointer;font-family:inherit}
 .connect-apply-link:hover{background:#e2e8f0}
 
 .stats-strip{max-width:1080px;margin:30px auto 0;padding:0 20px;display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
@@ -8463,9 +8539,10 @@ a{color:inherit}
   .vehicle-modal-card{max-height:92vh}
 }
 
-.agent-login-btn{position:absolute;top:16px;right:16px;z-index:6;background:rgba(255,255,255,0.12);
+.hero-actions{position:absolute;top:16px;right:16px;z-index:6;display:flex;gap:8px}
+.agent-login-btn{background:rgba(255,255,255,0.12);
   backdrop-filter:blur(6px);border:1px solid rgba(255,255,255,0.35);color:#fff;font-size:12.5px;font-weight:700;
-  padding:9px 16px;border-radius:999px;cursor:pointer;transition:background .15s ease}
+  padding:9px 16px;border-radius:999px;cursor:pointer;transition:background .15s ease;white-space:nowrap}
 .agent-login-btn:hover{background:rgba(255,255,255,0.22)}
 
 .agent-modal{display:none;position:fixed;inset:0;background:rgba(2,6,23,0.6);z-index:950;
@@ -8523,8 +8600,21 @@ a{color:inherit}
 .inquiry-contact-line a{color:var(--accent-dark);font-weight:700;text-decoration:none}
 .inquiry-contact-line a:hover{text-decoration:underline}
 
+.sell-photos-grid{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
+.sell-photo-thumb{position:relative;width:64px;height:64px;border-radius:9px;overflow:hidden;
+  border:1.5px solid var(--line)}
+.sell-photo-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.sell-photo-remove{position:absolute;top:2px;right:2px;width:18px;height:18px;border-radius:50%;
+  border:none;background:rgba(2,6,23,0.7);color:#fff;font-size:11px;line-height:1;cursor:pointer;padding:0}
+.sell-photo-add{width:64px;height:64px;border-radius:9px;border:1.5px dashed var(--line);background:#f8fafc;
+  color:var(--muted);font-size:11px;font-weight:700;cursor:pointer;display:flex;align-items:center;
+  justify-content:center;text-align:center;padding:4px}
+.sell-photo-add:hover{border-color:#cbd5e1}
+.sell-photo-count{font-size:11.5px;color:var(--muted);margin-bottom:4px}
+
 @media(max-width:520px){
-  .agent-login-btn{top:12px;right:12px;font-size:11.5px;padding:7px 12px}
+  .hero-actions{top:12px;right:12px;gap:6px}
+  .agent-login-btn{font-size:11.5px;padding:7px 12px}
   .agent-modal-card{max-height:92vh}
   .agent-modal-scroll{max-height:92vh;padding:26px 20px 22px}
 }
@@ -8867,6 +8957,181 @@ SHOWROOM_JS = """
     }
   });
 
+  // ---- Sell your car popup (opened from the "Sell your car" button in
+  // the hero). Posts to POST /api/v1/business/{id}/cl-sell-your-car (see
+  // CLSellerInquiry in main.py) - it lands as a normal 'pending'
+  // cl_applications row with role='seller', so it shows up on the
+  // dashboard's Applications tab (Sellers Application). Up to 10 photos
+  // are picked from the file system and uploaded to Cloudinary first,
+  // same pattern as the buyer inquiry's documents - see
+  // uploadInquiryPhoto above. ----
+  var sellCarBtn = document.getElementById('sell-car-btn');
+  var sellModal = document.getElementById('sell-modal');
+  var sellModalClose = document.getElementById('sell-modal-close');
+  var sellFormView = document.getElementById('sell-form-view');
+  var sellSuccessView = document.getElementById('sell-success-view');
+  var sellSuccessClose = document.getElementById('sell-success-close');
+  var sellForm = document.getElementById('sell-form');
+  var sellSubmit = document.getElementById('sell-submit');
+  var sellError = document.getElementById('sell-error');
+  var sellHasAmortization = document.getElementById('sell-has-amortization');
+  var sellAmortization = document.getElementById('sell-amortization');
+  var sellPhotosInput = document.getElementById('sell-photos-input');
+  var sellPhotoAddBtn = document.getElementById('sell-photo-add');
+  var sellPhotosGrid = document.getElementById('sell-photos-grid');
+  var sellPhotoCount = document.getElementById('sell-photo-count');
+  var SELL_MAX_PHOTOS = 10;
+  var sellPhotoFiles = [];
+
+  function showSellView(view){
+    if (sellFormView) sellFormView.style.display = (view === 'form') ? '' : 'none';
+    if (sellSuccessView) sellSuccessView.style.display = (view === 'success') ? '' : 'none';
+  }
+
+  function openSellModal(){
+    if (!sellModal) return;
+    if (sellError) sellError.style.display = 'none';
+    showSellView('form');
+    sellModal.classList.add('open');
+  }
+  function closeSellModal(){ if (sellModal) sellModal.classList.remove('open'); }
+
+  if (sellCarBtn) sellCarBtn.addEventListener('click', openSellModal);
+  var connectSellLink = document.getElementById('connect-sell-link');
+  if (connectSellLink) connectSellLink.addEventListener('click', openSellModal);
+  if (sellModalClose) sellModalClose.addEventListener('click', closeSellModal);
+  if (sellSuccessClose) sellSuccessClose.addEventListener('click', closeSellModal);
+  if (sellModal) sellModal.addEventListener('click', function(e){ if (e.target === sellModal) closeSellModal(); });
+  document.addEventListener('keydown', function(e){
+    if (!sellModal || !sellModal.classList.contains('open')) return;
+    if (e.key === 'Escape') closeSellModal();
+  });
+
+  if (sellHasAmortization) sellHasAmortization.addEventListener('change', function(){
+    if (sellAmortization) sellAmortization.classList.toggle('open', sellHasAmortization.checked);
+  });
+
+  function renderSellPhotos(){
+    if (!sellPhotosGrid) return;
+    var thumbs = sellPhotosGrid.querySelectorAll('.sell-photo-thumb');
+    thumbs.forEach(function(t){ t.remove(); });
+    sellPhotoFiles.forEach(function(file, idx){
+      var thumb = document.createElement('div');
+      thumb.className = 'sell-photo-thumb';
+      var img = document.createElement('img');
+      img.src = URL.createObjectURL(file);
+      img.alt = 'Vehicle photo ' + (idx + 1);
+      var removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'sell-photo-remove';
+      removeBtn.innerHTML = '&times;';
+      removeBtn.addEventListener('click', function(){
+        sellPhotoFiles.splice(idx, 1);
+        renderSellPhotos();
+      });
+      thumb.appendChild(img);
+      thumb.appendChild(removeBtn);
+      sellPhotosGrid.insertBefore(thumb, sellPhotoAddBtn);
+    });
+    if (sellPhotoAddBtn) sellPhotoAddBtn.style.display = (sellPhotoFiles.length >= SELL_MAX_PHOTOS) ? 'none' : '';
+    if (sellPhotoCount) sellPhotoCount.textContent = sellPhotoFiles.length + ' / ' + SELL_MAX_PHOTOS + ' photos added';
+  }
+
+  if (sellPhotoAddBtn) sellPhotoAddBtn.addEventListener('click', function(){
+    if (sellPhotosInput) sellPhotosInput.click();
+  });
+  if (sellPhotosInput) sellPhotosInput.addEventListener('change', function(){
+    var picked = Array.prototype.slice.call(sellPhotosInput.files || []);
+    picked.forEach(function(file){
+      if (sellPhotoFiles.length < SELL_MAX_PHOTOS) sellPhotoFiles.push(file);
+    });
+    sellPhotosInput.value = '';
+    renderSellPhotos();
+  });
+
+  if (sellForm) sellForm.addEventListener('submit', async function(e){
+    e.preventDefault();
+    var name = document.getElementById('sell-name').value.trim();
+    var phone = document.getElementById('sell-phone').value.trim();
+    var address = document.getElementById('sell-address').value.trim();
+    var make = document.getElementById('sell-make').value.trim();
+    var model = document.getElementById('sell-model').value.trim();
+    var year = document.getElementById('sell-year').value.trim();
+    var transmissionEl = document.querySelector('input[name="sell-transmission"]:checked');
+    var transmission = transmissionEl ? transmissionEl.value : null;
+    var mileage = document.getElementById('sell-mileage').value;
+    var price = document.getElementById('sell-price').value;
+    var sellerTypeEl = document.querySelector('input[name="sell-type"]:checked');
+    var sellerType = sellerTypeEl ? sellerTypeEl.value : null;
+    var hasAmortization = sellHasAmortization && sellHasAmortization.checked;
+    var amortAmount = document.getElementById('sell-amortization-amount').value;
+    var amortDueDate = document.getElementById('sell-amortization-due-date').value;
+    var amortNextDue = document.getElementById('sell-amortization-next-due').value;
+    var amortMonthsRemaining = document.getElementById('sell-amortization-months-remaining').value;
+
+    if (sellError) sellError.style.display = 'none';
+    if (!sellerType) {
+      if (sellError) { sellError.textContent = 'Please tell us whether you\'re the owner or a 3rd party.'; sellError.style.display = ''; }
+      return;
+    }
+    if (!inquiryConfig.api_base || !inquiryConfig.business_public_id) {
+      if (sellError) { sellError.textContent = 'This form is unavailable right now.'; sellError.style.display = ''; }
+      return;
+    }
+
+    if (sellSubmit) { sellSubmit.disabled = true; sellSubmit.textContent = 'Uploading photos…'; }
+    try {
+      var imageUrls = [];
+      if (sellPhotoFiles.length) {
+        var sigRes = await fetch(inquiryConfig.api_base + '/api/v1/business/' + inquiryConfig.business_public_id + '/cloudinary-signature?purpose=sell_your_car', {
+          method: 'POST'
+        });
+        var sig = await sigRes.json();
+        if (!sigRes.ok) throw new Error(sig.detail || 'Could not prepare photo upload');
+        for (var i = 0; i < sellPhotoFiles.length; i++) {
+          if (sellSubmit) sellSubmit.textContent = 'Uploading photo ' + (i + 1) + ' of ' + sellPhotoFiles.length + '…';
+          imageUrls.push(await uploadInquiryPhoto(sellPhotoFiles[i], sig));
+        }
+      }
+
+      if (sellSubmit) sellSubmit.textContent = 'Submitting…';
+      var res = await fetch(inquiryConfig.api_base + '/api/v1/business/' + inquiryConfig.business_public_id + '/cl-sell-your-car', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: name, phone: phone, address: address || null,
+          image_urls: imageUrls,
+          seller_make: make || null,
+          seller_model: model || null,
+          seller_year: year || null,
+          seller_transmission: transmission,
+          seller_mileage: mileage ? parseInt(mileage, 10) : null,
+          seller_price: price ? parseFloat(price) : null,
+          seller_type: sellerType,
+          has_amortization: !!hasAmortization,
+          amortization_amount: (hasAmortization && amortAmount) ? parseFloat(amortAmount) : null,
+          amortization_due_date: hasAmortization ? (amortDueDate || null) : null,
+          amortization_next_due: hasAmortization ? (amortNextDue || null) : null,
+          amortization_months_remaining: (hasAmortization && amortMonthsRemaining) ? parseInt(amortMonthsRemaining, 10) : null
+        })
+      });
+      var data = await res.json();
+      if (res.ok) {
+        sellForm.reset();
+        sellPhotoFiles = [];
+        renderSellPhotos();
+        if (sellAmortization) sellAmortization.classList.remove('open');
+        showSellView('success');
+      } else {
+        if (sellError) { sellError.textContent = data.detail || 'Submission failed'; sellError.style.display = ''; }
+      }
+    } catch (err) {
+      if (sellError) { sellError.textContent = (err && err.message) || 'Network error. Please try again.'; sellError.style.display = ''; }
+    } finally {
+      if (sellSubmit) { sellSubmit.disabled = false; sellSubmit.textContent = 'Submit'; }
+    }
+  });
+
   // ---- Agent Login / Sign Up popup ----
   var agentConfig = {};
   try {
@@ -9135,7 +9400,10 @@ async def showroom_page(business_public_id: str):
         hero_style = (" style=\"background-image:url('" + html_lib.escape(hero_url) + "')\"") if hero_url else ''
         hero_html = (
             '<div class="' + hero_class + '"' + hero_style + '>'
+            '<div class="hero-actions">'
+            '<button id="sell-car-btn" class="agent-login-btn" type="button">Sell your car</button>'
             '<button id="agent-login-btn" class="agent-login-btn" type="button">Agent Login</button>'
+            '</div>'
             '<div class="hero-overlay">'
             '<div class="hero-eyebrow"><span class="dot"></span>Live inventory</div>'
             '<div class="hero-logo">' + logo_html + '</div>'
@@ -9148,9 +9416,14 @@ async def showroom_page(business_public_id: str):
         # The apply-links row at the bottom sends visitors to the public
         # /apply page (POST /api/v1/cl-apply/...) for the three roles the
         # owner reviews from the dashboard's Applications tab.
+        # The 'seller' entry opens the richer "Sell your car" popup (photos,
+        # vehicle specs, amortization - see sell_modal_html) instead of
+        # linking to the plain /apply page like agent/buyer do.
         apply_links_html = ''.join(
-            '<a class="connect-apply-link" href="/apply/' + quote(business_public_id) + '?role=' + k + '">'
-            + html_lib.escape(v[0]) + '</a>'
+            ('<button type="button" id="connect-sell-link" class="connect-apply-link">' + html_lib.escape(v[0]) + '</button>')
+            if k == 'seller' else
+            ('<a class="connect-apply-link" href="/apply/' + quote(business_public_id) + '?role=' + k + '">'
+             + html_lib.escape(v[0]) + '</a>')
             for k, v in APPLY_ROLE_LABELS.items()
         )
         payment_html = (
@@ -9500,6 +9773,89 @@ async def showroom_page(business_public_id: str):
             '</div></div></div>'
         )
 
+        # "Sell your car" popup - opened from the "Sell your car" button in
+        # the hero (see hero_html above), not tied to any vehicle already
+        # in inventory. Posts to POST /api/v1/business/{id}/cl-sell-your-
+        # car (see CLSellerInquiry) which lands it directly in
+        # cl_applications (role='seller') for the owner to approve/reject
+        # on the dashboard's Applications tab -> Sellers Application.
+        # Reuses the agent-modal-*/inquiry-* CSS classes for layout/input
+        # styling so it matches the other popups. The photo picker lets the
+        # visitor pick up to VEHICLE_MAX_PHOTOS images (not the camera,
+        # same as the buyer inquiry's documents) - see the sell-* JS in
+        # SHOWROOM_JS. The amortization block only shows once "Monthly
+        # amortization" is checked.
+        sell_modal_html = (
+            '<div id="sell-modal" class="agent-modal">'
+            '<div class="agent-modal-card" style="max-width:420px">'
+            '<button id="sell-modal-close" class="agent-modal-close" type="button" aria-label="Close">&times;</button>'
+            '<div class="agent-modal-scroll">'
+
+            '<div id="sell-form-view" class="agent-modal-view">'
+            '<h3 class="agent-modal-title">Sell your car</h3>'
+            '<p class="agent-modal-sub">Tell us about your vehicle and we&rsquo;ll get back to you.</p>'
+            '<form id="sell-form">'
+            '<input type="text" id="sell-name" placeholder="Full name" required autocomplete="name">'
+            '<input type="tel" id="sell-phone" placeholder="Phone number" required autocomplete="tel">'
+            '<input type="text" id="sell-address" placeholder="Address" autocomplete="street-address">'
+
+            '<div class="inquiry-field-label">Photos of the vehicle (up to 10)</div>'
+            '<div class="sell-photo-count" id="sell-photo-count">0 / 10 photos added</div>'
+            '<div class="sell-photos-grid" id="sell-photos-grid">'
+            '<button type="button" id="sell-photo-add" class="sell-photo-add">+ Add<br>photo</button>'
+            '</div>'
+            '<input type="file" id="sell-photos-input" accept="image/*" multiple style="display:none">'
+
+            '<input type="text" id="sell-make" placeholder="Make">'
+            '<input type="text" id="sell-model" placeholder="Model">'
+            '<input type="text" id="sell-year" placeholder="Year">'
+
+            '<div class="inquiry-field-label">Transmission</div>'
+            '<div class="inquiry-radio-row">'
+            '<label><input type="radio" name="sell-transmission" value="automatic"> Automatic</label>'
+            '<label><input type="radio" name="sell-transmission" value="manual"> Manual</label>'
+            '</div>'
+
+            '<input type="number" id="sell-mileage" placeholder="Mileage (km)" min="0">'
+            '<input type="number" id="sell-price" placeholder="Cash / downpayment offer (₱)" min="0" step="0.01">'
+
+            '<div class="inquiry-field-label">Who&rsquo;s selling?</div>'
+            '<div class="inquiry-radio-row">'
+            '<label><input type="radio" name="sell-type" value="owner" required> Owner</label>'
+            '<label><input type="radio" name="sell-type" value="third_party" required> 3rd party</label>'
+            '</div>'
+
+            '<label class="inquiry-checkbox-row">'
+            '<input type="checkbox" id="sell-has-amortization"> Monthly amortization'
+            '</label>'
+
+            '<div id="sell-amortization" class="inquiry-tradein">'
+            '<input type="number" id="sell-amortization-amount" placeholder="Monthly amortization (₱)" min="0" step="0.01">'
+            '<div class="inquiry-field-label">Due date</div>'
+            '<input type="date" id="sell-amortization-due-date">'
+            '<div class="inquiry-field-label">Next due</div>'
+            '<input type="date" id="sell-amortization-next-due">'
+            '<input type="number" id="sell-amortization-months-remaining" placeholder="Months remaining" min="0">'
+            '</div>'
+
+            '<div id="sell-error" class="agent-modal-error" style="display:none"></div>'
+            '<button type="submit" id="sell-submit" class="agent-modal-submit">Submit</button>'
+            '</form>'
+            '<p class="inquiry-contact-line">Call us at '
+            '<a href="tel:09551996574">0955-199-6574</a> or '
+            '<a href="tel:09097030170">0909-703-0170</a></p>'
+            '</div>'
+
+            '<div id="sell-success-view" class="agent-modal-view" style="display:none">'
+            '<div class="agent-modal-success-icon">&#9989;</div>'
+            '<h3 class="agent-modal-title">Application submitted</h3>'
+            '<p class="agent-modal-sub">Your application is pending review. The dealership will contact you once it&rsquo;s approved.</p>'
+            '<button type="button" id="sell-success-close" class="agent-modal-submit agent-modal-secondary">Close</button>'
+            '</div>'
+
+            '</div></div></div>'
+        )
+
         footer_html = '<div class="footer">Powered by LoyaltyTree &middot; listings update in real time</div>'
 
         showroom_address = "WOLFCARS, Saint Francis Subdivision, 129 Diamond Dr, Meycauayan, 3020 Bulacan"
@@ -9524,7 +9880,7 @@ async def showroom_page(business_public_id: str):
             '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
             '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">'
             '<style>' + SHOWROOM_CSS + '</style></head><body>'
-            + hero_html + payment_html + stats_html + search_html + filter_html + make_filter_html + grid_html + location_html + footer_html + lightbox_html + vehicle_modal_html + agent_modal_html + inquiry_modal_html +
+            + hero_html + payment_html + stats_html + search_html + filter_html + make_filter_html + grid_html + location_html + footer_html + lightbox_html + vehicle_modal_html + agent_modal_html + inquiry_modal_html + sell_modal_html +
             '<script>' + SHOWROOM_JS + '</script>'
             '</body></html>'
         )

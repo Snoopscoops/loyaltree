@@ -2120,6 +2120,17 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                           Inquiring about: {a.vehicle_label}{a.make_offer ? ' · trade-in offer' : ''}{a.referring_agent ? ` · via ${a.referring_agent}` : ''}
                         </div>
                       )}
+                      {a.role === 'seller' && (a.seller_make || a.seller_model || a.seller_year) && (
+                        <div style={styles.recordMetaSub}>
+                          Selling: {[a.seller_year, a.seller_make, a.seller_model].filter(Boolean).join(' ')}
+                          {a.has_amortization ? ' · has amortization' : ''}
+                        </div>
+                      )}
+                      {a.image_urls && a.image_urls.length > 0 && (
+                        <div style={styles.recordMetaSub}>
+                          <a href={a.image_urls[0]} target="_blank" rel="noreferrer">View vehicle photos ↗</a>
+                        </div>
+                      )}
                       {a.id_photo_url && (
                         <div style={styles.recordMetaSub}>
                           <a href={a.id_photo_url} target="_blank" rel="noreferrer">View ID photo ↗</a>
@@ -2369,6 +2380,60 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                 </div>
               )
             })()}
+
+            {reviewingApplication.image_urls && reviewingApplication.image_urls.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 8 }}>
+                  Vehicle photos — tap to view full size
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                  {reviewingApplication.image_urls.map((url, idx) => (
+                    <a key={url + idx} href={url} target="_blank" rel="noreferrer" style={{ width: 'calc(33.33% - 7px)', textDecoration: 'none' }}>
+                      <img src={url} alt={`Vehicle photo ${idx + 1}`} style={styles.kycPhoto} />
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {reviewingApplication.role === 'seller' && (
+              <div style={{ ...styles.walletSetupCard, marginBottom: 16 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#0f172a', marginBottom: 8 }}>Vehicle for sale</div>
+                <div style={styles.recordMetaSub}>Make: {reviewingApplication.seller_make || '—'}</div>
+                <div style={styles.recordMetaSub}>Model: {reviewingApplication.seller_model || '—'}</div>
+                <div style={styles.recordMetaSub}>Year: {reviewingApplication.seller_year || '—'}</div>
+                <div style={styles.recordMetaSub}>
+                  Transmission: {reviewingApplication.seller_transmission ? reviewingApplication.seller_transmission.charAt(0).toUpperCase() + reviewingApplication.seller_transmission.slice(1) : '—'}
+                </div>
+                <div style={styles.recordMetaSub}>
+                  Mileage: {reviewingApplication.seller_mileage != null ? `${Number(reviewingApplication.seller_mileage).toLocaleString()} km` : '—'}
+                </div>
+                <div style={styles.recordMetaSub}>
+                  Cash / downpayment offer: {reviewingApplication.seller_price != null ? `₱${Number(reviewingApplication.seller_price).toLocaleString()}` : '—'}
+                </div>
+                <div style={styles.recordMetaSub}>
+                  Seller: {reviewingApplication.seller_type === 'owner' ? 'Owner' : reviewingApplication.seller_type === 'third_party' ? '3rd party' : '—'}
+                </div>
+              </div>
+            )}
+
+            {reviewingApplication.has_amortization && (
+              <div style={{ ...styles.walletSetupCard, marginBottom: 16 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#0f172a', marginBottom: 8 }}>Monthly amortization</div>
+                <div style={styles.recordMetaSub}>
+                  Amount: {reviewingApplication.amortization_amount != null ? `₱${Number(reviewingApplication.amortization_amount).toLocaleString()}` : '—'}
+                </div>
+                <div style={styles.recordMetaSub}>
+                  Due date: {reviewingApplication.amortization_due_date ? new Date(reviewingApplication.amortization_due_date).toLocaleDateString() : '—'}
+                </div>
+                <div style={styles.recordMetaSub}>
+                  Next due: {reviewingApplication.amortization_next_due ? new Date(reviewingApplication.amortization_next_due).toLocaleDateString() : '—'}
+                </div>
+                <div style={styles.recordMetaSub}>
+                  Months remaining: {reviewingApplication.amortization_months_remaining != null ? reviewingApplication.amortization_months_remaining : '—'}
+                </div>
+              </div>
+            )}
 
             {reviewingApplication.make_offer && (
               <div style={{ ...styles.walletSetupCard, marginBottom: 16 }}>
