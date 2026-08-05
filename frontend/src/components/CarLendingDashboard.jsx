@@ -191,7 +191,7 @@ const VEHICLE_MAX_PHOTOS = 10
 const CONTRACT_MAX_IMAGES = 5
 
 function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved }) {
-  const emptyForm = { make: '', model: '', year: '', plate_number: '', plate_end_in: '', color: '', mileage: '', transmission: '', fuel_type: '', price: '', total_cost: '', agent_name: '', status: 'available', payment_type: '', location: '', notes: '' }
+  const emptyForm = { make: '', model: '', year: '', plate_number: '', plate_end_in: '', color: '', mileage: '', transmission: '', fuel_type: '', price: '', total_cost: '', agent_name: '', status: 'available', payment_type: '', location: '', notes: '', downpayment: '', amortization_due_date: '', amortization_next_due: '', amortization_months_remaining: '' }
   const [form, setForm] = useState(emptyForm)
   const [imageUrls, setImageUrls] = useState([]) // up to VEHICLE_MAX_PHOTOS Cloudinary URLs, shown as a gallery on the showroom card
   const [uploading, setUploading] = useState(false)
@@ -220,6 +220,10 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
         payment_type: vehicle.payment_type || '',
         location: vehicle.location || '',
         notes: vehicle.notes || '',
+        downpayment: vehicle.downpayment ?? '',
+        amortization_due_date: vehicle.amortization_due_date || '',
+        amortization_next_due: vehicle.amortization_next_due || '',
+        amortization_months_remaining: vehicle.amortization_months_remaining ?? '',
       })
       setImageUrls(vehicle.image_urls && vehicle.image_urls.length ? vehicle.image_urls : (vehicle.image_url ? [vehicle.image_url] : []))
     } else {
@@ -306,6 +310,10 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
           payment_type: form.payment_type || null,
           location: form.location || null,
           notes: form.notes || null,
+          downpayment: (form.payment_type === 'monthly_amortization' && form.downpayment !== '') ? Number(form.downpayment) : null,
+          amortization_due_date: form.payment_type === 'monthly_amortization' ? (form.amortization_due_date || null) : null,
+          amortization_next_due: form.payment_type === 'monthly_amortization' ? (form.amortization_next_due || null) : null,
+          amortization_months_remaining: (form.payment_type === 'monthly_amortization' && form.amortization_months_remaining !== '') ? Number(form.amortization_months_remaining) : null,
           image_urls: imageUrls,
         }),
       })
@@ -436,7 +444,7 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
             <option value="hybrid">Hybrid</option>
             <option value="electric">Electric</option>
           </select>
-          <label style={styles.label}>Price to sell (₱)</label>
+          <label style={styles.label}>Price to sell (₱, optional)</label>
           <input
             type="number"
             style={styles.input}
@@ -479,6 +487,38 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
             <option value="cash">Cash</option>
             <option value="monthly_amortization">Monthly amortization</option>
           </select>
+          {form.payment_type === 'monthly_amortization' && (
+            <>
+              <label style={styles.label}>Downpayment (₱)</label>
+              <input
+                type="number"
+                style={styles.input}
+                value={form.downpayment}
+                onChange={e => setForm({ ...form, downpayment: e.target.value })}
+              />
+              <label style={styles.label}>Due date</label>
+              <input
+                type="date"
+                style={styles.input}
+                value={form.amortization_due_date}
+                onChange={e => setForm({ ...form, amortization_due_date: e.target.value })}
+              />
+              <label style={styles.label}>Next due</label>
+              <input
+                type="date"
+                style={styles.input}
+                value={form.amortization_next_due}
+                onChange={e => setForm({ ...form, amortization_next_due: e.target.value })}
+              />
+              <label style={styles.label}>Months remaining</label>
+              <input
+                type="number"
+                style={styles.input}
+                value={form.amortization_months_remaining}
+                onChange={e => setForm({ ...form, amortization_months_remaining: e.target.value })}
+              />
+            </>
+          )}
           <label style={styles.label}>Location</label>
           <input
             style={styles.input}
@@ -1888,6 +1928,16 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                           v.location || null,
                         ].filter(Boolean).join(' · ')}
                       </div>
+                      {v.payment_type === 'monthly_amortization' && (
+                        <div style={styles.recordMetaSub}>
+                          {[
+                            v.downpayment != null ? `Downpayment ₱${Number(v.downpayment).toLocaleString()}` : null,
+                            v.amortization_due_date ? `Due ${new Date(v.amortization_due_date).toLocaleDateString()}` : null,
+                            v.amortization_next_due ? `Next due ${new Date(v.amortization_next_due).toLocaleDateString()}` : null,
+                            v.amortization_months_remaining != null ? `${v.amortization_months_remaining} mo. remaining` : null,
+                          ].filter(Boolean).join(' · ')}
+                        </div>
+                      )}
                       {v.notes && <div style={{ ...styles.recordMetaSub, fontStyle: 'italic' }}>📝 {v.notes}</div>}
                     </div>
                     <div style={styles.recordActions}>

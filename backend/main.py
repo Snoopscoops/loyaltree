@@ -526,13 +526,17 @@ class VehicleCreate(BaseModel):
     mileage: Optional[int] = Field(default=None, ge=0)
     transmission: Optional[Literal['automatic', 'manual']] = None
     fuel_type: Optional[Literal['gasoline', 'diesel', 'hybrid', 'electric']] = None
-    price: float = Field(default=0, ge=0)  # "price to sell" - the only price shown publicly on the showroom
+    price: float = Field(default=0, ge=0)  # "price to sell" - the only price shown publicly on the showroom, optional (may not apply on a monthly-amortization unit)
     total_cost: float = Field(default=0, ge=0)  # what the business paid to acquire this unit - NEVER shown on the showroom, used only for the owner's profit/loss (net income) computation on the dashboard
     agent_name: Optional[str] = None  # which agent is handling/sourced this unit - used to roll up "top agent" on the dashboard
     status: Optional[Literal['available', 'reserved', 'sold', 'financed']] = 'available'
     payment_type: Optional[Literal['cash', 'monthly_amortization']] = None  # how this unit is being sold - cash sale or financed/monthly amortization
     location: Optional[str] = None  # where the physical unit currently is - dashboard-only
     notes: Optional[str] = None  # free-text internal note (e.g. agent fee) - dashboard-only, never shown on the showroom
+    downpayment: Optional[float] = Field(default=None, ge=0)  # only meaningful when payment_type = 'monthly_amortization'
+    amortization_due_date: Optional[str] = None      # YYYY-MM-DD, recurring monthly due date - only meaningful when payment_type = 'monthly_amortization'
+    amortization_next_due: Optional[str] = None       # YYYY-MM-DD, next actual due date coming up - only meaningful when payment_type = 'monthly_amortization'
+    amortization_months_remaining: Optional[int] = Field(default=None, ge=0)  # only meaningful when payment_type = 'monthly_amortization'
     image_url: Optional[str] = None  # legacy single-photo field - kept in sync as image_urls[0] for old readers
     image_urls: Optional[List[str]] = None  # up to VEHICLE_MAX_PHOTOS photos, shown as a gallery on the showroom card
 
@@ -553,6 +557,10 @@ class VehicleUpdate(BaseModel):
     payment_type: Optional[Literal['cash', 'monthly_amortization']] = None
     location: Optional[str] = None
     notes: Optional[str] = None
+    downpayment: Optional[float] = Field(default=None, ge=0)
+    amortization_due_date: Optional[str] = None
+    amortization_next_due: Optional[str] = None
+    amortization_months_remaining: Optional[int] = Field(default=None, ge=0)
     image_url: Optional[str] = None
     image_urls: Optional[List[str]] = None
 
@@ -5124,6 +5132,10 @@ async def create_vehicle(public_id: str, vehicle: VehicleCreate):
         'payment_type': vehicle.payment_type,
         'location': vehicle.location,
         'notes': vehicle.notes,
+        'downpayment': vehicle.downpayment,
+        'amortization_due_date': vehicle.amortization_due_date,
+        'amortization_next_due': vehicle.amortization_next_due,
+        'amortization_months_remaining': vehicle.amortization_months_remaining,
         'image_url': image_urls[0] if image_urls else None,
         'image_urls': image_urls,
     }
