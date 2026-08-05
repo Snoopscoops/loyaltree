@@ -8580,6 +8580,46 @@ a{color:inherit}
 .footer{max-width:1080px;margin:44px auto 0;padding:20px 20px 0;text-align:center;color:#9aa4b2;font-size:11.5px;
   border-top:1px solid var(--line)}
 
+.site-nav{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.94);backdrop-filter:blur(16px);border-bottom:1px solid rgba(226,232,240,.9)}
+.site-nav-inner{max-width:1180px;margin:0 auto;padding:12px 20px;display:flex;align-items:center;justify-content:space-between;gap:20px}
+.site-brand{display:flex;align-items:center;gap:10px;text-decoration:none;min-width:0}
+.site-brand-mark{width:38px;height:38px;border-radius:11px;background:var(--ink);color:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0;font-size:20px}
+.site-brand-mark img{width:100%;height:100%;object-fit:cover}
+.site-brand-name{font-size:15px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.site-nav-links{display:flex;align-items:center;gap:18px}
+.site-nav-links a{font-size:13px;font-weight:700;color:#475569;text-decoration:none}
+.site-nav-links a:hover{color:var(--ink)}
+.site-nav-cta{background:var(--ink)!important;color:#fff!important;padding:9px 15px;border-radius:999px}
+.hero-home{min-height:560px;height:auto}
+.hero-home .hero-overlay{align-items:flex-start;justify-content:center;text-align:left;padding:92px max(24px,calc((100vw - 1140px)/2)) 70px;background:linear-gradient(90deg,rgba(2,6,23,.94) 0%,rgba(2,6,23,.78) 44%,rgba(2,6,23,.22) 100%)}
+.hero-copy{max-width:660px}
+.hero-home .hero-logo{display:flex;align-items:center;gap:13px;font-size:42px;margin-bottom:18px}
+.hero-home .hero-logo img{width:62px;height:62px;border-radius:16px;margin:0;box-shadow:0 8px 24px rgba(0,0,0,.3)}
+.hero-home h1{font-size:clamp(38px,6vw,68px);line-height:1.02;max-width:760px}
+.hero-home .hero-subtitle{font-size:clamp(16px,2vw,20px);line-height:1.6;opacity:.88;max-width:620px;margin-top:18px}
+.hero-cta-row{display:flex;gap:12px;flex-wrap:wrap;margin-top:28px}
+.hero-primary-btn,.hero-secondary-btn{display:inline-flex;align-items:center;justify-content:center;border-radius:12px;padding:13px 20px;font-size:14px;font-weight:800;text-decoration:none;border:none;cursor:pointer;font-family:inherit}
+.hero-primary-btn{background:#fff;color:var(--ink)}
+.hero-secondary-btn{background:rgba(255,255,255,.1);color:#fff;border:1px solid rgba(255,255,255,.3)}
+.hero-actions{position:absolute;top:24px;right:max(20px,calc((100vw - 1140px)/2));z-index:4;display:flex;gap:8px}
+.agent-login-btn{background:rgba(255,255,255,.94);color:var(--ink);border:none;border-radius:10px;padding:10px 14px;font-weight:800;cursor:pointer;box-shadow:0 8px 24px rgba(2,6,23,.18)}
+.hero-metrics{display:flex;gap:28px;flex-wrap:wrap;margin-top:34px}
+.hero-metric strong{display:block;font-size:24px;color:#fff}.hero-metric span{display:block;font-size:12px;color:rgba(255,255,255,.68);margin-top:3px}
+.trust-strip{max-width:1080px;margin:-34px auto 0;position:relative;z-index:8;padding:0 20px}
+.trust-grid{background:#fff;border:1px solid var(--line);border-radius:18px;box-shadow:0 16px 38px rgba(15,23,42,.11);display:grid;grid-template-columns:repeat(4,1fr);overflow:hidden}
+.trust-item{padding:21px 18px;text-align:center;border-right:1px solid var(--line)}.trust-item:last-child{border-right:none}
+.trust-icon{font-size:23px}.trust-title{font-size:13px;font-weight:800;margin-top:7px}.trust-text{font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.45}
+.home-section{max-width:1080px;margin:64px auto 0;padding:0 20px}
+.home-kicker{font-size:11px;font-weight:800;letter-spacing:.12em;color:var(--accent);text-transform:uppercase}
+.home-heading{font-size:clamp(26px,4vw,38px);font-weight:800;letter-spacing:-.035em;margin-top:8px}
+.home-copy{font-size:14px;color:var(--muted);line-height:1.65;max-width:660px;margin-top:10px}
+.inventory-shell{scroll-margin-top:86px}
+.inventory-toolbar{max-width:1080px;margin:42px auto 0;padding:0 20px}
+.inventory-toolbar .stats-strip,.inventory-toolbar .search-wrap,.inventory-toolbar .filter-bar{padding-left:0;padding-right:0;max-width:none}
+.process-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:24px}
+.process-card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:22px}.process-n{width:34px;height:34px;border-radius:10px;background:#ccfbf1;color:#0f766e;display:flex;align-items:center;justify-content:center;font-weight:800}.process-card h3{font-size:15px;margin-top:15px}.process-card p{font-size:12.5px;color:var(--muted);line-height:1.55;margin-top:7px}
+@media(max-width:760px){.site-nav-links a:not(.site-nav-cta){display:none}.hero-home{min-height:620px}.hero-home .hero-overlay{padding:100px 22px 58px;background:linear-gradient(180deg,rgba(2,6,23,.55),rgba(2,6,23,.96) 70%)}.hero-actions{top:18px;right:16px}.hero-actions #sell-car-btn{display:none}.trust-grid{grid-template-columns:repeat(2,1fr)}.trust-item:nth-child(2){border-right:none}.trust-item:nth-child(-n+2){border-bottom:1px solid var(--line)}.process-grid{grid-template-columns:1fr}.hero-metrics{gap:18px}.hero-metric strong{font-size:20px}}
+
 .lightbox{display:none;position:fixed;inset:0;background:rgba(2,6,23,0.94);z-index:1000;align-items:center;justify-content:center}
 .lightbox.open{display:flex}
 .lightbox-img{max-width:88vw;max-height:78vh;border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,0.5);object-fit:contain}
@@ -9508,7 +9548,7 @@ async def showroom_page(business_public_id: str):
             vehicles = []
 
         logo_html = ('<img src="' + html_lib.escape(logo_url) + '" alt="Logo"/>') if logo_url else '&#128663;'
-        hero_class = 'hero' if hero_url else 'hero hero-fallback'
+        hero_class = 'hero hero-home' if hero_url else 'hero hero-home hero-fallback'
         hero_style = (" style=\"background-image:url('" + html_lib.escape(hero_url) + "')\"") if hero_url else ''
         hero_html = (
             '<div class="' + hero_class + '"' + hero_style + '>'
@@ -9516,11 +9556,21 @@ async def showroom_page(business_public_id: str):
             '<button id="sell-car-btn" class="agent-login-btn" type="button">Sell your car</button>'
             '<button id="agent-login-btn" class="agent-login-btn" type="button">Agent Login</button>'
             '</div>'
-            '<div class="hero-overlay">'
-            '<div class="hero-eyebrow"><span class="dot"></span>Live inventory</div>'
-            '<div class="hero-logo">' + logo_html + '</div>'
-            '<h1>' + html_lib.escape(biz_name) + '</h1>'
-            '</div></div>'
+            '<div class="hero-overlay"><div class="hero-copy">'
+            '<div class="hero-eyebrow"><span class="dot"></span>Updated dealership inventory</div>'
+            '<div class="hero-logo">' + logo_html + '<span>' + html_lib.escape(biz_name) + '</span></div>'
+            '<h1>Find your next car with confidence.</h1>'
+            '<p class="hero-subtitle">Browse available cash and rent-to-own units, view complete vehicle details, and submit your application online.</p>'
+            '<div class="hero-cta-row">'
+            '<a href="#inventory" class="hero-primary-btn">Browse available cars</a>'
+            '<a href="#location" class="hero-secondary-btn">Visit the showroom</a>'
+            '</div>'
+            '<div class="hero-metrics">'
+            '<div class="hero-metric"><strong>' + str(len(vehicles)) + '</strong><span>Listed vehicles</span></div>'
+            '<div class="hero-metric"><strong>' + str(sum(1 for x in vehicles if x.get('status') == 'available')) + '</strong><span>Available now</span></div>'
+            '<div class="hero-metric"><strong>5 min</strong><span>Application process</span></div>'
+            '</div>'
+            '</div></div></div>'
         )
 
         # Fixed "Connect with us?" block (Facebook message button + phone
@@ -9539,7 +9589,7 @@ async def showroom_page(business_public_id: str):
             for k, v in APPLY_ROLE_LABELS.items()
         )
         payment_html = (
-            '<div class="contact-wrap"><div class="contact-note">'
+            '<div id="connect" class="contact-wrap"><div class="contact-note">'
             '<div class="connect-title">Connect with us?</div>'
             '<a class="connect-fb-btn" href="https://www.facebook.com/wolfcarsmain08" target="_blank" rel="noopener noreferrer">'
             '&#128172; Message our Facebook page</a>'
@@ -9994,13 +10044,44 @@ async def showroom_page(business_public_id: str):
             '</div></div></div>'
         )
 
+        nav_html = (
+            '<nav class="site-nav"><div class="site-nav-inner">'
+            '<a class="site-brand" href="#top"><span class="site-brand-mark">' + logo_html + '</span>'
+            '<span class="site-brand-name">' + html_lib.escape(biz_name) + '</span></a>'
+            '<div class="site-nav-links">'
+            '<a href="#inventory">Available cars</a><a href="#how-it-works">How it works</a>'
+            '<a href="#location">Location</a><a class="site-nav-cta" href="#connect">Contact us</a>'
+            '</div></div></nav>'
+        )
+        trust_html = (
+            '<section class="trust-strip"><div class="trust-grid">'
+            '<div class="trust-item"><div class="trust-icon">&#128663;</div><div class="trust-title">Real inventory</div><div class="trust-text">Live available and reserved units</div></div>'
+            '<div class="trust-item"><div class="trust-icon">&#9989;</div><div class="trust-title">Fast application</div><div class="trust-text">Submit buyer details online</div></div>'
+            '<div class="trust-item"><div class="trust-icon">&#128260;</div><div class="trust-title">Trade-ins welcome</div><div class="trust-text">Upgrade or downgrade your car</div></div>'
+            '<div class="trust-item"><div class="trust-icon">&#128222;</div><div class="trust-title">Direct assistance</div><div class="trust-text">Talk directly with the dealership</div></div>'
+            '</div></section>'
+        )
+        intro_html = (
+            '<section class="home-section"><div class="home-kicker">Your next vehicle</div>'
+            '<h2 class="home-heading">Cars ready for serious buyers</h2>'
+            '<p class="home-copy">Choose from cash-sale and monthly-amortization vehicles. Tap any unit to review its photos, specifications, price, payment details, and application requirements.</p></section>'
+        )
+        process_html = (
+            '<section id="how-it-works" class="home-section"><div class="home-kicker">Simple process</div>'
+            '<h2 class="home-heading">From browsing to application</h2>'
+            '<div class="process-grid">'
+            '<div class="process-card"><div class="process-n">1</div><h3>Browse available units</h3><p>Filter by availability and vehicle make, then open a car to see the complete details.</p></div>'
+            '<div class="process-card"><div class="process-n">2</div><h3>Send your inquiry</h3><p>Apply for the vehicle, reserve it, or include your trade-in offer directly from the car page.</p></div>'
+            '<div class="process-card"><div class="process-n">3</div><h3>Talk with the dealership</h3><p>The dealership reviews the application and contacts serious buyers for the next step.</p></div>'
+            '</div></section>'
+        )
         footer_html = '<div class="footer">Powered by LoyaltyTree &middot; listings update in real time</div>'
 
         showroom_address = "WOLFCARS, Saint Francis Subdivision, 129 Diamond Dr, Meycauayan, 3020 Bulacan"
         maps_embed_src = "https://maps.google.com/maps?q=" + quote(showroom_address) + "&output=embed"
         maps_directions_href = "https://www.google.com/maps/search/?api=1&query=" + quote(showroom_address)
         location_html = (
-            '<div class="location-wrap">'
+            '<div id="location" class="location-wrap">'
             '<div class="location-title">Find us</div>'
             '<div class="location-address">' + html_lib.escape(showroom_address) + '</div>'
             '<div class="location-map"><iframe src="' + maps_embed_src + '" loading="lazy" '
@@ -10017,8 +10098,8 @@ async def showroom_page(business_public_id: str):
             '<link rel="preconnect" href="https://fonts.googleapis.com">'
             '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
             '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">'
-            '<style>' + SHOWROOM_CSS + '</style></head><body>'
-            + hero_html + payment_html + stats_html + search_html + filter_html + make_filter_html + grid_html + location_html + footer_html + lightbox_html + vehicle_modal_html + agent_modal_html + inquiry_modal_html + sell_modal_html +
+            '<style>' + SHOWROOM_CSS + '</style></head><body id="top">'
+            + nav_html + hero_html + trust_html + intro_html + '<section id="inventory" class="inventory-shell"><div class="inventory-toolbar">' + stats_html + search_html + filter_html + make_filter_html + '</div>' + grid_html + '</section>' + process_html + payment_html + location_html + footer_html + lightbox_html + vehicle_modal_html + agent_modal_html + inquiry_modal_html + sell_modal_html +
             '<script>' + SHOWROOM_JS + '</script>'
             '</body></html>'
         )
