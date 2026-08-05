@@ -3006,6 +3006,52 @@ async def login(req: LoginRequest):
     except Exception as e:
         print(f"Staff login error: {e}")
 
+    # Approved Car Lending agents authenticate from cl_agents. Their row is
+    # provisioned only after the dealership owner approves the original
+    # application, so existence here means the agent is approved.
+    try:
+        res = supabase.table("cl_agents").select("*,businesses(public_id,name,logo_url,status,business_type)") \
+            .eq("email", req.email.strip().lower()).maybe_single().execute()
+        agent = res.data
+        if agent:
+            stored_pw = agent.get('password_hash', '')
+            input_hash = hash_password(req.password)
+            if stored_pw == req.password or stored_pw == input_hash:
+                biz = agent.get('businesses', {}) or {}
+                status = (biz.get('status') or 'PENDING').upper()
+                if status != 'ACTIVE':
+                    raise HTTPException(
+                        status_code=403,
+                        detail="This dealership is not active. Please contact the dealership owner."
+                    )
+                business_public_id = biz.get('public_id', '')
+                return {
+                    "success": True,
+                    "token": "agent-token-" + agent.get("public_id", ""),
+                    "business_slug": business_public_id,
+                    "business_name": biz.get("name", ""),
+                    "business_type": biz.get("business_type", "car_lending"),
+                    "name": agent.get("name", ""),
+                    "role": "agent",
+                    "agent_public_id": agent.get("public_id", ""),
+                    "logo_url": biz.get("logo_url"),
+                    "redirect_url": f"{BASE_URL}/agent/{business_public_id}",
+                    "user": {
+                        "business_slug": business_public_id,
+                        "business_name": biz.get("name", ""),
+                        "business_type": biz.get("business_type", "car_lending"),
+                        "name": agent.get("name", ""),
+                        "email": agent.get("email", ""),
+                        "role": "agent",
+                        "agent_public_id": agent.get("public_id", ""),
+                        "logo_url": biz.get("logo_url"),
+                    }
+                }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Agent login error: {e}")
+
     raise HTTPException(status_code=401, detail="Invalid email or password")
 
 @app.post("/api/v1/register")
@@ -5829,15 +5875,20 @@ async def create_cl_application(public_id: str, application: CLApplicationCreate
 
 @app.patch("/api/v1/business/{public_id}/applications/{application_public_id}")
 async def update_cl_application(public_id: str, application_public_id: str, update: CLApplicationUpdate):
-    """Covers plain edits (name/phone/email/notes), the owner's
-    approve/reject decision (status + review_note), and - specifically for
-    an agent application that came in through the showroom's Agent Login
-    sign-up (role='agent' with a password_hash already attached) - actually
-    provisioning the real cl_agents login account the moment it's approved.
-    Rejecting, or approving a manually-logged agent application with no
-    password_hash (owner heard about them by phone/message), never touches
-    cl_agents. The dashboard is the only caller of this endpoint, so
-    there's no applicant-facing path that could set status itself."""
+    """Covers plain edits (name/phone/email/notes) and the owner's
+    approve/reject decision (status + review_note). Approving an agent
+    application - whether it came in through the showroom's Agent Login KYC
+    sign-up (has a password_hash/selfie_url/id_photo_url already attached)
+    or was logged manually by the owner with none of that - provisions (or,
+    matched by email, reuses) the real cl_agents account, and then the
+    application row itself is DELETED rather than left sitting around with
+    status='approved'. That's the whole point: an approved agent shows up
+    exactly once, under the Agents tab (GET .../cl-agents), never still
+    lingering on Applications too. Rejecting, or approving a buyer/seller
+    application, never touches cl_agents and never deletes the row - only
+    an agent application, and only on first approval, takes this branch.
+    The dashboard is the only caller of this endpoint, so there's no
+    applicant-facing path that could set status itself."""
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -5854,48 +5905,63 @@ async def update_cl_application(public_id: str, application_public_id: str, upda
     if newly_decided and update_data['status'] != 'pending':
         update_data['decided_at'] = datetime.utcnow().isoformat()
 
-    try:
-        res = supabase.table("cl_applications").update(update_data).eq("id", application.get("id")).execute()
-        updated = res.data[0] if res.data else {**application, **update_data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+    newly_approved_agent = (newly_decided and update_data.get('status') == 'approved'
+                             and application.get('role') == 'agent')
 
-    # Provision the real agent account, but only the moment status first
-    # becomes 'approved' on an agent application that actually came from
-    # the KYC sign-up flow (has a password_hash) - never on a plain
-    # owner-logged agent application, and never twice for the same one.
-    if (newly_decided and updated.get('status') == 'approved'
-            and updated.get('role') == 'agent' and updated.get('password_hash')):
+    # The normal path: plain edits, rejections, reopens, and approving a
+    # buyer/seller application all just update the cl_applications row like
+    # before. Approving an agent skips this - see below.
+    if not newly_approved_agent:
         try:
-            email = (updated.get('email') or '').strip().lower()
-            existing = supabase.table("cl_agents").select("id") \
-                .eq("business_id", business.get("id")).eq("email", email).maybe_single().execute()
-            if not existing.data:
-                supabase.table("cl_agents").insert({
-                    'business_id': business.get('id'),
-                    'public_id': generate_public_id(),
-                    'name': updated.get('name'),
-                    'phone': updated.get('phone'),
-                    'address': updated.get('address'),
-                    'email': email,
-                    'password_hash': updated.get('password_hash'),
-                    'selfie_url': updated.get('selfie_url'),
-                    'id_photo_url': updated.get('id_photo_url'),
-                    'created_at': datetime.utcnow().isoformat(),
-                    'updated_at': datetime.utcnow().isoformat(),
-                }).execute()
-            # The hash has done its job migrating into cl_agents - no need
-            # to keep a second copy sitting on the application row.
-            supabase.table("cl_applications").update({'password_hash': None}) \
-                .eq("id", application.get("id")).execute()
-            updated['password_hash'] = None
+            res = supabase.table("cl_applications").update(update_data).eq("id", application.get("id")).execute()
+            updated = res.data[0] if res.data else {**application, **update_data}
         except Exception as e:
-            # The application is already marked approved at this point;
-            # surface the account-creation failure rather than silently
-            # losing it, so the owner knows to retry or investigate.
-            raise HTTPException(status_code=500, detail=f"Application approved, but creating the agent account failed: {friendly_db_error(e)}")
+            raise HTTPException(status_code=500, detail=friendly_db_error(e))
+        return {k: v for k, v in updated.items() if k != 'password_hash'}
 
-    return {k: v for k, v in updated.items() if k != 'password_hash'}
+    # An agent application just got approved for the first time. Merge in
+    # whatever this same request also changed (name/phone/review_note) so
+    # the agent account reflects the latest edit, then move it: provision
+    # cl_agents (or reuse an existing account with the same email, so
+    # re-approving/duplicate signups never create two), and delete the
+    # cl_applications row so it stops showing up there.
+    updated = {**application, **update_data}
+    try:
+        email = (updated.get('email') or '').strip().lower()
+        existing = None
+        if email:
+            existing = supabase.table("cl_agents").select("*") \
+                .eq("business_id", business.get("id")).eq("email", email).maybe_single().execute()
+        if existing and existing.data:
+            agent_row = existing.data
+        else:
+            insert_data = {
+                'business_id': business.get('id'),
+                'public_id': generate_public_id(),
+                'name': updated.get('name'),
+                'phone': updated.get('phone'),
+                'address': updated.get('address'),
+                'email': email or None,
+                # Both None on a manually-logged application (no KYC
+                # sign-up behind it) - that's fine, there's no login
+                # flow enforcing these yet anyway.
+                'password_hash': updated.get('password_hash'),
+                'selfie_url': updated.get('selfie_url'),
+                'id_photo_url': updated.get('id_photo_url'),
+                'created_at': datetime.utcnow().isoformat(),
+                'updated_at': datetime.utcnow().isoformat(),
+            }
+            agent_res = supabase.table("cl_agents").insert(insert_data).execute()
+            agent_row = agent_res.data[0] if agent_res.data else insert_data
+        supabase.table("cl_applications").delete().eq("id", application.get("id")).execute()
+    except Exception as e:
+        # The approval decision itself never got saved (this whole branch
+        # runs before any DB write survives), so surface it distinctly from
+        # a plain update failure - the owner knows to just try approving
+        # again rather than ending up with a half-moved record.
+        raise HTTPException(status_code=500, detail=f"Approving this agent failed: {friendly_db_error(e)}")
+
+    return {**_cl_agent_public(agent_row), 'moved_to_agents': True}
 
 @app.delete("/api/v1/business/{public_id}/applications/{application_public_id}")
 async def delete_cl_application(public_id: str, application_public_id: str):
@@ -9320,21 +9386,33 @@ SHOWROOM_JS = """
     return data.secure_url;
   }
 
-  // Placeholder only - no backend call, no session/token yet. Swap this
-  // for a real POST to a login endpoint once agent auth (and an agent
-  // dashboard to send them to) is actually built.
+  // Approved agents authenticate against cl_agents through the shared
+  // login endpoint, then go directly to this dealership's agent inventory.
   var agentLoginForm = document.getElementById('agent-login-form');
-  if (agentLoginForm) agentLoginForm.addEventListener('submit', function(e){
+  if (agentLoginForm) agentLoginForm.addEventListener('submit', async function(e){
     e.preventDefault();
     var email = document.getElementById('agent-login-email').value.trim();
+    var password = document.getElementById('agent-login-password').value;
     var errEl = document.getElementById('agent-login-error');
+    var submitBtn = agentLoginForm.querySelector('button[type="submit"]');
     if (errEl) errEl.style.display = 'none';
-    if (!email) return;
-    agentLoggedIn = true;
-    var nameEl = document.getElementById('agent-loggedin-name');
-    if (nameEl) nameEl.textContent = email;
-    if (agentLoginBtn) agentLoginBtn.textContent = 'Agent';
-    showAgentView(agentLoggedinView);
+    if (!email || !password) return;
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Signing in…'; }
+    try {
+      var res = await fetch(agentConfig.api_base + '/api/v1/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email, password: password })
+      });
+      var data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Login failed');
+      if (data.role !== 'agent') throw new Error('This login is not an approved agent account.');
+      try { localStorage.setItem('loyaltree_agent', JSON.stringify(data)); } catch (storageErr) {}
+      window.location.href = data.redirect_url || (agentConfig.api_base + '/agent/' + data.business_slug);
+    } catch (err) {
+      if (errEl) { errEl.textContent = err.message || 'Login failed'; errEl.style.display = ''; }
+      if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Log in'; }
+    }
   });
 
   // Real signup - captures a selfie + ID photo live from the camera

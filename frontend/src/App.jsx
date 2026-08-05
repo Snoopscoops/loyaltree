@@ -15,9 +15,9 @@ const API_BASE = 'https://loyaltree-btw1.onrender.com'
 // React routes - if someone lands here on the frontend domain (old bookmark,
 // stray link, etc.) send them straight to the real page instead of a blank
 // or missing component.
-function RedirectToBackend({ base, sub }) {
+function RedirectToBackend({ base, sub, id: explicitId }) {
   const params = useParams()
-  const id = Object.values(params)[0]
+  const id = explicitId || Object.values(params)[0]
   useEffect(() => {
     window.location.replace(`${base}/${sub}/${id}`)
   }, [base, sub, id])
@@ -71,6 +71,7 @@ function App() {
           user ? (
             user.role === 'owner' ? <Navigate to="/dashboard" /> :
             user.role === 'super_admin' ? <Navigate to="/admin" /> :
+            user.role === 'agent' ? <RedirectToBackend base={API_BASE} sub="agent" id={user.business_slug} /> :
             ['manager', 'cashier'].includes(user.role) ? <Navigate to="/scanner" /> :
             <Navigate to="/login" />
           ) : <HomePage />

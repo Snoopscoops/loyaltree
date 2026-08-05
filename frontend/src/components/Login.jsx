@@ -31,7 +31,9 @@ function LoginPage({ API_BASE, onLogin }) {
         onLogin(data)
         if (data.role === 'owner') navigate('/dashboard')
         else if (data.role === 'super_admin') navigate('/admin')
-        else navigate('/scanner')
+        else if (data.role === 'agent') {
+          window.location.assign(data.redirect_url || `${API_BASE}/agent/${data.business_slug}`)
+        } else navigate('/scanner')
       } else if (res.status === 403) {
         // Account exists and password matched, but the business isn't
         // approved/active yet - show a softer notice instead of a hard error.

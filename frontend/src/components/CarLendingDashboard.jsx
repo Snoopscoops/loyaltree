@@ -1027,12 +1027,13 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Update failed')
       flash(
-        status === 'approved' ? 'Application approved' + (reviewingApplication.role === 'agent' && reviewingApplication.selfie_url ? ' — agent account created' : '')
+        status === 'approved' ? 'Application approved' + (reviewingApplication.role === 'agent' ? ' — moved to Agents' : '')
         : status === 'rejected' ? 'Application rejected'
         : 'Application reopened'
       )
       setReviewingApplication(null)
       reloadApplications()
+      if (reviewingApplication.role === 'agent' && status === 'approved') reloadAgents()
     } catch (err) {
       flash(err.message)
     }
