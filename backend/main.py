@@ -8241,10 +8241,11 @@ a{color:inherit}
 .agent-modal{display:none;position:fixed;inset:0;background:rgba(2,6,23,0.6);z-index:950;
   align-items:center;justify-content:center;padding:20px}
 .agent-modal.open{display:flex}
-.agent-modal-card{background:#fff;border-radius:20px;max-width:380px;width:100%;padding:30px 26px 26px;
-  box-shadow:0 24px 60px rgba(2,6,23,0.35);position:relative;text-align:center}
+.agent-modal-card{background:#fff;border-radius:20px;max-width:380px;width:100%;max-height:88vh;
+  box-shadow:0 24px 60px rgba(2,6,23,0.35);position:relative;text-align:center;overflow:hidden;padding:0}
+.agent-modal-scroll{max-height:88vh;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:30px 26px 26px}
 .agent-modal-close{position:absolute;top:12px;right:12px;width:32px;height:32px;border-radius:50%;
-  border:none;background:#f1f5f9;color:var(--ink);font-size:18px;line-height:1;cursor:pointer}
+  border:none;background:#f1f5f9;color:var(--ink);font-size:18px;line-height:1;cursor:pointer;z-index:2}
 .agent-modal-close:hover{background:#e2e8f0}
 .agent-modal-title{font-size:19px;font-weight:800;letter-spacing:-0.01em;margin-bottom:4px}
 .agent-modal-sub{font-size:13px;color:var(--muted);margin-bottom:18px}
@@ -8280,7 +8281,8 @@ a{color:inherit}
 
 @media(max-width:520px){
   .agent-login-btn{top:12px;right:12px;font-size:11.5px;padding:7px 12px}
-  .agent-modal-card{padding:26px 20px 22px}
+  .agent-modal-card{max-height:92vh}
+  .agent-modal-scroll{max-height:92vh;padding:26px 20px 22px}
 }
 """
 
@@ -8951,6 +8953,7 @@ async def showroom_page(business_public_id: str):
             '<div id="agent-modal" class="agent-modal">'
             '<div class="agent-modal-card">'
             '<button id="agent-modal-close" class="agent-modal-close" type="button" aria-label="Close">&times;</button>'
+            '<div class="agent-modal-scroll">'
 
             '<div id="agent-login-view" class="agent-modal-view">'
             '<h3 class="agent-modal-title">Agent Login</h3>'
@@ -9019,7 +9022,7 @@ async def showroom_page(business_public_id: str):
             '<button type="button" id="agent-logout-btn" class="agent-modal-submit agent-modal-secondary">Log out</button>'
             '</div>'
 
-            '</div></div>'
+            '</div></div></div>'
             '<script id="agent-config" type="application/json">'
             + json.dumps({'api_base': BASE_URL, 'business_public_id': business_public_id}) +
             '</script>'
