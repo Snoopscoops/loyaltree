@@ -261,7 +261,7 @@ function SocialPostStudio({kind,item,settings,publicUrl,onClose,initialConfig={}
 
   return <div style={S.modalOverlay} onClick={onClose}><div style={S.studioModal} onClick={e=>e.stopPropagation()}>
     <div style={S.studioHead}><div><h2 style={{margin:0}}>Cockpit Facebook Post Studio</h2><div style={S.muted}>Generate a VCSA-style poster, download the PNG, then copy the caption.</div></div><button style={S.close} onClick={onClose}>×</button></div>
-    <div style={S.studioGrid}><div><canvas ref={canvasRef} style={{...S.canvas,aspectRatio:format==='square'?'1 / 1':'4 / 5'}}/><div style={S.actionRow}><button style={S.primary} onClick={download} disabled={busy}>{busy?'Preparing…':'Download PNG'}</button><button style={S.secondary} onClick={copyCaption}>Copy Facebook Caption</button></div></div>
+    <div className="studio-grid" style={S.studioGrid}><div><canvas ref={canvasRef} style={{...S.canvas,aspectRatio:format==='square'?'1 / 1':'4 / 5'}}/><div style={S.actionRow}><button style={S.primary} onClick={download} disabled={busy}>{busy?'Preparing…':'Download PNG'}</button><button style={S.secondary} onClick={copyCaption}>Copy Facebook Caption</button></div></div>
     <div style={S.controls}>
       <Select label="Format" value={format} onChange={setFormat} options={[{value:'portrait',label:'Facebook portrait — 1080 × 1350'},{value:'square',label:'Facebook square — 1080 × 1080'}]}/>
       <Select label="Poster template" value={template} onChange={setTemplate} options={[{value:'vcsaClassic',label:'VCSA classic announcement'},{value:'premium',label:'Premium black and gold'},{value:'advisory',label:'Dark advisory'}]}/>
@@ -365,14 +365,62 @@ export default function CockpitDashboard({ API_BASE, user, onLogout }) {
   const upload = async (kind,field,file) => { if(!file)return;try{ const url=await uploadImage(API_BASE,businessId,file,`cockpit_${kind}`); setForm(kind,{[field]:url}); flash('Image uploaded') }catch(e){flash(e.message)} }
   const publicUrl = `${API_BASE}/cockpit/${businessId}`
 
-  return <div style={S.page}>
+  return <div style={S.page}><style>{`@media (max-width: 960px){.composer-shell{grid-template-columns:1fr!important}.composer-side{position:static!important}.studio-grid{grid-template-columns:1fr!important}} @media (max-width: 720px){.grid-four,.grid-three,.grid-two,.grid-two-compact,.contact-pair,.image-upload-row{grid-template-columns:1fr!important}.cockpit-main{padding:12px!important}.cockpit-panel{padding:14px!important}.composer-actions{align-items:stretch!important}.composer-actions>div:last-child{width:100%}.composer-actions button{flex:1}}`}</style>
     <header style={S.header}><div style={S.brandWrap}>{settings?.logo_url&&<img src={settings.logo_url} alt="Cockpit logo" style={S.brandLogo}/>}<div><h1 style={{margin:0}}>{user?.business_name || 'Cockpit Arena'}</h1><small>LoyaltyTree Cockpit Admin</small></div></div><div><a style={S.view} href={publicUrl} target="_blank" rel="noreferrer">View website</a><button style={S.logout} onClick={onLogout}>Log out</button></div></header>
     {message && <div style={S.toast}>{message}</div>}
     <nav style={S.nav}>{TABS.map(x=><button key={x} style={{...S.tab,...(tab===x?S.active:{})}} onClick={()=>setTab(x)}>{x[0].toUpperCase()+x.slice(1)}</button>)}</nav>
-    <main style={S.main}>
+    <main className="cockpit-main" style={S.main}>
       {tab==='overview' && <><div style={S.cards}>{[['Events',data.events.length],['Announcements',data.announcements.length],['Results',data.results.length],['Gallery',data.gallery.length],['Sponsors',data.sponsors.length]].map(([a,b])=><div style={S.card} key={a}><b style={{fontSize:30}}>{b}</b><div>{a}</div></div>)}</div><Panel title="Public website"><input style={S.input} readOnly value={publicUrl}/></Panel></>}
-      {tab==='events' && <Crud title="Events" form={<><Input label="Title" value={forms.events.title} onChange={v=>setForm('events',{title:v})}/><Input label="Date" type="date" value={forms.events.event_date} onChange={v=>setForm('events',{event_date:v})}/><Input label="Time" type="time" value={forms.events.start_time} onChange={v=>setForm('events',{start_time:v})}/><Input label="Category" value={forms.events.category} onChange={v=>setForm('events',{category:v})}/><Input label="Minimum bet" type="number" value={forms.events.entry_fee} onChange={v=>setForm('events',{entry_fee:v})}/><Input label="Prize details" value={forms.events.prize_details} onChange={v=>setForm('events',{prize_details:v})}/><TextArea label="Event details" value={forms.events.description} onChange={v=>setForm('events',{description:v})} rows={4}/><TextArea label="Special note (optional)" value={forms.events.special_note} onChange={v=>setForm('events',{special_note:v})} rows={4}/><Select label="Status" value={forms.events.status} onChange={v=>setForm('events',{status:v})} options={['upcoming','open','closed','finished','cancelled']}/><File label="Poster/background" onChange={f=>upload('events','poster_url',f)}/><PostSettingsPanel kind="event" value={eventPostSettings} onChange={setEventPostSettings}/></>} onSave={()=>create('events')} onPreview={()=>setShare({kind:'event',item:{...forms.events,minimum_bet_display:forms.events.entry_fee?money(forms.events.entry_fee):'',special_note:forms.events.special_note},config:{...eventPostSettings,payout:forms.events.prize_details,minimumBet:forms.events.entry_fee?money(forms.events.entry_fee):'',specialNote:forms.events.special_note,backgroundUrl:eventPostSettings.backgroundUrl||forms.events.poster_url||settings?.hero_image_url||''}})} items={data.events} onDelete={id=>remove('events',id)} onShare={item=>setShare({kind:'event',item,config:{...eventPostSettings,payout:item.prize_details||'',minimumBet:item.entry_fee?money(item.entry_fee):'',specialNote:item.special_note||splitEventDescription(item.description).specialNote||'',backgroundUrl:eventPostSettings.backgroundUrl||item.poster_url||settings?.hero_image_url||''}})}/>} 
-      {tab==='announcements' && <Crud title="Announcements" form={<><Input label="Title" value={forms.announcements.title} onChange={v=>setForm('announcements',{title:v})}/><Input label="Publish date" type="date" value={forms.announcements.publish_date} onChange={v=>setForm('announcements',{publish_date:v})}/><TextArea label="Message" value={forms.announcements.message} onChange={v=>setForm('announcements',{message:v})} rows={5}/><PostSettingsPanel kind="announcement" value={announcementPostSettings} onChange={setAnnouncementPostSettings}/></>} onSave={()=>create('announcements')} onPreview={()=>setShare({kind:'announcement',item:forms.announcements,config:{...announcementPostSettings,backgroundUrl:announcementPostSettings.backgroundUrl||settings?.hero_image_url||''}})} items={data.announcements} onDelete={id=>remove('announcements',id)} onShare={item=>setShare({kind:'announcement',item,config:{...announcementPostSettings,backgroundUrl:announcementPostSettings.backgroundUrl||settings?.hero_image_url||''}})}/>} 
+      {tab==='events' && <Crud title="Events" customLayout form={
+        <div className="composer-shell" style={S.composerShell}>
+          <div style={S.composerMain}>
+            <ComposerSection icon="📅" title="Event information" hint="The details shown on the website and used to build the Facebook poster.">
+              <div className="grid-four" style={S.formGridFour}>
+                <Input label="Title" value={forms.events.title} onChange={v=>setForm('events',{title:v})}/>
+                <Input label="Date" type="date" value={forms.events.event_date} onChange={v=>setForm('events',{event_date:v})}/>
+                <Input label="Time" type="time" value={forms.events.start_time} onChange={v=>setForm('events',{start_time:v})}/>
+                <Input label="Category" value={forms.events.category} onChange={v=>setForm('events',{category:v})}/>
+              </div>
+              <div className="grid-three" style={S.formGridThree}>
+                <Input label="Minimum bet" type="number" value={forms.events.entry_fee} onChange={v=>setForm('events',{entry_fee:v})}/>
+                <Input label="Prize details" value={forms.events.prize_details} onChange={v=>setForm('events',{prize_details:v})}/>
+                <Select label="Status" value={forms.events.status} onChange={v=>setForm('events',{status:v})} options={['upcoming','open','closed','finished','cancelled']}/>
+              </div>
+            </ComposerSection>
+            <ComposerSection icon="✍️" title="Event message" hint="Keep the main description separate from reminders or special instructions.">
+              <div className="grid-two" style={S.formGridTwo}>
+                <TextArea label="Event details" value={forms.events.description} onChange={v=>setForm('events',{description:v})} rows={5}/>
+                <TextArea label="Special note (optional)" value={forms.events.special_note} onChange={v=>setForm('events',{special_note:v})} rows={5}/>
+              </div>
+            </ComposerSection>
+            <ComposerSection icon="🖼️" title="Event image" hint="Upload the official event artwork or a clean background for the generated poster.">
+              <div className="image-upload-row" style={S.imageUploadRow}>
+                <File label="Poster / background" onChange={f=>upload('events','poster_url',f)}/>
+                {forms.events.poster_url && <img src={forms.events.poster_url} alt="Event poster preview" style={S.uploadPreview}/>} 
+              </div>
+            </ComposerSection>
+          </div>
+          <aside className="composer-side" style={S.composerSide}>
+            <PostSettingsPanel kind="event" value={eventPostSettings} onChange={setEventPostSettings}/>
+          </aside>
+        </div>
+      } onSave={()=>create('events')} onPreview={()=>setShare({kind:'event',item:{...forms.events,minimum_bet_display:forms.events.entry_fee?money(forms.events.entry_fee):'',special_note:forms.events.special_note},config:{...eventPostSettings,payout:forms.events.prize_details,minimumBet:forms.events.entry_fee?money(forms.events.entry_fee):'',specialNote:forms.events.special_note,backgroundUrl:eventPostSettings.backgroundUrl||forms.events.poster_url||settings?.hero_image_url||''}})} items={data.events} onDelete={id=>remove('events',id)} onShare={item=>setShare({kind:'event',item,config:{...eventPostSettings,payout:item.prize_details||'',minimumBet:item.entry_fee?money(item.entry_fee):'',specialNote:item.special_note||splitEventDescription(item.description).specialNote||'',backgroundUrl:eventPostSettings.backgroundUrl||item.poster_url||settings?.hero_image_url||''}})}/>} 
+      {tab==='announcements' && <Crud title="Announcements" customLayout form={
+        <div className="composer-shell" style={S.composerShell}>
+          <div style={S.composerMain}>
+            <ComposerSection icon="📢" title="Announcement" hint="Write the exact message that will appear on the website and Facebook caption.">
+              <div className="grid-two-compact" style={S.formGridTwoCompact}>
+                <Input label="Title" value={forms.announcements.title} onChange={v=>setForm('announcements',{title:v})}/>
+                <Input label="Publish date" type="date" value={forms.announcements.publish_date} onChange={v=>setForm('announcements',{publish_date:v})}/>
+              </div>
+              <TextArea label="Message" value={forms.announcements.message} onChange={v=>setForm('announcements',{message:v})} rows={8}/>
+            </ComposerSection>
+          </div>
+          <aside className="composer-side" style={S.composerSide}>
+            <PostSettingsPanel kind="announcement" value={announcementPostSettings} onChange={setAnnouncementPostSettings}/>
+          </aside>
+        </div>
+      } onSave={()=>create('announcements')} onPreview={()=>setShare({kind:'announcement',item:forms.announcements,config:{...announcementPostSettings,backgroundUrl:announcementPostSettings.backgroundUrl||settings?.hero_image_url||''}})} items={data.announcements} onDelete={id=>remove('announcements',id)} onShare={item=>setShare({kind:'announcement',item,config:{...announcementPostSettings,backgroundUrl:announcementPostSettings.backgroundUrl||settings?.hero_image_url||''}})}/>} 
       {tab==='results' && <Crud title="Results" form={<><Select label="Event" value={forms.results.event_public_id} onChange={v=>setForm('results',{event_public_id:v})} options={data.events.map(e=>({value:e.public_id,label:e.title}))}/><Input label="Category" value={forms.results.category} onChange={v=>setForm('results',{category:v})}/><Input label="Champion" value={forms.results.champion_name} onChange={v=>setForm('results',{champion_name:v})}/><Input label="Runner-up" value={forms.results.runner_up_name} onChange={v=>setForm('results',{runner_up_name:v})}/><Input label="Third place" value={forms.results.third_place_name} onChange={v=>setForm('results',{third_place_name:v})}/><Input label="Notes" value={forms.results.notes} onChange={v=>setForm('results',{notes:v})}/><File label="Photo" onChange={f=>upload('results','photo_url',f)}/></>} onSave={()=>create('results')} items={data.results} onDelete={id=>remove('results',id)}/>} 
       {tab==='gallery' && <Crud title="Gallery" form={<><Input label="Title" value={forms.gallery.title} onChange={v=>setForm('gallery',{title:v})}/><Input label="Album" value={forms.gallery.album_name} onChange={v=>setForm('gallery',{album_name:v})}/><File label="Image" onChange={f=>upload('gallery','image_url',f)}/></>} onSave={()=>create('gallery')} items={data.gallery} onDelete={id=>remove('gallery',id)}/>} 
       {tab==='sponsors' && <Crud title="Sponsors" form={<><Input label="Name" value={forms.sponsors.name} onChange={v=>setForm('sponsors',{name:v})}/><Input label="Website" value={forms.sponsors.website_url} onChange={v=>setForm('sponsors',{website_url:v})}/><Input label="Description" value={forms.sponsors.description} onChange={v=>setForm('sponsors',{description:v})}/><File label="Logo" onChange={f=>upload('sponsors','logo_url',f)}/></>} onSave={()=>create('sponsors')} items={data.sponsors} onDelete={id=>remove('sponsors',id)}/>} 
@@ -382,30 +430,63 @@ export default function CockpitDashboard({ API_BASE, user, onLogout }) {
   </div>
 }
 
-const Panel=({title,children})=><section style={S.panel}><h2>{title}</h2>{children}</section>
+const Panel=({title,children})=><section className="cockpit-panel" style={S.panel}><h2>{title}</h2>{children}</section>
 const Input=({label,value,onChange,type='text'})=><label style={S.field}><span>{label}</span><input style={S.input} type={type} value={value||''} onChange={e=>onChange(e.target.value)}/></label>
 const TextArea=({label,value,onChange,rows=4})=><label style={S.field}><span>{label}</span><textarea style={{...S.input,minHeight:rows*26,resize:'vertical'}} rows={rows} value={value||''} onChange={e=>onChange(e.target.value)}/></label>
 const File=({label,onChange})=><label style={S.field}><span>{label}</span><input style={S.input} type="file" accept="image/*" onChange={e=>onChange(e.target.files?.[0])}/></label>
 const Select=({label,value,onChange,options})=><label style={S.field}><span>{label}</span><select style={S.input} value={value||''} onChange={e=>onChange(e.target.value)}><option value="">Select</option>{options.map(o=>typeof o==='string'?<option key={o} value={o}>{o}</option>:<option key={o.value} value={o.value}>{o.label}</option>)}</select></label>
+function ComposerSection({icon,title,hint,children}){
+  return <section style={S.composerSection}>
+    <div style={S.composerSectionHead}>
+      <div style={S.composerIcon}>{icon}</div>
+      <div><h3 style={S.composerSectionTitle}>{title}</h3>{hint&&<div style={S.composerSectionHint}>{hint}</div>}</div>
+    </div>
+    <div style={S.composerSectionBody}>{children}</div>
+  </section>
+}
+
 function PostSettingsPanel({kind,value,onChange}){
   const patch = next => onChange({...value,...next})
   return <div style={S.postSettingsBox}>
-    <div style={S.postSettingsTitle}>Facebook post settings</div>
-    <div style={S.postSettingsHint}>Edit these settings first, then click Preview Facebook Post below.</div>
-    <div style={S.grid}>
+    <div style={S.postSettingsHeader}>
+      <div style={S.postSettingsIcon}>f</div>
+      <div><div style={S.postSettingsTitle}>Facebook post setup</div><div style={S.postSettingsHint}>Prepare the poster before opening the full preview.</div></div>
+    </div>
+    <div style={S.settingStack}>
       <Select label="Poster template" value={value.template} onChange={v=>patch({template:v})} options={kind==='event'?[{value:'vcsaClassic',label:'VCSA classic announcement'},{value:'premium',label:'Premium black and gold'}]:[{value:'advisory',label:'Dark advisory'},{value:'vcsaClassic',label:'VCSA classic announcement'}]}/>
       <Select label="Poster format" value={value.format} onChange={v=>patch({format:v})} options={[{value:'portrait',label:'Facebook portrait — 1080 × 1350'},{value:'square',label:'Facebook square — 1080 × 1080'}]}/>
       <Input label="Custom poster headline (optional)" value={value.customHeadline} onChange={v=>patch({customHeadline:v})}/>
       <Input label="Custom background image URL (optional)" value={value.backgroundUrl} onChange={v=>patch({backgroundUrl:v})}/>
-      <Input label="Reservation name 1" value={value.contactName1} onChange={v=>patch({contactName1:v})}/>
-      <Input label="Reservation number 1" value={value.contactNumber1} onChange={v=>patch({contactNumber1:v})}/>
-      <Input label="Reservation name 2" value={value.contactName2} onChange={v=>patch({contactName2:v})}/>
-      <Input label="Reservation number 2" value={value.contactNumber2} onChange={v=>patch({contactNumber2:v})}/>
     </div>
-    <TextArea label="Facebook hashtags" value={value.hashtags} onChange={v=>patch({hashtags:v})} rows={2}/>
+    <div style={S.contactBlock}>
+      <div style={S.contactBlockTitle}>Reservation contacts</div>
+      <div className="contact-pair" style={S.contactPair}>
+        <Input label="Name 1" value={value.contactName1} onChange={v=>patch({contactName1:v})}/>
+        <Input label="Number 1" value={value.contactNumber1} onChange={v=>patch({contactNumber1:v})}/>
+      </div>
+      <div className="contact-pair" style={S.contactPair}>
+        <Input label="Name 2" value={value.contactName2} onChange={v=>patch({contactName2:v})}/>
+        <Input label="Number 2" value={value.contactNumber2} onChange={v=>patch({contactNumber2:v})}/>
+      </div>
+    </div>
+    <TextArea label="Facebook hashtags" value={value.hashtags} onChange={v=>patch({hashtags:v})} rows={3}/>
   </div>
 }
 
-function Crud({title,form,onSave,onPreview,items,onDelete,onShare}){return <><Panel title={`Add ${title.slice(0,-1)}`}><div style={S.grid}>{form}</div><div style={S.actionRow}><button style={S.primary} onClick={onSave}>Save</button>{onPreview&&<button style={S.secondary} onClick={onPreview}>Preview Facebook Post</button>}</div></Panel><Panel title={title}>{items.length?items.map(x=><div key={x.public_id} style={S.row}><div><b>{x.title||x.name||x.category||'Record'}</b><div style={{fontSize:13,color:'#766'}}>{x.event_date||x.message||x.description||x.champion_name||''}</div></div><div style={S.actionRow}>{onShare&&<button style={S.shareBtn} onClick={()=>onShare(x)}>Facebook Post</button>}<button style={S.delete} onClick={()=>onDelete(x.public_id)}>Delete</button></div></div>):<p>No records yet.</p>}</Panel></>}
+function Crud({title,form,onSave,onPreview,items,onDelete,onShare,customLayout=false}){
+  return <>
+    <Panel title={`Add ${title.slice(0,-1)}`}>
+      <div style={customLayout?S.customFormWrap:S.grid}>{form}</div>
+      <div className="composer-actions" style={S.composerActions}>
+        <div style={S.actionHint}>Save publishes this information to the cockpit website. Preview lets you adjust and download the Facebook poster.</div>
+        <div style={S.actionRow}>
+          <button style={S.primary} onClick={onSave}>Save {title.slice(0,-1)}</button>
+          {onPreview&&<button style={S.previewBtn} onClick={onPreview}>Preview Facebook Post</button>}
+        </div>
+      </div>
+    </Panel>
+    <Panel title={title}>{items.length?items.map(x=><div key={x.public_id} style={S.row}><div><b>{x.title||x.name||x.category||'Record'}</b><div style={{fontSize:13,color:'#766'}}>{x.event_date||x.message||x.description||x.champion_name||''}</div></div><div style={S.actionRow}>{onShare&&<button style={S.shareBtn} onClick={()=>onShare(x)}>Facebook Post</button>}<button style={S.delete} onClick={()=>onDelete(x.public_id)}>Delete</button></div></div>):<p>No records yet.</p>}</Panel>
+  </>
+}
 
-const S={page:{minHeight:'100vh',background:'#f4efe8',fontFamily:'Arial,sans-serif'},brandWrap:{display:'flex',alignItems:'center',gap:12},brandLogo:{width:64,height:64,borderRadius:'50%',objectFit:'cover',border:'3px solid #d4a84f',background:'#fff'},header:{background:'#211813',color:'#fff',padding:'20px 28px',display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap'},view:{color:'#fff',background:'#a67734',padding:'10px 14px',borderRadius:8,textDecoration:'none',marginRight:8},logout:{padding:'10px 14px',borderRadius:8,border:'1px solid #776',background:'transparent',color:'#fff'},nav:{display:'flex',gap:6,overflowX:'auto',padding:12,background:'#fff'},tab:{border:0,background:'transparent',padding:'10px 13px',borderRadius:8,textTransform:'capitalize'},active:{background:'#211813',color:'#fff'},main:{maxWidth:1150,margin:'auto',padding:24},panel:{background:'#fff',padding:20,borderRadius:14,marginBottom:18,boxShadow:'0 5px 18px #0000000d'},cards:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:12,marginBottom:18},card:{background:'#fff',padding:18,borderRadius:12},grid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:12,marginBottom:14},field:{display:'flex',flexDirection:'column',gap:5,textTransform:'capitalize',fontSize:13,fontWeight:700},input:{padding:11,border:'1px solid #d6cabf',borderRadius:8,font:'inherit',width:'100%',boxSizing:'border-box'},primary:{background:'#8a6129',color:'#fff',border:0,borderRadius:8,padding:'11px 16px',fontWeight:700,cursor:'pointer'},secondary:{background:'#fff',color:'#6b431b',border:'1px solid #b99261',borderRadius:8,padding:'10px 15px',fontWeight:700,cursor:'pointer'},shareBtn:{background:'#1877f2',color:'#fff',border:0,borderRadius:7,padding:'8px 11px',fontWeight:700,cursor:'pointer'},row:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,padding:'12px 0',borderBottom:'1px solid #eee'},delete:{border:'1px solid #f4b4b4',color:'#b42318',background:'#fff3f3',borderRadius:7,padding:'7px 10px',cursor:'pointer'},toast:{position:'fixed',top:80,right:20,zIndex:20,background:'#211813',color:'#fff',padding:'12px 15px',borderRadius:8},actionRow:{display:'flex',gap:9,alignItems:'center',flexWrap:'wrap'},modalOverlay:{position:'fixed',inset:0,zIndex:50,background:'rgba(0,0,0,.72)',padding:20,overflowY:'auto',display:'flex',justifyContent:'center',alignItems:'flex-start'},studioModal:{width:'min(1180px,100%)',background:'#f7f2ec',borderRadius:18,margin:'20px auto',padding:22,boxShadow:'0 24px 80px rgba(0,0,0,.35)'},studioHead:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:16,marginBottom:18},close:{border:0,background:'#2b1b17',color:'#fff',width:40,height:40,borderRadius:10,fontSize:26,cursor:'pointer'},studioGrid:{display:'grid',gridTemplateColumns:'minmax(340px,1.05fr) minmax(300px,.95fr)',gap:24},canvas:{width:'100%',display:'block',background:'#111',borderRadius:12,boxShadow:'0 12px 30px rgba(0,0,0,.22)'},controls:{display:'flex',flexDirection:'column',gap:12},checkRow:{display:'flex',gap:18,flexWrap:'wrap',fontSize:14,fontWeight:700},muted:{color:'#765f54',fontSize:14,marginTop:5},postSettingsBox:{gridColumn:'1 / -1',background:'#fff8ee',border:'1px solid #dec39b',borderRadius:12,padding:16,marginTop:6},postSettingsTitle:{fontSize:17,fontWeight:800,color:'#5c3616',marginBottom:4},postSettingsHint:{fontSize:13,color:'#80664f',marginBottom:14}}
+const S={page:{minHeight:'100vh',background:'#f4efe8',fontFamily:'Arial,sans-serif'},brandWrap:{display:'flex',alignItems:'center',gap:12},brandLogo:{width:64,height:64,borderRadius:'50%',objectFit:'cover',border:'3px solid #d4a84f',background:'#fff'},header:{background:'#211813',color:'#fff',padding:'20px 28px',display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap'},view:{color:'#fff',background:'#a67734',padding:'10px 14px',borderRadius:8,textDecoration:'none',marginRight:8},logout:{padding:'10px 14px',borderRadius:8,border:'1px solid #776',background:'transparent',color:'#fff'},nav:{display:'flex',gap:6,overflowX:'auto',padding:12,background:'#fff'},tab:{border:0,background:'transparent',padding:'10px 13px',borderRadius:8,textTransform:'capitalize'},active:{background:'#211813',color:'#fff'},main:{maxWidth:1150,margin:'auto',padding:24},panel:{background:'#fff',padding:20,borderRadius:14,marginBottom:18,boxShadow:'0 5px 18px #0000000d'},cards:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:12,marginBottom:18},card:{background:'#fff',padding:18,borderRadius:12},grid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:12,marginBottom:14},field:{display:'flex',flexDirection:'column',gap:5,textTransform:'capitalize',fontSize:13,fontWeight:700},input:{padding:11,border:'1px solid #d6cabf',borderRadius:8,font:'inherit',width:'100%',boxSizing:'border-box'},primary:{background:'#8a6129',color:'#fff',border:0,borderRadius:8,padding:'11px 16px',fontWeight:700,cursor:'pointer'},secondary:{background:'#fff',color:'#6b431b',border:'1px solid #b99261',borderRadius:8,padding:'10px 15px',fontWeight:700,cursor:'pointer'},shareBtn:{background:'#1877f2',color:'#fff',border:0,borderRadius:7,padding:'8px 11px',fontWeight:700,cursor:'pointer'},row:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,padding:'12px 0',borderBottom:'1px solid #eee'},delete:{border:'1px solid #f4b4b4',color:'#b42318',background:'#fff3f3',borderRadius:7,padding:'7px 10px',cursor:'pointer'},toast:{position:'fixed',top:80,right:20,zIndex:20,background:'#211813',color:'#fff',padding:'12px 15px',borderRadius:8},actionRow:{display:'flex',gap:9,alignItems:'center',flexWrap:'wrap'},modalOverlay:{position:'fixed',inset:0,zIndex:50,background:'rgba(0,0,0,.72)',padding:20,overflowY:'auto',display:'flex',justifyContent:'center',alignItems:'flex-start'},studioModal:{width:'min(1180px,100%)',background:'#f7f2ec',borderRadius:18,margin:'20px auto',padding:22,boxShadow:'0 24px 80px rgba(0,0,0,.35)'},studioHead:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:16,marginBottom:18},close:{border:0,background:'#2b1b17',color:'#fff',width:40,height:40,borderRadius:10,fontSize:26,cursor:'pointer'},studioGrid:{display:'grid',gridTemplateColumns:'minmax(340px,1.05fr) minmax(300px,.95fr)',gap:24},canvas:{width:'100%',display:'block',background:'#111',borderRadius:12,boxShadow:'0 12px 30px rgba(0,0,0,.22)'},controls:{display:'flex',flexDirection:'column',gap:12},checkRow:{display:'flex',gap:18,flexWrap:'wrap',fontSize:14,fontWeight:700},muted:{color:'#765f54',fontSize:14,marginTop:5},customFormWrap:{marginBottom:16},composerShell:{display:'grid',gridTemplateColumns:'minmax(0,1.65fr) minmax(300px,.85fr)',gap:18,alignItems:'start'},composerMain:{display:'flex',flexDirection:'column',gap:14},composerSide:{position:'sticky',top:14},composerSection:{border:'1px solid #e8ded4',borderRadius:14,background:'#fff',overflow:'hidden'},composerSectionHead:{display:'flex',gap:11,alignItems:'center',padding:'14px 16px',background:'#faf7f3',borderBottom:'1px solid #eee4da'},composerIcon:{width:38,height:38,borderRadius:10,display:'grid',placeItems:'center',background:'#2a1c17',color:'#fff',fontSize:18},composerSectionTitle:{margin:0,fontSize:17,color:'#251813'},composerSectionHint:{marginTop:3,fontSize:12.5,color:'#816d61',fontWeight:500},composerSectionBody:{padding:16},formGridFour:{display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:12,marginBottom:12},formGridThree:{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:12},formGridTwo:{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:12},formGridTwoCompact:{display:'grid',gridTemplateColumns:'2fr 1fr',gap:12,marginBottom:12},imageUploadRow:{display:'grid',gridTemplateColumns:'minmax(0,1fr) 130px',gap:14,alignItems:'end'},uploadPreview:{width:130,height:96,objectFit:'cover',borderRadius:10,border:'1px solid #d6cabf'},postSettingsBox:{background:'linear-gradient(180deg,#fff8ee 0%,#fffdf9 100%)',border:'1px solid #dec39b',borderRadius:14,padding:16,boxShadow:'0 8px 24px rgba(93,54,22,.08)'},postSettingsHeader:{display:'flex',gap:11,alignItems:'center',paddingBottom:13,marginBottom:13,borderBottom:'1px solid #ead7bb'},postSettingsIcon:{width:38,height:38,borderRadius:'50%',display:'grid',placeItems:'center',background:'#1877f2',color:'#fff',fontWeight:900,fontSize:22,fontFamily:'Arial'},postSettingsTitle:{fontSize:17,fontWeight:800,color:'#5c3616'},postSettingsHint:{fontSize:12.5,color:'#80664f',marginTop:2},settingStack:{display:'flex',flexDirection:'column',gap:11},contactBlock:{margin:'14px 0',padding:'13px',background:'#fff',border:'1px solid #ebdfd1',borderRadius:11},contactBlockTitle:{fontSize:13,fontWeight:800,color:'#5c3616',marginBottom:10,textTransform:'uppercase',letterSpacing:'.04em'},contactPair:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:9,marginBottom:9},composerActions:{display:'flex',justifyContent:'space-between',gap:16,alignItems:'center',paddingTop:16,marginTop:4,borderTop:'1px solid #eee4da',flexWrap:'wrap'},actionHint:{fontSize:12.5,color:'#806f65',maxWidth:620,lineHeight:1.45},previewBtn:{background:'#1877f2',color:'#fff',border:0,borderRadius:8,padding:'11px 16px',fontWeight:800,cursor:'pointer'}}
