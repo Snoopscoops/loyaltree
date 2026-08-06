@@ -304,7 +304,7 @@ function CashierApp({ API_BASE }) {
       setMessage(
         data.upgraded
           ? `🎉 ${customerData.name} upgraded to ${data.tier.name}! +${data.points_earned} VIP points`
-          : `✅ +${data.points_earned} VIP points! ${customerData.name} now has ${data.vip_points}`
+          : `✅ ₱${Number(data.amount_spent || amount).toLocaleString()} recorded · +${data.points_earned} VIP points · ${data.vip_points} total`
       )
     } catch (err) {
       setMessage(`❌ ${err.message}`)
@@ -698,7 +698,7 @@ function CashierApp({ API_BASE }) {
         border: '#fde68a',
         icon: '👑',
         label: 'VIP Card',
-        actionTitle: 'Record Purchase & Add VIP Points',
+        actionTitle: 'Enter Amount Spent & Earn VIP Points',
       }
     : {
         accent: '#0d9488',
@@ -1023,10 +1023,13 @@ function CashierApp({ API_BASE }) {
               {vipSaleAmount && (
                 <p style={styles.pointsPreview}>
                   {previewVipPoints > 0
-                    ? `= +${previewVipPoints} VIP point${previewVipPoints === 1 ? '' : 's'}`
-                    : 'Enter a valid amount'}
+                    ? `₱${Number(vipSaleAmount).toLocaleString()} earns +${previewVipPoints} VIP point${previewVipPoints === 1 ? '' : 's'}`
+                    : 'Enter a purchase amount to preview VIP points'}
                 </p>
               )}
+              <p style={styles.pointsPreview}>
+                Earning rule: {customerData.vip_points_per_amount} VIP points for every ₱{customerData.vip_amount_pesos} spent
+              </p>
               {customerData.vip_next_tier && (
                 <p style={styles.pointsPreview}>
                   Next tier: {customerData.vip_next_tier.name} at {customerData.vip_next_tier.threshold} VIP points

@@ -626,7 +626,33 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
             </div>
           ) : form.card_type === 'vip' ? (
             <div style={styles.pointsSection}>
-              <div style={styles.fieldGroup}><label style={styles.label}>VIP earn rate</label><div style={styles.earnRateRow}><span style={styles.earnRateText}>Earn</span><input style={styles.earnRateInput} type="number" min={0} value={form.vip_points_per_amount} onChange={e=>update('vip_points_per_amount',e.target.value)}/><span style={styles.earnRateText}>VIP points per ₱</span><input style={styles.earnRateInput} type="number" min={1} value={form.vip_amount_pesos} onChange={e=>update('vip_amount_pesos',e.target.value)}/><span style={styles.earnRateText}>spent</span></div></div>
+              <div style={styles.fieldGroup}>
+                <label style={styles.label}>VIP points earning rule</label>
+                <div style={styles.earnRateRow}>
+                  <span style={styles.earnRateText}>Earn</span>
+                  <input
+                    style={styles.earnRateInput}
+                    type="number"
+                    min={0}
+                    step="any"
+                    value={form.vip_points_per_amount}
+                    onChange={e => update('vip_points_per_amount', e.target.value)}
+                  />
+                  <span style={styles.earnRateText}>VIP points for every ₱</span>
+                  <input
+                    style={styles.earnRateInput}
+                    type="number"
+                    min={1}
+                    step="any"
+                    value={form.vip_amount_pesos}
+                    onChange={e => update('vip_amount_pesos', e.target.value)}
+                  />
+                  <span style={styles.earnRateText}>spent</span>
+                </div>
+                <p style={styles.hint}>
+                  Cashiers enter the customer’s purchase amount. VIP points are calculated automatically and are used only for tier progression.
+                </p>
+              </div>
               <div style={styles.fieldGroup}><label style={styles.label}>VIP tiers</label>{(form.vip_tiers||[]).map((tier,i)=><div key={tier.id||i} style={{...styles.prizeForm,marginBottom:10}}><div style={styles.row}><input style={{...styles.input,flex:1}} value={tier.name} onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,name:e.target.value}:t))} placeholder="Tier name"/><input style={{...styles.input,width:130}} type="number" min={0} value={tier.threshold} onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,threshold:Number(e.target.value)}:t))} placeholder="Points"/><input type="color" style={styles.colorSwatch} value={tier.color||'#64748b'} onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,color:e.target.value}:t))}/></div><div style={styles.row}><input style={{...styles.input,width:150}} type="number" min={0} max={100} value={tier.discount_percent||0} onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,discount_percent:Number(e.target.value)}:t))} placeholder="Discount %"/><textarea style={{...styles.textarea,flex:1}} rows={3} value={(tier.benefits||[]).join('\n')} onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,benefits:e.target.value.split('\n').filter(Boolean)}:t))} placeholder="One benefit per line"/><button type="button" onClick={()=>update('vip_tiers',form.vip_tiers.filter((_,j)=>j!==i))} style={styles.prizeRemoveBtn}>✕</button></div></div>)}<button type="button" style={styles.addPrizeBtn} onClick={()=>update('vip_tiers',[...(form.vip_tiers||[]),{id:Math.random().toString(16).slice(2),name:'New Tier',threshold:0,color:'#64748b',discount_percent:0,benefits:[],active:true}])}>+ Add Tier</button><p style={styles.hint}>Thresholds must increase from lowest to highest. VIP points are not spent.</p></div>
             </div>
           ) : form.card_type === 'multipass' ? (
