@@ -13802,8 +13802,7 @@ async def cockpit_public_site(public_id: str):
     email = esc(settings.get('contact_email') or b.get('email') or '')
     address = esc(settings.get('address') or b.get('address') or 'Valenzuela City')
     about = esc(settings.get('about_text') or 'Pinagkakatiwalaan, propesyonal, at may respeto. Ang opisyal na tahanan ng aming mga schedule, anunsyo, resulta, at komunidad.')
-    facebook = esc(settings.get('facebook_url') or '')
-    join_url = f'{BASE_URL}/join/{public_id}'
+    facebook = esc(settings.get('facebook_url') or 'https://www.facebook.com/valenzuelacockpit')
 
     def date_parts(value):
         try:
@@ -13890,7 +13889,7 @@ footer{{border-top:1px solid #3b2d13;background:#050505;padding:35px 4% 20px}}.f
 <section class="section"><div class="dashboard-grid"><div class="box" style="grid-column:span 2"><h3>Weekly Schedule</h3>{schedule_html}</div><div class="box"><h3>Announcements</h3>{announcement_html}</div><div class="box"><h3>Be a Member</h3><p style="color:#bbb;line-height:1.6">Ang official digital membership ng {arena} ay kasalukuyang inihahanda.</p><div class="member-card"><b>{arena}</b><span>OFFICIAL DIGITAL MEMBERSHIP</span><code>COMING SOON</code></div><span class="btn primary" style="display:inline-flex;opacity:.72;cursor:not-allowed">Coming Soon</span></div></div></section>
 <section id="results" class="section"><div class="section-head"><h2>Latest Results</h2><a href="#results">View all results</a></div><div class="results-grid">{results_html}</div></section>
 <section id="gallery" class="section"><div class="section-head"><h2>Gallery</h2><a href="#gallery">View all photos</a></div><div class="gallery">{gallery_html}</div></section>
-<section id="about" class="section"><div class="about-member"><div class="about"><h2>About {arena}</h2><p>{about}</p></div><div class="join"><h2>Join the community</h2><p>Magrehistro bilang miyembro at makuha ang digital membership card na konektado sa LoyaltyTree.</p><a class="btn primary" href="{join_url}">Become a Member</a></div></div></section>
+<section id="about" class="section"><div class="about-member"><div class="about"><h2>About {arena}</h2><p>{about}</p></div><div class="join"><h2>Stay Connected</h2><p>Follow the official Facebook page for upcoming derbies, announcements, results, event posters, and live updates.</p><a class="btn primary" href="{facebook}" target="_blank" rel="noopener noreferrer">Follow VCSA on Facebook</a></div></div></section>
 <section id="sponsors" class="section"><div class="section-head"><h2>Our Sponsors</h2></div><div class="sponsors">{sponsor_html}</div></section></main>
 <footer id="contact"><div class="footer-grid"><div><h4>{arena}</h4><p>{tagline}</p></div><div><h4>Quick Links</h4><p><a href="#schedule">Schedule</a><br><a href="#results">Results</a><br><a href="#gallery">Gallery</a><br><a href="#sponsors">Sponsors</a></p></div><div><h4>Contact Us</h4><p>{phone}<br>{email}<br>{address}</p></div><div><h4>Follow Us</h4><p>{fb_html}</p></div></div><div class="copyright">© {datetime.utcnow().year} {arena}. All rights reserved.</div></footer>
 <script>document.querySelectorAll('.nav a').forEach(a=>a.addEventListener('click',()=>document.querySelector('.nav').classList.remove('open')))</script></body></html>'''
