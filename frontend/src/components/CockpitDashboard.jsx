@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 
 const TABS = ['overview','events','announcements','results','gallery','sponsors','settings']
 const empty = {
-  events:{title:'',event_date:'',start_time:'',category:'',entry_fee:'',prize_details:'',description:'',poster_url:'',status:'upcoming'},
+  events:{title:'',event_date:'',start_time:'',category:'',entry_fee:'',prize_details:'',description:'',special_note:'',poster_url:'',status:'upcoming'},
   announcements:{title:'',message:'',publish_date:'',is_pinned:false,is_active:true},
   results:{event_public_id:'',category:'',champion_name:'',runner_up_name:'',third_place_name:'',notes:'',photo_url:''},
   gallery:{event_public_id:'',title:'',album_name:'',image_url:''},
@@ -41,6 +41,27 @@ const readableTime = value => {
 }
 
 const safeFileName = value => (value || 'VCSA-post').replace(/[^a-z0-9]+/gi,'-').replace(/^-|-$/g,'').slice(0,80)
+
+
+const EVENT_DETAILS_LABEL = 'EVENT DETAILS:'
+const SPECIAL_NOTE_LABEL = 'SPECIAL NOTE:'
+
+function splitEventDescription(value){
+  const text=String(value||'').trim()
+  if(!text)return {details:'',specialNote:''}
+  const specialIndex=text.indexOf(SPECIAL_NOTE_LABEL)
+  if(specialIndex<0)return {details:text.replace(/^EVENT DETAILS:\s*/i,'').trim(),specialNote:''}
+  const details=text.slice(0,specialIndex).replace(/^EVENT DETAILS:\s*/i,'').trim()
+  const specialNote=text.slice(specialIndex+SPECIAL_NOTE_LABEL.length).trim()
+  return {details,specialNote}
+}
+
+function packEventDescription(details,specialNote){
+  const parts=[]
+  if(String(details||'').trim())parts.push(`${EVENT_DETAILS_LABEL}\n${String(details).trim()}`)
+  if(String(specialNote||'').trim())parts.push(`${SPECIAL_NOTE_LABEL}\n${String(specialNote).trim()}`)
+  return parts.join('\n\n')
+}
 
 function roundRect(ctx,x,y,w,h,r){
   const rr=Math.min(r,w/2,h/2)
@@ -94,14 +115,19 @@ function buildCaption(kind,item,settings,publicUrl,hashtags){
   const address=settings?.address||''
   const tags=(hashtags||'#VCSA #CockpitArena #Sabong #DerbySchedule').trim()
   if(kind==='event'){
+    const parsed=splitEventDescription(item.description)
+    const details=item.event_details||parsed.details
+    const specialNote=item.special_note||parsed.specialNote
+    const minimumBet=item.minimum_bet_display||money(item.entry_fee)
     const lines=[`🐓 ${String(item.title||'UPCOMING DERBY').toUpperCase()}`]
     if(item.event_date)lines.push(`📅 ${readableDate(item.event_date)}`)
     if(item.start_time)lines.push(`🕕 ${readableTime(item.start_time)}`)
     if(address)lines.push(`📍 ${address}`);else lines.push(`📍 ${arena}`)
     if(item.category)lines.push(`🏷️ ${item.category}`)
-    if(money(item.entry_fee))lines.push(`💰 Entry Fee: ${money(item.entry_fee)}`)
+    if(minimumBet)lines.push(`💵 Minimum Bet: ${minimumBet}`)
     if(item.prize_details)lines.push(`🏆 ${item.prize_details}`)
-    if(item.description)lines.push('',item.description)
+    if(details)lines.push('',details)
+    if(specialNote)lines.push('',`📌 SPECIAL NOTE`,specialNote)
     lines.push('',item.status==='closed'?'Registration is closed.':'Registration and inquiries are now open.')
     if(phone)lines.push(`📞 ${phone}`)
     lines.push(`🌐 ${publicUrl}`,'',tags)
@@ -123,14 +149,24 @@ function SocialPostStudio({kind,item,settings,publicUrl,onClose}){
   const [customHeadline,setCustomHeadline]=useState('')
   const [backgroundUrl,setBackgroundUrl]=useState(kind==='event'?(item.poster_url||settings?.hero_image_url||''):(settings?.hero_image_url||''))
   const [payout,setPayout]=useState(item.prize_details||'')
-  const [minimumBet,setMinimumBet]=useState('')
-  const [reservationContacts,setReservationContacts]=useState(settings?.contact_phone||'')
+  const [minimumBet,setMinimumBet]=useState(item.entry_fee?money(item.entry_fee):'')
+  const [specialNote,setSpecialNote]=useState(item.special_note||splitEventDescription(item.description).specialNote||'')
+  const [contactName1,setContactName1]=useState('')
+  const [contactNumber1,setContactNumber1]=useState(settings?.contact_phone||'')
+  const [contactName2,setContactName2]=useState('')
+  const [contactNumber2,setContactNumber2]=useState('')
   const [busy,setBusy]=useState(false)
 
-  const posterItem={...item,prize_details:payout}
-  const caption=buildCaption(kind,posterItem,settings,publicUrl,hashtags)+
-    (minimumBet?`\n💵 Minimum Bet: ${minimumBet}`:'')+
-    (reservationContacts?`\n☎ Reservations: ${reservationContacts}`:'')
+  const posterItem={...item,prize_details:payout,minimum_bet_display:minimumBet,special_note:specialNote}
+  const contactEntries=[
+    [contactName1,contactNumber1],
+    [contactName2,contactNumber2],
+  ].filter(([,number])=>String(number||'').trim())
+  const contactCaption=contactEntries.length
+    ? `\n☎ Reservations:\n${contactEntries.map(([name,number])=>`• ${name?`${name} — `:''}${number}`).join('\n')}`
+    : ''
+  const contactPosterText=contactEntries.map(([name,number])=>`${name?`${name}: `:''}${number}`)
+  const caption=buildCaption(kind,posterItem,settings,publicUrl,hashtags)+contactCaption
 
   useEffect(()=>{
     let cancelled=false
@@ -164,7 +200,8 @@ function SocialPostStudio({kind,item,settings,publicUrl,onClose}){
         ctx.fillStyle=red;ctx.fillText('COCKPIT ARENA',365,76)
         ctx.font='700 28px Arial';ctx.fillStyle='#111';ctx.textAlign='center'
         ctx.fillText(settings?.address||'665 Mc Arthur Hi-way, Malanday, Valenzuela City',W/2,126)
-        ctx.font='700 24px Arial';ctx.fillText(settings?.contact_phone?`CP #: ${settings.contact_phone}`:'OFFICIAL VCSA ANNOUNCEMENT',W/2,160)
+        const headerPhones=contactEntries.map(([,number])=>number).join(' / ')||settings?.contact_phone||''
+        ctx.font='700 24px Arial';ctx.fillText(headerPhones?`CP #: ${headerPhones}`:'OFFICIAL VCSA ANNOUNCEMENT',W/2,160)
         ctx.fillStyle='#111';ctx.fillRect(54,188,W-108,5)
 
         const title=(customHeadline||item.title||(kind==='event'?'UPCOMING EVENT':'IMPORTANT ANNOUNCEMENT')).toUpperCase()
@@ -184,7 +221,8 @@ function SocialPostStudio({kind,item,settings,publicUrl,onClose}){
           if(!/^\d+$/.test(big)){ctx.font='900 68px Arial';ctx.fillStyle='#fff';ctx.fillText('FIGHTS',W/2,y+276)}
           y+=350
           if(minimumBet){ctx.font='900 42px Arial';ctx.fillStyle=red;ctx.fillText(`MINIMUM BET ${minimumBet.toUpperCase()}`,W/2,y);y+=58}
-          if(reservationContacts){ctx.font='700 28px Arial';ctx.fillStyle='#111';ctx.fillText('FOR RESERVATION',W/2,y);y+=44;ctx.font='900 31px Arial';ctx.fillStyle=red;ctx.fillText(reservationContacts.toUpperCase(),W/2,y)}
+          if(contactPosterText.length){ctx.font='700 28px Arial';ctx.fillStyle='#111';ctx.fillText('FOR RESERVATION',W/2,y);y+=42;ctx.font='900 29px Arial';ctx.fillStyle=red;contactPosterText.slice(0,2).forEach(line=>{ctx.fillText(line.toUpperCase(),W/2,y);y+=39});y+=8}
+          if(specialNote&&y<H-115){ctx.font='800 24px Arial';ctx.fillStyle='#111';ctx.fillText('SPECIAL NOTE',W/2,y);y+=33;ctx.font='700 22px Arial';wrapLines(ctx,specialNote,W-150,3).forEach(line=>{ctx.fillText(line,W/2,y);y+=29})}
         }else{
           roundRect(ctx,80,y,W-160,H-y-230,24);ctx.fillStyle='#f7f7f7';ctx.fill();ctx.strokeStyle=red;ctx.lineWidth=8;ctx.stroke()
           ctx.font='800 38px Arial';ctx.fillStyle='#111';let ty=y+70
@@ -206,19 +244,20 @@ function SocialPostStudio({kind,item,settings,publicUrl,onClose}){
           if(item.start_time){ctx.fillText(`${readableTime(item.start_time)} START`,W/2,y);y+=52}
           if(payout){ctx.font='900 54px Arial';ctx.fillStyle=gold;wrapLines(ctx,payout.toUpperCase(),W-160,3).forEach(line=>{ctx.fillText(line,W/2,y);y+=62})}
           if(minimumBet){ctx.font='900 38px Arial';ctx.fillStyle='#fff';ctx.fillText(`MINIMUM BET ${minimumBet.toUpperCase()}`,W/2,y+18);y+=62}
+          if(specialNote&&y<H-250){ctx.font='800 27px Arial';ctx.fillStyle=gold;ctx.fillText('SPECIAL NOTE',W/2,y+12);y+=45;ctx.font='700 23px Arial';ctx.fillStyle='#fff';wrapLines(ctx,specialNote,W-180,4).forEach(line=>{ctx.fillText(line,W/2,y);y+=31})}
         }else{
           roundRect(ctx,80,y,W-160,360,22);ctx.fillStyle='rgba(255,255,255,.94)';ctx.fill();ctx.fillStyle='#211';ctx.font='800 32px Arial';let ty=y+60
           wrapLines(ctx,item.message||'Please check our official channels for the latest update.',W-240,8).forEach(line=>{ctx.fillText(line,W/2,ty);ty+=46})
         }
         ctx.fillStyle='rgba(0,0,0,.82)';ctx.fillRect(0,H-185,W,185)
         ctx.fillStyle=gold;ctx.font='800 25px Arial';ctx.fillText(settings?.address||settings?.arena_name||'VCSA Cockpit Arena',W/2,H-125)
-        ctx.fillStyle='#fff';ctx.font='700 22px Arial';ctx.fillText([reservationContacts||settings?.contact_phone,publicUrl].filter(Boolean).join('  •  ').slice(0,90),W/2,H-84)
+        ctx.fillStyle='#fff';ctx.font='700 22px Arial';ctx.fillText([contactPosterText.join('  •  ')||settings?.contact_phone,publicUrl].filter(Boolean).join('  •  ').slice(0,110),W/2,H-84)
         ctx.fillStyle='#ddd';ctx.font='700 19px Arial';ctx.fillText(hashtags.slice(0,100),W/2,H-45)
       }
       ctx.textAlign='left';ctx.shadowColor='transparent'
     }
     draw();return()=>{cancelled=true}
-  },[kind,item,settings,publicUrl,format,template,hashtags,customHeadline,backgroundUrl,payout,minimumBet,reservationContacts])
+  },[kind,item,settings,publicUrl,format,template,hashtags,customHeadline,backgroundUrl,payout,minimumBet,specialNote,contactName1,contactNumber1,contactName2,contactNumber2])
 
   const download=()=>{const canvas=canvasRef.current;if(!canvas)return;setBusy(true);canvas.toBlob(blob=>{if(!blob){setBusy(false);return}const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`${safeFileName(item.title)}-${format}.png`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);setBusy(false)},'image/png',1)}
   const copyCaption=async()=>{try{await navigator.clipboard.writeText(caption);alert('Facebook caption copied.')}catch{const t=document.createElement('textarea');t.value=caption;document.body.appendChild(t);t.select();document.execCommand('copy');t.remove();alert('Facebook caption copied.')}}
@@ -230,8 +269,13 @@ function SocialPostStudio({kind,item,settings,publicUrl,onClose}){
       <Select label="Format" value={format} onChange={setFormat} options={[{value:'portrait',label:'Facebook portrait — 1080 × 1350'},{value:'square',label:'Facebook square — 1080 × 1080'}]}/>
       <Select label="Poster template" value={template} onChange={setTemplate} options={[{value:'vcsaClassic',label:'VCSA classic announcement'},{value:'premium',label:'Premium black and gold'},{value:'advisory',label:'Dark advisory'}]}/>
       <Input label="Custom headline (optional)" value={customHeadline} onChange={setCustomHeadline}/>
-      {kind==='event'&&<><Input label="Payout / prize line" value={payout} onChange={setPayout}/><Input label="Minimum bet" value={minimumBet} onChange={setMinimumBet}/></>}
-      <Input label="Reservation contacts" value={reservationContacts} onChange={setReservationContacts}/>
+      {kind==='event'&&<><Input label="Payout / prize line" value={payout} onChange={setPayout}/><Input label="Minimum bet" value={minimumBet} onChange={setMinimumBet}/><TextArea label="Special note (optional)" value={specialNote} onChange={setSpecialNote} rows={4}/></>}
+      <div style={S.grid}>
+        <Input label="Contact name 1" value={contactName1} onChange={setContactName1}/>
+        <Input label="Contact number 1" value={contactNumber1} onChange={setContactNumber1}/>
+        <Input label="Contact name 2" value={contactName2} onChange={setContactName2}/>
+        <Input label="Contact number 2" value={contactNumber2} onChange={setContactNumber2}/>
+      </div>
       <Input label="Background image URL" value={backgroundUrl} onChange={setBackgroundUrl}/>
       <Input label="Hashtags" value={hashtags} onChange={setHashtags}/>
       <label style={S.field}><span>Generated Facebook caption</span><textarea style={{...S.input,minHeight:220,resize:'vertical'}} readOnly value={caption}/></label>
@@ -261,7 +305,18 @@ export default function CockpitDashboard({ API_BASE, user, onLogout }) {
   const flash = m => { setMessage(m); setTimeout(()=>setMessage(''),2500) }
   const setForm = (kind,patch) => setForms(v=>({...v,[kind]:{...v[kind],...patch}}))
   const create = async kind => {
-    try { await request(`/api/v1/business/${businessId}/cockpit/${kind}`,{method:'POST',body:JSON.stringify(forms[kind])}); setForms(v=>({...v,[kind]:JSON.parse(JSON.stringify(empty[kind]))})); await load(); flash('Saved') }
+    try {
+      let payload={...forms[kind]}
+      if(kind==='events'){
+        payload.description=packEventDescription(forms.events.description,forms.events.special_note)
+        delete payload.special_note
+      }
+      await request(`/api/v1/business/${businessId}/cockpit/${kind}`,{method:'POST',body:JSON.stringify(payload)})
+      if(!['events','announcements'].includes(kind)){
+        setForms(v=>({...v,[kind]:JSON.parse(JSON.stringify(empty[kind]))}))
+      }
+      await load(); flash('Saved')
+    }
     catch(e){ flash(e.message) }
   }
   const remove = async (kind,id) => { if(!confirm('Delete this item?')) return; try{ await request(`/api/v1/business/${businessId}/cockpit/${kind}/${id}`,{method:'DELETE'}); await load(); flash('Deleted') }catch(e){flash(e.message)} }
@@ -274,7 +329,7 @@ export default function CockpitDashboard({ API_BASE, user, onLogout }) {
     <nav style={S.nav}>{TABS.map(x=><button key={x} style={{...S.tab,...(tab===x?S.active:{})}} onClick={()=>setTab(x)}>{x[0].toUpperCase()+x.slice(1)}</button>)}</nav>
     <main style={S.main}>
       {tab==='overview' && <><div style={S.cards}>{[['Events',data.events.length],['Announcements',data.announcements.length],['Results',data.results.length],['Gallery',data.gallery.length],['Sponsors',data.sponsors.length]].map(([a,b])=><div style={S.card} key={a}><b style={{fontSize:30}}>{b}</b><div>{a}</div></div>)}</div><Panel title="Public website"><input style={S.input} readOnly value={publicUrl}/></Panel></>}
-      {tab==='events' && <Crud title="Events" form={<><Input label="Title" value={forms.events.title} onChange={v=>setForm('events',{title:v})}/><Input label="Date" type="date" value={forms.events.event_date} onChange={v=>setForm('events',{event_date:v})}/><Input label="Time" type="time" value={forms.events.start_time} onChange={v=>setForm('events',{start_time:v})}/><Input label="Category" value={forms.events.category} onChange={v=>setForm('events',{category:v})}/><Input label="Entry fee" type="number" value={forms.events.entry_fee} onChange={v=>setForm('events',{entry_fee:v})}/><Input label="Prize details" value={forms.events.prize_details} onChange={v=>setForm('events',{prize_details:v})}/><Input label="Description" value={forms.events.description} onChange={v=>setForm('events',{description:v})}/><Select label="Status" value={forms.events.status} onChange={v=>setForm('events',{status:v})} options={['upcoming','open','closed','finished','cancelled']}/><File label="Poster/background" onChange={f=>upload('events','poster_url',f)}/></>} onSave={()=>create('events')} onPreview={()=>setShare({kind:'event',item:forms.events})} items={data.events} onDelete={id=>remove('events',id)} onShare={item=>setShare({kind:'event',item})}/>} 
+      {tab==='events' && <Crud title="Events" form={<><Input label="Title" value={forms.events.title} onChange={v=>setForm('events',{title:v})}/><Input label="Date" type="date" value={forms.events.event_date} onChange={v=>setForm('events',{event_date:v})}/><Input label="Time" type="time" value={forms.events.start_time} onChange={v=>setForm('events',{start_time:v})}/><Input label="Category" value={forms.events.category} onChange={v=>setForm('events',{category:v})}/><Input label="Minimum bet" type="number" value={forms.events.entry_fee} onChange={v=>setForm('events',{entry_fee:v})}/><Input label="Prize details" value={forms.events.prize_details} onChange={v=>setForm('events',{prize_details:v})}/><TextArea label="Event details" value={forms.events.description} onChange={v=>setForm('events',{description:v})} rows={4}/><TextArea label="Special note (optional)" value={forms.events.special_note} onChange={v=>setForm('events',{special_note:v})} rows={4}/><Select label="Status" value={forms.events.status} onChange={v=>setForm('events',{status:v})} options={['upcoming','open','closed','finished','cancelled']}/><File label="Poster/background" onChange={f=>upload('events','poster_url',f)}/></>} onSave={()=>create('events')} onPreview={()=>setShare({kind:'event',item:{...forms.events,minimum_bet_display:forms.events.entry_fee?money(forms.events.entry_fee):'',special_note:forms.events.special_note}})} items={data.events} onDelete={id=>remove('events',id)} onShare={item=>setShare({kind:'event',item})}/>} 
       {tab==='announcements' && <Crud title="Announcements" form={<><Input label="Title" value={forms.announcements.title} onChange={v=>setForm('announcements',{title:v})}/><Input label="Publish date" type="date" value={forms.announcements.publish_date} onChange={v=>setForm('announcements',{publish_date:v})}/><Input label="Message" value={forms.announcements.message} onChange={v=>setForm('announcements',{message:v})}/></>} onSave={()=>create('announcements')} onPreview={()=>setShare({kind:'announcement',item:forms.announcements})} items={data.announcements} onDelete={id=>remove('announcements',id)} onShare={item=>setShare({kind:'announcement',item})}/>} 
       {tab==='results' && <Crud title="Results" form={<><Select label="Event" value={forms.results.event_public_id} onChange={v=>setForm('results',{event_public_id:v})} options={data.events.map(e=>({value:e.public_id,label:e.title}))}/><Input label="Category" value={forms.results.category} onChange={v=>setForm('results',{category:v})}/><Input label="Champion" value={forms.results.champion_name} onChange={v=>setForm('results',{champion_name:v})}/><Input label="Runner-up" value={forms.results.runner_up_name} onChange={v=>setForm('results',{runner_up_name:v})}/><Input label="Third place" value={forms.results.third_place_name} onChange={v=>setForm('results',{third_place_name:v})}/><Input label="Notes" value={forms.results.notes} onChange={v=>setForm('results',{notes:v})}/><File label="Photo" onChange={f=>upload('results','photo_url',f)}/></>} onSave={()=>create('results')} items={data.results} onDelete={id=>remove('results',id)}/>} 
       {tab==='gallery' && <Crud title="Gallery" form={<><Input label="Title" value={forms.gallery.title} onChange={v=>setForm('gallery',{title:v})}/><Input label="Album" value={forms.gallery.album_name} onChange={v=>setForm('gallery',{album_name:v})}/><File label="Image" onChange={f=>upload('gallery','image_url',f)}/></>} onSave={()=>create('gallery')} items={data.gallery} onDelete={id=>remove('gallery',id)}/>} 
@@ -287,6 +342,7 @@ export default function CockpitDashboard({ API_BASE, user, onLogout }) {
 
 const Panel=({title,children})=><section style={S.panel}><h2>{title}</h2>{children}</section>
 const Input=({label,value,onChange,type='text'})=><label style={S.field}><span>{label}</span><input style={S.input} type={type} value={value||''} onChange={e=>onChange(e.target.value)}/></label>
+const TextArea=({label,value,onChange,rows=4})=><label style={S.field}><span>{label}</span><textarea style={{...S.input,minHeight:rows*26,resize:'vertical'}} rows={rows} value={value||''} onChange={e=>onChange(e.target.value)}/></label>
 const File=({label,onChange})=><label style={S.field}><span>{label}</span><input style={S.input} type="file" accept="image/*" onChange={e=>onChange(e.target.files?.[0])}/></label>
 const Select=({label,value,onChange,options})=><label style={S.field}><span>{label}</span><select style={S.input} value={value||''} onChange={e=>onChange(e.target.value)}><option value="">Select</option>{options.map(o=>typeof o==='string'?<option key={o} value={o}>{o}</option>:<option key={o.value} value={o.value}>{o.label}</option>)}</select></label>
 function Crud({title,form,onSave,onPreview,items,onDelete,onShare}){return <><Panel title={`Add ${title.slice(0,-1)}`}><div style={S.grid}>{form}</div><div style={S.actionRow}><button style={S.primary} onClick={onSave}>Save</button>{onPreview&&<button style={S.secondary} onClick={onPreview}>Preview Facebook Post</button>}</div></Panel><Panel title={title}>{items.length?items.map(x=><div key={x.public_id} style={S.row}><div><b>{x.title||x.name||x.category||'Record'}</b><div style={{fontSize:13,color:'#766'}}>{x.event_date||x.message||x.description||x.champion_name||''}</div></div><div style={S.actionRow}>{onShare&&<button style={S.shareBtn} onClick={()=>onShare(x)}>Facebook Post</button>}<button style={S.delete} onClick={()=>onDelete(x.public_id)}>Delete</button></div></div>):<p>No records yet.</p>}</Panel></>}
