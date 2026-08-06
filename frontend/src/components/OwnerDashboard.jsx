@@ -619,7 +619,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   }
 
   if (loading) return (
-    <div style={styles.container}>
+    <div style={{...styles.container, background: cardExperience.soft}}>
       <div style={styles.loadingTree}>
         <div style={styles.treeIcon}>🌳</div>
         <p>Growing your digital forest...</p>
@@ -630,10 +630,82 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const isPointsCard = program?.card_type === 'points'
   const isMultipassCard = program?.card_type === 'multipass'
   const isMembershipCard = program?.card_type === 'membership'
+  const cardExperience = isPointsCard
+    ? {
+        key: 'points',
+        accent: '#2563eb',
+        soft: '#eff6ff',
+        border: '#bfdbfe',
+        icon: '💎',
+        title: 'Points Loyalty',
+        customerLabel: 'Customers',
+        customerIcon: '👥',
+        dashboardLabel: 'Points Dashboard',
+        scanTitle: 'Scan Customer',
+        scanDescription: 'Record a sale and award points',
+        recentTitle: 'Recent Customer Activity',
+        editDescription: 'Configure earning rules and reward prizes',
+      }
+    : isMembershipCard
+    ? {
+        key: 'membership',
+        accent: '#18181b',
+        soft: '#fafaf9',
+        border: '#d6d3d1',
+        icon: '🏋️',
+        title: 'Membership',
+        customerLabel: 'Members',
+        customerIcon: '👤',
+        dashboardLabel: 'Membership Dashboard',
+        scanTitle: 'Check In Member',
+        scanDescription: 'Verify access and log a member visit',
+        recentTitle: 'Recent Members',
+        editDescription: 'Configure subscription duration, price, perks, and terms',
+      }
+    : isMultipassCard
+    ? {
+        key: 'multipass',
+        accent: '#7c3aed',
+        soft: '#f5f3ff',
+        border: '#ddd6fe',
+        icon: '🎫',
+        title: 'Multi-Pass',
+        customerLabel: 'Pass Holders',
+        customerIcon: '🎟️',
+        dashboardLabel: 'Multi-Pass Dashboard',
+        scanTitle: 'Use a Session',
+        scanDescription: 'Scan a pass and deduct one session',
+        recentTitle: 'Recent Pass Activity',
+        editDescription: 'Configure session count and pass validity',
+      }
+    : {
+        key: 'stamp',
+        accent: '#0d9488',
+        soft: '#f0fdfa',
+        border: '#99f6e4',
+        icon: '🎟️',
+        title: 'Stamp Rewards',
+        customerLabel: 'Customers',
+        customerIcon: '🍃',
+        dashboardLabel: 'Stamp Dashboard',
+        scanTitle: 'Add a Stamp',
+        scanDescription: 'Scan a customer and add one stamp',
+        recentTitle: 'Recent Stamp Activity',
+        editDescription: 'Configure the stamp goal and reward',
+      }
+
   const confirmedStamps = customers.reduce((sum, c) => sum + (c.stamp_count || 0), 0)
   const totalPoints = customers.reduce((sum, c) => sum + (c.points_balance || 0), 0)
   const totalSessionsLeft = customers.reduce((sum, c) => sum + (c.multipass_sessions_remaining || 0), 0)
   const unlockedRewards = customers.filter(c => c.reward_unlocked).length
+  const membershipActive = customers.filter(c => ['active', 'lifetime'].includes(c.membership_effective_status || c.membership_status)).length
+  const membershipExpired = customers.filter(c => (c.membership_effective_status || c.membership_status) === 'expired').length
+  const membershipExpiringSoon = customers.filter(c => {
+    const status = c.membership_effective_status || c.membership_status
+    if (status !== 'active' || !c.membership_expires_at) return false
+    const days = Math.ceil((new Date(c.membership_expires_at) - new Date()) / 86400000)
+    return days >= 0 && days <= 7
+  }).length
   const growthStage = customers.length < 10 ? 'seedling' : customers.length < 50 ? 'sapling' : customers.length < 200 ? 'growing' : 'mature'
   const subStatus = subscription?.subscription_status
   const needsRenewal = subStatus === 'expiring_soon' || subStatus === 'expired'
@@ -666,7 +738,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           <img src={logo192} alt="LoyaltyTree" style={styles.logo} />
           <div>
             <h1 style={styles.brandName}>LoyaltyTree</h1>
-            <p style={styles.brandTagline}>Where businesses grow with customers</p>
+            <p style={styles.brandTagline}>{cardExperience.dashboardLabel} · {cardExperience.editDescription}</p>
           </div>
         </div>
         <div style={styles.headerActions}>
@@ -700,7 +772,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       )}
 
       {/* Tree Visualization */}
-      <div style={styles.treeSection}>
+      <div style={{...styles.treeSection, background: `linear-gradient(135deg, ${cardExperience.soft}, #ffffff)`, borderColor: cardExperience.border}}>
         <div style={styles.treeVisual}>
           <div style={{...styles.treeCanopy, transform: `scale(${Math.min(1 + customers.length * 0.01, 1.5)})`}}>
             {Array.from({length: Math.min(customers.length, 20)}).map((_, i) => (
@@ -711,7 +783,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 animationDelay: `${i * 0.1}s`,
               }}>🍃</div>
             ))}
-            <div style={styles.treeTop}>🌳</div>
+            <div style={styles.treeTop}>{cardExperience.icon}</div>
           </div>
           <div style={styles.treeTrunk}>
             <div style={styles.roots}>
@@ -720,32 +792,49 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           </div>
         </div>
         <div style={styles.statsRing}>
-          <div style={styles.statOrb}>
-            <span style={styles.orbNumber}>{customers.length}</span>
-            <span style={styles.orbLabel}>Leaves</span>
-          </div>
-          <div style={styles.statOrb}>
-            <span style={styles.orbNumber}>{isPointsCard ? totalPoints : isMultipassCard ? totalSessionsLeft : confirmedStamps}</span>
-            <span style={styles.orbLabel}>{isPointsCard ? 'Points' : isMultipassCard ? 'Sessions Left' : 'Rings'}</span>
-          </div>
-          <div style={styles.statOrb}>
-            <span style={styles.orbNumber}>{isMultipassCard ? customers.filter(c => (c.multipass_sessions_remaining || 0) <= 0).length : unlockedRewards}</span>
-            <span style={styles.orbLabel}>{isMultipassCard ? 'Passes Done' : 'Fruits'}</span>
-          </div>
+          {(isMembershipCard
+            ? [
+                { value: membershipActive, label: 'Active Members' },
+                { value: membershipExpiringSoon, label: 'Expiring in 7 Days' },
+                { value: membershipExpired, label: 'Expired' },
+              ]
+            : isPointsCard
+            ? [
+                { value: customers.length, label: 'Customers' },
+                { value: totalPoints, label: 'Points Balance' },
+                { value: unlockedRewards, label: 'Rewards Ready' },
+              ]
+            : isMultipassCard
+            ? [
+                { value: customers.length, label: 'Pass Holders' },
+                { value: totalSessionsLeft, label: 'Sessions Left' },
+                { value: customers.filter(c => (c.multipass_sessions_remaining || 0) <= 0 && (c.multipass_total_sessions || 0) > 0).length, label: 'Passes Completed' },
+              ]
+            : [
+                { value: customers.length, label: 'Customers' },
+                { value: confirmedStamps, label: 'Stamps Issued' },
+                { value: unlockedRewards, label: 'Rewards Ready' },
+              ]
+          ).map(metric => (
+            <div key={metric.label} style={{...styles.statOrb, borderColor: cardExperience.border}}>
+              <span style={{...styles.orbNumber, color: cardExperience.accent}}>{metric.value}</span>
+              <span style={styles.orbLabel}>{metric.label}</span>
+            </div>
+          ))}
         </div>
         <div style={styles.growthBadge}>
           <span style={styles.growthIcon}>
             {growthStage === 'seedling' ? '🌱' : growthStage === 'sapling' ? '🌿' : growthStage === 'growing' ? '🌳' : '🌲'}
           </span>
-          <span style={styles.growthText}>{growthStage.charAt(0).toUpperCase() + growthStage.slice(1)} Stage</span>
+          <span style={styles.growthText}>{cardExperience.title}</span>
         </div>
       </div>
 
       {/* Navigation Tabs */}
       <div style={styles.tabs}>
         {[
-          { id: 'tree', label: '🌳 My Tree', icon: '🌳' },
-          { id: 'customers', label: '🍃 Leaves', icon: '🍃' },
+          { id: 'tree', label: `${cardExperience.icon} Overview`, icon: cardExperience.icon },
+          { id: 'customers', label: `${cardExperience.customerIcon} ${cardExperience.customerLabel}`, icon: cardExperience.customerIcon },
           { id: 'staff', label: '🌿 Team', icon: '🌿' },
           { id: 'program', label: '✏️ Edit Card', icon: '✏️' },
           { id: 'billing', label: needsRenewal ? '💳 Billing ⚠️' : '💳 Billing', icon: '💳' },
@@ -755,7 +844,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             onClick={() => setActiveTab(tab.id)}
             style={{
               ...styles.tab,
-              background: activeTab === tab.id ? '#0d9488' : 'transparent',
+              background: activeTab === tab.id ? cardExperience.accent : 'transparent',
               color: activeTab === tab.id ? 'white' : '#64748b',
             }}
           >
@@ -769,30 +858,30 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         {activeTab === 'tree' && (
           <div style={styles.treeTab}>
             <div style={styles.actionCards}>
-              <div style={styles.actionCard} onClick={() => setActiveTab('customers')}>
-                <div style={styles.actionIcon}>🍃</div>
-                <h3>View All Leaves</h3>
-                <p>{customers.length} customers connected</p>
+              <div style={{...styles.actionCard, borderColor: cardExperience.border}} onClick={() => setActiveTab('customers')}>
+                <div style={styles.actionIcon}>{cardExperience.customerIcon}</div>
+                <h3>View {cardExperience.customerLabel}</h3>
+                <p>{customers.length} connected</p>
               </div>
-              <div style={styles.actionCard} onClick={() => navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name } })}>
+              <div style={{...styles.actionCard, borderColor: cardExperience.border}} onClick={() => navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name } })}>
                 <div style={styles.actionIcon}>📷</div>
-                <h3>Scan Leaf</h3>
-                <p>Add stamp via QR scan</p>
+                <h3>{cardExperience.scanTitle}</h3>
+                <p>{cardExperience.scanDescription}</p>
               </div>
-              <div style={styles.actionCard} onClick={() => setShowInviteModal(true)}>
+              <div style={{...styles.actionCard, borderColor: cardExperience.border}} onClick={() => setShowInviteModal(true)}>
                 <div style={styles.actionIcon}>🌿</div>
-                <h3>Grow Team</h3>
+                <h3>Manage Team</h3>
                 <p>Invite staff members</p>
               </div>
-              <div style={styles.actionCard} onClick={fetchQRImage}>
+              <div style={{...styles.actionCard, borderColor: cardExperience.border}} onClick={fetchQRImage}>
                 <div style={styles.actionIcon}>🔗</div>
-                <h3>Share Tree</h3>
-                <p>Get join QR code</p>
+                <h3>Share Join Link</h3>
+                <p>Get the customer signup QR code</p>
               </div>
             </div>
 
             <div style={styles.recentActivity}>
-              <h3 style={styles.sectionTitle}>🌊 Recent Sap Flow</h3>
+              <h3 style={styles.sectionTitle}>{cardExperience.icon} {cardExperience.recentTitle}</h3>
               {customers.slice(0, 5).map(c => (
                 <div key={c.public_id} style={styles.activityRow}>
                   <span style={styles.activityLeaf}>🍃</span>
@@ -810,14 +899,14 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         {activeTab === 'customers' && (
           <div>
             <div style={styles.sectionHeader}>
-              <h2 style={styles.sectionTitle}>🍃 Your Leaves ({filteredCustomers.length}{customerSearchTerm ? ` of ${customers.length}` : ''})</h2>
+              <h2 style={styles.sectionTitle}>{cardExperience.customerIcon} {cardExperience.customerLabel} ({filteredCustomers.length}{customerSearchTerm ? ` of ${customers.length}` : ''})</h2>
               <button onClick={() => { markAnalyticsChecked(); navigate('/analytics') }} style={styles.viewAnalyticsBtn}>📊 View Analytics</button>
             </div>
             <div style={styles.searchBarWrap}>
               <span style={styles.searchIcon}>🔍</span>
               <input
                 type="text"
-                placeholder="Search leaves by name, phone, or email..."
+                placeholder={`Search ${cardExperience.customerLabel.toLowerCase()} by name, phone, or email...`}
                 value={customerSearch}
                 onChange={e => setCustomerSearch(e.target.value)}
                 style={styles.searchInput}
@@ -827,7 +916,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               )}
             </div>
             {filteredCustomers.length === 0 && (
-              <p style={styles.searchEmptyText}>No leaves match "{customerSearch}".</p>
+              <p style={styles.searchEmptyText}>No {cardExperience.customerLabel.toLowerCase()} match "{customerSearch}".</p>
             )}
             <div style={styles.customerGrid}>
               {filteredCustomers.map(c => (
