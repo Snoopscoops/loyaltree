@@ -3765,15 +3765,55 @@ async def admin_delete_business(public_id: str, _: bool = Depends(require_admin)
 
 
 @app.get("/api/v1/public/partners")
-async def public_list_partners():
+async def public_list_partners(response: Response):
+    # Partner logos are public homepage content. Prevent browser/CDN caching so
+    # additions and replacement logos appear as soon as the admin saves them.
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+
+    fields = (
+        "public_id,name,logo_url,sector,plan_segment,website_url,"
+        "sort_order,is_active,updated_at"
+    )
     try:
-        res = supabase.table("platform_partners").select(
-            "public_id,name,logo_url,sector,plan_segment,website_url,sort_order"
-        ).eq("is_active", True).order("plan_segment").order("sort_order").order("name").execute()
+        res = (
+            supabase.table("platform_partners")
+            .select(fields)
+            .eq("is_active", True)
+            .order("plan_segment")
+            .order("sort_order")
+            .order("name")
+            .execute()
+        )
         return res.data or []
-    except Exception as e:
-        print(f"PUBLIC PARTNERS error: {e}")
-        return []
+    except Exception as ordered_error:
+        # Some older PostgREST/Supabase deployments reject chained ordering or
+        # briefly retain an old schema cache. Retry with a simpler query rather
+        # than silently making the whole homepage partner section disappear.
+        print(f"PUBLIC PARTNERS ordered query failed: {ordered_error}")
+        try:
+            fallback = (
+                supabase.table("platform_partners")
+                .select(fields)
+                .eq("is_active", True)
+                .execute()
+            )
+            rows = fallback.data or []
+            return sorted(
+                rows,
+                key=lambda row: (
+                    str(row.get("plan_segment") or "partners"),
+                    int(row.get("sort_order") or 0),
+                    str(row.get("name") or "").lower(),
+                ),
+            )
+        except Exception as fallback_error:
+            print(f"PUBLIC PARTNERS fallback query failed: {fallback_error}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Could not load homepage partners: {friendly_db_error(fallback_error)}",
+            )
 
 @app.get("/api/v1/admin/partners")
 async def admin_list_partners(_: bool = Depends(require_admin)):

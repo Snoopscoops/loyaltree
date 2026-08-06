@@ -316,21 +316,45 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
   const [modalView, setModalView] = useState('sample') // 'sample' | 'pricing'
   const [branchTier, setBranchTier] = useState('1')
   const [partners, setPartners] = useState([])
+  const [partnersLoading, setPartnersLoading] = useState(true)
+  const [partnersError, setPartnersError] = useState('')
 
   useEffect(() => {
     let cancelled = false
 
     const loadPartners = async () => {
       try {
-        const base = API_BASE || import.meta.env.VITE_API_BASE_URL || ''
+        const configuredBase = API_BASE || import.meta.env.VITE_API_BASE_URL || ''
+        const base = configuredBase.replace(/\/$/, '')
         const res = await fetch(`${base}/api/v1/public/partners?_=${Date.now()}`, {
           cache: 'no-store',
-          headers: { 'Cache-Control': 'no-cache' },
+          headers: {
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+          },
         })
-        const data = res.ok ? await res.json() : []
-        if (!cancelled) setPartners(Array.isArray(data) ? data : [])
-      } catch (_) {
-        if (!cancelled) setPartners([])
+        const raw = await res.text()
+        let data = []
+        try { data = raw ? JSON.parse(raw) : [] } catch (_) {}
+
+        if (!res.ok) {
+          throw new Error(data?.detail || `Partner API failed (${res.status})`)
+        }
+        if (!Array.isArray(data)) {
+          throw new Error('Partner API returned an invalid response')
+        }
+
+        if (!cancelled) {
+          setPartners(data.filter(partner => partner?.logo_url))
+          setPartnersError('')
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setPartners([])
+          setPartnersError(err.message || 'Could not load homepage partners')
+        }
+      } finally {
+        if (!cancelled) setPartnersLoading(false)
       }
     }
 
@@ -534,7 +558,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
       </section>
 
 
-      {partners.length > 0 && (
+      {(partnersLoading || partnersError || partners.length > 0) && (
         <section style={{ ...styles.section, background: '#ffffff' }}>
           <div style={styles.partnerHeader}>
             <span style={styles.partnerEyebrow}>Our growing community</span>
@@ -543,6 +567,20 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
               We are proud to support businesses that use LoyaltyTree to serve, retain, and appreciate their customers.
             </p>
           </div>
+
+          {partnersLoading && (
+            <div style={styles.partnerStatus}>Loading partner logos...</div>
+          )}
+
+          {!partnersLoading && partnersError && (
+            <div style={{...styles.partnerStatus, color:'#b91c1c', background:'#fef2f2', borderColor:'#fecaca'}}>
+              Partner logos could not load: {partnersError}
+            </div>
+          )}
+
+          {!partnersLoading && !partnersError && partners.length === 0 && (
+            <div style={styles.partnerStatus}>No active homepage partners have been added yet.</div>
+          )}
 
           {['partners', 'growth', 'starter'].map(planKey => {
             const planPartners = partners.filter(p => p.plan_segment === planKey)
@@ -890,6 +928,11 @@ const styles = {
   vipPoints: { marginTop: 5, fontSize: 14, fontWeight: 750, color: '#334155' },
   vipProgress: { marginTop: 6, fontSize: 11.5, color: '#64748b' },
   partnerHeader: { maxWidth: 680, margin: '0 auto 34px', textAlign: 'center' },
+  partnerStatus: {
+    maxWidth: 680, margin: '0 auto 24px', padding: '12px 16px',
+    border: '1px solid #ccfbf1', borderRadius: 12, background: '#f0fdfa',
+    color: '#0f766e', textAlign: 'center', fontSize: 13, fontWeight: 600,
+  },
   partnerEyebrow: { display: 'inline-block', marginBottom: 8, fontSize: 12, fontWeight: 800, color: '#0d9488', textTransform: 'uppercase', letterSpacing: 1 },
   partnerIntro: { margin: '10px auto 0', color: '#64748b', lineHeight: 1.7, fontSize: 14 },
   partnerPlanGroup: { maxWidth: 1080, margin: '0 auto 34px' },
