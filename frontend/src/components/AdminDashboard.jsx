@@ -29,6 +29,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   })
   const [partnerUploading, setPartnerUploading] = useState(false)
   const [partnerSaving, setPartnerSaving] = useState(false)
+  const [partnerRowUploading, setPartnerRowUploading] = useState(null)
 
   const authedFetch = (path, opts = {}) => fetch(`${API_BASE}${path}`, {
     ...opts,
@@ -154,29 +155,58 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
 
 
 
+  const uploadPartnerImageToCloudinary = async (file) => {
+    if (!file) throw new Error('Choose a logo image')
+    if (!file.type.startsWith('image/')) throw new Error('Choose an image file')
+    if (file.size > 8 * 1024 * 1024) throw new Error('Logo must be under 8 MB')
+
+    const sigRes = await authedFetch('/api/v1/admin/partners/cloudinary-signature', { method: 'POST' })
+    const sig = await sigRes.json()
+    if (!sigRes.ok) throw new Error(sig.detail || 'Could not start logo upload')
+
+    const body = new FormData()
+    body.append('file', file)
+    body.append('api_key', sig.api_key)
+    body.append('timestamp', sig.timestamp)
+    body.append('signature', sig.signature)
+    body.append('upload_preset', sig.upload_preset)
+    body.append('folder', sig.folder)
+
+    const uploadRes = await fetch(`https://api.cloudinary.com/v1_1/${sig.cloud_name}/image/upload`, {
+      method: 'POST',
+      body,
+    })
+    const uploaded = await uploadRes.json()
+    if (!uploadRes.ok || !uploaded.secure_url) {
+      throw new Error(uploaded?.error?.message || 'Logo upload failed')
+    }
+    return uploaded.secure_url
+  }
+
   const uploadPartnerLogo = async (file) => {
     if (!file) return
-    if (!file.type.startsWith('image/')) return setMessage('Choose an image file')
-    if (file.size > 8 * 1024 * 1024) return setMessage('Logo must be under 8 MB')
     setPartnerUploading(true)
     try {
-      const sigRes = await authedFetch('/api/v1/admin/partners/cloudinary-signature', { method: 'POST' })
-      const sig = await sigRes.json()
-      if (!sigRes.ok) throw new Error(sig.detail || 'Could not start logo upload')
-      const body = new FormData()
-      body.append('file', file)
-      body.append('api_key', sig.api_key)
-      body.append('timestamp', sig.timestamp)
-      body.append('signature', sig.signature)
-      body.append('upload_preset', sig.upload_preset)
-      body.append('folder', sig.folder)
-      const uploadRes = await fetch(`https://api.cloudinary.com/v1_1/${sig.cloud_name}/image/upload`, { method: 'POST', body })
-      const uploaded = await uploadRes.json()
-      if (!uploadRes.ok || !uploaded.secure_url) throw new Error(uploaded?.error?.message || 'Logo upload failed')
-      setPartnerForm(prev => ({ ...prev, logo_url: uploaded.secure_url }))
+      const logoUrl = await uploadPartnerImageToCloudinary(file)
+      setPartnerForm(prev => ({ ...prev, logo_url: logoUrl }))
       setMessage('Partner logo uploaded')
-    } catch (err) { setMessage(err.message) }
+    } catch (err) {
+      setMessage(err.message)
+    }
     setPartnerUploading(false)
+  }
+
+  const replacePartnerLogo = async (partner, file) => {
+    if (!file) return
+    setPartnerRowUploading(partner.public_id)
+    try {
+      const logoUrl = await uploadPartnerImageToCloudinary(file)
+      await updatePartner(partner, { logo_url: logoUrl })
+      setMessage(`${partner.name} logo updated on the homepage`)
+    } catch (err) {
+      setMessage(err.message)
+    }
+    setPartnerRowUploading(null)
   }
 
   const createPartner = async (e) => {
@@ -275,16 +305,112 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
             <button type="submit" style={styles.approveBtn} disabled={partnerSaving||partnerUploading}>{partnerSaving?'Adding…':'+ Add homepage partner'}</button>
           </form>
           <div style={styles.partnerList}>
-            {partners.map(p => (
-              <div key={p.public_id} style={styles.partnerRow}>
-                <img src={p.logo_url} alt="" style={styles.partnerRowLogo} />
-                <div style={{flex:1,minWidth:160}}><div style={styles.bizName}>{p.name}</div><div style={styles.bizEmail}>{p.sector||'No sector'} · {p.plan_segment}</div></div>
-                <select value={p.plan_segment} onChange={e=>updatePartner(p,{plan_segment:e.target.value})} style={styles.select}><option value="starter">Starter</option><option value="growth">Growth</option></select>
-                <input defaultValue={p.sector||''} onBlur={e=>updatePartner(p,{sector:e.target.value||null})} placeholder="Sector" style={{...styles.input,width:150}} />
-                <button onClick={()=>updatePartner(p,{is_active:!p.is_active})} style={styles.viewBtn}>{p.is_active?'Visible':'Hidden'}</button>
-                <button onClick={()=>deletePartner(p)} style={styles.deleteBtn}>Remove</button>
-              </div>
-            ))}
+            {[
+              { key: 'growth', title: 'Growth Plan Partners', badge: '#0d9488' },
+              { key: 'starter', title: 'Starter Plan Partners', badge: '#475569' },
+            ].map(group => {
+              const groupPartners = partners.filter(p => p.plan_segment === group.key)
+              return (
+                <div key={group.key} style={styles.partnerGroup}>
+                  <div style={styles.partnerGroupHeader}>
+                    <span style={{...styles.partnerGroupBadge, background: group.badge}}>
+                      {group.title}
+                    </span>
+                    <span style={styles.partnerGroupCount}>{groupPartners.length} partner{groupPartners.length === 1 ? '' : 's'}</span>
+                  </div>
+
+                  {groupPartners.length === 0 ? (
+                    <div style={styles.partnerEmpty}>No partners assigned to this plan yet.</div>
+                  ) : (
+                    groupPartners.map(p => (
+                      <div key={p.public_id} style={styles.partnerRow}>
+                        <div style={styles.partnerLogoManager}>
+                          <img src={p.logo_url} alt={`${p.name} logo`} style={styles.partnerRowLogo} />
+                          <label style={styles.partnerReplaceLogoBtn}>
+                            {partnerRowUploading === p.public_id ? 'Uploading…' : 'Replace logo'}
+                            <input
+                              type="file"
+                              accept="image/*"
+                              disabled={partnerRowUploading === p.public_id}
+                              style={{display: 'none'}}
+                              onChange={e => {
+                                replacePartnerLogo(p, e.target.files?.[0])
+                                e.target.value = ''
+                              }}
+                            />
+                          </label>
+                        </div>
+
+                        <div style={{flex: 1, minWidth: 190}}>
+                          <input
+                            defaultValue={p.name}
+                            onBlur={e => {
+                              const value = e.target.value.trim()
+                              if (value && value !== p.name) updatePartner(p, {name: value})
+                            }}
+                            style={{...styles.input, marginBottom: 6, fontWeight: 750}}
+                            aria-label="Partner name"
+                          />
+                          <input
+                            defaultValue={p.website_url || ''}
+                            onBlur={e => updatePartner(p, {website_url: e.target.value.trim() || null})}
+                            placeholder="Website link (optional)"
+                            style={{...styles.input, fontSize: 12}}
+                          />
+                        </div>
+
+                        <div style={styles.partnerRowControls}>
+                          <label style={styles.partnerMiniLabel}>Plan section</label>
+                          <select
+                            value={p.plan_segment}
+                            onChange={e => updatePartner(p, {plan_segment: e.target.value})}
+                            style={styles.select}
+                          >
+                            <option value="starter">Starter Plan</option>
+                            <option value="growth">Growth Plan</option>
+                          </select>
+                        </div>
+
+                        <div style={styles.partnerRowControls}>
+                          <label style={styles.partnerMiniLabel}>Sector</label>
+                          <input
+                            defaultValue={p.sector || ''}
+                            onBlur={e => updatePartner(p, {sector: e.target.value.trim() || null})}
+                            placeholder="Business sector"
+                            style={styles.input}
+                          />
+                        </div>
+
+                        <div style={{...styles.partnerRowControls, maxWidth: 100}}>
+                          <label style={styles.partnerMiniLabel}>Order</label>
+                          <input
+                            type="number"
+                            min="0"
+                            defaultValue={p.sort_order || 0}
+                            onBlur={e => updatePartner(p, {sort_order: Number(e.target.value) || 0})}
+                            style={styles.input}
+                          />
+                        </div>
+
+                        <div style={styles.partnerActionStack}>
+                          <button
+                            onClick={() => updatePartner(p, {is_active: !p.is_active})}
+                            style={{
+                              ...styles.viewBtn,
+                              color: p.is_active ? '#166534' : '#64748b',
+                              borderColor: p.is_active ? '#86efac' : '#cbd5e1',
+                            }}
+                          >
+                            {p.is_active ? 'Visible on homepage' : 'Hidden'}
+                          </button>
+                          <button onClick={() => deletePartner(p)} style={styles.deleteBtn}>Remove</button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )
+            })}
           </div>
         </section>
 
@@ -861,9 +987,19 @@ const styles = {
   partnerUploadRow: { display:'flex', gap:8, alignItems:'stretch' },
   partnerUploadBtn: { display:'flex', alignItems:'center', justifyContent:'center', whiteSpace:'nowrap', padding:'0 15px', background:'#f0fdfa', color:'#0f766e', border:'1px solid #99f6e4', borderRadius:8, fontSize:12, fontWeight:700, cursor:'pointer' },
   partnerPreview: { width:76, height:58, objectFit:'contain', marginTop:8, borderRadius:8, border:'1px solid #e2e8f0', background:'#f8fafc', padding:5 },
-  partnerList: { display:'flex', flexDirection:'column', gap:8, marginTop:18 },
-  partnerRow: { display:'flex', gap:10, alignItems:'center', flexWrap:'wrap', border:'1px solid #e2e8f0', borderRadius:10, padding:10 },
-  partnerRowLogo: { width:54, height:42, objectFit:'contain', background:'#f8fafc', borderRadius:7, border:'1px solid #e2e8f0', padding:4 },
+  partnerList: { display:'flex', flexDirection:'column', gap:18, marginTop:18 },
+  partnerGroup: { border:'1px solid #e2e8f0', borderRadius:14, padding:14, background:'#f8fafc' },
+  partnerGroupHeader: { display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, marginBottom:12 },
+  partnerGroupBadge: { color:'white', borderRadius:999, padding:'6px 12px', fontSize:12, fontWeight:800 },
+  partnerGroupCount: { color:'#64748b', fontSize:12, fontWeight:700 },
+  partnerEmpty: { padding:'18px 12px', borderRadius:10, background:'white', color:'#94a3b8', fontSize:13, textAlign:'center' },
+  partnerRow: { display:'flex', gap:12, alignItems:'center', flexWrap:'wrap', border:'1px solid #e2e8f0', borderRadius:12, padding:12, background:'white', marginTop:8 },
+  partnerLogoManager: { width:94, display:'flex', flexDirection:'column', alignItems:'stretch', gap:6 },
+  partnerRowLogo: { width:82, height:62, objectFit:'contain', background:'#f8fafc', borderRadius:9, border:'1px solid #e2e8f0', padding:6 },
+  partnerReplaceLogoBtn: { display:'block', textAlign:'center', padding:'6px 7px', background:'#f0fdfa', color:'#0f766e', border:'1px solid #99f6e4', borderRadius:7, fontSize:10.5, fontWeight:800, cursor:'pointer' },
+  partnerRowControls: { width:155, minWidth:135 },
+  partnerMiniLabel: { display:'block', marginBottom:4, fontSize:10.5, fontWeight:800, color:'#64748b', textTransform:'uppercase', letterSpacing:.35 },
+  partnerActionStack: { display:'flex', flexDirection:'column', gap:6, marginLeft:'auto' },
 
   applicationsSection: {
     background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 14,
