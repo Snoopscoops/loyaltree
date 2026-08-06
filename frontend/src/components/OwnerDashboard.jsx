@@ -277,10 +277,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     setCouponText('')
     setCouponExpiry('')
     fetchCoupons(c.public_id)
-    setMemberVisitService('')
-    setMemberVisitNote('')
-    if (['stamp', 'membership', 'multipass'].includes(program?.card_type)) fetchMemberHistory(c.public_id)
-    else setMemberHistory([])
     setShowEditModal(true)
   }
 
@@ -302,13 +298,14 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   }
 
   const logMemberVisitFromOwner = async () => {
-    if (!editForm.public_id) return
+    const customerPublicId = selectedCustomer?.public_id || editForm.public_id
+    if (!customerPublicId) return
     setMembershipActionLoading(true)
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/membership/note`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          customer_public_id: editForm.public_id,
+          customer_public_id: customerPublicId,
           service_name: memberVisitService.trim() || null,
           note: memberVisitNote.trim() || null,
           as_owner: true,
@@ -318,8 +315,13 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       if (!res.ok) throw new Error(data.detail || 'Could not log visit')
       setMemberVisitService('')
       setMemberVisitNote('')
-      await fetchMemberHistory(editForm.public_id)
+      await fetchMemberHistory(customerPublicId)
       await loadData()
+      setSelectedCustomer(prev => prev ? {
+        ...prev,
+        membership_visit_count: (prev.membership_visit_count || 0) + 1,
+        membership_last_visit_at: data.created_at || new Date().toISOString(),
+      } : prev)
       setMessage('Visit logged')
     } catch (err) { setMessage(err.message) }
     setMembershipActionLoading(false)
@@ -656,6 +658,13 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const viewCustomerCard = (customer) => {
     setSelectedCustomer(customer)
     fetchCoupons(customer.public_id)
+    setMemberVisitService('')
+    setMemberVisitNote('')
+    if (['stamp', 'membership', 'multipass'].includes(program?.card_type)) {
+      fetchMemberHistory(customer.public_id)
+    } else {
+      setMemberHistory([])
+    }
     setShowCardModal(true)
   }
 
@@ -1429,6 +1438,122 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               </div>
             </div>
 
+            {(isMembershipCard || isMultipassCard || (!isPointsCard && !isVipCard)) && (
+              <div style={{marginBottom:18, padding:16, border:'1px solid #ccfbf1', background:'#f0fdfa', borderRadius:14}}>
+                {isMembershipCard && (
+                  <>
+                    <div style={{display:'grid', gridTemplateColumns:'repeat(2, minmax(0, 1fr))', gap:10, marginBottom:14}}>
+                      <div style={{background:'white', border:'1px solid #99f6e4', borderRadius:12, padding:12}}>
+                        <div style={{fontSize:11, fontWeight:800, color:'#64748b', textTransform:'uppercase'}}>Total visits</div>
+                        <div style={{fontSize:24, fontWeight:900, color:'#0f766e', marginTop:4}}>
+                          {selectedCustomer.membership_visit_count || memberHistory.length || 0}
+                        </div>
+                      </div>
+                      <div style={{background:'white', border:'1px solid #99f6e4', borderRadius:12, padding:12}}>
+                        <div style={{fontSize:11, fontWeight:800, color:'#64748b', textTransform:'uppercase'}}>Last visit</div>
+                        <div style={{fontSize:14, fontWeight:800, color:'#0f766e', marginTop:6}}>
+                          {selectedCustomer.membership_last_visit_at
+                            ? new Date(selectedCustomer.membership_last_visit_at).toLocaleString()
+                            : 'Never'}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{padding:14, background:'white', border:'1px solid #99f6e4', borderRadius:12, marginBottom:14}}>
+                      <div style={{fontWeight:900, color:'#134e4a', marginBottom:4}}>Add member visit note</div>
+                      <div style={{fontSize:12, color:'#64748b', marginBottom:10}}>
+                        {membershipSettings.membership_quick_checkin
+                          ? 'Gym quick check-in is enabled. This records a visit immediately without requiring notes.'
+                          : 'Record the service, medical note, observation, or follow-up details for this visit.'}
+                      </div>
+                      {!membershipSettings.membership_quick_checkin && (
+                        <>
+                          <input
+                            style={{...styles.input, marginBottom:8}}
+                            value={memberVisitService}
+                            onChange={e => setMemberVisitService(e.target.value)}
+                            placeholder="Service or visit type (optional)"
+                          />
+                          <textarea
+                            style={{...styles.input, minHeight:78, marginBottom:8}}
+                            value={memberVisitNote}
+                            onChange={e => setMemberVisitNote(e.target.value)}
+                            placeholder="Medical note, observations, follow-up, or other details (optional)"
+                          />
+                        </>
+                      )}
+                      <button
+                        type="button"
+                        style={{...styles.submitBtn, marginTop:0}}
+                        disabled={membershipActionLoading}
+                        onClick={logMemberVisitFromOwner}
+                      >
+                        {membershipActionLoading ? 'Saving visit…' : 'Log Member Visit'}
+                      </button>
+                    </div>
+                  </>
+                )}
+
+                <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:12, marginBottom:12}}>
+                  <div>
+                    <strong style={{fontSize:15,color:'#115e59'}}>
+                      {isMultipassCard ? 'Multi-Pass activity' : isMembershipCard ? 'Member visit analytics' : 'Stamp activity'}
+                    </strong>
+                    <div style={{fontSize:12,color:'#64748b',marginTop:3}}>
+                      {isMembershipCard
+                        ? 'Service, notes, cashier, branch, and visit date'
+                        : isMultipassCard
+                        ? 'Every issued pass and stamped session'
+                        : 'The date, cashier, and branch for every recorded stamp'}
+                    </div>
+                  </div>
+                  <div style={{minWidth:76,textAlign:'center',background:'white',border:'1px solid #99f6e4',borderRadius:10,padding:'8px 10px'}}>
+                    <strong style={{display:'block',fontSize:20,color:'#0f766e'}}>
+                      {isMembershipCard
+                        ? (selectedCustomer.membership_visit_count || memberHistory.length || 0)
+                        : memberHistory.filter(item => !isMultipassCard || item.action === 'used').length}
+                    </strong>
+                    <span style={{fontSize:11,color:'#64748b'}}>
+                      {isMembershipCard ? 'Visits' : isMultipassCard ? 'Used' : 'Stamps'}
+                    </span>
+                  </div>
+                </div>
+
+                {memberHistoryLoading ? <p style={{color:'#64748b'}}>Loading activity...</p> : memberHistory.length === 0 ? (
+                  <p style={{color:'#64748b',background:'white',padding:12,borderRadius:10,margin:0}}>
+                    No dated activity has been recorded yet. Activity history starts when scans are logged through the system.
+                  </p>
+                ) : (
+                  <div style={{maxHeight:320, overflowY:'auto', background:'white', borderRadius:12, padding:'0 12px'}}>
+                    {memberHistory.map((item, i) => {
+                      const eventDate = item.service_date || item.created_at
+                      const location = [item.staff_name ? `By ${item.staff_name}` : null, item.branch_name ? `at ${item.branch_name}` : null].filter(Boolean).join(' ')
+                      const title = isMembershipCard
+                        ? (item.service_name || 'Visit')
+                        : isMultipassCard
+                        ? (item.action === 'issued' ? 'Pass issued' : 'Session stamped')
+                        : `Stamp #${item.stamp_number || (memberHistory.length - i)}`
+
+                      return <div key={item.id || i} style={{display:'grid',gridTemplateColumns:'12px 1fr',gap:10,padding:'12px 0',borderBottom:i===memberHistory.length-1?'none':'1px solid #e2e8f0'}}>
+                        <div style={{width:10,height:10,borderRadius:'50%',background:'#14b8a6',marginTop:5,boxShadow:'0 0 0 4px #ccfbf1'}} />
+                        <div>
+                          <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start'}}>
+                            <strong style={{color:'#134e4a'}}>{title}</strong>
+                            <span style={{fontSize:12,color:'#64748b',whiteSpace:'nowrap'}}>
+                              {eventDate ? new Date(eventDate).toLocaleString([], {year:'numeric',month:'short',day:'numeric',hour:eventDate.includes?.('T')?'numeric':undefined,minute:eventDate.includes?.('T')?'2-digit':undefined}) : 'Date unavailable'}
+                            </span>
+                          </div>
+                          {isMultipassCard && <div style={{fontSize:13,color:'#475569',marginTop:3}}>{item.sessions_remaining ?? 0} sessions remaining after this activity</div>}
+                          {isMembershipCard && item.note && <div style={{fontSize:13,color:'#334155',whiteSpace:'pre-wrap',marginTop:6,padding:8,background:'#f8fafc',borderRadius:8}}>{item.note}</div>}
+                          {location && <div style={{fontSize:12,color:'#64748b',marginTop:5}}>{location}</div>}
+                        </div>
+                      </div>
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
             {activeCoupon && (
               <div style={{ background: '#f0fdfa', border: '1.5px dashed #0d9488', borderRadius: 10, padding: '10px 14px', textAlign: 'center', marginBottom: 16 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, color: '#0f766e' }}>🎟️ {activeCoupon.reward_text}</div>
@@ -1533,10 +1658,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                   <input style={styles.input} type="date" value={editForm.membership_start_date || ''} readOnly />
                   <label style={styles.label}>Expires</label>
                   <input style={styles.input} type="date" value={editForm.membership_expires_at || ''} readOnly />
-                  <div style={{display:'flex', gap:12, padding:'12px 0', marginBottom:12, borderBottom:'1px solid #e2e8f0'}}>
-                    <div><strong>{editForm.membership_visit_count || memberHistory.length || 0}</strong><div style={{fontSize:12,color:'#64748b'}}>Total visits</div></div>
-                    <div><strong>{editForm.membership_last_visit_at || 'Never'}</strong><div style={{fontSize:12,color:'#64748b'}}>Last visit</div></div>
-                  </div>
                   <div style={{display: 'flex', flexWrap:'wrap', gap: 8, marginBottom: 18}}>
                     <button type="button" style={{...styles.submitBtn, width:'auto', flex:'1 1 120px'}} disabled={membershipActionLoading} onClick={() => runMembershipAction('activate')}>Activate</button>
                     <button type="button" style={{...styles.submitBtn, width:'auto', flex:'1 1 120px'}} disabled={membershipActionLoading} onClick={() => runMembershipAction('renew')}>Renew</button>
@@ -1544,14 +1665,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     <button type="button" style={{...styles.submitBtn, width:'auto', flex:'1 1 120px', background: '#0d9488'}} disabled={membershipActionLoading} onClick={() => runMembershipAction('reactivate')}>Reactivate</button>
                     <button type="button" style={{...styles.submitBtn, width:'auto', flex:'1 1 120px', background: '#334155'}} disabled={membershipActionLoading} onClick={() => runMembershipAction('lifetime')}>Lifetime</button>
                     <button type="button" style={{...styles.submitBtn, width:'auto', flex:'1 1 120px', background: '#dc2626'}} disabled={membershipActionLoading} onClick={() => runMembershipAction('cancel')}>Cancel</button>
-                  </div>
-                  <div style={{padding:14, background:'#f8fafc', borderRadius:12, marginBottom:16}}>
-                    <strong>Log a visit</strong>
-                    {!membershipSettings.membership_quick_checkin && <>
-                      <input style={{...styles.input, marginTop:10}} value={memberVisitService} onChange={e=>setMemberVisitService(e.target.value)} placeholder="Service / visit type (optional)" />
-                      <textarea style={{...styles.input, minHeight:80}} value={memberVisitNote} onChange={e=>setMemberVisitNote(e.target.value)} placeholder="Medical note, observations, follow-up, or other details (optional)" />
-                    </>}
-                    <button type="button" style={styles.submitBtn} disabled={membershipActionLoading} onClick={logMemberVisitFromOwner}>Log visit</button>
                   </div>
                 </>
               ) : (
@@ -1567,61 +1680,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     onChange={e => setEditForm({...editForm, stamp_count: e.target.value})}
                   />
                 </>
-              )}
-              {(isMembershipCard || isMultipassCard || (!isPointsCard && !isVipCard)) && (
-                <div style={{marginBottom:18, padding:16, border:'1px solid #ccfbf1', background:'#f0fdfa', borderRadius:14}}>
-                  <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:12, marginBottom:12}}>
-                    <div>
-                      <strong style={{fontSize:15,color:'#115e59'}}>
-                        {isMultipassCard ? 'Multi-Pass activity' : isMembershipCard ? 'Member visit analytics' : 'Stamp activity'}
-                      </strong>
-                      <div style={{fontSize:12,color:'#64748b',marginTop:3}}>
-                        {isMembershipCard
-                          ? 'Service, notes, cashier, branch, and visit date'
-                          : isMultipassCard
-                          ? 'Every issued pass and stamped session'
-                          : 'The date, cashier, and branch for every recorded stamp'}
-                      </div>
-                    </div>
-                    <div style={{minWidth:76,textAlign:'center',background:'white',border:'1px solid #99f6e4',borderRadius:10,padding:'8px 10px'}}>
-                      <strong style={{display:'block',fontSize:20,color:'#0f766e'}}>
-                        {isMembershipCard ? (editForm.membership_visit_count || memberHistory.length || 0) : memberHistory.filter(item => !isMultipassCard || item.action === 'used').length}
-                      </strong>
-                      <span style={{fontSize:11,color:'#64748b'}}>{isMembershipCard ? 'Visits' : isMultipassCard ? 'Used' : 'Stamps'}</span>
-                    </div>
-                  </div>
-                  {memberHistoryLoading ? <p style={{color:'#64748b'}}>Loading activity...</p> : memberHistory.length === 0 ? (
-                    <p style={{color:'#64748b',background:'white',padding:12,borderRadius:10,margin:0}}>
-                      No dated activity has been recorded yet. Activity history starts when scans are logged through the system.
-                    </p>
-                  ) : (
-                    <div style={{maxHeight:320, overflowY:'auto', background:'white', borderRadius:12, padding:'0 12px'}}>
-                      {memberHistory.map((item, i) => {
-                        const eventDate = item.service_date || item.created_at
-                        const location = [item.staff_name ? `By ${item.staff_name}` : null, item.branch_name ? `at ${item.branch_name}` : null].filter(Boolean).join(' ')
-                        const title = isMembershipCard
-                          ? (item.service_name || 'Visit')
-                          : isMultipassCard
-                          ? (item.action === 'issued' ? 'Pass issued' : 'Session stamped')
-                          : `Stamp #${item.stamp_number || (memberHistory.length - i)}`
-                        return <div key={item.id || i} style={{display:'grid',gridTemplateColumns:'12px 1fr',gap:10,padding:'12px 0',borderBottom:i===memberHistory.length-1?'none':'1px solid #e2e8f0'}}>
-                          <div style={{width:10,height:10,borderRadius:'50%',background:'#14b8a6',marginTop:5,boxShadow:'0 0 0 4px #ccfbf1'}} />
-                          <div>
-                            <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start'}}>
-                              <strong style={{color:'#134e4a'}}>{title}</strong>
-                              <span style={{fontSize:12,color:'#64748b',whiteSpace:'nowrap'}}>
-                                {eventDate ? new Date(eventDate).toLocaleString([], {year:'numeric',month:'short',day:'numeric',hour:eventDate.includes?.('T')?'numeric':undefined,minute:eventDate.includes?.('T')?'2-digit':undefined}) : 'Date unavailable'}
-                              </span>
-                            </div>
-                            {isMultipassCard && <div style={{fontSize:13,color:'#475569',marginTop:3}}>{item.sessions_remaining ?? 0} sessions remaining after this activity</div>}
-                            {isMembershipCard && item.note && <div style={{fontSize:13,color:'#334155',whiteSpace:'pre-wrap',marginTop:6,padding:8,background:'#f8fafc',borderRadius:8}}>{item.note}</div>}
-                            {location && <div style={{fontSize:12,color:'#64748b',marginTop:5}}>{location}</div>}
-                          </div>
-                        </div>
-                      })}
-                    </div>
-                  )}
-                </div>
               )}
               <label style={styles.label}>Address</label>
               <input style={styles.input} value={editForm.address || ''} onChange={e => setEditForm({...editForm, address: e.target.value})} />
