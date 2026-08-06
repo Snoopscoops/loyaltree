@@ -1026,7 +1026,7 @@ class PartnerCreate(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     logo_url: str = Field(min_length=1, max_length=1000)
     sector: Optional[str] = Field(default=None, max_length=120)
-    plan_segment: Literal['starter', 'growth']
+    plan_segment: Literal['partners', 'starter', 'growth']
     website_url: Optional[str] = Field(default=None, max_length=1000)
     is_active: bool = True
     sort_order: int = Field(default=0, ge=0, le=9999)
@@ -1035,7 +1035,7 @@ class PartnerUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=160)
     logo_url: Optional[str] = Field(default=None, min_length=1, max_length=1000)
     sector: Optional[str] = Field(default=None, max_length=120)
-    plan_segment: Optional[Literal['starter', 'growth']] = None
+    plan_segment: Optional[Literal['partners', 'starter', 'growth']] = None
     website_url: Optional[str] = Field(default=None, max_length=1000)
     is_active: Optional[bool] = None
     sort_order: Optional[int] = Field(default=None, ge=0, le=9999)
@@ -1221,43 +1221,1792 @@ def safe_get_customer_by_id(customer_id: int):
     except Exception:
         return None
 
-
-def get_business_active_card_type(business: Optional[dict], program: Optional[dict] = None) -> str:
-    """Resolve the current card type from the saved loyalty configuration.
-
-    The loyalty_programs row is what the owner edits and publishes, so it must
-    win over a stale businesses.active_card_type value. The business column is
-    retained only as a compatibility fallback.
-    """
-    allowed = {'stamp', 'points', 'membership', 'vip', 'multipass'}
-
-    program_type = (program or {}).get('card_type')
-    if program_type in allowed:
-        return program_type
-
-    business_type = (business or {}).get('active_card_type')
-    if business_type in allowed:
-        return business_type
-
-    return 'stamp'
-
 def safe_get_loyalty_program(business_id: int):
-    """One business has exactly one loyalty program row."""
+    if not supabase:
+        return None
+    try:
+        res = supabase.table("loyalty_programs").select("*").eq("business_id", business_id).maybe_single().execute()
+        return res.data
+    except Exception:
+        return None
+
+def safe_get_active_coupon(customer_id: int):
+    """The customer's current active, non-expired coupon (there's only ever
+    one at a time - creation is blocked while one is already active). If an
+    'active' row has passed its expires_at date, it's treated as expired
+    here and never returned - a background/cron sweep isn't required for
+    correctness, only for tidying up the stored status eventually."""
     if not supabase:
         return None
     try:
         res = (
-            supabase.table("loyalty_programs")
+            supabase.table("coupons")
             .select("*")
-            .eq("business_id", business_id)
-            .maybe_single()
+            .eq("customer_id", customer_id)
+            .eq("status", "active")
+            .order("created_at", desc=True)
+            .limit(1)
             .execute()
         )
-        return res.data
-    except Exception as e:
-        print(f"LOYALTY PROGRAM lookup error for business {business_id}: {e}")
+        rows = res.data or []
+        if not rows:
+            return None
+        coupon = rows[0]
+        expires_at = coupon.get('expires_at')
+        if expires_at:
+            try:
+                if datetime.fromisoformat(str(expires_at)).date() < datetime.utcnow().date():
+                    return None
+            except Exception:
+                pass
+        return coupon
+    except Exception:
         return None
 
+def find_business_duplicate(email: Optional[str], phone: Optional[str]) -> Optional[str]:
+    """Checks whether another business already uses this email or phone.
+    Email is compared case-insensitively; phone is compared as-entered.
+    Returns which field collided ('email' or 'phone'), or None if clear."""
+    if not supabase:
+        return None
+    email = (email or '').strip()
+    phone = (phone or '').strip()
+    try:
+        if email:
+            res = supabase.table("businesses").select("id").ilike("email", email).execute()
+            if res.data:
+                return "email"
+        if phone:
+            res = supabase.table("businesses").select("id").eq("phone", phone).execute()
+            if res.data:
+                return "phone"
+    except Exception:
+        return None
+    return None
+
+def find_customer_duplicate(business_id: int, phone: Optional[str], email: Optional[str], exclude_id: Optional[int] = None) -> Optional[str]:
+    """Checks whether another customer already enrolled in this business
+    (same business_id) has this phone or email. exclude_id skips the
+    customer's own row, so updates only flag a collision with someone else.
+    Returns which field collided ('phone' or 'email'), or None if clear."""
+    if not supabase:
+        return None
+    phone = (phone or '').strip()
+    email = (email or '').strip()
+    try:
+        if phone:
+            res = (
+                supabase.table("customers").select("id")
+                .eq("business_id", business_id).eq("phone", phone).execute()
+            )
+            for row in (res.data or []):
+                if exclude_id is None or row.get('id') != exclude_id:
+                    return "phone"
+        if email:
+            res = (
+                supabase.table("customers").select("id")
+                .eq("business_id", business_id).ilike("email", email).execute()
+            )
+            for row in (res.data or []):
+                if exclude_id is None or row.get('id') != exclude_id:
+                    return "email"
+    except Exception:
+        return None
+    return None
+
+def find_cl_customer_duplicate(business_id: int, phone: Optional[str], email: Optional[str], exclude_id: Optional[int] = None) -> Optional[str]:
+    """Same idea as find_customer_duplicate but scoped to cl_customers (Car
+    Lending buyers) - a separate table from the loyalty `customers` one."""
+    if not supabase:
+        return None
+    phone = (phone or '').strip()
+    email = (email or '').strip()
+    try:
+        if phone:
+            res = (
+                supabase.table("cl_customers").select("id")
+                .eq("business_id", business_id).eq("phone", phone).execute()
+            )
+            for row in (res.data or []):
+                if exclude_id is None or row.get('id') != exclude_id:
+                    return "phone"
+        if email:
+            res = (
+                supabase.table("cl_customers").select("id")
+                .eq("business_id", business_id).ilike("email", email).execute()
+            )
+            for row in (res.data or []):
+                if exclude_id is None or row.get('id') != exclude_id:
+                    return "email"
+    except Exception:
+        return None
+    return None
+
+def get_admin_token() -> Optional[str]:
+    """The one valid admin token, derived from the configured super-admin
+    password. Stateless by design (matches owner/staff tokens elsewhere in
+    this file) - no admin_sessions table to manage. Returns None if no
+    super-admin password is configured, which disables the admin routes."""
+    if not SUPER_ADMIN_PASSWORD:
+        return None
+    return "admin-token-" + hash_password(SUPER_ADMIN_PASSWORD)
+
+def require_admin(request: Request):
+    valid_token = get_admin_token()
+    if not valid_token:
+        raise HTTPException(status_code=503, detail="Admin access is not configured on this server")
+    auth_header = request.headers.get("authorization", "")
+    token = auth_header.replace("Bearer ", "").replace("bearer ", "") if auth_header else ""
+    if not token or token != valid_token:
+        raise HTTPException(status_code=401, detail="Admin authentication required")
+    return True
+
+def business_summary(biz: dict) -> dict:
+    """Lightweight per-business row for the admin businesses list - counts
+    only, no raw customer/staff records."""
+    biz_id = biz.get('id')
+    customer_count = 0
+    staff_count = 0
+    activity_30d = 0
+    points_balance_outstanding = 0
+    program = safe_get_loyalty_program(biz_id)
+    card_type = program.get('card_type', 'stamp') if program else 'stamp'
+    sessions_outstanding = 0
+    try:
+        cust_res = supabase.table("customers").select("id", count="exact").eq("business_id", biz_id).execute()
+        customer_count = cust_res.count or 0
+    except Exception:
+        pass
+    try:
+        staff_res = supabase.table("staff").select("id", count="exact").eq("business_id", biz_id).execute()
+        staff_count = staff_res.count or 0
+    except Exception:
+        pass
+    try:
+        # Points-card businesses log sales to points_events and multipass
+        # businesses log issues/uses to multipass_events, not stamp_events
+        # (see the card_type guard around /stamp vs /points-sale vs
+        # /multipass) - read from whichever table actually holds this
+        # business's activity so it doesn't show a false 0.
+        since = (datetime.utcnow() - timedelta(days=30)).isoformat()
+        if card_type == 'points':
+            activity_table = "points_events"
+        elif card_type == 'multipass':
+            activity_table = "multipass_events"
+        else:
+            activity_table = "stamp_events"
+        activity_q = supabase.table(activity_table).select("id", count="exact").eq("business_id", biz_id).gte("created_at", since)
+        if card_type == 'multipass':
+            # "activity" here means sessions actually used, not passes issued.
+            activity_q = activity_q.eq("action", "used")
+        activity_res = activity_q.execute()
+        activity_30d = activity_res.count or 0
+    except Exception:
+        pass
+    if card_type == 'points':
+        try:
+            # Outstanding points liability across all customers - lets
+            # admin monitor how many unredeemed points a points-card
+            # business is carrying.
+            bal_res = supabase.table("customers").select("points_balance").eq("business_id", biz_id).execute()
+            points_balance_outstanding = sum((c.get('points_balance') or 0) for c in (bal_res.data or []))
+        except Exception:
+            pass
+    elif card_type == 'multipass':
+        try:
+            # Outstanding session liability - unused sessions still owed on
+            # unexpired passes, same idea as points_balance_outstanding.
+            bal_res = supabase.table("customers").select("multipass_sessions_remaining").eq("business_id", biz_id).execute()
+            sessions_outstanding = sum((c.get('multipass_sessions_remaining') or 0) for c in (bal_res.data or []))
+        except Exception:
+            pass
+    plan = biz.get('plan', 'starter')
+
+    branch_count = 1
+    try:
+        branch_res = supabase.table("branches").select("id", count="exact").eq("business_id", biz_id).execute()
+        branch_count = branch_res.count or 1
+    except Exception:
+        pass
+
+    subscription_expires_at = biz.get('subscription_expires_at')
+    subscription_status = 'none'
+    if subscription_expires_at:
+        try:
+            expires = _parse_ts(subscription_expires_at)
+            if expires:
+                days_left = (expires - datetime.utcnow()).days
+                if days_left < 0:
+                    subscription_status = 'expired'
+                elif days_left <= 7:
+                    subscription_status = 'expiring_soon'
+                else:
+                    subscription_status = 'active'
+        except Exception:
+            subscription_status = 'none'
+
+    return {
+        "public_id": biz.get("public_id", ""),
+        "name": biz.get("name", ""),
+        "email": biz.get("email", ""),
+        "phone": biz.get("phone", ""),
+        "status": biz.get("status", "PENDING"),
+        "plan": plan,
+        "plan_label": SUBSCRIPTION_PLANS.get(plan, {}).get("label", plan),
+        "plan_features": get_plan_features(plan),
+        "announcement_limit_adjustment": biz.get("announcement_limit_adjustment") or 0,
+        "announcements_per_month_effective": get_effective_announcement_limit(biz),
+        "branch_count": branch_count,
+        "price_month": get_price_for_plan(plan, branch_count),
+        "business_type": biz.get("business_type", "other"),
+        "address": biz.get("address"),
+        "logo_url": biz.get("logo_url"),
+        "created_at": biz.get("created_at"),
+        "last_paid_at": biz.get("last_paid_at"),
+        "subscription_expires_at": subscription_expires_at,
+        "subscription_status": subscription_status,
+        "customer_count": customer_count,
+        "staff_count": staff_count,
+        "card_type": card_type,
+        # stamps_30d holds stamp punches for stamp cards, points sales
+        # (transactions, not points earned) for points cards, or sessions
+        # used for multipass cards - see card_type to know which. Kept as
+        # one key so existing callers keep working.
+        "stamps_30d": activity_30d,
+        "points_balance_outstanding": points_balance_outstanding if card_type == 'points' else None,
+        "sessions_outstanding": sessions_outstanding if card_type == 'multipass' else None,
+    }
+
+def generate_qr_svg(data: str) -> str:
+    qr = qrcode.make(data, image_factory=SvgImage)
+    buffer = BytesIO()
+    qr.save(buffer)
+    return buffer.getvalue().decode("utf-8")
+
+# Wallet hero-image generation
+# Google Wallet's heroImage has to be a flat, static PNG - it can't render
+# CSS, so the diagonal gradient card look used on the web/join page
+# (linear-gradient(135deg, primary_color 0%, #14b8a6 100%)) is baked into a
+# real 1032x336 image here instead. Rendered at 1/4 scale then upscaled with
+# LANCZOS, which is both fast and smooth enough for a soft gradient.
+HERO_GRADIENT_END = (20, 184, 166)  # #14b8a6 - matches the web card's gradient end
+HERO_SIZE = (1032, 336)             # Google's recommended hero image size
+
+def _hex_to_rgb(hex_color: Optional[str]) -> tuple:
+    hex_color = (hex_color or '#3b82f6').lstrip('#')
+    if len(hex_color) == 3:
+        hex_color = ''.join(c * 2 for c in hex_color)
+    try:
+        return tuple(int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
+    except Exception:
+        return (13, 148, 136)  # fallback teal if primary_color is malformed
+
+def generate_hero_image_bytes(primary_color: str) -> bytes:
+    """Plain gradient, no text - used as the class-level fallback banner
+    (shared by every customer before any personalized object image exists)."""
+    return _hero_to_png(_render_hero(primary_color))
+
+def _render_hero(primary_color: str) -> "Image.Image":
+    start = _hex_to_rgb(primary_color)
+    end = HERO_GRADIENT_END
+    scale = 4
+    w, h = HERO_SIZE[0] // scale, HERO_SIZE[1] // scale
+    small = Image.new('RGB', (w, h))
+    px = small.load()
+    max_d = w + h
+    for y in range(h):
+        for x in range(w):
+            t = (x + y) / max_d  # 135deg diagonal blend, matches CSS gradient direction
+            px[x, y] = (
+                int(start[0] + (end[0] - start[0]) * t),
+                int(start[1] + (end[1] - start[1]) * t),
+                int(start[2] + (end[2] - start[2]) * t),
+            )
+    return small.resize(HERO_SIZE, Image.LANCZOS)
+
+def _hero_to_png(img: "Image.Image") -> bytes:
+    buffer = BytesIO()
+    img.save(buffer, format='PNG')
+    return buffer.getvalue()
+
+def _wrap_text(draw, text: str, font, max_width: int, max_lines: int) -> List[str]:
+    """Greedy word-wrap using actual glyph widths, truncating with an
+    ellipsis if the text still doesn't fit in max_lines."""
+    words = (text or '').split()
+    lines, current = [], ''
+    for word in words:
+        trial = f'{current} {word}'.strip()
+        if draw.textbbox((0, 0), trial, font=font)[2] <= max_width:
+            current = trial
+        else:
+            if current:
+                lines.append(current)
+            current = word
+            if len(lines) == max_lines:
+                break
+    if current and len(lines) < max_lines:
+        lines.append(current)
+    if len(lines) == max_lines and words:
+        # last line may still overflow after wrapping - truncate with ellipsis
+        last = lines[-1]
+        while last and draw.textbbox((0, 0), last + '…', font=font)[2] > max_width:
+            last = last[:-1]
+        lines[-1] = last + '…' if last != lines[-1] else last
+    return lines
+
+def generate_personalized_hero_image_bytes(
+    primary_color: str,
+    reward_name: str,
+    stamps: int,
+    stamp_goal: int,
+    description: Optional[str] = None,
+    card_type: str = 'stamp',
+    points_balance: int = 0,
+    sessions_remaining: int = 0,
+    sessions_total: int = 0,
+    total_visits: int = 0,
+    last_service_name: Optional[str] = None,
+    vip_points: int = 0,
+    vip_tier_name: Optional[str] = None,
+    membership_status: Optional[str] = None,
+    membership_expires_at: Optional[str] = None,
+) -> bytes:
+    """Same gradient as generate_hero_image_bytes, but with a bottom banner
+    burned in showing the reward/progress and short description - the
+    per-customer Wallet equivalent of the reward/progress rows shown on the
+    web card. This is set as the *object*-level heroImage (per customer),
+    not the class-level one, since progress differs per person.
+    For card_type == 'points', the top line becomes a plain points balance
+    instead of a reward name (points cards have no single fixed reward -
+    see points_prizes on loyalty_programs) and the progress line reports
+    the points balance instead of a stamp count."""
+    img = _render_hero(primary_color).convert('RGBA')
+    from PIL import ImageDraw, ImageFont
+
+    scrim_height = 150
+    scrim = Image.new('RGBA', (HERO_SIZE[0], scrim_height), (0, 0, 0, 0))
+    scrim_px = scrim.load()
+    for y in range(scrim_height):
+        alpha = int(150 * (y / scrim_height))  # fades in from transparent to dark
+        for x in range(HERO_SIZE[0]):
+            scrim_px[x, y] = (0, 0, 0, alpha)
+    img.alpha_composite(scrim, (0, HERO_SIZE[1] - scrim_height))
+
+    draw = ImageDraw.Draw(img)
+    pad = 40
+    max_w = HERO_SIZE[0] - pad * 2
+    font_reward = ImageFont.load_default(size=34)
+    font_progress = ImageFont.load_default(size=24)
+    font_desc = ImageFont.load_default(size=19)
+
+    if card_type == 'points':
+        reward_line = f'{points_balance} points'
+        progress_line = 'Redeem prizes in-store'
+    elif card_type == 'multipass':
+        reward_line = 'Session Pass'
+        progress_line = (f'{sessions_remaining} of {sessions_total} sessions left' if sessions_remaining > 0
+                         else 'All sessions used')
+    elif card_type == 'vip':
+        reward_line = f'{vip_tier_name or "VIP"} VIP'
+        progress_line = f'{vip_points} VIP points'
+    elif card_type == 'membership':
+        reward_line = f'Membership · {membership_status.upper() if membership_status else "INACTIVE"}'
+        progress_line = (
+            'Lifetime membership'
+            if membership_status == 'lifetime'
+            else f'Active until {membership_expires_at}'
+            if membership_expires_at
+            else 'Not activated'
+        )
+    else:
+        reward_line = (reward_name or 'Reward')[:60]
+        progress_line = f'{stamps} of {stamp_goal} stamps'
+    desc_lines = _wrap_text(draw, description or '', font_desc, max_w, max_lines=2) if description else []
+
+    y = HERO_SIZE[1] - 24
+    for line in reversed(desc_lines):
+        h = draw.textbbox((0, 0), line, font=font_desc)[3]
+        y -= h + 4
+        draw.text((pad, y), line, font=font_desc, fill=(255, 255, 255, 235))
+    y -= 8
+    h = draw.textbbox((0, 0), progress_line, font=font_progress)[3]
+    y -= h
+    draw.text((pad, y), progress_line, font=font_progress, fill=(255, 255, 255, 255))
+    y -= 6
+    h = draw.textbbox((0, 0), reward_line, font=font_reward)[3]
+    y -= h
+    draw.text((pad, y), reward_line, font=font_reward, fill=(255, 255, 255, 255))
+
+    return _hero_to_png(img.convert('RGB'))
+
+# Google Wallet Helpers
+def get_google_wallet_credentials():
+    creds_json = os.getenv('GOOGLE_WALLET_CREDENTIALS', '')
+    if not creds_json:
+        return None
+    try:
+        return json.loads(creds_json)
+    except:
+        return None
+
+def create_google_wallet_jwt(loyalty_object: dict) -> str:
+    creds = get_google_wallet_credentials()
+    if not creds:
+        return ''
+    try:
+        import jwt as pyjwt
+        private_key = creds.get('private_key', '')
+        client_email = creds.get('client_email', '')
+        if not private_key or not client_email:
+            return ''
+        now = datetime.utcnow()
+        payload = {
+            'iss': client_email,
+            'aud': 'google',
+            'iat': now,
+            'exp': now + timedelta(hours=1),
+            'origins': [BASE_URL, 'https://theloyaltytree.com', 'https://loyaltree-five.vercel.app'],
+            'typ': 'savetowallet',
+            'payload': {'loyaltyObjects': [loyalty_object]}
+        }
+        token = pyjwt.encode(payload, private_key, algorithm='RS256')
+        return token if isinstance(token, str) else token.decode('utf-8')
+    except Exception as e:
+        print(f"JWT generation error: {e}")
+        return ''
+
+def get_google_access_token() -> str:
+    creds = get_google_wallet_credentials()
+    if not creds:
+        return ''
+    try:
+        import jwt as pyjwt
+        import httpx
+        private_key = creds.get('private_key', '')
+        client_email = creds.get('client_email', '')
+        now = int(datetime.utcnow().timestamp())
+        auth_payload = {
+            'iss': client_email,
+            'sub': client_email,
+            'scope': 'https://www.googleapis.com/auth/wallet_object.issuer',
+            'aud': 'https://oauth2.googleapis.com/token',
+            'iat': now,
+            'exp': now + 3600,
+        }
+        jwt_assertion = pyjwt.encode(auth_payload, private_key, algorithm='RS256')
+        if isinstance(jwt_assertion, bytes):
+            jwt_assertion = jwt_assertion.decode('utf-8')
+        with httpx.Client() as client:
+            resp = client.post(
+                'https://oauth2.googleapis.com/token',
+                data={
+                    'grant_type': 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+                    'assertion': jwt_assertion,
+                }
+            )
+            return resp.json().get('access_token', '')
+    except Exception as e:
+        print(f"Access token error: {e}")
+        return ''
+
+def build_loyalty_class(business: dict, program: dict, review_status: str = 'UNDER_REVIEW') -> dict:
+    biz_public_id = business.get('public_id', '')
+    class_id = program.get('google_wallet_class_id') if program else None
+    if not class_id:
+        class_id = f'{GOOGLE_WALLET_ISSUER_ID}.{biz_public_id}'
+
+    primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
+    reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
+    card_type = program.get('card_type', 'stamp') if program else 'stamp'
+    card_name = program.get('card_name') if program else None
+    description = program.get('description') if program else None
+    biz_name = business.get('name', 'Loyalty')
+    program_name = card_name if card_name else f'{biz_name} Rewards'
+
+    if card_type == 'multipass':
+        session_count = program.get('multipass_session_count', 12) if program else 12
+        reward_module_body = f'{session_count}-session pass'
+    elif card_type == 'membership':
+        services = (program.get('membership_services') if program else None) or []
+        reward_module_body = ', '.join(services) if services else 'Membership'
+    else:
+        reward_module_body = reward_name
+
+    loyalty_class = {
+        'id': class_id,
+        'issuerName': biz_name,
+        'programName': program_name,
+        'reviewStatus': review_status,
+        'hexBackgroundColor': primary_color if primary_color.startswith('#') else f'#{primary_color}',
+        'textModulesData': [
+            {'header': 'Reward', 'body': reward_module_body},
+            {'header': 'About', 'body': description if description else 'Collect stamps, earn rewards'}
+        ]
+    }
+
+    logo_url = business.get('logo_url')
+    if not logo_url and program:
+        logo_url = program.get('program_logo_url')
+    if not logo_url:
+        # Google Wallet requires a programLogo to create a class - fall back to a
+        # generic placeholder so publishing never hard-fails when a business hasn't
+        # uploaded their own logo yet. Businesses should still be encouraged to set
+        # a real logo_url via signup or loyalty-config for a branded look.
+        logo_url = DEFAULT_LOGO_URL
+    loyalty_class['programLogo'] = {'sourceUri': {'uri': logo_url}}
+
+    hero_url = program.get('hero_image_url') if program else None
+    if not hero_url:
+        # No custom hero photo uploaded - generate the same diagonal gradient
+        # used on the web/join page so the Wallet pass matches it, instead of
+        # showing no banner at all. The color is baked into the URL itself:
+        # same primary_color -> same URL -> Google can keep using its cached
+        # copy; a color change produces a new URL, forcing Google to refetch.
+        color_key = primary_color.lstrip('#')
+        hero_url = f'{BASE_URL}/api/v1/business/{biz_public_id}/hero-image.png?c={color_key}'
+    loyalty_class['heroImage'] = {'sourceUri': {'uri': hero_url}}
+
+    return loyalty_class
+
+def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
+    cust_public_id = customer.get('public_id', '')
+    class_id = program.get('google_wallet_class_id') if program and program.get('google_wallet_class_id') else f'{GOOGLE_WALLET_ISSUER_ID}.{GOOGLE_WALLET_CLASS_SUFFIX}'
+    object_id = f'{GOOGLE_WALLET_ISSUER_ID}.{cust_public_id}'
+    card_type = program.get('card_type', 'stamp') if program else 'stamp'
+    stamp_goal = program.get('stamp_goal', 8) if program else 8
+    reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
+    stamps = customer.get('stamp_count', 0)
+    points_balance = customer.get('points_balance', 0)
+    sessions_remaining = customer.get('multipass_sessions_remaining', 0) or 0
+    sessions_total = customer.get('multipass_total_sessions', 0) or (program.get('multipass_session_count', 12) if program else 12)
+    cust_name = customer.get('name', 'Member')
+    biz_name = business.get('name', '')
+    membership_summary = (
+        get_membership_summary(business.get('id'), customer.get('id'))
+        if card_type == 'membership' else None
+    )
+
+    if card_type == 'points':
+        loyalty_points_label = 'Points'
+        loyalty_points_balance = str(points_balance)
+        progress_body = f'{points_balance} points'
+        reward_body = 'Redeem prizes in-store'
+    elif card_type == 'multipass':
+        loyalty_points_label = 'Sessions'
+        loyalty_points_balance = f'{sessions_remaining}/{sessions_total}'
+        progress_body = f'{sessions_remaining} of {sessions_total} sessions left'
+        reward_body = (program.get('description') if program else None) or 'Session pass'
+    elif card_type == 'vip':
+        tier = get_vip_tier(customer, program or {})
+        next_tier = get_next_vip_tier(customer, program or {})
+        loyalty_points_label = 'VIP Points'
+        loyalty_points_balance = str(int(customer.get('vip_points') or 0))
+        progress_body = f"{tier.get('name','VIP')} VIP" + (f" · {max(0,next_tier.get('threshold',0)-int(customer.get('vip_points') or 0))} points to {next_tier.get('name')}" if next_tier else ' · Highest tier')
+        reward_body = ', '.join(tier.get('benefits') or []) or 'VIP benefits'
+    elif card_type == 'membership':
+        status = membership_effective_status(customer)
+        expiry = customer.get('membership_expires_at')
+        loyalty_points_label = 'Status'
+        loyalty_points_balance = status.upper()
+        progress_body = ('Lifetime membership' if status == 'lifetime'
+                         else f'Valid until {expiry}' if expiry
+                         else status.title())
+        benefits = (program.get('membership_services') if program else None) or []
+        reward_body = ', '.join(benefits[:3]) if benefits else ((program.get('description') if program else None) or 'Membership benefits')
+    else:
+        loyalty_points_label = 'Stamps'
+        loyalty_points_balance = f'{stamps}/{stamp_goal}'
+        progress_body = f'{stamps} of {stamp_goal} stamps'
+        reward_body = reward_name
+
+    loyalty_object = {
+        'id': object_id,
+        'classId': class_id,
+        'state': 'active',
+        'barcode': {
+            'type': 'QR_CODE',
+            'value': f'{BASE_URL}/stamp/{cust_public_id}',
+            'alternateText': cust_name
+        },
+        'accountId': cust_public_id,
+        'accountName': cust_name,
+        'loyaltyPoints': {
+            'label': loyalty_points_label,
+            'balance': {'string': loyalty_points_balance}
+        },
+        'textModulesData': [
+            {'header': 'Business', 'body': biz_name},
+            {'header': 'Reward', 'body': reward_body},
+            {'header': 'Progress', 'body': progress_body}
+        ],
+        'linksModuleData': {
+            'uris': [{'uri': f'{BASE_URL}/wallet/{cust_public_id}', 'description': 'View Card Online'}]
+        }
+    }
+
+    # Object-level heroImage overrides the class-level one for just this
+    # customer - used to burn their live reward/progress/description onto
+    # the gradient banner. Skipped when the business uploaded their own
+    # hero photo, since baking text onto someone else's image would look
+    # wrong; that photo is left to show as-is (inherited from the class).
+    if not (program and program.get('hero_image_url')):
+        primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
+        description = program.get('description') if program else None
+        color_key = primary_color.lstrip('#')
+        if card_type == 'points':
+            progress_key = points_balance
+        elif card_type == 'multipass':
+            progress_key = sessions_remaining
+        elif card_type == 'membership':
+            progress_key = membership_summary['total_visits']
+        else:
+            progress_key = stamps
+        hero_url = (
+            f'{BASE_URL}/api/v1/customer/{cust_public_id}/hero-image.png'
+            f'?s={progress_key}&g={stamp_goal}&c={color_key}'
+        )
+        loyalty_object['heroImage'] = {'sourceUri': {'uri': hero_url}}
+
+    return loyalty_object
+
+
+def sync_wallet_object(customer: dict, business: dict, program: dict,
+                        notify_header: str = None, notify_body: str = None,
+                        notify_message_id: str = None):
+    """Push the customer's latest stamp count to Google Wallet.
+    Google only creates its own copy of the loyaltyObject when the customer taps
+    "Add to Google Wallet" - after that, changes in our DB never reach the saved
+    pass unless we PATCH it here. Best-effort: never raises, so a Wallet API hiccup
+    never blocks the stamp/redeem response to the cashier.
+
+    Pass notify_header/notify_body/notify_message_id to also fire a
+    TEXT_AND_NOTIFY addMessage call (via send_wallet_object_message) after the
+    patch succeeds - the PATCH alone silently updates the pass's data with no
+    visible notification to the customer. Omit them (as the owner's manual
+    dashboard stamp-count edit does) to keep the sync silent."""
+    access_token = get_google_access_token()
+    if not access_token:
+        return
+    try:
+        import httpx
+        loyalty_object = build_loyalty_object(customer, business, program)
+        object_id = loyalty_object['id']
+        with httpx.Client() as client:
+            resp = client.patch(
+                f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyObject/{object_id}',
+                headers={"Authorization": f"Bearer {access_token}"},
+                json=loyalty_object
+            )
+            if resp.status_code in (200, 201):
+                print(f"WALLET SYNC: updated {object_id}")
+                if notify_header and notify_message_id:
+                    send_wallet_object_message(object_id, notify_header, notify_body or '', notify_message_id)
+            elif resp.status_code == 404:
+                print(f"WALLET SYNC: {object_id} not found - customer hasn't added it to their wallet yet")
+            else:
+                print(f"WALLET SYNC: failed {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"WALLET SYNC error: {e}")
+
+# Apple Wallet (PassKit) Helpers
+#
+# Unlike Google Wallet (a REST API Google hosts), an Apple Wallet pass is a
+# signed zip file (.pkpass) that we build and sign ourselves, plus a small
+# "web service" Apple's Wallet app calls back into for live updates. Three
+# things happen here:
+#   1. build_pkpass_bytes() - assembles + signs the .pkpass, used both for
+#      the initial download and for every subsequent refetch.
+#   2. The web service routes (registration, list-updated, get-pass, log)
+#      further down, which Wallet calls per Apple's PassKit Web Service spec.
+#   3. push_apple_wallet_update() - the APNs push that tells a device's
+#      Wallet app "go call the web service, something changed" - the Apple
+#      equivalent of sync_wallet_object() above.
+
+_apple_pass_credentials_cache = None
+_apple_push_cert_paths = None
+
+def get_apple_pass_credentials():
+    """Loads (private_key, certificate, wwdr_certificate) from the env vars
+    once per process. Returns None if Apple Wallet isn't configured yet.
+    Tries the PEM cert+key path first (APPLE_PASS_CERTIFICATE +
+    APPLE_PASS_PRIVATE_KEY), falling back to reading APPLE_PASS_CERTIFICATE
+    as a raw .p12 if no separate key was given."""
+    global _apple_pass_credentials_cache
+    if _apple_pass_credentials_cache is not None:
+        return _apple_pass_credentials_cache or None
+    if not APPLE_PASS_CERTIFICATE or not APPLE_WWDR_CERTIFICATE:
+        _apple_pass_credentials_cache = False
+        return None
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.primitives import serialization
+
+        wwdr_bytes = base64.b64decode(APPLE_WWDR_CERTIFICATE)
+        try:
+            wwdr_cert = x509.load_pem_x509_certificate(wwdr_bytes)
+        except ValueError:
+            wwdr_cert = x509.load_der_x509_certificate(wwdr_bytes)
+
+        private_key = None
+        certificate = None
+
+        if APPLE_PASS_PRIVATE_KEY:
+            cert_bytes = base64.b64decode(APPLE_PASS_CERTIFICATE)
+            key_bytes = base64.b64decode(APPLE_PASS_PRIVATE_KEY)
+            certificate = x509.load_pem_x509_certificate(cert_bytes)
+            key_password = APPLE_PASS_CERTIFICATE_PASSWORD.encode() if APPLE_PASS_CERTIFICATE_PASSWORD else None
+            private_key = serialization.load_pem_private_key(key_bytes, password=key_password)
+        else:
+            from cryptography.hazmat.primitives.serialization import pkcs12
+            p12_bytes = base64.b64decode(APPLE_PASS_CERTIFICATE)
+            password_bytes = APPLE_PASS_CERTIFICATE_PASSWORD.encode() if APPLE_PASS_CERTIFICATE_PASSWORD else None
+            private_key, certificate, _extra = pkcs12.load_key_and_certificates(p12_bytes, password_bytes)
+
+        if not private_key or not certificate:
+            print("APPLE WALLET: credentials did not yield both a private key and a certificate")
+            _apple_pass_credentials_cache = False
+            return None
+        _apple_pass_credentials_cache = (private_key, certificate, wwdr_cert)
+        return _apple_pass_credentials_cache
+    except Exception as e:
+        print(f"APPLE WALLET: credential load error: {e}")
+        _apple_pass_credentials_cache = False
+        return None
+
+def apple_pass_auth_token(serial_number: str) -> str:
+    """Per-customer token embedded in pass.json's authenticationToken. The
+    Wallet app sends it back as 'Authorization: ApplePass <token>' on every
+    web service call for that pass, so we can verify the call is really
+    about that customer's pass without storing a token anywhere ourselves."""
+    secret = APPLE_PASS_AUTH_SECRET or 'unset-secret-please-configure-APPLE_PASS_AUTH_SECRET'
+    return hmac.new(secret.encode(), serial_number.encode(), hashlib.sha256).hexdigest()
+
+def apple_auth_ok(serial_number: str, authorization: Optional[str]) -> bool:
+    if not authorization or not authorization.startswith('ApplePass '):
+        return False
+    token = authorization[len('ApplePass '):].strip()
+    return hmac.compare_digest(token, apple_pass_auth_token(serial_number))
+
+def sign_pkpass_manifest(manifest_bytes: bytes) -> Optional[bytes]:
+    creds = get_apple_pass_credentials()
+    if not creds:
+        return None
+    private_key, certificate, wwdr_cert = creds
+    try:
+        from cryptography.hazmat.primitives.serialization import pkcs7, Encoding
+        from cryptography.hazmat.primitives import hashes
+        return (
+            pkcs7.PKCS7SignatureBuilder()
+            .set_data(manifest_bytes)
+            .add_signer(certificate, private_key, hashes.SHA256())
+            .add_certificate(wwdr_cert)
+            .sign(Encoding.DER, [pkcs7.PKCS7Options.DetachedSignature, pkcs7.PKCS7Options.Binary])
+        )
+    except Exception as e:
+        print(f"APPLE WALLET: manifest signing error: {e}")
+        return None
+
+def generate_apple_icon_bytes(primary_color: str, business_name: str, size: int) -> bytes:
+    """Solid primary_color square with the business's first initial - the
+    same 'colored circle + initial' look used for customer avatars in the
+    dashboard, just square (Apple rounds the corners itself)."""
+    from PIL import ImageDraw, ImageFont
+    r, g, b = _hex_to_rgb(primary_color)
+    img = Image.new('RGB', (size, size), (r, g, b))
+    draw = ImageDraw.Draw(img)
+    letter = (business_name or '?').strip()[:1].upper() or '?'
+    font = ImageFont.load_default(size=int(size * 0.55))
+    bbox = draw.textbbox((0, 0), letter, font=font)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    draw.text(((size - tw) / 2 - bbox[0], (size - th) / 2 - bbox[1]), letter, font=font, fill=(255, 255, 255))
+    return _hero_to_png(img)
+
+def generate_apple_logo_bytes(business_name: str, width: int, height: int) -> bytes:
+    """Transparent-background wordmark shown in the pass header, next to
+    logoText. Shrinks the font until the business name fits on one line."""
+    from PIL import ImageDraw, ImageFont
+    img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    text = (business_name or 'Loyalty').strip()[:24]
+    font_size = int(height * 0.55)
+    font = ImageFont.load_default(size=font_size)
+    bbox = draw.textbbox((0, 0), text, font=font)
+    tw = bbox[2] - bbox[0]
+    while tw > width - 16 and font_size > 8:
+        font_size -= 2
+        font = ImageFont.load_default(size=font_size)
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw = bbox[2] - bbox[0]
+    th = bbox[3] - bbox[1]
+    draw.text(((width - tw) / 2 - bbox[0], (height - th) / 2 - bbox[1]), text, font=font, fill=(255, 255, 255, 255))
+    return _hero_to_png(img)
+
+def get_latest_active_announcement(business_id: int) -> Optional[dict]:
+    """Latest still-active, not-yet-expired announcement for a business, used
+    to surface an 'Announcement' field on the Apple Wallet pass (Google
+    Wallet gets its own copy via send_wallet_class_message's addMessage
+    call, so this is Apple's equivalent data source). Returns None on any
+    error or when there simply isn't one - callers treat that the same as
+    'no announcement configured', not an error."""
+    if not supabase:
+        return None
+    try:
+        res = (
+            supabase.table("announcements")
+            .select("*")
+            .eq("business_id", business_id)
+            .eq("is_active", True)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+    except Exception:
+        return None
+    if not rows:
+        return None
+    ann = rows[0]
+    end_date = ann.get('end_date')
+    if end_date and str(end_date) < datetime.utcnow().date().isoformat():
+        return None
+    return ann
+
+def build_apple_pass_json(customer: dict, business: dict, program: dict, announcement: Optional[dict] = None) -> dict:
+    cust_public_id = customer.get('public_id', '')
+    cust_name = customer.get('name', 'Member')
+    biz_name = business.get('name', 'Loyalty')
+    card_type = program.get('card_type', 'stamp') if program else 'stamp'
+    stamp_goal = program.get('stamp_goal', 8) if program else 8
+    reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
+    description = program.get('description') if program else None
+    stamps = customer.get('stamp_count', 0)
+    points_balance = customer.get('points_balance', 0)
+    sessions_remaining = customer.get('multipass_sessions_remaining', 0) or 0
+    sessions_total = customer.get('multipass_total_sessions', 0) or (program.get('multipass_session_count', 12) if program else 12)
+    multipass_expires_at = customer.get('multipass_expires_at')
+    reward_unlocked = bool(customer.get('reward_unlocked'))
+    primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
+    r, g, b = _hex_to_rgb(primary_color)
+    membership_summary = (
+        get_membership_summary(business.get('id'), customer.get('id'))
+        if card_type == 'membership' else None
+    )
+
+    # Announcement field: always present (rather than added/removed) so the
+    # field's value - not its existence - is what changes between rebuilds.
+    # PassKit only offers a lock-screen notification when a field's *value*
+    # differs from what the device already has for that key, substituted
+    # into changeMessage's %@. Falls back to a static placeholder when there
+    # is no active announcement, so first-time installs and quiet periods
+    # don't show stale or blank text. Note: this placeholder is itself a
+    # "value" PassKit can diff against, so a business going from an active
+    # announcement back to none will also trigger one (harmless but
+    # unavoidable) notification - PassKit has no per-field "silent update".
+    ann_title = (announcement or {}).get('title', '') or ''
+    ann_message = (announcement or {}).get('message', '') or ''
+    announcement_value = ann_title.strip() or ann_message.strip() or 'Check back for updates'
+
+    back_fields = [
+        {'key': 'about', 'label': 'About', 'value': description or 'Collect stamps, earn rewards.'},
+        {'key': 'online', 'label': 'View Online', 'value': f'{BASE_URL}/wallet/{cust_public_id}'},
+        {
+            'key': 'announcement',
+            'label': '📢 ANNOUNCEMENT',
+            'value': announcement_value[:150],
+            'changeMessage': '%@',
+        },
+    ]
+    if ann_message.strip() and ann_message.strip() != announcement_value:
+        back_fields.append({'key': 'announcement_detail', 'label': ' ', 'value': ann_message.strip()[:400]})
+
+    return {
+        'formatVersion': 1,
+        'passTypeIdentifier': APPLE_PASS_TYPE_IDENTIFIER,
+        'teamIdentifier': APPLE_TEAM_IDENTIFIER,
+        'organizationName': biz_name,
+        'serialNumber': cust_public_id,
+        'description': f'{biz_name} Loyalty Card',
+        'logoText': biz_name[:20],
+        'backgroundColor': f'rgb({r}, {g}, {b})',
+        'foregroundColor': 'rgb(255, 255, 255)',
+        'labelColor': 'rgba(255, 255, 255, 0.75)',
+        'webServiceURL': APPLE_PASS_WEB_SERVICE_URL,
+        'authenticationToken': apple_pass_auth_token(cust_public_id),
+        'storeCard': {
+            # Clean, real-card layout: one small header (member name), one
+            # BIG hero value (the number that matters - points or stamp
+            # progress), and a single short secondary line for the reward.
+            # Nothing repeats logoText/organizationName (already shown up
+            # top), so there's no duplicate "business name" field.
+            'headerFields': [
+                {'key': 'member', 'label': 'MEMBER', 'value': cust_name[:20]}
+            ],
+            'primaryFields': [
+                {'key': 'points', 'label': 'POINTS', 'value': str(points_balance), 'changeMessage': 'Points added! You now have %@ points.'}
+                if card_type == 'points' else
+                {'key': 'sessions', 'label': 'SESSIONS', 'value': f'{sessions_remaining}/{sessions_total}', 'changeMessage': 'Session used! %@ sessions left.'}
+                if card_type == 'multipass' else
+                {'key': 'vip_points', 'label': 'VIP POINTS', 'value': str(int(customer.get('vip_points') or 0)), 'changeMessage': 'VIP points updated: %@'}
+                if card_type == 'vip' else
+                {'key': 'membership_status', 'label': 'MEMBERSHIP', 'value': membership_effective_status(customer).upper(), 'changeMessage': 'Membership status: %@'}
+                if card_type == 'membership' else
+                {'key': 'stamps', 'label': 'STAMPS', 'value': f'{stamps}/{stamp_goal}', 'changeMessage': 'Stamp added! You now have %@ stamps.'}
+            ],
+            'secondaryFields': [
+                {'key': 'reward', 'label': 'REWARD', 'value': 'Redeem prizes in-store', 'changeMessage': '%@'}
+                if card_type == 'points' else
+                {'key': 'reward', 'label': 'EXPIRES', 'value': (multipass_expires_at or 'No expiry set'), 'changeMessage': '%@'}
+                if card_type == 'multipass' else
+                {'key': 'vip_tier', 'label': 'VIP TIER', 'value': get_vip_tier(customer, program or {}).get('name', 'VIP'), 'changeMessage': 'VIP tier: %@'}
+                if card_type == 'vip' else
+                {'key': 'reward', 'label': 'ACTIVE UNTIL', 'value': ('Lifetime' if membership_effective_status(customer) == 'lifetime' else (customer.get('membership_expires_at') or 'Not activated')), 'changeMessage': '%@'}
+                if card_type == 'membership' else
+                {'key': 'reward', 'label': 'REWARD', 'value': ('🎉 Ready to redeem!' if reward_unlocked else reward_name)[:30], 'changeMessage': '%@'}
+            ],
+            'backFields': back_fields
+        },
+        'barcodes': [
+            {
+                'format': 'PKBarcodeFormatQR',
+                'message': f'{BASE_URL}/stamp/{cust_public_id}',
+                'messageEncoding': 'iso-8859-1',
+                'altText': cust_name
+            }
+        ]
+    }
+
+def build_pkpass_bytes(customer: dict, business: dict, program: dict, announcement: Optional[dict] = None) -> Optional[bytes]:
+    """Assembles and signs the full .pkpass zip. Returns None if Apple
+    Wallet credentials aren't configured or signing fails - callers treat
+    that the same way create_google_wallet_jwt()'s empty-string return is
+    treated: a clear 'not configured' error rather than a crash.
+    `announcement` is optional - pass the business's current active
+    announcement (see get_latest_active_announcement) so it's reflected in
+    the pass; omitted, the pass just shows the no-announcement placeholder."""
+    if not APPLE_PASS_TYPE_IDENTIFIER or not APPLE_TEAM_IDENTIFIER:
+        return None
+    if get_apple_pass_credentials() is None:
+        return None
+
+    primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
+    biz_name = business.get('name', 'Loyalty')
+    pass_json = build_apple_pass_json(customer, business, program, announcement)
+
+    files = {
+        'pass.json': json.dumps(pass_json).encode('utf-8'),
+        'icon.png': generate_apple_icon_bytes(primary_color, biz_name, 29),
+        'icon@2x.png': generate_apple_icon_bytes(primary_color, biz_name, 58),
+        'icon@3x.png': generate_apple_icon_bytes(primary_color, biz_name, 87),
+        'logo.png': generate_apple_logo_bytes(biz_name, 160, 50),
+        'logo@2x.png': generate_apple_logo_bytes(biz_name, 320, 100),
+        'logo@3x.png': generate_apple_logo_bytes(biz_name, 480, 150),
+    }
+
+    manifest = {name: hashlib.sha1(content).hexdigest() for name, content in files.items()}
+    manifest_bytes = json.dumps(manifest).encode('utf-8')
+    signature = sign_pkpass_manifest(manifest_bytes)
+    if signature is None:
+        return None
+
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for name, content in files.items():
+            zf.writestr(name, content)
+        zf.writestr('manifest.json', manifest_bytes)
+        zf.writestr('signature', signature)
+    return buffer.getvalue()
+
+def get_apple_push_cert_files():
+    """Writes the signing cert + private key to temp PEM files once per
+    process (httpx/ssl need real file paths, not bytes) and reuses them -
+    this is the same cert used to sign passes, reused here as the TLS
+    client cert APNs requires to authorize pushes for this Pass Type ID."""
+    global _apple_push_cert_paths
+    if _apple_push_cert_paths and all(os.path.exists(p) for p in _apple_push_cert_paths):
+        return _apple_push_cert_paths
+    creds = get_apple_pass_credentials()
+    if not creds:
+        return None, None
+    private_key, certificate, wwdr_cert = creds
+    try:
+        import tempfile
+        from cryptography.hazmat.primitives import serialization
+        # APNs' mTLS handshake needs the full chain - our leaf pass-signing
+        # cert PLUS the Apple WWDR intermediate - or Apple can't build a
+        # trust path to its root and silently drops the connection. Without
+        # this, pushes fail inside _send_apple_wallet_pushes' try/except and
+        # get swallowed: passes still issue fine (that path doesn't use this
+        # file), but no device ever gets woken up to refetch.
+        cert_pem = certificate.public_bytes(serialization.Encoding.PEM) + \
+            wwdr_cert.public_bytes(serialization.Encoding.PEM)
+        key_pem = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+        cert_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
+        cert_file.write(cert_pem)
+        cert_file.close()
+        key_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
+        key_file.write(key_pem)
+        key_file.close()
+        _apple_push_cert_paths = (cert_file.name, key_file.name)
+        return _apple_push_cert_paths
+    except Exception as e:
+        print(f"APPLE WALLET: push cert setup error: {e}")
+        return None, None
+
+def _send_apple_wallet_pushes(push_tokens: list) -> int:
+    """Shared APNs-sending core used by both push_apple_wallet_update()
+    (single customer, e.g. after a stamp/redeem) and
+    push_apple_wallet_announcement() (whole business, e.g. a new
+    announcement). Takes raw push tokens rather than querying itself, so
+    callers control which registrations get notified. Best-effort and
+    silent on failure - a push hiccup must never block the caller.
+    Returns the number of tokens APNs accepted (200 response), just for
+    logging - callers don't need to react to this."""
+    tokens = [t for t in push_tokens if t]
+    if not tokens:
+        return 0
+    cert_path, key_path = get_apple_push_cert_files()
+    if not cert_path:
+        return 0
+    sent = 0
+    try:
+        import httpx
+        with httpx.Client(http2=True, cert=(cert_path, key_path), timeout=10) as client:
+            for token in tokens:
+                try:
+                    resp = client.post(
+                        f"https://api.push.apple.com/3/device/{token}",
+                        headers={"apns-topic": APPLE_PASS_TYPE_IDENTIFIER},
+                        json={},
+                    )
+                    if resp.status_code == 200:
+                        sent += 1
+                        print(f"APPLE WALLET PUSH: sent to {token[:12]}...")
+                    else:
+                        print(f"APPLE WALLET PUSH failed {resp.status_code}: {resp.text}")
+                except Exception as e:
+                    print(f"APPLE WALLET PUSH error: {e}")
+    except Exception as e:
+        print(f"APPLE WALLET PUSH client error: {e}")
+    return sent
+
+def push_apple_wallet_update(serial_number: str):
+    """Tells every device that has this one customer's pass saved to
+    refetch it. Best-effort and silent on failure, same contract as
+    sync_wallet_object() - a push hiccup must never block a stamp/redeem."""
+    if not supabase or not APPLE_PASS_TYPE_IDENTIFIER:
+        return
+    try:
+        rows = (
+            supabase.table("apple_wallet_registrations")
+            .select("push_token")
+            .eq("serial_number", serial_number)
+            .eq("pass_type_identifier", APPLE_PASS_TYPE_IDENTIFIER)
+            .execute()
+        ).data or []
+    except Exception:
+        return
+    _send_apple_wallet_pushes([row.get('push_token') for row in rows])
+
+def push_apple_wallet_announcement(business_id: int) -> int:
+    """Companion to send_wallet_class_message() for announcements, but for
+    Apple Wallet: send_wallet_class_message() pushes to every Google
+    Wallet card via one class-level API call, but Apple Wallet has no
+    equivalent "notify everyone with this pass type" call - PassKit only
+    supports pushing to individual registered serial numbers. So this
+    fetches every customer's public_id for the business, looks up which
+    of those serial numbers have an Apple Wallet registration, and pushes
+    to each. Best-effort and silent on failure, same contract as
+    push_apple_wallet_update() - a push hiccup must never block posting
+    an announcement. Returns the number of tokens APNs accepted, so
+    callers can optionally log/report it; 0 is a normal outcome (no
+    Apple Wallet customers yet) and never raises."""
+    if not supabase or not APPLE_PASS_TYPE_IDENTIFIER:
+        return 0
+    try:
+        customer_rows = (
+            supabase.table("customers")
+            .select("public_id")
+            .eq("business_id", business_id)
+            .execute()
+        ).data or []
+    except Exception:
+        return 0
+    serial_numbers = [r['public_id'] for r in customer_rows if r.get('public_id')]
+    if not serial_numbers:
+        return 0
+    push_tokens = []
+    try:
+        # Chunked to stay well under PostgREST's URL length limit for large
+        # customer bases - an .in_() filter with thousands of UUIDs in one
+        # request risks a 414/URI-too-long instead of a clean empty result.
+        CHUNK_SIZE = 200
+        for i in range(0, len(serial_numbers), CHUNK_SIZE):
+            chunk = serial_numbers[i:i + CHUNK_SIZE]
+            rows = (
+                supabase.table("apple_wallet_registrations")
+                .select("push_token")
+                .in_("serial_number", chunk)
+                .eq("pass_type_identifier", APPLE_PASS_TYPE_IDENTIFIER)
+                .execute()
+            ).data or []
+            push_tokens.extend(row.get('push_token') for row in rows)
+    except Exception as e:
+        print(f"APPLE WALLET announcement lookup error: {e}")
+        return 0
+    return _send_apple_wallet_pushes(push_tokens)
+
+def sync_apple_wallet_pass(customer: dict):
+    """Companion to sync_wallet_object() - call alongside it wherever a
+    customer's stamp_count changes. Never raises."""
+    try:
+        push_apple_wallet_update(customer.get('public_id', ''))
+    except Exception as e:
+        print(f"APPLE WALLET sync error: {e}")
+
+def send_wallet_class_message(class_id: str, header: str, body: str, message_id: str, detail_url: str = None) -> bool:
+    """Push a notification to every customer who has saved a loyalty card
+    under this business's Wallet class. Google Wallet's addMessage endpoint on
+    the *class* (not each individual object) fans the message out to every
+    saved card in one call, which is what powers the phone notification -
+    but only if messageType is TEXT_AND_NOTIFY. Plain TEXT silently adds the
+    message to the back of the pass without ever firing a push/lock-screen
+    notification, which looks identical to success in the API response.
+    message_id should be stable per-announcement-send so re-calling this with
+    the same id doesn't spam a duplicate notification.
+
+    IMPORTANT - what the customer actually sees: the lock-screen notification
+    text itself is controlled entirely by Google Wallet, not by header/body
+    here - issuers can't customize it. Tapping the notification opens the
+    pass with a "Review update" / "View message" callout that reveals header
+    + body on the back of the pass. That back-of-pass view is the only place
+    this app's content is actually shown, so if detail_url is given, it's
+    appended to body as a hyperlink (Wallet supports basic <a> tags in
+    message bodies) pointing at a full HTML detail page - useful since body
+    is capped at 500 plain-text characters and can't hold images/formatting.
+
+    Google-side limits to know about (not enforced by this app):
+    - Max 3 notification-triggering messages per pass per rolling 24h; extra
+      calls beyond that raise a quota error on Google's side.
+    - The customer must have notifications enabled for the pass in their
+      Google Wallet app, or nothing will show even though the API call
+      succeeds.
+    - Delivery isn't always instant; a short delay is normal."""
+    access_token = get_google_access_token()
+    if not access_token or not class_id:
+        return False
+    try:
+        import httpx
+        body_text = (body or '').strip()
+        if detail_url:
+            link_html = f' <a href="{detail_url}">View full details</a>'
+            if len(body_text) + len(link_html) > 500:
+                body_text = body_text[:500 - len(link_html)].rstrip() + '…'
+            body_text = (body_text + link_html)[:500]
+        else:
+            body_text = body_text[:500]
+        payload = {
+            'message': {
+                'header': (header or '')[:150],
+                'body': body_text,
+                'id': message_id,
+                'messageType': 'TEXT_AND_NOTIFY',
+            }
+        }
+        with httpx.Client() as client:
+            resp = client.post(
+                f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}/addMessage',
+                headers={"Authorization": f"Bearer {access_token}"},
+                json=payload
+            )
+            if resp.status_code in (200, 201):
+                print(f"WALLET PUSH: sent to class {class_id}")
+                return True
+            print(f"WALLET PUSH failed: {resp.status_code} - {resp.text}")
+            return False
+    except Exception as e:
+        print(f"WALLET PUSH error: {e}")
+        return False
+
+def send_wallet_object_message(object_id: str, header: str, body: str, message_id: str) -> bool:
+    """Push a notification to ONE customer's saved loyalty card, unlike
+    send_wallet_class_message above which fans out to everyone on the
+    business's card at once. Used for personalized messages - birthday
+    greetings, win-back nudges - where blasting every customer would be
+    wrong. Same TEXT_AND_NOTIFY / 500-char / 3-per-24h rules apply as the
+    class-level version; see that function's docstring for details."""
+    access_token = get_google_access_token()
+    if not access_token or not object_id:
+        return False
+    try:
+        import httpx
+        payload = {
+            'message': {
+                'header': (header or '')[:150],
+                'body': (body or '')[:500],
+                'id': message_id,
+                'messageType': 'TEXT_AND_NOTIFY',
+            }
+        }
+        with httpx.Client() as client:
+            resp = client.post(
+                f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyObject/{object_id}/addMessage',
+                headers={"Authorization": f"Bearer {access_token}"},
+                json=payload
+            )
+            if resp.status_code in (200, 201):
+                print(f"WALLET PUSH: sent to object {object_id}")
+                return True
+            print(f"WALLET PUSH (object) failed: {resp.status_code} - {resp.text}")
+            return False
+    except Exception as e:
+        print(f"WALLET PUSH (object) error: {e}")
+        return False
+
+# CAR LENDING / SHOWROOM - WALLET PASSES
+#
+# Separate pass type from the loyalty stamp/points/multipass/membership
+# cards above: a car-lending buyer's pass shows their loan BALANCE and
+# NEXT DUE DATE instead of a stamp/points count. Reuses all the same
+# plumbing (Google Wallet REST API creds, Apple PassKit signing cert,
+# apple_wallet_registrations table, the generic send_wallet_class_message /
+# send_wallet_object_message / push_apple_wallet_update primitives above) -
+# no new credentials or tables needed. The only thing that distinguishes a
+# car-lending pass from a loyalty one at the infra level is:
+#   - Google: its own loyaltyClass, id'd `{ISSUER_ID}.cl-{business.public_id}`
+#     (stored on businesses.cl_google_wallet_class_id), separate from the
+#     loyalty class on the same business.
+#   - Apple: its own serialNumber, `cl-{customer.public_id}` (prefixed so
+#     apple_get_updated_pass can tell which table to look the pass up in) -
+#     same passTypeIdentifier/cert as loyalty, since Apple doesn't require a
+#     distinct Pass Type ID per pass "shape", only per signing identity.
+#
+# A buyer with no active loan still gets a pass (0 / 0) - see
+# build_cl_wallet_object/build_cl_apple_pass_json below - specifically so
+# every member can receive dealership-wide announcements (send_wallet_class_
+# message / push_cl_apple_wallet_announcement) even before their first deal,
+# or after their loan is paid off.
+
+def get_active_contract_for_cl_customer(customer_id: int) -> Optional[dict]:
+    """The contract that should drive this buyer's wallet pass: their
+    active or overdue loan if they have one, else the most recently
+    completed one (so a paid-off buyer's pass still shows the deal they
+    just finished for a beat), else None (never financed - 0/0 pass)."""
+    if not supabase:
+        return None
+    try:
+        rows = (
+            supabase.table("contracts")
+            .select("*")
+            .eq("customer_id", customer_id)
+            .in_("status", ["active", "overdue"])
+            .order("next_due_date")
+            .limit(1)
+            .execute()
+        ).data or []
+        if rows:
+            return rows[0]
+        rows = (
+            supabase.table("contracts")
+            .select("*")
+            .eq("customer_id", customer_id)
+            .order("updated_at", desc=True)
+            .limit(1)
+            .execute()
+        ).data or []
+        return rows[0] if rows else None
+    except Exception:
+        return None
+
+def get_latest_cl_announcement(business_id: int) -> Optional[dict]:
+    """Latest dealership-wide (broadcast, not single-buyer) announcement,
+    used as the back-of-pass 'Announcement' field - same role
+    get_latest_active_announcement() plays for loyalty passes."""
+    if not supabase:
+        return None
+    try:
+        rows = (
+            supabase.table("cl_announcements")
+            .select("*")
+            .eq("business_id", business_id)
+            .is_("customer_id", "null")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        ).data or []
+        return rows[0] if rows else None
+    except Exception:
+        return None
+
+def build_cl_wallet_class(business: dict) -> dict:
+    biz_public_id = business.get('public_id', '')
+    class_id = business.get('cl_google_wallet_class_id') or f'{GOOGLE_WALLET_ISSUER_ID}.cl-{biz_public_id}'
+    biz_name = business.get('name', 'Financing')
+
+    loyalty_class = {
+        'id': class_id,
+        'issuerName': biz_name,
+        'programName': biz_name,
+        'reviewStatus': 'UNDER_REVIEW',
+        'hexBackgroundColor': '#0f172a',
+        'textModulesData': [
+            {'header': 'About', 'body': 'Your loan balance and next payment due date, always up to date.'},
+        ],
+    }
+    logo_url = business.get('logo_url') or DEFAULT_LOGO_URL
+    loyalty_class['programLogo'] = {'sourceUri': {'uri': logo_url}}
+    return loyalty_class
+
+def build_cl_wallet_object(customer: dict, business: dict, contract: Optional[dict]) -> dict:
+    cust_public_id = customer.get('public_id', '')
+    class_id = business.get('cl_google_wallet_class_id') or f'{GOOGLE_WALLET_ISSUER_ID}.cl-{business.get("public_id", "")}'
+    object_id = f'{GOOGLE_WALLET_ISSUER_ID}.cl-{cust_public_id}'
+    cust_name = customer.get('name', 'Member')
+    biz_name = business.get('name', '')
+
+    if contract and contract.get('status') in ('active', 'overdue'):
+        balance = float(contract.get('balance_remaining') or 0)
+        total = float(contract.get('installment_amount') or 0) * float(contract.get('term_months') or 1)
+        # total_payable isn't stored on the row - installment*term is a
+        # reasonable approximation for the "X / Y" display; balance itself
+        # (the field that matters for the notification) is always exact.
+        balance_str = f'₱{balance:,.0f} / ₱{total:,.0f}'
+        due = contract.get('next_due_date') or '—'
+        status_body = 'Overdue' if contract.get('status') == 'overdue' else f'Due {due}'
+    else:
+        balance_str = '0/0'
+        due = '—'
+        status_body = 'No active loan'
+
+    return {
+        'id': object_id,
+        'classId': class_id,
+        'state': 'active',
+        'barcode': {
+            'type': 'QR_CODE',
+            # A URL, not a bare public_id - scanning the card with any
+            # ordinary camera app now opens the buyer's own "check your
+            # card" page (balance, next due date, Browse Showroom button)
+            # instead of just displaying plain text. The owner's own
+            # in-store "Scan QR" lookup (handleScanResult in the dashboard)
+            # still works off the same barcode - it pulls the public_id
+            # back out of the URL's last path segment.
+            'value': f'{BASE_URL}/cl-wallet/{cust_public_id}',
+            'alternateText': cust_name,
+        },
+        'accountId': cust_public_id,
+        'accountName': cust_name,
+        'loyaltyPoints': {
+            'label': 'Balance',
+            'balance': {'string': balance_str},
+        },
+        'textModulesData': [
+            {'header': 'Business', 'body': biz_name},
+            {'header': 'Status', 'body': status_body},
+            {'header': 'Next Due', 'body': due},
+        ],
+        # Tappable link on the card itself, in addition to the barcode
+        # above - opens the public showroom directly (browse current
+        # inventory) without going through the "check your card" page.
+        'linksModuleData': {
+            'uris': [{'uri': f'{BASE_URL}/showroom/{business.get("public_id", "")}', 'description': 'Browse Showroom'}]
+        },
+    }
+
+def sync_cl_wallet_object(customer: dict, business: dict, contract: Optional[dict],
+                           notify_header: str = None, notify_body: str = None,
+                           notify_message_id: str = None):
+    """Car-lending equivalent of sync_wallet_object() - PATCHes the buyer's
+    Google Wallet loan card with their current balance/due date, optionally
+    firing a TEXT_AND_NOTIFY push alongside it. Best-effort, never raises."""
+    access_token = get_google_access_token()
+    if not access_token:
+        return
+    try:
+        import httpx
+        cl_object = build_cl_wallet_object(customer, business, contract)
+        object_id = cl_object['id']
+        with httpx.Client() as client:
+            resp = client.patch(
+                f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyObject/{object_id}',
+                headers={"Authorization": f"Bearer {access_token}"},
+                json=cl_object
+            )
+            if resp.status_code in (200, 201):
+                print(f"CL WALLET SYNC: updated {object_id}")
+                if notify_header and notify_message_id:
+                    send_wallet_object_message(object_id, notify_header, notify_body or '', notify_message_id)
+            elif resp.status_code == 404:
+                print(f"CL WALLET SYNC: {object_id} not found - buyer hasn't added it to their wallet yet")
+            else:
+                print(f"CL WALLET SYNC: failed {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"CL WALLET SYNC error: {e}")
+
+def build_cl_apple_pass_json(customer: dict, business: dict, contract: Optional[dict],
+                              announcement: Optional[dict] = None, reminder_text: Optional[str] = None) -> dict:
+    cust_public_id = customer.get('public_id', '')
+    serial = f'cl-{cust_public_id}'
+    cust_name = customer.get('name', 'Member')
+    biz_name = business.get('name', 'Financing')
+
+    if contract and contract.get('status') in ('active', 'overdue'):
+        balance = float(contract.get('balance_remaining') or 0)
+        due = contract.get('next_due_date') or '—'
+        balance_value = f'₱{balance:,.0f}'
+        due_value = due
+    else:
+        balance_value = '0/0'
+        due_value = '—'
+
+    ann_title = (announcement or {}).get('title', '') or ''
+    ann_message = (announcement or {}).get('message', '') or ''
+    announcement_value = ann_title.strip() or ann_message.strip() or 'Check back for updates'
+
+    # Value (not existence) is what PassKit diffs to decide whether to fire
+    # a lock-screen notification on refetch - see build_apple_pass_json's
+    # comment above for the full explanation. reminder_text is passed in by
+    # the payment-reminder cron with a stage-specific message ("Due in 7
+    # days", "Overdue", etc.) so each new stage is a genuinely new value.
+    reminder_value = reminder_text or due_value
+
+    back_fields = [
+        {'key': 'about', 'label': 'About', 'value': 'Your loan balance and next payment due date.'},
+        {
+            'key': 'showroom',
+            'label': 'Browse Showroom',
+            # Apple Wallet auto-links a bare URL in a back field's value, so
+            # this renders as a tappable link straight to the public
+            # inventory page - no extra "links module" concept on PassKit.
+            'value': f'{BASE_URL}/showroom/{business.get("public_id", "")}',
+        },
+        {
+            'key': 'announcement',
+            'label': '📢 ANNOUNCEMENT',
+            'value': announcement_value[:150],
+            'changeMessage': '%@',
+        },
+    ]
+    if ann_message.strip() and ann_message.strip() != announcement_value:
+        back_fields.append({'key': 'announcement_detail', 'label': ' ', 'value': ann_message.strip()[:400]})
+
+    return {
+        'formatVersion': 1,
+        'passTypeIdentifier': APPLE_PASS_TYPE_IDENTIFIER,
+        'teamIdentifier': APPLE_TEAM_IDENTIFIER,
+        'organizationName': biz_name,
+        'serialNumber': serial,
+        'description': biz_name,
+        'logoText': biz_name[:20],
+        'backgroundColor': 'rgb(15, 23, 42)',
+        'foregroundColor': 'rgb(255, 255, 255)',
+        'labelColor': 'rgba(255, 255, 255, 0.75)',
+        'webServiceURL': APPLE_PASS_WEB_SERVICE_URL,
+        'authenticationToken': apple_pass_auth_token(serial),
+        'storeCard': {
+            'headerFields': [
+                {'key': 'member', 'label': 'MEMBER', 'value': cust_name[:20]}
+            ],
+            'primaryFields': [
+                {'key': 'balance', 'label': 'BALANCE', 'value': balance_value, 'changeMessage': 'Balance updated: %@'}
+            ],
+            'secondaryFields': [
+                {'key': 'reminder', 'label': 'NEXT DUE', 'value': reminder_value[:30], 'changeMessage': '%@'}
+            ],
+            'backFields': back_fields,
+        },
+        'barcodes': [
+            {
+                'format': 'PKBarcodeFormatQR',
+                # Same URL as the Google Wallet barcode above - see that
+                # comment for why this changed from a bare public_id.
+                'message': f'{BASE_URL}/cl-wallet/{cust_public_id}',
+                'messageEncoding': 'iso-8859-1',
+                'altText': cust_name,
+            }
+        ],
+    }
+
+def build_cl_pkpass_bytes(customer: dict, business: dict, contract: Optional[dict],
+                           announcement: Optional[dict] = None, reminder_text: Optional[str] = None) -> Optional[bytes]:
+    if not APPLE_PASS_TYPE_IDENTIFIER or not APPLE_TEAM_IDENTIFIER:
+        return None
+    if get_apple_pass_credentials() is None:
+        return None
+
+    biz_name = business.get('name', 'Financing')
+    pass_json = build_cl_apple_pass_json(customer, business, contract, announcement, reminder_text)
+
+    files = {
+        'pass.json': json.dumps(pass_json).encode('utf-8'),
+        'icon.png': generate_apple_icon_bytes('#0f172a', biz_name, 29),
+        'icon@2x.png': generate_apple_icon_bytes('#0f172a', biz_name, 58),
+        'icon@3x.png': generate_apple_icon_bytes('#0f172a', biz_name, 87),
+        'logo.png': generate_apple_logo_bytes(biz_name, 160, 50),
+        'logo@2x.png': generate_apple_logo_bytes(biz_name, 320, 100),
+        'logo@3x.png': generate_apple_logo_bytes(biz_name, 480, 150),
+    }
+    manifest = {name: hashlib.sha1(content).hexdigest() for name, content in files.items()}
+    manifest_bytes = json.dumps(manifest).encode('utf-8')
+    signature = sign_pkpass_manifest(manifest_bytes)
+    if signature is None:
+        return None
+
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for name, content in files.items():
+            zf.writestr(name, content)
+        zf.writestr('manifest.json', manifest_bytes)
+        zf.writestr('signature', signature)
+    return buffer.getvalue()
+
+def push_cl_apple_wallet_announcement(business_id: int) -> int:
+    """Car-lending equivalent of push_apple_wallet_announcement() - fans a
+    push out to every buyer's registered Apple Wallet loan card for this
+    business, including ones with no active loan (0/0 pass), so a
+    dealership-wide announcement reaches everyone. Best-effort, never
+    raises; 0 is a normal outcome."""
+    if not supabase or not APPLE_PASS_TYPE_IDENTIFIER:
+        return 0
+    try:
+        customer_rows = (
+            supabase.table("cl_customers")
+            .select("public_id")
+            .eq("business_id", business_id)
+            .execute()
+        ).data or []
+    except Exception:
+        return 0
+    serial_numbers = [f"cl-{r['public_id']}" for r in customer_rows if r.get('public_id')]
+    if not serial_numbers:
+        return 0
+    push_tokens = []
+    try:
+        CHUNK_SIZE = 200
+        for i in range(0, len(serial_numbers), CHUNK_SIZE):
+            chunk = serial_numbers[i:i + CHUNK_SIZE]
+            rows = (
+                supabase.table("apple_wallet_registrations")
+                .select("push_token")
+                .in_("serial_number", chunk)
+                .eq("pass_type_identifier", APPLE_PASS_TYPE_IDENTIFIER)
+                .execute()
+            ).data or []
+            push_tokens.extend(row.get('push_token') for row in rows)
+    except Exception as e:
+        print(f"CL APPLE WALLET announcement lookup error: {e}")
+        return 0
+    return _send_apple_wallet_pushes(push_tokens)
+
+def sync_cl_apple_wallet_pass(customer: dict):
+    """Companion to sync_cl_wallet_object() - call alongside it wherever a
+    buyer's balance/due date changes. Never raises."""
+    try:
+        push_apple_wallet_update(f"cl-{customer.get('public_id', '')}")
+    except Exception as e:
+        print(f"CL APPLE WALLET sync error: {e}")
+
+def log_stamp_event(business_id: int, customer_id: int, staff_id: Optional[int] = None, branch_id: Optional[int] = None):
+    """Best-effort event log powering the Analytics dashboard's trend and
+    peak-activity charts, and the per-cashier/per-branch stamp counters.
+    Never raises - a logging hiccup should never block the stamp response
+    to the cashier. staff_id/branch_id are None when the owner stamps
+    directly from their dashboard (no staff PIN involved)."""
+    try:
+        event = {
+            'business_id': business_id,
+            'customer_id': customer_id,
+            'created_at': datetime.utcnow().isoformat(),
+        }
+        if staff_id is not None:
+            event['staff_id'] = staff_id
+        if branch_id is not None:
+            event['branch_id'] = branch_id
+        supabase.table("stamp_events").insert(event).execute()
+    except Exception as e:
+        print(f"STAMP EVENT LOG error: {e}")
+
+def log_redemption_event(business_id: int, customer_id: int, staff_id: Optional[int] = None, branch_id: Optional[int] = None,
+                          prize_name: Optional[str] = None, points_spent: Optional[int] = None):
+    """Best-effort event log powering the Analytics dashboard's reward
+    trend chart. Never raises. prize_name/points_spent are set only for
+    points-card prize redemptions (see redeem_points_prize) - left out
+    entirely for stamp-goal reward redemptions, same as before."""
+    try:
+        event = {
+            'business_id': business_id,
+            'customer_id': customer_id,
+            'created_at': datetime.utcnow().isoformat(),
+        }
+        if staff_id is not None:
+            event['staff_id'] = staff_id
+        if branch_id is not None:
+            event['branch_id'] = branch_id
+        if prize_name is not None:
+            event['prize_name'] = prize_name
+        if points_spent is not None:
+            event['points_spent'] = points_spent
+        supabase.table("redemption_events").insert(event).execute()
+    except Exception as e:
+        print(f"REDEMPTION EVENT LOG error: {e}")
+
+def log_points_event(business_id: int, customer_id: int, amount_spent: float, points_earned: int,
+                      staff_id: Optional[int] = None, branch_id: Optional[int] = None):
+    """Best-effort event log for points-card sales - powers the Analytics
+    dashboard the same way log_stamp_event powers it for stamp cards.
+    Never raises."""
+    try:
+        event = {
+            'business_id': business_id,
+            'customer_id': customer_id,
+            'amount_spent_pesos': amount_spent,
+            'points_earned': points_earned,
+            'created_at': datetime.utcnow().isoformat(),
+        }
+        if staff_id is not None:
+            event['staff_id'] = staff_id
+        if branch_id is not None:
+            event['branch_id'] = branch_id
+        supabase.table("points_events").insert(event).execute()
+    except Exception as e:
+        print(f"POINTS EVENT LOG error: {e}")
+
+def log_multipass_event(business_id: int, customer_id: int, action: str, sessions_remaining: int,
+                         staff_id: Optional[int] = None, branch_id: Optional[int] = None):
+    """Best-effort event log for multipass issues/uses - powers the Analytics
+    dashboard the same way log_stamp_event/log_points_event do for their
+    card types. action is 'issued' or 'used'. Never raises."""
+    try:
+        event = {
+            'business_id': business_id,
+            'customer_id': customer_id,
+            'action': action,
+            'sessions_remaining': sessions_remaining,
+            'created_at': datetime.utcnow().isoformat(),
+        }
+        if staff_id is not None:
+            event['staff_id'] = staff_id
+        if branch_id is not None:
+            event['branch_id'] = branch_id
+        supabase.table("multipass_events").insert(event).execute()
+    except Exception as e:
+        print(f"MULTIPASS EVENT LOG error: {e}")
+
+
+
+def normalize_vip_tiers(program: dict) -> list:
+    raw = program.get('vip_tiers') or []
+    tiers = []
+    for i, t in enumerate(raw):
+        if not isinstance(t, dict):
+            continue
+        try:
+            threshold = max(0, int(t.get('threshold') or 0))
+        except Exception:
+            threshold = 0
+        tiers.append({
+            'id': str(t.get('id') or f'tier-{i+1}'),
+            'name': str(t.get('name') or f'Tier {i+1}'),
+            'threshold': threshold,
+            'color': str(t.get('color') or '#64748b'),
+            'discount_percent': max(0, min(100, float(t.get('discount_percent') or 0))),
+            'benefits': [str(x).strip() for x in (t.get('benefits') or []) if str(x).strip()],
+            'active': t.get('active') is not False,
+        })
+    tiers = [t for t in tiers if t['active']]
+    tiers.sort(key=lambda t: t['threshold'])
+    return tiers
+
+def get_vip_tier(customer: dict, program: dict) -> dict:
+    tiers = normalize_vip_tiers(program)
+    if not tiers:
+        return {'id':'vip','name':'VIP','threshold':0,'color':'#111827','discount_percent':0,'benefits':[]}
+    manual = customer.get('vip_manual_tier_id')
+    if manual:
+        found = next((t for t in tiers if t['id'] == manual), None)
+        if found:
+            return found
+    points = int(customer.get('vip_points') or 0)
+    current = tiers[0]
+    for tier in tiers:
+        if points >= tier['threshold']:
+            current = tier
+        else:
+            break
+    return current
+
+def get_next_vip_tier(customer: dict, program: dict):
+    points = int(customer.get('vip_points') or 0)
+    current = get_vip_tier(customer, program)
+    tiers = normalize_vip_tiers(program)
+    for tier in tiers:
+        if tier['threshold'] > points and tier['threshold'] > current['threshold']:
+            return tier
+    return None
+
+def log_vip_event(business_id, customer_id, action, points_delta, points_balance, amount_spent=None, old_tier=None, new_tier=None, staff_id=None, branch_id=None, note=None):
+    try:
+        supabase.table('vip_events').insert({
+            'business_id': business_id, 'customer_id': customer_id, 'action': action,
+            'points_delta': points_delta, 'points_balance': points_balance,
+            'amount_spent': amount_spent, 'old_tier': old_tier, 'new_tier': new_tier,
+            'staff_id': staff_id, 'branch_id': branch_id, 'note': note,
+            'created_at': datetime.utcnow().isoformat(),
+        }).execute()
+    except Exception as e:
+        print(f'VIP EVENT error: {e}')
+
+def membership_effective_status(customer: dict) -> str:
+    """Returns the current access status, automatically treating a past
+    expiry date as expired without overwriting suspended/cancelled/lifetime."""
+    status = (customer.get('membership_status') or 'inactive').lower()
+    if status in ('suspended', 'cancelled', 'lifetime'):
+        return status
+    expiry = customer.get('membership_expires_at')
+    if status == 'active' and expiry:
+        try:
+            if datetime.strptime(str(expiry)[:10], '%Y-%m-%d').date() < datetime.utcnow().date():
+                return 'expired'
+        except Exception:
+            pass
+    return status
+
+def membership_access_allowed(customer: dict) -> bool:
+    return membership_effective_status(customer) in ('active', 'lifetime')
+
+def add_days_to_date(date_value: Optional[str], days: int) -> str:
+    base = datetime.utcnow().date()
+    if date_value:
+        try:
+            parsed = datetime.strptime(str(date_value)[:10], '%Y-%m-%d').date()
+            if parsed > base:
+                base = parsed
+        except Exception:
+            pass
+    return (base + timedelta(days=days)).isoformat()
+
+def log_membership_history(business_id: int, customer_id: int, action: str,
+                           old_status: Optional[str], new_status: Optional[str],
+                           expires_at: Optional[str], price_paid: Optional[float],
+                           payment_method: Optional[str], note: Optional[str]):
+    try:
+        supabase.table('membership_history').insert({
+            'business_id': business_id,
+            'customer_id': customer_id,
+            'action': action,
+            'old_status': old_status,
+            'new_status': new_status,
+            'expires_at': expires_at,
+            'price_paid': price_paid,
+            'payment_method': payment_method,
+            'note': note,
+            'created_at': datetime.utcnow().isoformat(),
+        }).execute()
+    except Exception as e:
+        print(f"MEMBERSHIP HISTORY error: {e}")
 
 def log_membership_event(business_id: int, customer_id: int, service_name: str, note: Optional[str],
                           service_date: str, staff_id: Optional[int] = None, branch_id: Optional[int] = None):
@@ -2371,9 +4120,7 @@ async def paymongo_webhook(request: Request):
     return {"received": True}
 
 @app.get("/api/v1/customer/{public_id}")
-async def get_customer_api(public_id: str, response: Response):
-    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    response.headers["Pragma"] = "no-cache"
+async def get_customer_api(public_id: str):
     customer = safe_get_customer(public_id)
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
@@ -2387,47 +4134,15 @@ async def get_customer_api(public_id: str, response: Response):
         customer['vip_tier'] = get_vip_tier(customer, program)
         customer['vip_next_tier'] = get_next_vip_tier(customer, program)
 
-    current_card_type = (
-        program.get("card_type")
-        if program and program.get("card_type") in ("stamp", "points", "membership", "vip", "multipass")
-        else "stamp"
-    )
-
-    # Compatibility defaults for customers who joined before these card types
-    # existed. Their existing public_id and QR remain valid.
-    if current_card_type == "vip":
-        customer.setdefault("vip_points", 0)
-        customer["vip_tier"] = get_vip_tier(customer, program or {})
-        customer["vip_next_tier"] = get_next_vip_tier(customer, program or {})
-    elif current_card_type == "membership":
-        customer.setdefault("membership_status", "inactive")
-        customer["membership_effective_status"] = membership_effective_status(customer)
-    elif current_card_type == "multipass":
-        customer.setdefault("multipass_sessions_remaining", 0)
-        customer.setdefault("multipass_total_sessions", 0)
-        customer.setdefault("multipass_expires_at", None)
-
-    response_program = dict(program or {})
-    response_program["card_type"] = current_card_type
-
     return {
-        "current_card_type": current_card_type,
-        "card_type_source": (
-            "loyalty_programs"
-            if (program or {}).get("card_type") == current_card_type
-            else "businesses.active_card_type"
-            if (business or {}).get("active_card_type") == current_card_type
-            else "fallback"
-        ),
         "customer": customer,
         "business": {
             "id": business.get("id") if business else None,
             "public_id": business.get("public_id") if business else None,
             "name": business.get("name") if business else None,
             "logo_url": business.get("logo_url") if business else None,
-            "active_card_type": current_card_type,
         },
-        "program": response_program,
+        "program": program,
         "active_coupon": safe_get_active_coupon(customer.get('id')),
     }
 
@@ -3238,19 +4953,6 @@ async def get_analytics(public_id: str, range: str = '30d'):
         "revenue": revenue,
     }
 
-
-@app.get("/api/v1/business/{public_id}/active-card")
-async def get_active_card(public_id: str):
-    business = safe_get_business(public_id)
-    if not business:
-        raise HTTPException(status_code=404, detail="Business not found")
-    program = safe_get_loyalty_program(business.get("id"))
-    card_type = get_business_active_card_type(business, program)
-    return {
-        "card_type": card_type,
-        "program": program or {"card_type": card_type},
-    }
-
 @app.get("/api/v1/business/{public_id}/loyalty-config")
 async def get_loyalty_config(public_id: str):
     business = safe_get_business(public_id)
@@ -3357,35 +5059,13 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
         data['google_review_url'] = config.google_review_url
 
     try:
-        data["updated_at"] = datetime.utcnow().isoformat()
-
-        # Same reliable structure used by the original Points card:
-        # one loyalty_programs row per business, updated through an upsert.
-        existing = (
-            supabase.table("loyalty_programs")
-            .select("id")
-            .eq("business_id", business.get("id"))
-            .maybe_single()
-            .execute()
-        )
-
+        existing = supabase.table("loyalty_programs").select("id").eq("business_id", business.get("id")).maybe_single().execute()
         if existing and existing.data:
-            supabase.table("loyalty_programs").update(data).eq(
-                "business_id", business.get("id")
-            ).execute()
+            supabase.table("loyalty_programs").update(data).eq("business_id", business.get("id")).execute()
         else:
-            data["created_at"] = datetime.utcnow().isoformat()
+            data['created_at'] = datetime.utcnow().isoformat()
             supabase.table("loyalty_programs").insert(data).execute()
-
-        supabase.table("businesses").update({
-            "active_card_type": config.card_type,
-            "updated_at": datetime.utcnow().isoformat(),
-        }).eq("id", business.get("id")).execute()
-
-        return {
-            "message": "Configuration saved",
-            "active_card_type": config.card_type,
-        }
+        return {"message": "Configuration saved"}
     except Exception as e:
         error_msg = str(e)
         if "row-level security" in error_msg.lower() or "rls" in error_msg.lower():
@@ -5451,7 +7131,7 @@ async def add_vip_sale(public_id: str, req: VIPSaleRequest, authorization: str =
     if not customer or customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
     program = safe_get_loyalty_program(business.get('id'))
-    if get_business_active_card_type(business, program) != 'vip':
+    if not program or program.get('card_type') != 'vip':
         raise HTTPException(status_code=400, detail="This business is not using a VIP card")
     staff_id = branch_id = None
     claims = get_staff_session_claims(public_id, authorization)
@@ -5493,7 +7173,7 @@ async def adjust_vip_points(public_id: str, req: VIPAdjustRequest):
     business=safe_get_business(public_id); customer=safe_get_customer(req.customer_public_id)
     if not business or not customer or customer.get('business_id') != business.get('id'): raise HTTPException(status_code=404, detail='Customer not found')
     program=safe_get_loyalty_program(business.get('id'))
-    if get_business_active_card_type(business, program) != 'vip': raise HTTPException(status_code=400, detail='Not a VIP program')
+    if not program or program.get('card_type')!='vip': raise HTTPException(status_code=400, detail='Not a VIP program')
     old=get_vip_tier(customer,program); balance=max(0,int(customer.get('vip_points') or 0)+req.points_delta)
     supabase.table('customers').update({'vip_points':balance,'updated_at':datetime.utcnow().isoformat()}).eq('id',customer.get('id')).execute(); customer['vip_points']=balance
     new=get_vip_tier(customer,program); log_vip_event(business.get('id'),customer.get('id'),'adjustment',req.points_delta,balance,old_tier=old.get('name'),new_tier=new.get('name'),note=req.note)
@@ -5702,7 +7382,7 @@ async def issue_multipass(public_id: str, req: MultipassIssueRequest, authorizat
         raise HTTPException(status_code=404, detail="Customer not found for this business")
 
     program = safe_get_loyalty_program(business.get('id'))
-    if get_business_active_card_type(business, program) != 'multipass':
+    if not program or program.get('card_type') != 'multipass':
         raise HTTPException(status_code=400, detail="This business is not on a multi-pass card")
 
     issuing_staff_id = None
@@ -5796,7 +7476,7 @@ async def use_multipass_session(public_id: str, req: MultipassUseRequest, author
         raise HTTPException(status_code=404, detail="Customer not found for this business")
 
     program = safe_get_loyalty_program(business.get('id'))
-    if get_business_active_card_type(business, program) != 'multipass':
+    if not program or program.get('card_type') != 'multipass':
         raise HTTPException(status_code=400, detail="This business is not on a multi-pass card")
 
     sessions_remaining = customer.get('multipass_sessions_remaining', 0) or 0
@@ -5867,7 +7547,7 @@ async def membership_action(public_id: str, req: MembershipActionRequest):
     if not customer or customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
     program = safe_get_loyalty_program(business.get('id'))
-    if get_business_active_card_type(business, program) != 'membership':
+    if not program or program.get('card_type') != 'membership':
         raise HTTPException(status_code=400, detail="This business is not using a membership card")
 
     old_status = membership_effective_status(customer)
@@ -5982,7 +7662,7 @@ async def add_membership_note(public_id: str, req: MembershipNoteRequest, author
         raise HTTPException(status_code=404, detail="Customer not found for this business")
 
     program = safe_get_loyalty_program(business.get('id'))
-    if get_business_active_card_type(business, program) != 'membership':
+    if not program or program.get('card_type') != 'membership':
         raise HTTPException(status_code=400, detail="This business is not on a membership card")
     effective_status = membership_effective_status(customer)
     if effective_status not in ('active', 'lifetime'):
