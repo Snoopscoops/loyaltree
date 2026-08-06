@@ -263,6 +263,58 @@ function AnalyticsDashboard({ API_BASE, user }) {
               </div>
             )
           })()}
+          {demographics?.age && (() => {
+            const a = demographics.age
+            const rows = [
+              { label: 'Under 18', value: a.under_18 || 0 },
+              { label: '18–24', value: a['18_24'] || 0 },
+              { label: '25–34', value: a['25_34'] || 0 },
+              { label: '35–44', value: a['35_44'] || 0 },
+              { label: '45–54', value: a['45_54'] || 0 },
+              { label: '55–64', value: a['55_64'] || 0 },
+              { label: '65+', value: a['65_plus'] || 0 },
+              { label: 'Unknown', value: a.unknown || 0 },
+            ]
+            const total = rows.reduce((sum, row) => sum + row.value, 0)
+            const pct = (n) => total ? Math.round((n / total) * 100) : 0
+            const knownRows = rows.filter(row => row.label !== 'Unknown')
+            const largestGroup = knownRows.reduce(
+              (best, row) => row.value > best.value ? row : best,
+              { label: 'No data yet', value: 0 }
+            )
+
+            return (
+              <div style={styles.insightCard}>
+                <div style={{display:'flex', justifyContent:'space-between', gap:12, alignItems:'flex-start', marginBottom:12}}>
+                  <div>
+                    <h4 style={{...styles.insightTitle, marginBottom:4}}>Age Breakdown</h4>
+                    <div style={{fontSize:12, color:'#94a3b8'}}>Based on saved age or birthday</div>
+                  </div>
+                  {largestGroup.value > 0 && (
+                    <div style={{textAlign:'right'}}>
+                      <div style={{fontSize:11, color:'#94a3b8'}}>Largest group</div>
+                      <strong style={{fontSize:13, color:'#0d9488'}}>{largestGroup.label}</strong>
+                    </div>
+                  )}
+                </div>
+                {rows.map(r => (
+                  <div key={r.label} style={{ marginBottom: 10 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#475569', marginBottom: 4 }}>
+                      <span>{r.label}</span>
+                      <span>{r.value} ({pct(r.value)}%)</span>
+                    </div>
+                    <div style={styles.retentionBar}>
+                      <div style={{
+                        ...styles.retentionFill,
+                        width: `${pct(r.value)}%`,
+                        background: r.label === 'Unknown' ? '#cbd5e1' : '#0d9488',
+                      }}></div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )
+          })()}
         </div>
       </div>
 

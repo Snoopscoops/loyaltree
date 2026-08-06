@@ -4910,8 +4910,69 @@ async def get_analytics(public_id: str, range: str = '30d'):
         if g not in gender_counts:
             g = 'rather_not_say'
         gender_counts[g] += 1
+    # Age breakdown - all-time distribution. Prefer the explicitly stored
+    # customers.age value; when it is missing, derive age from birthday so
+    # older customer records can still be included. Unknown/invalid values
+    # stay visible instead of being silently dropped.
+    age_counts = {
+        "under_18": 0,
+        "18_24": 0,
+        "25_34": 0,
+        "35_44": 0,
+        "45_54": 0,
+        "55_64": 0,
+        "65_plus": 0,
+        "unknown": 0,
+    }
+
+    def _customer_age(customer: dict) -> Optional[int]:
+        raw_age = customer.get("age")
+        try:
+            if raw_age is not None and str(raw_age).strip() != "":
+                age_value = int(raw_age)
+                return age_value if 0 <= age_value <= 120 else None
+        except (TypeError, ValueError):
+            pass
+
+        birthday = customer.get("birthday")
+        if not birthday:
+            return None
+        try:
+            birthday_date = datetime.fromisoformat(str(birthday).replace("Z", "+00:00")).date()
+        except (TypeError, ValueError):
+            try:
+                birthday_date = datetime.strptime(str(birthday)[:10], "%Y-%m-%d").date()
+            except (TypeError, ValueError):
+                return None
+
+        today = now.date()
+        derived_age = today.year - birthday_date.year - (
+            (today.month, today.day) < (birthday_date.month, birthday_date.day)
+        )
+        return derived_age if 0 <= derived_age <= 120 else None
+
+    for c in customers:
+        age_value = _customer_age(c)
+        if age_value is None:
+            age_counts["unknown"] += 1
+        elif age_value < 18:
+            age_counts["under_18"] += 1
+        elif age_value <= 24:
+            age_counts["18_24"] += 1
+        elif age_value <= 34:
+            age_counts["25_34"] += 1
+        elif age_value <= 44:
+            age_counts["35_44"] += 1
+        elif age_value <= 54:
+            age_counts["45_54"] += 1
+        elif age_value <= 64:
+            age_counts["55_64"] += 1
+        else:
+            age_counts["65_plus"] += 1
+
     demographics_block = {
         "gender": gender_counts,
+        "age": age_counts,
     }
 
     # Proxy for "how many customers hit the goal": for stamp cards, that's
