@@ -13610,3 +13610,191 @@ if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
 
+
+# =============================================================================
+# COCKPIT ARENA MODULE
+# =============================================================================
+class CockpitEventCreate(BaseModel):
+    title: str
+    event_date: Optional[str] = None
+    start_time: Optional[str] = None
+    category: Optional[str] = None
+    entry_fee: float = Field(default=0, ge=0)
+    prize_details: Optional[str] = None
+    description: Optional[str] = None
+    poster_url: Optional[str] = None
+    status: Literal['upcoming', 'open', 'closed', 'finished', 'cancelled'] = 'upcoming'
+    is_featured: bool = False
+
+class CockpitAnnouncementCreate(BaseModel):
+    title: str
+    message: str
+    publish_date: Optional[str] = None
+    is_pinned: bool = False
+    is_active: bool = True
+
+class CockpitResultCreate(BaseModel):
+    event_public_id: Optional[str] = None
+    category: Optional[str] = None
+    champion_name: Optional[str] = None
+    runner_up_name: Optional[str] = None
+    third_place_name: Optional[str] = None
+    notes: Optional[str] = None
+    photo_url: Optional[str] = None
+
+class CockpitGalleryCreate(BaseModel):
+    event_public_id: Optional[str] = None
+    title: Optional[str] = None
+    album_name: Optional[str] = None
+    image_url: str
+
+class CockpitSponsorCreate(BaseModel):
+    name: str
+    logo_url: Optional[str] = None
+    website_url: Optional[str] = None
+    description: Optional[str] = None
+    sort_order: int = 0
+    is_active: bool = True
+
+class CockpitSettingsUpdate(BaseModel):
+    arena_name: Optional[str] = None
+    tagline: Optional[str] = None
+    about_text: Optional[str] = None
+    hero_image_url: Optional[str] = None
+    logo_url: Optional[str] = None
+    contact_phone: Optional[str] = None
+    contact_email: Optional[str] = None
+    address: Optional[str] = None
+    facebook_url: Optional[str] = None
+    map_embed_url: Optional[str] = None
+
+def cockpit_business(public_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    if business.get('business_type') != 'cockpit':
+        raise HTTPException(status_code=400, detail='Business type must be cockpit')
+    return business
+
+def cockpit_list(table: str, business_id):
+    q = supabase.table(table).select('*').eq('business_id', business_id)
+    if table == 'cockpit_events':
+        q = q.order('event_date', desc=False)
+    elif table == 'cockpit_sponsors':
+        q = q.order('sort_order', desc=False)
+    else:
+        q = q.order('created_at', desc=True)
+    return q.execute().data or []
+
+def cockpit_event_db_id(business_id, event_public_id):
+    if not event_public_id:
+        return None
+    row = supabase.table('cockpit_events').select('id').eq('business_id', business_id).eq('public_id', event_public_id).maybe_single().execute().data
+    return row.get('id') if row else None
+
+@app.get('/api/v1/business/{public_id}/cockpit/dashboard')
+async def get_cockpit_dashboard(public_id: str):
+    b = cockpit_business(public_id)
+    settings = supabase.table('cockpit_settings').select('*').eq('business_id', b['id']).maybe_single().execute().data or {}
+    return {
+        'business': b,
+        'settings': settings,
+        'events': cockpit_list('cockpit_events', b['id']),
+        'announcements': cockpit_list('cockpit_announcements', b['id']),
+        'results': cockpit_list('cockpit_results', b['id']),
+        'gallery': cockpit_list('cockpit_gallery', b['id']),
+        'sponsors': cockpit_list('cockpit_sponsors', b['id']),
+    }
+
+@app.post('/api/v1/business/{public_id}/cockpit/events')
+async def add_cockpit_event(public_id: str, item: CockpitEventCreate):
+    b = cockpit_business(public_id)
+    row = item.model_dump()
+    row.update({'business_id': b['id'], 'public_id': generate_public_id()})
+    return supabase.table('cockpit_events').insert(row).execute().data[0]
+
+@app.post('/api/v1/business/{public_id}/cockpit/announcements')
+async def add_cockpit_announcement(public_id: str, item: CockpitAnnouncementCreate):
+    b = cockpit_business(public_id)
+    row = item.model_dump()
+    row.update({'business_id': b['id'], 'public_id': generate_public_id()})
+    return supabase.table('cockpit_announcements').insert(row).execute().data[0]
+
+@app.post('/api/v1/business/{public_id}/cockpit/results')
+async def add_cockpit_result(public_id: str, item: CockpitResultCreate):
+    b = cockpit_business(public_id)
+    row = item.model_dump()
+    event_public_id = row.pop('event_public_id', None)
+    row['event_id'] = cockpit_event_db_id(b['id'], event_public_id)
+    row.update({'business_id': b['id'], 'public_id': generate_public_id()})
+    return supabase.table('cockpit_results').insert(row).execute().data[0]
+
+@app.post('/api/v1/business/{public_id}/cockpit/gallery')
+async def add_cockpit_gallery(public_id: str, item: CockpitGalleryCreate):
+    b = cockpit_business(public_id)
+    row = item.model_dump()
+    event_public_id = row.pop('event_public_id', None)
+    row['event_id'] = cockpit_event_db_id(b['id'], event_public_id)
+    row.update({'business_id': b['id'], 'public_id': generate_public_id()})
+    return supabase.table('cockpit_gallery').insert(row).execute().data[0]
+
+@app.post('/api/v1/business/{public_id}/cockpit/sponsors')
+async def add_cockpit_sponsor(public_id: str, item: CockpitSponsorCreate):
+    b = cockpit_business(public_id)
+    row = item.model_dump()
+    row.update({'business_id': b['id'], 'public_id': generate_public_id()})
+    return supabase.table('cockpit_sponsors').insert(row).execute().data[0]
+
+@app.put('/api/v1/business/{public_id}/cockpit/settings')
+async def update_cockpit_settings(public_id: str, item: CockpitSettingsUpdate):
+    b = cockpit_business(public_id)
+    row = {k: v for k, v in item.model_dump().items() if v is not None}
+    row.update({'business_id': b['id'], 'updated_at': datetime.utcnow().isoformat()})
+    existing = supabase.table('cockpit_settings').select('id').eq('business_id', b['id']).maybe_single().execute().data
+    if existing:
+        return supabase.table('cockpit_settings').update(row).eq('business_id', b['id']).execute().data[0]
+    return supabase.table('cockpit_settings').insert(row).execute().data[0]
+
+@app.delete('/api/v1/business/{public_id}/cockpit/{kind}/{item_public_id}')
+async def remove_cockpit_record(public_id: str, kind: str, item_public_id: str):
+    b = cockpit_business(public_id)
+    tables = {
+        'events': 'cockpit_events',
+        'announcements': 'cockpit_announcements',
+        'results': 'cockpit_results',
+        'gallery': 'cockpit_gallery',
+        'sponsors': 'cockpit_sponsors',
+    }
+    table = tables.get(kind)
+    if not table:
+        raise HTTPException(status_code=404, detail='Unknown cockpit record type')
+    supabase.table(table).delete().eq('business_id', b['id']).eq('public_id', item_public_id).execute()
+    return {'success': True}
+
+def cockpit_public_card(title, body, image_url=None):
+    image = f'<img src="{html_lib.escape(image_url)}" alt="">' if image_url else ''
+    return f'<article class="card">{image}<div class="pad"><h3>{html_lib.escape(title or "")}</h3><p>{html_lib.escape(body or "")}</p></div></article>'
+
+@app.get('/cockpit/{public_id}', response_class=HTMLResponse)
+async def cockpit_public_site(public_id: str):
+    b = cockpit_business(public_id)
+    settings = supabase.table('cockpit_settings').select('*').eq('business_id', b['id']).maybe_single().execute().data or {}
+    events = cockpit_list('cockpit_events', b['id'])
+    announcements = [x for x in cockpit_list('cockpit_announcements', b['id']) if x.get('is_active')]
+    results = cockpit_list('cockpit_results', b['id'])
+    gallery = cockpit_list('cockpit_gallery', b['id'])
+    sponsors = [x for x in cockpit_list('cockpit_sponsors', b['id']) if x.get('is_active')]
+    esc = lambda value: html_lib.escape(str(value or ''))
+    arena = esc(settings.get('arena_name') or b.get('name'))
+    tagline = esc(settings.get('tagline') or 'Official schedules, announcements and results')
+    hero = esc(settings.get('hero_image_url') or '')
+    hero_style = f"background-image:linear-gradient(90deg,rgba(20,12,8,.88),rgba(20,12,8,.35)),url('{hero}')" if hero else 'background:linear-gradient(120deg,#1f1712,#7c5727)'
+    event_html = ''.join(cockpit_public_card(x.get('title'), f"{x.get('event_date') or ''} {x.get('start_time') or ''} — {x.get('description') or ''}", x.get('poster_url')) for x in events) or '<p>No events posted yet.</p>'
+    announcement_html = ''.join(cockpit_public_card(x.get('title'), x.get('message')) for x in announcements) or '<p>No announcements posted yet.</p>'
+    result_html = ''.join(cockpit_public_card(x.get('category') or 'Official Result', f"Champion: {x.get('champion_name') or ''} | Runner-up: {x.get('runner_up_name') or ''} | {x.get('notes') or ''}", x.get('photo_url')) for x in results) or '<p>No results published yet.</p>'
+    gallery_html = ''.join(f'<img src="{esc(x.get("image_url"))}" alt="{esc(x.get("title"))}">' for x in gallery)
+    sponsor_html = ''.join(f'<div class="sponsor"><img src="{esc(x.get("logo_url"))}" alt=""><span>{esc(x.get("name"))}</span></div>' for x in sponsors)
+    html = f'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>{arena}</title><style>
+*{{box-sizing:border-box}}body{{margin:0;font-family:Arial,sans-serif;background:#f5f0e9;color:#231a15}}nav{{position:sticky;top:0;z-index:3;background:#1e1713;color:#fff;padding:15px 6%;display:flex;justify-content:space-between}}nav a{{color:#fff;text-decoration:none;margin-left:16px}}.hero{{min-height:470px;background-size:cover;background-position:center;display:flex;align-items:center;padding:7%;color:#fff}}.hero h1{{font-size:clamp(42px,8vw,82px);margin:0}}.hero p{{font-size:20px}}section{{padding:58px 7%;max-width:1400px;margin:auto}}h2{{font-size:34px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:18px}}.card{{background:#fff;border-radius:15px;overflow:hidden;box-shadow:0 8px 24px #0001}}.card img{{width:100%;height:220px;object-fit:cover}}.pad{{padding:18px}}.gallery{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}}.gallery img{{width:100%;height:220px;object-fit:cover;border-radius:12px}}.sponsors{{display:flex;flex-wrap:wrap;gap:14px}}.sponsor{{background:#fff;padding:14px;border-radius:12px;display:flex;align-items:center;gap:10px}}.sponsor img{{width:65px;height:45px;object-fit:contain}}footer{{background:#1e1713;color:#fff;padding:35px 7%}}@media(max-width:700px){{nav div:last-child{{display:none}}section{{padding:40px 5%}}}}
+</style></head><body><nav><strong>{arena}</strong><div><a href="#events">Events</a><a href="#announcements">Announcements</a><a href="#results">Results</a><a href="#gallery">Gallery</a></div></nav><header class="hero" style="{hero_style}"><div><h1>{arena}</h1><p>{tagline}</p></div></header><section id="events"><h2>Events & Schedules</h2><div class="grid">{event_html}</div></section><section id="announcements"><h2>Announcements</h2><div class="grid">{announcement_html}</div></section><section id="results"><h2>Official Results</h2><div class="grid">{result_html}</div></section><section id="gallery"><h2>Gallery</h2><div class="gallery">{gallery_html}</div></section><section><h2>Sponsors</h2><div class="sponsors">{sponsor_html}</div></section><footer><h3>{arena}</h3><p>{esc(settings.get('address') or b.get('address'))}</p><p>{esc(settings.get('contact_phone') or b.get('phone'))} {esc(settings.get('contact_email'))}</p><p>{esc(settings.get('about_text'))}</p></footer></body></html>'''
+    return HTMLResponse(html)

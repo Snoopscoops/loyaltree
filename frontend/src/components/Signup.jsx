@@ -174,6 +174,8 @@ function Signup({ API_BASE }) {
                 <option value="salon">Salon</option>
                 <option value="fitness">Fitness</option>
                 <option value="restaurant">Restaurant</option>
+                <option value="car_lending">Car Lending / Showroom</option>
+                <option value="cockpit">Cockpit Arena</option>
                 <option value="other">Other</option>
               </select>
             </div>

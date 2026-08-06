@@ -668,6 +668,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                     <option value="fitness">Fitness</option>
                     <option value="restaurant">Restaurant</option>
                     <option value="car_lending">Car Lending / Showroom</option>
+                    <option value="cockpit">Cockpit Arena</option>
                     <option value="other">Other</option>
                   </select>
                 </div>
@@ -857,6 +858,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
               <select style={styles.select} value={createForm.business_type}
                 onChange={e => setCreateForm({ ...createForm, business_type: e.target.value })}>
                 <option value="car_lending">Car Lending / Showroom</option>
+                <option value="cockpit">Cockpit Arena</option>
                 <option value="spa">Spa</option>
                 <option value="salon">Salon</option>
                 <option value="fitness">Fitness</option>

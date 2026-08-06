@@ -5,6 +5,7 @@ import Signup from './components/Signup'
 import HomePage from './components/HomePage'
 import OwnerDashboard from './components/OwnerDashboard'
 import CarLendingDashboard from './components/CarLendingDashboard'
+import CockpitDashboard from './components/CockpitDashboard'
 import CashierApp from './components/CashierApp'
 import AnalyticsDashboard from './components/AnalyticsDashboard'
 import AdminDashboard from './components/AdminDashboard'
@@ -82,7 +83,9 @@ function App() {
           user?.role === 'owner' ? (
             user.business_type === 'car_lending'
               ? <CarLendingDashboard API_BASE={API_BASE} user={user} onLogout={() => setUser(null)} />
-              : <OwnerDashboard API_BASE={API_BASE} user={user} onLogout={() => setUser(null)} />
+              : user.business_type === 'cockpit'
+                ? <CockpitDashboard API_BASE={API_BASE} user={user} onLogout={() => setUser(null)} />
+                : <OwnerDashboard API_BASE={API_BASE} user={user} onLogout={() => setUser(null)} />
           ) : <Navigate to="/login" />
         } />
         <Route path="/scanner" element={
