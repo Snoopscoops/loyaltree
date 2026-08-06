@@ -118,14 +118,19 @@ function buildCaption(kind,item,settings,publicUrl,hashtags){
 function SocialPostStudio({kind,item,settings,publicUrl,onClose}){
   const canvasRef=useRef(null)
   const [format,setFormat]=useState('portrait')
-  const [theme,setTheme]=useState('red')
+  const [template,setTemplate]=useState(kind==='event'?'vcsaClassic':'advisory')
   const [hashtags,setHashtags]=useState('#VCSA #CockpitArena #Sabong #DerbySchedule')
   const [customHeadline,setCustomHeadline]=useState('')
   const [backgroundUrl,setBackgroundUrl]=useState(kind==='event'?(item.poster_url||settings?.hero_image_url||''):(settings?.hero_image_url||''))
-  const [showFee,setShowFee]=useState(true)
-  const [showPrize,setShowPrize]=useState(true)
+  const [payout,setPayout]=useState(item.prize_details||'')
+  const [minimumBet,setMinimumBet]=useState('')
+  const [reservationContacts,setReservationContacts]=useState(settings?.contact_phone||'')
   const [busy,setBusy]=useState(false)
-  const caption=buildCaption(kind,item,settings,publicUrl,hashtags)
+
+  const posterItem={...item,prize_details:payout}
+  const caption=buildCaption(kind,posterItem,settings,publicUrl,hashtags)+
+    (minimumBet?`\n💵 Minimum Bet: ${minimumBet}`:'')+
+    (reservationContacts?`\n☎ Reservations: ${reservationContacts}`:'')
 
   useEffect(()=>{
     let cancelled=false
@@ -137,88 +142,101 @@ function SocialPostStudio({kind,item,settings,publicUrl,onClose}){
       const bg=await loadCanvasImage(backgroundUrl)
       const logo=await loadCanvasImage(settings?.logo_url)
       if(cancelled)return
-      const red=theme==='red'?'#8f0f18':'#151515', gold='#d4a84f'
-      ctx.fillStyle='#100d0d';ctx.fillRect(0,0,W,H)
-      if(bg){drawCover(ctx,bg,0,0,W,H);ctx.fillStyle='rgba(8,5,5,.60)';ctx.fillRect(0,0,W,H)}
-      const grad=ctx.createLinearGradient(0,0,0,H);grad.addColorStop(0,'rgba(0,0,0,.10)');grad.addColorStop(.64,'rgba(0,0,0,.52)');grad.addColorStop(1,'rgba(0,0,0,.96)');ctx.fillStyle=grad;ctx.fillRect(0,0,W,H)
-      ctx.fillStyle=red;ctx.fillRect(0,0,24,H)
-      ctx.fillStyle=gold;ctx.fillRect(24,0,8,H)
-      ctx.fillStyle='rgba(143,15,24,.95)';ctx.fillRect(0,0,W,128)
-      ctx.fillStyle=gold;ctx.fillRect(0,128,W,6)
-      if(logo){ctx.save();ctx.beginPath();ctx.arc(88,64,46,0,Math.PI*2);ctx.clip();drawCover(ctx,logo,42,18,92,92);ctx.restore();ctx.strokeStyle=gold;ctx.lineWidth=4;ctx.beginPath();ctx.arc(88,64,47,0,Math.PI*2);ctx.stroke()}
-      ctx.fillStyle='#fff';ctx.font='800 34px Arial';ctx.fillText(settings?.arena_name||'VCSA COCKPIT ARENA',logo?156:58,58)
-      ctx.fillStyle='#ffe6a5';ctx.font='600 20px Arial';ctx.fillText(settings?.tagline||'THE OFFICIAL ARENA UPDATE',logo?156:90,90)
-      const headline=(customHeadline||item.title||(kind==='event'?'UPCOMING DERBY':'IMPORTANT ANNOUNCEMENT')).toUpperCase()
-      ctx.font=`900 ${kind==='event'?72:66}px Arial`;ctx.fillStyle='#fff'
-      const headlineLines=wrapLines(ctx,headline,W-130,3)
-      let y=H*(format==='square'?.30:.32)
-      headlineLines.forEach(line=>{ctx.fillText(line,72,y);y+=82})
-      ctx.fillStyle=gold;ctx.fillRect(72,y+8,180,8);y+=58
-      if(kind==='event'){
-        ctx.font='700 34px Arial';ctx.fillStyle='#fff'
-        const details=[]
-        if(item.event_date)details.push(`DATE  •  ${readableDate(item.event_date)}`)
-        if(item.start_time)details.push(`TIME  •  ${readableTime(item.start_time)}`)
-        if(item.category)details.push(`CATEGORY  •  ${item.category}`)
-        details.forEach(line=>{ctx.fillText(line,72,y);y+=50})
-        if((showFee&&money(item.entry_fee))||(showPrize&&item.prize_details)){
-          y+=14;roundRect(ctx,62,y,W-124,144,18);ctx.fillStyle='rgba(143,15,24,.92)';ctx.fill()
-          ctx.fillStyle='#fff';ctx.font='800 28px Arial'
-          if(showFee&&money(item.entry_fee))ctx.fillText(`ENTRY FEE: ${money(item.entry_fee)}`,88,y+49)
-          if(showPrize&&item.prize_details){ctx.font='800 30px Arial';const pl=wrapLines(ctx,item.prize_details,W-180,2);pl.forEach((line,i)=>ctx.fillText(line,88,y+93+i*34))}
-          y+=174
-        }
-        if(item.description){ctx.fillStyle='#f6eee9';ctx.font='500 27px Arial';wrapLines(ctx,item.description,W-145,4).forEach(line=>{ctx.fillText(line,72,y);y+=38})}
-      }else{
-        roundRect(ctx,62,y,W-124,Math.min(390,H-y-260),20);ctx.fillStyle='rgba(255,255,255,.94)';ctx.fill()
-        ctx.fillStyle='#2b1717';ctx.font='700 31px Arial';let ty=y+54
-        wrapLines(ctx,item.message||'Please check our official channels for the latest update.',W-190,8).forEach(line=>{ctx.fillText(line,92,ty);ty+=43})
+
+      const gold='#f4b400', red='#c8102e', blue='#163a8a', ink='#171214'
+      ctx.fillStyle=template==='vcsaClassic'?'#fff':ink;ctx.fillRect(0,0,W,H)
+
+      if(template!=='vcsaClassic'){
+        if(bg){drawCover(ctx,bg,0,0,W,H);ctx.fillStyle='rgba(0,0,0,.62)';ctx.fillRect(0,0,W,H)}
+        const g=ctx.createLinearGradient(0,0,0,H);g.addColorStop(0,'rgba(0,0,0,.08)');g.addColorStop(1,'rgba(0,0,0,.96)');ctx.fillStyle=g;ctx.fillRect(0,0,W,H)
       }
-      const bottomY=H-160
-      ctx.fillStyle='rgba(0,0,0,.78)';ctx.fillRect(32,bottomY,W-32,160)
-      ctx.fillStyle=gold;ctx.font='800 24px Arial';ctx.fillText(settings?.address||settings?.arena_name||'VCSA Cockpit Arena',72,bottomY+48)
-      ctx.fillStyle='#fff';ctx.font='600 22px Arial'
-      const contact=[settings?.contact_phone,publicUrl].filter(Boolean).join('   •   ')
-      ctx.fillText(contact.slice(0,82),72,bottomY+86)
-      ctx.fillStyle='#ddd';ctx.font='600 19px Arial';ctx.fillText(hashtags.slice(0,95),72,bottomY+124)
+
+      const drawCircularLogo=(cx,cy,r)=>{
+        ctx.save();ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.clip()
+        if(logo)drawCover(ctx,logo,cx-r,cy-r,r*2,r*2)
+        else{ctx.fillStyle=red;ctx.fillRect(cx-r,cy-r,r*2,r*2)}
+        ctx.restore();ctx.strokeStyle=gold;ctx.lineWidth=Math.max(5,r*.08);ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.stroke()
+      }
+
+      if(template==='vcsaClassic'){
+        drawCircularLogo(106,90,64)
+        ctx.font='900 54px Arial';ctx.fillStyle=blue;ctx.fillText('VCSA',195,76)
+        ctx.fillStyle=red;ctx.fillText('COCKPIT ARENA',365,76)
+        ctx.font='700 28px Arial';ctx.fillStyle='#111';ctx.textAlign='center'
+        ctx.fillText(settings?.address||'665 Mc Arthur Hi-way, Malanday, Valenzuela City',W/2,126)
+        ctx.font='700 24px Arial';ctx.fillText(settings?.contact_phone?`CP #: ${settings.contact_phone}`:'OFFICIAL VCSA ANNOUNCEMENT',W/2,160)
+        ctx.fillStyle='#111';ctx.fillRect(54,188,W-108,5)
+
+        const title=(customHeadline||item.title||(kind==='event'?'UPCOMING EVENT':'IMPORTANT ANNOUNCEMENT')).toUpperCase()
+        ctx.font='900 55px Arial';ctx.textAlign='center';ctx.fillStyle='#111'
+        let y=255
+        wrapLines(ctx,title,W-120,2).forEach(line=>{ctx.fillText(line,W/2,y);y+=66})
+
+        if(kind==='event'){
+          if(item.event_date){ctx.font='900 44px Arial';ctx.fillStyle='#111';ctx.fillText(readableDate(item.event_date).toUpperCase(),W/2,y+12);y+=64}
+          if(payout){ctx.font='900 76px Arial';ctx.fillStyle=red;wrapLines(ctx,payout.toUpperCase(),W-100,2).forEach(line=>{ctx.fillText(line,W/2,y+38);y+=88})}
+          ctx.font='900 54px Arial';ctx.fillStyle='#111';ctx.fillText('PER WIN',W/2,y+20);y+=82
+          if(item.start_time){ctx.font='900 48px Arial';ctx.fillStyle=red;ctx.fillText(`${readableTime(item.start_time)} START`,W/2,y);y+=70}
+
+          roundRect(ctx,115,y,W-230,310,22);ctx.fillStyle='#20171a';ctx.fill();ctx.strokeStyle=red;ctx.lineWidth=12;ctx.stroke()
+          const big=(customHeadline||item.title||'EVENT').replace(/[^0-9]/g,'')||String(item.title||'DERBY').toUpperCase()
+          ctx.font=`900 ${big.length>5?96:190}px Arial`;ctx.fillStyle=gold;ctx.shadowColor='rgba(153,33,33,.75)';ctx.shadowOffsetX=16;ctx.shadowOffsetY=16;ctx.textAlign='center';ctx.fillText(big,W/2,y+195);ctx.shadowColor='transparent'
+          if(!/^\d+$/.test(big)){ctx.font='900 68px Arial';ctx.fillStyle='#fff';ctx.fillText('FIGHTS',W/2,y+276)}
+          y+=350
+          if(minimumBet){ctx.font='900 42px Arial';ctx.fillStyle=red;ctx.fillText(`MINIMUM BET ${minimumBet.toUpperCase()}`,W/2,y);y+=58}
+          if(reservationContacts){ctx.font='700 28px Arial';ctx.fillStyle='#111';ctx.fillText('FOR RESERVATION',W/2,y);y+=44;ctx.font='900 31px Arial';ctx.fillStyle=red;ctx.fillText(reservationContacts.toUpperCase(),W/2,y)}
+        }else{
+          roundRect(ctx,80,y,W-160,H-y-230,24);ctx.fillStyle='#f7f7f7';ctx.fill();ctx.strokeStyle=red;ctx.lineWidth=8;ctx.stroke()
+          ctx.font='800 38px Arial';ctx.fillStyle='#111';let ty=y+70
+          wrapLines(ctx,item.message||'Please check our official page and website for the latest update.',W-240,10).forEach(line=>{ctx.fillText(line,W/2,ty);ty+=52})
+          if(item.publish_date){ctx.font='900 34px Arial';ctx.fillStyle=red;ctx.fillText(readableDate(item.publish_date).toUpperCase(),W/2,ty+32)}
+        }
+        ctx.fillStyle=red;ctx.fillRect(0,H-78,W,78);ctx.fillStyle=gold;ctx.font='900 30px Arial';ctx.textAlign='center';ctx.fillText((settings?.tagline||'MALINIS AT MAGINOONG SABONG ANG AMING TRADISYON').toUpperCase(),W/2,H-29)
+      }else{
+        drawCircularLogo(W/2,116,76)
+        ctx.textAlign='center';ctx.fillStyle='#fff';ctx.font='900 43px Arial';ctx.fillText((settings?.arena_name||'VCSA COCKPIT ARENA').toUpperCase(),W/2,225)
+        ctx.fillStyle=gold;ctx.font='800 26px Arial';ctx.fillText((settings?.tagline||'OFFICIAL ARENA UPDATE').toUpperCase(),W/2,264)
+        const title=(customHeadline||item.title||(kind==='event'?'UPCOMING DERBY':'IMPORTANT ANNOUNCEMENT')).toUpperCase()
+        ctx.font='900 72px Arial';ctx.fillStyle='#fff';let y=395
+        wrapLines(ctx,title,W-140,3).forEach(line=>{ctx.fillText(line,W/2,y);y+=84})
+        ctx.fillStyle=gold;ctx.fillRect(W/2-120,y-30,240,8);y+=35
+        if(kind==='event'){
+          ctx.font='800 35px Arial';ctx.fillStyle='#fff'
+          if(item.event_date){ctx.fillText(readableDate(item.event_date).toUpperCase(),W/2,y);y+=52}
+          if(item.start_time){ctx.fillText(`${readableTime(item.start_time)} START`,W/2,y);y+=52}
+          if(payout){ctx.font='900 54px Arial';ctx.fillStyle=gold;wrapLines(ctx,payout.toUpperCase(),W-160,3).forEach(line=>{ctx.fillText(line,W/2,y);y+=62})}
+          if(minimumBet){ctx.font='900 38px Arial';ctx.fillStyle='#fff';ctx.fillText(`MINIMUM BET ${minimumBet.toUpperCase()}`,W/2,y+18);y+=62}
+        }else{
+          roundRect(ctx,80,y,W-160,360,22);ctx.fillStyle='rgba(255,255,255,.94)';ctx.fill();ctx.fillStyle='#211';ctx.font='800 32px Arial';let ty=y+60
+          wrapLines(ctx,item.message||'Please check our official channels for the latest update.',W-240,8).forEach(line=>{ctx.fillText(line,W/2,ty);ty+=46})
+        }
+        ctx.fillStyle='rgba(0,0,0,.82)';ctx.fillRect(0,H-185,W,185)
+        ctx.fillStyle=gold;ctx.font='800 25px Arial';ctx.fillText(settings?.address||settings?.arena_name||'VCSA Cockpit Arena',W/2,H-125)
+        ctx.fillStyle='#fff';ctx.font='700 22px Arial';ctx.fillText([reservationContacts||settings?.contact_phone,publicUrl].filter(Boolean).join('  •  ').slice(0,90),W/2,H-84)
+        ctx.fillStyle='#ddd';ctx.font='700 19px Arial';ctx.fillText(hashtags.slice(0,100),W/2,H-45)
+      }
+      ctx.textAlign='left';ctx.shadowColor='transparent'
     }
-    draw()
-    return()=>{cancelled=true}
-  },[kind,item,settings,publicUrl,format,theme,hashtags,customHeadline,backgroundUrl,showFee,showPrize])
+    draw();return()=>{cancelled=true}
+  },[kind,item,settings,publicUrl,format,template,hashtags,customHeadline,backgroundUrl,payout,minimumBet,reservationContacts])
 
-  const download=()=>{
-    const canvas=canvasRef.current;if(!canvas)return
-    setBusy(true)
-    canvas.toBlob(blob=>{
-      if(!blob){setBusy(false);return}
-      const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`${safeFileName(item.title)}-${format}.png`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);setBusy(false)
-    },'image/png',1)
-  }
-  const copyCaption=async()=>{
-    try{await navigator.clipboard.writeText(caption);alert('Facebook caption copied.')}
-    catch{const t=document.createElement('textarea');t.value=caption;document.body.appendChild(t);t.select();document.execCommand('copy');t.remove();alert('Facebook caption copied.')}
-  }
+  const download=()=>{const canvas=canvasRef.current;if(!canvas)return;setBusy(true);canvas.toBlob(blob=>{if(!blob){setBusy(false);return}const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`${safeFileName(item.title)}-${format}.png`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);setBusy(false)},'image/png',1)}
+  const copyCaption=async()=>{try{await navigator.clipboard.writeText(caption);alert('Facebook caption copied.')}catch{const t=document.createElement('textarea');t.value=caption;document.body.appendChild(t);t.select();document.execCommand('copy');t.remove();alert('Facebook caption copied.')}}
 
-  return <div style={S.modalOverlay} onClick={onClose}>
-    <div style={S.studioModal} onClick={e=>e.stopPropagation()}>
-      <div style={S.studioHead}><div><h2 style={{margin:0}}>Facebook Post Studio</h2><div style={S.muted}>Generate a branded image and ready-to-paste caption.</div></div><button style={S.close} onClick={onClose}>×</button></div>
-      <div style={S.studioGrid}>
-        <div>
-          <canvas ref={canvasRef} style={{...S.canvas,aspectRatio:format==='square'?'1 / 1':'4 / 5'}}/>
-          <div style={S.actionRow}><button style={S.primary} onClick={download} disabled={busy}>{busy?'Preparing…':'Download PNG'}</button><button style={S.secondary} onClick={copyCaption}>Copy Facebook Caption</button></div>
-        </div>
-        <div style={S.controls}>
-          <Select label="Format" value={format} onChange={setFormat} options={[{value:'portrait',label:'Facebook portrait — 1080 × 1350'},{value:'square',label:'Facebook square — 1080 × 1080'}]}/>
-          <Select label="Template" value={theme} onChange={setTheme} options={[{value:'red',label:'VCSA red and gold'},{value:'black',label:'Black and gold'}]}/>
-          <Input label="Custom headline (optional)" value={customHeadline} onChange={setCustomHeadline}/>
-          <Input label="Background image URL" value={backgroundUrl} onChange={setBackgroundUrl}/>
-          {kind==='event'&&<div style={S.checkRow}><label><input type="checkbox" checked={showFee} onChange={e=>setShowFee(e.target.checked)}/> Show entry fee</label><label><input type="checkbox" checked={showPrize} onChange={e=>setShowPrize(e.target.checked)}/> Show prize</label></div>}
-          <Input label="Hashtags" value={hashtags} onChange={setHashtags}/>
-          <label style={S.field}><span>Generated Facebook caption</span><textarea style={{...S.input,minHeight:240,resize:'vertical'}} readOnly value={caption}/></label>
-        </div>
-      </div>
-    </div>
-  </div>
+  return <div style={S.modalOverlay} onClick={onClose}><div style={S.studioModal} onClick={e=>e.stopPropagation()}>
+    <div style={S.studioHead}><div><h2 style={{margin:0}}>Cockpit Facebook Post Studio</h2><div style={S.muted}>Generate a VCSA-style poster, download the PNG, then copy the caption.</div></div><button style={S.close} onClick={onClose}>×</button></div>
+    <div style={S.studioGrid}><div><canvas ref={canvasRef} style={{...S.canvas,aspectRatio:format==='square'?'1 / 1':'4 / 5'}}/><div style={S.actionRow}><button style={S.primary} onClick={download} disabled={busy}>{busy?'Preparing…':'Download PNG'}</button><button style={S.secondary} onClick={copyCaption}>Copy Facebook Caption</button></div></div>
+    <div style={S.controls}>
+      <Select label="Format" value={format} onChange={setFormat} options={[{value:'portrait',label:'Facebook portrait — 1080 × 1350'},{value:'square',label:'Facebook square — 1080 × 1080'}]}/>
+      <Select label="Poster template" value={template} onChange={setTemplate} options={[{value:'vcsaClassic',label:'VCSA classic announcement'},{value:'premium',label:'Premium black and gold'},{value:'advisory',label:'Dark advisory'}]}/>
+      <Input label="Custom headline (optional)" value={customHeadline} onChange={setCustomHeadline}/>
+      {kind==='event'&&<><Input label="Payout / prize line" value={payout} onChange={setPayout}/><Input label="Minimum bet" value={minimumBet} onChange={setMinimumBet}/></>}
+      <Input label="Reservation contacts" value={reservationContacts} onChange={setReservationContacts}/>
+      <Input label="Background image URL" value={backgroundUrl} onChange={setBackgroundUrl}/>
+      <Input label="Hashtags" value={hashtags} onChange={setHashtags}/>
+      <label style={S.field}><span>Generated Facebook caption</span><textarea style={{...S.input,minHeight:220,resize:'vertical'}} readOnly value={caption}/></label>
+    </div></div>
+  </div></div>
 }
 
 export default function CockpitDashboard({ API_BASE, user, onLogout }) {
@@ -251,7 +269,7 @@ export default function CockpitDashboard({ API_BASE, user, onLogout }) {
   const publicUrl = `${API_BASE}/cockpit/${businessId}`
 
   return <div style={S.page}>
-    <header style={S.header}><div><h1 style={{margin:0}}>{user?.business_name || 'Cockpit Arena'}</h1><small>LoyaltyTree Cockpit Admin</small></div><div><a style={S.view} href={publicUrl} target="_blank" rel="noreferrer">View website</a><button style={S.logout} onClick={onLogout}>Log out</button></div></header>
+    <header style={S.header}><div style={S.brandWrap}>{settings?.logo_url&&<img src={settings.logo_url} alt="Cockpit logo" style={S.brandLogo}/>}<div><h1 style={{margin:0}}>{user?.business_name || 'Cockpit Arena'}</h1><small>LoyaltyTree Cockpit Admin</small></div></div><div><a style={S.view} href={publicUrl} target="_blank" rel="noreferrer">View website</a><button style={S.logout} onClick={onLogout}>Log out</button></div></header>
     {message && <div style={S.toast}>{message}</div>}
     <nav style={S.nav}>{TABS.map(x=><button key={x} style={{...S.tab,...(tab===x?S.active:{})}} onClick={()=>setTab(x)}>{x[0].toUpperCase()+x.slice(1)}</button>)}</nav>
     <main style={S.main}>
@@ -273,4 +291,4 @@ const File=({label,onChange})=><label style={S.field}><span>{label}</span><input
 const Select=({label,value,onChange,options})=><label style={S.field}><span>{label}</span><select style={S.input} value={value||''} onChange={e=>onChange(e.target.value)}><option value="">Select</option>{options.map(o=>typeof o==='string'?<option key={o} value={o}>{o}</option>:<option key={o.value} value={o.value}>{o.label}</option>)}</select></label>
 function Crud({title,form,onSave,onPreview,items,onDelete,onShare}){return <><Panel title={`Add ${title.slice(0,-1)}`}><div style={S.grid}>{form}</div><div style={S.actionRow}><button style={S.primary} onClick={onSave}>Save</button>{onPreview&&<button style={S.secondary} onClick={onPreview}>Preview Facebook Post</button>}</div></Panel><Panel title={title}>{items.length?items.map(x=><div key={x.public_id} style={S.row}><div><b>{x.title||x.name||x.category||'Record'}</b><div style={{fontSize:13,color:'#766'}}>{x.event_date||x.message||x.description||x.champion_name||''}</div></div><div style={S.actionRow}>{onShare&&<button style={S.shareBtn} onClick={()=>onShare(x)}>Facebook Post</button>}<button style={S.delete} onClick={()=>onDelete(x.public_id)}>Delete</button></div></div>):<p>No records yet.</p>}</Panel></>}
 
-const S={page:{minHeight:'100vh',background:'#f4efe8',fontFamily:'Arial,sans-serif'},header:{background:'#211813',color:'#fff',padding:'20px 28px',display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap'},view:{color:'#fff',background:'#a67734',padding:'10px 14px',borderRadius:8,textDecoration:'none',marginRight:8},logout:{padding:'10px 14px',borderRadius:8,border:'1px solid #776',background:'transparent',color:'#fff'},nav:{display:'flex',gap:6,overflowX:'auto',padding:12,background:'#fff'},tab:{border:0,background:'transparent',padding:'10px 13px',borderRadius:8,textTransform:'capitalize'},active:{background:'#211813',color:'#fff'},main:{maxWidth:1150,margin:'auto',padding:24},panel:{background:'#fff',padding:20,borderRadius:14,marginBottom:18,boxShadow:'0 5px 18px #0000000d'},cards:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:12,marginBottom:18},card:{background:'#fff',padding:18,borderRadius:12},grid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:12,marginBottom:14},field:{display:'flex',flexDirection:'column',gap:5,textTransform:'capitalize',fontSize:13,fontWeight:700},input:{padding:11,border:'1px solid #d6cabf',borderRadius:8,font:'inherit',width:'100%',boxSizing:'border-box'},primary:{background:'#8a6129',color:'#fff',border:0,borderRadius:8,padding:'11px 16px',fontWeight:700,cursor:'pointer'},secondary:{background:'#fff',color:'#6b431b',border:'1px solid #b99261',borderRadius:8,padding:'10px 15px',fontWeight:700,cursor:'pointer'},shareBtn:{background:'#1877f2',color:'#fff',border:0,borderRadius:7,padding:'8px 11px',fontWeight:700,cursor:'pointer'},row:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,padding:'12px 0',borderBottom:'1px solid #eee'},delete:{border:'1px solid #f4b4b4',color:'#b42318',background:'#fff3f3',borderRadius:7,padding:'7px 10px',cursor:'pointer'},toast:{position:'fixed',top:80,right:20,zIndex:20,background:'#211813',color:'#fff',padding:'12px 15px',borderRadius:8},actionRow:{display:'flex',gap:9,alignItems:'center',flexWrap:'wrap'},modalOverlay:{position:'fixed',inset:0,zIndex:50,background:'rgba(0,0,0,.72)',padding:20,overflowY:'auto',display:'flex',justifyContent:'center',alignItems:'flex-start'},studioModal:{width:'min(1180px,100%)',background:'#f7f2ec',borderRadius:18,margin:'20px auto',padding:22,boxShadow:'0 24px 80px rgba(0,0,0,.35)'},studioHead:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:16,marginBottom:18},close:{border:0,background:'#2b1b17',color:'#fff',width:40,height:40,borderRadius:10,fontSize:26,cursor:'pointer'},studioGrid:{display:'grid',gridTemplateColumns:'minmax(340px,1.05fr) minmax(300px,.95fr)',gap:24},canvas:{width:'100%',display:'block',background:'#111',borderRadius:12,boxShadow:'0 12px 30px rgba(0,0,0,.22)'},controls:{display:'flex',flexDirection:'column',gap:12},checkRow:{display:'flex',gap:18,flexWrap:'wrap',fontSize:14,fontWeight:700},muted:{color:'#765f54',fontSize:14,marginTop:5}}
+const S={page:{minHeight:'100vh',background:'#f4efe8',fontFamily:'Arial,sans-serif'},brandWrap:{display:'flex',alignItems:'center',gap:12},brandLogo:{width:64,height:64,borderRadius:'50%',objectFit:'cover',border:'3px solid #d4a84f',background:'#fff'},header:{background:'#211813',color:'#fff',padding:'20px 28px',display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap'},view:{color:'#fff',background:'#a67734',padding:'10px 14px',borderRadius:8,textDecoration:'none',marginRight:8},logout:{padding:'10px 14px',borderRadius:8,border:'1px solid #776',background:'transparent',color:'#fff'},nav:{display:'flex',gap:6,overflowX:'auto',padding:12,background:'#fff'},tab:{border:0,background:'transparent',padding:'10px 13px',borderRadius:8,textTransform:'capitalize'},active:{background:'#211813',color:'#fff'},main:{maxWidth:1150,margin:'auto',padding:24},panel:{background:'#fff',padding:20,borderRadius:14,marginBottom:18,boxShadow:'0 5px 18px #0000000d'},cards:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:12,marginBottom:18},card:{background:'#fff',padding:18,borderRadius:12},grid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:12,marginBottom:14},field:{display:'flex',flexDirection:'column',gap:5,textTransform:'capitalize',fontSize:13,fontWeight:700},input:{padding:11,border:'1px solid #d6cabf',borderRadius:8,font:'inherit',width:'100%',boxSizing:'border-box'},primary:{background:'#8a6129',color:'#fff',border:0,borderRadius:8,padding:'11px 16px',fontWeight:700,cursor:'pointer'},secondary:{background:'#fff',color:'#6b431b',border:'1px solid #b99261',borderRadius:8,padding:'10px 15px',fontWeight:700,cursor:'pointer'},shareBtn:{background:'#1877f2',color:'#fff',border:0,borderRadius:7,padding:'8px 11px',fontWeight:700,cursor:'pointer'},row:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,padding:'12px 0',borderBottom:'1px solid #eee'},delete:{border:'1px solid #f4b4b4',color:'#b42318',background:'#fff3f3',borderRadius:7,padding:'7px 10px',cursor:'pointer'},toast:{position:'fixed',top:80,right:20,zIndex:20,background:'#211813',color:'#fff',padding:'12px 15px',borderRadius:8},actionRow:{display:'flex',gap:9,alignItems:'center',flexWrap:'wrap'},modalOverlay:{position:'fixed',inset:0,zIndex:50,background:'rgba(0,0,0,.72)',padding:20,overflowY:'auto',display:'flex',justifyContent:'center',alignItems:'flex-start'},studioModal:{width:'min(1180px,100%)',background:'#f7f2ec',borderRadius:18,margin:'20px auto',padding:22,boxShadow:'0 24px 80px rgba(0,0,0,.35)'},studioHead:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:16,marginBottom:18},close:{border:0,background:'#2b1b17',color:'#fff',width:40,height:40,borderRadius:10,fontSize:26,cursor:'pointer'},studioGrid:{display:'grid',gridTemplateColumns:'minmax(340px,1.05fr) minmax(300px,.95fr)',gap:24},canvas:{width:'100%',display:'block',background:'#111',borderRadius:12,boxShadow:'0 12px 30px rgba(0,0,0,.22)'},controls:{display:'flex',flexDirection:'column',gap:12},checkRow:{display:'flex',gap:18,flexWrap:'wrap',fontSize:14,fontWeight:700},muted:{color:'#765f54',fontSize:14,marginTop:5}}
