@@ -12412,6 +12412,13 @@ async def cashier_stamp_page(customer_public_id: str):
     card_type = program.get('card_type', 'stamp') if program else 'stamp'
     points_prizes = program.get('points_prizes', []) if program else []
 
+    # multipass/vip/membership are only computed when that program type is
+    # actually active - keeps this cheap and avoids calling vip-tier helpers
+    # against a program dict that isn't shaped like a VIP program.
+    default_vip_tier = {'id': 'vip', 'name': 'VIP', 'threshold': 0, 'color': '#111827', 'discount_percent': 0, 'benefits': []}
+    vip_tier_data = get_vip_tier(customer, program) if (program and card_type == 'vip') else default_vip_tier
+    vip_next_tier_data = get_next_vip_tier(customer, program) if (program and card_type == 'vip') else None
+
     data = {
         'customer_public_id': customer.get('public_id', ''),
         'customer_name': customer.get('name', 'Member'),
@@ -12425,13 +12432,21 @@ async def cashier_stamp_page(customer_public_id: str):
         'points_balance': customer.get('points_balance', 0),
         'points_prizes': points_prizes if isinstance(points_prizes, list) else [],
         'coupon_text': active_coupon.get('reward_text') if active_coupon else None,
+        'multipass_sessions_remaining': customer.get('multipass_sessions_remaining', 0) or 0,
+        'multipass_total_sessions': customer.get('multipass_total_sessions', 0) or 0,
+        'multipass_expires_at': customer.get('multipass_expires_at'),
+        'vip_points': int(customer.get('vip_points') or 0),
+        'vip_tier': vip_tier_data,
+        'vip_next_tier': vip_next_tier_data,
+        'membership_status': membership_effective_status(customer),
     }
     data_json = json.dumps(data)
+    page_title = {'points': 'Add Points', 'multipass': 'Use Session', 'vip': 'Add VIP Sale', 'membership': 'Log Visit'}.get(card_type, 'Add Stamp')
 
     head = (
         '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
-        '<title>' + ('Add Points' if card_type == 'points' else 'Add Stamp') + ' - ' + html_lib.escape(business.get('name', '')) + '</title>'
+        '<title>' + page_title + ' - ' + html_lib.escape(business.get('name', '')) + '</title>'
         '<style>'
         '*{box-sizing:border-box;margin:0;padding:0}'
         'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;'
@@ -12476,6 +12491,12 @@ async def cashier_stamp_page(customer_public_id: str):
         'let pointsBalance=DATA.points_balance;'
         'const pointsPrizes=DATA.points_prizes||[];'
         'let couponText=DATA.coupon_text;'
+        'let multipassRemaining=DATA.multipass_sessions_remaining;'
+        'let multipassTotal=DATA.multipass_total_sessions;'
+        'let vipPoints=DATA.vip_points;'
+        'let vipTier=DATA.vip_tier;'
+        'let vipNextTier=DATA.vip_next_tier;'
+        'let membershipStatus=DATA.membership_status;'
         'let cachedPin=null;'
         'const app=document.getElementById("app");'
         'const sessionKey="loyaltree_cashier_"+DATA.business_public_id;'
@@ -12568,6 +12589,38 @@ async def cashier_stamp_page(customer_public_id: str):
         'prizeHtml;'
         '}'
 
+        'function renderMultipassBody(){'
+        'const today=new Date().toISOString().slice(0,10);'
+        'const expired=DATA.multipass_expires_at&&DATA.multipass_expires_at<today;'
+        'if(expired){'
+        'return "<div class=\'msg msg-err\'>This pass expired on "+escapeHtml(DATA.multipass_expires_at)+". Issue a new pass from the dashboard.</div>";'
+        '}'
+        'if(multipassRemaining<=0){'
+        'return "<div class=\'msg msg-err\'>No sessions left on this pass. Issue a new pass from the dashboard.</div>";'
+        '}'
+        'return "<button class=\'btn-primary\' id=\'multipassBtn\'>Use 1 Session</button>";'
+        '}'
+
+        'function renderVipBody(){'
+        'const tier=vipTier||{};'
+        'const tierHtml="<div style=\'text-align:center;margin-bottom:14px\'>"+'
+        '"<div style=\'display:inline-block;padding:6px 16px;border-radius:999px;background:"+(tier.color||"#111827")+";color:white;font-weight:700;font-size:13px\'>"+escapeHtml(tier.name||"VIP")+"</div>"+'
+        '(vipNextTier?"<div style=\'font-size:12px;color:#94a3b8;margin-top:6px\'>"+Math.max(0,vipNextTier.threshold-vipPoints)+" pts to "+escapeHtml(vipNextTier.name)+"</div>":"")+'
+        '"</div>";'
+        'return tierHtml+'
+        '"<input id=\'vipAmount\' type=\'number\' inputmode=\'decimal\' min=\'0\' placeholder=\'Amount spent\'>"+'
+        '"<button class=\'btn-primary\' id=\'vipBtn\'>Add VIP Sale</button>";'
+        '}'
+
+        'function renderMembershipBody(){'
+        'if(membershipStatus!=="active"&&membershipStatus!=="lifetime"){'
+        'return "<div class=\'msg msg-err\'>Membership is "+escapeHtml(membershipStatus)+". Activate or renew it from the dashboard before logging a visit.</div>";'
+        '}'
+        'return "<input id=\'serviceName\' type=\'text\' placeholder=\'Service (e.g. Teeth cleaning)\'>"+'
+        '"<input id=\'serviceNote\' type=\'text\' placeholder=\'Note (optional)\'>"+'
+        '"<button class=\'btn-primary\' id=\'membershipBtn\'>Log Visit</button>";'
+        '}'
+
         'function attachBodyListeners(){'
         'if(cardType==="points"){'
         'const pointsBtn=document.getElementById("pointsBtn");'
@@ -12576,6 +12629,15 @@ async def cashier_stamp_page(customer_public_id: str):
         'for(let i=0;i<prizeBtns.length;i++){'
         'prizeBtns[i].addEventListener("click",function(e){doRedeemPrize(e.currentTarget.getAttribute("data-prize-id"));});'
         '}'
+        '}else if(cardType==="multipass"){'
+        'const multipassBtn=document.getElementById("multipassBtn");'
+        'if(multipassBtn)multipassBtn.addEventListener("click",doMultipass);'
+        '}else if(cardType==="vip"){'
+        'const vipBtn=document.getElementById("vipBtn");'
+        'if(vipBtn)vipBtn.addEventListener("click",doVip);'
+        '}else if(cardType==="membership"){'
+        'const membershipBtn=document.getElementById("membershipBtn");'
+        'if(membershipBtn)membershipBtn.addEventListener("click",doMembershipNote);'
         '}else{'
         'const stampBtn=document.getElementById("stampBtn");'
         'if(stampBtn)stampBtn.addEventListener("click",doStamp);'
@@ -12585,9 +12647,9 @@ async def cashier_stamp_page(customer_public_id: str):
         '}'
 
         'function renderCard(staffName,msg){'
-        'const bodyHtml=cardType==="points"?renderPointsBody():renderStampBody();'
+        'const bodyHtml=cardType==="points"?renderPointsBody():cardType==="multipass"?renderMultipassBody():cardType==="vip"?renderVipBody():cardType==="membership"?renderMembershipBody():renderStampBody();'
         'const couponHtml=couponText?"<div class=\'coupon\'>&#127903; "+escapeHtml(couponText)+"</div>":"";'
-        'const statsHtml=cardType==="points"?(pointsBalance+" points"):(stampCount+" / "+DATA.stamp_goal+" stamps");'
+        'const statsHtml=cardType==="points"?(pointsBalance+" points"):cardType==="multipass"?(multipassRemaining+" / "+multipassTotal+" sessions"):cardType==="vip"?(escapeHtml((vipTier&&vipTier.name)||"VIP")+" &bull; "+vipPoints+" pts"):cardType==="membership"?("Membership: "+escapeHtml(membershipStatus)):(stampCount+" / "+DATA.stamp_goal+" stamps");'
         'app.innerHTML='
         '(msg?"<div class=\'msg "+(msg.ok?"msg-ok":"msg-err")+"\'>"+escapeHtml(msg.text)+"</div>":"")+'
         '"<div class=\'customer-box\'>"+'
@@ -12652,6 +12714,86 @@ async def cashier_stamp_page(customer_public_id: str):
         '}'
         '}catch(e){'
         'renderCard(s?s.name:"",{ok:false,text:"Network error - points not added"});'
+        '}'
+        '}'
+
+        'async function doMultipass(){'
+        'const btn=document.getElementById("multipassBtn");'
+        'btn.disabled=true;btn.textContent="Using...";'
+        'const s=getSession();'
+        'try{'
+        'const res=await fetch("/api/v1/business/"+DATA.business_public_id+"/multipass/use",{'
+        'method:"POST",headers:authHeaders(),'
+        'body:JSON.stringify({customer_public_id:DATA.customer_public_id,'
+        'staff_pin:getSession()?undefined:cachedPin})'
+        '});'
+        'const d=await res.json();'
+        'if(res.ok){'
+        'multipassRemaining=d.sessions_remaining;multipassTotal=d.sessions_total;'
+        'renderCard(s?s.name:"",{ok:true,text:"Session used! "+multipassRemaining+" left."});'
+        '}else if(res.status===401){'
+        'clearSession();renderLogin(d.detail||"Session expired - log in again");'
+        '}else{'
+        'renderCard(s?s.name:"",{ok:false,text:d.detail||"Could not use session"});'
+        '}'
+        '}catch(e){'
+        'renderCard(s?s.name:"",{ok:false,text:"Network error - session not used"});'
+        '}'
+        '}'
+
+        'async function doVip(){'
+        'const input=document.getElementById("vipAmount");'
+        'const amount=parseFloat(input?input.value:"");'
+        'if(!amount||amount<=0){renderCard(getSession()?getSession().name:"",{ok:false,text:"Enter an amount spent first"});return;}'
+        'const btn=document.getElementById("vipBtn");'
+        'btn.disabled=true;btn.textContent="Adding...";'
+        'const s=getSession();'
+        'try{'
+        'const res=await fetch("/api/v1/business/"+DATA.business_public_id+"/vip-sale",{'
+        'method:"POST",headers:authHeaders(),'
+        'body:JSON.stringify({customer_public_id:DATA.customer_public_id,amount_spent:amount,'
+        'staff_pin:getSession()?undefined:cachedPin})'
+        '});'
+        'const d=await res.json();'
+        'if(res.ok){'
+        'vipPoints=d.vip_points;vipTier=d.tier;vipNextTier=d.next_tier;'
+        'renderCard(s?s.name:"",{ok:true,text:"+"+d.points_earned+" VIP points! Now "+(d.tier&&d.tier.name?d.tier.name:"VIP")+"."});'
+        '}else if(res.status===401){'
+        'clearSession();renderLogin(d.detail||"Session expired - log in again");'
+        '}else{'
+        'renderCard(s?s.name:"",{ok:false,text:d.detail||"Could not add VIP sale"});'
+        '}'
+        '}catch(e){'
+        'renderCard(s?s.name:"",{ok:false,text:"Network error - sale not added"});'
+        '}'
+        '}'
+
+        'async function doMembershipNote(){'
+        'const nameInput=document.getElementById("serviceName");'
+        'const noteInput=document.getElementById("serviceNote");'
+        'const serviceName=(nameInput?nameInput.value:"").trim();'
+        'if(!serviceName){renderCard(getSession()?getSession().name:"",{ok:false,text:"Enter the service name first"});return;}'
+        'const btn=document.getElementById("membershipBtn");'
+        'btn.disabled=true;btn.textContent="Logging...";'
+        'const s=getSession();'
+        'try{'
+        'const noteVal=(noteInput?noteInput.value:"").trim();'
+        'const res=await fetch("/api/v1/business/"+DATA.business_public_id+"/membership/note",{'
+        'method:"POST",headers:authHeaders(),'
+        'body:JSON.stringify({customer_public_id:DATA.customer_public_id,service_name:serviceName,'
+        'note:noteVal?noteVal:undefined,'
+        'staff_pin:getSession()?undefined:cachedPin})'
+        '});'
+        'const d=await res.json();'
+        'if(res.ok){'
+        'renderCard(s?s.name:"",{ok:true,text:"Visit logged: "+serviceName});'
+        '}else if(res.status===401){'
+        'clearSession();renderLogin(d.detail||"Session expired - log in again");'
+        '}else{'
+        'renderCard(s?s.name:"",{ok:false,text:d.detail||"Could not log visit"});'
+        '}'
+        '}catch(e){'
+        'renderCard(s?s.name:"",{ok:false,text:"Network error - visit not logged"});'
         '}'
         '}'
 
