@@ -618,15 +618,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     setMessage('Apple Wallet coming soon!')
   }
 
-  if (loading) return (
-    <div style={{...styles.container, background: cardExperience.soft}}>
-      <div style={styles.loadingTree}>
-        <div style={styles.treeIcon}>🌳</div>
-        <p>Growing your digital forest...</p>
-      </div>
-    </div>
-  )
-
   const isPointsCard = program?.card_type === 'points'
   const isMultipassCard = program?.card_type === 'multipass'
   const isMembershipCard = program?.card_type === 'membership'
@@ -709,6 +700,17 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const growthStage = customers.length < 10 ? 'seedling' : customers.length < 50 ? 'sapling' : customers.length < 200 ? 'growing' : 'mature'
   const subStatus = subscription?.subscription_status
   const needsRenewal = subStatus === 'expiring_soon' || subStatus === 'expired'
+
+
+  if (loading) return (
+    <div style={{...styles.container, background: cardExperience?.soft || '#f8fafc'}}>
+      <div style={styles.loadingTree}>
+        <div style={styles.treeIcon}>🌳</div>
+        <p>Growing your digital forest...</p>
+      </div>
+    </div>
+  )
+
 
   // Leaves (customers) search - matches name, phone, or email
   const customerSearchTerm = customerSearch.trim().toLowerCase()
