@@ -4137,7 +4137,9 @@ async def paymongo_webhook(request: Request):
     return {"received": True}
 
 @app.get("/api/v1/customer/{public_id}")
-async def get_customer_api(public_id: str):
+async def get_customer_api(public_id: str, response: Response):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
     customer = safe_get_customer(public_id)
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
@@ -4977,7 +4979,9 @@ async def get_analytics(public_id: str, range: str = '30d'):
     }
 
 @app.get("/api/v1/business/{public_id}/loyalty-config")
-async def get_loyalty_config(public_id: str):
+async def get_loyalty_config(public_id: str, response: Response):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -5095,15 +5099,32 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
         rows = existing.data or []
 
         if rows:
-            program_id = rows[0].get("id")
-            supabase.table("loyalty_programs").update(data).eq("id", program_id).execute()
+            # Older deployments may have duplicate loyalty_programs rows.
+            # Synchronize all of them instead of deleting records, so every
+            # legacy lookup returns the same selected card type.
+            supabase.table("loyalty_programs").update(data).eq(
+                "business_id", business.get("id")
+            ).execute()
         else:
             data['created_at'] = datetime.utcnow().isoformat()
             supabase.table("loyalty_programs").insert(data).execute()
 
+        persisted = safe_get_loyalty_program(business.get("id"))
+        persisted_type = (persisted or {}).get("card_type")
+
+        if persisted_type != config.card_type:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"Card type did not persist. Requested {config.card_type}, "
+                    f"but database returned {persisted_type or 'none'}."
+                ),
+            )
+
         return {
             "message": "Configuration saved",
-            "card_type": config.card_type,
+            "card_type": persisted_type,
+            "program": persisted,
         }
     except Exception as e:
         error_msg = str(e)

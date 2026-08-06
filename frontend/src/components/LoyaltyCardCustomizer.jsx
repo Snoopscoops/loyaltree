@@ -75,7 +75,10 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
     setLoading(true)
     setError('')
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config`)
+      const res = await fetch(
+        `${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config?_=${Date.now()}`,
+        { cache: 'no-store' }
+      )
       const data = await res.json()
       if (res.ok) {
         setForm(f => ({
@@ -229,6 +232,13 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
     })
     const data = await res.json()
     if (!res.ok) throw new Error(data.detail || 'Failed to save changes')
+
+    if (data.card_type !== form.card_type) {
+      throw new Error(
+        `The server did not save the selected card type. Selected: ${form.card_type}; saved: ${data.card_type || 'none'}.`
+      )
+    }
+
     return data
   }
 
@@ -238,7 +248,20 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
     setError('')
     setSaved(false)
     try {
-      await postConfig()
+      const savedData = await postConfig()
+      const verifyRes = await fetch(
+        `${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config?_=${Date.now()}`,
+        { cache: 'no-store' }
+      )
+      const verified = await verifyRes.json()
+
+      if (!verifyRes.ok || verified.card_type !== form.card_type) {
+        throw new Error(
+          `Save verification failed. Selected: ${form.card_type}; database returned: ${verified.card_type || 'none'}.`
+        )
+      }
+
+      setForm(current => ({ ...current, card_type: savedData.card_type }))
       setSaved(true)
       if (onSaved) onSaved()
       setTimeout(() => setSaved(false), 3000)
