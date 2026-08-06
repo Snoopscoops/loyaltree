@@ -106,22 +106,27 @@ function CashierApp({ API_BASE }) {
         const data = await res.json()
         const c = data.customer || {}
 
-        let activeCardData = {}
-        try {
-          const activeCardRes = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/active-card`)
-          if (activeCardRes.ok) activeCardData = await activeCardRes.json()
-        } catch (_) {
-          // Customer response remains the compatibility fallback.
+        const scannedBusinessSlug = data.business?.public_id || null
+
+        // The scanned customer's business is authoritative. A stale cashier
+        // login/localStorage businessSlug must never turn a VIP, Membership,
+        // or Multi-Pass customer back into Stamp.
+        if (businessSlug && scannedBusinessSlug && businessSlug !== scannedBusinessSlug) {
+          throw new Error(
+            `This customer belongs to ${data.business?.name || 'another business'}. Please log in to the correct cashier account.`
+          )
         }
 
-        const program = activeCardData.program || data.program || {}
+        const program = data.program || {}
         const goal = program.stamp_goal || 8
-        const backendCardType = activeCardData.card_type || data.current_card_type || program.card_type
+        const backendCardType = data.current_card_type || data.business?.active_card_type || program.card_type
         const cardType = ['stamp', 'points', 'membership', 'vip', 'multipass'].includes(backendCardType)
           ? backendCardType
           : 'stamp'
         if (DEBUG) {
-          setDebugInfo(prev => `${prev} | Current card: ${cardType} | Program: ${program.card_type || 'none'}`)
+          setDebugInfo(prev =>
+            `${prev} | Current: ${data.current_card_type || 'none'} | Business: ${data.business?.active_card_type || 'none'} | Program: ${program.card_type || 'none'} | Final: ${cardType}`
+          )
         }
         setCustomerData({
           public_id: c.public_id,

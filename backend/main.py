@@ -4199,6 +4199,9 @@ async def get_customer_api(public_id: str):
         customer.setdefault("multipass_total_sessions", 0)
         customer.setdefault("multipass_expires_at", None)
 
+    response_program = dict(program or {})
+    response_program["card_type"] = current_card_type
+
     return {
         "current_card_type": current_card_type,
         "customer": customer,
@@ -4207,8 +4210,9 @@ async def get_customer_api(public_id: str):
             "public_id": business.get("public_id") if business else None,
             "name": business.get("name") if business else None,
             "logo_url": business.get("logo_url") if business else None,
+            "active_card_type": current_card_type,
         },
-        "program": program,
+        "program": response_program,
         "active_coupon": safe_get_active_coupon(customer.get('id')),
     }
 
