@@ -106,7 +106,13 @@ function CashierApp({ API_BASE }) {
         const c = data.customer || {}
         const program = data.program || {}
         const goal = program.stamp_goal || 8
-        const cardType = program.card_type === 'points' ? 'points' : program.card_type === 'multipass' ? 'multipass' : 'stamp'
+        const cardType = program.card_type === 'points'
+          ? 'points'
+          : program.card_type === 'multipass'
+          ? 'multipass'
+          : program.card_type === 'membership'
+          ? 'membership'
+          : 'stamp'
         setCustomerData({
           public_id: c.public_id,
           name: c.name,
@@ -132,6 +138,11 @@ function CashierApp({ API_BASE }) {
           multipass_session_count: program.multipass_session_count || 12,
           multipass_validity_days: program.multipass_validity_days || 90,
           multipass_description: program.description || '',
+          membership_status: c.membership_effective_status || c.membership_status || 'inactive',
+          membership_start_date: c.membership_start_date || null,
+          membership_expires_at: c.membership_expires_at || null,
+          membership_services: Array.isArray(program.membership_services) ? program.membership_services : [],
+          membership_description: program.description || '',
         })
         setMessage(`Found: ${c.name}`)
       } else {
@@ -238,6 +249,38 @@ function CashierApp({ API_BASE }) {
       }
     } catch (err) {
       setMessage('❌ Network error - points not added')
+    }
+    setLoading(false)
+  }
+
+
+  const logMembershipVisit = async () => {
+    if (!customerData || !businessSlug) return
+    const serviceName = window.prompt(
+      'Visit or service',
+      customerData.membership_services?.[0] || 'Member check-in'
+    )
+    if (!serviceName) return
+    setLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/membership/note`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+        },
+        body: JSON.stringify({
+          customer_public_id: customerData.public_id,
+          service_name: serviceName,
+          ...(sessionToken ? {} : { staff_pin: staffPin }),
+          as_owner: isOwner,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not log visit')
+      setMessage(`✅ Visit logged for ${customerData.name}`)
+    } catch (err) {
+      setMessage(`❌ ${err.message}`)
     }
     setLoading(false)
   }
@@ -639,6 +682,8 @@ function CashierApp({ API_BASE }) {
                   ? `${customerData.points_balance} points`
                   : customerData.card_type === 'multipass'
                   ? `${customerData.sessions_remaining}/${customerData.sessions_total} sessions left`
+                  : customerData.card_type === 'membership'
+                  ? `${customerData.membership_status.toUpperCase()}${customerData.membership_expires_at ? ` • until ${customerData.membership_expires_at}` : ''}`
                   : `${customerData.stamp_count} rings • ${customerData.reward_threshold - (customerData.stamp_count % customerData.reward_threshold)} to fruit`}
               </p>
             </div>
@@ -698,6 +743,29 @@ function CashierApp({ API_BASE }) {
                 </p>
               )}
             </>
+          ) : customerData.card_type === 'membership' ? (
+            <>
+              <div style={{
+                ...styles.pointsBalanceBox,
+                background: ['active','lifetime'].includes(customerData.membership_status) ? '#dcfce7' : '#fee2e2'
+              }}>
+                <span style={{...styles.pointsBalanceNumber, fontSize: 28}}>
+                  {customerData.membership_status.toUpperCase()}
+                </span>
+                <span style={styles.pointsBalanceLabel}>
+                  {customerData.membership_status === 'lifetime'
+                    ? 'Lifetime access'
+                    : customerData.membership_expires_at
+                    ? `Valid until ${customerData.membership_expires_at}`
+                    : 'No active subscription'}
+                </span>
+              </div>
+              {customerData.membership_services?.length > 0 && (
+                <div style={{margin: '12px 0', color: '#475569', fontSize: 13}}>
+                  {customerData.membership_services.map((s, i) => <div key={i}>✓ {s}</div>)}
+                </div>
+              )}
+            </>
           ) : (
             /* Stamp Rings */
             <div style={styles.stampVisual}>
@@ -713,7 +781,7 @@ function CashierApp({ API_BASE }) {
           )}
 
           {/* Reward Banner (stamp cards only) */}
-          {customerData.card_type !== 'points' && customerData.card_type !== 'multipass' && customerData.reward_unlocked && (
+          {customerData.card_type === 'stamp' && customerData.reward_unlocked && (
             <div style={styles.rewardBanner}>
               <span style={styles.rewardEmoji}>🍎</span>
               <span style={styles.rewardText}>Fruit Ready!</span>
@@ -796,7 +864,7 @@ function CashierApp({ API_BASE }) {
             </div>
           ) : null}
           <div style={styles.actions}>
-            {customerData.card_type !== 'points' && customerData.card_type !== 'multipass' && (
+            {customerData.card_type === 'stamp' && (
               <button
                 style={{...styles.actionBtn, background: '#0d9488'}}
                 onClick={addStamp}
@@ -804,6 +872,20 @@ function CashierApp({ API_BASE }) {
               >
                 {loading ? '...' : '🍃 Add Ring'}
               </button>
+            )}
+            {customerData.card_type === 'membership' && (
+              <button
+                style={{...styles.actionBtn, background: '#0d9488'}}
+                onClick={logMembershipVisit}
+                disabled={loading || !['active','lifetime'].includes(customerData.membership_status)}
+              >
+                {loading ? '...' : '✅ Log Visit'}
+              </button>
+            )}
+            {customerData.card_type === 'membership' && !['active','lifetime'].includes(customerData.membership_status) && (
+              <div style={{width: '100%', color: '#991b1b', fontWeight: 700, textAlign: 'center'}}>
+                Access denied — membership is {customerData.membership_status}.
+              </div>
             )}
             {customerData.card_type === 'multipass' && (
               <button
@@ -814,7 +896,7 @@ function CashierApp({ API_BASE }) {
                 {loading ? '...' : '✅ Use Session'}
               </button>
             )}
-            {customerData.card_type !== 'points' && customerData.card_type !== 'multipass' && customerData.reward_unlocked && (
+            {customerData.card_type === 'stamp' && customerData.reward_unlocked && (
               <button
                 style={{...styles.actionBtn, background: '#f59e0b'}}
                 onClick={redeemReward}

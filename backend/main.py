@@ -868,7 +868,10 @@ class LoyaltyConfig(BaseModel):
     multipass_session_count: Optional[int] = Field(default=12, ge=2, le=200)  # sessions issued per pass, e.g. 12 sessions sold at the price of 10
     multipass_validity_days: Optional[int] = Field(default=90, ge=1)          # days a freshly-issued pass stays valid before it expires unused
     # --- Membership card only ---
-    membership_services: Optional[List[str]] = None  # preset list of service names (e.g. "Cleaning", "Whitening") shown as quick-select chips at the cashier - cashier can still type a custom note per visit
+    membership_services: Optional[List[str]] = None
+    membership_duration_days: Optional[int] = Field(default=30, ge=1, le=3650)
+    membership_price: Optional[float] = Field(default=0, ge=0)
+    membership_terms: Optional[str] = Field(default=None, max_length=2000)
 
 class CustomerSignup(BaseModel):
     name: str
@@ -894,6 +897,9 @@ class CustomerUpdate(BaseModel):
     stamp_count: Optional[int] = Field(default=None, ge=0)  # lets the owner manually correct a customer's stamp count
     points_balance: Optional[int] = Field(default=None, ge=0)  # lets the owner manually correct a customer's points balance
     multipass_sessions_remaining: Optional[int] = Field(default=None, ge=0)  # lets the owner manually correct a customer's remaining sessions
+    membership_status: Optional[Literal['inactive', 'active', 'suspended', 'cancelled', 'lifetime']] = None
+    membership_start_date: Optional[str] = None
+    membership_expires_at: Optional[str] = None
 
 class StampRequest(BaseModel):
     customer_public_id: str
@@ -923,6 +929,17 @@ class MultipassIssueRequest(BaseModel):
 class MultipassUseRequest(BaseModel):
     # Burns one session off the customer's current pack.
     customer_public_id: str
+    staff_pin: Optional[str] = None
+    as_owner: Optional[bool] = False
+
+
+class MembershipActionRequest(BaseModel):
+    customer_public_id: str
+    action: Literal['activate', 'renew', 'suspend', 'reactivate', 'cancel', 'lifetime']
+    duration_days: Optional[int] = Field(default=None, ge=1, le=3650)
+    price_paid: Optional[float] = Field(default=None, ge=0)
+    payment_method: Optional[str] = Field(default=None, max_length=80)
+    note: Optional[str] = Field(default=None, max_length=500)
     staff_pin: Optional[str] = None
     as_owner: Optional[bool] = False
 
@@ -1543,8 +1560,8 @@ def generate_personalized_hero_image_bytes(
         progress_line = (f'{sessions_remaining} of {sessions_total} sessions left' if sessions_remaining > 0
                          else 'All sessions used')
     elif card_type == 'membership':
-        reward_line = f'{total_visits} visit{"s" if total_visits != 1 else ""}'
-        progress_line = f'Last visit: {last_service_name}' if last_service_name else 'Welcome!'
+        reward_line = 'Membership'
+        progress_line = f'{total_visits} visit{"s" if total_visits != 1 else ""} logged'
     else:
         reward_line = (reward_name or 'Reward')[:60]
         progress_line = f'{stamps} of {stamp_goal} stamps'
@@ -1724,11 +1741,15 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         progress_body = f'{sessions_remaining} of {sessions_total} sessions left'
         reward_body = (program.get('description') if program else None) or 'Session pass'
     elif card_type == 'membership':
-        total_visits = membership_summary['total_visits']
-        loyalty_points_label = 'Visits'
-        loyalty_points_balance = str(total_visits)
-        progress_body = f'{total_visits} visit{"s" if total_visits != 1 else ""}'
-        reward_body = membership_summary['last_service_name'] or (program.get('description') if program else None) or 'Member services'
+        status = membership_effective_status(customer)
+        expiry = customer.get('membership_expires_at')
+        loyalty_points_label = 'Status'
+        loyalty_points_balance = status.upper()
+        progress_body = ('Lifetime membership' if status == 'lifetime'
+                         else f'Valid until {expiry}' if expiry
+                         else status.title())
+        benefits = (program.get('membership_services') if program else None) or []
+        reward_body = ', '.join(benefits[:3]) if benefits else ((program.get('description') if program else None) or 'Membership benefits')
     else:
         loyalty_points_label = 'Stamps'
         loyalty_points_balance = f'{stamps}/{stamp_goal}'
@@ -2062,7 +2083,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                 if card_type == 'points' else
                 {'key': 'sessions', 'label': 'SESSIONS', 'value': f'{sessions_remaining}/{sessions_total}', 'changeMessage': 'Session used! %@ sessions left.'}
                 if card_type == 'multipass' else
-                {'key': 'visits', 'label': 'VISITS', 'value': str(membership_summary['total_visits']), 'changeMessage': 'Visit logged! You now have %@ visits.'}
+                {'key': 'membership_status', 'label': 'MEMBERSHIP', 'value': membership_effective_status(customer).upper(), 'changeMessage': 'Membership status: %@'}
                 if card_type == 'membership' else
                 {'key': 'stamps', 'label': 'STAMPS', 'value': f'{stamps}/{stamp_goal}', 'changeMessage': 'Stamp added! You now have %@ stamps.'}
             ],
@@ -2071,7 +2092,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                 if card_type == 'points' else
                 {'key': 'reward', 'label': 'EXPIRES', 'value': (multipass_expires_at or 'No expiry set'), 'changeMessage': '%@'}
                 if card_type == 'multipass' else
-                {'key': 'reward', 'label': 'LAST VISIT', 'value': (membership_summary['last_service_name'] or 'No visits yet')[:30], 'changeMessage': '%@'}
+                {'key': 'reward', 'label': 'VALID UNTIL', 'value': ('Lifetime' if membership_effective_status(customer) == 'lifetime' else (customer.get('membership_expires_at') or 'Not activated')), 'changeMessage': '%@'}
                 if card_type == 'membership' else
                 {'key': 'reward', 'label': 'REWARD', 'value': ('🎉 Ready to redeem!' if reward_unlocked else reward_name)[:30], 'changeMessage': '%@'}
             ],
@@ -2806,6 +2827,56 @@ def log_multipass_event(business_id: int, customer_id: int, action: str, session
         supabase.table("multipass_events").insert(event).execute()
     except Exception as e:
         print(f"MULTIPASS EVENT LOG error: {e}")
+
+
+def membership_effective_status(customer: dict) -> str:
+    """Returns the current access status, automatically treating a past
+    expiry date as expired without overwriting suspended/cancelled/lifetime."""
+    status = (customer.get('membership_status') or 'inactive').lower()
+    if status in ('suspended', 'cancelled', 'lifetime'):
+        return status
+    expiry = customer.get('membership_expires_at')
+    if status == 'active' and expiry:
+        try:
+            if datetime.strptime(str(expiry)[:10], '%Y-%m-%d').date() < datetime.utcnow().date():
+                return 'expired'
+        except Exception:
+            pass
+    return status
+
+def membership_access_allowed(customer: dict) -> bool:
+    return membership_effective_status(customer) in ('active', 'lifetime')
+
+def add_days_to_date(date_value: Optional[str], days: int) -> str:
+    base = datetime.utcnow().date()
+    if date_value:
+        try:
+            parsed = datetime.strptime(str(date_value)[:10], '%Y-%m-%d').date()
+            if parsed > base:
+                base = parsed
+        except Exception:
+            pass
+    return (base + timedelta(days=days)).isoformat()
+
+def log_membership_history(business_id: int, customer_id: int, action: str,
+                           old_status: Optional[str], new_status: Optional[str],
+                           expires_at: Optional[str], price_paid: Optional[float],
+                           payment_method: Optional[str], note: Optional[str]):
+    try:
+        supabase.table('membership_history').insert({
+            'business_id': business_id,
+            'customer_id': customer_id,
+            'action': action,
+            'old_status': old_status,
+            'new_status': new_status,
+            'expires_at': expires_at,
+            'price_paid': price_paid,
+            'payment_method': payment_method,
+            'note': note,
+            'created_at': datetime.utcnow().isoformat(),
+        }).execute()
+    except Exception as e:
+        print(f"MEMBERSHIP HISTORY error: {e}")
 
 def log_membership_event(business_id: int, customer_id: int, service_name: str, note: Optional[str],
                           service_date: str, staff_id: Optional[int] = None, branch_id: Optional[int] = None):
@@ -3845,6 +3916,9 @@ async def get_customer_api(public_id: str):
     business = safe_get_business_by_id(customer.get('business_id'))
     program = safe_get_loyalty_program(customer.get('business_id')) if business else None
 
+    if program and program.get('card_type') == 'membership':
+        customer['membership_effective_status'] = membership_effective_status(customer)
+
     return {
         "customer": customer,
         "business": {
@@ -3894,6 +3968,11 @@ async def get_customers(public_id: str):
     except Exception:
         for c in customers:
             c.setdefault('last_stamp_at', None)
+
+    program = safe_get_loyalty_program(business.get('id'))
+    if program and program.get('card_type') == 'membership':
+        for c in customers:
+            c['membership_effective_status'] = membership_effective_status(c)
 
     return customers
 
@@ -4678,6 +4757,9 @@ async def get_loyalty_config(public_id: str):
             "points_amount_pesos": 100,
             "points_prizes": [],
             "membership_services": [],
+            "membership_duration_days": 30,
+            "membership_price": 0,
+            "membership_terms": None,
         }
     return program
 
@@ -4719,8 +4801,12 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
                 'description': p.description,
             })
         data['points_prizes'] = prizes
-    if config.card_type == 'membership' and config.membership_services is not None:
-        data['membership_services'] = [s.strip() for s in config.membership_services if s and s.strip()]
+    if config.card_type == 'membership':
+        if config.membership_services is not None:
+            data['membership_services'] = [s.strip() for s in config.membership_services if s and s.strip()]
+        data['membership_duration_days'] = config.membership_duration_days or 30
+        data['membership_price'] = config.membership_price or 0
+        data['membership_terms'] = (config.membership_terms or '').strip() or None
     if config.google_review_url is not None:
         features = get_plan_features(business.get('plan'))
         if not features.get('google_review_prompt'):
@@ -7150,6 +7236,103 @@ async def use_multipass_session(public_id: str, req: MultipassUseRequest, author
         "sessions_total": customer.get('multipass_total_sessions', 0),
     }
 
+
+@app.post("/api/v1/business/{public_id}/membership/action")
+async def membership_action(public_id: str, req: MembershipActionRequest):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    customer = safe_get_customer(req.customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+    program = safe_get_loyalty_program(business.get('id'))
+    if not program or program.get('card_type') != 'membership':
+        raise HTTPException(status_code=400, detail="This business is not using a membership card")
+
+    old_status = membership_effective_status(customer)
+    action = req.action
+    duration = req.duration_days or program.get('membership_duration_days') or 30
+    today = datetime.utcnow().date().isoformat()
+    update_data = {'updated_at': datetime.utcnow().isoformat()}
+
+    if action == 'activate':
+        update_data.update({
+            'membership_status': 'active',
+            'membership_start_date': customer.get('membership_start_date') or today,
+            'membership_expires_at': add_days_to_date(None, duration),
+        })
+    elif action == 'renew':
+        update_data.update({
+            'membership_status': 'active',
+            'membership_start_date': customer.get('membership_start_date') or today,
+            'membership_expires_at': add_days_to_date(customer.get('membership_expires_at'), duration),
+        })
+    elif action == 'suspend':
+        update_data['membership_status'] = 'suspended'
+    elif action == 'reactivate':
+        update_data['membership_status'] = 'active'
+        if not customer.get('membership_expires_at') or old_status == 'expired':
+            update_data['membership_expires_at'] = add_days_to_date(None, duration)
+        update_data['membership_start_date'] = customer.get('membership_start_date') or today
+    elif action == 'cancel':
+        update_data['membership_status'] = 'cancelled'
+    elif action == 'lifetime':
+        update_data.update({
+            'membership_status': 'lifetime',
+            'membership_start_date': customer.get('membership_start_date') or today,
+            'membership_expires_at': None,
+        })
+
+    try:
+        res = supabase.table('customers').update(update_data).eq('id', customer.get('id')).execute()
+        updated = (res.data or [{**customer, **update_data}])[0]
+        new_status = membership_effective_status(updated)
+        log_membership_history(
+            business.get('id'), customer.get('id'), action, old_status, new_status,
+            updated.get('membership_expires_at'), req.price_paid,
+            (req.payment_method or '').strip() or None,
+            (req.note or '').strip() or None,
+        )
+        sync_wallet_object(
+            updated, business, program,
+            notify_header="Membership updated",
+            notify_body=(
+                f"Your membership is now {new_status.upper()}."
+                + (f" Valid until {updated.get('membership_expires_at')}." if updated.get('membership_expires_at') else "")
+            ),
+            notify_message_id=f"membership-action-{customer.get('id')}-{int(datetime.utcnow().timestamp())}",
+        )
+        sync_apple_wallet_pass(updated)
+        return {
+            'message': 'Membership updated',
+            'customer': updated,
+            'effective_status': new_status,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/membership-history")
+async def get_membership_history(public_id: str, customer_public_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    customer = safe_get_customer(customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+    try:
+        res = (
+            supabase.table('membership_history')
+            .select('*')
+            .eq('business_id', business.get('id'))
+            .eq('customer_id', customer.get('id'))
+            .order('created_at', desc=True)
+            .execute()
+        )
+        return res.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+
 # MEMBERSHIP CARD - visit notes ("leaves")
 #
 # Unlike stamp/points/multipass, a membership card has no running balance -
@@ -7180,6 +7363,12 @@ async def add_membership_note(public_id: str, req: MembershipNoteRequest, author
     program = safe_get_loyalty_program(business.get('id'))
     if not program or program.get('card_type') != 'membership':
         raise HTTPException(status_code=400, detail="This business is not on a membership card")
+    effective_status = membership_effective_status(customer)
+    if effective_status not in ('active', 'lifetime'):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Membership is {effective_status}. Activate or renew it before logging a visit."
+        )
 
     noting_staff_id = None
     noting_branch_id = None

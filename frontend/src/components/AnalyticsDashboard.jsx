@@ -55,6 +55,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
   const { overview, trends, customers, demographics, stamps, rewards, revenue } = analytics
   const isPoints = overview.card_type === 'points'
   const isMultipass = overview.card_type === 'multipass'
+  const isMembership = overview.card_type === 'membership'
 
   return (
     <div className="an-container" style={styles.container}>
@@ -134,15 +135,15 @@ function AnalyticsDashboard({ API_BASE, user }) {
           />
         ) : (
           <StatCard
-            title={isMultipass ? 'Sessions Used' : 'Stamps Issued'}
+            title={isMembership ? 'Member Visits' : isMultipass ? 'Sessions Used' : 'Stamps Issued'}
             value={overview.total_stamps}
             change={overview.stamp_change}
-            icon={isMultipass ? '🎫' : '🎯'}
+            icon={isMembership ? '✅' : isMultipass ? '🎫' : '🎯'}
             color="#f59e0b"
           />
         )}
         <StatCard 
-          title={isMultipass ? 'Packs Completed' : 'Rewards Redeemed'}
+          title={isMembership ? 'Membership Actions' : isMultipass ? 'Packs Completed' : 'Rewards Redeemed'}
           value={overview.total_rewards} 
           change={overview.reward_change}
           icon="🎁" 
@@ -158,7 +159,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           />
         ) : (
           <StatCard
-            title={isMultipass ? 'Avg. Sessions/Customer' : 'Avg. Stamps/Customer'}
+            title={isMembership ? 'Avg. Visits/Member' : isMultipass ? 'Avg. Sessions/Customer' : 'Avg. Stamps/Customer'}
             value={overview.avg_stamps_per_customer}
             change={overview.avg_change}
             icon="📈"
@@ -190,7 +191,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           <LineChart data={trends.customers} color="#0d9488" />
         </div>
         <div className="an-chart-card" style={styles.chartCard}>
-          <h3 style={styles.chartTitle}>{isPoints ? '💎 Points Activity' : isMultipass ? '🎫 Session Activity' : '🎯 Stamp Activity'}</h3>
+          <h3 style={styles.chartTitle}>{isPoints ? '💎 Points Activity' : isMembership ? '✅ Member Visits' : isMultipass ? '🎫 Session Activity' : '🎯 Stamp Activity'}</h3>
           <LineChart data={trends.stamps} color="#f59e0b" />
         </div>
       </div>
@@ -198,7 +199,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
       {/* Second Charts Row */}
       <div className="an-charts-row" style={styles.chartsRow}>
         <div className="an-chart-card" style={styles.chartCard}>
-          <h3 style={styles.chartTitle}>{isMultipass ? '✅ Packs Completed' : '🎁 Reward Redemptions'}</h3>
+          <h3 style={styles.chartTitle}>{isMembership ? '📅 Membership Activity' : isMultipass ? '✅ Packs Completed' : '🎁 Reward Redemptions'}</h3>
           <BarChart data={trends.rewards} color="#ec4899" />
         </div>
         <div className="an-chart-card" style={styles.chartCard}>

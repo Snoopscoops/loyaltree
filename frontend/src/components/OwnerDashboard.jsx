@@ -69,6 +69,14 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [onboardingStep, setOnboardingStep] = useState(0)
   const [announcementsChecked, setAnnouncementsChecked] = useState(false)
   const [analyticsChecked, setAnalyticsChecked] = useState(false)
+  const [membershipSettings, setMembershipSettings] = useState({
+    membership_duration_days: 30,
+    membership_price: 0,
+    membership_services_text: '',
+    membership_terms: '',
+  })
+  const [savingMembershipSettings, setSavingMembershipSettings] = useState(false)
+  const [membershipActionLoading, setMembershipActionLoading] = useState(false)
 
   // Frontend URL for customer-facing pages
   const FRONTEND_URL = 'https://loyaltree-btw1.onrender.com'
@@ -152,6 +160,14 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       setStaff(staffData)
       setStats(statsData)
       setProgram(progData)
+      if (progData?.card_type === 'membership') {
+        setMembershipSettings({
+          membership_duration_days: progData.membership_duration_days || 30,
+          membership_price: progData.membership_price || 0,
+          membership_services_text: Array.isArray(progData.membership_services) ? progData.membership_services.join('\n') : '',
+          membership_terms: progData.membership_terms || '',
+        })
+      }
       setBranches(Array.isArray(branchData) ? branchData : [])
       setSubscription(subData)
 
@@ -239,6 +255,9 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       stamp_count: c.stamp_count ?? 0,
       points_balance: c.points_balance ?? 0,
       multipass_sessions_remaining: c.multipass_sessions_remaining ?? 0,
+      membership_status: c.membership_effective_status || c.membership_status || 'inactive',
+      membership_start_date: c.membership_start_date || '',
+      membership_expires_at: c.membership_expires_at || '',
     })
     setShowCouponForm(false)
     setCouponError('')
@@ -308,6 +327,84 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     } catch (err) {
       setCouponError('Failed to cancel coupon')
     }
+  }
+
+
+  const saveMembershipSettings = async () => {
+    setSavingMembershipSettings(true)
+    try {
+      const services = membershipSettings.membership_services_text
+        .split('\n')
+        .map(s => s.trim())
+        .filter(Boolean)
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          card_type: 'membership',
+          stamp_goal: program?.stamp_goal || 8,
+          reward_name: program?.reward_name || 'Membership',
+          primary_color: program?.primary_color || '#3b82f6',
+          reward_expiry_days: program?.reward_expiry_days || 30,
+          program_logo_url: program?.program_logo_url || null,
+          hero_image_url: program?.hero_image_url || null,
+          card_name: program?.card_name || 'Membership Card',
+          description: program?.description || '',
+          membership_services: services,
+          membership_duration_days: Number(membershipSettings.membership_duration_days) || 30,
+          membership_price: Number(membershipSettings.membership_price) || 0,
+          membership_terms: membershipSettings.membership_terms || null,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not save membership settings')
+      setMessage('Membership settings saved')
+      loadData()
+    } catch (err) {
+      setMessage(err.message)
+    }
+    setSavingMembershipSettings(false)
+  }
+
+  const runMembershipAction = async (action) => {
+    if (!editForm.public_id) return
+    const priceDefault = Number(program?.membership_price || 0)
+    let pricePaid = null
+    let paymentMethod = null
+    if (action === 'activate' || action === 'renew') {
+      const entered = window.prompt('Amount paid', String(priceDefault))
+      if (entered === null) return
+      pricePaid = Number(entered) || 0
+      paymentMethod = window.prompt('Payment method', 'Cash') || 'Cash'
+    }
+    setMembershipActionLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/membership/action`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customer_public_id: editForm.public_id,
+          action,
+          duration_days: Number(program?.membership_duration_days || 30),
+          price_paid: pricePaid,
+          payment_method: paymentMethod,
+          as_owner: true,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Membership update failed')
+      setEditForm(prev => ({
+        ...prev,
+        membership_status: data.effective_status,
+        membership_start_date: data.customer?.membership_start_date || prev.membership_start_date,
+        membership_expires_at: data.customer?.membership_expires_at || '',
+      }))
+      setMessage(`Membership ${action} complete`)
+      loadData()
+    } catch (err) {
+      setMessage(err.message)
+    }
+    setMembershipActionLoading(false)
   }
 
   const saveCustomer = async (e) => {
@@ -532,6 +629,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   const isPointsCard = program?.card_type === 'points'
   const isMultipassCard = program?.card_type === 'multipass'
+  const isMembershipCard = program?.card_type === 'membership'
   const confirmedStamps = customers.reduce((sum, c) => sum + (c.stamp_count || 0), 0)
   const totalPoints = customers.reduce((sum, c) => sum + (c.points_balance || 0), 0)
   const totalSessionsLeft = customers.reduce((sum, c) => sum + (c.multipass_sessions_remaining || 0), 0)
@@ -700,7 +798,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                   <span style={styles.activityLeaf}>🍃</span>
                   <span style={styles.activityName}>{c.name}</span>
                   <span style={styles.activityStamps}>
-                    {isPointsCard ? `${c.points_balance || 0} points` : isMultipassCard ? `${c.multipass_sessions_remaining || 0}/${c.multipass_total_sessions || 0} sessions` : `${c.stamp_count} rings`}
+                    {isPointsCard ? `${c.points_balance || 0} points` : isMultipassCard ? `${c.multipass_sessions_remaining || 0}/${c.multipass_total_sessions || 0} sessions` : isMembershipCard ? `${(c.membership_effective_status || c.membership_status || 'inactive').toUpperCase()}` : `${c.stamp_count} rings`}
                   </span>
                   {c.reward_unlocked && <span style={styles.activityFruit}>🍎</span>}
                 </div>
@@ -758,6 +856,19 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                         <p style={styles.stampText}>
                           {c.multipass_sessions_remaining || 0} / {c.multipass_total_sessions || 0} sessions left
                           {c.multipass_expires_at ? ` · until ${c.multipass_expires_at}` : ''}
+                        </p>
+                      </>
+                    ) : isMembershipCard ? (
+                      <>
+                        <p style={{...styles.stampText, fontWeight: 800}}>
+                          {(c.membership_effective_status || c.membership_status || 'inactive').toUpperCase()}
+                        </p>
+                        <p style={styles.lastStampedText}>
+                          {(c.membership_effective_status || c.membership_status) === 'lifetime'
+                            ? 'Lifetime membership'
+                            : c.membership_expires_at
+                            ? `Valid until ${c.membership_expires_at}`
+                            : 'Not yet activated'}
                         </p>
                       </>
                     ) : (
@@ -903,6 +1014,43 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         {activeTab === 'program' && (
           <div style={styles.programTab}>
             <LoyaltyCardCustomizer API_BASE={API_BASE} user={user} onSaved={loadData} />
+            {isMembershipCard && (
+              <div style={{...styles.card, marginTop: 18}}>
+                <h3 style={{marginTop: 0}}>Membership subscription settings</h3>
+                <label style={styles.label}>Default duration (days)</label>
+                <input
+                  style={styles.input}
+                  type="number"
+                  min="1"
+                  value={membershipSettings.membership_duration_days}
+                  onChange={e => setMembershipSettings({...membershipSettings, membership_duration_days: e.target.value})}
+                />
+                <label style={styles.label}>Default price (₱)</label>
+                <input
+                  style={styles.input}
+                  type="number"
+                  min="0"
+                  value={membershipSettings.membership_price}
+                  onChange={e => setMembershipSettings({...membershipSettings, membership_price: e.target.value})}
+                />
+                <label style={styles.label}>Perks / benefits (one per line)</label>
+                <textarea
+                  style={{...styles.input, minHeight: 120, resize: 'vertical'}}
+                  value={membershipSettings.membership_services_text}
+                  onChange={e => setMembershipSettings({...membershipSettings, membership_services_text: e.target.value})}
+                  placeholder={'Unlimited access\nLocker use\nFree assessment'}
+                />
+                <label style={styles.label}>Terms (optional)</label>
+                <textarea
+                  style={{...styles.input, minHeight: 90, resize: 'vertical'}}
+                  value={membershipSettings.membership_terms}
+                  onChange={e => setMembershipSettings({...membershipSettings, membership_terms: e.target.value})}
+                />
+                <button style={styles.submitBtn} onClick={saveMembershipSettings} disabled={savingMembershipSettings}>
+                  {savingMembershipSettings ? 'Saving...' : 'Save membership settings'}
+                </button>
+              </div>
+            )}
 
             {business?.status !== 'active' && (
               <div style={{...styles.goLiveCard, marginTop: 16, maxWidth: 500, marginLeft: 'auto', marginRight: 'auto'}}>
@@ -1120,6 +1268,23 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     value={editForm.multipass_sessions_remaining}
                     onChange={e => setEditForm({...editForm, multipass_sessions_remaining: e.target.value})}
                   />
+                </>
+              ) : isMembershipCard ? (
+                <>
+                  <label style={styles.label}>Membership status</label>
+                  <input style={styles.input} value={(editForm.membership_status || 'inactive').toUpperCase()} readOnly />
+                  <label style={styles.label}>Started</label>
+                  <input style={styles.input} type="date" value={editForm.membership_start_date || ''} readOnly />
+                  <label style={styles.label}>Expires</label>
+                  <input style={styles.input} type="date" value={editForm.membership_expires_at || ''} readOnly />
+                  <div style={{display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 8, marginBottom: 16}}>
+                    <button type="button" style={styles.submitBtn} disabled={membershipActionLoading} onClick={() => runMembershipAction('activate')}>Activate</button>
+                    <button type="button" style={styles.submitBtn} disabled={membershipActionLoading} onClick={() => runMembershipAction('renew')}>Renew</button>
+                    <button type="button" style={{...styles.submitBtn, background: '#f59e0b'}} disabled={membershipActionLoading} onClick={() => runMembershipAction('suspend')}>Suspend</button>
+                    <button type="button" style={{...styles.submitBtn, background: '#0d9488'}} disabled={membershipActionLoading} onClick={() => runMembershipAction('reactivate')}>Reactivate</button>
+                    <button type="button" style={{...styles.submitBtn, background: '#334155'}} disabled={membershipActionLoading} onClick={() => runMembershipAction('lifetime')}>Lifetime</button>
+                    <button type="button" style={{...styles.submitBtn, background: '#dc2626'}} disabled={membershipActionLoading} onClick={() => runMembershipAction('cancel')}>Cancel</button>
+                  </div>
                 </>
               ) : (
                 <>
