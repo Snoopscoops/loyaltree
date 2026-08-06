@@ -1157,6 +1157,69 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                       </p>
                     )}
                   </div>
+                ) : isMembershipCard ? (
+                  <div style={styles.cardProgress}>
+                    <p style={{
+                      fontSize: 30,
+                      fontWeight: 900,
+                      color: 'white',
+                      margin: '8px 0 2px',
+                      letterSpacing: 0.5,
+                    }}>
+                      {(selectedCustomer.membership_effective_status || selectedCustomer.membership_status || 'inactive').toUpperCase()}
+                    </p>
+
+                    <p style={{
+                      fontSize: 13,
+                      color: 'rgba(255,255,255,0.88)',
+                      margin: '4px 0 0',
+                    }}>
+                      {(selectedCustomer.membership_effective_status || selectedCustomer.membership_status) === 'lifetime'
+                        ? 'Lifetime membership'
+                        : selectedCustomer.membership_expires_at
+                        ? `Valid until ${selectedCustomer.membership_expires_at}`
+                        : 'Membership not yet activated'}
+                    </p>
+
+                    {selectedCustomer.membership_start_date && (
+                      <p style={{
+                        fontSize: 12,
+                        color: 'rgba(255,255,255,0.72)',
+                        margin: '6px 0 0',
+                      }}>
+                        Member since {selectedCustomer.membership_start_date}
+                      </p>
+                    )}
+
+                    {Array.isArray(program?.membership_services) && program.membership_services.length > 0 && (
+                      <div style={{
+                        marginTop: 14,
+                        paddingTop: 12,
+                        borderTop: '1px solid rgba(255,255,255,0.25)',
+                        textAlign: 'left',
+                      }}>
+                        <p style={{
+                          fontSize: 11,
+                          fontWeight: 800,
+                          color: 'rgba(255,255,255,0.72)',
+                          margin: '0 0 7px',
+                          textTransform: 'uppercase',
+                          letterSpacing: 0.6,
+                        }}>
+                          Membership perks
+                        </p>
+                        {program.membership_services.slice(0, 5).map((benefit, i) => (
+                          <p key={i} style={{
+                            fontSize: 12.5,
+                            color: 'white',
+                            margin: '4px 0',
+                          }}>
+                            ✓ {benefit}
+                          </p>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 ) : (
                   <>
                     <div style={styles.cardStamps}>
