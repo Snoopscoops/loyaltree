@@ -698,9 +698,9 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     : isMembershipCard
     ? {
         key: 'membership',
-        accent: '#18181b',
-        soft: '#fafaf9',
-        border: '#d6d3d1',
+        accent: '#0d9488',
+        soft: '#f0fdfa',
+        border: '#99f6e4',
         icon: '🏋️',
         title: 'Membership',
         customerLabel: 'Members',
@@ -835,24 +835,36 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       {/* Professional dashboard summary */}
       <section style={styles.dashboardShell}>
         <div style={styles.dashboardHero}>
-          <div style={styles.heroIdentity}>
-            <div style={{...styles.heroIcon, background: cardExperience.soft, color: cardExperience.accent}}>
-              {cardExperience.icon}
-            </div>
-            <div style={{minWidth: 0}}>
-              <p style={styles.heroEyebrow}>{cardExperience.dashboardLabel}</p>
-              <h2 style={styles.heroTitle}>{user?.business_name}</h2>
-              <p style={styles.heroDescription}>{cardExperience.editDescription}</p>
+          <div style={styles.heroTreeWrap} aria-hidden="true">
+            <div style={styles.heroTreeGlow}></div>
+            <div style={styles.heroTree}>🌳</div>
+            <div style={styles.heroTreeGround}>
+              <span>🍃</span><span>🍃</span><span>🍃</span>
             </div>
           </div>
+
+          <div style={styles.heroIdentity}>
+            <div style={{minWidth: 0}}>
+              <p style={styles.heroEyebrow}>LoyaltyTree · {cardExperience.dashboardLabel}</p>
+              <h2 style={styles.heroTitle}>{user?.business_name}</h2>
+              <p style={styles.heroDescription}>{cardExperience.editDescription}</p>
+              <div style={styles.heroGrowthRow}>
+                <span style={styles.heroGrowthBadge}>
+                  {growthStage === 'seedling' ? '🌱 Seedling' : growthStage === 'sapling' ? '🌿 Sapling' : growthStage === 'growing' ? '🌳 Growing Tree' : '🌲 Mature Tree'}
+                </span>
+                <span style={styles.heroProgramBadge}>{cardExperience.icon} {cardExperience.title}</span>
+              </div>
+            </div>
+          </div>
+
           <div style={styles.heroQuickActions}>
             <button
               onClick={() => navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name } })}
-              style={{...styles.primaryActionBtn, background: cardExperience.accent}}
+              style={{...styles.primaryActionBtn, background: '#0d9488'}}
             >
               📷 {cardExperience.scanTitle}
             </button>
-            <button onClick={fetchQRImage} style={styles.secondaryActionBtn}>🔗 Share Join QR</button>
+            <button onClick={fetchQRImage} style={{...styles.secondaryActionBtn, borderColor: '#99f6e4', color: '#0f766e'}}>🔗 Share Join QR</button>
           </div>
         </div>
 
@@ -884,9 +896,9 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               ]
           ).map(metric => (
             <article key={metric.label} style={styles.metricCard}>
-              <div style={{...styles.metricAccent, background: cardExperience.accent}} />
+              <div style={{...styles.metricAccent, background: '#0d9488'}} />
               <span style={styles.metricLabel}>{metric.label}</span>
-              <strong style={{...styles.metricValue, color: cardExperience.accent}}>{metric.value}</strong>
+              <strong style={{...styles.metricValue, color: '#0f766e'}}>{metric.value}</strong>
               <span style={styles.metricHint}>{metric.hint}</span>
             </article>
           ))}
@@ -907,9 +919,9 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               style={{
                 ...styles.tab,
                 ...(activeTab === tab.id ? {
-                  background: cardExperience.accent,
+                  background: '#0d9488',
                   color: 'white',
-                  boxShadow: `0 8px 18px ${cardExperience.accent}26`,
+                  boxShadow: '0 8px 18px rgba(13,148,136,0.22)',
                 } : {}),
               }}
             >
@@ -2069,7 +2081,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 const styles = {
   container: {
     minHeight: '100vh',
-    background: '#f6f8fb',
+    background: 'linear-gradient(180deg, #f0fdfa 0%, #f8fafc 38%, #f6f8fb 100%)',
     color: '#172033',
     fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
   },
@@ -2297,16 +2309,50 @@ const styles = {
     flexWrap: 'wrap',
     gap: 20,
     padding: '26px 28px',
-    background: 'white',
-    border: '1px solid #e7ebf0',
+    background: 'linear-gradient(135deg, #ffffff 0%, #f0fdfa 100%)',
+    border: '1px solid #ccfbf1',
     borderRadius: 20,
-    boxShadow: '0 10px 30px rgba(15,23,42,0.06)',
+    boxShadow: '0 12px 32px rgba(13,148,136,0.10)',
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  heroTreeWrap: {
+    position: 'relative',
+    width: 112,
+    height: 96,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  heroTreeGlow: {
+    position: 'absolute',
+    width: 92,
+    height: 92,
+    borderRadius: '50%',
+    background: 'rgba(20,184,166,0.12)',
+    filter: 'blur(2px)',
+  },
+  heroTree: {
+    position: 'relative',
+    zIndex: 2,
+    fontSize: 72,
+    lineHeight: 1,
+    filter: 'drop-shadow(0 8px 10px rgba(13,148,136,0.16))',
+  },
+  heroTreeGround: {
+    position: 'absolute',
+    zIndex: 3,
+    bottom: 0,
+    display: 'flex',
+    gap: 2,
+    fontSize: 13,
   },
   heroIdentity: {
     display: 'flex',
     alignItems: 'center',
     gap: 18,
-    flex: '1 1 430px',
+    flex: '1 1 360px',
   },
   heroIcon: {
     width: 68,
@@ -2323,7 +2369,7 @@ const styles = {
     fontSize: 12,
     fontWeight: 800,
     letterSpacing: 0.8,
-    color: '#718096',
+    color: '#0d9488',
     textTransform: 'uppercase',
   },
   heroTitle: {
@@ -2336,6 +2382,34 @@ const styles = {
     margin: '8px 0 0',
     color: '#667085',
     fontSize: 14,
+  },
+  heroGrowthRow: {
+    display: 'flex',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 14,
+  },
+  heroGrowthBadge: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    padding: '6px 10px',
+    borderRadius: 999,
+    background: '#ccfbf1',
+    color: '#0f766e',
+    fontSize: 12,
+    fontWeight: 800,
+  },
+  heroProgramBadge: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    padding: '6px 10px',
+    borderRadius: 999,
+    background: 'rgba(255,255,255,0.8)',
+    border: '1px solid #d5f5ef',
+    color: '#475467',
+    fontSize: 12,
+    fontWeight: 700,
   },
   heroQuickActions: {
     display: 'flex',
@@ -2375,7 +2449,7 @@ const styles = {
     minHeight: 126,
     padding: '20px 20px 18px',
     background: 'white',
-    border: '1px solid #e7ebf0',
+    border: '1px solid #dff7f2',
     borderRadius: 16,
     boxShadow: '0 6px 20px rgba(15,23,42,0.045)',
   },
@@ -2407,7 +2481,7 @@ const styles = {
     padding: 6,
     overflowX: 'auto',
     background: 'white',
-    border: '1px solid #e7ebf0',
+    border: '1px solid #dff7f2',
     borderRadius: 14,
     boxShadow: '0 5px 18px rgba(15,23,42,0.04)',
   },
