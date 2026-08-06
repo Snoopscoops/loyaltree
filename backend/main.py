@@ -671,11 +671,11 @@ class CLPaymentUpdate(BaseModel):
 # Login" sign-up popup lands (role='agent', with password_hash/selfie_url/
 # id_photo_url filled in) - see CLApplicationUpdate/update_cl_application
 # for how approving one of those provisions the real cl_agents account. ---
-CL_APPLICATION_ROLES = ['agent', 'buyer', 'seller']
+CL_APPLICATION_ROLES = ['agent', 'buyer', 'seller', 'reservation']
 CL_APPLICATION_STATUSES = ['pending', 'approved', 'rejected']
 
 class CLApplicationCreate(BaseModel):
-    role: Literal['agent', 'buyer', 'seller']
+    role: Literal['agent', 'buyer', 'seller', 'reservation']
     name: str
     phone: Optional[str] = None
     email: Optional[str] = None
@@ -701,7 +701,7 @@ class CLApplicationUpdate(BaseModel):
 # lands as 'pending', same spirit as CLCustomerSelfSignup below never
 # letting the submitter set their own approval state.
 class CLApplicationSelfSignup(BaseModel):
-    role: Literal['agent', 'buyer', 'seller']
+    role: Literal['agent', 'buyer', 'seller', 'reservation']
     name: str
     phone: Optional[str] = None
     email: Optional[str] = None
@@ -769,6 +769,23 @@ class CLBuyerInquiry(BaseModel):
     trade_in_mileage: Optional[int] = Field(default=None, ge=0)
     add_cash_amount: Optional[float] = Field(default=None, ge=0)
     add_cash_by: Optional[Literal['buyer', 'seller']] = None
+
+
+
+# --- Car Lending / Showroom: reservation payment submission. Opened from
+# the selected vehicle's "Reserve this car" action. The buyer sees the
+# owner's current reservation-payment instructions, enters their name, and
+# uploads a payment receipt. The submission lands in cl_applications with
+# role='reservation' so the owner reviews it under Applications ->
+# Reservation Application.
+class CLReservationCreate(BaseModel):
+    name: str
+    vehicle_public_id: str
+    receipt_url: str
+
+class CLReservationSettingsUpdate(BaseModel):
+    reservation_amount: Optional[float] = Field(default=None, ge=0)
+    payment_note: Optional[str] = Field(default=None, max_length=1000)
 
 
 # --- Car Lending / Showroom: "Sell your car" popup, opened from a
@@ -5130,6 +5147,8 @@ async def get_cloudinary_signature(public_id: str, purpose: Optional[str] = None
         folder = f'contracts/{public_id}'
     elif purpose == 'agent_kyc':
         folder = f'agent-kyc/{public_id}'
+    elif purpose == 'reservation':
+        folder = f'reservation-receipts/{public_id}'
     else:
         folder = f'vehicles/{public_id}'
     params_to_sign = {
@@ -5921,6 +5940,18 @@ async def update_cl_application(public_id: str, application_public_id: str, upda
         try:
             res = supabase.table("cl_applications").update(update_data).eq("id", application.get("id")).execute()
             updated = res.data[0] if res.data else {**application, **update_data}
+
+            # A verified reservation payment reserves the selected unit.
+            if (
+                newly_decided
+                and update_data.get("status") == "approved"
+                and application.get("role") == "reservation"
+                and application.get("vehicle_id")
+            ):
+                supabase.table("vehicles").update({
+                    "status": "reserved",
+                    "updated_at": datetime.utcnow().isoformat(),
+                }).eq("id", application.get("vehicle_id")).eq("business_id", business.get("id")).execute()
         except Exception as e:
             raise HTTPException(status_code=500, detail=friendly_db_error(e))
         return {k: v for k, v in updated.items() if k != 'password_hash'}
@@ -5988,6 +6019,71 @@ async def delete_cl_application(public_id: str, application_public_id: str):
 # the dashboard's existing Applications tab (Buyers Application) and goes
 # through the normal approve/reject flow. No separate list/update
 # endpoints needed - GET/PATCH .../applications already cover it.
+
+@app.get("/api/v1/business/{public_id}/reservation-settings")
+async def get_reservation_settings(public_id: str):
+    """Public read used by the showroom reservation popup."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    return {
+        "reservation_amount": business.get("showroom_reservation_amount"),
+        "payment_note": business.get("showroom_reservation_payment_note") or "",
+    }
+
+@app.post("/api/v1/business/{public_id}/reservation-settings")
+async def save_reservation_settings(public_id: str, settings: CLReservationSettingsUpdate):
+    """Owner-managed payment instructions shown in the reservation popup."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    update_data = {
+        "showroom_reservation_amount": settings.reservation_amount,
+        "showroom_reservation_payment_note": settings.payment_note,
+    }
+    try:
+        supabase.table("businesses").update(update_data).eq("id", business.get("id")).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+    return {
+        "reservation_amount": settings.reservation_amount,
+        "payment_note": settings.payment_note or "",
+    }
+
+@app.post("/api/v1/business/{public_id}/cl-reservation")
+async def create_cl_reservation(public_id: str, reservation: CLReservationCreate):
+    """Public reservation-payment submission from the showroom."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    vehicle = safe_get_vehicle(reservation.vehicle_public_id)
+    if not vehicle or vehicle.get("business_id") != business.get("id"):
+        raise HTTPException(status_code=404, detail="Vehicle not found for this business")
+    if vehicle.get("status") not in ("available", "reserved"):
+        raise HTTPException(status_code=400, detail="This vehicle is no longer available for reservation")
+
+    vehicle_label = " ".join(
+        str(x).strip() for x in [vehicle.get("year"), vehicle.get("make"), vehicle.get("model")] if x
+    )
+    application_data = {
+        "business_id": business.get("id"),
+        "public_id": generate_public_id(),
+        "role": "reservation",
+        "name": reservation.name.strip(),
+        "status": "pending",
+        "vehicle_id": vehicle.get("id"),
+        "vehicle_label": vehicle_label,
+        "reservation_receipt_url": reservation.receipt_url,
+        "reservation_amount": business.get("showroom_reservation_amount"),
+        "reservation_payment_note": business.get("showroom_reservation_payment_note"),
+    }
+    try:
+        res = supabase.table("cl_applications").insert(application_data).execute()
+        return res.data[0] if res.data else application_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+
 @app.post("/api/v1/business/{public_id}/cl-buyer-inquiry")
 async def cl_buyer_inquiry(public_id: str, inquiry: CLBuyerInquiry):
     """Public, unauthenticated - submitted by the "Inquire to buy this
@@ -9404,6 +9500,107 @@ SHOWROOM_JS = """
     }
   });
 
+
+  // ---- Reservation payment popup ---------------------------------------
+  var inquiryReserve = document.getElementById('inquiry-reserve');
+  var reservationModal = document.getElementById('reservation-modal');
+  var reservationModalClose = document.getElementById('reservation-modal-close');
+  var reservationForm = document.getElementById('reservation-form');
+  var reservationVehicleTitle = document.getElementById('reservation-vehicle-title');
+  var reservationAmount = document.getElementById('reservation-amount');
+  var reservationPaymentNote = document.getElementById('reservation-payment-note');
+  var reservationName = document.getElementById('reservation-name');
+  var reservationReceipt = document.getElementById('reservation-receipt');
+  var reservationError = document.getElementById('reservation-error');
+  var reservationSubmit = document.getElementById('reservation-submit');
+  var reservationFormView = document.getElementById('reservation-form-view');
+  var reservationSuccessView = document.getElementById('reservation-success-view');
+  var reservationSuccessClose = document.getElementById('reservation-success-close');
+  var reservationCurVehiclePublicId = null;
+
+  function showReservationView(view){
+    if (reservationFormView) reservationFormView.style.display = view === 'form' ? '' : 'none';
+    if (reservationSuccessView) reservationSuccessView.style.display = view === 'success' ? '' : 'none';
+  }
+  function closeReservationModal(){
+    if (reservationModal) reservationModal.classList.remove('open');
+  }
+  async function openReservationModal(car){
+    if (!reservationModal) return;
+    reservationCurVehiclePublicId = (car && car.public_id) || inquiryCurVehiclePublicId || null;
+    if (reservationVehicleTitle) reservationVehicleTitle.textContent = car && car.title ? car.title : (inquiryVehicleTitle ? inquiryVehicleTitle.textContent.replace(/^For:\\s*/, '') : '');
+    if (reservationError) reservationError.style.display = 'none';
+    showReservationView('form');
+    reservationModal.classList.add('open');
+    try {
+      var settingsRes = await fetch(inquiryConfig.api_base + '/api/v1/business/' + inquiryConfig.business_public_id + '/reservation-settings');
+      var settings = await settingsRes.json();
+      if (settingsRes.ok) {
+        if (reservationAmount) {
+          reservationAmount.textContent = settings.reservation_amount != null
+            ? ('₱' + Number(settings.reservation_amount).toLocaleString())
+            : 'Amount set by the dealership';
+        }
+        if (reservationPaymentNote) {
+          reservationPaymentNote.textContent = settings.payment_note || 'Contact the dealership for reservation payment instructions.';
+        }
+      }
+    } catch (e) {
+      if (reservationPaymentNote) reservationPaymentNote.textContent = 'Contact the dealership for reservation payment instructions.';
+    }
+  }
+
+  if (inquiryReserve) inquiryReserve.addEventListener('click', function(){
+    var car = vCurCar || null;
+    closeInquiryModal();
+    openReservationModal(car);
+  });
+  if (reservationModalClose) reservationModalClose.addEventListener('click', closeReservationModal);
+  if (reservationSuccessClose) reservationSuccessClose.addEventListener('click', closeReservationModal);
+  if (reservationModal) reservationModal.addEventListener('click', function(e){ if (e.target === reservationModal) closeReservationModal(); });
+
+  if (reservationForm) reservationForm.addEventListener('submit', async function(e){
+    e.preventDefault();
+    var name = reservationName ? reservationName.value.trim() : '';
+    var receiptFile = reservationReceipt && reservationReceipt.files ? reservationReceipt.files[0] : null;
+    if (reservationError) reservationError.style.display = 'none';
+    if (!name || !receiptFile || !reservationCurVehiclePublicId) {
+      if (reservationError) {
+        reservationError.textContent = 'Enter your name and upload the reservation payment receipt.';
+        reservationError.style.display = '';
+      }
+      return;
+    }
+    if (reservationSubmit) { reservationSubmit.disabled = true; reservationSubmit.textContent = 'Uploading receipt…'; }
+    try {
+      var sigRes = await fetch(inquiryConfig.api_base + '/api/v1/business/' + inquiryConfig.business_public_id + '/cloudinary-signature?purpose=reservation', { method: 'POST' });
+      var sig = await sigRes.json();
+      if (!sigRes.ok) throw new Error(sig.detail || 'Could not prepare receipt upload');
+      var receiptUrl = await uploadInquiryPhoto(receiptFile, sig);
+      if (reservationSubmit) reservationSubmit.textContent = 'Submitting…';
+      var res = await fetch(inquiryConfig.api_base + '/api/v1/business/' + inquiryConfig.business_public_id + '/cl-reservation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: name,
+          vehicle_public_id: reservationCurVehiclePublicId,
+          receipt_url: receiptUrl
+        })
+      });
+      var data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Reservation submission failed');
+      reservationForm.reset();
+      showReservationView('success');
+    } catch (err) {
+      if (reservationError) {
+        reservationError.textContent = (err && err.message) || 'Network error. Please try again.';
+        reservationError.style.display = '';
+      }
+    } finally {
+      if (reservationSubmit) { reservationSubmit.disabled = false; reservationSubmit.textContent = 'Submit reservation'; }
+    }
+  });
+
   // ---- Sell your car popup (opened from the "Sell your car" button in
   // the hero). Posts to POST /api/v1/business/{id}/cl-sell-your-car (see
   // CLSellerInquiry in main.py) - it lands as a normal 'pending'
@@ -9848,6 +10045,11 @@ SHOWROOM_JS = """
 """
 
 SHOWROOM_CSS += r'''
+
+
+.reservation-payment-box{background:#faf8f1;border:1px solid #e5d7b5;border-radius:14px;padding:16px;margin:14px 0 16px}
+.reservation-amount{font-size:24px;font-weight:800;color:#171717}
+.reservation-note{white-space:pre-wrap;font-size:14px;line-height:1.6;color:#444}
 
 /* Clean showroom v4: compact benefits strip and inventory-first flow */
 .benefit-strip{background:#fff;border-top:1px solid #eee8db;border-bottom:1px solid #eee8db}
@@ -10325,6 +10527,41 @@ async def showroom_page(business_public_id: str):
             '</div></div></div>'
         )
 
+
+        reservation_modal_html = (
+            '<div id="reservation-modal" class="agent-modal">'
+            '<div class="agent-modal-card" style="max-width:430px">'
+            '<button id="reservation-modal-close" class="agent-modal-close" type="button" aria-label="Close">&times;</button>'
+            '<div class="agent-modal-scroll">'
+
+            '<div id="reservation-form-view" class="agent-modal-view">'
+            '<h3 class="agent-modal-title">Send reservation</h3>'
+            '<p class="agent-modal-sub" id="reservation-vehicle-title"></p>'
+            '<div class="reservation-payment-box">'
+            '<div class="inquiry-field-label">Reservation amount</div>'
+            '<div id="reservation-amount" class="reservation-amount">Amount set by the dealership</div>'
+            '<div class="inquiry-field-label" style="margin-top:12px">Where to send payment</div>'
+            '<div id="reservation-payment-note" class="reservation-note">Loading payment instructions…</div>'
+            '</div>'
+            '<form id="reservation-form">'
+            '<input type="text" id="reservation-name" placeholder="Full name" required autocomplete="name">'
+            '<div class="inquiry-field-label">Upload reservation payment receipt</div>'
+            '<input type="file" id="reservation-receipt" accept="image/*" required>'
+            '<div id="reservation-error" class="agent-modal-error" style="display:none"></div>'
+            '<button type="submit" id="reservation-submit" class="agent-modal-submit">Submit reservation</button>'
+            '</form>'
+            '</div>'
+
+            '<div id="reservation-success-view" class="agent-modal-view" style="display:none">'
+            '<div class="agent-modal-success-icon">&#9989;</div>'
+            '<h3 class="agent-modal-title">Reservation submitted</h3>'
+            '<p class="agent-modal-sub">Your payment receipt was sent for verification. The dealership will contact you after review.</p>'
+            '<button type="button" id="reservation-success-close" class="agent-modal-submit agent-modal-secondary">Close</button>'
+            '</div>'
+
+            '</div></div></div>'
+        )
+
         # "Sell your car" popup - opened from the "Sell your car" button in
         # the hero (see hero_html above), not tied to any vehicle already
         # in inventory. Posts to POST /api/v1/business/{id}/cl-sell-your-
@@ -10476,7 +10713,7 @@ async def showroom_page(business_public_id: str):
             '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
             '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">'
             '<style>' + SHOWROOM_CSS + '</style></head><body id="top">'
-            + nav_html + hero_html + trust_html + '<section id="inventory" class="inventory-shell"><div class="inventory-toolbar">' + stats_html + search_html + filter_html + make_filter_html + '</div>' + grid_html + '</section>' + agent_cta_html + payment_html + location_html + footer_html + lightbox_html + vehicle_modal_html + agent_modal_html + inquiry_modal_html + sell_modal_html +
+            + nav_html + hero_html + trust_html + '<section id="inventory" class="inventory-shell"><div class="inventory-toolbar">' + stats_html + search_html + filter_html + make_filter_html + '</div>' + grid_html + '</section>' + agent_cta_html + payment_html + location_html + footer_html + lightbox_html + vehicle_modal_html + agent_modal_html + inquiry_modal_html + reservation_modal_html + sell_modal_html +
             '<script>' + SHOWROOM_JS + '</script>'
             '</body></html>'
         )
@@ -10689,6 +10926,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 
 AGENT_JS = """
 (function(){
+  var BUSINESS_PUBLIC_ID = document.body.getAttribute('data-business-public-id') || '';
   var cars = JSON.parse(document.getElementById('agent-cars-data').textContent);
   var grid = document.getElementById('agent-grid');
   var search = document.getElementById('agent-search');
@@ -10881,23 +11119,26 @@ AGENT_JS = """
   });
 
   saveImagesBtn.addEventListener('click', function(){
-    if (!currentCar || !currentCar.imgs || !currentCar.imgs.length) return;
-    var baseName = String(currentCar.title || 'vehicle')
-      .replace(/[^a-z0-9]+/gi, '-')
-      .replace(/^-+|-+$/g, '');
-    currentCar.imgs.forEach(function(url, index){
-      setTimeout(function(){
-        var a = document.createElement('a');
-        a.href = url;
-        a.download = baseName + '-' + (index + 1) + '.jpg';
-        a.target = '_blank';
-        a.rel = 'noopener';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-      }, index * 250);
-    });
-    showToast('Saving ' + currentCar.imgs.length + ' image' + (currentCar.imgs.length === 1 ? '' : 's'));
+    if (!currentCar || !currentCar.public_id || !currentCar.imgs || !currentCar.imgs.length) return;
+    var originalText = saveImagesBtn.textContent;
+    saveImagesBtn.disabled = true;
+    saveImagesBtn.textContent = 'Preparing ZIP...';
+    showToast('Preparing all vehicle images');
+
+    var downloadUrl = '/api/v1/business/' + encodeURIComponent(BUSINESS_PUBLIC_ID)
+      + '/vehicles/' + encodeURIComponent(currentCar.public_id) + '/download-images';
+    var a = document.createElement('a');
+    a.href = downloadUrl;
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+
+    setTimeout(function(){
+      saveImagesBtn.disabled = false;
+      saveImagesBtn.textContent = originalText;
+      showToast('ZIP download started');
+    }, 1200);
   });
 
   function fallbackCopy(text, done){
@@ -10921,6 +11162,74 @@ AGENT_JS = """
   }
 })();
 """
+
+@app.get("/api/v1/business/{business_public_id}/vehicles/{vehicle_public_id}/download-images")
+async def download_agent_vehicle_images(business_public_id: str, vehicle_public_id: str):
+    """Download every photo for one dealership vehicle as a single ZIP.
+
+    The agent page uses this instead of relying on the browser's `download`
+    attribute for Cloudinary URLs, which is commonly ignored for cross-origin
+    files and opens each image in a new tab instead.
+    """
+    business = safe_get_business(business_public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    vehicle = safe_get_vehicle(vehicle_public_id)
+    if not vehicle or vehicle.get("business_id") != business.get("id"):
+        raise HTTPException(status_code=404, detail="Vehicle not found")
+
+    image_urls = vehicle.get("image_urls") or ([vehicle.get("image_url")] if vehicle.get("image_url") else [])
+    image_urls = [url for url in image_urls if url][:VEHICLE_MAX_PHOTOS]
+    if not image_urls:
+        raise HTTPException(status_code=404, detail="This vehicle has no images")
+
+    import httpx
+    zip_buffer = BytesIO()
+    safe_title = re.sub(
+        r"[^a-zA-Z0-9]+",
+        "-",
+        f"{vehicle.get('year') or ''}-{vehicle.get('make') or ''}-{vehicle.get('model') or ''}"
+    ).strip("-") or "vehicle"
+
+    downloaded = 0
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            for index, url in enumerate(image_urls, start=1):
+                try:
+                    response = await client.get(url)
+                    response.raise_for_status()
+                    content_type = (response.headers.get("content-type") or "").split(";", 1)[0].lower()
+                    extension = {
+                        "image/jpeg": ".jpg",
+                        "image/jpg": ".jpg",
+                        "image/png": ".png",
+                        "image/webp": ".webp",
+                        "image/gif": ".gif",
+                    }.get(content_type)
+                    if not extension:
+                        url_path = str(url).split("?", 1)[0].lower()
+                        extension = next((ext for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif") if url_path.endswith(ext)), ".jpg")
+                        if extension == ".jpeg":
+                            extension = ".jpg"
+                    archive.writestr(f"{safe_title}-{index}{extension}", response.content)
+                    downloaded += 1
+                except Exception as exc:
+                    print(f"Vehicle image ZIP skipped {url}: {exc}")
+
+    if downloaded == 0:
+        raise HTTPException(status_code=502, detail="Could not download the vehicle images")
+
+    zip_buffer.seek(0)
+    filename = f"{safe_title}-images.zip"
+    return Response(
+        content=zip_buffer.getvalue(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 @app.get("/agent/{business_public_id}", response_class=HTMLResponse)
 async def agent_inventory_page(business_public_id: str):
@@ -11114,7 +11423,7 @@ async def agent_inventory_page(business_public_id: str):
         '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
         '<title>' + html_lib.escape(biz_name) + ' - Agent Inventory</title>'
-        '<style>' + AGENT_CSS + '</style></head><body>'
+        '<style>' + AGENT_CSS + '</style></head><body data-business-public-id="' + html_lib.escape(business_public_id) + '">'
         + header_html + toolbar_html + grid_html + no_results_html + modal_html +
         '<div id="agent-toast" class="agent-toast"></div>'
         '<script>' + AGENT_JS + '</script>'

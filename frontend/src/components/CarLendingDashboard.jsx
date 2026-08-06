@@ -126,6 +126,7 @@ const APPLICATION_ROLES = [
   { key: 'agent', label: 'Agents Application' },
   { key: 'buyer', label: 'Buyers Application' },
   { key: 'seller', label: 'Sellers Application' },
+  { key: 'reservation', label: 'Reservation Application' },
 ]
 
 // Renders backend-generated QR SVGs as an <img> (data URI) instead of
@@ -656,10 +657,10 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const [loadingWalletInfo, setLoadingWalletInfo] = useState(false)
   const [publishingWallet, setPublishingWallet] = useState(false)
 
-  // ---------- Agent / Buyer / Seller applications state ----------
+  // ---------- Agent / Buyer / Seller / Reservation applications state ----------
   const [applications, setApplications] = useState([])
   const [loadingApplications, setLoadingApplications] = useState(false)
-  const [applicationRoleTab, setApplicationRoleTab] = useState('agent') // 'agent' | 'buyer' | 'seller'
+  const [applicationRoleTab, setApplicationRoleTab] = useState('agent') // 'agent' | 'buyer' | 'seller' | 'reservation'
   const [applicationStatusFilter, setApplicationStatusFilter] = useState('')
   const [showApplicationForm, setShowApplicationForm] = useState(false)
   const [editingApplication, setEditingApplication] = useState(null) // application being edited, or null for "new"
@@ -673,6 +674,8 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const [reviewingApplication, setReviewingApplication] = useState(null)
   const [reviewNote, setReviewNote] = useState('')
   const [decidingApplication, setDecidingApplication] = useState(false)
+  const [reservationSettings, setReservationSettings] = useState({ reservation_amount: '', payment_note: '' })
+  const [savingReservationSettings, setSavingReservationSettings] = useState(false)
 
   // ---------- Agent roster (approved cl_agents accounts, next to
   // Customers) state - read-only besides basic contact edits and removal;
@@ -791,6 +794,25 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
       setLoadingApplications(false)
     })()
   }, [activeTab, applicationRoleTab, applicationStatusFilter, businessId])
+
+
+  useEffect(() => {
+    if (!businessId || activeTab !== 'applications' || applicationRoleTab !== 'reservation') return
+    ;(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/reservation-settings`)
+        const data = await res.json().catch(() => ({}))
+        if (res.ok) {
+          setReservationSettings({
+            reservation_amount: data.reservation_amount ?? '',
+            payment_note: data.payment_note || '',
+          })
+        }
+      } catch (err) {
+        console.error('Reservation settings error:', err)
+      }
+    })()
+  }, [activeTab, applicationRoleTab, businessId, API_BASE])
 
   // Re-fetch the approved agent roster whenever the Agents tab is opened.
   // No status filter - everyone in cl_agents is already approved (see
@@ -933,7 +955,32 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     }
   }
 
-  // ---------- Agent / Buyer / Seller applications CRUD ----------
+
+  const saveReservationSettings = async () => {
+    setSavingReservationSettings(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/reservation-settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reservation_amount: reservationSettings.reservation_amount !== '' ? Number(reservationSettings.reservation_amount) : null,
+          payment_note: reservationSettings.payment_note || null,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not save reservation settings')
+      setReservationSettings({
+        reservation_amount: data.reservation_amount ?? '',
+        payment_note: data.payment_note || '',
+      })
+      flash('Reservation payment instructions saved')
+    } catch (err) {
+      flash(err.message)
+    }
+    setSavingReservationSettings(false)
+  }
+
+  // ---------- Agent / Buyer / Seller / Reservation applications CRUD ----------
   const reloadApplications = async () => {
     try {
       const params = new URLSearchParams()
@@ -985,7 +1032,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
         email: applicationForm.email || null,
         notes: applicationForm.notes || null,
       }
-      // role is fixed by whichever sub-tab (Agents/Buyers/Sellers) the
+      // role is fixed by whichever sub-tab (Agents/Buyers/Sellers/Reservations) the
       // owner had open when they clicked "New" - only sent on create,
       // since it can't be changed on an existing application.
       if (!editingApplication) body.role = applicationRoleTab
@@ -2009,7 +2056,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
               <h2 style={styles.sectionTitle}>
                 {APPLICATION_ROLES.find(r => r.key === applicationRoleTab)?.label}
               </h2>
-              <button onClick={openNewApplication} style={styles.newBtn}>+ New application</button>
+              {applicationRoleTab !== 'reservation' && <button onClick={openNewApplication} style={styles.newBtn}>+ New application</button>}
             </div>
             <p style={styles.sectionSubtitle}>
               Only you can approve or reject an application here — there's no self-approval path for applicants.
@@ -2026,6 +2073,42 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                 </button>
               ))}
             </div>
+
+            {applicationRoleTab === 'reservation' && (
+              <div style={{ ...styles.walletSetupCard, marginBottom: 16 }}>
+                <div style={{ fontSize: 15, fontWeight: 800, color: '#171717', marginBottom: 6 }}>
+                  Reservation payment instructions
+                </div>
+                <div style={{ fontSize: 12, color: '#777', marginBottom: 12 }}>
+                  Buyers see this amount and note before uploading their reservation payment receipt.
+                </div>
+                <div style={styles.formGrid}>
+                  <label style={styles.label}>Reservation amount (₱)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    style={styles.input}
+                    value={reservationSettings.reservation_amount}
+                    onChange={e => setReservationSettings({ ...reservationSettings, reservation_amount: e.target.value })}
+                    placeholder="e.g. 5000"
+                  />
+                  <label style={styles.label}>Where the buyer should send payment</label>
+                  <textarea
+                    style={{ ...styles.input, minHeight: 100, resize: 'vertical' }}
+                    value={reservationSettings.payment_note}
+                    onChange={e => setReservationSettings({ ...reservationSettings, payment_note: e.target.value })}
+                    placeholder={'Example:\nGCash: 0917 123 4567\nAccount name: Wolf Cars\nUpload the receipt after sending payment.'}
+                  />
+                </div>
+                <button
+                  onClick={saveReservationSettings}
+                  disabled={savingReservationSettings}
+                  style={{ ...styles.saveBtn, marginTop: 12 }}
+                >
+                  {savingReservationSettings ? 'Saving…' : 'Save reservation instructions'}
+                </button>
+              </div>
+            )}
 
             <select
               style={{ ...styles.select, marginBottom: 16 }}
@@ -2064,6 +2147,16 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                       {a.vehicle_label && (
                         <div style={styles.recordMetaSub}>
                           Inquiring about: {a.vehicle_label}{a.make_offer ? ' · trade-in offer' : ''}{a.referring_agent ? ` · via ${a.referring_agent}` : ''}
+                        </div>
+                      )}
+                      {a.role === 'reservation' && a.reservation_amount != null && (
+                        <div style={styles.recordMetaSub}>
+                          Reservation amount: ₱{Number(a.reservation_amount).toLocaleString()}
+                        </div>
+                      )}
+                      {a.role === 'reservation' && a.reservation_receipt_url && (
+                        <div style={styles.recordMetaSub}>
+                          <a href={a.reservation_receipt_url} target="_blank" rel="noreferrer">View payment receipt ↗</a>
                         </div>
                       )}
                       {a.role === 'seller' && (a.seller_make || a.seller_model || a.seller_year) && (
@@ -2274,6 +2367,16 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                   <strong>Inquiring about:</strong> {reviewingApplication.vehicle_label}
                 </div>
               )}
+              {reviewingApplication.role === 'reservation' && reviewingApplication.reservation_amount != null && (
+                <div style={styles.recordMeta}>
+                  <strong>Reservation amount:</strong> ₱{Number(reviewingApplication.reservation_amount).toLocaleString()}
+                </div>
+              )}
+              {reviewingApplication.role === 'reservation' && reviewingApplication.reservation_payment_note && (
+                <div style={styles.recordMeta}>
+                  <strong>Payment instructions shown:</strong> {reviewingApplication.reservation_payment_note}
+                </div>
+              )}
               {reviewingApplication.referring_agent && (
                 <div style={styles.recordMeta}>
                   <strong>Referred by agent:</strong> {reviewingApplication.referring_agent}
@@ -2308,6 +2411,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                 { url: reviewingApplication.id_photo_2_url, label: 'Valid ID #2' },
                 { url: reviewingApplication.proof_of_billing_url, label: 'Proof of billing' },
                 { url: reviewingApplication.proof_of_income_url, label: 'Proof of income' },
+                { url: reviewingApplication.reservation_receipt_url, label: 'Reservation payment receipt' },
               ].filter(p => p.url)
               if (!photos.length) return null
               return (
@@ -2409,7 +2513,9 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                 style={{ ...styles.input, minHeight: 70, resize: 'vertical' }}
                 value={reviewNote}
                 onChange={e => setReviewNote(e.target.value)}
-                placeholder="Reason for approving or rejecting — kept on file, not shown to the applicant yet."
+                placeholder={reviewingApplication.role === 'reservation'
+                  ? 'Payment verification note, reference number, or reason for rejection.'
+                  : 'Reason for approving or rejecting — kept on file, not shown to the applicant yet.'}
               />
             </div>
 
