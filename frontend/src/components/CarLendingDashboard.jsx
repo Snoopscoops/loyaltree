@@ -2149,6 +2149,16 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                           Inquiring about: {a.vehicle_label}{a.make_offer ? ' · trade-in offer' : ''}{a.referring_agent ? ` · via ${a.referring_agent}` : ''}
                         </div>
                       )}
+                      {a.role === 'reservation' && (
+                        <>
+                          <div style={styles.recordMetaSub}>
+                            Contact: {a.reservation_contact_number || a.phone || '—'}
+                          </div>
+                          <div style={styles.recordMetaSub}>
+                            Address: {a.reservation_address || a.address || '—'}
+                          </div>
+                        </>
+                      )}
                       {a.role === 'reservation' && a.reservation_amount != null && (
                         <div style={styles.recordMetaSub}>
                           Reservation amount: ₱{Number(a.reservation_amount).toLocaleString()}
@@ -2366,6 +2376,16 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
                 <div style={styles.recordMeta}>
                   <strong>Inquiring about:</strong> {reviewingApplication.vehicle_label}
                 </div>
+              )}
+              {reviewingApplication.role === 'reservation' && (
+                <>
+                  <div style={styles.recordMeta}>
+                    <strong>Contact number:</strong> {reviewingApplication.reservation_contact_number || reviewingApplication.phone || '—'}
+                  </div>
+                  <div style={styles.recordMeta}>
+                    <strong>Address:</strong> {reviewingApplication.reservation_address || reviewingApplication.address || '—'}
+                  </div>
+                </>
               )}
               {reviewingApplication.role === 'reservation' && reviewingApplication.reservation_amount != null && (
                 <div style={styles.recordMeta}>

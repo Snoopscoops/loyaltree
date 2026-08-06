@@ -780,6 +780,8 @@ class CLBuyerInquiry(BaseModel):
 # Reservation Application.
 class CLReservationCreate(BaseModel):
     name: str
+    contact_number: str
+    address: str
     vehicle_public_id: str
     receipt_url: str
 
@@ -6070,6 +6072,10 @@ async def create_cl_reservation(public_id: str, reservation: CLReservationCreate
         "public_id": generate_public_id(),
         "role": "reservation",
         "name": reservation.name.strip(),
+        "phone": reservation.contact_number.strip(),
+        "address": reservation.address.strip(),
+        "reservation_contact_number": reservation.contact_number.strip(),
+        "reservation_address": reservation.address.strip(),
         "status": "pending",
         "vehicle_id": vehicle.get("id"),
         "vehicle_label": vehicle_label,
@@ -9510,6 +9516,8 @@ SHOWROOM_JS = """
   var reservationAmount = document.getElementById('reservation-amount');
   var reservationPaymentNote = document.getElementById('reservation-payment-note');
   var reservationName = document.getElementById('reservation-name');
+  var reservationContactNumber = document.getElementById('reservation-contact-number');
+  var reservationAddress = document.getElementById('reservation-address');
   var reservationReceipt = document.getElementById('reservation-receipt');
   var reservationError = document.getElementById('reservation-error');
   var reservationSubmit = document.getElementById('reservation-submit');
@@ -9562,11 +9570,13 @@ SHOWROOM_JS = """
   if (reservationForm) reservationForm.addEventListener('submit', async function(e){
     e.preventDefault();
     var name = reservationName ? reservationName.value.trim() : '';
+    var contactNumber = reservationContactNumber ? reservationContactNumber.value.trim() : '';
+    var address = reservationAddress ? reservationAddress.value.trim() : '';
     var receiptFile = reservationReceipt && reservationReceipt.files ? reservationReceipt.files[0] : null;
     if (reservationError) reservationError.style.display = 'none';
-    if (!name || !receiptFile || !reservationCurVehiclePublicId) {
+    if (!name || !contactNumber || !address || !receiptFile || !reservationCurVehiclePublicId) {
       if (reservationError) {
-        reservationError.textContent = 'Enter your name and upload the reservation payment receipt.';
+        reservationError.textContent = 'Enter your name, contact number, complete address, and upload the payment receipt.';
         reservationError.style.display = '';
       }
       return;
@@ -9583,6 +9593,8 @@ SHOWROOM_JS = """
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: name,
+          contact_number: contactNumber,
+          address: address,
           vehicle_public_id: reservationCurVehiclePublicId,
           receipt_url: receiptUrl
         })
@@ -10545,6 +10557,8 @@ async def showroom_page(business_public_id: str):
             '</div>'
             '<form id="reservation-form">'
             '<input type="text" id="reservation-name" placeholder="Full name" required autocomplete="name">'
+            '<input type="tel" id="reservation-contact-number" placeholder="Contact number" required autocomplete="tel">'
+            '<textarea id="reservation-address" placeholder="Complete address" required autocomplete="street-address"></textarea>'
             '<div class="inquiry-field-label">Upload reservation payment receipt</div>'
             '<input type="file" id="reservation-receipt" accept="image/*" required>'
             '<div id="reservation-error" class="agent-modal-error" style="display:none"></div>'
