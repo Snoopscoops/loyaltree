@@ -113,23 +113,26 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     return () => clearInterval(interval)
   }, [user])
 
-  // Auto-launch the setup tutorial the first time the business goes live,
-  // so the owner is walked through Edit Card -> Cashier -> Share Tree ->
-  // Analytics before they start using the dashboard on their own. Shows
-  // once ever per business - dismissing it (or finishing it) is final,
-  // it never forces itself back open.
+  // Automatically guide a newly signed-up business, and keep prompting on
+  // later visits while no card has been selected/published yet. Once a card
+  // exists, the guide continues from cashier setup instead of restarting.
   useEffect(() => {
-    if (!isActive || !onboardingKey) return
+    if (loading || !isActive || !onboardingKey) return
     if (activeTab !== 'tree') return
-    const seen = localStorage.getItem(onboardingKey)
-    if (!seen) {
-      setOnboardingStep(0)
+
+    const seen = localStorage.getItem(onboardingKey) === '1'
+    const firstIncompleteStep = !cardSetUp ? 0 : !cashierSetUp ? 1 : 2
+
+    if (!seen || !cardSetUp || !cashierSetUp) {
+      setOnboardingStep(firstIncompleteStep)
       setShowOnboarding(true)
     }
-  }, [isActive, onboardingKey, activeTab])
+  }, [loading, isActive, onboardingKey, activeTab, cardSetUp, cashierSetUp])
 
   const closeOnboarding = () => {
-    if (onboardingKey) localStorage.setItem(onboardingKey, '1')
+    if (onboardingKey && cardSetUp && cashierSetUp) {
+      localStorage.setItem(onboardingKey, '1')
+    }
     setShowOnboarding(false)
   }
 
@@ -703,7 +706,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
 
   if (loading) return (
-    <div style={{...styles.container, background: cardExperience?.soft || '#f8fafc'}}>
+    <div style={styles.container}>
       <div style={styles.loadingTree}>
         <div style={styles.treeIcon}>🌳</div>
         <p>Growing your digital forest...</p>
@@ -774,7 +777,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       )}
 
       {/* Tree Visualization */}
-      <div style={{...styles.treeSection, background: `linear-gradient(135deg, ${cardExperience.soft}, #ffffff)`, borderColor: cardExperience.border}}>
+      <div style={styles.treeSection}>
         <div style={styles.treeVisual}>
           <div style={{...styles.treeCanopy, transform: `scale(${Math.min(1 + customers.length * 0.01, 1.5)})`}}>
             {Array.from({length: Math.min(customers.length, 20)}).map((_, i) => (
@@ -1647,76 +1650,167 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       {showOnboarding && (() => {
         const steps = [
           {
-            emoji: '✏️',
-            title: '1. Set Up Your Card',
-            body: "Configure your loyalty program: how many stamps until a reward, what the reward is, your card color, and your logo. Make sure to save & publish so your card is actually live - customers won't see your branding on their Google Wallet card until you do.",
-            cta: 'Go to Edit Card',
-            action: () => { setActiveTab('program'); closeOnboarding() },
+            emoji: '1️⃣',
+            title: 'Choose and configure your card',
+            body: 'Choose Stamp, Points, Membership, or Multi-Pass. Add the card details, branding, and rules, then save and publish it.',
+            cta: cardSetUp ? 'Review Card' : 'Choose a Card',
+            action: () => { setActiveTab('program'); setShowOnboarding(false) },
             done: cardSetUp,
+            locked: false,
           },
           {
-            emoji: '🌿',
-            title: '2. Set Up Your Cashiers',
-            body: "Invite your staff and each one gets a 4-digit PIN. Important: cashiers also need your Business ID (shown on the Team tab) to log into the scanner - without it, their PIN alone won't work. Share both with them.",
-            cta: 'Go to Team',
-            action: () => { setActiveTab('staff'); closeOnboarding() },
+            emoji: '2️⃣',
+            title: 'Set up your cashier',
+            body: 'Invite at least one cashier or staff member. They will use the Business ID and their PIN to access the scanner.',
+            cta: cashierSetUp ? 'Review Team' : 'Set Up Cashier',
+            action: () => { setActiveTab('staff'); setShowOnboarding(false) },
             done: cashierSetUp,
+            locked: !cardSetUp,
           },
           {
-            emoji: '🔗',
-            title: '3. Share Your Tree',
-            body: "Get your join QR code and print it out. Keep it at the counter or entrance so customers can scan it themselves as they come in, sign up in seconds, and start earning stamps right away.",
-            cta: 'Get QR Code',
-            action: () => { setActiveTab('tree'); closeOnboarding(); fetchQRImage() },
+            emoji: '3️⃣',
+            title: 'Share your join QR',
+            body: 'Let customers scan your QR code to join. Place it at the counter, entrance, or on your social pages.',
+            cta: 'Open Join QR',
+            action: () => { setActiveTab('tree'); setShowOnboarding(false); fetchQRImage() },
+            done: customers.length > 0,
+            locked: !cardSetUp || !cashierSetUp,
           },
           {
-            emoji: '📊',
-            title: '4. Analytics & Announcements',
-            body: "Check Analytics to see visit trends, repeat customers, and redemption rates. Use Announcements to push a message straight to customers' Google Wallet cards - great for promos or reminders.",
-            cta: 'View Analytics',
-            action: () => { closeOnboarding(); markAnalyticsChecked(); navigate('/analytics') },
-            done: announcementsChecked && analyticsChecked,
+            emoji: '4️⃣',
+            title: 'Use the full dashboard',
+            body: 'Once your card and cashier are ready, use customer management, scanning, announcements, and analytics normally.',
+            cta: 'Open Dashboard',
+            action: () => { setActiveTab('tree'); closeOnboarding() },
+            done: cardSetUp && cashierSetUp,
+            locked: !cardSetUp || !cashierSetUp,
           },
         ]
-        const step = steps[onboardingStep]
-        const isLast = onboardingStep === steps.length - 1
-        return (
-          <div style={styles.modalOverlay} onClick={closeOnboarding}>
-            <div style={{...styles.modal, textAlign: 'center', maxWidth: 420}} onClick={e => e.stopPropagation()}>
-              <div style={{fontSize: 40, marginBottom: 8}}>{step.emoji}</div>
-              <h3 style={{marginBottom: 12}}>
-                {step.title}{step.done && <span style={{color: '#0d9488'}}> ✓</span>}
-              </h3>
-              <p style={{color: '#64748b', fontSize: 14, marginBottom: 20, lineHeight: 1.5}}>{step.body}</p>
 
-              <div style={{display: 'flex', justifyContent: 'center', gap: 6, marginBottom: 20}}>
-                {steps.map((s, i) => (
-                  <span key={i} style={{
-                    width: 8, height: 8, borderRadius: 4,
-                    background: i === onboardingStep ? '#0d9488' : (s.done ? '#a7f3d0' : '#e2e8f0'),
-                  }} />
-                ))}
+        const safeStep = Math.min(onboardingStep, steps.length - 1)
+        const step = steps[safeStep]
+        const completed = steps.filter(s => s.done).length
+
+        return (
+          <div style={styles.modalOverlay} onClick={() => setShowOnboarding(false)}>
+            <div
+              style={{
+                ...styles.modal,
+                maxWidth: 520,
+                padding: 0,
+                overflow: 'hidden',
+                borderRadius: 22,
+                boxShadow: '0 28px 80px rgba(15,23,42,.24)',
+              }}
+              onClick={e => e.stopPropagation()}
+            >
+              <div style={{
+                padding: '24px 26px 20px',
+                background: 'linear-gradient(135deg,#ffffff 0%,#f8fafc 100%)',
+                borderBottom: '1px solid #e2e8f0',
+              }}>
+                <div style={{display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start'}}>
+                  <div>
+                    <div style={{fontSize: 12, fontWeight: 850, color: cardExperience.accent, textTransform: 'uppercase', letterSpacing: .7}}>
+                      Business setup · {completed}/{steps.length}
+                    </div>
+                    <h2 style={{fontSize: 24, margin: '7px 0 6px', color: '#0f172a'}}>
+                      Get LoyaltyTree ready
+                    </h2>
+                    <p style={{fontSize: 13.5, color: '#64748b', margin: 0, lineHeight: 1.55}}>
+                      Complete the essential setup first. You can close this guide and continue later.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setShowOnboarding(false)}
+                    aria-label="Close setup guide"
+                    style={{
+                      width: 36,
+                      height: 36,
+                      borderRadius: 12,
+                      border: '1px solid #e2e8f0',
+                      background: 'white',
+                      color: '#64748b',
+                      cursor: 'pointer',
+                      fontSize: 18,
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
               </div>
 
-              <div style={{display: 'flex', gap: 10, justifyContent: 'center', marginBottom: 12}}>
-                {onboardingStep > 0 && (
-                  <button onClick={() => setOnboardingStep(s => s - 1)} style={{...styles.submitBtn, background: '#64748b'}}>
-                    Back
-                  </button>
-                )}
-                <button onClick={step.action} style={styles.submitBtn}>
+              <div style={{padding: 24}}>
+                <div style={{
+                  padding: 18,
+                  borderRadius: 16,
+                  background: cardExperience.soft,
+                  border: `1px solid ${cardExperience.border}`,
+                  marginBottom: 18,
+                }}>
+                  <div style={{fontSize: 34, marginBottom: 6}}>{step.emoji}</div>
+                  <h3 style={{margin: '0 0 7px', color: '#0f172a', fontSize: 18}}>{step.title}</h3>
+                  <p style={{margin: 0, color: '#64748b', fontSize: 13.5, lineHeight: 1.6}}>{step.body}</p>
+                </div>
+
+                <div style={{display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 18}}>
+                  {steps.map((s, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      disabled={s.locked}
+                      onClick={() => !s.locked && setOnboardingStep(i)}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 11,
+                        padding: '11px 12px',
+                        borderRadius: 12,
+                        border: `1px solid ${i === safeStep ? cardExperience.border : '#e2e8f0'}`,
+                        background: s.done ? '#f0fdf4' : i === safeStep ? '#fff' : '#f8fafc',
+                        color: '#0f172a',
+                        cursor: s.locked ? 'not-allowed' : 'pointer',
+                        opacity: s.locked ? .5 : 1,
+                        textAlign: 'left',
+                      }}
+                    >
+                      <span style={{fontSize: 16}}>{s.done ? '✅' : s.locked ? '🔒' : s.emoji}</span>
+                      <span style={{fontSize: 13, fontWeight: 750, flex: 1}}>{s.title}</span>
+                      {i === safeStep && !s.done && <span style={{fontSize: 12, color: cardExperience.accent}}>Current</span>}
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  onClick={step.action}
+                  disabled={step.locked}
+                  style={{
+                    ...styles.submitBtn,
+                    width: '100%',
+                    minHeight: 48,
+                    borderRadius: 12,
+                    background: step.locked ? '#cbd5e1' : cardExperience.accent,
+                    cursor: step.locked ? 'not-allowed' : 'pointer',
+                  }}
+                >
                   {step.cta}
                 </button>
-                {!isLast && (
-                  <button onClick={() => setOnboardingStep(s => s + 1)} style={{...styles.submitBtn, background: 'transparent', color: '#0d9488', border: '1px solid #a7f3d0'}}>
-                    Next
-                  </button>
-                )}
-              </div>
 
-              <button onClick={closeOnboarding} style={{background: 'none', border: 'none', color: '#94a3b8', fontSize: 13, cursor: 'pointer'}}>
-                Skip tutorial
-              </button>
+                <button
+                  onClick={() => setShowOnboarding(false)}
+                  style={{
+                    width: '100%',
+                    marginTop: 10,
+                    border: 'none',
+                    background: 'transparent',
+                    color: '#94a3b8',
+                    fontSize: 12.5,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Continue later
+                </button>
+              </div>
             </div>
           </div>
         )
@@ -1842,6 +1936,13 @@ const styles = {
     padding: '32px 16px',
     textAlign: 'center',
     position: 'relative',
+    maxWidth: 1180,
+    margin: '22px auto 0',
+    borderRadius: 24,
+    background: 'rgba(255,255,255,0.72)',
+    border: '1px solid rgba(255,255,255,0.9)',
+    boxShadow: '0 18px 45px rgba(15,23,42,0.08)',
+    backdropFilter: 'blur(12px)',
   },
   treeVisual: {
     position: 'relative',
