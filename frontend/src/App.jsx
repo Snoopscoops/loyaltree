@@ -86,7 +86,9 @@ function App() {
           ) : <Navigate to="/login" />
         } />
         <Route path="/scanner" element={
-          ['owner', 'manager', 'cashier'].includes(user?.role) ? <CashierApp API_BASE={API_BASE} /> : <Navigate to="/login" />
+          ['owner', 'manager', 'cashier'].includes(user?.role)
+            ? <CashierApp key="cashier-v14" API_BASE={API_BASE} />
+            : <Navigate to="/login" />
         } />
         <Route path="/wallet/:customerId" element={<RedirectToBackend base={API_BASE} sub="wallet" />} />
         <Route path="/analytics" element={

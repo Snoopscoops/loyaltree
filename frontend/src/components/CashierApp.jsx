@@ -5,6 +5,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 // Only shows the raw scan/debug panel in local dev - never in a production
 // build, since it prints internal API paths and response codes on-screen.
 const DEBUG = import.meta.env.DEV
+const CASHIER_BUILD = 'VIP-MEMBERSHIP-MULTIPASS-V14'
 
 function CashierApp({ API_BASE }) {
   const location = useLocation()
@@ -117,22 +118,19 @@ function CashierApp({ API_BASE }) {
           )
         }
 
-        const programRes = await fetch(
-          `${API_BASE}/api/v1/business/${scannedBusinessSlug}/cashier-program?_=${Date.now()}`,
-          { cache: 'no-store' }
-        )
-        const program = await programRes.json().catch(() => ({}))
-
-        if (!programRes.ok) {
-          throw new Error(program.detail || 'Could not load the business card configuration')
-        }
-
+        // Use the same program object returned with the scanned customer.
+        // This is the exact source already used successfully by the Points flow.
+        const program = data.program || {}
         const allowedCardTypes = ['stamp', 'points', 'membership', 'vip', 'multipass']
-        if (!allowedCardTypes.includes(program.card_type)) {
-          throw new Error(`Invalid saved card type: ${program.card_type || 'none'}`)
+        const returnedCardType = data.current_card_type || program.card_type
+
+        if (!allowedCardTypes.includes(returnedCardType)) {
+          throw new Error(
+            `The server returned no valid card type. Current: ${data.current_card_type || 'none'}; Program: ${program.card_type || 'none'}`
+          )
         }
 
-        const cardType = program.card_type
+        const cardType = returnedCardType
         const goal = program.stamp_goal || 8
 
         if (DEBUG) {
@@ -745,7 +743,14 @@ function CashierApp({ API_BASE }) {
       <header style={styles.header}>
         <div style={styles.headerBrand}>
           <span style={styles.headerLogo}>🌳</span>
-          <span style={styles.headerTitle}>{isOwner ? 'Card Scanner' : 'Cashier Scanner'}{staffName ? ` · ${staffName}` : ''}</span>
+          <div>
+            <span style={styles.headerTitle}>
+              {isOwner ? 'Card Scanner' : 'Cashier Scanner'}{staffName ? ` · ${staffName}` : ''}
+            </span>
+            <div style={{fontSize: 9, color: '#94a3b8', marginTop: 2}}>
+              {CASHIER_BUILD}
+            </div>
+          </div>
         </div>
         <button style={styles.resetBtn} onClick={() => {
           if (isOwner) {
@@ -848,6 +853,20 @@ function CashierApp({ API_BASE }) {
                   : `${customerData.stamp_count} rings • ${customerData.reward_threshold - (customerData.stamp_count % customerData.reward_threshold)} to fruit`}
               </p>
             </div>
+          </div>
+
+          <div style={{
+            margin: '10px 0 2px',
+            padding: '7px 10px',
+            borderRadius: 8,
+            background: '#f8fafc',
+            border: '1px solid #e2e8f0',
+            color: '#475569',
+            fontSize: 11,
+            fontWeight: 800,
+            textAlign: 'center',
+          }}>
+            SERVER CARD TYPE: {String(customerData.card_type || 'none').toUpperCase()}
           </div>
 
           {customerData.card_type === 'points' ? (
