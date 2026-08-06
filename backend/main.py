@@ -879,6 +879,7 @@ class LoyaltyConfig(BaseModel):
     membership_duration_days: Optional[int] = Field(default=30, ge=1, le=3650)
     membership_price: Optional[float] = Field(default=0, ge=0)
     membership_terms: Optional[str] = Field(default=None, max_length=2000)
+    membership_quick_checkin: Optional[bool] = False
     # --- VIP card only ---
     vip_points_per_amount: Optional[float] = Field(default=10, ge=0)
     vip_amount_pesos: Optional[float] = Field(default=100, ge=1)
@@ -973,7 +974,7 @@ class MembershipNoteRequest(BaseModel):
     # a full activity history per member (think: a dentist's per-patient
     # chart) - see 'leaves' on the member's record.
     customer_public_id: str
-    service_name: str = Field(max_length=120)  # what was done, e.g. "Teeth cleaning", "Root canal - session 1"
+    service_name: Optional[str] = Field(default=None, max_length=120)  # optional in quick check-in mode; blank becomes 'Visit'
     note: Optional[str] = Field(default=None, max_length=500)  # optional longer note - observations, follow-up needed, etc.
     service_date: Optional[str] = None  # 'YYYY-MM-DD' - defaults to today if omitted; lets a cashier log a visit entered late
     staff_pin: Optional[str] = None
@@ -4154,6 +4155,9 @@ async def get_customer_api(public_id: str, response: Response):
 
     if program and program.get('card_type') == 'membership':
         customer['membership_effective_status'] = membership_effective_status(customer)
+        membership_summary = get_membership_summary(customer.get('business_id'), customer.get('id'))
+        customer['membership_visit_count'] = membership_summary.get('total_visits', 0)
+        customer['membership_last_visit_at'] = membership_summary.get('last_service_date')
     if program and program.get('card_type') == 'vip':
         customer['vip_tier'] = get_vip_tier(customer, program)
         customer['vip_next_tier'] = get_next_vip_tier(customer, program)
@@ -4213,6 +4217,9 @@ async def get_customers(public_id: str):
     if program and program.get('card_type') == 'membership':
         for c in customers:
             c['membership_effective_status'] = membership_effective_status(c)
+            membership_summary = get_membership_summary(business.get('id'), c.get('id'))
+            c['membership_visit_count'] = membership_summary.get('total_visits', 0)
+            c['membership_last_visit_at'] = membership_summary.get('last_service_date')
     if program and program.get('card_type') == 'vip':
         for c in customers:
             c['vip_tier'] = get_vip_tier(c, program)
@@ -5006,6 +5013,7 @@ async def get_loyalty_config(public_id: str, response: Response):
             "membership_duration_days": 30,
             "membership_price": 0,
             "membership_terms": None,
+            "membership_quick_checkin": False,
             "vip_points_per_amount": 10,
             "vip_amount_pesos": 100,
             "vip_tiers": [],
@@ -5111,6 +5119,7 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
         data['membership_duration_days'] = config.membership_duration_days or 30
         data['membership_price'] = config.membership_price or 0
         data['membership_terms'] = (config.membership_terms or '').strip() or None
+        data['membership_quick_checkin'] = bool(config.membership_quick_checkin)
     if config.google_review_url is not None:
         features = get_plan_features(business.get('plan'))
         if not features.get('google_review_prompt'):
@@ -7707,6 +7716,28 @@ async def membership_action(public_id: str, req: MembershipActionRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
+@app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/multipass-history")
+async def get_multipass_history(public_id: str, customer_public_id: str):
+    """Customer-visible/owner-visible issue and use history, newest first."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    customer = safe_get_customer(customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+    try:
+        res = (
+            supabase.table('multipass_events')
+            .select('*')
+            .eq('business_id', business.get('id'))
+            .eq('customer_id', customer.get('id'))
+            .order('created_at', desc=True)
+            .execute()
+        )
+        return res.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
 @app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/membership-history")
 async def get_membership_history(public_id: str, customer_public_id: str):
     business = safe_get_business(public_id)
@@ -7791,11 +7822,12 @@ async def add_membership_note(public_id: str, req: MembershipNoteRequest, author
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
 
+    service_name = (req.service_name or '').strip() or 'Visit'
     service_date = req.service_date or datetime.utcnow().date().isoformat()
 
     try:
         leaf = log_membership_event(
-            business.get('id'), customer.get('id'), req.service_name.strip(),
+            business.get('id'), customer.get('id'), service_name,
             (req.note or '').strip() or None, service_date, noting_staff_id, noting_branch_id,
         )
         if leaf is None:
@@ -7803,7 +7835,7 @@ async def add_membership_note(public_id: str, req: MembershipNoteRequest, author
         sync_wallet_object(
             customer, business, program,
             notify_header="Visit logged ✅",
-            notify_body=f"Thanks for visiting! Service: {req.service_name.strip()}",
+            notify_body=f"Thanks for visiting! Service: {service_name}",
             notify_message_id=f"membership-{customer.get('id')}-{leaf.get('id')}-{int(datetime.utcnow().timestamp())}",
         )
         sync_apple_wallet_pass(customer)
@@ -8878,8 +8910,24 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup):
         'updated_at': datetime.utcnow().isoformat(),
     }
 
+    program = safe_get_loyalty_program(business.get('id'))
+    if program and program.get('card_type') == 'multipass':
+        session_count = int(program.get('multipass_session_count') or 12)
+        validity_days = int(program.get('multipass_validity_days') or 90)
+        customer_data.update({
+            'multipass_sessions_remaining': session_count,
+            'multipass_total_sessions': session_count,
+            'multipass_expires_at': (datetime.utcnow() + timedelta(days=validity_days)).date().isoformat(),
+        })
+
     try:
-        supabase.table("customers").insert(customer_data).execute()
+        insert_res = supabase.table("customers").insert(customer_data).execute()
+        inserted_customer = (insert_res.data or [None])[0]
+        if inserted_customer and program and program.get('card_type') == 'multipass':
+            log_multipass_event(
+                business.get('id'), inserted_customer.get('id'), 'issued',
+                inserted_customer.get('multipass_sessions_remaining') or 0,
+            )
     except Exception as e:
         error_msg = str(e)
         print(f"CUSTOMER INSERT ERROR: {error_msg}")

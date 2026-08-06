@@ -168,6 +168,7 @@ function CashierApp({ API_BASE }) {
           membership_expires_at: c.membership_expires_at || null,
           membership_services: Array.isArray(program.membership_services) ? program.membership_services : [],
           membership_description: program.description || '',
+          membership_quick_checkin: !!program.membership_quick_checkin,
           vip_points: c.vip_points || 0,
           vip_tier: c.vip_tier || null,
           vip_next_tier: c.vip_next_tier || null,
@@ -336,11 +337,10 @@ function CashierApp({ API_BASE }) {
 
   const logMembershipVisit = async () => {
     if (!customerData || !businessSlug) return
-    const serviceName = window.prompt(
-      'Visit or service',
-      customerData.membership_services?.[0] || 'Member check-in'
-    )
-    if (!serviceName) return
+    const serviceName = customerData.membership_quick_checkin
+      ? null
+      : window.prompt('Visit or service', customerData.membership_services?.[0] || 'Member check-in')
+    if (!customerData.membership_quick_checkin && !serviceName) return
     setLoading(true)
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/membership/note`, {
@@ -351,7 +351,7 @@ function CashierApp({ API_BASE }) {
         },
         body: JSON.stringify({
           customer_public_id: customerData.public_id,
-          service_name: serviceName,
+          service_name: serviceName || null,
           ...(sessionToken ? {} : { staff_pin: staffPin }),
           as_owner: isOwner,
         }),

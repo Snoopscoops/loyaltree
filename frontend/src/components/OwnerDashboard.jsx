@@ -74,9 +74,14 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     membership_price: 0,
     membership_services_text: '',
     membership_terms: '',
+    membership_quick_checkin: false,
   })
   const [savingMembershipSettings, setSavingMembershipSettings] = useState(false)
   const [membershipActionLoading, setMembershipActionLoading] = useState(false)
+  const [memberHistory, setMemberHistory] = useState([])
+  const [memberHistoryLoading, setMemberHistoryLoading] = useState(false)
+  const [memberVisitService, setMemberVisitService] = useState('')
+  const [memberVisitNote, setMemberVisitNote] = useState('')
 
   // Frontend URL for customer-facing pages
   const FRONTEND_URL = 'https://loyaltree-btw1.onrender.com'
@@ -169,6 +174,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           membership_price: progData.membership_price || 0,
           membership_services_text: Array.isArray(progData.membership_services) ? progData.membership_services.join('\n') : '',
           membership_terms: progData.membership_terms || '',
+          membership_quick_checkin: !!progData.membership_quick_checkin,
         })
       }
       setBranches(Array.isArray(branchData) ? branchData : [])
@@ -259,6 +265,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       points_balance: c.points_balance ?? 0,
       multipass_sessions_remaining: c.multipass_sessions_remaining ?? 0,
       membership_status: c.membership_effective_status || c.membership_status || 'inactive',
+      membership_visit_count: c.membership_visit_count || 0,
+      membership_last_visit_at: c.membership_last_visit_at || '',
       membership_start_date: c.membership_start_date || '',
       membership_expires_at: c.membership_expires_at || '',
       vip_points: c.vip_points ?? 0,
@@ -269,7 +277,48 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     setCouponText('')
     setCouponExpiry('')
     fetchCoupons(c.public_id)
+    setMemberVisitService('')
+    setMemberVisitNote('')
+    if (program?.card_type === 'membership' || program?.card_type === 'multipass') fetchMemberHistory(c.public_id)
+    else setMemberHistory([])
     setShowEditModal(true)
+  }
+
+  const fetchMemberHistory = async (customerPublicId) => {
+    setMemberHistoryLoading(true)
+    try {
+      const suffix = program?.card_type === 'multipass' ? 'multipass-history' : 'leaves'
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${customerPublicId}/${suffix}`)
+      const data = await res.json().catch(() => [])
+      setMemberHistory(res.ok && Array.isArray(data) ? data : [])
+    } catch (err) {
+      setMemberHistory([])
+    }
+    setMemberHistoryLoading(false)
+  }
+
+  const logMemberVisitFromOwner = async () => {
+    if (!editForm.public_id) return
+    setMembershipActionLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/membership/note`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customer_public_id: editForm.public_id,
+          service_name: memberVisitService.trim() || null,
+          note: memberVisitNote.trim() || null,
+          as_owner: true,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not log visit')
+      setMemberVisitService('')
+      setMemberVisitNote('')
+      await fetchMemberHistory(editForm.public_id)
+      await loadData()
+      setMessage('Visit logged')
+    } catch (err) { setMessage(err.message) }
+    setMembershipActionLoading(false)
   }
 
   const fetchCoupons = async (customerPublicId) => {
@@ -359,6 +408,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           membership_duration_days: Number(membershipSettings.membership_duration_days) || 30,
           membership_price: Number(membershipSettings.membership_price) || 0,
           membership_terms: membershipSettings.membership_terms || null,
+          membership_quick_checkin: !!membershipSettings.membership_quick_checkin,
         }),
       })
       const data = await res.json().catch(() => ({}))
@@ -1147,6 +1197,15 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                   onChange={e => setMembershipSettings({...membershipSettings, membership_services_text: e.target.value})}
                   placeholder={'Unlimited access\nLocker use\nFree assessment'}
                 />
+                <label style={{...styles.label, display: 'flex', gap: 10, alignItems: 'flex-start', cursor: 'pointer'}}>
+                  <input
+                    type="checkbox"
+                    checked={!!membershipSettings.membership_quick_checkin}
+                    onChange={e => setMembershipSettings({...membershipSettings, membership_quick_checkin: e.target.checked})}
+                    style={{marginTop: 3}}
+                  />
+                  <span><strong>Quick check-in (gym mode)</strong><br/><small style={{color:'#64748b'}}>Cashiers scan and log a visit immediately without asking for a service note. Turn this off for clinics or services that need visit details.</small></span>
+                </label>
                 <label style={styles.label}>Terms (optional)</label>
                 <textarea
                   style={{...styles.input, minHeight: 90, resize: 'vertical'}}
@@ -1454,13 +1513,25 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                   <input style={styles.input} type="date" value={editForm.membership_start_date || ''} readOnly />
                   <label style={styles.label}>Expires</label>
                   <input style={styles.input} type="date" value={editForm.membership_expires_at || ''} readOnly />
-                  <div style={{display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 8, marginBottom: 16}}>
-                    <button type="button" style={styles.submitBtn} disabled={membershipActionLoading} onClick={() => runMembershipAction('activate')}>Activate</button>
-                    <button type="button" style={styles.submitBtn} disabled={membershipActionLoading} onClick={() => runMembershipAction('renew')}>Renew</button>
-                    <button type="button" style={{...styles.submitBtn, background: '#f59e0b'}} disabled={membershipActionLoading} onClick={() => runMembershipAction('suspend')}>Suspend</button>
-                    <button type="button" style={{...styles.submitBtn, background: '#0d9488'}} disabled={membershipActionLoading} onClick={() => runMembershipAction('reactivate')}>Reactivate</button>
-                    <button type="button" style={{...styles.submitBtn, background: '#334155'}} disabled={membershipActionLoading} onClick={() => runMembershipAction('lifetime')}>Lifetime</button>
-                    <button type="button" style={{...styles.submitBtn, background: '#dc2626'}} disabled={membershipActionLoading} onClick={() => runMembershipAction('cancel')}>Cancel</button>
+                  <div style={{display:'flex', gap:12, padding:'12px 0', marginBottom:12, borderBottom:'1px solid #e2e8f0'}}>
+                    <div><strong>{editForm.membership_visit_count || memberHistory.length || 0}</strong><div style={{fontSize:12,color:'#64748b'}}>Total visits</div></div>
+                    <div><strong>{editForm.membership_last_visit_at || 'Never'}</strong><div style={{fontSize:12,color:'#64748b'}}>Last visit</div></div>
+                  </div>
+                  <div style={{display: 'flex', flexWrap:'wrap', gap: 8, marginBottom: 18}}>
+                    <button type="button" style={{...styles.submitBtn, width:'auto', flex:'1 1 120px'}} disabled={membershipActionLoading} onClick={() => runMembershipAction('activate')}>Activate</button>
+                    <button type="button" style={{...styles.submitBtn, width:'auto', flex:'1 1 120px'}} disabled={membershipActionLoading} onClick={() => runMembershipAction('renew')}>Renew</button>
+                    <button type="button" style={{...styles.submitBtn, width:'auto', flex:'1 1 120px', background: '#f59e0b'}} disabled={membershipActionLoading} onClick={() => runMembershipAction('suspend')}>Suspend</button>
+                    <button type="button" style={{...styles.submitBtn, width:'auto', flex:'1 1 120px', background: '#0d9488'}} disabled={membershipActionLoading} onClick={() => runMembershipAction('reactivate')}>Reactivate</button>
+                    <button type="button" style={{...styles.submitBtn, width:'auto', flex:'1 1 120px', background: '#334155'}} disabled={membershipActionLoading} onClick={() => runMembershipAction('lifetime')}>Lifetime</button>
+                    <button type="button" style={{...styles.submitBtn, width:'auto', flex:'1 1 120px', background: '#dc2626'}} disabled={membershipActionLoading} onClick={() => runMembershipAction('cancel')}>Cancel</button>
+                  </div>
+                  <div style={{padding:14, background:'#f8fafc', borderRadius:12, marginBottom:16}}>
+                    <strong>Log a visit</strong>
+                    {!membershipSettings.membership_quick_checkin && <>
+                      <input style={{...styles.input, marginTop:10}} value={memberVisitService} onChange={e=>setMemberVisitService(e.target.value)} placeholder="Service / visit type (optional)" />
+                      <textarea style={{...styles.input, minHeight:80}} value={memberVisitNote} onChange={e=>setMemberVisitNote(e.target.value)} placeholder="Medical note, observations, follow-up, or other details (optional)" />
+                    </>}
+                    <button type="button" style={styles.submitBtn} disabled={membershipActionLoading} onClick={logMemberVisitFromOwner}>Log visit</button>
                   </div>
                 </>
               ) : (
@@ -1476,6 +1547,24 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     onChange={e => setEditForm({...editForm, stamp_count: e.target.value})}
                   />
                 </>
+              )}
+              {(isMembershipCard || isMultipassCard) && (
+                <div style={{marginBottom:18, padding:14, border:'1px solid #e2e8f0', borderRadius:12}}>
+                  <strong>{isMultipassCard ? 'Session history' : 'Visit history'}</strong>
+                  {memberHistoryLoading ? <p style={{color:'#64748b'}}>Loading history...</p> : memberHistory.length === 0 ? <p style={{color:'#64748b'}}>No history yet.</p> : (
+                    <div style={{maxHeight:260, overflowY:'auto', marginTop:10}}>
+                      {memberHistory.map((item, i) => <div key={item.id || i} style={{padding:'10px 0', borderBottom:'1px solid #f1f5f9'}}>
+                        <div style={{display:'flex', justifyContent:'space-between', gap:10}}>
+                          <strong>{isMultipassCard ? (item.action === 'issued' ? 'Pass issued' : 'Session used') : (item.service_name || 'Visit')}</strong>
+                          <span style={{fontSize:12,color:'#64748b'}}>{item.service_date || (item.created_at ? new Date(item.created_at).toLocaleDateString() : '')}</span>
+                        </div>
+                        {isMultipassCard && <div style={{fontSize:13,color:'#475569'}}>{item.sessions_remaining ?? 0} sessions remaining</div>}
+                        {!isMultipassCard && item.note && <div style={{fontSize:13,color:'#475569',whiteSpace:'pre-wrap'}}>{item.note}</div>}
+                        {!isMultipassCard && (item.staff_name || item.branch_name) && <div style={{fontSize:12,color:'#94a3b8'}}>{[item.staff_name,item.branch_name].filter(Boolean).join(' · ')}</div>}
+                      </div>)}
+                    </div>
+                  )}
+                </div>
               )}
               <label style={styles.label}>Address</label>
               <input style={styles.input} value={editForm.address || ''} onChange={e => setEditForm({...editForm, address: e.target.value})} />
