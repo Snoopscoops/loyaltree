@@ -10464,8 +10464,6 @@ async def showroom_page(business_public_id: str):
                         specs_data.append({'label': 'Next due', 'value': format_showroom_date(v.get('amortization_next_due'))})
                     if v.get('amortization_months_remaining') is not None:
                         specs_data.append({'label': 'Months remaining', 'value': str(v.get('amortization_months_remaining'))})
-                    if v.get('financing_bank_name'):
-                        specs_data.append({'label': 'Financing bank', 'value': str(v.get('financing_bank_name'))})
                 elif payment_type == 'cash':
                     specs_data.append({'label': 'Payment type', 'value': 'Cash'})
 
