@@ -1269,6 +1269,8 @@ def safe_get_loyalty_program(business_id: int):
             supabase.table("loyalty_programs")
             .select("*")
             .eq("business_id", business_id)
+            .order("updated_at", desc=True)
+            .order("created_at", desc=True)
             .order("id", desc=True)
             .limit(1)
             .execute()
@@ -4169,7 +4171,9 @@ async def paymongo_webhook(request: Request):
     return {"received": True}
 
 @app.get("/api/v1/customer/{public_id}")
-async def get_customer_api(public_id: str):
+async def get_customer_api(public_id: str, response: Response):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
     customer = safe_get_customer(public_id)
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")

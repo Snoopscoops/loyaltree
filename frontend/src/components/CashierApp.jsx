@@ -95,11 +95,11 @@ function CashierApp({ API_BASE }) {
   const fetchCustomer = async (customerId) => {
     setLoading(true)
     setMessage('')
-    const url = `${API_BASE}/api/v1/customer/${customerId}`
+    const url = `${API_BASE}/api/v1/customer/${customerId}?_=${Date.now()}`
     if (DEBUG) setDebugInfo(prev => prev + ' | URL: ' + url.replace(API_BASE, ''))
 
     try {
-      const res = await fetch(url)
+      const res = await fetch(url, { cache: 'no-store' })
       if (DEBUG) setDebugInfo(prev => prev + ' | Status: ' + res.status)
 
       if (res.ok) {
