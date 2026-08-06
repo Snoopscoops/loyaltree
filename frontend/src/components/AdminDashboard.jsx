@@ -161,24 +161,41 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
     if (file.size > 8 * 1024 * 1024) throw new Error('Logo must be under 8 MB')
 
     const sigRes = await authedFetch('/api/v1/admin/partners/cloudinary-signature', { method: 'POST' })
-    const sig = await sigRes.json()
-    if (!sigRes.ok) throw new Error(sig.detail || 'Could not start logo upload')
+    const sigText = await sigRes.text()
+    let sig = {}
+    try { sig = sigText ? JSON.parse(sigText) : {} } catch (_) {}
+
+    if (!sigRes.ok) {
+      throw new Error(
+        sig.detail ||
+        `Could not start logo upload (${sigRes.status}). Check the backend Cloudinary configuration.`
+      )
+    }
+    if (!sig.cloud_name || !sig.api_key || !sig.signature || !sig.timestamp) {
+      throw new Error('The backend returned an incomplete Cloudinary upload signature')
+    }
 
     const body = new FormData()
     body.append('file', file)
     body.append('api_key', sig.api_key)
-    body.append('timestamp', sig.timestamp)
+    body.append('timestamp', String(sig.timestamp))
     body.append('signature', sig.signature)
-    body.append('upload_preset', sig.upload_preset)
-    body.append('folder', sig.folder)
+    if (sig.upload_preset) body.append('upload_preset', sig.upload_preset)
+    if (sig.folder) body.append('folder', sig.folder)
 
     const uploadRes = await fetch(`https://api.cloudinary.com/v1_1/${sig.cloud_name}/image/upload`, {
       method: 'POST',
       body,
     })
-    const uploaded = await uploadRes.json()
+    const uploadedText = await uploadRes.text()
+    let uploaded = {}
+    try { uploaded = uploadedText ? JSON.parse(uploadedText) : {} } catch (_) {}
+
     if (!uploadRes.ok || !uploaded.secure_url) {
-      throw new Error(uploaded?.error?.message || 'Logo upload failed')
+      throw new Error(
+        uploaded?.error?.message ||
+        `Cloudinary logo upload failed (${uploadRes.status})`
+      )
     }
     return uploaded.secure_url
   }
@@ -297,7 +314,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 <label style={styles.partnerLabel}>Logo</label>
                 <div style={styles.partnerUploadRow}>
                   <input style={styles.input} value={partnerForm.logo_url} onChange={e => setPartnerForm({...partnerForm,logo_url:e.target.value})} placeholder="Upload or paste logo URL" />
-                  <label style={styles.partnerUploadBtn}>{partnerUploading?'Uploading…':'📤 Upload logo'}<input type="file" accept="image/*" disabled={partnerUploading} style={{display:'none'}} onChange={e=>{uploadPartnerLogo(e.target.files[0]);e.target.value=''}} /></label>
+                  <label style={styles.partnerUploadBtn}>{partnerUploading?'Uploading…':'📤 Upload logo'}<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" disabled={partnerUploading} style={{display:'none'}} onChange={e=>{uploadPartnerLogo(e.target.files?.[0]);e.target.value=''}} /></label>
                 </div>
                 {partnerForm.logo_url && <img src={partnerForm.logo_url} alt="" style={styles.partnerPreview} />}
               </div>

@@ -22,6 +22,7 @@ from io import BytesIO
 from PIL import Image
 import zipfile
 import calendar
+import time
 
 # Environment
 SUPABASE_URL = os.getenv('SUPABASE_URL', '')
