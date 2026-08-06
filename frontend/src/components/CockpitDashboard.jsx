@@ -111,7 +111,6 @@ function drawCover(ctx,img,x,y,w,h){
 
 function buildCaption(kind,item,settings,publicUrl,hashtags){
   const arena=settings?.arena_name||'VCSA Cockpit Arena'
-  const phone=settings?.contact_phone||''
   const address=settings?.address||''
   const tags=(hashtags||'#VCSA #CockpitArena #Sabong #DerbySchedule').trim()
   if(kind==='event'){
@@ -129,14 +128,12 @@ function buildCaption(kind,item,settings,publicUrl,hashtags){
     if(details)lines.push('',details)
     if(specialNote)lines.push('',`📌 SPECIAL NOTE`,specialNote)
     lines.push('',item.status==='closed'?'Registration is closed.':'Registration and inquiries are now open.')
-    if(phone)lines.push(`📞 ${phone}`)
     lines.push(`🌐 ${publicUrl}`,'',tags)
     return lines.join('\n')
   }
   const lines=[`📢 ${String(item.title||'IMPORTANT ANNOUNCEMENT').toUpperCase()}`,'',item.message||'Please check our official page and website for the latest update.']
   if(item.publish_date)lines.push('',`📅 ${readableDate(item.publish_date)}`)
   if(address)lines.push(`📍 ${address}`);else lines.push(`📍 ${arena}`)
-  if(phone)lines.push(`📞 ${phone}`)
   lines.push(`🌐 ${publicUrl}`,'',tags)
   return lines.join('\n')
 }
@@ -152,7 +149,7 @@ function SocialPostStudio({kind,item,settings,publicUrl,onClose}){
   const [minimumBet,setMinimumBet]=useState(item.entry_fee?money(item.entry_fee):'')
   const [specialNote,setSpecialNote]=useState(item.special_note||splitEventDescription(item.description).specialNote||'')
   const [contactName1,setContactName1]=useState('')
-  const [contactNumber1,setContactNumber1]=useState(settings?.contact_phone||'')
+  const [contactNumber1,setContactNumber1]=useState('')
   const [contactName2,setContactName2]=useState('')
   const [contactNumber2,setContactNumber2]=useState('')
   const [busy,setBusy]=useState(false)
@@ -200,7 +197,7 @@ function SocialPostStudio({kind,item,settings,publicUrl,onClose}){
         ctx.fillStyle=red;ctx.fillText('COCKPIT ARENA',365,76)
         ctx.font='700 28px Arial';ctx.fillStyle='#111';ctx.textAlign='center'
         ctx.fillText(settings?.address||'665 Mc Arthur Hi-way, Malanday, Valenzuela City',W/2,126)
-        const headerPhones=contactEntries.map(([,number])=>number).join(' / ')||settings?.contact_phone||''
+        const headerPhones=contactEntries.map(([,number])=>number).join(' / ')
         ctx.font='700 24px Arial';ctx.fillText(headerPhones?`CP #: ${headerPhones}`:'OFFICIAL VCSA ANNOUNCEMENT',W/2,160)
         ctx.fillStyle='#111';ctx.fillRect(54,188,W-108,5)
 
@@ -251,7 +248,7 @@ function SocialPostStudio({kind,item,settings,publicUrl,onClose}){
         }
         ctx.fillStyle='rgba(0,0,0,.82)';ctx.fillRect(0,H-185,W,185)
         ctx.fillStyle=gold;ctx.font='800 25px Arial';ctx.fillText(settings?.address||settings?.arena_name||'VCSA Cockpit Arena',W/2,H-125)
-        ctx.fillStyle='#fff';ctx.font='700 22px Arial';ctx.fillText([contactPosterText.join('  •  ')||settings?.contact_phone,publicUrl].filter(Boolean).join('  •  ').slice(0,110),W/2,H-84)
+        ctx.fillStyle='#fff';ctx.font='700 22px Arial';ctx.fillText([contactPosterText.join('  •  '),publicUrl].filter(Boolean).join('  •  ').slice(0,110),W/2,H-84)
         ctx.fillStyle='#ddd';ctx.font='700 19px Arial';ctx.fillText(hashtags.slice(0,100),W/2,H-45)
       }
       ctx.textAlign='left';ctx.shadowColor='transparent'
@@ -271,10 +268,10 @@ function SocialPostStudio({kind,item,settings,publicUrl,onClose}){
       <Input label="Custom headline (optional)" value={customHeadline} onChange={setCustomHeadline}/>
       {kind==='event'&&<><Input label="Payout / prize line" value={payout} onChange={setPayout}/><Input label="Minimum bet" value={minimumBet} onChange={setMinimumBet}/><TextArea label="Special note (optional)" value={specialNote} onChange={setSpecialNote} rows={4}/></>}
       <div style={S.grid}>
-        <Input label="Contact name 1" value={contactName1} onChange={setContactName1}/>
-        <Input label="Contact number 1" value={contactNumber1} onChange={setContactNumber1}/>
-        <Input label="Contact name 2" value={contactName2} onChange={setContactName2}/>
-        <Input label="Contact number 2" value={contactNumber2} onChange={setContactNumber2}/>
+        <Input label="Reservation name 1" value={contactName1} onChange={setContactName1}/>
+        <Input label="Reservation number 1" value={contactNumber1} onChange={setContactNumber1}/>
+        <Input label="Reservation name 2" value={contactName2} onChange={setContactName2}/>
+        <Input label="Reservation number 2" value={contactNumber2} onChange={setContactNumber2}/>
       </div>
       <Input label="Background image URL" value={backgroundUrl} onChange={setBackgroundUrl}/>
       <Input label="Hashtags" value={hashtags} onChange={setHashtags}/>
