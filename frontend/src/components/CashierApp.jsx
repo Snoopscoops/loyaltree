@@ -105,9 +105,18 @@ function CashierApp({ API_BASE }) {
       if (res.ok) {
         const data = await res.json()
         const c = data.customer || {}
-        const program = data.program || {}
+
+        let activeCardData = {}
+        try {
+          const activeCardRes = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/active-card`)
+          if (activeCardRes.ok) activeCardData = await activeCardRes.json()
+        } catch (_) {
+          // Customer response remains the compatibility fallback.
+        }
+
+        const program = activeCardData.program || data.program || {}
         const goal = program.stamp_goal || 8
-        const backendCardType = data.current_card_type || program.card_type
+        const backendCardType = activeCardData.card_type || data.current_card_type || program.card_type
         const cardType = ['stamp', 'points', 'membership', 'vip', 'multipass'].includes(backendCardType)
           ? backendCardType
           : 'stamp'

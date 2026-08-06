@@ -1221,27 +1221,59 @@ def safe_get_customer_by_id(customer_id: int):
     except Exception:
         return None
 
-def safe_get_loyalty_program(business_id: int):
-    """Return the business's newest loyalty configuration.
 
-    Older databases may contain more than one loyalty_programs row for the
-    same business. maybe_single() rejects that result and previously caused
-    the cashier to silently fall back to a Stamp card. Selecting the newest
-    row keeps existing customer QR codes working after changing card types.
+def get_business_active_card_type(business: Optional[dict], program: Optional[dict] = None) -> str:
+    """Authoritative card type for scans and transactions.
+
+    businesses.active_card_type is the source of truth. The loyalty program
+    value remains a compatibility fallback for databases before migration.
     """
+    allowed = {'stamp', 'points', 'membership', 'vip', 'multipass'}
+    business_type = (business or {}).get('active_card_type')
+    if business_type in allowed:
+        return business_type
+    program_type = (program or {}).get('card_type')
+    if program_type in allowed:
+        return program_type
+    return 'stamp'
+
+def safe_get_loyalty_program(business_id: int):
+    """Return the program matching the business's authoritative active card."""
     if not supabase:
         return None
     try:
-        res = (
+        business_rows = (
+            supabase.table("businesses")
+            .select("active_card_type")
+            .eq("id", business_id)
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        active_type = business_rows[0].get("active_card_type") if business_rows else None
+
+        query = supabase.table("loyalty_programs").select("*").eq("business_id", business_id)
+        if active_type in ("stamp", "points", "membership", "vip", "multipass"):
+            matched = (
+                query.eq("card_type", active_type)
+                .order("updated_at", desc=True)
+                .order("id", desc=True)
+                .limit(1)
+                .execute()
+            )
+            rows = matched.data or []
+            if rows:
+                return rows[0]
+
+        fallback = (
             supabase.table("loyalty_programs")
             .select("*")
             .eq("business_id", business_id)
-            .order("updated_at", desc=True)
             .order("id", desc=True)
             .limit(1)
             .execute()
         )
-        rows = res.data or []
+        rows = fallback.data or []
         return rows[0] if rows else None
     except Exception as e:
         print(f"LOYALTY PROGRAM lookup error for business {business_id}: {e}")
@@ -4151,11 +4183,7 @@ async def get_customer_api(public_id: str):
         customer['vip_tier'] = get_vip_tier(customer, program)
         customer['vip_next_tier'] = get_next_vip_tier(customer, program)
 
-    current_card_type = (
-        program.get("card_type")
-        if program and program.get("card_type") in ("stamp", "points", "membership", "vip", "multipass")
-        else "stamp"
-    )
+    current_card_type = get_business_active_card_type(business, program)
 
     # Compatibility defaults for customers who joined before these card types
     # existed. Their existing public_id and QR remain valid.
@@ -4991,6 +5019,19 @@ async def get_analytics(public_id: str, range: str = '30d'):
         "revenue": revenue,
     }
 
+
+@app.get("/api/v1/business/{public_id}/active-card")
+async def get_active_card(public_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    program = safe_get_loyalty_program(business.get("id"))
+    card_type = get_business_active_card_type(business, program)
+    return {
+        "card_type": card_type,
+        "program": program or {"card_type": card_type},
+    }
+
 @app.get("/api/v1/business/{public_id}/loyalty-config")
 async def get_loyalty_config(public_id: str):
     business = safe_get_business(public_id)
@@ -5129,7 +5170,15 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
         else:
             data['created_at'] = datetime.utcnow().isoformat()
             supabase.table("loyalty_programs").insert(data).execute()
-        return {"message": "Configuration saved"}
+        supabase.table("businesses").update({
+            "active_card_type": config.card_type,
+            "updated_at": datetime.utcnow().isoformat(),
+        }).eq("id", business.get("id")).execute()
+
+        return {
+            "message": "Configuration saved",
+            "active_card_type": config.card_type,
+        }
     except Exception as e:
         error_msg = str(e)
         if "row-level security" in error_msg.lower() or "rls" in error_msg.lower():
@@ -7195,7 +7244,7 @@ async def add_vip_sale(public_id: str, req: VIPSaleRequest, authorization: str =
     if not customer or customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
     program = safe_get_loyalty_program(business.get('id'))
-    if not program or program.get('card_type') != 'vip':
+    if get_business_active_card_type(business, program) != 'vip':
         raise HTTPException(status_code=400, detail="This business is not using a VIP card")
     staff_id = branch_id = None
     claims = get_staff_session_claims(public_id, authorization)
@@ -7237,7 +7286,7 @@ async def adjust_vip_points(public_id: str, req: VIPAdjustRequest):
     business=safe_get_business(public_id); customer=safe_get_customer(req.customer_public_id)
     if not business or not customer or customer.get('business_id') != business.get('id'): raise HTTPException(status_code=404, detail='Customer not found')
     program=safe_get_loyalty_program(business.get('id'))
-    if not program or program.get('card_type')!='vip': raise HTTPException(status_code=400, detail='Not a VIP program')
+    if get_business_active_card_type(business, program) != 'vip': raise HTTPException(status_code=400, detail='Not a VIP program')
     old=get_vip_tier(customer,program); balance=max(0,int(customer.get('vip_points') or 0)+req.points_delta)
     supabase.table('customers').update({'vip_points':balance,'updated_at':datetime.utcnow().isoformat()}).eq('id',customer.get('id')).execute(); customer['vip_points']=balance
     new=get_vip_tier(customer,program); log_vip_event(business.get('id'),customer.get('id'),'adjustment',req.points_delta,balance,old_tier=old.get('name'),new_tier=new.get('name'),note=req.note)
@@ -7446,7 +7495,7 @@ async def issue_multipass(public_id: str, req: MultipassIssueRequest, authorizat
         raise HTTPException(status_code=404, detail="Customer not found for this business")
 
     program = safe_get_loyalty_program(business.get('id'))
-    if not program or program.get('card_type') != 'multipass':
+    if get_business_active_card_type(business, program) != 'multipass':
         raise HTTPException(status_code=400, detail="This business is not on a multi-pass card")
 
     issuing_staff_id = None
@@ -7540,7 +7589,7 @@ async def use_multipass_session(public_id: str, req: MultipassUseRequest, author
         raise HTTPException(status_code=404, detail="Customer not found for this business")
 
     program = safe_get_loyalty_program(business.get('id'))
-    if not program or program.get('card_type') != 'multipass':
+    if get_business_active_card_type(business, program) != 'multipass':
         raise HTTPException(status_code=400, detail="This business is not on a multi-pass card")
 
     sessions_remaining = customer.get('multipass_sessions_remaining', 0) or 0
@@ -7611,7 +7660,7 @@ async def membership_action(public_id: str, req: MembershipActionRequest):
     if not customer or customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
     program = safe_get_loyalty_program(business.get('id'))
-    if not program or program.get('card_type') != 'membership':
+    if get_business_active_card_type(business, program) != 'membership':
         raise HTTPException(status_code=400, detail="This business is not using a membership card")
 
     old_status = membership_effective_status(customer)
@@ -7726,7 +7775,7 @@ async def add_membership_note(public_id: str, req: MembershipNoteRequest, author
         raise HTTPException(status_code=404, detail="Customer not found for this business")
 
     program = safe_get_loyalty_program(business.get('id'))
-    if not program or program.get('card_type') != 'membership':
+    if get_business_active_card_type(business, program) != 'membership':
         raise HTTPException(status_code=400, detail="This business is not on a membership card")
     effective_status = membership_effective_status(customer)
     if effective_status not in ('active', 'lifetime'):
