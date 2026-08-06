@@ -308,7 +308,7 @@ const PLANS = [
   },
 ]
 
-function HomePage({ onNavigateLogin }) {
+function HomePage({ onNavigateLogin, API_BASE = '' }) {
   const navigate = useNavigate()
   const goToLogin = onNavigateLogin || (() => navigate('/login'))
 
@@ -318,11 +318,44 @@ function HomePage({ onNavigateLogin }) {
   const [partners, setPartners] = useState([])
 
   useEffect(() => {
-    fetch('/api/v1/public/partners')
-      .then(res => res.ok ? res.json() : [])
-      .then(data => setPartners(Array.isArray(data) ? data : []))
-      .catch(() => setPartners([]))
-  }, [])
+    let cancelled = false
+
+    const loadPartners = async () => {
+      try {
+        const base = API_BASE || import.meta.env.VITE_API_BASE_URL || ''
+        const res = await fetch(`${base}/api/v1/public/partners?_=${Date.now()}`, {
+          cache: 'no-store',
+          headers: { 'Cache-Control': 'no-cache' },
+        })
+        const data = res.ok ? await res.json() : []
+        if (!cancelled) setPartners(Array.isArray(data) ? data : [])
+      } catch (_) {
+        if (!cancelled) setPartners([])
+      }
+    }
+
+    loadPartners()
+
+    // Keep the public partner showcase in sync with changes made from the
+    // Admin Dashboard without requiring visitors to hard-refresh the page.
+    const interval = window.setInterval(loadPartners, 30000)
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') loadPartners()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [API_BASE])
+
+  const partnerLogoSrc = (partner) => {
+    if (!partner?.logo_url) return ''
+    const version = encodeURIComponent(partner.updated_at || partner.public_id || Date.now())
+    return `${partner.logo_url}${partner.logo_url.includes('?') ? '&' : '?'}ltv=${version}`
+  }
 
   const openCard = (card) => {
     if (!card.available) return
@@ -518,7 +551,7 @@ function HomePage({ onNavigateLogin }) {
               <div key={planKey} style={styles.partnerPlanGroup}>
                 <div style={styles.partnerPlanHeading}>
                   <span style={{ ...styles.partnerPlanBadge, background: planKey === 'growth' ? '#0d9488' : '#475569' }}>
-                    {planKey === 'growth' ? 'Growth Plan Partners' : 'Starter Plan Partners'}
+                    {planKey === 'partners' ? 'Partners' : planKey === 'growth' ? 'Growth Plan Partners' : 'Starter Plan Partners'}
                   </span>
                 </div>
                 <div style={styles.partnerGrid}>
@@ -531,7 +564,7 @@ function HomePage({ onNavigateLogin }) {
                       style={styles.partnerCard}
                     >
                       <div style={styles.partnerLogoWrap}>
-                        <img src={partner.logo_url} alt={partner.name} style={styles.partnerLogo} />
+                        <img src={partnerLogoSrc(partner)} alt={partner.name} style={styles.partnerLogo} loading="lazy" onError={e => { e.currentTarget.style.display = 'none' }} />
                       </div>
                       <div style={styles.partnerName}>{partner.name}</div>
                       <div style={styles.partnerSector}>{partner.sector || 'Business Partner'}</div>
