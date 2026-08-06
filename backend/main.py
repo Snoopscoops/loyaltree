@@ -13689,13 +13689,17 @@ def cockpit_list(table: str, business_id):
 def cockpit_event_db_id(business_id, event_public_id):
     if not event_public_id:
         return None
-    row = supabase.table('cockpit_events').select('id').eq('business_id', business_id).eq('public_id', event_public_id).maybe_single().execute().data
+    res = supabase.table('cockpit_events').select('id').eq('business_id', business_id).eq('public_id', event_public_id).limit(1).execute()
+    rows = res.data or []
+    row = rows[0] if rows else None
     return row.get('id') if row else None
 
 @app.get('/api/v1/business/{public_id}/cockpit/dashboard')
 async def get_cockpit_dashboard(public_id: str):
     b = cockpit_business(public_id)
-    settings = supabase.table('cockpit_settings').select('*').eq('business_id', b['id']).maybe_single().execute().data or {}
+    settings_res = supabase.table('cockpit_settings').select('*').eq('business_id', b['id']).limit(1).execute()
+    settings_rows = settings_res.data or []
+    settings = settings_rows[0] if settings_rows else {}
     return {
         'business': b,
         'settings': settings,
@@ -13750,7 +13754,9 @@ async def update_cockpit_settings(public_id: str, item: CockpitSettingsUpdate):
     b = cockpit_business(public_id)
     row = {k: v for k, v in item.model_dump().items() if v is not None}
     row.update({'business_id': b['id'], 'updated_at': datetime.utcnow().isoformat()})
-    existing = supabase.table('cockpit_settings').select('id').eq('business_id', b['id']).maybe_single().execute().data
+    existing_res = supabase.table('cockpit_settings').select('id').eq('business_id', b['id']).limit(1).execute()
+    existing_rows = existing_res.data or []
+    existing = existing_rows[0] if existing_rows else None
     if existing:
         return supabase.table('cockpit_settings').update(row).eq('business_id', b['id']).execute().data[0]
     return supabase.table('cockpit_settings').insert(row).execute().data[0]
@@ -13778,7 +13784,9 @@ def cockpit_public_card(title, body, image_url=None):
 @app.get('/cockpit/{public_id}', response_class=HTMLResponse)
 async def cockpit_public_site(public_id: str):
     b = cockpit_business(public_id)
-    settings = supabase.table('cockpit_settings').select('*').eq('business_id', b['id']).maybe_single().execute().data or {}
+    settings_res = supabase.table('cockpit_settings').select('*').eq('business_id', b['id']).limit(1).execute()
+    settings_rows = settings_res.data or []
+    settings = settings_rows[0] if settings_rows else {}
     events = cockpit_list('cockpit_events', b['id'])
     announcements = [x for x in cockpit_list('cockpit_announcements', b['id']) if x.get('is_active')]
     results = cockpit_list('cockpit_results', b['id'])
