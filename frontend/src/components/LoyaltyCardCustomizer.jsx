@@ -12,7 +12,7 @@ const DESCRIPTION_LIMIT = 140
 // `program` used for the customer card preview modal.
 function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
   const [form, setForm] = useState({
-    card_type: 'stamp', // 'stamp' | 'points' | 'membership' | 'multipass' - one active card at a time
+    card_type: 'stamp', // 'stamp' | 'points' | 'membership' | 'multipass' | 'vip' - one active card at a time
     card_name: '',
     primary_color: '#0d9488',
     reward_name: '',
@@ -31,6 +31,14 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
     membership_price: 0,
     membership_services: [],
     membership_terms: '',
+    // VIP card only
+    vip_points_per_amount: 10,
+    vip_amount_pesos: 100,
+    vip_tiers: [
+      { id: 'bronze', name: 'Bronze', threshold: 0, color: '#92400e', discount_percent: 0, benefits: ['Member-only offers'], active: true },
+      { id: 'silver', name: 'Silver', threshold: 1000, color: '#64748b', discount_percent: 5, benefits: ['5% discount'], active: true },
+      { id: 'gold', name: 'Gold', threshold: 3000, color: '#ca8a04', discount_percent: 10, benefits: ['10% discount', 'Priority service'], active: true },
+    ],
     // Multipass card only
     multipass_session_count: 12,
     multipass_validity_days: 90,
@@ -72,7 +80,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
       if (res.ok) {
         setForm(f => ({
           ...f,
-          card_type: ['stamp', 'points', 'membership', 'multipass'].includes(data.card_type) ? data.card_type : 'stamp',
+          card_type: ['stamp', 'points', 'membership', 'multipass', 'vip'].includes(data.card_type) ? data.card_type : 'stamp',
           card_name: data.card_name || '',
           primary_color: data.primary_color || '#0d9488',
           reward_name: data.reward_name || '',
@@ -89,6 +97,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
           membership_price: data.membership_price ?? 0,
           membership_services: Array.isArray(data.membership_services) ? data.membership_services : [],
           membership_terms: data.membership_terms || '',
+          vip_points_per_amount: data.vip_points_per_amount ?? 10,
+          vip_amount_pesos: data.vip_amount_pesos ?? 100,
+          vip_tiers: Array.isArray(data.vip_tiers) && data.vip_tiers.length ? data.vip_tiers : f.vip_tiers,
           multipass_session_count: data.multipass_session_count ?? 12,
           multipass_validity_days: data.multipass_validity_days ?? 90,
         }))
@@ -173,6 +184,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
     membership_price: Number(form.membership_price) || 0,
     membership_services: Array.isArray(form.membership_services) ? form.membership_services : [],
     membership_terms: form.membership_terms || null,
+    vip_points_per_amount: Number(form.vip_points_per_amount) || 0,
+    vip_amount_pesos: Number(form.vip_amount_pesos) || 100,
+    vip_tiers: form.vip_tiers,
     multipass_session_count: Number(form.multipass_session_count) || 12,
     multipass_validity_days: Number(form.multipass_validity_days) || 90,
   })
@@ -321,6 +335,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
             {form.card_type === 'membership' && <span style={styles.pickerCardBadge}>Selected</span>}
           </button>
 
+          <button type="button" onClick={() => update('card_type','vip')} style={{...styles.pickerCard,...(form.card_type==='vip'?{borderColor:form.primary_color||'#0d9488',background:'#fefce8'}:{})}}><span style={styles.pickerCardIcon}>👑</span><span style={styles.pickerCardLabel}>VIP Card</span><span style={styles.pickerCardDesc}>Customers earn non-spendable VIP points, rise through tiers automatically, and unlock stronger benefits.</span>{form.card_type==='vip'&&<span style={styles.pickerCardBadge}>Selected</span>}</button>
+
           <button
             type="button"
             onClick={() => update('card_type', 'multipass')}
@@ -337,7 +353,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
         </div>
 
         <button type="button" onClick={() => setStep('form')} style={styles.pickerContinueBtn}>
-          Continue with {form.card_type === 'points' ? 'Points Card' : form.card_type === 'membership' ? 'Membership Card' : form.card_type === 'multipass' ? 'Multi-Pass' : 'Stamp Card'} →
+          Continue with {form.card_type === 'points' ? 'Points Card' : form.card_type === 'membership' ? 'Membership Card' : form.card_type === 'vip' ? 'VIP Card' : form.card_type === 'multipass' ? 'Multi-Pass' : 'Stamp Card'} →
         </button>
       </div>
     )
@@ -369,6 +385,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
                     ? 'Points Rewards'
                     : form.card_type === 'membership'
                     ? 'Membership'
+                    : form.card_type === 'vip'
+                    ? 'VIP Status'
                     : form.card_type === 'multipass'
                     ? `${Number(form.multipass_session_count) || 12}-Session Pass`
                     : (form.reward_name || 'Free Service')}
@@ -423,6 +441,12 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
                       </div>
                     )}
                   </>
+                ) : form.card_type === 'vip' ? (
+                  <>
+                    <div style={styles.previewPointsBalance}><span style={{color:form.primary_color||'#0d9488'}}>GOLD VIP</span></div>
+                    <div style={styles.cardFoot}>3,450 VIP points · progressing automatically</div>
+                    <div style={styles.previewPrizeList}>{(form.vip_tiers||[]).slice(0,4).map((t,i)=><div key={t.id||i} style={styles.previewPrizeRow}><span>{t.name}</span><span>{t.threshold} pts</span></div>)}</div>
+                  </>
                 ) : form.card_type === 'multipass' ? (
                   <>
                     <div style={styles.previewPointsBalance}>
@@ -476,7 +500,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
 
           <div style={styles.typeSummary}>
             <span style={styles.typeSummaryText}>
-              {form.card_type === 'points' ? '💎 Points Card' : form.card_type === 'membership' ? '🏋️ Membership Card' : form.card_type === 'multipass' ? '🎫 Multi-Pass' : '🎟️ Stamp Card'}
+              {form.card_type === 'points' ? '💎 Points Card' : form.card_type === 'membership' ? '🏋️ Membership Card' : form.card_type === 'vip' ? '👑 VIP Card' : form.card_type === 'multipass' ? '🎫 Multi-Pass' : '🎟️ Stamp Card'}
             </span>
             <button type="button" onClick={() => setStep('picker')} style={styles.typeChangeBtn}>
               Change card type
@@ -599,6 +623,11 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
                   placeholder="Optional rules, renewal terms, and usage conditions."
                 />
               </div>
+            </div>
+          ) : form.card_type === 'vip' ? (
+            <div style={styles.pointsSection}>
+              <div style={styles.fieldGroup}><label style={styles.label}>VIP earn rate</label><div style={styles.earnRateRow}><span style={styles.earnRateText}>Earn</span><input style={styles.earnRateInput} type="number" min={0} value={form.vip_points_per_amount} onChange={e=>update('vip_points_per_amount',e.target.value)}/><span style={styles.earnRateText}>VIP points per ₱</span><input style={styles.earnRateInput} type="number" min={1} value={form.vip_amount_pesos} onChange={e=>update('vip_amount_pesos',e.target.value)}/><span style={styles.earnRateText}>spent</span></div></div>
+              <div style={styles.fieldGroup}><label style={styles.label}>VIP tiers</label>{(form.vip_tiers||[]).map((tier,i)=><div key={tier.id||i} style={{...styles.prizeForm,marginBottom:10}}><div style={styles.row}><input style={{...styles.input,flex:1}} value={tier.name} onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,name:e.target.value}:t))} placeholder="Tier name"/><input style={{...styles.input,width:130}} type="number" min={0} value={tier.threshold} onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,threshold:Number(e.target.value)}:t))} placeholder="Points"/><input type="color" style={styles.colorSwatch} value={tier.color||'#64748b'} onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,color:e.target.value}:t))}/></div><div style={styles.row}><input style={{...styles.input,width:150}} type="number" min={0} max={100} value={tier.discount_percent||0} onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,discount_percent:Number(e.target.value)}:t))} placeholder="Discount %"/><textarea style={{...styles.textarea,flex:1}} rows={3} value={(tier.benefits||[]).join('\n')} onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,benefits:e.target.value.split('\n').filter(Boolean)}:t))} placeholder="One benefit per line"/><button type="button" onClick={()=>update('vip_tiers',form.vip_tiers.filter((_,j)=>j!==i))} style={styles.prizeRemoveBtn}>✕</button></div></div>)}<button type="button" style={styles.addPrizeBtn} onClick={()=>update('vip_tiers',[...(form.vip_tiers||[]),{id:Math.random().toString(16).slice(2),name:'New Tier',threshold:0,color:'#64748b',discount_percent:0,benefits:[],active:true}])}>+ Add Tier</button><p style={styles.hint}>Thresholds must increase from lowest to highest. VIP points are not spent.</p></div>
             </div>
           ) : form.card_type === 'multipass' ? (
             <div style={styles.pointsSection}>

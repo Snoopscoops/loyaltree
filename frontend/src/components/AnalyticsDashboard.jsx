@@ -56,6 +56,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
   const isPoints = overview.card_type === 'points'
   const isMultipass = overview.card_type === 'multipass'
   const isMembership = overview.card_type === 'membership'
+  const isVip = overview.card_type === 'vip'
 
   return (
     <div className="an-container" style={styles.container}>
@@ -135,15 +136,15 @@ function AnalyticsDashboard({ API_BASE, user }) {
           />
         ) : (
           <StatCard
-            title={isMembership ? 'Member Visits' : isMultipass ? 'Sessions Used' : 'Stamps Issued'}
+            title={isVip ? 'VIP Points Issued' : isMembership ? 'Member Visits' : isMultipass ? 'Sessions Used' : 'Stamps Issued'}
             value={overview.total_stamps}
             change={overview.stamp_change}
-            icon={isMembership ? '✅' : isMultipass ? '🎫' : '🎯'}
+            icon={isVip ? '👑' : isMembership ? '✅' : isMultipass ? '🎫' : '🎯'}
             color="#f59e0b"
           />
         )}
         <StatCard 
-          title={isMembership ? 'Membership Actions' : isMultipass ? 'Packs Completed' : 'Rewards Redeemed'}
+          title={isVip ? 'Tier Upgrades' : isMembership ? 'Membership Actions' : isMultipass ? 'Packs Completed' : 'Rewards Redeemed'}
           value={overview.total_rewards} 
           change={overview.reward_change}
           icon="🎁" 
@@ -159,7 +160,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           />
         ) : (
           <StatCard
-            title={isMembership ? 'Avg. Visits/Member' : isMultipass ? 'Avg. Sessions/Customer' : 'Avg. Stamps/Customer'}
+            title={isVip ? 'Avg. VIP Points/Customer' : isMembership ? 'Avg. Visits/Member' : isMultipass ? 'Avg. Sessions/Customer' : 'Avg. Stamps/Customer'}
             value={overview.avg_stamps_per_customer}
             change={overview.avg_change}
             icon="📈"

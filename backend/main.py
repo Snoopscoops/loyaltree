@@ -850,7 +850,7 @@ class PointsPrize(BaseModel):
     description: Optional[str] = Field(default=None, max_length=140)
 
 class LoyaltyConfig(BaseModel):
-    card_type: Literal['stamp', 'points', 'multipass', 'membership'] = 'stamp'  # a business runs ONE active card at a time
+    card_type: Literal['stamp', 'points', 'multipass', 'membership', 'vip'] = 'stamp'  # a business runs ONE active card at a time
     stamp_goal: int = Field(default=8, ge=3, le=20)
     reward_name: str = 'Free Service'
     primary_color: str = '#3b82f6'
@@ -872,6 +872,10 @@ class LoyaltyConfig(BaseModel):
     membership_duration_days: Optional[int] = Field(default=30, ge=1, le=3650)
     membership_price: Optional[float] = Field(default=0, ge=0)
     membership_terms: Optional[str] = Field(default=None, max_length=2000)
+    # --- VIP card only ---
+    vip_points_per_amount: Optional[float] = Field(default=10, ge=0)
+    vip_amount_pesos: Optional[float] = Field(default=100, ge=1)
+    vip_tiers: Optional[List[dict]] = None
 
 class CustomerSignup(BaseModel):
     name: str
@@ -900,6 +904,8 @@ class CustomerUpdate(BaseModel):
     membership_status: Optional[Literal['inactive', 'active', 'suspended', 'cancelled', 'lifetime']] = None
     membership_start_date: Optional[str] = None
     membership_expires_at: Optional[str] = None
+    vip_points: Optional[int] = Field(default=None, ge=0)
+    vip_manual_tier_id: Optional[str] = None
 
 class StampRequest(BaseModel):
     customer_public_id: str
@@ -911,6 +917,17 @@ class PointsSaleRequest(BaseModel):
     amount_spent: float = Field(gt=0)  # pesos - converted to points via program.points_per_amount / points_amount_pesos
     staff_pin: Optional[str] = None
     as_owner: Optional[bool] = False
+
+class VIPSaleRequest(BaseModel):
+    customer_public_id: str
+    amount_spent: float = Field(gt=0)
+    staff_pin: Optional[str] = None
+    as_owner: Optional[bool] = False
+
+class VIPAdjustRequest(BaseModel):
+    customer_public_id: str
+    points_delta: int
+    note: Optional[str] = None
 
 class PointsRedeemRequest(BaseModel):
     customer_public_id: str
@@ -1740,6 +1757,13 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         loyalty_points_balance = f'{sessions_remaining}/{sessions_total}'
         progress_body = f'{sessions_remaining} of {sessions_total} sessions left'
         reward_body = (program.get('description') if program else None) or 'Session pass'
+    elif card_type == 'vip':
+        tier = get_vip_tier(customer, program or {})
+        next_tier = get_next_vip_tier(customer, program or {})
+        loyalty_points_label = 'VIP Tier'
+        loyalty_points_balance = tier.get('name','VIP')
+        progress_body = f"{int(customer.get('vip_points') or 0)} VIP points" + (f" · {max(0,next_tier.get('threshold',0)-int(customer.get('vip_points') or 0))} to {next_tier.get('name')}" if next_tier else ' · Highest tier')
+        reward_body = ', '.join(tier.get('benefits') or []) or 'VIP benefits'
     elif card_type == 'membership':
         status = membership_effective_status(customer)
         expiry = customer.get('membership_expires_at')
@@ -2828,6 +2852,69 @@ def log_multipass_event(business_id: int, customer_id: int, action: str, session
     except Exception as e:
         print(f"MULTIPASS EVENT LOG error: {e}")
 
+
+
+def normalize_vip_tiers(program: dict) -> list:
+    raw = program.get('vip_tiers') or []
+    tiers = []
+    for i, t in enumerate(raw):
+        if not isinstance(t, dict):
+            continue
+        try:
+            threshold = max(0, int(t.get('threshold') or 0))
+        except Exception:
+            threshold = 0
+        tiers.append({
+            'id': str(t.get('id') or f'tier-{i+1}'),
+            'name': str(t.get('name') or f'Tier {i+1}'),
+            'threshold': threshold,
+            'color': str(t.get('color') or '#64748b'),
+            'discount_percent': max(0, min(100, float(t.get('discount_percent') or 0))),
+            'benefits': [str(x).strip() for x in (t.get('benefits') or []) if str(x).strip()],
+            'active': t.get('active') is not False,
+        })
+    tiers = [t for t in tiers if t['active']]
+    tiers.sort(key=lambda t: t['threshold'])
+    return tiers
+
+def get_vip_tier(customer: dict, program: dict) -> dict:
+    tiers = normalize_vip_tiers(program)
+    if not tiers:
+        return {'id':'vip','name':'VIP','threshold':0,'color':'#111827','discount_percent':0,'benefits':[]}
+    manual = customer.get('vip_manual_tier_id')
+    if manual:
+        found = next((t for t in tiers if t['id'] == manual), None)
+        if found:
+            return found
+    points = int(customer.get('vip_points') or 0)
+    current = tiers[0]
+    for tier in tiers:
+        if points >= tier['threshold']:
+            current = tier
+        else:
+            break
+    return current
+
+def get_next_vip_tier(customer: dict, program: dict):
+    points = int(customer.get('vip_points') or 0)
+    current = get_vip_tier(customer, program)
+    tiers = normalize_vip_tiers(program)
+    for tier in tiers:
+        if tier['threshold'] > points and tier['threshold'] > current['threshold']:
+            return tier
+    return None
+
+def log_vip_event(business_id, customer_id, action, points_delta, points_balance, amount_spent=None, old_tier=None, new_tier=None, staff_id=None, branch_id=None, note=None):
+    try:
+        supabase.table('vip_events').insert({
+            'business_id': business_id, 'customer_id': customer_id, 'action': action,
+            'points_delta': points_delta, 'points_balance': points_balance,
+            'amount_spent': amount_spent, 'old_tier': old_tier, 'new_tier': new_tier,
+            'staff_id': staff_id, 'branch_id': branch_id, 'note': note,
+            'created_at': datetime.utcnow().isoformat(),
+        }).execute()
+    except Exception as e:
+        print(f'VIP EVENT error: {e}')
 
 def membership_effective_status(customer: dict) -> str:
     """Returns the current access status, automatically treating a past
@@ -3918,6 +4005,9 @@ async def get_customer_api(public_id: str):
 
     if program and program.get('card_type') == 'membership':
         customer['membership_effective_status'] = membership_effective_status(customer)
+    if program and program.get('card_type') == 'vip':
+        customer['vip_tier'] = get_vip_tier(customer, program)
+        customer['vip_next_tier'] = get_next_vip_tier(customer, program)
 
     return {
         "customer": customer,
@@ -3973,6 +4063,10 @@ async def get_customers(public_id: str):
     if program and program.get('card_type') == 'membership':
         for c in customers:
             c['membership_effective_status'] = membership_effective_status(c)
+    if program and program.get('card_type') == 'vip':
+        for c in customers:
+            c['vip_tier'] = get_vip_tier(c, program)
+            c['vip_next_tier'] = get_next_vip_tier(c, program)
 
     return customers
 
@@ -4760,6 +4854,9 @@ async def get_loyalty_config(public_id: str):
             "membership_duration_days": 30,
             "membership_price": 0,
             "membership_terms": None,
+            "vip_points_per_amount": 10,
+            "vip_amount_pesos": 100,
+            "vip_tiers": [],
         }
     return program
 
@@ -4801,6 +4898,26 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
                 'description': p.description,
             })
         data['points_prizes'] = prizes
+    if config.card_type == 'vip':
+        data['vip_points_per_amount'] = config.vip_points_per_amount or 0
+        data['vip_amount_pesos'] = config.vip_amount_pesos or 100
+        tiers=[]
+        last=-1
+        for i,t in enumerate(config.vip_tiers or []):
+            threshold=max(0,int(t.get('threshold') or 0))
+            if threshold < last:
+                raise HTTPException(status_code=400, detail='VIP tier thresholds must increase in order')
+            last=threshold
+            tiers.append({
+                'id': str(t.get('id') or uuid.uuid4().hex[:12]),
+                'name': str(t.get('name') or f'Tier {i+1}').strip(),
+                'threshold': threshold,
+                'color': str(t.get('color') or '#64748b'),
+                'discount_percent': max(0,min(100,float(t.get('discount_percent') or 0))),
+                'benefits': [str(x).strip() for x in (t.get('benefits') or []) if str(x).strip()],
+                'active': t.get('active') is not False,
+            })
+        data['vip_tiers'] = tiers
     if config.card_type == 'membership':
         if config.membership_services is not None:
             data['membership_services'] = [s.strip() for s in config.membership_services if s and s.strip()]
@@ -6879,6 +6996,50 @@ async def add_stamp(public_id: str, req: StampRequest, authorization: str = Head
         "stamp_count": new_count,
         "reward_unlocked": reward_unlocked,
     }
+
+
+@app.post("/api/v1/business/{public_id}/vip-sale")
+async def add_vip_sale(public_id: str, req: VIPSaleRequest, authorization: str = Header(default="")):
+    business = safe_get_business(public_id)
+    if not business: raise HTTPException(status_code=404, detail="Business not found")
+    customer = safe_get_customer(req.customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+    program = safe_get_loyalty_program(business.get('id'))
+    if not program or program.get('card_type') != 'vip':
+        raise HTTPException(status_code=400, detail="This business is not using a VIP card")
+    staff_id = branch_id = None
+    claims = get_staff_session_claims(public_id, authorization)
+    if claims:
+        staff_id = claims.get('staff_id')
+    elif not req.as_owner:
+        if not req.staff_pin: raise HTTPException(status_code=400, detail="Staff PIN required")
+        sr = supabase.table('staff').select('*').eq('business_id', business.get('id')).eq('pin', req.staff_pin).execute()
+        if not sr.data: raise HTTPException(status_code=403, detail="Invalid staff PIN")
+        staff_id=sr.data[0].get('id'); branch_id=sr.data[0].get('branch_id')
+    rate=float(program.get('vip_points_per_amount') or 0); base=float(program.get('vip_amount_pesos') or 100)
+    earned=max(0,int((req.amount_spent/base)*rate))
+    old_tier=get_vip_tier(customer, program)
+    balance=int(customer.get('vip_points') or 0)+earned
+    supabase.table('customers').update({'vip_points':balance,'updated_at':datetime.utcnow().isoformat()}).eq('id',customer.get('id')).execute()
+    customer['vip_points']=balance
+    new_tier=get_vip_tier(customer, program); next_tier=get_next_vip_tier(customer, program)
+    log_vip_event(business.get('id'),customer.get('id'),'sale',earned,balance,req.amount_spent,old_tier.get('name'),new_tier.get('name'),staff_id,branch_id)
+    sync_wallet_object(customer,business,program,notify_header='VIP status updated',notify_body=(f"You earned {earned} VIP points. You are now {new_tier.get('name')} VIP."),notify_message_id=f"vip-{customer.get('id')}-{balance}-{int(datetime.utcnow().timestamp())}")
+    sync_apple_wallet_pass(customer)
+    return {'message':f'{earned} VIP points added','points_earned':earned,'vip_points':balance,'tier':new_tier,'next_tier':next_tier,'upgraded':old_tier.get('id')!=new_tier.get('id')}
+
+@app.post("/api/v1/business/{public_id}/vip-adjust")
+async def adjust_vip_points(public_id: str, req: VIPAdjustRequest):
+    business=safe_get_business(public_id); customer=safe_get_customer(req.customer_public_id)
+    if not business or not customer or customer.get('business_id') != business.get('id'): raise HTTPException(status_code=404, detail='Customer not found')
+    program=safe_get_loyalty_program(business.get('id'))
+    if not program or program.get('card_type')!='vip': raise HTTPException(status_code=400, detail='Not a VIP program')
+    old=get_vip_tier(customer,program); balance=max(0,int(customer.get('vip_points') or 0)+req.points_delta)
+    supabase.table('customers').update({'vip_points':balance,'updated_at':datetime.utcnow().isoformat()}).eq('id',customer.get('id')).execute(); customer['vip_points']=balance
+    new=get_vip_tier(customer,program); log_vip_event(business.get('id'),customer.get('id'),'adjustment',req.points_delta,balance,old_tier=old.get('name'),new_tier=new.get('name'),note=req.note)
+    sync_wallet_object(customer,business,program); sync_apple_wallet_pass(customer)
+    return {'vip_points':balance,'tier':new,'next_tier':get_next_vip_tier(customer,program)}
 
 @app.post("/api/v1/business/{public_id}/points-sale")
 async def add_points_sale(public_id: str, req: PointsSaleRequest, authorization: str = Header(default="")):

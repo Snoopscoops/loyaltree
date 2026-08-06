@@ -261,6 +261,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       membership_status: c.membership_effective_status || c.membership_status || 'inactive',
       membership_start_date: c.membership_start_date || '',
       membership_expires_at: c.membership_expires_at || '',
+      vip_points: c.vip_points ?? 0,
+      vip_manual_tier_id: c.vip_manual_tier_id || '',
     })
     setShowCouponForm(false)
     setCouponError('')
@@ -624,6 +626,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const isPointsCard = program?.card_type === 'points'
   const isMultipassCard = program?.card_type === 'multipass'
   const isMembershipCard = program?.card_type === 'membership'
+  const isVipCard = program?.card_type === 'vip'
   const cardExperience = isPointsCard
     ? {
         key: 'points',
@@ -640,6 +643,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         recentTitle: 'Recent Customer Activity',
         editDescription: 'Configure earning rules and reward prizes',
       }
+    : isVipCard
+    ? { key:'vip',accent:'#ca8a04',soft:'#fefce8',border:'#fde68a',icon:'👑',title:'VIP Program',customerLabel:'VIP Customers',customerIcon:'👑',dashboardLabel:'VIP Dashboard',scanTitle:'Record VIP Purchase',scanDescription:'Award VIP points and check tier benefits',recentTitle:'Recent VIP Activity',editDescription:'Configure tier thresholds and increasing benefits' }
     : isMembershipCard
     ? {
         key: 'membership',
@@ -692,6 +697,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const totalPoints = customers.reduce((sum, c) => sum + (c.points_balance || 0), 0)
   const totalSessionsLeft = customers.reduce((sum, c) => sum + (c.multipass_sessions_remaining || 0), 0)
   const unlockedRewards = customers.filter(c => c.reward_unlocked).length
+  const totalVipPoints = customers.reduce((sum,c)=>sum+(c.vip_points||0),0)
   const membershipActive = customers.filter(c => ['active', 'lifetime'].includes(c.membership_effective_status || c.membership_status)).length
   const membershipExpired = customers.filter(c => (c.membership_effective_status || c.membership_status) === 'expired').length
   const membershipExpiringSoon = customers.filter(c => {
@@ -797,7 +803,9 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           </div>
         </div>
         <div style={styles.statsRing}>
-          {(isMembershipCard
+          {(isVipCard
+            ? [{value:customers.length,label:'VIP Customers'},{value:totalVipPoints,label:'VIP Points'},{value:customers.filter(c=>c.vip_tier?.name).length,label:'Tiered Customers'}]
+            : isMembershipCard
             ? [
                 { value: membershipActive, label: 'Active Members' },
                 { value: membershipExpiringSoon, label: 'Expiring in 7 Days' },
@@ -892,7 +900,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                   <span style={styles.activityLeaf}>🍃</span>
                   <span style={styles.activityName}>{c.name}</span>
                   <span style={styles.activityStamps}>
-                    {isPointsCard ? `${c.points_balance || 0} points` : isMultipassCard ? `${c.multipass_sessions_remaining || 0}/${c.multipass_total_sessions || 0} sessions` : isMembershipCard ? `${(c.membership_effective_status || c.membership_status || 'inactive').toUpperCase()}` : `${c.stamp_count} rings`}
+                    {isPointsCard ? `${c.points_balance || 0} points` : isMultipassCard ? `${c.multipass_sessions_remaining || 0}/${c.multipass_total_sessions || 0} sessions` : isVipCard ? `${c.vip_tier?.name || 'VIP'} · ${c.vip_points || 0} pts` : isMembershipCard ? `${(c.membership_effective_status || c.membership_status || 'inactive').toUpperCase()}` : `${c.stamp_count} rings`}
                   </span>
                   {c.reward_unlocked && <span style={styles.activityFruit}>🍎</span>}
                 </div>
@@ -951,6 +959,11 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                           {c.multipass_sessions_remaining || 0} / {c.multipass_total_sessions || 0} sessions left
                           {c.multipass_expires_at ? ` · until ${c.multipass_expires_at}` : ''}
                         </p>
+                      </>
+                    ) : isVipCard ? (
+                      <>
+                        <p style={{...styles.stampText,fontWeight:900,color:c.vip_tier?.color||'#ca8a04'}}>👑 {c.vip_tier?.name||'VIP'}</p>
+                        <p style={styles.lastStampedText}>{c.vip_points||0} VIP points{c.vip_next_tier?` · ${Math.max(0,c.vip_next_tier.threshold-(c.vip_points||0))} to ${c.vip_next_tier.name}`:' · Highest tier'}</p>
                       </>
                     ) : isMembershipCard ? (
                       <>
@@ -1251,6 +1264,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                       </p>
                     )}
                   </div>
+                ) : isVipCard ? (
+                  <div style={styles.cardProgress}><p style={{fontSize:30,fontWeight:900,color:'white',margin:'8px 0 2px'}}>👑 {selectedCustomer.vip_tier?.name||'VIP'}</p><p style={{fontSize:14,color:'white'}}>{selectedCustomer.vip_points||0} VIP points</p>{selectedCustomer.vip_next_tier&&<p style={{fontSize:12,color:'rgba(255,255,255,.8)'}}>{Math.max(0,selectedCustomer.vip_next_tier.threshold-(selectedCustomer.vip_points||0))} points to {selectedCustomer.vip_next_tier.name}</p>}{(selectedCustomer.vip_tier?.benefits||[]).map((b,i)=><p key={i} style={{fontSize:12,color:'white',margin:'4px 0',textAlign:'left'}}>✓ {b}</p>)}</div>
                 ) : isMembershipCard ? (
                   <div style={styles.cardProgress}>
                     <p style={{
@@ -1425,6 +1440,11 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     value={editForm.multipass_sessions_remaining}
                     onChange={e => setEditForm({...editForm, multipass_sessions_remaining: e.target.value})}
                   />
+                </>
+              ) : isVipCard ? (
+                <>
+                  <label style={styles.label}>VIP points</label><input style={styles.input} type='number' min='0' value={editForm.vip_points||0} onChange={e=>setEditForm({...editForm,vip_points:e.target.value})}/>
+                  <label style={styles.label}>Manual tier override</label><select style={styles.input} value={editForm.vip_manual_tier_id||''} onChange={e=>setEditForm({...editForm,vip_manual_tier_id:e.target.value})}><option value=''>Automatic from points</option>{(program?.vip_tiers||[]).map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select>
                 </>
               ) : isMembershipCard ? (
                 <>

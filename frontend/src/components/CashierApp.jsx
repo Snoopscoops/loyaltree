@@ -112,6 +112,8 @@ function CashierApp({ API_BASE }) {
           ? 'multipass'
           : program.card_type === 'membership'
           ? 'membership'
+          : program.card_type === 'vip'
+          ? 'vip'
           : 'stamp'
         setCustomerData({
           public_id: c.public_id,
@@ -143,6 +145,7 @@ function CashierApp({ API_BASE }) {
           membership_expires_at: c.membership_expires_at || null,
           membership_services: Array.isArray(program.membership_services) ? program.membership_services : [],
           membership_description: program.description || '',
+          vip_points: c.vip_points || 0, vip_tier: c.vip_tier || null, vip_next_tier: c.vip_next_tier || null,
         })
         setMessage(`Found: ${c.name}`)
       } else {
@@ -253,6 +256,11 @@ function CashierApp({ API_BASE }) {
     setLoading(false)
   }
 
+
+  const recordVipPurchase = async () => {
+    const amount = Number(window.prompt('Purchase amount (₱)', '0')); if (!amount || amount <= 0) return; setLoading(true)
+    try { const res=await fetch(`${API_BASE}/api/v1/business/${businessSlug}/vip-sale`,{method:'POST',headers:{'Content-Type':'application/json',...(sessionToken?{Authorization:`Bearer ${sessionToken}`}:{})},body:JSON.stringify({customer_public_id:customerData.public_id,amount_spent:amount,...(sessionToken?{}:{staff_pin:staffPin}),as_owner:isOwner})}); const d=await res.json(); if(!res.ok) throw new Error(d.detail||'VIP sale failed'); setCustomerData({...customerData,vip_points:d.vip_points,vip_tier:d.tier,vip_next_tier:d.next_tier}); setMessage(d.upgraded?`🎉 Upgraded to ${d.tier.name}!`:`✅ ${d.points_earned} VIP points added`) } catch(e){setMessage(`❌ ${e.message}`)} setLoading(false)
+  }
 
   const logMembershipVisit = async () => {
     if (!customerData || !businessSlug) return
@@ -682,6 +690,8 @@ function CashierApp({ API_BASE }) {
                   ? `${customerData.points_balance} points`
                   : customerData.card_type === 'multipass'
                   ? `${customerData.sessions_remaining}/${customerData.sessions_total} sessions left`
+                  : customerData.card_type === 'vip'
+                  ? `${customerData.vip_tier?.name || 'VIP'} · ${customerData.vip_points || 0} points`
                   : customerData.card_type === 'membership'
                   ? `${customerData.membership_status.toUpperCase()}${customerData.membership_expires_at ? ` • until ${customerData.membership_expires_at}` : ''}`
                   : `${customerData.stamp_count} rings • ${customerData.reward_threshold - (customerData.stamp_count % customerData.reward_threshold)} to fruit`}
@@ -743,6 +753,8 @@ function CashierApp({ API_BASE }) {
                 </p>
               )}
             </>
+          ) : customerData.card_type === 'vip' ? (
+            <><div style={styles.pointsBalanceBox}><span style={{...styles.pointsBalanceNumber,fontSize:28}}>👑 {customerData.vip_tier?.name||'VIP'}</span><span style={styles.pointsBalanceLabel}>{customerData.vip_points||0} VIP points</span></div>{(customerData.vip_tier?.benefits||[]).map((b,i)=><div key={i} style={{fontSize:13,color:'#475569'}}>✓ {b}</div>)}</>
           ) : customerData.card_type === 'membership' ? (
             <>
               <div style={{
@@ -873,6 +885,7 @@ function CashierApp({ API_BASE }) {
                 {loading ? '...' : '🍃 Add Ring'}
               </button>
             )}
+            {customerData.card_type === 'vip' && (<button style={{...styles.actionBtn,background:'#ca8a04'}} onClick={recordVipPurchase} disabled={loading}>{loading?'...':'👑 Record VIP Purchase'}</button>)}
             {customerData.card_type === 'membership' && (
               <button
                 style={{...styles.actionBtn, background: '#0d9488'}}
