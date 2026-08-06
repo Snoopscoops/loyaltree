@@ -832,89 +832,93 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         </div>
       )}
 
-      {/* Tree Visualization */}
-      <div style={styles.treeSection}>
-        <div style={styles.treeVisual}>
-          <div style={{...styles.treeCanopy, transform: `scale(${Math.min(1 + customers.length * 0.01, 1.5)})`}}>
-            {Array.from({length: Math.min(customers.length, 20)}).map((_, i) => (
-              <div key={i} style={{
-                ...styles.leaf,
-                left: `${30 + Math.random() * 40}%`,
-                top: `${20 + Math.random() * 30}%`,
-                animationDelay: `${i * 0.1}s`,
-              }}>🍃</div>
-            ))}
-            <div style={styles.treeTop}>{cardExperience.icon}</div>
-          </div>
-          <div style={styles.treeTrunk}>
-            <div style={styles.roots}>
-              <div style={styles.root}>🏪 {user?.business_name}</div>
+      {/* Professional dashboard summary */}
+      <section style={styles.dashboardShell}>
+        <div style={styles.dashboardHero}>
+          <div style={styles.heroIdentity}>
+            <div style={{...styles.heroIcon, background: cardExperience.soft, color: cardExperience.accent}}>
+              {cardExperience.icon}
+            </div>
+            <div style={{minWidth: 0}}>
+              <p style={styles.heroEyebrow}>{cardExperience.dashboardLabel}</p>
+              <h2 style={styles.heroTitle}>{user?.business_name}</h2>
+              <p style={styles.heroDescription}>{cardExperience.editDescription}</p>
             </div>
           </div>
+          <div style={styles.heroQuickActions}>
+            <button
+              onClick={() => navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name } })}
+              style={{...styles.primaryActionBtn, background: cardExperience.accent}}
+            >
+              📷 {cardExperience.scanTitle}
+            </button>
+            <button onClick={fetchQRImage} style={styles.secondaryActionBtn}>🔗 Share Join QR</button>
+          </div>
         </div>
-        <div style={styles.statsRing}>
+
+        <div style={styles.metricsGrid}>
           {(isVipCard
-            ? [{value:customers.length,label:'VIP Customers'},{value:totalVipPoints,label:'VIP Points'},{value:customers.filter(c=>c.vip_tier?.name).length,label:'Tiered Customers'}]
+            ? [{value:customers.length,label:'VIP Customers',hint:'Enrolled in your VIP program'},{value:totalVipPoints,label:'VIP Points',hint:'Current points across customers'},{value:customers.filter(c=>c.vip_tier?.name).length,label:'Tiered Customers',hint:'Customers with an assigned tier'}]
             : isMembershipCard
             ? [
-                { value: membershipActive, label: 'Active Members' },
-                { value: membershipExpiringSoon, label: 'Expiring in 7 Days' },
-                { value: membershipExpired, label: 'Expired' },
+                { value: membershipActive, label: 'Active Members', hint: 'Currently allowed to check in' },
+                { value: membershipExpiringSoon, label: 'Expiring Soon', hint: 'Memberships ending within 7 days' },
+                { value: membershipExpired, label: 'Expired', hint: 'Memberships requiring renewal' },
               ]
             : isPointsCard
             ? [
-                { value: customers.length, label: 'Customers' },
-                { value: totalPoints, label: 'Points Balance' },
-                { value: unlockedRewards, label: 'Rewards Ready' },
+                { value: customers.length, label: 'Customers', hint: 'Customers enrolled in the program' },
+                { value: totalPoints, label: 'Points Balance', hint: 'Total unredeemed customer points' },
+                { value: unlockedRewards, label: 'Rewards Ready', hint: 'Customers with available rewards' },
               ]
             : isMultipassCard
             ? [
-                { value: customers.length, label: 'Pass Holders' },
-                { value: totalSessionsLeft, label: 'Sessions Left' },
-                { value: customers.filter(c => (c.multipass_sessions_remaining || 0) <= 0 && (c.multipass_total_sessions || 0) > 0).length, label: 'Passes Completed' },
+                { value: customers.length, label: 'Pass Holders', hint: 'Customers with a multi-pass record' },
+                { value: totalSessionsLeft, label: 'Sessions Left', hint: 'Unused sessions across all passes' },
+                { value: customers.filter(c => (c.multipass_sessions_remaining || 0) <= 0 && (c.multipass_total_sessions || 0) > 0).length, label: 'Completed Passes', hint: 'Passes that reached zero sessions' },
               ]
             : [
-                { value: customers.length, label: 'Customers' },
-                { value: confirmedStamps, label: 'Stamps Issued' },
-                { value: unlockedRewards, label: 'Rewards Ready' },
+                { value: customers.length, label: 'Customers', hint: 'Customers enrolled in the program' },
+                { value: confirmedStamps, label: 'Stamps Issued', hint: 'Total stamps currently recorded' },
+                { value: unlockedRewards, label: 'Rewards Ready', hint: 'Customers with available rewards' },
               ]
           ).map(metric => (
-            <div key={metric.label} style={{...styles.statOrb, borderColor: cardExperience.border}}>
-              <span style={{...styles.orbNumber, color: cardExperience.accent}}>{metric.value}</span>
-              <span style={styles.orbLabel}>{metric.label}</span>
-            </div>
+            <article key={metric.label} style={styles.metricCard}>
+              <div style={{...styles.metricAccent, background: cardExperience.accent}} />
+              <span style={styles.metricLabel}>{metric.label}</span>
+              <strong style={{...styles.metricValue, color: cardExperience.accent}}>{metric.value}</strong>
+              <span style={styles.metricHint}>{metric.hint}</span>
+            </article>
           ))}
         </div>
-        <div style={styles.growthBadge}>
-          <span style={styles.growthIcon}>
-            {growthStage === 'seedling' ? '🌱' : growthStage === 'sapling' ? '🌿' : growthStage === 'growing' ? '🌳' : '🌲'}
-          </span>
-          <span style={styles.growthText}>{cardExperience.title}</span>
-        </div>
-      </div>
 
-      {/* Navigation Tabs */}
-      <div style={styles.tabs}>
-        {[
-          { id: 'tree', label: `${cardExperience.icon} Overview`, icon: cardExperience.icon },
-          { id: 'customers', label: `${cardExperience.customerIcon} ${cardExperience.customerLabel}`, icon: cardExperience.customerIcon },
-          { id: 'staff', label: '🌿 Team', icon: '🌿' },
-          { id: 'program', label: '✏️ Edit Card', icon: '✏️' },
-          { id: 'billing', label: needsRenewal ? '💳 Billing ⚠️' : '💳 Billing', icon: '💳' },
-        ].map(tab => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            style={{
-              ...styles.tab,
-              background: activeTab === tab.id ? cardExperience.accent : 'transparent',
-              color: activeTab === tab.id ? 'white' : '#64748b',
-            }}
-          >
-            {tab.icon} {tab.label}
-          </button>
-        ))}
-      </div>
+        {/* Navigation Tabs */}
+        <nav style={styles.tabs} aria-label="Owner dashboard sections">
+          {[
+            { id: 'tree', label: 'Overview', icon: cardExperience.icon },
+            { id: 'customers', label: cardExperience.customerLabel, icon: cardExperience.customerIcon },
+            { id: 'staff', label: 'Team', icon: '👥' },
+            { id: 'program', label: 'Edit Card', icon: '✏️' },
+            { id: 'billing', label: needsRenewal ? 'Billing ⚠️' : 'Billing', icon: '💳' },
+          ].map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              style={{
+                ...styles.tab,
+                ...(activeTab === tab.id ? {
+                  background: cardExperience.accent,
+                  color: 'white',
+                  boxShadow: `0 8px 18px ${cardExperience.accent}26`,
+                } : {}),
+              }}
+            >
+              <span aria-hidden="true">{tab.icon}</span>
+              <span>{tab.label}</span>
+            </button>
+          ))}
+        </nav>
+      </section>
 
       {/* Tab Content */}
       <div style={styles.content}>
@@ -2065,7 +2069,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 const styles = {
   container: {
     minHeight: '100vh',
-    background: 'linear-gradient(180deg, #f0fdf4 0%, #ecfdf5 50%, #d1fae5 100%)',
+    background: '#f6f8fb',
+    color: '#172033',
     fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
   },
   loadingTree: {
@@ -2087,14 +2092,15 @@ const styles = {
     justifyContent: 'space-between',
     alignItems: 'center',
     flexWrap: 'wrap',
-    rowGap: 10,
-    padding: '12px 16px',
-    background: 'rgba(255,255,255,0.9)',
-    backdropFilter: 'blur(10px)',
-    borderBottom: '1px solid rgba(13,148,136,0.1)',
+    rowGap: 12,
+    padding: '14px clamp(18px, 4vw, 48px)',
+    background: 'rgba(255,255,255,0.96)',
+    backdropFilter: 'blur(14px)',
+    borderBottom: '1px solid #e7ebf0',
     position: 'sticky',
     top: 0,
     zIndex: 100,
+    boxShadow: '0 2px 12px rgba(15,23,42,0.04)',
   },
   brand: {
     display: 'flex',
@@ -2279,27 +2285,151 @@ const styles = {
     fontWeight: 600,
     color: '#0f766e',
   },
+  dashboardShell: {
+    width: 'calc(100% - 32px)',
+    maxWidth: 1180,
+    margin: '28px auto 0',
+  },
+  dashboardHero: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 20,
+    padding: '26px 28px',
+    background: 'white',
+    border: '1px solid #e7ebf0',
+    borderRadius: 20,
+    boxShadow: '0 10px 30px rgba(15,23,42,0.06)',
+  },
+  heroIdentity: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 18,
+    flex: '1 1 430px',
+  },
+  heroIcon: {
+    width: 68,
+    height: 68,
+    borderRadius: 18,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: 34,
+    flexShrink: 0,
+  },
+  heroEyebrow: {
+    margin: '0 0 5px',
+    fontSize: 12,
+    fontWeight: 800,
+    letterSpacing: 0.8,
+    color: '#718096',
+    textTransform: 'uppercase',
+  },
+  heroTitle: {
+    margin: 0,
+    fontSize: 'clamp(24px, 3vw, 34px)',
+    lineHeight: 1.15,
+    color: '#172033',
+  },
+  heroDescription: {
+    margin: '8px 0 0',
+    color: '#667085',
+    fontSize: 14,
+  },
+  heroQuickActions: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  primaryActionBtn: {
+    padding: '11px 16px',
+    color: 'white',
+    border: 'none',
+    borderRadius: 10,
+    fontSize: 13,
+    fontWeight: 750,
+    cursor: 'pointer',
+  },
+  secondaryActionBtn: {
+    padding: '11px 16px',
+    color: '#344054',
+    background: 'white',
+    border: '1px solid #d9dee7',
+    borderRadius: 10,
+    fontSize: 13,
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  metricsGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+    gap: 14,
+    marginTop: 16,
+  },
+  metricCard: {
+    position: 'relative',
+    overflow: 'hidden',
+    display: 'flex',
+    flexDirection: 'column',
+    minHeight: 126,
+    padding: '20px 20px 18px',
+    background: 'white',
+    border: '1px solid #e7ebf0',
+    borderRadius: 16,
+    boxShadow: '0 6px 20px rgba(15,23,42,0.045)',
+  },
+  metricAccent: {
+    position: 'absolute',
+    inset: '0 auto 0 0',
+    width: 4,
+  },
+  metricLabel: {
+    color: '#667085',
+    fontSize: 13,
+    fontWeight: 700,
+  },
+  metricValue: {
+    marginTop: 8,
+    fontSize: 32,
+    lineHeight: 1,
+  },
+  metricHint: {
+    marginTop: 10,
+    color: '#98a2b3',
+    fontSize: 12,
+  },
   tabs: {
     display: 'flex',
-    justifyContent: 'center',
-    flexWrap: 'wrap',
-    gap: 8,
-    padding: '0 16px 16px',
-    borderBottom: '1px solid rgba(13,148,136,0.1)',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 18,
+    padding: 6,
+    overflowX: 'auto',
+    background: 'white',
+    border: '1px solid #e7ebf0',
+    borderRadius: 14,
+    boxShadow: '0 5px 18px rgba(15,23,42,0.04)',
   },
   tab: {
-    padding: '10px 16px',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    padding: '10px 15px',
     border: 'none',
-    borderRadius: 12,
-    fontSize: 14,
-    fontWeight: 600,
+    borderRadius: 10,
+    background: 'transparent',
+    color: '#667085',
+    fontSize: 13,
+    fontWeight: 700,
     cursor: 'pointer',
     transition: 'all 0.2s',
     whiteSpace: 'nowrap',
   },
   content: {
-    padding: '20px 16px',
-    maxWidth: 900,
+    padding: '22px 16px 48px',
+    maxWidth: 1180,
     margin: '0 auto',
   },
   treeTab: {
