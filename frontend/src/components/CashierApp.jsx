@@ -119,13 +119,12 @@ function CashierApp({ API_BASE }) {
 
         const program = data.program || {}
         const goal = program.stamp_goal || 8
-        const backendCardType = data.current_card_type || data.business?.active_card_type || program.card_type
-        const cardType = ['stamp', 'points', 'membership', 'vip', 'multipass'].includes(backendCardType)
-          ? backendCardType
+        const cardType = ['stamp', 'points', 'membership', 'vip', 'multipass'].includes(program.card_type)
+          ? program.card_type
           : 'stamp'
         if (DEBUG) {
           setDebugInfo(prev =>
-            `${prev} | Current: ${data.current_card_type || 'none'} | Business: ${data.business?.active_card_type || 'none'} | Program: ${program.card_type || 'none'} | Final: ${cardType}`
+            `${prev} | Program card type: ${program.card_type || 'none'} | Final: ${cardType}`
           )
         }
         setCustomerData({
