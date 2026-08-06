@@ -511,7 +511,7 @@ function HomePage({ onNavigateLogin }) {
             </p>
           </div>
 
-          {['growth', 'starter'].map(planKey => {
+          {['partners', 'growth', 'starter'].map(planKey => {
             const planPartners = partners.filter(p => p.plan_segment === planKey)
             if (!planPartners.length) return null
             return (

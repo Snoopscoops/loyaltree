@@ -24,7 +24,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const [creating, setCreating] = useState(false)
   const [partners, setPartners] = useState([])
   const [partnerForm, setPartnerForm] = useState({
-    name: '', logo_url: '', sector: '', plan_segment: 'starter',
+    name: '', logo_url: '', sector: '', plan_segment: 'partners',
     website_url: '', is_active: true, sort_order: 0,
   })
   const [partnerUploading, setPartnerUploading] = useState(false)
@@ -225,7 +225,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Could not add partner')
-      setPartnerForm({ name: '', logo_url: '', sector: '', plan_segment: 'starter', website_url: '', is_active: true, sort_order: 0 })
+      setPartnerForm({ name: '', logo_url: '', sector: '', plan_segment: 'partners', website_url: '', is_active: true, sort_order: 0 })
       setMessage('Partner added to homepage')
       loadData()
     } catch (err) { setMessage(err.message) }
@@ -284,13 +284,13 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
         <section style={styles.partnerAdminSection}>
           <h2 style={styles.partnerAdminTitle}>🤝 Homepage Partners</h2>
           <p style={styles.partnerAdminSubtitle}>
-            Add logos to “Thank you for trusting us,” choose the business sector, and place each partner under Starter or Growth.
+            Add logos to “Thank you for trusting us,” choose the business sector, and place each logo under Partners, Growth Plan, or Starter Plan.
           </p>
           <form onSubmit={createPartner} style={styles.partnerForm}>
             <div style={styles.partnerFormGrid}>
               <div><label style={styles.partnerLabel}>Partner name</label><input style={styles.input} value={partnerForm.name} onChange={e => setPartnerForm({...partnerForm,name:e.target.value})} required /></div>
               <div><label style={styles.partnerLabel}>Sector</label><input style={styles.input} value={partnerForm.sector} onChange={e => setPartnerForm({...partnerForm,sector:e.target.value})} placeholder="Fitness, Restaurant, Retail..." /></div>
-              <div><label style={styles.partnerLabel}>Plan section</label><select style={styles.select} value={partnerForm.plan_segment} onChange={e => setPartnerForm({...partnerForm,plan_segment:e.target.value})}><option value="starter">Starter Plan</option><option value="growth">Growth Plan</option></select></div>
+              <div><label style={styles.partnerLabel}>Plan section</label><select style={styles.select} value={partnerForm.plan_segment} onChange={e => setPartnerForm({...partnerForm,plan_segment:e.target.value})}><option value="partners">Partners</option><option value="growth">Growth Plan</option><option value="starter">Starter Plan</option></select></div>
               <div><label style={styles.partnerLabel}>Display order</label><input style={styles.input} type="number" min="0" value={partnerForm.sort_order} onChange={e => setPartnerForm({...partnerForm,sort_order:e.target.value})} /></div>
               <div style={{gridColumn:'1 / -1'}}><label style={styles.partnerLabel}>Website (optional)</label><input style={styles.input} value={partnerForm.website_url} onChange={e => setPartnerForm({...partnerForm,website_url:e.target.value})} placeholder="https://..." /></div>
               <div style={{gridColumn:'1 / -1'}}>
@@ -306,6 +306,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
           </form>
           <div style={styles.partnerList}>
             {[
+              { key: 'partners', title: 'Partners', badge: '#1e293b' },
               { key: 'growth', title: 'Growth Plan Partners', badge: '#0d9488' },
               { key: 'starter', title: 'Starter Plan Partners', badge: '#475569' },
             ].map(group => {
@@ -366,8 +367,9 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                             onChange={e => updatePartner(p, {plan_segment: e.target.value})}
                             style={styles.select}
                           >
-                            <option value="starter">Starter Plan</option>
+                            <option value="partners">Partners</option>
                             <option value="growth">Growth Plan</option>
+                            <option value="starter">Starter Plan</option>
                           </select>
                         </div>
 

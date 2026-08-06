@@ -409,20 +409,13 @@ def require_cron(request: Request):
 STAFF_SESSION_SECRET = os.getenv('STAFF_SESSION_SECRET', '')
 STAFF_SESSION_TTL_HOURS = 12  # covers a full shift
 
-def create_staff_session_token(
-    business_public_id: str,
-    staff_id,
-    role: str,
-    name: str,
-    branch_id=None,
-) -> str:
+def create_staff_session_token(business_public_id: str, staff_id, role: str, name: str) -> str:
     import jwt as pyjwt
     payload = {
         'business_public_id': business_public_id,
         'staff_id': staff_id,  # None when the owner is the one scanning
         'role': role,
         'name': name,
-        'branch_id': branch_id,
         'exp': datetime.utcnow() + timedelta(hours=STAFF_SESSION_TTL_HOURS),
     }
     return pyjwt.encode(payload, STAFF_SESSION_SECRET, algorithm='HS256')
@@ -1026,7 +1019,7 @@ class PartnerCreate(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     logo_url: str = Field(min_length=1, max_length=1000)
     sector: Optional[str] = Field(default=None, max_length=120)
-    plan_segment: Literal['starter', 'growth']
+    plan_segment: Literal['partners', 'starter', 'growth']
     website_url: Optional[str] = Field(default=None, max_length=1000)
     is_active: bool = True
     sort_order: int = Field(default=0, ge=0, le=9999)
@@ -1035,7 +1028,7 @@ class PartnerUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=160)
     logo_url: Optional[str] = Field(default=None, min_length=1, max_length=1000)
     sector: Optional[str] = Field(default=None, max_length=120)
-    plan_segment: Optional[Literal['starter', 'growth']] = None
+    plan_segment: Optional[Literal['partners', 'starter', 'growth']] = None
     website_url: Optional[str] = Field(default=None, max_length=1000)
     is_active: Optional[bool] = None
     sort_order: Optional[int] = Field(default=None, ge=0, le=9999)
@@ -7137,15 +7130,13 @@ async def add_vip_sale(public_id: str, req: VIPSaleRequest, authorization: str =
     claims = get_staff_session_claims(public_id, authorization)
     if claims:
         staff_id = claims.get('staff_id')
-        branch_id = claims.get('branch_id')
     elif not req.as_owner:
         if not req.staff_pin: raise HTTPException(status_code=400, detail="Staff PIN required")
         sr = supabase.table('staff').select('*').eq('business_id', business.get('id')).eq('pin', req.staff_pin).execute()
         if not sr.data: raise HTTPException(status_code=403, detail="Invalid staff PIN")
         staff_id=sr.data[0].get('id'); branch_id=sr.data[0].get('branch_id')
-    rate = float(program.get('vip_points_per_amount') or 0)
-    base = float(program.get('vip_amount_pesos') or 100)
-    earned = max(0, int((float(req.amount_spent) / base) * rate))
+    rate=float(program.get('vip_points_per_amount') or 0); base=float(program.get('vip_amount_pesos') or 100)
+    earned=max(0,int((req.amount_spent/base)*rate))
     old_tier=get_vip_tier(customer, program)
     balance=int(customer.get('vip_points') or 0)+earned
     supabase.table('customers').update({'vip_points':balance,'updated_at':datetime.utcnow().isoformat()}).eq('id',customer.get('id')).execute()
@@ -7154,19 +7145,7 @@ async def add_vip_sale(public_id: str, req: VIPSaleRequest, authorization: str =
     log_vip_event(business.get('id'),customer.get('id'),'sale',earned,balance,req.amount_spent,old_tier.get('name'),new_tier.get('name'),staff_id,branch_id)
     sync_wallet_object(customer,business,program,notify_header='VIP status updated',notify_body=(f"You earned {earned} VIP points. You are now {new_tier.get('name')} VIP."),notify_message_id=f"vip-{customer.get('id')}-{balance}-{int(datetime.utcnow().timestamp())}")
     sync_apple_wallet_pass(customer)
-    return {
-        'message': f'{earned} VIP points added',
-        'amount_spent': float(req.amount_spent),
-        'points_earned': earned,
-        'vip_points': balance,
-        'tier': new_tier,
-        'next_tier': next_tier,
-        'upgraded': old_tier.get('id') != new_tier.get('id'),
-        'earning_rule': {
-            'vip_points': rate,
-            'per_pesos': base,
-        },
-    }
+    return {'message':f'{earned} VIP points added','points_earned':earned,'vip_points':balance,'tier':new_tier,'next_tier':next_tier,'upgraded':old_tier.get('id')!=new_tier.get('id')}
 
 @app.post("/api/v1/business/{public_id}/vip-adjust")
 async def adjust_vip_points(public_id: str, req: VIPAdjustRequest):
@@ -7494,7 +7473,6 @@ async def use_multipass_session(public_id: str, req: MultipassUseRequest, author
 
     if session_claims:
         using_staff_id = session_claims.get('staff_id')
-        using_branch_id = session_claims.get('branch_id')
     elif req.as_owner:
         pass
     else:
@@ -7679,7 +7657,6 @@ async def add_membership_note(public_id: str, req: MembershipNoteRequest, author
 
     if session_claims:
         noting_staff_id = session_claims.get('staff_id')
-        noting_branch_id = session_claims.get('branch_id')
     elif req.as_owner:
         pass
     else:
@@ -7877,11 +7854,7 @@ async def verify_staff_pin(public_id: str, req: PinVerify):
         # working exactly as before (resending the raw PIN each time).
         if STAFF_SESSION_SECRET:
             response["session_token"] = create_staff_session_token(
-                public_id,
-                staff.get('id'),
-                staff.get('role', 'cashier'),
-                staff.get('name', ''),
-                staff.get('branch_id'),
+                public_id, staff.get('id'), staff.get('role', 'cashier'), staff.get('name', '')
             )
             response["expires_in_hours"] = STAFF_SESSION_TTL_HOURS
         return response
