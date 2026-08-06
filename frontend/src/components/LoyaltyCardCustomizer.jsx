@@ -12,7 +12,7 @@ const DESCRIPTION_LIMIT = 140
 // `program` used for the customer card preview modal.
 function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
   const [form, setForm] = useState({
-    card_type: 'stamp', // 'stamp' | 'points' | 'multipass' - a business runs ONE active card at a time
+    card_type: 'stamp', // 'stamp' | 'points' | 'membership' | 'multipass' - one active card at a time
     card_name: '',
     primary_color: '#0d9488',
     reward_name: '',
@@ -26,6 +26,11 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
     points_per_amount: 10,
     points_amount_pesos: 100,
     points_prizes: [],
+    // Membership card only
+    membership_duration_days: 30,
+    membership_price: 0,
+    membership_services: [],
+    membership_terms: '',
     // Multipass card only
     multipass_session_count: 12,
     multipass_validity_days: 90,
@@ -67,7 +72,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
       if (res.ok) {
         setForm(f => ({
           ...f,
-          card_type: (data.card_type === 'points' || data.card_type === 'multipass') ? data.card_type : 'stamp',
+          card_type: ['stamp', 'points', 'membership', 'multipass'].includes(data.card_type) ? data.card_type : 'stamp',
           card_name: data.card_name || '',
           primary_color: data.primary_color || '#0d9488',
           reward_name: data.reward_name || '',
@@ -80,6 +85,10 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
           points_per_amount: data.points_per_amount ?? 10,
           points_amount_pesos: data.points_amount_pesos ?? 100,
           points_prizes: Array.isArray(data.points_prizes) ? data.points_prizes : [],
+          membership_duration_days: data.membership_duration_days ?? 30,
+          membership_price: data.membership_price ?? 0,
+          membership_services: Array.isArray(data.membership_services) ? data.membership_services : [],
+          membership_terms: data.membership_terms || '',
           multipass_session_count: data.multipass_session_count ?? 12,
           multipass_validity_days: data.multipass_validity_days ?? 90,
         }))
@@ -160,6 +169,10 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
     points_per_amount: Number(form.points_per_amount) || 0,
     points_amount_pesos: Number(form.points_amount_pesos) || 1,
     points_prizes: form.points_prizes,
+    membership_duration_days: Number(form.membership_duration_days) || 30,
+    membership_price: Number(form.membership_price) || 0,
+    membership_services: Array.isArray(form.membership_services) ? form.membership_services : [],
+    membership_terms: form.membership_terms || null,
     multipass_session_count: Number(form.multipass_session_count) || 12,
     multipass_validity_days: Number(form.multipass_validity_days) || 90,
   })
@@ -260,8 +273,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
     return (
       <div style={styles.page}>
         <div style={styles.header}>
-          <h2 style={styles.title}>🎨 Choose Your Loyalty Card</h2>
-          <p style={styles.subtitle}>Pick how customers earn rewards. Your business runs one active card at a time.</p>
+          <h2 style={styles.title}>🎨 Choose Your Card</h2>
+          <p style={styles.subtitle}>Choose how your business serves customers. Your business runs one active card at a time.</p>
         </div>
 
         <div style={styles.pickerGrid}>
@@ -293,6 +306,21 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
             {form.card_type === 'points' && <span style={styles.pickerCardBadge}>Selected</span>}
           </button>
 
+
+          <button
+            type="button"
+            onClick={() => update('card_type', 'membership')}
+            style={{
+              ...styles.pickerCard,
+              ...(form.card_type === 'membership' ? { borderColor: form.primary_color || '#0d9488', background: '#f0fdfa' } : {}),
+            }}
+          >
+            <span style={styles.pickerCardIcon}>🏋️</span>
+            <span style={styles.pickerCardLabel}>Membership Card</span>
+            <span style={styles.pickerCardDesc}>For subscriptions and access-based businesses such as gyms, clubs, coworking spaces, clinics, and monthly service plans.</span>
+            {form.card_type === 'membership' && <span style={styles.pickerCardBadge}>Selected</span>}
+          </button>
+
           <button
             type="button"
             onClick={() => update('card_type', 'multipass')}
@@ -309,7 +337,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
         </div>
 
         <button type="button" onClick={() => setStep('form')} style={styles.pickerContinueBtn}>
-          Continue with {form.card_type === 'points' ? 'Points Card' : form.card_type === 'multipass' ? 'Multi-Pass' : 'Stamp Card'} →
+          Continue with {form.card_type === 'points' ? 'Points Card' : form.card_type === 'membership' ? 'Membership Card' : form.card_type === 'multipass' ? 'Multi-Pass' : 'Stamp Card'} →
         </button>
       </div>
     )
@@ -325,7 +353,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
       `}</style>
 
       <div style={styles.header}>
-        <h2 style={styles.title}>🎨 Customize Your Loyalty Card</h2>
+        <h2 style={styles.title}>🎨 Customize Your Card</h2>
         <p style={styles.subtitle}>Changes here update what customers see on their wallet pass and join page.</p>
       </div>
 
@@ -337,7 +365,13 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
             <div style={styles.card}>
               <div style={{ ...styles.cardHeader, background: form.primary_color || '#0d9488' }}>
                 <span style={styles.cardHeaderTitle}>
-                  {form.card_type === 'points' ? 'Points Rewards' : form.card_type === 'multipass' ? `${Number(form.multipass_session_count) || 12}-Session Pass` : (form.reward_name || 'Free Service')}
+                  {form.card_type === 'points'
+                    ? 'Points Rewards'
+                    : form.card_type === 'membership'
+                    ? 'Membership'
+                    : form.card_type === 'multipass'
+                    ? `${Number(form.multipass_session_count) || 12}-Session Pass`
+                    : (form.reward_name || 'Free Service')}
                 </span>
                 <span style={styles.cardHeaderSub}>{displayName}</span>
               </div>
@@ -367,6 +401,25 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
                         {form.points_prizes.length > 3 && (
                           <div style={styles.previewMoreText}>+{form.points_prizes.length - 3} more</div>
                         )}
+                      </div>
+                    )}
+                  </>
+                ) : form.card_type === 'membership' ? (
+                  <>
+                    <div style={styles.previewPointsBalance}>
+                      <span style={{ color: form.primary_color || '#0d9488' }}>ACTIVE</span>
+                    </div>
+                    <div style={styles.cardFoot}>
+                      valid for {Number(form.membership_duration_days) || 30} days
+                      {Number(form.membership_price) > 0 ? ` · ₱${Number(form.membership_price).toLocaleString()}` : ''}
+                    </div>
+                    {Array.isArray(form.membership_services) && form.membership_services.length > 0 && (
+                      <div style={styles.previewPrizeList}>
+                        {form.membership_services.slice(0, 4).map((benefit, i) => (
+                          <div key={i} style={styles.previewPrizeRow}>
+                            <span>✓ {benefit}</span>
+                          </div>
+                        ))}
                       </div>
                     )}
                   </>
@@ -423,7 +476,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
 
           <div style={styles.typeSummary}>
             <span style={styles.typeSummaryText}>
-              {form.card_type === 'points' ? '💎 Points Card' : form.card_type === 'multipass' ? '🎫 Multi-Pass' : '🎟️ Stamp Card'}
+              {form.card_type === 'points' ? '💎 Points Card' : form.card_type === 'membership' ? '🏋️ Membership Card' : form.card_type === 'multipass' ? '🎫 Multi-Pass' : '🎟️ Stamp Card'}
             </span>
             <button type="button" onClick={() => setStep('picker')} style={styles.typeChangeBtn}>
               Change card type
@@ -445,7 +498,11 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
             <label style={styles.label}>Description</label>
             <textarea
               style={styles.textarea}
-              placeholder="e.g. Collect a stamp on every visit and get a free coffee on us!"
+              placeholder={
+                form.card_type === 'membership'
+                  ? 'e.g. Monthly access membership with exclusive perks.'
+                  : 'e.g. Collect a stamp on every visit and get a free coffee on us!'
+              }
               value={form.description}
               maxLength={DESCRIPTION_LIMIT}
               onChange={e => update('description', e.target.value)}
@@ -480,6 +537,66 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
                   max={20}
                   value={form.stamp_goal}
                   onChange={e => update('stamp_goal', e.target.value)}
+                />
+              </div>
+            </div>
+          ) : form.card_type === 'membership' ? (
+            <div style={styles.pointsSection}>
+              <div style={styles.row}>
+                <div style={{ ...styles.fieldGroup, flex: 1 }}>
+                  <label style={styles.label}>Default membership duration</label>
+                  <div style={styles.colorRow}>
+                    <input
+                      style={styles.input}
+                      type="number"
+                      min={1}
+                      max={3650}
+                      value={form.membership_duration_days}
+                      onChange={e => update('membership_duration_days', e.target.value)}
+                    />
+                    <span style={styles.unit}>days</span>
+                  </div>
+                  <p style={styles.hint}>Used when activating or renewing a member.</p>
+                </div>
+                <div style={{ ...styles.fieldGroup, flex: 1 }}>
+                  <label style={styles.label}>Default price</label>
+                  <div style={styles.colorRow}>
+                    <span style={styles.unit}>₱</span>
+                    <input
+                      style={styles.input}
+                      type="number"
+                      min={0}
+                      step="any"
+                      value={form.membership_price}
+                      onChange={e => update('membership_price', e.target.value)}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div style={styles.fieldGroup}>
+                <label style={styles.label}>Perks / benefits</label>
+                <textarea
+                  style={styles.textarea}
+                  rows={6}
+                  value={(form.membership_services || []).join('\n')}
+                  onChange={e => update(
+                    'membership_services',
+                    e.target.value.split('\n').map(v => v.trim()).filter(Boolean)
+                  )}
+                  placeholder={'Unlimited gym access\nLocker use\nFree fitness assessment'}
+                />
+                <p style={styles.hint}>Enter one perk per line. These appear on the membership card and cashier screen.</p>
+              </div>
+
+              <div style={styles.fieldGroup}>
+                <label style={styles.label}>Membership terms</label>
+                <textarea
+                  style={styles.textarea}
+                  rows={4}
+                  value={form.membership_terms}
+                  onChange={e => update('membership_terms', e.target.value)}
+                  placeholder="Optional rules, renewal terms, and usage conditions."
                 />
               </div>
             </div>
