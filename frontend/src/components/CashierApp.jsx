@@ -117,21 +117,27 @@ function CashierApp({ API_BASE }) {
           )
         }
 
-        const program = data.program || {}
-        const goal = program.stamp_goal || 8
-        const allowedCardTypes = ['stamp', 'points', 'membership', 'vip', 'multipass']
-        const returnedCardType = data.current_card_type || program.card_type
+        const programRes = await fetch(
+          `${API_BASE}/api/v1/business/${scannedBusinessSlug}/cashier-program?_=${Date.now()}`,
+          { cache: 'no-store' }
+        )
+        const program = await programRes.json().catch(() => ({}))
 
-        if (!allowedCardTypes.includes(returnedCardType)) {
-          throw new Error(
-            `No valid card type was returned by the server. Received: ${returnedCardType || 'none'}`
-          )
+        if (!programRes.ok) {
+          throw new Error(program.detail || 'Could not load the business card configuration')
         }
 
-        const cardType = returnedCardType
+        const allowedCardTypes = ['stamp', 'points', 'membership', 'vip', 'multipass']
+        if (!allowedCardTypes.includes(program.card_type)) {
+          throw new Error(`Invalid saved card type: ${program.card_type || 'none'}`)
+        }
+
+        const cardType = program.card_type
+        const goal = program.stamp_goal || 8
+
         if (DEBUG) {
           setDebugInfo(prev =>
-            `${prev} | Program card type: ${program.card_type || 'none'} | Final: ${cardType}`
+            `${prev} | Cashier program: ${program.card_type} | Final: ${cardType}`
           )
         }
         setCustomerData({

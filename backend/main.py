@@ -5012,6 +5012,41 @@ async def get_loyalty_config(public_id: str, response: Response):
         }
     return program
 
+
+@app.get("/api/v1/business/{public_id}/cashier-program")
+async def get_cashier_program(public_id: str, response: Response):
+    """Cashier-facing alias of loyalty-config.
+
+    All card types use the same source that already works for Points:
+    loyalty_programs.card_type plus that row's settings.
+    """
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    program = safe_get_loyalty_program(business.get("id"))
+    if not program:
+        raise HTTPException(
+            status_code=404,
+            detail="No loyalty program is saved for this business. Open Edit Card and save the card first.",
+        )
+
+    card_type = program.get("card_type")
+    allowed = ("stamp", "points", "membership", "vip", "multipass")
+    if card_type not in allowed:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Invalid saved card type: {card_type or 'none'}",
+        )
+
+    return {
+        **program,
+        "card_type": card_type,
+    }
+
 @app.post("/api/v1/business/{public_id}/loyalty-config")
 async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
     business = safe_get_business(public_id)
