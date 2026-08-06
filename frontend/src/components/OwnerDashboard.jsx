@@ -1648,168 +1648,302 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       )}
 
       {showOnboarding && (() => {
-        const steps = [
-          {
-            emoji: '1️⃣',
-            title: 'Choose and configure your card',
-            body: 'Choose Stamp, Points, Membership, or Multi-Pass. Add the card details, branding, and rules, then save and publish it.',
-            cta: cardSetUp ? 'Review Card' : 'Choose a Card',
-            action: () => { setActiveTab('program'); setShowOnboarding(false) },
-            done: cardSetUp,
-            locked: false,
-          },
-          {
-            emoji: '2️⃣',
-            title: 'Set up your cashier',
-            body: 'Invite at least one cashier or staff member. They will use the Business ID and their PIN to access the scanner.',
-            cta: cashierSetUp ? 'Review Team' : 'Set Up Cashier',
-            action: () => { setActiveTab('staff'); setShowOnboarding(false) },
-            done: cashierSetUp,
-            locked: !cardSetUp,
-          },
-          {
-            emoji: '3️⃣',
-            title: 'Share your join QR',
-            body: 'Let customers scan your QR code to join. Place it at the counter, entrance, or on your social pages.',
-            cta: 'Open Join QR',
-            action: () => { setActiveTab('tree'); setShowOnboarding(false); fetchQRImage() },
-            done: customers.length > 0,
-            locked: !cardSetUp || !cashierSetUp,
-          },
-          {
-            emoji: '4️⃣',
-            title: 'Use the full dashboard',
-            body: 'Once your card and cashier are ready, use customer management, scanning, announcements, and analytics normally.',
-            cta: 'Open Dashboard',
-            action: () => { setActiveTab('tree'); closeOnboarding() },
-            done: cardSetUp && cashierSetUp,
-            locked: !cardSetUp || !cashierSetUp,
-          },
-        ]
+        const totalSteps = 4
+        const safeStep = Math.min(onboardingStep, totalSteps - 1)
 
-        const safeStep = Math.min(onboardingStep, steps.length - 1)
-        const step = steps[safeStep]
-        const completed = steps.filter(s => s.done).length
+        const goNextAfterCard = () => {
+          loadData()
+          setOnboardingStep(1)
+        }
+
+        const submitCashierInsideTutorial = async (e) => {
+          e.preventDefault()
+          await inviteStaff(e)
+          setTimeout(() => {
+            loadData()
+            setOnboardingStep(2)
+          }, 350)
+        }
+
+        const finishSetup = () => {
+          if (onboardingKey) localStorage.setItem(onboardingKey, '1')
+          setShowOnboarding(false)
+          setActiveTab('tree')
+        }
 
         return (
-          <div style={styles.modalOverlay} onClick={() => setShowOnboarding(false)}>
+          <div style={styles.modalOverlay}>
             <div
               style={{
                 ...styles.modal,
-                maxWidth: 520,
+                width: safeStep === 0 ? 'min(1100px, 96vw)' : 'min(620px, 94vw)',
+                maxWidth: safeStep === 0 ? 1100 : 620,
+                maxHeight: '92vh',
                 padding: 0,
                 overflow: 'hidden',
                 borderRadius: 22,
-                boxShadow: '0 28px 80px rgba(15,23,42,.24)',
+                boxShadow: '0 28px 90px rgba(15,23,42,.28)',
               }}
               onClick={e => e.stopPropagation()}
             >
               <div style={{
-                padding: '24px 26px 20px',
-                background: 'linear-gradient(135deg,#ffffff 0%,#f8fafc 100%)',
+                padding: '20px 24px',
                 borderBottom: '1px solid #e2e8f0',
+                background: 'white',
               }}>
-                <div style={{display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start'}}>
+                <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16}}>
                   <div>
-                    <div style={{fontSize: 12, fontWeight: 850, color: cardExperience.accent, textTransform: 'uppercase', letterSpacing: .7}}>
-                      Business setup · {completed}/{steps.length}
+                    <div style={{
+                      fontSize: 12,
+                      fontWeight: 850,
+                      color: cardExperience.accent,
+                      textTransform: 'uppercase',
+                      letterSpacing: .7,
+                    }}>
+                      LoyaltyTree setup · Step {safeStep + 1} of {totalSteps}
                     </div>
-                    <h2 style={{fontSize: 24, margin: '7px 0 6px', color: '#0f172a'}}>
-                      Get LoyaltyTree ready
+                    <h2 style={{margin: '5px 0 0', fontSize: 24, color: '#0f172a'}}>
+                      {safeStep === 0
+                        ? 'Choose and configure your card'
+                        : safeStep === 1
+                        ? 'Create your cashier'
+                        : safeStep === 2
+                        ? 'Share your join QR'
+                        : 'Your business is ready'}
                     </h2>
-                    <p style={{fontSize: 13.5, color: '#64748b', margin: 0, lineHeight: 1.55}}>
-                      Complete the essential setup first. You can close this guide and continue later.
-                    </p>
                   </div>
-                  <button
-                    onClick={() => setShowOnboarding(false)}
-                    aria-label="Close setup guide"
-                    style={{
-                      width: 36,
-                      height: 36,
-                      borderRadius: 12,
-                      border: '1px solid #e2e8f0',
-                      background: 'white',
-                      color: '#64748b',
-                      cursor: 'pointer',
-                      fontSize: 18,
-                    }}
-                  >
-                    ×
-                  </button>
+
+                  <div style={{display: 'flex', gap: 6}}>
+                    {Array.from({length: totalSteps}).map((_, i) => (
+                      <span
+                        key={i}
+                        style={{
+                          width: i === safeStep ? 28 : 9,
+                          height: 9,
+                          borderRadius: 999,
+                          background: i < safeStep ? '#22c55e' : i === safeStep ? cardExperience.accent : '#e2e8f0',
+                          transition: 'all .2s ease',
+                        }}
+                      />
+                    ))}
+                  </div>
                 </div>
               </div>
 
-              <div style={{padding: 24}}>
-                <div style={{
-                  padding: 18,
-                  borderRadius: 16,
-                  background: cardExperience.soft,
-                  border: `1px solid ${cardExperience.border}`,
-                  marginBottom: 18,
-                }}>
-                  <div style={{fontSize: 34, marginBottom: 6}}>{step.emoji}</div>
-                  <h3 style={{margin: '0 0 7px', color: '#0f172a', fontSize: 18}}>{step.title}</h3>
-                  <p style={{margin: 0, color: '#64748b', fontSize: 13.5, lineHeight: 1.6}}>{step.body}</p>
-                </div>
+              <div style={{
+                padding: safeStep === 0 ? 18 : 24,
+                overflowY: 'auto',
+                maxHeight: 'calc(92vh - 84px)',
+                background: '#f8fafc',
+              }}>
+                {safeStep === 0 && (
+                  <div>
+                    <p style={{margin: '0 0 16px', color: '#64748b', fontSize: 14, lineHeight: 1.55}}>
+                      Select the card your business will use, complete its settings, then save it. You will stay inside this setup guide.
+                    </p>
+                    <div style={{
+                      background: 'white',
+                      border: '1px solid #e2e8f0',
+                      borderRadius: 18,
+                      padding: 18,
+                    }}>
+                      <LoyaltyCardCustomizer
+                        API_BASE={API_BASE}
+                        user={user}
+                        onSaved={goNextAfterCard}
+                      />
+                    </div>
+                  </div>
+                )}
 
-                <div style={{display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 18}}>
-                  {steps.map((s, i) => (
-                    <button
-                      key={i}
-                      type="button"
-                      disabled={s.locked}
-                      onClick={() => !s.locked && setOnboardingStep(i)}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 11,
-                        padding: '11px 12px',
+                {safeStep === 1 && (
+                  <div style={{
+                    background: 'white',
+                    border: '1px solid #e2e8f0',
+                    borderRadius: 18,
+                    padding: 22,
+                  }}>
+                    <p style={{margin: '0 0 18px', color: '#64748b', fontSize: 14, lineHeight: 1.55}}>
+                      Create the cashier account that will scan customer cards and record visits, stamps, points, or sessions.
+                    </p>
+
+                    <form onSubmit={submitCashierInsideTutorial}>
+                      <label style={styles.label}>Cashier name</label>
+                      <input
+                        style={styles.input}
+                        value={inviteForm.name}
+                        onChange={e => setInviteForm({...inviteForm, name: e.target.value})}
+                        placeholder="Full name"
+                        required
+                      />
+
+                      <label style={styles.label}>Email</label>
+                      <input
+                        style={styles.input}
+                        type="email"
+                        value={inviteForm.email}
+                        onChange={e => setInviteForm({...inviteForm, email: e.target.value})}
+                        placeholder="cashier@example.com"
+                        required
+                      />
+
+                      <label style={styles.label}>Phone</label>
+                      <input
+                        style={styles.input}
+                        value={inviteForm.phone}
+                        onChange={e => setInviteForm({...inviteForm, phone: e.target.value})}
+                        placeholder="09XXXXXXXXX"
+                      />
+
+                      {branches.length > 0 && (
+                        <>
+                          <label style={styles.label}>Branch</label>
+                          <select
+                            style={styles.input}
+                            value={inviteForm.branch_public_id}
+                            onChange={e => setInviteForm({...inviteForm, branch_public_id: e.target.value})}
+                          >
+                            <option value="">Unassigned</option>
+                            {branches.map(branch => (
+                              <option key={branch.public_id} value={branch.public_id}>{branch.name}</option>
+                            ))}
+                          </select>
+                        </>
+                      )}
+
+                      <div style={{
+                        background: '#f0fdfa',
+                        border: '1px solid #99f6e4',
                         borderRadius: 12,
-                        border: `1px solid ${i === safeStep ? cardExperience.border : '#e2e8f0'}`,
-                        background: s.done ? '#f0fdf4' : i === safeStep ? '#fff' : '#f8fafc',
-                        color: '#0f172a',
-                        cursor: s.locked ? 'not-allowed' : 'pointer',
-                        opacity: s.locked ? .5 : 1,
-                        textAlign: 'left',
+                        padding: 13,
+                        margin: '4px 0 16px',
+                        color: '#0f766e',
+                        fontSize: 13,
+                        lineHeight: 1.5,
+                      }}>
+                        The initial cashier PIN is <strong>0000</strong>. You can change it later from the Team section.
+                      </div>
+
+                      <button type="submit" style={{...styles.submitBtn, width: '100%'}}>
+                        Create Cashier and Continue
+                      </button>
+                    </form>
+                  </div>
+                )}
+
+                {safeStep === 2 && (
+                  <div style={{
+                    background: 'white',
+                    border: '1px solid #e2e8f0',
+                    borderRadius: 18,
+                    padding: 24,
+                    textAlign: 'center',
+                  }}>
+                    <p style={{margin: '0 0 18px', color: '#64748b', fontSize: 14, lineHeight: 1.55}}>
+                      Customers scan this QR code to join your program and receive their digital card.
+                    </p>
+
+                    <img
+                      src={`https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=${encodeURIComponent(`${FRONTEND_URL}/join/${user.business_slug}`)}`}
+                      alt="Customer join QR"
+                      style={{
+                        width: 240,
+                        height: 240,
+                        maxWidth: '100%',
+                        borderRadius: 16,
+                        border: '1px solid #e2e8f0',
+                        padding: 10,
+                        background: 'white',
+                      }}
+                    />
+
+                    <p style={{
+                      margin: '14px auto 18px',
+                      fontSize: 12,
+                      color: '#64748b',
+                      wordBreak: 'break-all',
+                      maxWidth: 440,
+                    }}>
+                      {FRONTEND_URL}/join/{user.business_slug}
+                    </p>
+
+                    <div style={{display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap'}}>
+                      <button
+                        type="button"
+                        onClick={shareQR}
+                        style={styles.submitBtn}
+                      >
+                        📤 Share QR
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const joinUrl = `${FRONTEND_URL}/join/${user.business_slug}`
+                          navigator.clipboard.writeText(joinUrl)
+                          setMessage('Join link copied!')
+                        }}
+                        style={{...styles.submitBtn, background: '#475569'}}
+                      >
+                        🔗 Copy Join Link
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setOnboardingStep(3)}
+                        style={{...styles.submitBtn, background: cardExperience.accent}}
+                      >
+                        Continue
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {safeStep === 3 && (
+                  <div style={{
+                    background: 'white',
+                    border: '1px solid #e2e8f0',
+                    borderRadius: 18,
+                    padding: '34px 24px',
+                    textAlign: 'center',
+                  }}>
+                    <div style={{fontSize: 54, marginBottom: 10}}>🎉</div>
+                    <h3 style={{fontSize: 25, margin: '0 0 8px', color: '#0f172a'}}>
+                      Your LoyaltyTree is ready
+                    </h3>
+                    <p style={{margin: '0 auto 22px', maxWidth: 430, color: '#64748b', fontSize: 14, lineHeight: 1.6}}>
+                      Your card is configured, your cashier is ready, and your customer join link can now be shared.
+                    </p>
+
+                    <div style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))',
+                      gap: 10,
+                      maxWidth: 500,
+                      margin: '0 auto 22px',
+                    }}>
+                      <div style={{padding: 13, borderRadius: 12, background: '#f0fdf4', color: '#166534', fontWeight: 750, fontSize: 13}}>
+                        ✅ Card configured
+                      </div>
+                      <div style={{padding: 13, borderRadius: 12, background: '#f0fdf4', color: '#166534', fontWeight: 750, fontSize: 13}}>
+                        ✅ Cashier created
+                      </div>
+                      <div style={{padding: 13, borderRadius: 12, background: '#f0fdf4', color: '#166534', fontWeight: 750, fontSize: 13}}>
+                        ✅ Join QR ready
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={finishSetup}
+                      style={{
+                        ...styles.submitBtn,
+                        minWidth: 220,
+                        background: cardExperience.accent,
                       }}
                     >
-                      <span style={{fontSize: 16}}>{s.done ? '✅' : s.locked ? '🔒' : s.emoji}</span>
-                      <span style={{fontSize: 13, fontWeight: 750, flex: 1}}>{s.title}</span>
-                      {i === safeStep && !s.done && <span style={{fontSize: 12, color: cardExperience.accent}}>Current</span>}
+                      Open My Dashboard
                     </button>
-                  ))}
-                </div>
-
-                <button
-                  onClick={step.action}
-                  disabled={step.locked}
-                  style={{
-                    ...styles.submitBtn,
-                    width: '100%',
-                    minHeight: 48,
-                    borderRadius: 12,
-                    background: step.locked ? '#cbd5e1' : cardExperience.accent,
-                    cursor: step.locked ? 'not-allowed' : 'pointer',
-                  }}
-                >
-                  {step.cta}
-                </button>
-
-                <button
-                  onClick={() => setShowOnboarding(false)}
-                  style={{
-                    width: '100%',
-                    marginTop: 10,
-                    border: 'none',
-                    background: 'transparent',
-                    color: '#94a3b8',
-                    fontSize: 12.5,
-                    cursor: 'pointer',
-                  }}
-                >
-                  Continue later
-                </button>
+                  </div>
+                )}
               </div>
             </div>
           </div>
