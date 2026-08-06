@@ -7716,6 +7716,58 @@ async def membership_action(public_id: str, req: MembershipActionRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
+def attach_activity_location_names(rows: list) -> list:
+    """Attach cashier and branch labels to per-customer activity rows.
+    Missing staff/branch records are tolerated so old activity remains visible."""
+    try:
+        staff_ids = {row.get('staff_id') for row in rows if row.get('staff_id')}
+        branch_ids = {row.get('branch_id') for row in rows if row.get('branch_id')}
+        staff_by_id, branch_by_id = {}, {}
+        if staff_ids:
+            staff_rows = supabase.table('staff').select('id,name').in_('id', list(staff_ids)).execute().data or []
+            staff_by_id = {row.get('id'): row.get('name') for row in staff_rows}
+        if branch_ids:
+            branch_rows = supabase.table('branches').select('id,name').in_('id', list(branch_ids)).execute().data or []
+            branch_by_id = {row.get('id'): row.get('name') for row in branch_rows}
+        for row in rows:
+            row['staff_name'] = staff_by_id.get(row.get('staff_id'))
+            row['branch_name'] = branch_by_id.get(row.get('branch_id'))
+    except Exception:
+        for row in rows:
+            row.setdefault('staff_name', None)
+            row.setdefault('branch_name', None)
+    return rows
+
+
+@app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/stamp-history")
+async def get_customer_stamp_history(public_id: str, customer_public_id: str):
+    """Every recorded stamp for one customer, including date, cashier and branch."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    customer = safe_get_customer(customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+    try:
+        rows = (
+            supabase.table('stamp_events')
+            .select('*')
+            .eq('business_id', business.get('id'))
+            .eq('customer_id', customer.get('id'))
+            .order('created_at', desc=True)
+            .execute()
+        ).data or []
+        rows = attach_activity_location_names(rows)
+        total = len(rows)
+        for index, row in enumerate(rows):
+            # Rows are newest first. This gives each historical punch its
+            # chronological stamp number without needing a new DB column.
+            row['stamp_number'] = total - index
+        return rows
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+
 @app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/multipass-history")
 async def get_multipass_history(public_id: str, customer_public_id: str):
     """Customer-visible/owner-visible issue and use history, newest first."""
@@ -7726,15 +7778,15 @@ async def get_multipass_history(public_id: str, customer_public_id: str):
     if not customer or customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
     try:
-        res = (
+        rows = (
             supabase.table('multipass_events')
             .select('*')
             .eq('business_id', business.get('id'))
             .eq('customer_id', customer.get('id'))
             .order('created_at', desc=True)
             .execute()
-        )
-        return res.data or []
+        ).data or []
+        return attach_activity_location_names(rows)
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 

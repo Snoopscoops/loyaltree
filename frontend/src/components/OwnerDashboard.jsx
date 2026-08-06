@@ -279,7 +279,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     fetchCoupons(c.public_id)
     setMemberVisitService('')
     setMemberVisitNote('')
-    if (program?.card_type === 'membership' || program?.card_type === 'multipass') fetchMemberHistory(c.public_id)
+    if (['stamp', 'membership', 'multipass'].includes(program?.card_type)) fetchMemberHistory(c.public_id)
     else setMemberHistory([])
     setShowEditModal(true)
   }
@@ -287,7 +287,11 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const fetchMemberHistory = async (customerPublicId) => {
     setMemberHistoryLoading(true)
     try {
-      const suffix = program?.card_type === 'multipass' ? 'multipass-history' : 'leaves'
+      const suffix = program?.card_type === 'multipass'
+        ? 'multipass-history'
+        : program?.card_type === 'membership'
+        ? 'leaves'
+        : 'stamp-history'
       const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${customerPublicId}/${suffix}`)
       const data = await res.json().catch(() => [])
       setMemberHistory(res.ok && Array.isArray(data) ? data : [])
@@ -1564,20 +1568,57 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                   />
                 </>
               )}
-              {(isMembershipCard || isMultipassCard) && (
-                <div style={{marginBottom:18, padding:14, border:'1px solid #e2e8f0', borderRadius:12}}>
-                  <strong>{isMultipassCard ? 'Session history' : 'Visit history'}</strong>
-                  {memberHistoryLoading ? <p style={{color:'#64748b'}}>Loading history...</p> : memberHistory.length === 0 ? <p style={{color:'#64748b'}}>No history yet.</p> : (
-                    <div style={{maxHeight:260, overflowY:'auto', marginTop:10}}>
-                      {memberHistory.map((item, i) => <div key={item.id || i} style={{padding:'10px 0', borderBottom:'1px solid #f1f5f9'}}>
-                        <div style={{display:'flex', justifyContent:'space-between', gap:10}}>
-                          <strong>{isMultipassCard ? (item.action === 'issued' ? 'Pass issued' : 'Session used') : (item.service_name || 'Visit')}</strong>
-                          <span style={{fontSize:12,color:'#64748b'}}>{item.service_date || (item.created_at ? new Date(item.created_at).toLocaleDateString() : '')}</span>
+              {(isMembershipCard || isMultipassCard || (!isPointsCard && !isVipCard)) && (
+                <div style={{marginBottom:18, padding:16, border:'1px solid #ccfbf1', background:'#f0fdfa', borderRadius:14}}>
+                  <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:12, marginBottom:12}}>
+                    <div>
+                      <strong style={{fontSize:15,color:'#115e59'}}>
+                        {isMultipassCard ? 'Multi-Pass activity' : isMembershipCard ? 'Member visit analytics' : 'Stamp activity'}
+                      </strong>
+                      <div style={{fontSize:12,color:'#64748b',marginTop:3}}>
+                        {isMembershipCard
+                          ? 'Service, notes, cashier, branch, and visit date'
+                          : isMultipassCard
+                          ? 'Every issued pass and stamped session'
+                          : 'The date, cashier, and branch for every recorded stamp'}
+                      </div>
+                    </div>
+                    <div style={{minWidth:76,textAlign:'center',background:'white',border:'1px solid #99f6e4',borderRadius:10,padding:'8px 10px'}}>
+                      <strong style={{display:'block',fontSize:20,color:'#0f766e'}}>
+                        {isMembershipCard ? (editForm.membership_visit_count || memberHistory.length || 0) : memberHistory.filter(item => !isMultipassCard || item.action === 'used').length}
+                      </strong>
+                      <span style={{fontSize:11,color:'#64748b'}}>{isMembershipCard ? 'Visits' : isMultipassCard ? 'Used' : 'Stamps'}</span>
+                    </div>
+                  </div>
+                  {memberHistoryLoading ? <p style={{color:'#64748b'}}>Loading activity...</p> : memberHistory.length === 0 ? (
+                    <p style={{color:'#64748b',background:'white',padding:12,borderRadius:10,margin:0}}>
+                      No dated activity has been recorded yet. Activity history starts when scans are logged through the system.
+                    </p>
+                  ) : (
+                    <div style={{maxHeight:320, overflowY:'auto', background:'white', borderRadius:12, padding:'0 12px'}}>
+                      {memberHistory.map((item, i) => {
+                        const eventDate = item.service_date || item.created_at
+                        const location = [item.staff_name ? `By ${item.staff_name}` : null, item.branch_name ? `at ${item.branch_name}` : null].filter(Boolean).join(' ')
+                        const title = isMembershipCard
+                          ? (item.service_name || 'Visit')
+                          : isMultipassCard
+                          ? (item.action === 'issued' ? 'Pass issued' : 'Session stamped')
+                          : `Stamp #${item.stamp_number || (memberHistory.length - i)}`
+                        return <div key={item.id || i} style={{display:'grid',gridTemplateColumns:'12px 1fr',gap:10,padding:'12px 0',borderBottom:i===memberHistory.length-1?'none':'1px solid #e2e8f0'}}>
+                          <div style={{width:10,height:10,borderRadius:'50%',background:'#14b8a6',marginTop:5,boxShadow:'0 0 0 4px #ccfbf1'}} />
+                          <div>
+                            <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start'}}>
+                              <strong style={{color:'#134e4a'}}>{title}</strong>
+                              <span style={{fontSize:12,color:'#64748b',whiteSpace:'nowrap'}}>
+                                {eventDate ? new Date(eventDate).toLocaleString([], {year:'numeric',month:'short',day:'numeric',hour:eventDate.includes?.('T')?'numeric':undefined,minute:eventDate.includes?.('T')?'2-digit':undefined}) : 'Date unavailable'}
+                              </span>
+                            </div>
+                            {isMultipassCard && <div style={{fontSize:13,color:'#475569',marginTop:3}}>{item.sessions_remaining ?? 0} sessions remaining after this activity</div>}
+                            {isMembershipCard && item.note && <div style={{fontSize:13,color:'#334155',whiteSpace:'pre-wrap',marginTop:6,padding:8,background:'#f8fafc',borderRadius:8}}>{item.note}</div>}
+                            {location && <div style={{fontSize:12,color:'#64748b',marginTop:5}}>{location}</div>}
+                          </div>
                         </div>
-                        {isMultipassCard && <div style={{fontSize:13,color:'#475569'}}>{item.sessions_remaining ?? 0} sessions remaining</div>}
-                        {!isMultipassCard && item.note && <div style={{fontSize:13,color:'#475569',whiteSpace:'pre-wrap'}}>{item.note}</div>}
-                        {!isMultipassCard && (item.staff_name || item.branch_name) && <div style={{fontSize:12,color:'#94a3b8'}}>{[item.staff_name,item.branch_name].filter(Boolean).join(' · ')}</div>}
-                      </div>)}
+                      })}
                     </div>
                   )}
                 </div>
