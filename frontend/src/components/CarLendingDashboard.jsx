@@ -192,7 +192,7 @@ const VEHICLE_MAX_PHOTOS = 10
 const CONTRACT_MAX_IMAGES = 5
 
 function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved }) {
-  const emptyForm = { make: '', model: '', year: '', plate_number: '', plate_end_in: '', engine_number: '', chassis_number: '', color: '', mileage: '', transmission: '', fuel_type: '', price: '', total_cost: '', agent_name: '', status: 'available', payment_type: '', location: '', notes: '', downpayment: '', monthly_amortization_amount: '', amortization_due_date: '', amortization_next_due: '', amortization_months_remaining: '' }
+  const emptyForm = { make: '', model: '', year: '', plate_number: '', plate_end_in: '', engine_number: '', chassis_number: '', color: '', mileage: '', transmission: '', fuel_type: '', price: '', total_cost: '', agent_name: '', status: 'available', payment_type: '', location: '', notes: '', downpayment: '', monthly_amortization_amount: '', amortization_due_date: '', amortization_next_due: '', amortization_months_remaining: '', financing_bank_name: '' }
   const [form, setForm] = useState(emptyForm)
   const [imageUrls, setImageUrls] = useState([]) // up to VEHICLE_MAX_PHOTOS Cloudinary URLs, shown as a gallery on the showroom card
   const [uploading, setUploading] = useState(false)
@@ -228,6 +228,7 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
         amortization_due_date: vehicle.amortization_due_date || '',
         amortization_next_due: vehicle.amortization_next_due || '',
         amortization_months_remaining: vehicle.amortization_months_remaining ?? '',
+        financing_bank_name: vehicle.financing_bank_name || '',
       })
       setImageUrls(vehicle.image_urls && vehicle.image_urls.length ? vehicle.image_urls : (vehicle.image_url ? [vehicle.image_url] : []))
     } else {
@@ -321,6 +322,7 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
           amortization_due_date: form.payment_type === 'monthly_amortization' ? (form.amortization_due_date || null) : null,
           amortization_next_due: form.payment_type === 'monthly_amortization' ? (form.amortization_next_due || null) : null,
           amortization_months_remaining: (form.payment_type === 'monthly_amortization' && form.amortization_months_remaining !== '') ? Number(form.amortization_months_remaining) : null,
+          financing_bank_name: form.payment_type === 'monthly_amortization' ? (form.financing_bank_name.trim() || null) : null,
           image_urls: imageUrls,
         }),
       })
@@ -547,6 +549,13 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
                 style={styles.input}
                 value={form.amortization_months_remaining}
                 onChange={e => setForm({ ...form, amortization_months_remaining: e.target.value })}
+              />
+              <label style={styles.label}>Bank name <span style={styles.optionalLabel}>(optional · internal only)</span></label>
+              <input
+                style={styles.input}
+                value={form.financing_bank_name}
+                onChange={e => setForm({ ...form, financing_bank_name: e.target.value })}
+                placeholder="e.g. BDO, BPI, EastWest Bank"
               />
             </>
           )}

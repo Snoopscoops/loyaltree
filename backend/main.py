@@ -550,6 +550,7 @@ class VehicleCreate(BaseModel):
     amortization_due_date: Optional[str] = None      # YYYY-MM-DD, recurring monthly due date - only meaningful when payment_type = 'monthly_amortization'
     amortization_next_due: Optional[str] = None       # YYYY-MM-DD, next actual due date coming up - only meaningful when payment_type = 'monthly_amortization'
     amortization_months_remaining: Optional[int] = Field(default=None, ge=0)  # only meaningful when payment_type = 'monthly_amortization'
+    financing_bank_name: Optional[str] = None  # optional internal bank/lender name for monthly-amortization units
     image_url: Optional[str] = None  # legacy single-photo field - kept in sync as image_urls[0] for old readers
     image_urls: Optional[List[str]] = None  # up to VEHICLE_MAX_PHOTOS photos, shown as a gallery on the showroom card
 
@@ -577,6 +578,7 @@ class VehicleUpdate(BaseModel):
     amortization_due_date: Optional[str] = None
     amortization_next_due: Optional[str] = None
     amortization_months_remaining: Optional[int] = Field(default=None, ge=0)
+    financing_bank_name: Optional[str] = None
     image_url: Optional[str] = None
     image_urls: Optional[List[str]] = None
 
@@ -9167,6 +9169,149 @@ body{background:var(--wc-bg)!important;color:var(--wc-ink)!important;padding-bot
 }
 @media(max-width:380px){.hero-v2 h1{font-size:34px}.hero-stats-v2{grid-template-columns:1fr;gap:12px}.hero-stats-v2>div,.hero-stats-v2>div+div{padding:0;border:0}.hero-stats-v2 span{font-size:9px}.trust-grid{grid-template-columns:1fr!important}.trust-item{border-right:0!important;border-bottom:1px solid var(--wc-line)!important}.trust-item:last-child{border-bottom:0!important}.vehicle-modal-specs{grid-template-columns:1fr!important}}
 
+
+/* Reservation popup polish */
+#reservation-modal .agent-modal-card{
+  width:min(92vw,560px);
+  max-height:min(92vh,860px);
+  border-radius:28px;
+  overflow:hidden;
+}
+#reservation-modal .agent-modal-scroll{
+  padding:34px 34px 30px;
+}
+#reservation-modal .agent-modal-title{
+  font-size:32px;
+  line-height:1.12;
+  margin-bottom:6px;
+}
+#reservation-modal .agent-modal-sub{
+  font-size:17px;
+  color:#737373;
+  margin-bottom:20px;
+}
+#reservation-modal .reservation-payment-box{
+  background:linear-gradient(180deg,#fffdf7 0%,#faf6ea 100%);
+  border:1px solid #e2cf9d;
+  box-shadow:0 8px 24px rgba(24,24,24,.05);
+  border-radius:20px;
+  padding:22px;
+  margin:18px 0 22px;
+  text-align:left;
+}
+#reservation-modal .reservation-amount{
+  font-size:30px;
+  line-height:1.15;
+  font-weight:850;
+  color:#171717;
+  margin-top:5px;
+}
+#reservation-modal .reservation-note{
+  font-size:15px;
+  line-height:1.65;
+  color:#4b4b4b;
+  margin-top:5px;
+}
+.reservation-field{
+  margin-bottom:15px;
+}
+.reservation-field label{
+  display:block;
+  margin:0 0 7px;
+  color:#262626;
+  font-size:13px;
+  line-height:1.2;
+  font-weight:750;
+}
+.reservation-control{
+  display:block;
+  box-sizing:border-box;
+  width:100%;
+  min-width:0;
+  border:1px solid #ded9cc;
+  border-radius:15px;
+  background:#fff;
+  color:#171717;
+  padding:15px 16px;
+  font:inherit;
+  font-size:15px;
+  line-height:1.4;
+  outline:none;
+  box-shadow:0 1px 0 rgba(0,0,0,.02);
+  transition:border-color .18s ease,box-shadow .18s ease,background .18s ease;
+}
+.reservation-control::placeholder{color:#a3a3a3}
+.reservation-control:focus{
+  border-color:#c79a22;
+  box-shadow:0 0 0 4px rgba(199,154,34,.13);
+  background:#fffefb;
+}
+.reservation-textarea{
+  min-height:100px;
+  resize:vertical;
+}
+.reservation-file-wrap{
+  position:relative;
+  min-height:78px;
+  border:1.5px dashed #d3c38f;
+  border-radius:16px;
+  background:#fffdf8;
+  overflow:hidden;
+  display:flex;
+  align-items:center;
+}
+.reservation-file-input{
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  opacity:0;
+  cursor:pointer;
+  z-index:2;
+}
+.reservation-file-copy{
+  width:100%;
+  padding:16px 18px;
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  pointer-events:none;
+}
+.reservation-file-copy strong{
+  font-size:15px;
+  color:#171717;
+}
+.reservation-file-copy span{
+  font-size:12px;
+  color:#777;
+}
+#reservation-modal .agent-modal-submit{
+  width:100%;
+  min-height:54px;
+  border-radius:15px;
+  margin-top:6px;
+  font-size:16px;
+  font-weight:850;
+}
+@media(max-width:600px){
+  #reservation-modal{
+    align-items:flex-end;
+    padding:0;
+  }
+  #reservation-modal .agent-modal-card{
+    width:100%;
+    max-width:none;
+    max-height:94vh;
+    border-radius:24px 24px 0 0;
+  }
+  #reservation-modal .agent-modal-scroll{
+    padding:28px 20px calc(24px + env(safe-area-inset-bottom));
+  }
+  #reservation-modal .agent-modal-title{font-size:27px}
+  #reservation-modal .reservation-payment-box{padding:18px}
+  #reservation-modal .reservation-amount{font-size:25px}
+}
+
 """
 
 SHOWROOM_JS = """
@@ -9566,6 +9711,24 @@ SHOWROOM_JS = """
   if (reservationModalClose) reservationModalClose.addEventListener('click', closeReservationModal);
   if (reservationSuccessClose) reservationSuccessClose.addEventListener('click', closeReservationModal);
   if (reservationModal) reservationModal.addEventListener('click', function(e){ if (e.target === reservationModal) closeReservationModal(); });
+
+
+  if (reservationReceipt) reservationReceipt.addEventListener('change', function(){
+    var copy = reservationReceipt.closest('.reservation-file-wrap');
+    if (!copy) return;
+    var title = copy.querySelector('.reservation-file-copy strong');
+    var sub = copy.querySelector('.reservation-file-copy span');
+    var file = reservationReceipt.files && reservationReceipt.files[0];
+    if (file) {
+      if (title) title.textContent = file.name;
+      if (sub) sub.textContent = 'Receipt selected — tap to replace';
+      copy.classList.add('has-file');
+    } else {
+      if (title) title.textContent = 'Upload receipt';
+      if (sub) sub.textContent = 'JPG or PNG, up to 10 MB';
+      copy.classList.remove('has-file');
+    }
+  });
 
   if (reservationForm) reservationForm.addEventListener('submit', async function(e){
     e.preventDefault();
@@ -10301,6 +10464,8 @@ async def showroom_page(business_public_id: str):
                         specs_data.append({'label': 'Next due', 'value': format_showroom_date(v.get('amortization_next_due'))})
                     if v.get('amortization_months_remaining') is not None:
                         specs_data.append({'label': 'Months remaining', 'value': str(v.get('amortization_months_remaining'))})
+                    if v.get('financing_bank_name'):
+                        specs_data.append({'label': 'Financing bank', 'value': str(v.get('financing_bank_name'))})
                 elif payment_type == 'cash':
                     specs_data.append({'label': 'Payment type', 'value': 'Cash'})
 
@@ -10556,11 +10721,25 @@ async def showroom_page(business_public_id: str):
             '<div id="reservation-payment-note" class="reservation-note">Loading payment instructions…</div>'
             '</div>'
             '<form id="reservation-form">'
-            '<input type="text" id="reservation-name" placeholder="Full name" required autocomplete="name">'
-            '<input type="tel" id="reservation-contact-number" placeholder="Contact number" required autocomplete="tel">'
-            '<textarea id="reservation-address" placeholder="Complete address" required autocomplete="street-address"></textarea>'
-            '<div class="inquiry-field-label">Upload reservation payment receipt</div>'
-            '<input type="file" id="reservation-receipt" accept="image/*" required>'
+            '<div class="reservation-field">'
+            '<label for="reservation-name">Full name</label>'
+            '<input class="reservation-control" type="text" id="reservation-name" placeholder="Enter your full name" required autocomplete="name">'
+            '</div>'
+            '<div class="reservation-field">'
+            '<label for="reservation-contact-number">Contact number</label>'
+            '<input class="reservation-control" type="tel" id="reservation-contact-number" placeholder="e.g. 0917 123 4567" required autocomplete="tel">'
+            '</div>'
+            '<div class="reservation-field">'
+            '<label for="reservation-address">Complete address</label>'
+            '<textarea class="reservation-control reservation-textarea" id="reservation-address" placeholder="House number, street, barangay, city or municipality, province" required autocomplete="street-address"></textarea>'
+            '</div>'
+            '<div class="reservation-field">'
+            '<label for="reservation-receipt">Reservation payment receipt</label>'
+            '<div class="reservation-file-wrap">'
+            '<input class="reservation-file-input" type="file" id="reservation-receipt" accept="image/*" required>'
+            '<div class="reservation-file-copy"><strong>Upload receipt</strong><span>JPG or PNG, up to 10 MB</span></div>'
+            '</div>'
+            '</div>'
             '<div id="reservation-error" class="agent-modal-error" style="display:none"></div>'
             '<button type="submit" id="reservation-submit" class="agent-modal-submit">Submit reservation</button>'
             '</form>'
