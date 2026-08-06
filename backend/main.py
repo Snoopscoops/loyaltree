@@ -10691,7 +10691,10 @@ async def showroom_page(business_public_id: str):
             '</form>'
             '<p class="inquiry-contact-line">Call us at '
             '<a href="tel:09551996574">0955-199-6574</a> or '
-            '<a href="tel:09097030170">0909-703-0170</a></p>'
+            '<a href="tel:09097030170">0909-703-0170</a><br><br>'
+            'or message us here at: '
+            '<a href="https://www.facebook.com/share/1JYgDr75Hm/?mibextid=wwXIfr" '
+            'target="_blank" rel="noopener noreferrer">Wolf Cars Facebook</a></p>'
             '</div>'
 
             '<div id="inquiry-success-view" class="agent-modal-view" style="display:none">'
