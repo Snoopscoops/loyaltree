@@ -974,7 +974,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                           {(c.membership_effective_status || c.membership_status) === 'lifetime'
                             ? 'Lifetime membership'
                             : c.membership_expires_at
-                            ? `Valid until ${c.membership_expires_at}`
+                            ? `Active until ${c.membership_expires_at}`
                             : 'Not yet activated'}
                         </p>
                       </>
@@ -1265,7 +1265,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     )}
                   </div>
                 ) : isVipCard ? (
-                  <div style={styles.cardProgress}><p style={{fontSize:30,fontWeight:900,color:'white',margin:'8px 0 2px'}}>👑 {selectedCustomer.vip_tier?.name||'VIP'}</p><p style={{fontSize:14,color:'white'}}>{selectedCustomer.vip_points||0} VIP points</p>{selectedCustomer.vip_next_tier&&<p style={{fontSize:12,color:'rgba(255,255,255,.8)'}}>{Math.max(0,selectedCustomer.vip_next_tier.threshold-(selectedCustomer.vip_points||0))} points to {selectedCustomer.vip_next_tier.name}</p>}{(selectedCustomer.vip_tier?.benefits||[]).map((b,i)=><p key={i} style={{fontSize:12,color:'white',margin:'4px 0',textAlign:'left'}}>✓ {b}</p>)}</div>
+                  <div style={styles.cardProgress}><p style={{fontSize:30,fontWeight:900,color:'white',margin:'8px 0 2px'}}>👑 {selectedCustomer.vip_tier?.name||'VIP'}</p><p style={{fontSize:14,color:'white',fontWeight:800}}>VIP Points: {selectedCustomer.vip_points||0}</p>{selectedCustomer.vip_next_tier&&<p style={{fontSize:12,color:'rgba(255,255,255,.8)'}}>{Math.max(0,selectedCustomer.vip_next_tier.threshold-(selectedCustomer.vip_points||0))} points to {selectedCustomer.vip_next_tier.name}</p>}{(selectedCustomer.vip_tier?.benefits||[]).map((b,i)=><p key={i} style={{fontSize:12,color:'white',margin:'4px 0',textAlign:'left'}}>✓ {b}</p>)}</div>
                 ) : isMembershipCard ? (
                   <div style={styles.cardProgress}>
                     <p style={{
@@ -1286,7 +1286,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                       {(selectedCustomer.membership_effective_status || selectedCustomer.membership_status) === 'lifetime'
                         ? 'Lifetime membership'
                         : selectedCustomer.membership_expires_at
-                        ? `Valid until ${selectedCustomer.membership_expires_at}`
+                        ? `Active until ${selectedCustomer.membership_expires_at}`
                         : 'Membership not yet activated'}
                     </p>
 

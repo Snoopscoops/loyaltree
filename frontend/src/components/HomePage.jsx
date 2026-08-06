@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import logo192 from './logo-192.png'
 import logo64 from './logo-64.png'
@@ -109,9 +109,9 @@ const CARD_TYPES = [
   { key: 'cashback', icon: '💵', title: 'Cashback', available: false },
   { key: 'discount', icon: '🏷️', title: 'Discount', available: false },
   { key: 'multipass', icon: '🎫', title: 'Multipass', available: true },
-  { key: 'membership', icon: '🪪', title: 'Membership', available: false },
+  { key: 'membership', icon: '🪪', title: 'Membership', available: true },
   { key: 'giftcard', icon: '🎁', title: 'Gift Card', available: false },
-  { key: 'vip', icon: '👑', title: 'VIP Cards', available: false },
+  { key: 'vip', icon: '👑', title: 'VIP Cards', available: true },
   { key: 'nfc', icon: '📡', title: 'NFC Enabled Cards', available: false },
 ]
 
@@ -187,6 +187,43 @@ const CARD_SAMPLES = {
           ))}
         </div>
         <div style={styles.heroCardFoot}>4 of 10 visits used &middot; 6 remaining</div>
+      </div>
+    ),
+  },
+
+  membership: {
+    name: 'Membership',
+    intro: 'Run subscription and access programs with active status, renewal dates, and member perks.',
+    render: (styles) => (
+      <div style={styles.heroCard}>
+        <div style={styles.heroCardHeader}>
+          <span>Gym Membership</span>
+          <span style={{ fontSize: 12, opacity: 0.85 }}>Active Fitness</span>
+        </div>
+        <div style={styles.membershipBody}>
+          <div style={styles.membershipStatus}>ACTIVE</div>
+          <div style={styles.membershipDate}>Active until Sep 30, 2026</div>
+          <div style={styles.membershipPerks}>✓ Unlimited access · ✓ Locker use</div>
+        </div>
+        <div style={styles.heroCardFoot}>Member ID · LT-2048</div>
+      </div>
+    ),
+  },
+  vip: {
+    name: 'VIP Cards',
+    intro: 'Reward your best customers with VIP points, automatic tier upgrades, and stronger benefits at every level.',
+    render: (styles) => (
+      <div style={styles.heroCard}>
+        <div style={{ ...styles.heroCardHeader, background: '#a16207' }}>
+          <span>Gold VIP</span>
+          <span style={{ fontSize: 12, opacity: 0.85 }}>Premier Retail</span>
+        </div>
+        <div style={styles.vipBody}>
+          <div style={styles.vipTier}>GOLD</div>
+          <div style={styles.vipPoints}>3,450 VIP points</div>
+          <div style={styles.vipProgress}>550 points to Platinum</div>
+        </div>
+        <div style={styles.heroCardFoot}>10% discount · Priority service</div>
       </div>
     ),
   },
@@ -278,6 +315,14 @@ function HomePage({ onNavigateLogin }) {
   const [activeCard, setActiveCard] = useState(null) // e.g. 'stamps'
   const [modalView, setModalView] = useState('sample') // 'sample' | 'pricing'
   const [branchTier, setBranchTier] = useState('1')
+  const [partners, setPartners] = useState([])
+
+  useEffect(() => {
+    fetch('/api/v1/public/partners')
+      .then(res => res.ok ? res.json() : [])
+      .then(data => setPartners(Array.isArray(data) ? data : []))
+      .catch(() => setPartners([]))
+  }, [])
 
   const openCard = (card) => {
     if (!card.available) return
@@ -418,7 +463,7 @@ function HomePage({ onNavigateLogin }) {
 
       <section style={styles.section}>
         <h2 style={styles.h2}>Choose your card type</h2>
-        <p style={styles.cardTypesIntro}>Stamps, Coupons, and Points are live today. Everything else is on its way.</p>
+        <p style={styles.cardTypesIntro}>Choose the card that fits your business: rewards, subscriptions, session packs, or VIP tiers.</p>
         <div style={styles.cardTypesGrid}>
           {CARD_TYPES.map(c => (
             <button
@@ -454,6 +499,50 @@ function HomePage({ onNavigateLogin }) {
           ))}
         </div>
       </section>
+
+
+      {partners.length > 0 && (
+        <section style={{ ...styles.section, background: '#ffffff' }}>
+          <div style={styles.partnerHeader}>
+            <span style={styles.partnerEyebrow}>Our growing community</span>
+            <h2 style={styles.h2}>Thank you for trusting us</h2>
+            <p style={styles.partnerIntro}>
+              We are proud to support businesses that use LoyaltyTree to serve, retain, and appreciate their customers.
+            </p>
+          </div>
+
+          {['growth', 'starter'].map(planKey => {
+            const planPartners = partners.filter(p => p.plan_segment === planKey)
+            if (!planPartners.length) return null
+            return (
+              <div key={planKey} style={styles.partnerPlanGroup}>
+                <div style={styles.partnerPlanHeading}>
+                  <span style={{ ...styles.partnerPlanBadge, background: planKey === 'growth' ? '#0d9488' : '#475569' }}>
+                    {planKey === 'growth' ? 'Growth Plan Partners' : 'Starter Plan Partners'}
+                  </span>
+                </div>
+                <div style={styles.partnerGrid}>
+                  {planPartners.map(partner => (
+                    <a
+                      key={partner.public_id}
+                      href={partner.website_url || undefined}
+                      target={partner.website_url ? '_blank' : undefined}
+                      rel={partner.website_url ? 'noopener noreferrer' : undefined}
+                      style={styles.partnerCard}
+                    >
+                      <div style={styles.partnerLogoWrap}>
+                        <img src={partner.logo_url} alt={partner.name} style={styles.partnerLogo} />
+                      </div>
+                      <div style={styles.partnerName}>{partner.name}</div>
+                      <div style={styles.partnerSector}>{partner.sector || 'Business Partner'}</div>
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )
+          })}
+        </section>
+      )}
 
       <section style={styles.ctaSection}>
         <h2 style={{ ...styles.h2, color: 'white' }}>Ready to grow your regulars?</h2>
@@ -758,6 +847,27 @@ const styles = {
     fontSize: 11, fontWeight: 600, color: '#94a3b8', background: '#f1f5f9',
     borderRadius: 20, padding: '3px 10px', marginTop: 2,
   },
+
+  membershipBody: { padding: '24px 18px', textAlign: 'center' },
+  membershipStatus: { fontSize: 27, fontWeight: 900, color: '#0d9488', letterSpacing: 1 },
+  membershipDate: { marginTop: 5, fontSize: 13, color: '#475569' },
+  membershipPerks: { marginTop: 13, fontSize: 11.5, color: '#64748b', lineHeight: 1.5 },
+  vipBody: { padding: '24px 18px', textAlign: 'center' },
+  vipTier: { fontSize: 29, fontWeight: 900, color: '#a16207', letterSpacing: 1.5 },
+  vipPoints: { marginTop: 5, fontSize: 14, fontWeight: 750, color: '#334155' },
+  vipProgress: { marginTop: 6, fontSize: 11.5, color: '#64748b' },
+  partnerHeader: { maxWidth: 680, margin: '0 auto 34px', textAlign: 'center' },
+  partnerEyebrow: { display: 'inline-block', marginBottom: 8, fontSize: 12, fontWeight: 800, color: '#0d9488', textTransform: 'uppercase', letterSpacing: 1 },
+  partnerIntro: { margin: '10px auto 0', color: '#64748b', lineHeight: 1.7, fontSize: 14 },
+  partnerPlanGroup: { maxWidth: 1080, margin: '0 auto 34px' },
+  partnerPlanHeading: { display: 'flex', justifyContent: 'center', marginBottom: 18 },
+  partnerPlanBadge: { color: 'white', borderRadius: 999, padding: '7px 16px', fontSize: 12, fontWeight: 800, letterSpacing: .4 },
+  partnerGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 },
+  partnerCard: { textDecoration: 'none', color: 'inherit', background: '#fff', border: '1px solid #e2e8f0', borderRadius: 16, padding: '18px 14px', textAlign: 'center', boxShadow: '0 7px 20px rgba(15,23,42,.05)' },
+  partnerLogoWrap: { height: 82, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc', borderRadius: 12, marginBottom: 12, padding: 10 },
+  partnerLogo: { maxWidth: '100%', maxHeight: 62, objectFit: 'contain' },
+  partnerName: { fontSize: 14, fontWeight: 800, color: '#0f172a' },
+  partnerSector: { marginTop: 4, fontSize: 11.5, color: '#94a3b8' },
 
   // Modal
   modalOverlay: {

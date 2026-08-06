@@ -33,6 +33,7 @@ function CashierApp({ API_BASE }) {
   const [verifying, setVerifying] = useState(false)
   const [staffName, setStaffName] = useState(isOwner ? (ownerState?.ownerName || 'Owner') : '')
   const [saleAmount, setSaleAmount] = useState('')
+  const [vipSaleAmount, setVipSaleAmount] = useState('')
   const [customSessionCount, setCustomSessionCount] = useState('')
 
   useEffect(() => {
@@ -145,7 +146,11 @@ function CashierApp({ API_BASE }) {
           membership_expires_at: c.membership_expires_at || null,
           membership_services: Array.isArray(program.membership_services) ? program.membership_services : [],
           membership_description: program.description || '',
-          vip_points: c.vip_points || 0, vip_tier: c.vip_tier || null, vip_next_tier: c.vip_next_tier || null,
+          vip_points: c.vip_points || 0,
+          vip_tier: c.vip_tier || null,
+          vip_next_tier: c.vip_next_tier || null,
+          vip_points_per_amount: program.vip_points_per_amount || 0,
+          vip_amount_pesos: program.vip_amount_pesos || 1,
         })
         setMessage(`Found: ${c.name}`)
       } else {
@@ -258,8 +263,53 @@ function CashierApp({ API_BASE }) {
 
 
   const recordVipPurchase = async () => {
-    const amount = Number(window.prompt('Purchase amount (₱)', '0')); if (!amount || amount <= 0) return; setLoading(true)
-    try { const res=await fetch(`${API_BASE}/api/v1/business/${businessSlug}/vip-sale`,{method:'POST',headers:{'Content-Type':'application/json',...(sessionToken?{Authorization:`Bearer ${sessionToken}`}:{})},body:JSON.stringify({customer_public_id:customerData.public_id,amount_spent:amount,...(sessionToken?{}:{staff_pin:staffPin}),as_owner:isOwner})}); const d=await res.json(); if(!res.ok) throw new Error(d.detail||'VIP sale failed'); setCustomerData({...customerData,vip_points:d.vip_points,vip_tier:d.tier,vip_next_tier:d.next_tier}); setMessage(d.upgraded?`🎉 Upgraded to ${d.tier.name}!`:`✅ ${d.points_earned} VIP points added`) } catch(e){setMessage(`❌ ${e.message}`)} setLoading(false)
+    if (!customerData || !businessSlug || (!isOwner && !staffPin && !sessionToken)) {
+      setMessage('Missing info - scan again')
+      return
+    }
+    const amount = parseFloat(vipSaleAmount)
+    if (!amount || amount <= 0) {
+      setMessage('Enter a purchase amount first')
+      return
+    }
+
+    setLoading(true)
+    setMessage('Adding VIP points...')
+
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/vip-sale`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+        },
+        body: JSON.stringify({
+          customer_public_id: customerData.public_id,
+          amount_spent: amount,
+          ...(sessionToken ? {} : { staff_pin: staffPin }),
+          as_owner: isOwner,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'VIP sale failed')
+
+      setCustomerData(prev => prev ? {
+        ...prev,
+        vip_points: data.vip_points,
+        vip_tier: data.tier,
+        vip_next_tier: data.next_tier,
+      } : prev)
+      setVipSaleAmount('')
+
+      setMessage(
+        data.upgraded
+          ? `🎉 ${customerData.name} upgraded to ${data.tier.name}! +${data.points_earned} VIP points`
+          : `✅ +${data.points_earned} VIP points! ${customerData.name} now has ${data.vip_points}`
+      )
+    } catch (err) {
+      setMessage(`❌ ${err.message}`)
+    }
+    setLoading(false)
   }
 
   const logMembershipVisit = async () => {
@@ -501,6 +551,7 @@ function CashierApp({ API_BASE }) {
     setMessage('')
     setDebugInfo('')
     setSaleAmount('')
+    setVipSaleAmount('')
     setCustomSessionCount('')
   }
 
@@ -604,6 +655,60 @@ function CashierApp({ API_BASE }) {
     return Math.floor((amount / pesos) * rate)
   })()
 
+  const previewVipPoints = (() => {
+    if (!customerData || customerData.card_type !== 'vip') return 0
+    const amount = parseFloat(vipSaleAmount)
+    if (!amount || amount <= 0) return 0
+    const rate = customerData.vip_points_per_amount || 0
+    const pesos = customerData.vip_amount_pesos || 1
+    return Math.floor((amount / pesos) * rate)
+  })()
+
+  const cardExperience = customerData?.card_type === 'points'
+    ? {
+        accent: '#2563eb',
+        soft: '#eff6ff',
+        border: '#bfdbfe',
+        icon: '💎',
+        label: 'Points Card',
+        actionTitle: 'Record Purchase & Add Points',
+      }
+    : customerData?.card_type === 'membership'
+    ? {
+        accent: '#18181b',
+        soft: '#fafaf9',
+        border: '#d6d3d1',
+        icon: '🏋️',
+        label: 'Membership Card',
+        actionTitle: 'Verify Access & Log Visit',
+      }
+    : customerData?.card_type === 'multipass'
+    ? {
+        accent: '#7c3aed',
+        soft: '#f5f3ff',
+        border: '#ddd6fe',
+        icon: '🎫',
+        label: 'Multi-Pass',
+        actionTitle: 'Use or Issue Sessions',
+      }
+    : customerData?.card_type === 'vip'
+    ? {
+        accent: '#ca8a04',
+        soft: '#fefce8',
+        border: '#fde68a',
+        icon: '👑',
+        label: 'VIP Card',
+        actionTitle: 'Record Purchase & Add VIP Points',
+      }
+    : {
+        accent: '#0d9488',
+        soft: '#f0fdfa',
+        border: '#99f6e4',
+        icon: '🎟️',
+        label: 'Stamp Card',
+        actionTitle: 'Add Stamp',
+      }
+
   const isMultipassExpired = !!(
     customerData?.card_type === 'multipass' &&
     customerData.multipass_expires_at &&
@@ -616,7 +721,7 @@ function CashierApp({ API_BASE }) {
       <header style={styles.header}>
         <div style={styles.headerBrand}>
           <span style={styles.headerLogo}>🌳</span>
-          <span style={styles.headerTitle}>{isOwner ? 'Scan Leaf' : 'Cashier'}{staffName ? ` · ${staffName}` : ''}</span>
+          <span style={styles.headerTitle}>{isOwner ? 'Card Scanner' : 'Cashier Scanner'}{staffName ? ` · ${staffName}` : ''}</span>
         </div>
         <button style={styles.resetBtn} onClick={() => {
           if (isOwner) {
@@ -649,9 +754,9 @@ function CashierApp({ API_BASE }) {
       {!customerData ? (
         <div style={styles.scanSection}>
           <div style={styles.scanCard}>
-            <h3 style={styles.scanTitle}>🍃 Scan Customer QR</h3>
+            <h3 style={styles.scanTitle}>📷 Scan Customer Card</h3>
             <div id="reader" style={styles.reader}></div>
-            <p style={styles.scanHint}>Point camera at customer QR code</p>
+            <p style={styles.scanHint}>Scan any LoyaltyTree card: Stamp, Points, Membership, VIP, or Multi-Pass.</p>
 
             <button style={styles.manualBtn} onClick={() => setShowManual(true)}>
               ✏️ Enter ID Manually
@@ -681,9 +786,31 @@ function CashierApp({ API_BASE }) {
       ) : (
         <div style={styles.customerCard}>
           {/* Customer Info */}
-          <div style={styles.customerHeader}>
-            <div style={styles.customerAvatar}>{customerData.name?.[0]?.toUpperCase()}</div>
-            <div>
+          <div style={{
+            ...styles.customerHeader,
+            background: cardExperience.soft,
+            border: `1px solid ${cardExperience.border}`,
+            borderRadius: 16,
+            padding: 14,
+          }}>
+            <div style={{
+              ...styles.customerAvatar,
+              background: cardExperience.accent,
+            }}>{customerData.name?.[0]?.toUpperCase()}</div>
+            <div style={{flex: 1}}>
+              <div style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                fontSize: 11,
+                fontWeight: 800,
+                color: cardExperience.accent,
+                textTransform: 'uppercase',
+                letterSpacing: .5,
+                marginBottom: 4,
+              }}>
+                {cardExperience.icon} {cardExperience.label}
+              </div>
               <h3 style={styles.customerName}>{customerData.name}</h3>
               <p style={styles.customerMeta}>
                 {customerData.card_type === 'points'
@@ -768,7 +895,7 @@ function CashierApp({ API_BASE }) {
                   {customerData.membership_status === 'lifetime'
                     ? 'Lifetime access'
                     : customerData.membership_expires_at
-                    ? `Valid until ${customerData.membership_expires_at}`
+                    ? `Active until ${customerData.membership_expires_at}`
                     : 'No active subscription'}
                 </span>
               </div>
@@ -822,6 +949,18 @@ function CashierApp({ API_BASE }) {
             </div>
           )}
 
+          {/* Card-specific transaction */}
+          <div style={{
+            margin: '18px 0 10px',
+            fontSize: 13,
+            fontWeight: 850,
+            color: cardExperience.accent,
+            textTransform: 'uppercase',
+            letterSpacing: .5,
+          }}>
+            {cardExperience.actionTitle}
+          </div>
+
           {/* Actions */}
           {customerData.card_type === 'points' ? (
             <div style={styles.pointsSaleSection}>
@@ -840,7 +979,7 @@ function CashierApp({ API_BASE }) {
                   onClick={addPoints}
                   disabled={loading || !saleAmount}
                 >
-                  {loading ? '...' : '💎 Add Points'}
+                  {loading ? '...' : '💎 Record Sale'}
                 </button>
               </div>
               {saleAmount && (
@@ -848,6 +987,49 @@ function CashierApp({ API_BASE }) {
                   {previewPoints > 0
                     ? `= +${previewPoints} point${previewPoints === 1 ? '' : 's'}`
                     : 'Enter a valid amount'}
+                </p>
+              )}
+            </div>
+          ) : null}
+          {customerData.card_type === 'vip' ? (
+            <div style={{
+              ...styles.pointsSaleSection,
+              background: '#fefce8',
+              border: '1px solid #fde68a',
+            }}>
+              <div style={styles.pointsSaleRow}>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min="0"
+                  placeholder="Purchase amount (₱)"
+                  value={vipSaleAmount}
+                  onChange={e => setVipSaleAmount(e.target.value)}
+                  style={styles.pointsSaleInput}
+                />
+                <button
+                  style={{
+                    ...styles.actionBtn,
+                    background: '#ca8a04',
+                    flex: 'none',
+                    padding: '14px 20px',
+                  }}
+                  onClick={recordVipPurchase}
+                  disabled={loading || !vipSaleAmount}
+                >
+                  {loading ? '...' : '👑 Add VIP Points'}
+                </button>
+              </div>
+              {vipSaleAmount && (
+                <p style={styles.pointsPreview}>
+                  {previewVipPoints > 0
+                    ? `= +${previewVipPoints} VIP point${previewVipPoints === 1 ? '' : 's'}`
+                    : 'Enter a valid amount'}
+                </p>
+              )}
+              {customerData.vip_next_tier && (
+                <p style={styles.pointsPreview}>
+                  Next tier: {customerData.vip_next_tier.name} at {customerData.vip_next_tier.threshold} VIP points
                 </p>
               )}
             </div>
@@ -882,17 +1064,16 @@ function CashierApp({ API_BASE }) {
                 onClick={addStamp}
                 disabled={loading}
               >
-                {loading ? '...' : '🍃 Add Ring'}
+                {loading ? '...' : '🎟️ Add Stamp'}
               </button>
             )}
-            {customerData.card_type === 'vip' && (<button style={{...styles.actionBtn,background:'#ca8a04'}} onClick={recordVipPurchase} disabled={loading}>{loading?'...':'👑 Record VIP Purchase'}</button>)}
             {customerData.card_type === 'membership' && (
               <button
                 style={{...styles.actionBtn, background: '#0d9488'}}
                 onClick={logMembershipVisit}
                 disabled={loading || !['active','lifetime'].includes(customerData.membership_status)}
               >
-                {loading ? '...' : '✅ Log Visit'}
+                {loading ? '...' : '🏋️ Check In Member'}
               </button>
             )}
             {customerData.card_type === 'membership' && !['active','lifetime'].includes(customerData.membership_status) && (
@@ -906,7 +1087,7 @@ function CashierApp({ API_BASE }) {
                 onClick={useMultipassSession}
                 disabled={loading || isMultipassExpired || customerData.sessions_remaining <= 0}
               >
-                {loading ? '...' : '✅ Use Session'}
+                {loading ? '...' : '🎫 Use One Session'}
               </button>
             )}
             {customerData.card_type === 'stamp' && customerData.reward_unlocked && (

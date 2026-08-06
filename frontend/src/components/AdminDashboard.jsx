@@ -22,6 +22,13 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [createForm, setCreateForm] = useState({ name: '', email: '', password: '', phone: '', business_type: 'car_lending', address: '', branch_count: 1 })
   const [creating, setCreating] = useState(false)
+  const [partners, setPartners] = useState([])
+  const [partnerForm, setPartnerForm] = useState({
+    name: '', logo_url: '', sector: '', plan_segment: 'starter',
+    website_url: '', is_active: true, sort_order: 0,
+  })
+  const [partnerUploading, setPartnerUploading] = useState(false)
+  const [partnerSaving, setPartnerSaving] = useState(false)
 
   const authedFetch = (path, opts = {}) => fetch(`${API_BASE}${path}`, {
     ...opts,
@@ -39,17 +46,19 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
       if (statusFilter) params.set('status', statusFilter)
       if (planFilter) params.set('plan', planFilter)
 
-      const [ovRes, plansRes, bizRes, pendingRes] = await Promise.all([
+      const [ovRes, plansRes, bizRes, pendingRes, partnersRes] = await Promise.all([
         authedFetch('/api/v1/admin/overview'),
         authedFetch('/api/v1/admin/plans'),
         authedFetch(`/api/v1/admin/businesses?${params.toString()}`),
         authedFetch('/api/v1/admin/businesses?status=PENDING'),
+        authedFetch('/api/v1/admin/partners'),
       ])
       if (ovRes.status === 401 || bizRes.status === 401) { onLogout(); return }
       setOverview(await ovRes.json().catch(() => null))
       setPlans(await plansRes.json().catch(() => ({})))
       setBusinesses(await bizRes.json().catch(() => []))
       setPendingApps(await pendingRes.json().catch(() => []))
+      setPartners(await partnersRes.json().catch(() => []))
     } catch (err) {
       console.error('Admin load error:', err)
     }
@@ -144,6 +153,74 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   }
 
 
+
+  const uploadPartnerLogo = async (file) => {
+    if (!file) return
+    if (!file.type.startsWith('image/')) return setMessage('Choose an image file')
+    if (file.size > 8 * 1024 * 1024) return setMessage('Logo must be under 8 MB')
+    setPartnerUploading(true)
+    try {
+      const sigRes = await authedFetch('/api/v1/admin/partners/cloudinary-signature', { method: 'POST' })
+      const sig = await sigRes.json()
+      if (!sigRes.ok) throw new Error(sig.detail || 'Could not start logo upload')
+      const body = new FormData()
+      body.append('file', file)
+      body.append('api_key', sig.api_key)
+      body.append('timestamp', sig.timestamp)
+      body.append('signature', sig.signature)
+      body.append('upload_preset', sig.upload_preset)
+      body.append('folder', sig.folder)
+      const uploadRes = await fetch(`https://api.cloudinary.com/v1_1/${sig.cloud_name}/image/upload`, { method: 'POST', body })
+      const uploaded = await uploadRes.json()
+      if (!uploadRes.ok || !uploaded.secure_url) throw new Error(uploaded?.error?.message || 'Logo upload failed')
+      setPartnerForm(prev => ({ ...prev, logo_url: uploaded.secure_url }))
+      setMessage('Partner logo uploaded')
+    } catch (err) { setMessage(err.message) }
+    setPartnerUploading(false)
+  }
+
+  const createPartner = async (e) => {
+    e.preventDefault()
+    if (!partnerForm.name.trim() || !partnerForm.logo_url) return setMessage('Partner name and logo are required')
+    setPartnerSaving(true)
+    try {
+      const res = await authedFetch('/api/v1/admin/partners', {
+        method: 'POST',
+        body: JSON.stringify({
+          ...partnerForm, name: partnerForm.name.trim(),
+          sector: partnerForm.sector.trim() || null,
+          website_url: partnerForm.website_url.trim() || null,
+          sort_order: Number(partnerForm.sort_order) || 0,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not add partner')
+      setPartnerForm({ name: '', logo_url: '', sector: '', plan_segment: 'starter', website_url: '', is_active: true, sort_order: 0 })
+      setMessage('Partner added to homepage')
+      loadData()
+    } catch (err) { setMessage(err.message) }
+    setPartnerSaving(false)
+  }
+
+  const updatePartner = async (partner, patch) => {
+    try {
+      const res = await authedFetch(`/api/v1/admin/partners/${partner.public_id}`, { method: 'PATCH', body: JSON.stringify(patch) })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Partner update failed')
+      loadData()
+    } catch (err) { setMessage(err.message) }
+  }
+
+  const deletePartner = async (partner) => {
+    if (!window.confirm(`Remove ${partner.name} from the homepage?`)) return
+    try {
+      const res = await authedFetch(`/api/v1/admin/partners/${partner.public_id}`, { method: 'DELETE' })
+      if (!res.ok) throw new Error('Could not remove partner')
+      setMessage('Partner removed')
+      loadData()
+    } catch (err) { setMessage(err.message) }
+  }
+
   if (loading) {
     return <div style={styles.loadingScreen}>Loading platform data…</div>
   }
@@ -172,6 +249,44 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
           <button onClick={() => setShowCreateModal(true)} style={styles.approveBtn}>+ Create business</button>
         </div>
+
+
+        <section style={styles.partnerAdminSection}>
+          <h2 style={styles.partnerAdminTitle}>🤝 Homepage Partners</h2>
+          <p style={styles.partnerAdminSubtitle}>
+            Add logos to “Thank you for trusting us,” choose the business sector, and place each partner under Starter or Growth.
+          </p>
+          <form onSubmit={createPartner} style={styles.partnerForm}>
+            <div style={styles.partnerFormGrid}>
+              <div><label style={styles.partnerLabel}>Partner name</label><input style={styles.input} value={partnerForm.name} onChange={e => setPartnerForm({...partnerForm,name:e.target.value})} required /></div>
+              <div><label style={styles.partnerLabel}>Sector</label><input style={styles.input} value={partnerForm.sector} onChange={e => setPartnerForm({...partnerForm,sector:e.target.value})} placeholder="Fitness, Restaurant, Retail..." /></div>
+              <div><label style={styles.partnerLabel}>Plan section</label><select style={styles.select} value={partnerForm.plan_segment} onChange={e => setPartnerForm({...partnerForm,plan_segment:e.target.value})}><option value="starter">Starter Plan</option><option value="growth">Growth Plan</option></select></div>
+              <div><label style={styles.partnerLabel}>Display order</label><input style={styles.input} type="number" min="0" value={partnerForm.sort_order} onChange={e => setPartnerForm({...partnerForm,sort_order:e.target.value})} /></div>
+              <div style={{gridColumn:'1 / -1'}}><label style={styles.partnerLabel}>Website (optional)</label><input style={styles.input} value={partnerForm.website_url} onChange={e => setPartnerForm({...partnerForm,website_url:e.target.value})} placeholder="https://..." /></div>
+              <div style={{gridColumn:'1 / -1'}}>
+                <label style={styles.partnerLabel}>Logo</label>
+                <div style={styles.partnerUploadRow}>
+                  <input style={styles.input} value={partnerForm.logo_url} onChange={e => setPartnerForm({...partnerForm,logo_url:e.target.value})} placeholder="Upload or paste logo URL" />
+                  <label style={styles.partnerUploadBtn}>{partnerUploading?'Uploading…':'📤 Upload logo'}<input type="file" accept="image/*" disabled={partnerUploading} style={{display:'none'}} onChange={e=>{uploadPartnerLogo(e.target.files[0]);e.target.value=''}} /></label>
+                </div>
+                {partnerForm.logo_url && <img src={partnerForm.logo_url} alt="" style={styles.partnerPreview} />}
+              </div>
+            </div>
+            <button type="submit" style={styles.approveBtn} disabled={partnerSaving||partnerUploading}>{partnerSaving?'Adding…':'+ Add homepage partner'}</button>
+          </form>
+          <div style={styles.partnerList}>
+            {partners.map(p => (
+              <div key={p.public_id} style={styles.partnerRow}>
+                <img src={p.logo_url} alt="" style={styles.partnerRowLogo} />
+                <div style={{flex:1,minWidth:160}}><div style={styles.bizName}>{p.name}</div><div style={styles.bizEmail}>{p.sector||'No sector'} · {p.plan_segment}</div></div>
+                <select value={p.plan_segment} onChange={e=>updatePartner(p,{plan_segment:e.target.value})} style={styles.select}><option value="starter">Starter</option><option value="growth">Growth</option></select>
+                <input defaultValue={p.sector||''} onBlur={e=>updatePartner(p,{sector:e.target.value||null})} placeholder="Sector" style={{...styles.input,width:150}} />
+                <button onClick={()=>updatePartner(p,{is_active:!p.is_active})} style={styles.viewBtn}>{p.is_active?'Visible':'Hidden'}</button>
+                <button onClick={()=>deletePartner(p)} style={styles.deleteBtn}>Remove</button>
+              </div>
+            ))}
+          </div>
+        </section>
 
         {/* Applications - pending business signups awaiting approval */}
         {pendingApps.length > 0 && (
@@ -334,7 +449,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                   <td style={styles.td}>{b.staff_count}</td>
                   <td style={styles.td}>
                     <span style={cardTypeBadgeStyle(b.card_type)}>
-                      {b.card_type === 'points' ? '⭐ Points' : b.card_type === 'multipass' ? '🎫 Multipass' : '🎟️ Stamp'}
+                      {b.card_type === 'points' ? '⭐ Points' : b.card_type === 'membership' ? '🪪 Membership' : b.card_type === 'vip' ? '👑 VIP' : b.card_type === 'multipass' ? '🎫 Multipass' : '🎟️ Stamp'}
                     </span>
                   </td>
                   <td style={styles.td}>
@@ -737,6 +852,19 @@ const styles = {
     boxShadow: '0 4px 12px rgba(0,0,0,0.15)', zIndex: 200,
   },
   body: { padding: '24px', maxWidth: 1200, margin: '0 auto' },
+  partnerAdminSection: { background:'white', border:'1px solid #e2e8f0', borderRadius:16, padding:20, marginBottom:20, boxShadow:'0 8px 24px rgba(15,23,42,.04)' },
+  partnerAdminTitle: { margin:0, fontSize:17, color:'#0f172a' },
+  partnerAdminSubtitle: { margin:'5px 0 16px', color:'#64748b', fontSize:13, lineHeight:1.5 },
+  partnerForm: { borderTop:'1px solid #f1f5f9', paddingTop:16 },
+  partnerFormGrid: { display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))', gap:12, marginBottom:14 },
+  partnerLabel: { display:'block', marginBottom:5, fontSize:12, fontWeight:700, color:'#334155' },
+  partnerUploadRow: { display:'flex', gap:8, alignItems:'stretch' },
+  partnerUploadBtn: { display:'flex', alignItems:'center', justifyContent:'center', whiteSpace:'nowrap', padding:'0 15px', background:'#f0fdfa', color:'#0f766e', border:'1px solid #99f6e4', borderRadius:8, fontSize:12, fontWeight:700, cursor:'pointer' },
+  partnerPreview: { width:76, height:58, objectFit:'contain', marginTop:8, borderRadius:8, border:'1px solid #e2e8f0', background:'#f8fafc', padding:5 },
+  partnerList: { display:'flex', flexDirection:'column', gap:8, marginTop:18 },
+  partnerRow: { display:'flex', gap:10, alignItems:'center', flexWrap:'wrap', border:'1px solid #e2e8f0', borderRadius:10, padding:10 },
+  partnerRowLogo: { width:54, height:42, objectFit:'contain', background:'#f8fafc', borderRadius:7, border:'1px solid #e2e8f0', padding:4 },
+
   applicationsSection: {
     background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 14,
     padding: '18px 20px', marginBottom: 20,

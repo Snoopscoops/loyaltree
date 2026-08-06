@@ -1014,6 +1014,25 @@ class AnnouncementUpdate(BaseModel):
     is_active: Optional[bool] = None
     end_date: Optional[str] = None
 
+
+class PartnerCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    logo_url: str = Field(min_length=1, max_length=1000)
+    sector: Optional[str] = Field(default=None, max_length=120)
+    plan_segment: Literal['starter', 'growth']
+    website_url: Optional[str] = Field(default=None, max_length=1000)
+    is_active: bool = True
+    sort_order: int = Field(default=0, ge=0, le=9999)
+
+class PartnerUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=160)
+    logo_url: Optional[str] = Field(default=None, min_length=1, max_length=1000)
+    sector: Optional[str] = Field(default=None, max_length=120)
+    plan_segment: Optional[Literal['starter', 'growth']] = None
+    website_url: Optional[str] = Field(default=None, max_length=1000)
+    is_active: Optional[bool] = None
+    sort_order: Optional[int] = Field(default=None, ge=0, le=9999)
+
 class AdminLoginRequest(BaseModel):
     email: str
     password: str
@@ -1540,6 +1559,10 @@ def generate_personalized_hero_image_bytes(
     sessions_total: int = 0,
     total_visits: int = 0,
     last_service_name: Optional[str] = None,
+    vip_points: int = 0,
+    vip_tier_name: Optional[str] = None,
+    membership_status: Optional[str] = None,
+    membership_expires_at: Optional[str] = None,
 ) -> bytes:
     """Same gradient as generate_hero_image_bytes, but with a bottom banner
     burned in showing the reward/progress and short description - the
@@ -1576,9 +1599,18 @@ def generate_personalized_hero_image_bytes(
         reward_line = 'Session Pass'
         progress_line = (f'{sessions_remaining} of {sessions_total} sessions left' if sessions_remaining > 0
                          else 'All sessions used')
+    elif card_type == 'vip':
+        reward_line = f'{vip_tier_name or "VIP"} VIP'
+        progress_line = f'{vip_points} VIP points'
     elif card_type == 'membership':
-        reward_line = 'Membership'
-        progress_line = f'{total_visits} visit{"s" if total_visits != 1 else ""} logged'
+        reward_line = f'Membership · {membership_status.upper() if membership_status else "INACTIVE"}'
+        progress_line = (
+            'Lifetime membership'
+            if membership_status == 'lifetime'
+            else f'Active until {membership_expires_at}'
+            if membership_expires_at
+            else 'Not activated'
+        )
     else:
         reward_line = (reward_name or 'Reward')[:60]
         progress_line = f'{stamps} of {stamp_goal} stamps'
@@ -1760,9 +1792,9 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     elif card_type == 'vip':
         tier = get_vip_tier(customer, program or {})
         next_tier = get_next_vip_tier(customer, program or {})
-        loyalty_points_label = 'VIP Tier'
-        loyalty_points_balance = tier.get('name','VIP')
-        progress_body = f"{int(customer.get('vip_points') or 0)} VIP points" + (f" · {max(0,next_tier.get('threshold',0)-int(customer.get('vip_points') or 0))} to {next_tier.get('name')}" if next_tier else ' · Highest tier')
+        loyalty_points_label = 'VIP Points'
+        loyalty_points_balance = str(int(customer.get('vip_points') or 0))
+        progress_body = f"{tier.get('name','VIP')} VIP" + (f" · {max(0,next_tier.get('threshold',0)-int(customer.get('vip_points') or 0))} points to {next_tier.get('name')}" if next_tier else ' · Highest tier')
         reward_body = ', '.join(tier.get('benefits') or []) or 'VIP benefits'
     elif card_type == 'membership':
         status = membership_effective_status(customer)
@@ -2107,6 +2139,8 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                 if card_type == 'points' else
                 {'key': 'sessions', 'label': 'SESSIONS', 'value': f'{sessions_remaining}/{sessions_total}', 'changeMessage': 'Session used! %@ sessions left.'}
                 if card_type == 'multipass' else
+                {'key': 'vip_points', 'label': 'VIP POINTS', 'value': str(int(customer.get('vip_points') or 0)), 'changeMessage': 'VIP points updated: %@'}
+                if card_type == 'vip' else
                 {'key': 'membership_status', 'label': 'MEMBERSHIP', 'value': membership_effective_status(customer).upper(), 'changeMessage': 'Membership status: %@'}
                 if card_type == 'membership' else
                 {'key': 'stamps', 'label': 'STAMPS', 'value': f'{stamps}/{stamp_goal}', 'changeMessage': 'Stamp added! You now have %@ stamps.'}
@@ -2116,7 +2150,9 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                 if card_type == 'points' else
                 {'key': 'reward', 'label': 'EXPIRES', 'value': (multipass_expires_at or 'No expiry set'), 'changeMessage': '%@'}
                 if card_type == 'multipass' else
-                {'key': 'reward', 'label': 'VALID UNTIL', 'value': ('Lifetime' if membership_effective_status(customer) == 'lifetime' else (customer.get('membership_expires_at') or 'Not activated')), 'changeMessage': '%@'}
+                {'key': 'vip_tier', 'label': 'VIP TIER', 'value': get_vip_tier(customer, program or {}).get('name', 'VIP'), 'changeMessage': 'VIP tier: %@'}
+                if card_type == 'vip' else
+                {'key': 'reward', 'label': 'ACTIVE UNTIL', 'value': ('Lifetime' if membership_effective_status(customer) == 'lifetime' else (customer.get('membership_expires_at') or 'Not activated')), 'changeMessage': '%@'}
                 if card_type == 'membership' else
                 {'key': 'reward', 'label': 'REWARD', 'value': ('🎉 Ready to redeem!' if reward_unlocked else reward_name)[:30], 'changeMessage': '%@'}
             ],
@@ -3700,6 +3736,88 @@ async def admin_delete_business(public_id: str, _: bool = Depends(require_admin)
 # LoyaltyTree promos like "refer a friend, get a free month"). Separate
 # from the /business/{id}/announcements routes above, which are a business
 # owner's own announcements to their customers.
+
+
+@app.get("/api/v1/public/partners")
+async def public_list_partners():
+    try:
+        res = supabase.table("platform_partners").select(
+            "public_id,name,logo_url,sector,plan_segment,website_url,sort_order"
+        ).eq("is_active", True).order("plan_segment").order("sort_order").order("name").execute()
+        return res.data or []
+    except Exception as e:
+        print(f"PUBLIC PARTNERS error: {e}")
+        return []
+
+@app.get("/api/v1/admin/partners")
+async def admin_list_partners(_: bool = Depends(require_admin)):
+    try:
+        res = supabase.table("platform_partners").select("*").order(
+            "plan_segment"
+        ).order("sort_order").order("name").execute()
+        return res.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.post("/api/v1/admin/partners")
+async def admin_create_partner(partner: PartnerCreate, _: bool = Depends(require_admin)):
+    payload = partner.model_dump()
+    payload.update({
+        "public_id": str(uuid.uuid4()),
+        "name": payload["name"].strip(),
+        "sector": (payload.get("sector") or "").strip() or None,
+        "website_url": (payload.get("website_url") or "").strip() or None,
+        "created_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.utcnow().isoformat(),
+    })
+    try:
+        res = supabase.table("platform_partners").insert(payload).execute()
+        return (res.data or [payload])[0]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.patch("/api/v1/admin/partners/{partner_public_id}")
+async def admin_update_partner(partner_public_id: str, partner: PartnerUpdate, _: bool = Depends(require_admin)):
+    payload = {k: v for k, v in partner.model_dump().items() if v is not None}
+    if "name" in payload:
+        payload["name"] = payload["name"].strip()
+    if "sector" in payload:
+        payload["sector"] = (payload.get("sector") or "").strip() or None
+    if "website_url" in payload:
+        payload["website_url"] = (payload.get("website_url") or "").strip() or None
+    payload["updated_at"] = datetime.utcnow().isoformat()
+    try:
+        res = supabase.table("platform_partners").update(payload).eq("public_id", partner_public_id).execute()
+        if not res.data:
+            raise HTTPException(status_code=404, detail="Partner not found")
+        return res.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.delete("/api/v1/admin/partners/{partner_public_id}")
+async def admin_delete_partner(partner_public_id: str, _: bool = Depends(require_admin)):
+    try:
+        supabase.table("platform_partners").delete().eq("public_id", partner_public_id).execute()
+        return {"message": "Partner removed"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.post("/api/v1/admin/partners/cloudinary-signature")
+async def admin_partner_logo_signature(_: bool = Depends(require_admin)):
+    if not CLOUDINARY_API_KEY or not CLOUDINARY_API_SECRET:
+        raise HTTPException(status_code=503, detail="Image uploads are not configured")
+    timestamp = int(time.time())
+    folder = "loyaltytree/platform-partners"
+    params = {"folder": folder, "timestamp": timestamp, "upload_preset": CLOUDINARY_UPLOAD_PRESET}
+    to_sign = "&".join(f"{key}={params[key]}" for key in sorted(params))
+    signature = hashlib.sha1((to_sign + CLOUDINARY_API_SECRET).encode("utf-8")).hexdigest()
+    return {
+        "timestamp": timestamp, "signature": signature, "api_key": CLOUDINARY_API_KEY,
+        "cloud_name": CLOUDINARY_CLOUD_NAME, "upload_preset": CLOUDINARY_UPLOAD_PRESET,
+        "folder": folder,
+    }
 
 @app.get("/api/v1/admin/platform-announcements")
 async def admin_list_platform_announcements(_: bool = Depends(require_admin)):
