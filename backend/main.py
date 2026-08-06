@@ -13784,17 +13784,107 @@ async def cockpit_public_site(public_id: str):
     results = cockpit_list('cockpit_results', b['id'])
     gallery = cockpit_list('cockpit_gallery', b['id'])
     sponsors = [x for x in cockpit_list('cockpit_sponsors', b['id']) if x.get('is_active')]
+
     esc = lambda value: html_lib.escape(str(value or ''))
-    arena = esc(settings.get('arena_name') or b.get('name'))
-    tagline = esc(settings.get('tagline') or 'Official schedules, announcements and results')
+    arena = esc(settings.get('arena_name') or b.get('name') or 'Cockpit Arena')
+    tagline = esc(settings.get('tagline') or 'Malinis at maginoong sabong ang aming tradisyon')
     hero = esc(settings.get('hero_image_url') or '')
-    hero_style = f"background-image:linear-gradient(90deg,rgba(20,12,8,.88),rgba(20,12,8,.35)),url('{hero}')" if hero else 'background:linear-gradient(120deg,#1f1712,#7c5727)'
-    event_html = ''.join(cockpit_public_card(x.get('title'), f"{x.get('event_date') or ''} {x.get('start_time') or ''} — {x.get('description') or ''}", x.get('poster_url')) for x in events) or '<p>No events posted yet.</p>'
-    announcement_html = ''.join(cockpit_public_card(x.get('title'), x.get('message')) for x in announcements) or '<p>No announcements posted yet.</p>'
-    result_html = ''.join(cockpit_public_card(x.get('category') or 'Official Result', f"Champion: {x.get('champion_name') or ''} | Runner-up: {x.get('runner_up_name') or ''} | {x.get('notes') or ''}", x.get('photo_url')) for x in results) or '<p>No results published yet.</p>'
-    gallery_html = ''.join(f'<img src="{esc(x.get("image_url"))}" alt="{esc(x.get("title"))}">' for x in gallery)
-    sponsor_html = ''.join(f'<div class="sponsor"><img src="{esc(x.get("logo_url"))}" alt=""><span>{esc(x.get("name"))}</span></div>' for x in sponsors)
-    html = f'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>{arena}</title><style>
-*{{box-sizing:border-box}}body{{margin:0;font-family:Arial,sans-serif;background:#f5f0e9;color:#231a15}}nav{{position:sticky;top:0;z-index:3;background:#1e1713;color:#fff;padding:15px 6%;display:flex;justify-content:space-between}}nav a{{color:#fff;text-decoration:none;margin-left:16px}}.hero{{min-height:470px;background-size:cover;background-position:center;display:flex;align-items:center;padding:7%;color:#fff}}.hero h1{{font-size:clamp(42px,8vw,82px);margin:0}}.hero p{{font-size:20px}}section{{padding:58px 7%;max-width:1400px;margin:auto}}h2{{font-size:34px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:18px}}.card{{background:#fff;border-radius:15px;overflow:hidden;box-shadow:0 8px 24px #0001}}.card img{{width:100%;height:220px;object-fit:cover}}.pad{{padding:18px}}.gallery{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}}.gallery img{{width:100%;height:220px;object-fit:cover;border-radius:12px}}.sponsors{{display:flex;flex-wrap:wrap;gap:14px}}.sponsor{{background:#fff;padding:14px;border-radius:12px;display:flex;align-items:center;gap:10px}}.sponsor img{{width:65px;height:45px;object-fit:contain}}footer{{background:#1e1713;color:#fff;padding:35px 7%}}@media(max-width:700px){{nav div:last-child{{display:none}}section{{padding:40px 5%}}}}
-</style></head><body><nav><strong>{arena}</strong><div><a href="#events">Events</a><a href="#announcements">Announcements</a><a href="#results">Results</a><a href="#gallery">Gallery</a></div></nav><header class="hero" style="{hero_style}"><div><h1>{arena}</h1><p>{tagline}</p></div></header><section id="events"><h2>Events & Schedules</h2><div class="grid">{event_html}</div></section><section id="announcements"><h2>Announcements</h2><div class="grid">{announcement_html}</div></section><section id="results"><h2>Official Results</h2><div class="grid">{result_html}</div></section><section id="gallery"><h2>Gallery</h2><div class="gallery">{gallery_html}</div></section><section><h2>Sponsors</h2><div class="sponsors">{sponsor_html}</div></section><footer><h3>{arena}</h3><p>{esc(settings.get('address') or b.get('address'))}</p><p>{esc(settings.get('contact_phone') or b.get('phone'))} {esc(settings.get('contact_email'))}</p><p>{esc(settings.get('about_text'))}</p></footer></body></html>'''
-    return HTMLResponse(html)
+    logo = esc(settings.get('logo_url') or b.get('logo_url') or '')
+    phone = esc(settings.get('contact_phone') or b.get('phone') or '')
+    email = esc(settings.get('contact_email') or b.get('email') or '')
+    address = esc(settings.get('address') or b.get('address') or 'Valenzuela City')
+    about = esc(settings.get('about_text') or 'Pinagkakatiwalaan, propesyonal, at may respeto. Ang opisyal na tahanan ng aming mga schedule, anunsyo, resulta, at komunidad.')
+    facebook = esc(settings.get('facebook_url') or '')
+    join_url = f'{BASE_URL}/join/{public_id}'
+
+    def date_parts(value):
+        try:
+            dt = datetime.strptime(str(value)[:10], '%Y-%m-%d')
+            return dt.strftime('%b').upper(), dt.strftime('%d'), dt.strftime('%a').upper()
+        except Exception:
+            return 'TBA', '--', ''
+
+    event_cards = []
+    for item in events[:6]:
+        mon, day, dow = date_parts(item.get('event_date'))
+        poster = esc(item.get('poster_url'))
+        image_style = f"background-image:linear-gradient(90deg,rgba(8,8,8,.94),rgba(8,8,8,.25)),url('{poster}')" if poster else 'background:linear-gradient(130deg,#171717,#35110d)'
+        fee = float(item.get('entry_fee') or 0)
+        fee_text = f'₱{fee:,.0f}' if fee else 'To be announced'
+        prize = esc(item.get('prize_details') or 'Prize details to be announced')
+        event_cards.append(f'''<article class="event-card" style="{image_style}">
+          <div class="date-box"><b>{mon}</b><strong>{day}</strong><span>{dow}</span></div>
+          <div class="event-copy"><small>{esc(item.get('category') or 'DERBY EVENT')}</small><h3>{esc(item.get('title'))}</h3>
+          <p>◷ {esc(item.get('start_time') or 'Time TBA')} &nbsp; • &nbsp; Entry fee: {fee_text}</p><div class="prize">{prize}</div></div>
+        </article>''')
+    events_html = ''.join(event_cards) or '<div class="empty">No upcoming events have been posted.</div>'
+
+    schedule_rows = []
+    for item in events[:7]:
+        mon, day, dow = date_parts(item.get('event_date'))
+        schedule_rows.append(f'<div class="schedule-row"><span>{dow or mon}</span><b>{esc(item.get("title"))}</b><em>{esc(item.get("start_time") or "TBA")}</em></div>')
+    schedule_html = ''.join(schedule_rows) or '<div class="empty small">Schedule coming soon.</div>'
+
+    announcement_rows = []
+    for item in announcements[:4]:
+        mon, day, dow = date_parts(item.get('publish_date') or item.get('created_at'))
+        announcement_rows.append(f'''<article class="announcement-row"><div class="mini-date"><b>{mon}</b><strong>{day}</strong></div>
+          <div><h4>{esc(item.get('title'))}</h4><p>{esc(item.get('message'))}</p></div></article>''')
+    announcement_html = ''.join(announcement_rows) or '<div class="empty small">No announcements posted.</div>'
+
+    result_cards = []
+    for item in results[:4]:
+        photo = esc(item.get('photo_url'))
+        image = f'<img src="{photo}" alt="Official result">' if photo else '<div class="result-placeholder">🏆</div>'
+        result_cards.append(f'''<article class="result-card">{image}<div><small>{esc(item.get('category') or 'OFFICIAL RESULT')}</small>
+          <h3>{esc(item.get('champion_name') or 'Champion to be announced')}</h3>
+          <p>Runner-up: {esc(item.get('runner_up_name') or '—')}</p></div></article>''')
+    results_html = ''.join(result_cards) or '<div class="empty">No official results have been published.</div>'
+
+    gallery_html = ''.join(f'<img loading="lazy" src="{esc(x.get("image_url"))}" alt="{esc(x.get("title") or "Arena gallery")}">' for x in gallery[:12]) or '<div class="empty">Gallery photos coming soon.</div>'
+    sponsor_html = ''.join(f'''<a class="sponsor" href="{esc(x.get('website_url') or '#')}" target="_blank" rel="noopener">
+      {f'<img src="{esc(x.get("logo_url"))}" alt="{esc(x.get("name"))}">' if x.get('logo_url') else ''}<span>{esc(x.get('name'))}</span></a>''' for x in sponsors) or '<div class="empty small">Sponsor logos coming soon.</div>'
+
+    hero_style = f"background-image:linear-gradient(90deg,rgba(4,4,4,.95) 0%,rgba(4,4,4,.55) 48%,rgba(4,4,4,.22) 100%),url('{hero}')" if hero else 'background:radial-gradient(circle at 70% 35%,#4d1710 0,#18100d 34%,#050505 75%)'
+    logo_html = f'<img class="brand-logo" src="{logo}" alt="{arena} logo">' if logo else '<div class="brand-mark">VCSA</div>'
+    fb_html = f'<a href="{facebook}" target="_blank" rel="noopener">Facebook</a>' if facebook else ''
+
+    page = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{arena}</title><style>
+:root{{--black:#050505;--panel:#0d0d0e;--panel2:#141414;--line:#3b2d13;--red:#c91f25;--gold:#e6a91a;--text:#f8f8f8;--muted:#aaa}}
+*{{box-sizing:border-box}}html{{scroll-behavior:smooth}}body{{margin:0;background:var(--black);color:var(--text);font-family:Arial,Helvetica,sans-serif}}a{{color:inherit}}button,a{{-webkit-tap-highlight-color:transparent}}
+.topbar{{min-height:78px;padding:10px 3.5%;display:flex;align-items:center;justify-content:space-between;background:#050505;border-bottom:1px solid #21180b;position:sticky;top:0;z-index:20}}
+.brand{{display:flex;align-items:center;gap:13px;text-decoration:none;min-width:260px}}.brand-logo{{width:62px;height:62px;object-fit:contain}}.brand-mark{{width:58px;height:58px;border:2px solid var(--gold);border-radius:50%;display:grid;place-items:center;font-weight:900;color:var(--gold)}}
+.brand-copy b{{display:block;font-size:clamp(18px,2.1vw,31px);line-height:1;color:#fff;text-transform:uppercase;font-style:italic}}.brand-copy b span{{color:var(--red)}}.brand-copy small{{display:block;color:var(--gold);font-weight:800;margin-top:5px;font-size:11px;text-transform:uppercase}}
+.nav{{display:flex;align-items:center;gap:25px;font-size:12px;font-weight:800;text-transform:uppercase}}.nav a{{text-decoration:none;opacity:.9}}.nav a:hover{{color:var(--gold)}}.login{{background:var(--red);padding:13px 18px;border-radius:4px}}.menu{{display:none;background:none;border:0;color:#fff;font-size:25px}}
+.hero{{min-height:530px;background-size:cover;background-position:center;display:flex;align-items:center;padding:65px 4%;border-bottom:1px solid var(--gold)}}.hero-copy{{max-width:650px}}.hero h1{{margin:0;text-transform:uppercase;font-style:italic;font-size:clamp(46px,6vw,86px);line-height:.95;text-shadow:0 3px 15px #000}}.hero h1 .gold{{color:var(--gold)}}.hero h1 .red{{color:var(--red)}}.hero p{{font-size:18px;line-height:1.6;color:#ddd;margin:25px 0}}
+.actions{{display:flex;gap:13px;flex-wrap:wrap}}.btn{{display:inline-flex;align-items:center;justify-content:center;padding:14px 20px;text-transform:uppercase;text-decoration:none;font-weight:900;font-size:13px;border-radius:3px;border:1px solid var(--gold)}}.btn.primary{{background:var(--red);border-color:var(--red)}}.btn.secondary{{color:var(--gold);background:#080808cc}}
+.values{{display:grid;grid-template-columns:repeat(4,1fr);border-bottom:1px solid #241d10;background:#080808}}.value{{padding:27px 24px;text-align:center;border-right:1px solid #282015}}.value:last-child{{border-right:0}}.value strong{{display:block;color:var(--gold);text-transform:uppercase;font-size:15px;margin:9px 0}}.value span{{color:#bdbdbd;font-size:12px;line-height:1.45}}
+.section{{padding:52px 4%;max-width:1600px;margin:auto}}.section-head{{display:flex;align-items:end;justify-content:space-between;margin-bottom:20px}}.section h2{{margin:0;text-transform:uppercase;font-size:26px;border-left:4px solid var(--red);padding-left:12px}}.section-head a{{color:var(--red);font-weight:800;font-size:12px;text-transform:uppercase;text-decoration:none}}
+.dashboard-grid{{display:grid;grid-template-columns:1.25fr .8fr 1fr .9fr;gap:15px}}.box{{background:linear-gradient(180deg,#121212,#0b0b0b);border:1px solid #32260f;border-radius:5px;padding:18px;min-height:290px}}.box h3{{margin:0 0 18px;text-transform:uppercase;font-size:18px}}
+.event-list{{display:grid;gap:14px}}.event-card{{min-height:210px;background-size:cover!important;background-position:center!important;border:1px solid #54350f;border-radius:5px;padding:20px;display:flex;gap:18px;align-items:center}}.date-box,.mini-date{{width:68px;min-width:68px;border:1px solid var(--red);text-align:center;background:#0b0b0bdd}}.date-box b,.mini-date b{{display:block;background:#36100e;color:#ffb1a7;padding:5px;font-size:12px}}.date-box strong{{display:block;font-size:31px;padding-top:6px}}.date-box span{{display:block;color:#ddd;font-size:11px;padding-bottom:7px}}.event-copy small,.result-card small{{color:var(--gold);font-weight:900}}.event-copy h3{{font-size:27px;margin:5px 0 11px}}.event-copy p{{color:#ccc;font-size:12px}}.prize{{color:var(--gold);font-weight:900;margin-top:16px;text-transform:uppercase}}
+.schedule-row{{display:grid;grid-template-columns:42px 1fr auto;gap:10px;padding:10px 0;border-bottom:1px solid #262626;align-items:center;font-size:12px}}.schedule-row span{{color:var(--red);font-weight:900}}.schedule-row em{{font-style:normal;color:var(--gold)}}
+.announcement-row{{display:grid;grid-template-columns:55px 1fr;gap:12px;padding:11px 0;border-bottom:1px solid #262626}}.mini-date{{width:55px;min-width:55px}}.mini-date strong{{font-size:20px;padding:6px;display:block}}.announcement-row h4{{margin:0 0 5px;color:var(--gold)}}.announcement-row p{{margin:0;color:#bbb;font-size:12px;line-height:1.4}}
+.member-card{{background:linear-gradient(145deg,#2a0808,#100707);border:1px solid #63311e;padding:17px;border-radius:7px;margin:20px 0;transform:rotate(-2deg)}}.member-card b{{font-size:18px}}.member-card span{{display:block;color:var(--gold);font-size:11px;margin-top:25px}}.member-card code{{display:block;margin-top:8px;color:#fff}}
+.results-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}}.result-card{{display:grid;grid-template-columns:110px 1fr;gap:15px;background:#101010;border:1px solid #3a2a10;padding:12px;align-items:center}}.result-card img,.result-placeholder{{width:110px;height:105px;object-fit:cover;background:#1d100b;display:grid;place-items:center;font-size:43px}}.result-card h3{{margin:7px 0 4px;text-transform:uppercase}}.result-card p{{margin:0;color:#aaa;font-size:13px}}
+.gallery{{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}}.gallery img{{width:100%;height:210px;object-fit:cover;border:1px solid #473515;border-radius:3px;transition:.2s}}.gallery img:hover{{transform:scale(1.02);border-color:var(--gold)}}
+.about-member{{display:grid;grid-template-columns:1.4fr .8fr;gap:18px}}.about{{background:#0e0e0e;border:1px solid #342710;padding:26px}}.about p{{color:#c8c8c8;line-height:1.8}}.join{{background:linear-gradient(145deg,#1f1308,#320908);border:1px solid var(--gold);padding:26px}}.join p{{color:#ccc;line-height:1.6}}
+.sponsors{{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}}.sponsor{{min-height:100px;background:#101010;border:1px solid #272727;display:flex;align-items:center;justify-content:center;gap:10px;padding:15px;text-decoration:none;font-weight:800}}.sponsor img{{max-width:120px;max-height:60px;object-fit:contain}}.empty{{padding:30px;color:#888;border:1px dashed #333;text-align:center}}.empty.small{{padding:15px}}
+footer{{border-top:1px solid #3b2d13;background:#050505;padding:35px 4% 20px}}.footer-grid{{display:grid;grid-template-columns:1.1fr .7fr 1fr .8fr;gap:28px;max-width:1500px;margin:auto}}footer h4{{text-transform:uppercase;margin:0 0 13px}}footer p,footer a{{color:#aaa;font-size:13px;line-height:1.7;text-decoration:none}}.copyright{{border-top:1px solid #222;margin-top:25px;padding-top:18px;text-align:center;color:#777;font-size:12px}}
+@media(max-width:1050px){{.dashboard-grid{{grid-template-columns:1fr 1fr}}.gallery{{grid-template-columns:repeat(3,1fr)}}.nav{{gap:12px}}}}
+@media(max-width:760px){{.topbar{{min-height:70px}}.brand{{min-width:0}}.brand-logo,.brand-mark{{width:48px;height:48px}}.brand-copy b{{font-size:17px}}.brand-copy small{{font-size:8px}}.menu{{display:block}}.nav{{display:none;position:absolute;left:0;right:0;top:70px;background:#080808;padding:20px;flex-direction:column;align-items:stretch}}.nav.open{{display:flex}}.hero{{min-height:600px;background-position:62% center;padding:45px 6%}}.hero-copy{{padding-top:120px}}.values{{grid-template-columns:1fr 1fr}}.value{{border-bottom:1px solid #282015}}.dashboard-grid{{grid-template-columns:1fr}}.gallery{{grid-template-columns:1fr 1fr}}.gallery img{{height:160px}}.about-member,.footer-grid{{grid-template-columns:1fr}}.section{{padding:38px 5%}}}}
+</style></head><body>
+<header class="topbar"><a class="brand" href="#home">{logo_html}<span class="brand-copy"><b>{arena}</b><small>{tagline}</small></span></a>
+<button class="menu" onclick="document.querySelector('.nav').classList.toggle('open')">☰</button><nav class="nav"><a href="#home">Home</a><a href="#schedule">Schedule</a><a href="#results">Results</a><a href="#gallery">Gallery</a><a href="#sponsors">Sponsors</a><a href="#about">About Us</a><a href="#contact">Contact</a><a class="login" href="{join_url}">Member Login</a></nav></header>
+<main id="home"><section class="hero" style="{hero_style}"><div class="hero-copy"><h1>Malinis at<br><span class="gold">maginoong sabong</span><br>ang aming <span class="red">tradisyon</span></h1><p>Pinagkakatiwalaan. Propesyonal. May respeto.<br><b>{arena}</b></p><div class="actions"><a class="btn primary" href="#schedule">View Schedule</a><a class="btn secondary" href="#results">Latest Results</a></div></div></section>
+<section class="values"><div class="value">🛡️<strong>Malinis</strong><span>Sinusunod ang lahat ng patakaran at regulasyon.</span></div><div class="value">👥<strong>Propesyonal</strong><span>Pinapatakbo nang may karanasan at propesyonalismo.</span></div><div class="value">🤝<strong>May respeto</strong><span>Respeto sa mananabong, manonood, at sa laro.</span></div><div class="value">🔒<strong>Walang dayaan</strong><span>Transparente at patas ang bawat laban.</span></div></section>
+<section id="schedule" class="section"><div class="section-head"><h2>Upcoming Events</h2><a href="#schedule">View all schedule</a></div><div class="event-list">{events_html}</div></section>
+<section class="section"><div class="dashboard-grid"><div class="box" style="grid-column:span 2"><h3>Weekly Schedule</h3>{schedule_html}</div><div class="box"><h3>Announcements</h3>{announcement_html}</div><div class="box"><h3>Be a Member</h3><p style="color:#bbb;line-height:1.6">Maging bahagi ng {arena} at mag-enjoy ng exclusive member benefits.</p><div class="member-card"><b>{arena}</b><span>OFFICIAL DIGITAL MEMBERSHIP</span><code>Scan or register online</code></div><a class="btn primary" href="{join_url}">Register Now</a></div></div></section>
+<section id="results" class="section"><div class="section-head"><h2>Latest Results</h2><a href="#results">View all results</a></div><div class="results-grid">{results_html}</div></section>
+<section id="gallery" class="section"><div class="section-head"><h2>Gallery</h2><a href="#gallery">View all photos</a></div><div class="gallery">{gallery_html}</div></section>
+<section id="about" class="section"><div class="about-member"><div class="about"><h2>About {arena}</h2><p>{about}</p></div><div class="join"><h2>Join the community</h2><p>Magrehistro bilang miyembro at makuha ang digital membership card na konektado sa LoyaltyTree.</p><a class="btn primary" href="{join_url}">Become a Member</a></div></div></section>
+<section id="sponsors" class="section"><div class="section-head"><h2>Our Sponsors</h2></div><div class="sponsors">{sponsor_html}</div></section></main>
+<footer id="contact"><div class="footer-grid"><div><h4>{arena}</h4><p>{tagline}</p></div><div><h4>Quick Links</h4><p><a href="#schedule">Schedule</a><br><a href="#results">Results</a><br><a href="#gallery">Gallery</a><br><a href="#sponsors">Sponsors</a></p></div><div><h4>Contact Us</h4><p>{phone}<br>{email}<br>{address}</p></div><div><h4>Follow Us</h4><p>{fb_html}</p></div></div><div class="copyright">© {datetime.utcnow().year} {arena}. All rights reserved.</div></footer>
+<script>document.querySelectorAll('.nav a').forEach(a=>a.addEventListener('click',()=>document.querySelector('.nav').classList.remove('open')))</script></body></html>'''
+    return HTMLResponse(page)
+
