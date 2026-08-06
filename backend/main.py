@@ -409,13 +409,20 @@ def require_cron(request: Request):
 STAFF_SESSION_SECRET = os.getenv('STAFF_SESSION_SECRET', '')
 STAFF_SESSION_TTL_HOURS = 12  # covers a full shift
 
-def create_staff_session_token(business_public_id: str, staff_id, role: str, name: str) -> str:
+def create_staff_session_token(
+    business_public_id: str,
+    staff_id,
+    role: str,
+    name: str,
+    branch_id=None,
+) -> str:
     import jwt as pyjwt
     payload = {
         'business_public_id': business_public_id,
         'staff_id': staff_id,  # None when the owner is the one scanning
         'role': role,
         'name': name,
+        'branch_id': branch_id,
         'exp': datetime.utcnow() + timedelta(hours=STAFF_SESSION_TTL_HOURS),
     }
     return pyjwt.encode(payload, STAFF_SESSION_SECRET, algorithm='HS256')
@@ -1019,7 +1026,7 @@ class PartnerCreate(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     logo_url: str = Field(min_length=1, max_length=1000)
     sector: Optional[str] = Field(default=None, max_length=120)
-    plan_segment: Literal['partners', 'starter', 'growth']
+    plan_segment: Literal['starter', 'growth']
     website_url: Optional[str] = Field(default=None, max_length=1000)
     is_active: bool = True
     sort_order: int = Field(default=0, ge=0, le=9999)
@@ -1028,7 +1035,7 @@ class PartnerUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=160)
     logo_url: Optional[str] = Field(default=None, min_length=1, max_length=1000)
     sector: Optional[str] = Field(default=None, max_length=120)
-    plan_segment: Optional[Literal['partners', 'starter', 'growth']] = None
+    plan_segment: Optional[Literal['starter', 'growth']] = None
     website_url: Optional[str] = Field(default=None, max_length=1000)
     is_active: Optional[bool] = None
     sort_order: Optional[int] = Field(default=None, ge=0, le=9999)
@@ -1215,12 +1222,29 @@ def safe_get_customer_by_id(customer_id: int):
         return None
 
 def safe_get_loyalty_program(business_id: int):
+    """Return the business's newest loyalty configuration.
+
+    Older databases may contain more than one loyalty_programs row for the
+    same business. maybe_single() rejects that result and previously caused
+    the cashier to silently fall back to a Stamp card. Selecting the newest
+    row keeps existing customer QR codes working after changing card types.
+    """
     if not supabase:
         return None
     try:
-        res = supabase.table("loyalty_programs").select("*").eq("business_id", business_id).maybe_single().execute()
-        return res.data
-    except Exception:
+        res = (
+            supabase.table("loyalty_programs")
+            .select("*")
+            .eq("business_id", business_id)
+            .order("updated_at", desc=True)
+            .order("id", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+        return rows[0] if rows else None
+    except Exception as e:
+        print(f"LOYALTY PROGRAM lookup error for business {business_id}: {e}")
         return None
 
 def safe_get_active_coupon(customer_id: int):
@@ -4127,7 +4151,28 @@ async def get_customer_api(public_id: str):
         customer['vip_tier'] = get_vip_tier(customer, program)
         customer['vip_next_tier'] = get_next_vip_tier(customer, program)
 
+    current_card_type = (
+        program.get("card_type")
+        if program and program.get("card_type") in ("stamp", "points", "membership", "vip", "multipass")
+        else "stamp"
+    )
+
+    # Compatibility defaults for customers who joined before these card types
+    # existed. Their existing public_id and QR remain valid.
+    if current_card_type == "vip":
+        customer.setdefault("vip_points", 0)
+        customer["vip_tier"] = get_vip_tier(customer, program or {})
+        customer["vip_next_tier"] = get_next_vip_tier(customer, program or {})
+    elif current_card_type == "membership":
+        customer.setdefault("membership_status", "inactive")
+        customer["membership_effective_status"] = membership_effective_status(customer)
+    elif current_card_type == "multipass":
+        customer.setdefault("multipass_sessions_remaining", 0)
+        customer.setdefault("multipass_total_sessions", 0)
+        customer.setdefault("multipass_expires_at", None)
+
     return {
+        "current_card_type": current_card_type,
         "customer": customer,
         "business": {
             "id": business.get("id") if business else None,
@@ -5052,9 +5097,35 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
         data['google_review_url'] = config.google_review_url
 
     try:
-        existing = supabase.table("loyalty_programs").select("id").eq("business_id", business.get("id")).maybe_single().execute()
-        if existing and existing.data:
-            supabase.table("loyalty_programs").update(data).eq("business_id", business.get("id")).execute()
+        existing = (
+            supabase.table("loyalty_programs")
+            .select("id")
+            .eq("business_id", business.get("id"))
+            .order("updated_at", desc=True)
+            .order("id", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = existing.data or []
+        if rows:
+            current_id = rows[0].get("id")
+            supabase.table("loyalty_programs").update(data).eq("id", current_id).execute()
+
+            # Best-effort cleanup of historical duplicates so future lookups
+            # remain unambiguous. Never blocks saving if cleanup fails.
+            try:
+                all_rows = (
+                    supabase.table("loyalty_programs")
+                    .select("id")
+                    .eq("business_id", business.get("id"))
+                    .execute()
+                    .data or []
+                )
+                duplicate_ids = [row.get("id") for row in all_rows if row.get("id") != current_id]
+                for duplicate_id in duplicate_ids:
+                    supabase.table("loyalty_programs").delete().eq("id", duplicate_id).execute()
+            except Exception as cleanup_error:
+                print(f"LOYALTY PROGRAM duplicate cleanup error: {cleanup_error}")
         else:
             data['created_at'] = datetime.utcnow().isoformat()
             supabase.table("loyalty_programs").insert(data).execute()
@@ -7130,13 +7201,15 @@ async def add_vip_sale(public_id: str, req: VIPSaleRequest, authorization: str =
     claims = get_staff_session_claims(public_id, authorization)
     if claims:
         staff_id = claims.get('staff_id')
+        branch_id = claims.get('branch_id')
     elif not req.as_owner:
         if not req.staff_pin: raise HTTPException(status_code=400, detail="Staff PIN required")
         sr = supabase.table('staff').select('*').eq('business_id', business.get('id')).eq('pin', req.staff_pin).execute()
         if not sr.data: raise HTTPException(status_code=403, detail="Invalid staff PIN")
         staff_id=sr.data[0].get('id'); branch_id=sr.data[0].get('branch_id')
-    rate=float(program.get('vip_points_per_amount') or 0); base=float(program.get('vip_amount_pesos') or 100)
-    earned=max(0,int((req.amount_spent/base)*rate))
+    rate = float(program.get('vip_points_per_amount') or 0)
+    base = float(program.get('vip_amount_pesos') or 100)
+    earned = max(0, int((float(req.amount_spent) / base) * rate))
     old_tier=get_vip_tier(customer, program)
     balance=int(customer.get('vip_points') or 0)+earned
     supabase.table('customers').update({'vip_points':balance,'updated_at':datetime.utcnow().isoformat()}).eq('id',customer.get('id')).execute()
@@ -7145,7 +7218,19 @@ async def add_vip_sale(public_id: str, req: VIPSaleRequest, authorization: str =
     log_vip_event(business.get('id'),customer.get('id'),'sale',earned,balance,req.amount_spent,old_tier.get('name'),new_tier.get('name'),staff_id,branch_id)
     sync_wallet_object(customer,business,program,notify_header='VIP status updated',notify_body=(f"You earned {earned} VIP points. You are now {new_tier.get('name')} VIP."),notify_message_id=f"vip-{customer.get('id')}-{balance}-{int(datetime.utcnow().timestamp())}")
     sync_apple_wallet_pass(customer)
-    return {'message':f'{earned} VIP points added','points_earned':earned,'vip_points':balance,'tier':new_tier,'next_tier':next_tier,'upgraded':old_tier.get('id')!=new_tier.get('id')}
+    return {
+        'message': f'{earned} VIP points added',
+        'amount_spent': float(req.amount_spent),
+        'points_earned': earned,
+        'vip_points': balance,
+        'tier': new_tier,
+        'next_tier': next_tier,
+        'upgraded': old_tier.get('id') != new_tier.get('id'),
+        'earning_rule': {
+            'vip_points': rate,
+            'per_pesos': base,
+        },
+    }
 
 @app.post("/api/v1/business/{public_id}/vip-adjust")
 async def adjust_vip_points(public_id: str, req: VIPAdjustRequest):
@@ -7473,6 +7558,7 @@ async def use_multipass_session(public_id: str, req: MultipassUseRequest, author
 
     if session_claims:
         using_staff_id = session_claims.get('staff_id')
+        using_branch_id = session_claims.get('branch_id')
     elif req.as_owner:
         pass
     else:
@@ -7657,6 +7743,7 @@ async def add_membership_note(public_id: str, req: MembershipNoteRequest, author
 
     if session_claims:
         noting_staff_id = session_claims.get('staff_id')
+        noting_branch_id = session_claims.get('branch_id')
     elif req.as_owner:
         pass
     else:
@@ -7854,7 +7941,11 @@ async def verify_staff_pin(public_id: str, req: PinVerify):
         # working exactly as before (resending the raw PIN each time).
         if STAFF_SESSION_SECRET:
             response["session_token"] = create_staff_session_token(
-                public_id, staff.get('id'), staff.get('role', 'cashier'), staff.get('name', '')
+                public_id,
+                staff.get('id'),
+                staff.get('role', 'cashier'),
+                staff.get('name', ''),
+                staff.get('branch_id'),
             )
             response["expires_in_hours"] = STAFF_SESSION_TTL_HOURS
         return response
