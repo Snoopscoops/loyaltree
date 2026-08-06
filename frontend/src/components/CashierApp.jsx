@@ -119,9 +119,16 @@ function CashierApp({ API_BASE }) {
 
         const program = data.program || {}
         const goal = program.stamp_goal || 8
-        const cardType = ['stamp', 'points', 'membership', 'vip', 'multipass'].includes(program.card_type)
-          ? program.card_type
-          : 'stamp'
+        const allowedCardTypes = ['stamp', 'points', 'membership', 'vip', 'multipass']
+        const returnedCardType = data.current_card_type || program.card_type
+
+        if (!allowedCardTypes.includes(returnedCardType)) {
+          throw new Error(
+            `No valid card type was returned by the server. Received: ${returnedCardType || 'none'}`
+          )
+        }
+
+        const cardType = returnedCardType
         if (DEBUG) {
           setDebugInfo(prev =>
             `${prev} | Program card type: ${program.card_type || 'none'} | Final: ${cardType}`
@@ -170,8 +177,8 @@ function CashierApp({ API_BASE }) {
         if (DEBUG) setDebugInfo(prev => prev + ' | Error: ' + (errorData.detail || 'Unknown'))
       }
     } catch (err) {
-      setMessage('Network error - check connection')
-      if (DEBUG) setDebugInfo(prev => prev + ' | Network Error')
+      setMessage(`❌ ${err.message || 'Could not load customer card'}`)
+      if (DEBUG) setDebugInfo(prev => prev + ` | Error: ${err.message || 'unknown'}`)
     }
     setLoading(false)
   }

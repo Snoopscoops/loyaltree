@@ -1222,12 +1222,29 @@ def safe_get_customer_by_id(customer_id: int):
         return None
 
 def safe_get_loyalty_program(business_id: int):
+    """Return the most recently saved loyalty program.
+
+    Historical duplicate rows can exist in older databases. maybe_single()
+    returns no data when that happens, which made the cashier fall back to
+    Stamp. Reading the newest row keeps existing customer QR codes valid.
+    """
     if not supabase:
         return None
     try:
-        res = supabase.table("loyalty_programs").select("*").eq("business_id", business_id).maybe_single().execute()
-        return res.data
-    except Exception:
+        res = (
+            supabase.table("loyalty_programs")
+            .select("*")
+            .eq("business_id", business_id)
+            .order("updated_at", desc=True)
+            .order("created_at", desc=True)
+            .order("id", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+        return rows[0] if rows else None
+    except Exception as e:
+        print(f"LOYALTY PROGRAM lookup error for business {business_id}: {e}")
         return None
 
 def safe_get_active_coupon(customer_id: int):
@@ -4127,6 +4144,11 @@ async def get_customer_api(public_id: str):
 
     business = safe_get_business_by_id(customer.get('business_id'))
     program = safe_get_loyalty_program(customer.get('business_id')) if business else None
+    current_card_type = (
+        program.get('card_type')
+        if program and program.get('card_type') in ('stamp', 'points', 'membership', 'vip', 'multipass')
+        else None
+    )
 
     if program and program.get('card_type') == 'membership':
         customer['membership_effective_status'] = membership_effective_status(customer)
@@ -4135,6 +4157,7 @@ async def get_customer_api(public_id: str):
         customer['vip_next_tier'] = get_next_vip_tier(customer, program)
 
     return {
+        "current_card_type": current_card_type,
         "customer": customer,
         "business": {
             "id": business.get("id") if business else None,
@@ -5059,13 +5082,29 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
         data['google_review_url'] = config.google_review_url
 
     try:
-        existing = supabase.table("loyalty_programs").select("id").eq("business_id", business.get("id")).maybe_single().execute()
-        if existing and existing.data:
-            supabase.table("loyalty_programs").update(data).eq("business_id", business.get("id")).execute()
+        existing = (
+            supabase.table("loyalty_programs")
+            .select("id")
+            .eq("business_id", business.get("id"))
+            .order("updated_at", desc=True)
+            .order("created_at", desc=True)
+            .order("id", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = existing.data or []
+
+        if rows:
+            program_id = rows[0].get("id")
+            supabase.table("loyalty_programs").update(data).eq("id", program_id).execute()
         else:
             data['created_at'] = datetime.utcnow().isoformat()
             supabase.table("loyalty_programs").insert(data).execute()
-        return {"message": "Configuration saved"}
+
+        return {
+            "message": "Configuration saved",
+            "card_type": config.card_type,
+        }
     except Exception as e:
         error_msg = str(e)
         if "row-level security" in error_msg.lower() or "rls" in error_msg.lower():
