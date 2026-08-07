@@ -288,6 +288,9 @@ export default function CockpitDashboard({ API_BASE, user, onLogout }) {
   const [settings,setSettings] = useState({})
   const [message,setMessage] = useState('')
   const [share,setShare] = useState(null)
+  const [eventSearch,setEventSearch] = useState('')
+  const [editingEvent,setEditingEvent] = useState(null)
+  const [savingEventEdit,setSavingEventEdit] = useState(false)
   const [eventPostSettings,setEventPostSettings] = useState({
     format:'portrait', template:'vcsaClassic', customHeadline:'', backgroundUrl:'',
     hashtags:'#VCSA #CockpitArena #Sabong #DerbySchedule',
@@ -361,6 +364,62 @@ export default function CockpitDashboard({ API_BASE, user, onLogout }) {
     }
     catch(e){ flash(e?.message || 'Save failed') }
   }
+  const openEventEditor = event => {
+    const parsed = splitEventDescription(event.description)
+    const result = data.results.find(item => item.event_id === event.id) || {}
+    setEditingEvent({
+      ...event,
+      event_details: parsed.details,
+      special_note: parsed.specialNote,
+      champion_name: result.champion_name || '',
+      runner_up_name: result.runner_up_name || '',
+      third_place_name: result.third_place_name || '',
+      result_notes: result.notes || '',
+      result_photo_url: result.photo_url || '',
+    })
+  }
+
+  const saveEventEdit = async () => {
+    if (!editingEvent?.public_id) return
+    setSavingEventEdit(true)
+    try {
+      const payload = {
+        title: String(editingEvent.title || '').trim(),
+        event_date: cleanOptionalText(editingEvent.event_date),
+        start_time: cleanOptionalText(editingEvent.start_time),
+        category: cleanOptionalText(editingEvent.category),
+        entry_fee: editingEvent.entry_fee === '' ? 0 : Number(editingEvent.entry_fee),
+        prize_details: cleanOptionalText(editingEvent.prize_details),
+        description: cleanOptionalText(packEventDescription(editingEvent.event_details, editingEvent.special_note)),
+        poster_url: cleanOptionalText(editingEvent.poster_url),
+        status: editingEvent.status || 'upcoming',
+        is_featured: Boolean(editingEvent.is_featured),
+        champion_name: cleanOptionalText(editingEvent.champion_name),
+        runner_up_name: cleanOptionalText(editingEvent.runner_up_name),
+        third_place_name: cleanOptionalText(editingEvent.third_place_name),
+        result_notes: cleanOptionalText(editingEvent.result_notes),
+        result_photo_url: cleanOptionalText(editingEvent.result_photo_url),
+      }
+      if (!payload.title) throw new Error('Event title is required')
+      if (!Number.isFinite(payload.entry_fee) || payload.entry_fee < 0) throw new Error('Minimum bet must be valid')
+      await request(`/api/v1/business/${businessId}/cockpit/events/${editingEvent.public_id}`, {
+        method:'PATCH',
+        body:JSON.stringify(payload),
+      })
+      setEditingEvent(null)
+      await load()
+      flash(payload.champion_name ? 'Event updated and result published' : 'Event updated')
+    } catch (e) {
+      flash(e.message || 'Update failed')
+    }
+    setSavingEventEdit(false)
+  }
+
+  const markEventDone = event => {
+    openEventEditor(event)
+    setTimeout(() => setEditingEvent(current => current ? {...current,status:'finished'} : current), 0)
+  }
+
   const remove = async (kind,id) => { if(!confirm('Delete this item?')) return; try{ await request(`/api/v1/business/${businessId}/cockpit/${kind}/${id}`,{method:'DELETE'}); await load(); flash('Deleted') }catch(e){flash(e.message)} }
   const upload = async (kind,field,file) => { if(!file)return;try{ const url=await uploadImage(API_BASE,businessId,file,`cockpit_${kind}`); setForm(kind,{[field]:url}); flash('Image uploaded') }catch(e){flash(e.message)} }
   const publicUrl = `${API_BASE}/cockpit/${businessId}`
@@ -371,7 +430,7 @@ export default function CockpitDashboard({ API_BASE, user, onLogout }) {
     <nav style={S.nav}>{TABS.map(x=><button key={x} style={{...S.tab,...(tab===x?S.active:{})}} onClick={()=>setTab(x)}>{x[0].toUpperCase()+x.slice(1)}</button>)}</nav>
     <main className="cockpit-main" style={S.main}>
       {tab==='overview' && <><div style={S.cards}>{[['Events',data.events.length],['Announcements',data.announcements.length],['Results',data.results.length],['Gallery',data.gallery.length],['Sponsors',data.sponsors.length]].map(([a,b])=><div style={S.card} key={a}><b style={{fontSize:30}}>{b}</b><div>{a}</div></div>)}</div><Panel title="Public website"><input style={S.input} readOnly value={publicUrl}/></Panel></>}
-      {tab==='events' && <Crud title="Events" customLayout form={
+      {tab==='events' && <><Crud title="Events" customLayout form={
         <div style={S.simpleComposer}>
           <ComposerSection icon="📅" title="Event basics" hint="Enter only the information customers need to see first.">
             <div className="grid-three" style={S.simpleTopGrid}>
@@ -406,7 +465,16 @@ export default function CockpitDashboard({ API_BASE, user, onLogout }) {
 
           <PostSettingsPanel kind="event" value={eventPostSettings} onChange={setEventPostSettings}/>
         </div>
-      } onSave={()=>create('events')} onPreview={()=>setShare({kind:'event',item:{...forms.events,minimum_bet_display:forms.events.entry_fee?money(forms.events.entry_fee):'',special_note:forms.events.special_note},config:{...eventPostSettings,payout:forms.events.prize_details,minimumBet:forms.events.entry_fee?money(forms.events.entry_fee):'',specialNote:forms.events.special_note,backgroundUrl:eventPostSettings.backgroundUrl||forms.events.poster_url||settings?.hero_image_url||''}})} items={data.events} onDelete={id=>remove('events',id)} onShare={item=>setShare({kind:'event',item,config:{...eventPostSettings,payout:item.prize_details||'',minimumBet:item.entry_fee?money(item.entry_fee):'',specialNote:item.special_note||splitEventDescription(item.description).specialNote||'',backgroundUrl:eventPostSettings.backgroundUrl||item.poster_url||settings?.hero_image_url||''}})}/>} 
+      } onSave={()=>create('events')} onPreview={()=>setShare({kind:'event',item:{...forms.events,minimum_bet_display:forms.events.entry_fee?money(forms.events.entry_fee):'',special_note:forms.events.special_note},config:{...eventPostSettings,payout:forms.events.prize_details,minimumBet:forms.events.entry_fee?money(forms.events.entry_fee):'',specialNote:forms.events.special_note,backgroundUrl:eventPostSettings.backgroundUrl||forms.events.poster_url||settings?.hero_image_url||''}})} items={data.events} onDelete={id=>remove('events',id)} onShare={item=>setShare({kind:'event',item,config:{...eventPostSettings,payout:item.prize_details||'',minimumBet:item.entry_fee?money(item.entry_fee):'',specialNote:item.special_note||splitEventDescription(item.description).specialNote||'',backgroundUrl:eventPostSettings.backgroundUrl||item.poster_url||settings?.hero_image_url||''}})} hideList/>
+      <EventManager
+        events={data.events}
+        search={eventSearch}
+        onSearch={setEventSearch}
+        onEdit={openEventEditor}
+        onDone={markEventDone}
+        onDelete={id=>remove('events',id)}
+        onShare={item=>setShare({kind:'event',item,config:{...eventPostSettings,payout:item.prize_details||'',minimumBet:item.entry_fee?money(item.entry_fee):'',specialNote:item.special_note||splitEventDescription(item.description).specialNote||'',backgroundUrl:eventPostSettings.backgroundUrl||item.poster_url||settings?.hero_image_url||''}})}
+      /></>} 
       {tab==='announcements' && <Crud title="Announcements" customLayout form={
         <div className="composer-shell" style={S.composerShell}>
           <div style={S.composerMain}>
@@ -428,6 +496,45 @@ export default function CockpitDashboard({ API_BASE, user, onLogout }) {
       {tab==='sponsors' && <Crud title="Sponsors" form={<><Input label="Name" value={forms.sponsors.name} onChange={v=>setForm('sponsors',{name:v})}/><Input label="Website" value={forms.sponsors.website_url} onChange={v=>setForm('sponsors',{website_url:v})}/><Input label="Description" value={forms.sponsors.description} onChange={v=>setForm('sponsors',{description:v})}/><File label="Logo" onChange={f=>upload('sponsors','logo_url',f)}/></>} onSave={()=>create('sponsors')} items={data.sponsors} onDelete={id=>remove('sponsors',id)}/>} 
       {tab==='settings' && <Panel title="Website Settings"><div style={S.grid}>{['arena_name','tagline','about_text','contact_phone','contact_email','address','facebook_url','map_embed_url'].map(k=><Input key={k} label={k.replaceAll('_',' ')} value={settings[k]||''} onChange={v=>setSettings({...settings,[k]:v})}/>)}</div><div style={S.grid}><File label="Hero image" onChange={async f=>{if(f)setSettings({...settings,hero_image_url:await uploadImage(API_BASE,businessId,f,'cockpit_settings')})}}/><File label="Logo" onChange={async f=>{if(f)setSettings({...settings,logo_url:await uploadImage(API_BASE,businessId,f,'cockpit_settings')})}}/></div><button style={S.primary} onClick={async()=>{try{await request(`/api/v1/business/${businessId}/cockpit/settings`,{method:'PUT',body:JSON.stringify(settings)});await load();flash('Settings saved')}catch(e){flash(e.message)}}}>Save settings</button></Panel>}
     </main>
+    {editingEvent&&<div style={S.modalOverlay} onClick={()=>setEditingEvent(null)}>
+      <div style={{...S.studioModal,maxWidth:820}} onClick={e=>e.stopPropagation()}>
+        <div style={S.studioHead}>
+          <div><h2 style={{margin:0}}>Edit Event</h2><p style={S.muted}>Finished or cancelled events will no longer appear under Upcoming Events.</p></div>
+          <button style={S.close} onClick={()=>setEditingEvent(null)}>×</button>
+        </div>
+        <div className="grid-three" style={S.simpleTopGrid}>
+          <Input label="Event title" value={editingEvent.title} onChange={v=>setEditingEvent({...editingEvent,title:v})}/>
+          <Input label="Date" type="date" value={editingEvent.event_date} onChange={v=>setEditingEvent({...editingEvent,event_date:v})}/>
+          <Input label="Time" type="time" value={editingEvent.start_time} onChange={v=>setEditingEvent({...editingEvent,start_time:v})}/>
+        </div>
+        <div className="grid-two" style={S.formGridTwo}>
+          <Input label="Minimum bet" type="number" value={editingEvent.entry_fee} onChange={v=>setEditingEvent({...editingEvent,entry_fee:v})}/>
+          <Input label="Prize details" value={editingEvent.prize_details} onChange={v=>setEditingEvent({...editingEvent,prize_details:v})}/>
+        </div>
+        <div className="grid-two" style={S.formGridTwo}>
+          <Input label="Category" value={editingEvent.category} onChange={v=>setEditingEvent({...editingEvent,category:v})}/>
+          <Select label="Status" value={editingEvent.status} onChange={v=>setEditingEvent({...editingEvent,status:v})} options={['upcoming','open','closed','finished','cancelled']}/>
+        </div>
+        <TextArea label="Event details" value={editingEvent.event_details} onChange={v=>setEditingEvent({...editingEvent,event_details:v})} rows={4}/>
+        <TextArea label="Special note" value={editingEvent.special_note} onChange={v=>setEditingEvent({...editingEvent,special_note:v})} rows={3}/>
+        <details open={editingEvent.status==='finished'} style={S.resultOptionBox}>
+          <summary style={S.optionalSummary}>🏆 Champion / Latest Result (optional)</summary>
+          <div style={S.optionalBody}>
+            <p style={S.muted}>Adding a champion automatically publishes or updates this event in Latest Results.</p>
+            <div className="grid-three" style={S.formGridThree}>
+              <Input label="Champion" value={editingEvent.champion_name} onChange={v=>setEditingEvent({...editingEvent,champion_name:v})}/>
+              <Input label="Runner-up" value={editingEvent.runner_up_name} onChange={v=>setEditingEvent({...editingEvent,runner_up_name:v})}/>
+              <Input label="Third place" value={editingEvent.third_place_name} onChange={v=>setEditingEvent({...editingEvent,third_place_name:v})}/>
+            </div>
+            <TextArea label="Result notes" value={editingEvent.result_notes} onChange={v=>setEditingEvent({...editingEvent,result_notes:v})} rows={3}/>
+          </div>
+        </details>
+        <div style={{...S.actionRow,justifyContent:'flex-end',marginTop:18}}>
+          <button style={S.secondary} onClick={()=>setEditingEvent(null)}>Cancel</button>
+          <button style={S.primary} disabled={savingEventEdit} onClick={saveEventEdit}>{savingEventEdit?'Saving...':'Save Changes'}</button>
+        </div>
+      </div>
+    </div>}
     {share&&<SocialPostStudio kind={share.kind} item={share.item} settings={settings} publicUrl={publicUrl} initialConfig={share.config||{}} onClose={()=>setShare(null)}/>} 
   </div>
 }
@@ -483,7 +590,35 @@ function PostSettingsPanel({kind,value,onChange}){
   </details>
 }
 
-function Crud({title,form,onSave,onPreview,items,onDelete,onShare,customLayout=false}){
+function EventManager({events,search,onSearch,onEdit,onDone,onDelete,onShare}){
+  const query=String(search||'').trim().toLowerCase()
+  const filtered=[...events].filter(event=>!query||[event.title,event.event_date,event.category,event.status,event.prize_details].some(value=>String(value||'').toLowerCase().includes(query)))
+  return <Panel title="Manage Events">
+    <div style={S.eventToolbar}>
+      <input style={S.input} value={search} onChange={e=>onSearch(e.target.value)} placeholder="Search events by name, date, category, status, or prize"/>
+      <span style={S.eventCount}>{filtered.length} event{filtered.length===1?'':'s'}</span>
+    </div>
+    {filtered.length?filtered.map(event=>{
+      const status=String(event.status||'upcoming').toLowerCase()
+      const done=['finished','cancelled'].includes(status)
+      return <div key={event.public_id} style={S.eventManageRow}>
+        <div style={S.eventManageInfo}>
+          <div style={S.eventTitleLine}><b>{event.title}</b><span style={{...S.statusBadge,...(S.statusColors[status]||S.statusColors.upcoming)}}>{status}</span></div>
+          <div style={S.eventMeta}>{event.event_date||'No date'}{event.start_time?` • ${readableTime(event.start_time)}`:''}{event.category?` • ${event.category}`:''}</div>
+          {done&&<div style={S.doneHint}>Not displayed in Upcoming Events</div>}
+        </div>
+        <div style={S.actionRow}>
+          <button style={S.secondary} onClick={()=>onEdit(event)}>Edit</button>
+          {!done&&<button style={S.doneBtn} onClick={()=>onDone(event)}>Mark Done</button>}
+          <button style={S.shareBtn} onClick={()=>onShare(event)}>Facebook Post</button>
+          <button style={S.delete} onClick={()=>onDelete(event.public_id)}>Delete</button>
+        </div>
+      </div>
+    }):<p>No events match your search.</p>}
+  </Panel>
+}
+
+function Crud({title,form,onSave,onPreview,items,onDelete,onShare,customLayout=false,hideList=false}){
   return <>
     <Panel title={`Add ${title.slice(0,-1)}`}>
       <div style={customLayout?S.customFormWrap:S.grid}>{form}</div>
@@ -495,8 +630,8 @@ function Crud({title,form,onSave,onPreview,items,onDelete,onShare,customLayout=f
         </div>
       </div>
     </Panel>
-    <Panel title={title}>{items.length?items.map(x=><div key={x.public_id} style={S.row}><div><b>{x.title||x.name||x.category||'Record'}</b><div style={{fontSize:13,color:'#766'}}>{x.event_date||x.message||x.description||x.champion_name||''}</div></div><div style={S.actionRow}>{onShare&&<button style={S.shareBtn} onClick={()=>onShare(x)}>Facebook Post</button>}<button style={S.delete} onClick={()=>onDelete(x.public_id)}>Delete</button></div></div>):<p>No records yet.</p>}</Panel>
+    {!hideList&&<Panel title={title}>{items.length?items.map(x=><div key={x.public_id} style={S.row}><div><b>{x.title||x.name||x.category||'Record'}</b><div style={{fontSize:13,color:'#766'}}>{x.event_date||x.message||x.description||x.champion_name||''}</div></div><div style={S.actionRow}>{onShare&&<button style={S.shareBtn} onClick={()=>onShare(x)}>Facebook Post</button>}<button style={S.delete} onClick={()=>onDelete(x.public_id)}>Delete</button></div></div>):<p>No records yet.</p>}</Panel>}
   </>
 }
 
-const S={page:{minHeight:'100vh',background:'#f4efe8',fontFamily:'Arial,sans-serif'},simpleComposer:{display:'flex',flexDirection:'column',gap:14,maxWidth:900,margin:'0 auto'},simpleTopGrid:{display:'grid',gridTemplateColumns:'2fr 1fr 1fr',gap:12,marginBottom:12},optionalBox:{border:'1px solid #e8ded4',borderRadius:12,background:'#fff'},optionalSummary:{padding:'13px 16px',cursor:'pointer',fontWeight:800,color:'#5c3616'},optionalBody:{padding:'0 16px 16px'},facebookDetails:{border:'1px solid #c9daf8',borderRadius:14,background:'#f8fbff',overflow:'hidden'},facebookSummary:{display:'flex',alignItems:'center',gap:11,padding:'14px 16px',cursor:'pointer',color:'#174ea6'},facebookSummaryHint:{display:'block',fontWeight:500,color:'#64748b',marginTop:2},facebookBody:{padding:'0 16px 16px'},subOptions:{marginTop:12,border:'1px solid #dbe4f0',borderRadius:10,background:'#fff'},subOptionsSummary:{padding:'11px 13px',cursor:'pointer',fontSize:13,fontWeight:750,color:'#475569'},subOptionsBody:{padding:'0 13px 13px',display:'flex',flexDirection:'column',gap:10},brandWrap:{display:'flex',alignItems:'center',gap:12},brandLogo:{width:64,height:64,borderRadius:'50%',objectFit:'cover',border:'3px solid #d4a84f',background:'#fff'},header:{background:'#211813',color:'#fff',padding:'20px 28px',display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap'},view:{color:'#fff',background:'#a67734',padding:'10px 14px',borderRadius:8,textDecoration:'none',marginRight:8},logout:{padding:'10px 14px',borderRadius:8,border:'1px solid #776',background:'transparent',color:'#fff'},nav:{display:'flex',gap:6,overflowX:'auto',padding:12,background:'#fff'},tab:{border:0,background:'transparent',padding:'10px 13px',borderRadius:8,textTransform:'capitalize'},active:{background:'#211813',color:'#fff'},main:{maxWidth:1150,margin:'auto',padding:24},panel:{background:'#fff',padding:20,borderRadius:14,marginBottom:18,boxShadow:'0 5px 18px #0000000d'},cards:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:12,marginBottom:18},card:{background:'#fff',padding:18,borderRadius:12},grid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:12,marginBottom:14},field:{display:'flex',flexDirection:'column',gap:5,textTransform:'capitalize',fontSize:13,fontWeight:700},input:{padding:11,border:'1px solid #d6cabf',borderRadius:8,font:'inherit',width:'100%',boxSizing:'border-box'},primary:{background:'#8a6129',color:'#fff',border:0,borderRadius:8,padding:'11px 16px',fontWeight:700,cursor:'pointer'},secondary:{background:'#fff',color:'#6b431b',border:'1px solid #b99261',borderRadius:8,padding:'10px 15px',fontWeight:700,cursor:'pointer'},shareBtn:{background:'#1877f2',color:'#fff',border:0,borderRadius:7,padding:'8px 11px',fontWeight:700,cursor:'pointer'},row:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,padding:'12px 0',borderBottom:'1px solid #eee'},delete:{border:'1px solid #f4b4b4',color:'#b42318',background:'#fff3f3',borderRadius:7,padding:'7px 10px',cursor:'pointer'},toast:{position:'fixed',top:80,right:20,zIndex:20,background:'#211813',color:'#fff',padding:'12px 15px',borderRadius:8},actionRow:{display:'flex',gap:9,alignItems:'center',flexWrap:'wrap'},modalOverlay:{position:'fixed',inset:0,zIndex:50,background:'rgba(0,0,0,.72)',padding:20,overflowY:'auto',display:'flex',justifyContent:'center',alignItems:'flex-start'},studioModal:{width:'min(1180px,100%)',background:'#f7f2ec',borderRadius:18,margin:'20px auto',padding:22,boxShadow:'0 24px 80px rgba(0,0,0,.35)'},studioHead:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:16,marginBottom:18},close:{border:0,background:'#2b1b17',color:'#fff',width:40,height:40,borderRadius:10,fontSize:26,cursor:'pointer'},studioGrid:{display:'grid',gridTemplateColumns:'minmax(340px,1.05fr) minmax(300px,.95fr)',gap:24},canvas:{width:'100%',display:'block',background:'#111',borderRadius:12,boxShadow:'0 12px 30px rgba(0,0,0,.22)'},controls:{display:'flex',flexDirection:'column',gap:12},checkRow:{display:'flex',gap:18,flexWrap:'wrap',fontSize:14,fontWeight:700},muted:{color:'#765f54',fontSize:14,marginTop:5},customFormWrap:{marginBottom:16},composerShell:{display:'grid',gridTemplateColumns:'minmax(0,1.65fr) minmax(300px,.85fr)',gap:18,alignItems:'start'},composerMain:{display:'flex',flexDirection:'column',gap:14},composerSide:{position:'sticky',top:14},composerSection:{border:'1px solid #e8ded4',borderRadius:14,background:'#fff',overflow:'hidden'},composerSectionHead:{display:'flex',gap:11,alignItems:'center',padding:'14px 16px',background:'#faf7f3',borderBottom:'1px solid #eee4da'},composerIcon:{width:38,height:38,borderRadius:10,display:'grid',placeItems:'center',background:'#2a1c17',color:'#fff',fontSize:18},composerSectionTitle:{margin:0,fontSize:17,color:'#251813'},composerSectionHint:{marginTop:3,fontSize:12.5,color:'#816d61',fontWeight:500},composerSectionBody:{padding:16},formGridFour:{display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:12,marginBottom:12},formGridThree:{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:12},formGridTwo:{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:12},formGridTwoCompact:{display:'grid',gridTemplateColumns:'2fr 1fr',gap:12,marginBottom:12},imageUploadRow:{display:'grid',gridTemplateColumns:'minmax(0,1fr) 130px',gap:14,alignItems:'end'},uploadPreview:{width:130,height:96,objectFit:'cover',borderRadius:10,border:'1px solid #d6cabf'},postSettingsBox:{background:'linear-gradient(180deg,#fff8ee 0%,#fffdf9 100%)',border:'1px solid #dec39b',borderRadius:14,padding:16,boxShadow:'0 8px 24px rgba(93,54,22,.08)'},postSettingsHeader:{display:'flex',gap:11,alignItems:'center',paddingBottom:13,marginBottom:13,borderBottom:'1px solid #ead7bb'},postSettingsIcon:{width:38,height:38,borderRadius:'50%',display:'grid',placeItems:'center',background:'#1877f2',color:'#fff',fontWeight:900,fontSize:22,fontFamily:'Arial'},postSettingsTitle:{fontSize:17,fontWeight:800,color:'#5c3616'},postSettingsHint:{fontSize:12.5,color:'#80664f',marginTop:2},settingStack:{display:'flex',flexDirection:'column',gap:11},contactBlock:{margin:'14px 0',padding:'13px',background:'#fff',border:'1px solid #ebdfd1',borderRadius:11},contactBlockTitle:{fontSize:13,fontWeight:800,color:'#5c3616',marginBottom:10,textTransform:'uppercase',letterSpacing:'.04em'},contactPair:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:9,marginBottom:9},composerActions:{display:'flex',justifyContent:'space-between',gap:16,alignItems:'center',paddingTop:16,marginTop:4,borderTop:'1px solid #eee4da',flexWrap:'wrap'},actionHint:{fontSize:12.5,color:'#806f65',maxWidth:620,lineHeight:1.45},previewBtn:{background:'#1877f2',color:'#fff',border:0,borderRadius:8,padding:'11px 16px',fontWeight:800,cursor:'pointer'}}
+const S={eventToolbar:{display:'grid',gridTemplateColumns:'minmax(0,1fr) auto',gap:12,alignItems:'center',marginBottom:14},eventCount:{fontSize:13,fontWeight:800,color:'#765f54'},eventManageRow:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:16,padding:'15px 0',borderBottom:'1px solid #eee',flexWrap:'wrap'},eventManageInfo:{minWidth:220,flex:1},eventTitleLine:{display:'flex',alignItems:'center',gap:9,flexWrap:'wrap',fontSize:17},eventMeta:{fontSize:13,color:'#766',marginTop:4},doneHint:{fontSize:11.5,color:'#64748b',marginTop:5,fontWeight:700},statusBadge:{padding:'4px 9px',borderRadius:999,fontSize:10.5,textTransform:'uppercase',fontWeight:900},statusColors:{upcoming:{background:'#dbeafe',color:'#1d4ed8'},open:{background:'#dcfce7',color:'#166534'},closed:{background:'#fef3c7',color:'#92400e'},finished:{background:'#e2e8f0',color:'#334155'},cancelled:{background:'#fee2e2',color:'#991b1b'}},doneBtn:{background:'#166534',color:'#fff',border:0,borderRadius:7,padding:'9px 12px',fontWeight:800,cursor:'pointer'},resultOptionBox:{marginTop:14,border:'1px solid #e4c984',borderRadius:12,background:'#fffaf0'},page:{minHeight:'100vh',background:'#f4efe8',fontFamily:'Arial,sans-serif'},simpleComposer:{display:'flex',flexDirection:'column',gap:14,maxWidth:900,margin:'0 auto'},simpleTopGrid:{display:'grid',gridTemplateColumns:'2fr 1fr 1fr',gap:12,marginBottom:12},optionalBox:{border:'1px solid #e8ded4',borderRadius:12,background:'#fff'},optionalSummary:{padding:'13px 16px',cursor:'pointer',fontWeight:800,color:'#5c3616'},optionalBody:{padding:'0 16px 16px'},facebookDetails:{border:'1px solid #c9daf8',borderRadius:14,background:'#f8fbff',overflow:'hidden'},facebookSummary:{display:'flex',alignItems:'center',gap:11,padding:'14px 16px',cursor:'pointer',color:'#174ea6'},facebookSummaryHint:{display:'block',fontWeight:500,color:'#64748b',marginTop:2},facebookBody:{padding:'0 16px 16px'},subOptions:{marginTop:12,border:'1px solid #dbe4f0',borderRadius:10,background:'#fff'},subOptionsSummary:{padding:'11px 13px',cursor:'pointer',fontSize:13,fontWeight:750,color:'#475569'},subOptionsBody:{padding:'0 13px 13px',display:'flex',flexDirection:'column',gap:10},brandWrap:{display:'flex',alignItems:'center',gap:12},brandLogo:{width:64,height:64,borderRadius:'50%',objectFit:'cover',border:'3px solid #d4a84f',background:'#fff'},header:{background:'#211813',color:'#fff',padding:'20px 28px',display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap'},view:{color:'#fff',background:'#a67734',padding:'10px 14px',borderRadius:8,textDecoration:'none',marginRight:8},logout:{padding:'10px 14px',borderRadius:8,border:'1px solid #776',background:'transparent',color:'#fff'},nav:{display:'flex',gap:6,overflowX:'auto',padding:12,background:'#fff'},tab:{border:0,background:'transparent',padding:'10px 13px',borderRadius:8,textTransform:'capitalize'},active:{background:'#211813',color:'#fff'},main:{maxWidth:1150,margin:'auto',padding:24},panel:{background:'#fff',padding:20,borderRadius:14,marginBottom:18,boxShadow:'0 5px 18px #0000000d'},cards:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:12,marginBottom:18},card:{background:'#fff',padding:18,borderRadius:12},grid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:12,marginBottom:14},field:{display:'flex',flexDirection:'column',gap:5,textTransform:'capitalize',fontSize:13,fontWeight:700},input:{padding:11,border:'1px solid #d6cabf',borderRadius:8,font:'inherit',width:'100%',boxSizing:'border-box'},primary:{background:'#8a6129',color:'#fff',border:0,borderRadius:8,padding:'11px 16px',fontWeight:700,cursor:'pointer'},secondary:{background:'#fff',color:'#6b431b',border:'1px solid #b99261',borderRadius:8,padding:'10px 15px',fontWeight:700,cursor:'pointer'},shareBtn:{background:'#1877f2',color:'#fff',border:0,borderRadius:7,padding:'8px 11px',fontWeight:700,cursor:'pointer'},row:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,padding:'12px 0',borderBottom:'1px solid #eee'},delete:{border:'1px solid #f4b4b4',color:'#b42318',background:'#fff3f3',borderRadius:7,padding:'7px 10px',cursor:'pointer'},toast:{position:'fixed',top:80,right:20,zIndex:20,background:'#211813',color:'#fff',padding:'12px 15px',borderRadius:8},actionRow:{display:'flex',gap:9,alignItems:'center',flexWrap:'wrap'},modalOverlay:{position:'fixed',inset:0,zIndex:50,background:'rgba(0,0,0,.72)',padding:20,overflowY:'auto',display:'flex',justifyContent:'center',alignItems:'flex-start'},studioModal:{width:'min(1180px,100%)',background:'#f7f2ec',borderRadius:18,margin:'20px auto',padding:22,boxShadow:'0 24px 80px rgba(0,0,0,.35)'},studioHead:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:16,marginBottom:18},close:{border:0,background:'#2b1b17',color:'#fff',width:40,height:40,borderRadius:10,fontSize:26,cursor:'pointer'},studioGrid:{display:'grid',gridTemplateColumns:'minmax(340px,1.05fr) minmax(300px,.95fr)',gap:24},canvas:{width:'100%',display:'block',background:'#111',borderRadius:12,boxShadow:'0 12px 30px rgba(0,0,0,.22)'},controls:{display:'flex',flexDirection:'column',gap:12},checkRow:{display:'flex',gap:18,flexWrap:'wrap',fontSize:14,fontWeight:700},muted:{color:'#765f54',fontSize:14,marginTop:5},customFormWrap:{marginBottom:16},composerShell:{display:'grid',gridTemplateColumns:'minmax(0,1.65fr) minmax(300px,.85fr)',gap:18,alignItems:'start'},composerMain:{display:'flex',flexDirection:'column',gap:14},composerSide:{position:'sticky',top:14},composerSection:{border:'1px solid #e8ded4',borderRadius:14,background:'#fff',overflow:'hidden'},composerSectionHead:{display:'flex',gap:11,alignItems:'center',padding:'14px 16px',background:'#faf7f3',borderBottom:'1px solid #eee4da'},composerIcon:{width:38,height:38,borderRadius:10,display:'grid',placeItems:'center',background:'#2a1c17',color:'#fff',fontSize:18},composerSectionTitle:{margin:0,fontSize:17,color:'#251813'},composerSectionHint:{marginTop:3,fontSize:12.5,color:'#816d61',fontWeight:500},composerSectionBody:{padding:16},formGridFour:{display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:12,marginBottom:12},formGridThree:{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:12},formGridTwo:{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:12},formGridTwoCompact:{display:'grid',gridTemplateColumns:'2fr 1fr',gap:12,marginBottom:12},imageUploadRow:{display:'grid',gridTemplateColumns:'minmax(0,1fr) 130px',gap:14,alignItems:'end'},uploadPreview:{width:130,height:96,objectFit:'cover',borderRadius:10,border:'1px solid #d6cabf'},postSettingsBox:{background:'linear-gradient(180deg,#fff8ee 0%,#fffdf9 100%)',border:'1px solid #dec39b',borderRadius:14,padding:16,boxShadow:'0 8px 24px rgba(93,54,22,.08)'},postSettingsHeader:{display:'flex',gap:11,alignItems:'center',paddingBottom:13,marginBottom:13,borderBottom:'1px solid #ead7bb'},postSettingsIcon:{width:38,height:38,borderRadius:'50%',display:'grid',placeItems:'center',background:'#1877f2',color:'#fff',fontWeight:900,fontSize:22,fontFamily:'Arial'},postSettingsTitle:{fontSize:17,fontWeight:800,color:'#5c3616'},postSettingsHint:{fontSize:12.5,color:'#80664f',marginTop:2},settingStack:{display:'flex',flexDirection:'column',gap:11},contactBlock:{margin:'14px 0',padding:'13px',background:'#fff',border:'1px solid #ebdfd1',borderRadius:11},contactBlockTitle:{fontSize:13,fontWeight:800,color:'#5c3616',marginBottom:10,textTransform:'uppercase',letterSpacing:'.04em'},contactPair:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:9,marginBottom:9},composerActions:{display:'flex',justifyContent:'space-between',gap:16,alignItems:'center',paddingTop:16,marginTop:4,borderTop:'1px solid #eee4da',flexWrap:'wrap'},actionHint:{fontSize:12.5,color:'#806f65',maxWidth:620,lineHeight:1.45},previewBtn:{background:'#1877f2',color:'#fff',border:0,borderRadius:8,padding:'11px 16px',fontWeight:800,cursor:'pointer'}}

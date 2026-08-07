@@ -13828,6 +13828,23 @@ class CockpitEventCreate(BaseModel):
     status: Literal['upcoming', 'open', 'closed', 'finished', 'cancelled'] = 'upcoming'
     is_featured: bool = False
 
+class CockpitEventUpdate(BaseModel):
+    title: Optional[str] = None
+    event_date: Optional[str] = None
+    start_time: Optional[str] = None
+    category: Optional[str] = None
+    entry_fee: Optional[float] = Field(default=None, ge=0)
+    prize_details: Optional[str] = None
+    description: Optional[str] = None
+    poster_url: Optional[str] = None
+    status: Optional[Literal['upcoming', 'open', 'closed', 'finished', 'cancelled']] = None
+    is_featured: Optional[bool] = None
+    champion_name: Optional[str] = None
+    runner_up_name: Optional[str] = None
+    third_place_name: Optional[str] = None
+    result_notes: Optional[str] = None
+    result_photo_url: Optional[str] = None
+
 class CockpitAnnouncementCreate(BaseModel):
     title: str
     message: str
@@ -13919,6 +13936,78 @@ async def add_cockpit_event(public_id: str, item: CockpitEventCreate):
     row.update({'business_id': b['id'], 'public_id': generate_public_id()})
     return supabase.table('cockpit_events').insert(row).execute().data[0]
 
+@app.patch('/api/v1/business/{public_id}/cockpit/events/{event_public_id}')
+async def update_cockpit_event(public_id: str, event_public_id: str, item: CockpitEventUpdate):
+    b = cockpit_business(public_id)
+    event_rows = (
+        supabase.table('cockpit_events')
+        .select('*')
+        .eq('business_id', b['id'])
+        .eq('public_id', event_public_id)
+        .limit(1)
+        .execute()
+        .data or []
+    )
+    if not event_rows:
+        raise HTTPException(status_code=404, detail='Event not found')
+    event = event_rows[0]
+
+    payload = item.model_dump()
+    champion_name = (payload.pop('champion_name', None) or '').strip()
+    runner_up_name = payload.pop('runner_up_name', None)
+    third_place_name = payload.pop('third_place_name', None)
+    result_notes = payload.pop('result_notes', None)
+    result_photo_url = payload.pop('result_photo_url', None)
+
+    event_patch = {key: value for key, value in payload.items() if value is not None}
+    if event_patch:
+        event_patch['updated_at'] = datetime.utcnow().isoformat()
+        updated_rows = (
+            supabase.table('cockpit_events')
+            .update(event_patch)
+            .eq('business_id', b['id'])
+            .eq('public_id', event_public_id)
+            .execute()
+            .data or []
+        )
+        if updated_rows:
+            event = updated_rows[0]
+
+    result = None
+    if champion_name:
+        result_row = {
+            'business_id': b['id'],
+            'event_id': event['id'],
+            'category': event.get('category'),
+            'champion_name': champion_name,
+            'runner_up_name': runner_up_name,
+            'third_place_name': third_place_name,
+            'notes': result_notes,
+            'photo_url': result_photo_url or event.get('poster_url'),
+        }
+        existing_rows = (
+            supabase.table('cockpit_results')
+            .select('id')
+            .eq('business_id', b['id'])
+            .eq('event_id', event['id'])
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        if existing_rows:
+            result = (
+                supabase.table('cockpit_results')
+                .update(result_row)
+                .eq('id', existing_rows[0]['id'])
+                .execute()
+                .data[0]
+            )
+        else:
+            result_row['public_id'] = generate_public_id()
+            result = supabase.table('cockpit_results').insert(result_row).execute().data[0]
+
+    return {'event': event, 'result': result}
+
 @app.post('/api/v1/business/{public_id}/cockpit/announcements')
 async def add_cockpit_announcement(public_id: str, item: CockpitAnnouncementCreate):
     b = cockpit_business(public_id)
@@ -13989,7 +14078,11 @@ async def cockpit_public_site(public_id: str):
     settings_res = supabase.table('cockpit_settings').select('*').eq('business_id', b['id']).limit(1).execute()
     settings_rows = settings_res.data or []
     settings = settings_rows[0] if settings_rows else {}
-    events = cockpit_list('cockpit_events', b['id'])
+    all_events = cockpit_list('cockpit_events', b['id'])
+    events = [
+        event for event in all_events
+        if str(event.get('status') or 'upcoming').lower() in ('upcoming', 'open')
+    ]
     announcements = [x for x in cockpit_list('cockpit_announcements', b['id']) if x.get('is_active')]
     results = cockpit_list('cockpit_results', b['id'])
     gallery = cockpit_list('cockpit_gallery', b['id'])
