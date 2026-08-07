@@ -23,6 +23,12 @@ function CustomerJoin({ API_BASE }) {
   // the separate /wallet/{id} page first.
   const [walletData, setWalletData] = useState(null)
   const [walletLoading, setWalletLoading] = useState(false)
+  const [businessInfo,setBusinessInfo]=useState(null)
+
+  useEffect(()=>{
+    fetch(`${API_BASE}/api/v1/public/business/${businessSlug}/join-config`)
+      .then(r=>r.ok?r.json():null).then(setBusinessInfo).catch(()=>setBusinessInfo(null))
+  },[API_BASE,businessSlug])
 
   useEffect(() => {
     if (!submitted || !customerId) return
@@ -125,11 +131,11 @@ function CustomerJoin({ API_BASE }) {
   return (
     <div style={styles.page}>
       <div style={styles.card}>
-        <div style={styles.logoBox}>
-          <span style={styles.logoIcon}>🌳</span>
+        <div style={{...styles.logoBox,background:businessInfo?.primary_color||styles.logoBox.background}}>
+          {businessInfo?.logo_url?<img src={businessInfo.logo_url} alt="" style={styles.businessLogo}/>:<span style={styles.logoIcon}>{businessInfo?.category?.icon||'🌳'}</span>}
         </div>
-        <h1 style={styles.title}>Join Rewards</h1>
-        <p style={styles.subtitle}>Get stamps. Earn rewards. It&apos;s that simple.</p>
+        <h1 style={styles.title}>{businessInfo?.name?`Join ${businessInfo.name}`:'Join Rewards'}</h1>
+        <p style={styles.subtitle}>{businessInfo?.category?.label?`${businessInfo.category.label} · `:''}Add your loyalty card to your phone and use it every visit.</p>
 
         <form onSubmit={handleSubmit} style={styles.form}>
           <div style={styles.inputGroup}>
@@ -252,6 +258,7 @@ const styles = {
     boxShadow: '0 25px 50px -12px rgba(0,0,0,0.25)',
     textAlign: 'center',
   },
+  businessLogo:{width:'100%',height:'100%',objectFit:'cover',borderRadius:'inherit'},
   logoBox: {
     width: 64,
     height: 64,

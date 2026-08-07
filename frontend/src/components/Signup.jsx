@@ -18,6 +18,27 @@ function priceFor(planData, branchCount) {
   return planData.price_tiers?.[bracket] ?? planData.price_month
 }
 
+const BUSINESS_TYPES = [
+  ['spa','🌿 Spa'],['salon','✂️ Salon / Barber'],['fitness','🏋️ Gym / Fitness'],
+  ['restaurant','🍽️ Restaurant / Food'],['coffee','☕ Coffee Shop / Café'],
+  ['retail','🛍️ Retail / Store'],['clinic','🩺 Clinic / Wellness'],
+  ['laundry','🧺 Laundry Shop'],['gas_station','⛽ Gasoline Station'],
+  ['car_wash','🚿 Car Wash'],['pharmacy','💊 Pharmacy'],['bakery','🥐 Bakery'],
+  ['hotel','🏨 Hotel / Resort'],['other','🏪 Other Business'],
+]
+
+const BUSINESS_RECOMMENDATIONS = {
+  laundry:'Great with Stamps or Points for repeat wash-and-fold customers.',
+  gas_station:'Points and VIP work well for frequent motorists and fleet customers.',
+  fitness:'Membership or Multipass is usually the best fit for gyms.',
+  coffee:'Stamps are ideal for frequent café visits; Points work well for spend-based rewards.',
+  salon:'VIP, Stamps and Points work well for repeat appointments.',
+  restaurant:'Stamps or Points are strong choices for repeat diners.',
+  clinic:'Membership and Multipass work well for recurring wellness services.',
+  car_wash:'Stamps and Multipass work well for repeat washes.',
+  retail:'Points is usually the strongest choice for spend-based retail rewards.',
+}
+
 function Signup({ API_BASE }) {
   const [form, setForm] = useState({
     name: '',
@@ -194,14 +215,9 @@ function Signup({ API_BASE }) {
             <div style={{ ...styles.inputGroup, flex: 1 }}>
               <label style={styles.label}>Type</label>
               <select name="business_type" value={form.business_type} onChange={handleChange} style={styles.select}>
-                <option value="spa">Spa</option>
-                <option value="salon">Salon</option>
-                <option value="fitness">Fitness</option>
-                <option value="restaurant">Restaurant</option>
-                <option value="retail">Retail</option>
-                <option value="clinic">Clinic / Wellness</option>
-                <option value="other">Other</option>
+                {BUSINESS_TYPES.map(([value,label]) => <option key={value} value={value}>{label}</option>)}
               </select>
+              {BUSINESS_RECOMMENDATIONS[form.business_type] && <span style={styles.businessTip}>{BUSINESS_RECOMMENDATIONS[form.business_type]}</span>}
             </div>
             <div style={{ ...styles.inputGroup, flex: 1 }}>
               <label style={styles.label}>Number of Branches</label>
@@ -405,6 +421,7 @@ const styles = {
     color: '#d97706',
     textAlign: 'center',
   },
+  businessTip:{marginTop:5,color:'#0f766e',fontSize:11.5,lineHeight:1.4},
   planCapNotice: {
     fontSize: 12.5,
     color: '#d97706',

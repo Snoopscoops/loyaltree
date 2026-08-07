@@ -23,6 +23,23 @@ function formatLastStamped(isoString) {
   return `Stamped ${diffYears} year${diffYears !== 1 ? 's' : ''} ago`
 }
 
+const INDUSTRY_META = {
+  spa:{icon:'🌿',label:'Spa',recommend:'Membership or VIP',focus:'repeat visits and membership activity'},
+  salon:{icon:'✂️',label:'Salon / Barber',recommend:'VIP, Stamps or Points',focus:'repeat appointments and reward activity'},
+  fitness:{icon:'🏋️',label:'Gym / Fitness',recommend:'Membership or Multipass',focus:'check-ins, visit frequency and expiring memberships'},
+  restaurant:{icon:'🍽️',label:'Restaurant / Food',recommend:'Stamps or Points',focus:'repeat visits and reward claims'},
+  coffee:{icon:'☕',label:'Coffee Shop / Café',recommend:'Stamps or Points',focus:'visit frequency and reward progress'},
+  retail:{icon:'🛍️',label:'Retail / Store',recommend:'Points or VIP',focus:'points activity and repeat customers'},
+  clinic:{icon:'🩺',label:'Clinic / Wellness',recommend:'Membership or Multipass',focus:'visit history, services and active memberships'},
+  laundry:{icon:'🧺',label:'Laundry Shop',recommend:'Stamps or Points',focus:'repeat visits, service frequency and redemptions'},
+  gas_station:{icon:'⛽',label:'Gasoline Station',recommend:'Points or VIP',focus:'repeat motorists, points earned and redemptions'},
+  car_wash:{icon:'🚿',label:'Car Wash',recommend:'Stamps or Multipass',focus:'repeat washes and session usage'},
+  pharmacy:{icon:'💊',label:'Pharmacy',recommend:'Points or VIP',focus:'repeat customers and points activity'},
+  bakery:{icon:'🥐',label:'Bakery',recommend:'Stamps or Points',focus:'repeat visits and reward progress'},
+  hotel:{icon:'🏨',label:'Hotel / Resort',recommend:'VIP or Membership',focus:'VIP activity and repeat guests'},
+  other:{icon:'🏪',label:'Business',recommend:'Choose the card that matches repeat behavior',focus:'customer activity and retention'},
+}
+
 function OwnerDashboard({ API_BASE, user, onLogout }) {
   const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState('tree')
@@ -794,6 +811,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const growthStage = customers.length < 10 ? 'seedling' : customers.length < 50 ? 'sapling' : customers.length < 200 ? 'growing' : 'mature'
   const subStatus = subscription?.subscription_status
   const needsRenewal = subStatus === 'expiring_soon' || subStatus === 'expired'
+  const industry = INDUSTRY_META[business?.business_type] || INDUSTRY_META.other
 
 
   if (loading) return (
@@ -880,7 +898,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
           <div style={styles.heroIdentity}>
             <div style={{minWidth: 0}}>
-              <p style={styles.heroEyebrow}>LoyaltyTree · {cardExperience.dashboardLabel}</p>
+              <p style={styles.heroEyebrow}>{industry.icon} {industry.label} · {cardExperience.dashboardLabel}</p>
               <h2 style={styles.heroTitle}>{user?.business_name}</h2>
               <p style={styles.heroDescription}>{cardExperience.editDescription}</p>
               <div style={styles.heroGrowthRow}>
@@ -971,6 +989,14 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       <div style={styles.content}>
         {activeTab === 'tree' && (
           <div style={styles.treeTab}>
+            <div style={styles.industryInsight}>
+              <div style={styles.industryInsightIcon}>{industry.icon}</div>
+              <div>
+                <div style={styles.industryInsightLabel}>{industry.label} setup</div>
+                <strong style={styles.industryInsightTitle}>Recommended: {industry.recommend}</strong>
+                <div style={styles.industryInsightText}>Focus analytics: {industry.focus}.</div>
+              </div>
+            </div>
             <div style={styles.actionCards}>
               <div style={{...styles.actionCard, borderColor: cardExperience.border}} onClick={() => setActiveTab('customers')}>
                 <div style={styles.actionIcon}>{cardExperience.customerIcon}</div>
@@ -3123,6 +3149,11 @@ const styles = {
   setupKitLogo:{maxWidth:145,maxHeight:65,objectFit:'contain'},
   setupKitQr:{width:165,height:165},
   setupKitTwoCol:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10},
+  industryInsight:{display:'flex',gap:13,alignItems:'center',padding:'14px 16px',marginBottom:16,background:'#f8fffe',border:'1px solid #ccfbf1',borderRadius:14},
+  industryInsightIcon:{width:42,height:42,borderRadius:12,display:'flex',alignItems:'center',justifyContent:'center',fontSize:23,background:'#ecfdf5'},
+  industryInsightLabel:{fontSize:10.5,fontWeight:900,textTransform:'uppercase',letterSpacing:.8,color:'#0d9488'},
+  industryInsightTitle:{display:'block',fontSize:14,color:'#134e4a',marginTop:2},
+  industryInsightText:{fontSize:12,color:'#64748b',marginTop:3,lineHeight:1.4},
 }
 
 export default OwnerDashboard

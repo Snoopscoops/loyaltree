@@ -5,7 +5,8 @@ import { useLocation, useNavigate } from 'react-router-dom'
 // Only shows the raw scan/debug panel in local dev - never in a production
 // build, since it prints internal API paths and response codes on-screen.
 const DEBUG = import.meta.env.DEV
-const CASHIER_BUILD = 'VIP-MEMBERSHIP-MULTIPASS-V14'
+const CASHIER_BUILD = 'VIP-MEMBERSHIP-MULTIPASS-V15-INDUSTRIES'
+const BUSINESS_ICONS={spa:'🌿',salon:'✂️',fitness:'🏋️',restaurant:'🍽️',coffee:'☕',retail:'🛍️',clinic:'🩺',laundry:'🧺',gas_station:'⛽',car_wash:'🚿',pharmacy:'💊',bakery:'🥐',hotel:'🏨',other:'🏪',car_lending:'🚗',cockpit:'🏆'}
 
 function CashierApp({ API_BASE }) {
   const location = useLocation()
@@ -142,6 +143,8 @@ function CashierApp({ API_BASE }) {
           public_id: c.public_id,
           name: c.name,
           phone: c.phone,
+          business_name: data.business?.name || '',
+          business_type: data.business?.business_type || 'other',
           card_type: cardType,
           stamp_count: c.stamp_count || 0,
           reward_unlocked: !!c.reward_unlocked,
@@ -838,7 +841,7 @@ function CashierApp({ API_BASE }) {
                 letterSpacing: .5,
                 marginBottom: 4,
               }}>
-                {cardExperience.icon} {cardExperience.label}
+                {cardExperience.icon} {cardExperience.label} · {BUSINESS_ICONS[customerData.business_type] || '🏪'}
               </div>
               <h3 style={styles.customerName}>{customerData.name}</h3>
               <p style={styles.customerMeta}>

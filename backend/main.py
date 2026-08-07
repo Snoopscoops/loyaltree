@@ -459,6 +459,35 @@ else:
         ENV_ERROR = str(e)
         supabase = None
 
+
+# LoyaltyTree self-serve business categories. Car Lending and Cockpit stay
+# supported by the backend but remain invite-only specialized systems.
+BUSINESS_CATEGORY_META = {
+    'spa': {'label': 'Spa', 'icon': '🌿', 'color': '#0f766e', 'recommended_cards': ['membership','vip','stamp']},
+    'salon': {'label': 'Salon / Barber', 'icon': '✂️', 'color': '#7c3aed', 'recommended_cards': ['vip','stamp','points']},
+    'fitness': {'label': 'Gym / Fitness', 'icon': '🏋️', 'color': '#2563eb', 'recommended_cards': ['membership','multipass','vip']},
+    'restaurant': {'label': 'Restaurant / Food', 'icon': '🍽️', 'color': '#ea580c', 'recommended_cards': ['stamp','points','vip']},
+    'coffee': {'label': 'Coffee Shop / Café', 'icon': '☕', 'color': '#92400e', 'recommended_cards': ['stamp','points','vip']},
+    'retail': {'label': 'Retail / Store', 'icon': '🛍️', 'color': '#d97706', 'recommended_cards': ['points','vip','stamp']},
+    'clinic': {'label': 'Clinic / Wellness', 'icon': '🩺', 'color': '#0891b2', 'recommended_cards': ['membership','multipass','vip']},
+    'laundry': {'label': 'Laundry Shop', 'icon': '🧺', 'color': '#0284c7', 'recommended_cards': ['stamp','points','membership']},
+    'gas_station': {'label': 'Gasoline Station', 'icon': '⛽', 'color': '#dc2626', 'recommended_cards': ['points','vip','stamp']},
+    'car_wash': {'label': 'Car Wash', 'icon': '🚿', 'color': '#0369a1', 'recommended_cards': ['stamp','multipass','points']},
+    'pharmacy': {'label': 'Pharmacy', 'icon': '💊', 'color': '#16a34a', 'recommended_cards': ['points','vip','stamp']},
+    'bakery': {'label': 'Bakery', 'icon': '🥐', 'color': '#b45309', 'recommended_cards': ['stamp','points','vip']},
+    'hotel': {'label': 'Hotel / Resort', 'icon': '🏨', 'color': '#4338ca', 'recommended_cards': ['vip','membership','points']},
+    'other': {'label': 'Other Business', 'icon': '🏪', 'color': '#0d9488', 'recommended_cards': ['stamp','points','vip']},
+    'car_lending': {'label': 'Car Lending / Showroom', 'icon': '🚗', 'color': '#0f172a', 'recommended_cards': []},
+    'cockpit': {'label': 'Cockpit Arena', 'icon': '🏆', 'color': '#713f12', 'recommended_cards': []},
+}
+
+def normalize_business_type(value: Optional[str]) -> str:
+    value = (value or 'other').strip().lower()
+    return value if value in BUSINESS_CATEGORY_META else 'other'
+
+def business_category_meta(value: Optional[str]) -> dict:
+    return BUSINESS_CATEGORY_META.get(normalize_business_type(value), BUSINESS_CATEGORY_META['other'])
+
 # Pydantic Models
 class BusinessCreate(BaseModel):
     name: str
@@ -1753,7 +1782,9 @@ def build_loyalty_class(business: dict, program: dict, review_status: str = 'UND
     if not class_id:
         class_id = f'{GOOGLE_WALLET_ISSUER_ID}.{biz_public_id}'
 
-    primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
+    category = business_category_meta(business.get('business_type'))
+    configured_color = program.get('primary_color') if program else None
+    primary_color = configured_color or category['color']
     reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
     card_type = program.get('card_type', 'stamp') if program else 'stamp'
     card_name = program.get('card_name') if program else None
@@ -1777,8 +1808,9 @@ def build_loyalty_class(business: dict, program: dict, review_status: str = 'UND
         'reviewStatus': review_status,
         'hexBackgroundColor': primary_color if primary_color.startswith('#') else f'#{primary_color}',
         'textModulesData': [
+            {'header': 'Business Type', 'body': f"{category['icon']} {category['label']}"},
             {'header': 'Reward', 'body': reward_module_body},
-            {'header': 'About', 'body': description if description else 'Collect stamps, earn rewards'}
+            {'header': 'About', 'body': description if description else 'Collect rewards and keep your card in your phone wallet'}
         ]
     }
 
@@ -1819,6 +1851,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     sessions_total = customer.get('multipass_total_sessions', 0) or (program.get('multipass_session_count', 12) if program else 12)
     cust_name = customer.get('name', 'Member')
     biz_name = business.get('name', '')
+    category = business_category_meta(business.get('business_type'))
     membership_summary = (
         get_membership_summary(business.get('id'), customer.get('id'))
         if card_type == 'membership' else None
@@ -1874,6 +1907,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         },
         'textModulesData': [
             {'header': 'Business', 'body': biz_name},
+            {'header': 'Category', 'body': f"{category['icon']} {category['label']}"},
             {'header': 'Reward', 'body': reward_body},
             {'header': 'Progress', 'body': progress_body}
         ],
@@ -3327,6 +3361,7 @@ async def register(biz: BusinessCreate):
     # Some business types are invite-only / admin-provisioned (specialized
     # dashboards set up by us, not self-serve) - block them here rather than
     # just hiding the option in the UI, since this endpoint is public.
+    biz.business_type = normalize_business_type(biz.business_type)
     INVITE_ONLY_BUSINESS_TYPES = {'car_lending', 'cockpit'}
     if biz.business_type in INVITE_ONLY_BUSINESS_TYPES:
         raise HTTPException(
@@ -3419,7 +3454,7 @@ async def register(biz: BusinessCreate):
                 f"<li><b>Phone:</b> {html_lib.escape(biz.phone or '')}</li>"
                 f"<li><b>Plan:</b> {SUBSCRIPTION_PLANS.get(plan, {}).get('label', plan)}</li>"
                 f"<li><b>Branches:</b> {biz.branch_count}</li>"
-                f"<li><b>Status:</b> ACTIVE (7-day free trial, expires {trial_expires})</li>"
+                f"<li><b>Status:</b> ACTIVE (1-day setup access, expires {trial_expires})</li>"
                 f"</ul>"
             ),
         )
@@ -3833,7 +3868,7 @@ async def admin_update_business(public_id: str, update: AdminBusinessUpdate, _: 
     if update.phone is not None:
         data['phone'] = update.phone
     if update.business_type is not None:
-        data['business_type'] = update.business_type
+        data['business_type'] = normalize_business_type(update.business_type)
     if update.logo_url is not None:
         data['logo_url'] = update.logo_url
     if update.subscription_expires_at is not None:
@@ -8852,6 +8887,8 @@ async def get_cl_wallet_pass(customer_public_id: str):
     return {
         "pass_data": {
             "business_name": business.get('name', ''),
+            "business_type": normalize_business_type(business.get('business_type')),
+            "business_category": business_category_meta(business.get('business_type')),
             "customer_name": customer.get('name', ''),
             "customer_id": customer_public_id,
             "has_active_loan": has_active_loan,
@@ -13301,6 +13338,24 @@ async def announcement_detail_page(business_public_id: str, announcement_id: str
     return HTMLResponse(html_out)
 
 # WALLET PASS (Google + Apple)
+
+@app.get("/api/v1/public/business/{public_id}/join-config")
+async def public_business_join_config(public_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    program = safe_get_loyalty_program(business.get('id')) or {}
+    category = business_category_meta(business.get('business_type'))
+    return {
+        'public_id': business.get('public_id'),
+        'name': business.get('name'),
+        'logo_url': business.get('logo_url'),
+        'business_type': normalize_business_type(business.get('business_type')),
+        'category': category,
+        'card_type': program.get('card_type', 'stamp'),
+        'primary_color': program.get('primary_color') or category['color'],
+        'card_name': program.get('card_name'),
+    }
 
 @app.get("/api/v1/customer/{customer_public_id}/wallet-pass")
 async def get_wallet_pass(customer_public_id: str):

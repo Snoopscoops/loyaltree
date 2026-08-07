@@ -3,6 +3,17 @@ import PlatformAnnouncementsAdmin from './PlatformAnnouncementsAdmin'
 
 const STATUS_OPTIONS = ['PENDING', 'ACTIVE', 'SUSPENDED', 'REJECTED']
 
+const BUSINESS_TYPE_OPTIONS=[
+  ['spa','🌿 Spa'],['salon','✂️ Salon / Barber'],['fitness','🏋️ Gym / Fitness'],['restaurant','🍽️ Restaurant / Food'],
+  ['coffee','☕ Coffee Shop / Café'],['retail','🛍️ Retail / Store'],['clinic','🩺 Clinic / Wellness'],['laundry','🧺 Laundry Shop'],
+  ['gas_station','⛽ Gasoline Station'],['car_wash','🚿 Car Wash'],['pharmacy','💊 Pharmacy'],['bakery','🥐 Bakery'],['hotel','🏨 Hotel / Resort'],
+  ['other','🏪 Other Business'],['car_lending','🚗 Car Lending / Showroom'],['cockpit','🏆 Cockpit Arena']
+]
+const businessTypeLabel=v=>BUSINESS_TYPE_OPTIONS.find(([k])=>k===v)?.[1]||'🏪 Other Business'
+const kitStatusLabel=s=>({requested:'Requested',paid:'Paid',preparing:'Preparing',ready_to_ship:'Ready to ship',shipped:'Shipped',delivered:'Delivered',cancelled:'Cancelled'})[String(s||'').toLowerCase()]||'Not requested'
+const kitStatusStyle=s=>({requested:{background:'#fff7ed',color:'#9a3412'},paid:{background:'#ecfdf5',color:'#166534'},preparing:{background:'#fefce8',color:'#854d0e'},ready_to_ship:{background:'#eff6ff',color:'#1d4ed8'},shipped:{background:'#eef2ff',color:'#4338ca'},delivered:{background:'#dcfce7',color:'#166534'},cancelled:{background:'#fef2f2',color:'#b91c1c'}}[String(s||'').toLowerCase()]||{background:'#f1f5f9',color:'#64748b'})
+
+
 function AdminDashboard({ API_BASE, user, onLogout }) {
   const token = user?.token
 
@@ -14,6 +25,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [planFilter, setPlanFilter] = useState('')
+  const [businessTypeFilter,setBusinessTypeFilter]=useState('')
   const [sortByAddress, setSortByAddress] = useState(false)
   const [selected, setSelected] = useState(null)
   const [detail, setDetail] = useState(null)
@@ -287,9 +299,12 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   }
 
   const filteredCount = businesses.length
+  const latestKitByBusiness=setupKitOrders.reduce((m,o)=>{if(o.business_public_id&&!m[o.business_public_id])m[o.business_public_id]=o;return m},{})
+  const businessKitStatus=b=>latestKitByBusiness[b.public_id]?.fulfillment_status||b.setup_kit_status||(b.setup_kit_requested?(b.setup_kit_paid?'paid':'requested'):'')
+  const categoryBusinesses=businessTypeFilter?businesses.filter(b=>b.business_type===businessTypeFilter):businesses
   const displayBusinesses = sortByAddress
-    ? [...businesses].sort((a, b) => (a.address || '\uffff').localeCompare(b.address || '\uffff'))
-    : businesses
+    ? [...categoryBusinesses].sort((a, b) => (a.address || '\uffff').localeCompare(b.address || '\uffff'))
+    : categoryBusinesses
 
   return (
     <div style={styles.container}>
@@ -554,6 +569,10 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
             <option value="">All plans</option>
             {Object.entries(plans).map(([key, p]) => <option key={key} value={key}>{p.label}{p.price_month != null ? ` (₱${p.price_month.toLocaleString()}/mo)` : ''}</option>)}
           </select>
+          <select value={businessTypeFilter} onChange={e=>setBusinessTypeFilter(e.target.value)} style={styles.filterSelect}>
+            <option value="">All business types</option>
+            {BUSINESS_TYPE_OPTIONS.map(([key,label])=><option key={key} value={key}>{label}</option>)}
+          </select>
           <span style={styles.resultCount}>{filteredCount} shown</span>
         </div>
 
@@ -564,6 +583,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
               <tr>
                 <th style={styles.th}>Business</th>
                 <th style={styles.th}>Location</th>
+                <th style={styles.th}>Category</th>
                 <th style={styles.th}>Status</th>
                 <th style={styles.th}>Plan</th>
                 <th style={styles.th}>Paid</th>
@@ -571,6 +591,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 <th style={styles.th}>Customers</th>
                 <th style={styles.th}>Staff</th>
                 <th style={styles.th}>Card</th>
+                <th style={styles.th}>PR Kit</th>
                 <th style={styles.th}>Activity (30d)</th>
                 <th style={styles.th}></th>
               </tr>
@@ -591,6 +612,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                   <td style={styles.td}>
                     {b.address ? <span style={styles.bizPhone}>{b.address}</span> : <span style={styles.resultCount}>—</span>}
                   </td>
+                  <td style={styles.td}><span style={styles.categoryBadge}>{businessTypeLabel(b.business_type)}</span></td>
                   <td style={styles.td}>
                     <select
                       value={b.status}
@@ -627,6 +649,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                       {b.card_type === 'points' ? '⭐ Points' : b.card_type === 'membership' ? '🪪 Membership' : b.card_type === 'vip' ? '👑 VIP' : b.card_type === 'multipass' ? '🎫 Multipass' : '🎟️ Stamp'}
                     </span>
                   </td>
+                  <td style={styles.td}><span style={{...styles.kitTableBadge,...kitStatusStyle(businessKitStatus(b))}}>{businessKitStatus(b)==='delivered'?'✓ ':''}{kitStatusLabel(businessKitStatus(b))}</span></td>
                   <td style={styles.td}>
                     {b.stamps_30d}
                     <div style={styles.rowPriceHint}>
@@ -646,7 +669,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 </tr>
               ))}
               {displayBusinesses.length === 0 && (
-                <tr><td style={styles.td} colSpan={11}>No businesses match these filters.</td></tr>
+                <tr><td style={styles.td} colSpan={13}>No businesses match these filters.</td></tr>
               )}
             </tbody>
           </table>
@@ -710,13 +733,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                     onChange={e => updateBusiness(selected.public_id, { business_type: e.target.value })}
                     style={styles.dateInput}
                   >
-                    <option value="spa">Spa</option>
-                    <option value="salon">Salon</option>
-                    <option value="fitness">Fitness</option>
-                    <option value="restaurant">Restaurant</option>
-                    <option value="car_lending">Car Lending / Showroom</option>
-                    <option value="cockpit">Cockpit Arena</option>
-                    <option value="other">Other</option>
+                    {BUSINESS_TYPE_OPTIONS.map(([key,label])=><option key={key} value={key}>{label}</option>)}
                   </select>
                 </div>
                 <div style={styles.detailRow}>
@@ -904,13 +921,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 onChange={e => setCreateForm({ ...createForm, address: e.target.value })} />
               <select style={styles.select} value={createForm.business_type}
                 onChange={e => setCreateForm({ ...createForm, business_type: e.target.value })}>
-                <option value="car_lending">Car Lending / Showroom</option>
-                <option value="cockpit">Cockpit Arena</option>
-                <option value="spa">Spa</option>
-                <option value="salon">Salon</option>
-                <option value="fitness">Fitness</option>
-                <option value="restaurant">Restaurant</option>
-                <option value="other">Other</option>
+                {BUSINESS_TYPE_OPTIONS.map(([key,label])=><option key={key} value={key}>{label}</option>)}
               </select>
               <input style={styles.input} type="number" min="1" placeholder="Branch count" value={createForm.branch_count}
                 onChange={e => setCreateForm({ ...createForm, branch_count: e.target.value })} />
@@ -1199,6 +1210,8 @@ const styles = {
   kitQr:{width:92,height:92},
   kitDownload:{color:'#0d9488',fontSize:11,fontWeight:800,textDecoration:'none'},
   kitAddress:{display:'flex',flexDirection:'column',gap:3,background:'#f0fdfa',borderRadius:10,padding:11,fontSize:12,lineHeight:1.45},
+  categoryBadge:{display:'inline-flex',padding:'5px 8px',borderRadius:999,background:'#f8fafc',border:'1px solid #e2e8f0',fontSize:10.5,fontWeight:800,color:'#475569',whiteSpace:'nowrap'},
+  kitTableBadge:{display:'inline-flex',padding:'5px 8px',borderRadius:999,fontSize:10.5,fontWeight:800,whiteSpace:'nowrap'},
 }
 
 export default AdminDashboard

@@ -102,6 +102,17 @@ const STEPS = [
   { n: '3', title: 'Stamp at checkout', body: 'Your staff adds a stamp with their PIN. The reward unlocks itself.' },
 ]
 
+const INDUSTRIES=[
+  {icon:'☕',title:'Coffee & Food',body:'Cafés, bakeries, restaurants and food businesses.',cards:'Stamps · Points · VIP'},
+  {icon:'🏋️',title:'Fitness & Wellness',body:'Gyms, fitness studios, spas and wellness businesses.',cards:'Membership · Multipass · VIP'},
+  {icon:'✂️',title:'Beauty & Personal Care',body:'Salons, barbers and personal-care businesses.',cards:'VIP · Stamps · Points'},
+  {icon:'🧺',title:'Laundry',body:'Reward repeat wash, dry and fold customers.',cards:'Stamps · Points · Membership'},
+  {icon:'⛽',title:'Gasoline Stations',body:'Reward frequent motorists and build stronger fleet loyalty.',cards:'Points · VIP · Stamps'},
+  {icon:'🚿',title:'Automotive Services',body:'Car washes and repeat-service automotive businesses.',cards:'Stamps · Multipass · Points'},
+  {icon:'🩺',title:'Clinics & Health',body:'Recurring wellness, clinic and pharmacy customers.',cards:'Membership · Points · Multipass'},
+  {icon:'🛍️',title:'Retail',body:'Stores and merchants that want spend-based loyalty.',cards:'Points · VIP · Stamps'},
+]
+
 const CARD_TYPES = [
   { key: 'stamps', icon: '🎟️', title: 'Stamps', available: true },
   { key: 'coupons', icon: '✂️', title: 'Coupons', available: true },
@@ -544,6 +555,20 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
           .lt-card-available, .lt-card-coming { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
         }
       `}</style>
+      <section style={{...styles.section,background:'#f8fafc'}}>
+        <div style={styles.industryHeader}>
+          <span style={styles.partnerEyebrow}>Built for everyday businesses</span>
+          <h2 style={styles.h2}>Choose your industry. LoyaltyTree adapts.</h2>
+          <p style={styles.cardTypesIntro}>Laundry shops and gasoline stations are now included alongside food, fitness, beauty, health, retail and automotive services.</p>
+        </div>
+        <div style={styles.industryGrid}>
+          {INDUSTRIES.map(item=><div key={item.title} style={styles.industryCard}>
+            <div style={styles.industryIcon}>{item.icon}</div><div style={styles.industryTitle}>{item.title}</div>
+            <p style={styles.industryBody}>{item.body}</p><div style={styles.industryCards}>{item.cards}</div>
+          </div>)}
+        </div>
+      </section>
+
       <section style={styles.section}>
         <h2 style={styles.h2}>Choose your card type</h2>
         <p style={styles.cardTypesIntro}>Choose the card that fits your business: rewards, subscriptions, session packs, or VIP tiers.</p>
@@ -802,6 +827,11 @@ const styles = {
   pointsUnit: { fontSize: 14, fontWeight: 600, color: '#94a3b8' },
   pointsToNext: { fontSize: 12.5, color: '#64748b', marginTop: 4 },
   section: { padding: '64px 32px', maxWidth: 1100, margin: '0 auto' },
+  industryHeader:{maxWidth:720,margin:'0 auto 28px',textAlign:'center'},
+  industryGrid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:14},
+  industryCard:{background:'#fff',border:'1px solid #e2e8f0',borderRadius:16,padding:18,boxShadow:'0 8px 20px rgba(15,23,42,.04)'},
+  industryIcon:{fontSize:28,marginBottom:10},industryTitle:{fontSize:15,fontWeight:800,color:'#0f172a'},
+  industryBody:{fontSize:12.5,lineHeight:1.5,color:'#64748b',minHeight:56},industryCards:{fontSize:11,fontWeight:800,color:'#0d9488'},
 
   // Marketing / Retention / Zero Waste pillars
   pillarSection: {
