@@ -29,11 +29,12 @@ function Signup({ API_BASE }) {
     business_type: 'spa',
     branch_count: 1,
     plan: 'starter',
+    setup_kit_requested: false,
   })
   const [plans, setPlans] = useState(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  // 'form' -> 'choice' (account is live on a free trial - pay now or wait) -> 'payment' (optional, pay early) -> 'activated'
+  // 'form' -> 'choice' (one-day setup access is live) -> 'payment' -> 'activated'
   const [step, setStep] = useState('form')
   const [businessSlug, setBusinessSlug] = useState('')
   const [trialExpiresAt, setTrialExpiresAt] = useState('')
@@ -62,7 +63,11 @@ function Signup({ API_BASE }) {
       const res = await fetch(`${API_BASE}/api/v1/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...form, branch_count: branchCount })
+        body: JSON.stringify({
+          ...form,
+          branch_count: branchCount,
+          setup_kit_requested: Boolean(form.setup_kit_requested),
+        })
       })
       const data = await res.json()
       if (res.ok) {
@@ -98,21 +103,28 @@ function Signup({ API_BASE }) {
       <div style={styles.page}>
         <div style={styles.card}>
           <div style={{ fontSize: 56, textAlign: 'center', marginBottom: 16 }}>🎉</div>
-          <h1 style={styles.title}>Your Free Trial Has Started!</h1>
+          <h1 style={styles.title}>Your Setup Access Is Ready</h1>
           <p style={styles.subtitle}>
-            Your account is live right now - no payment needed yet.
-            {trialExpiresAt && <> Free access runs through <strong>{trialExpiresAt}</strong>.</>}
+            Your account is active for one day so you can set up your card, branding, staff, and QR code.
+            {trialExpiresAt && <> Setup access ends on <strong>{trialExpiresAt}</strong>.</>}
           </p>
 
+          {form.setup_kit_requested && (
+            <div style={styles.kitConfirmation}>
+              <strong>Physical QR / PR Kit requested — ₱150</strong>
+              <span>Includes a Sintra board QR display. Delivery is expected within 3–5 days after payment confirmation.</span>
+            </div>
+          )}
+
           <button type="button" onClick={() => navigate('/login')} style={styles.button}>
-            Start Using My Free Trial
+            Continue to 1-Day Setup
           </button>
           <button type="button" onClick={() => setStep('payment')} style={styles.secondaryButton}>
-            Pay Now Instead
+            Pay and Activate Plan
           </button>
 
           <p style={styles.footer}>
-            You can always pay later from your dashboard before the trial ends.
+            Complete payment within the setup period to keep the account active without interruption.
           </p>
         </div>
       </div>
@@ -126,7 +138,9 @@ function Signup({ API_BASE }) {
           API_BASE={API_BASE}
           businessSlug={businessSlug}
           title="Pay Now"
-          subtitle="Your account is already live on a free trial - paying now just locks in your plan and skips any interruption once the trial ends."
+          subtitle={form.setup_kit_requested
+            ? "Your total includes your selected monthly plan plus the ₱150 Sintra board QR / PR Kit. Delivery is expected within 3–5 days after payment confirmation."
+            : "Pay now to activate your selected monthly plan before the one-day setup access ends."}
           successMessage="🎉 Payment received - you're all paid up!"
           onPaid={() => setStep('activated')}
         />
@@ -174,8 +188,8 @@ function Signup({ API_BASE }) {
                 <option value="salon">Salon</option>
                 <option value="fitness">Fitness</option>
                 <option value="restaurant">Restaurant</option>
-                <option value="car_lending">Car Lending / Showroom</option>
-                <option value="cockpit">Cockpit Arena</option>
+                <option value="retail">Retail</option>
+                <option value="clinic">Clinic / Wellness</option>
                 <option value="other">Other</option>
               </select>
             </div>
@@ -191,6 +205,21 @@ function Signup({ API_BASE }) {
                 style={styles.input}
               />
             </div>
+          </div>
+
+          <div style={styles.kitCard}>
+            <label style={styles.kitLabel}>
+              <input
+                type="checkbox"
+                checked={form.setup_kit_requested}
+                onChange={e => setForm({...form, setup_kit_requested: e.target.checked})}
+                style={styles.checkbox}
+              />
+              <span style={styles.kitCopy}>
+                <strong>Physical QR / PR Kit — ₱150 one-time</strong>
+                <span>Sintra board QR display delivered to your business doorstep within 3–5 days after payment confirmation.</span>
+              </span>
+            </label>
           </div>
 
           <div style={styles.inputGroup}>
@@ -366,6 +395,45 @@ const styles = {
     fontWeight: 600,
     cursor: 'pointer',
     marginTop: 8,
+  },
+  kitCard: {
+    border: '1.5px solid #99f6e4',
+    background: '#f0fdfa',
+    borderRadius: 12,
+    padding: 14,
+  },
+  kitLabel: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: 10,
+    cursor: 'pointer',
+  },
+  checkbox: {
+    width: 18,
+    height: 18,
+    marginTop: 2,
+    accentColor: '#0d9488',
+  },
+  kitCopy: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+    color: '#134e4a',
+    fontSize: 13,
+    lineHeight: 1.45,
+  },
+  kitConfirmation: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+    padding: 14,
+    marginBottom: 16,
+    borderRadius: 12,
+    background: '#f0fdfa',
+    border: '1px solid #99f6e4',
+    color: '#134e4a',
+    fontSize: 13,
+    lineHeight: 1.45,
   },
   secondaryButton: {
     width: '100%',

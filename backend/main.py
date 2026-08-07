@@ -89,7 +89,7 @@ CLOUDINARY_API_KEY = os.getenv('CLOUDINARY_API_KEY', '')
 CLOUDINARY_API_SECRET = os.getenv('CLOUDINARY_API_SECRET', '')
 CLOUDINARY_UPLOAD_PRESET = os.getenv('CLOUDINARY_UPLOAD_PRESET', 'LoyaltyTree_Images')
 SUBSCRIPTION_PERIOD_DAYS = 30  # how long a successful payment extends access for
-TRIAL_PERIOD_DAYS = 7  # free trial length granted automatically on signup, no payment/approval needed
+TRIAL_PERIOD_DAYS = 1  # one-day setup access granted automatically on signup
 
 # Subscription expiry reminder emails, sent via Resend (resend.com). Get
 # RESEND_API_KEY from Resend's dashboard once you've verified a sending
@@ -470,6 +470,7 @@ class BusinessCreate(BaseModel):
     address: Optional[str] = None  # business's main address - lets super admin organize businesses by location
     branch_count: int = Field(default=1, ge=1, le=50)
     plan: Optional[str] = None  # explicit plan choice; if omitted, derived from branch_count
+    setup_kit_requested: bool = False
 
 class LoginRequest(BaseModel):
     email: str
@@ -3308,7 +3309,7 @@ async def register(biz: BusinessCreate):
     # Some business types are invite-only / admin-provisioned (specialized
     # dashboards set up by us, not self-serve) - block them here rather than
     # just hiding the option in the UI, since this endpoint is public.
-    INVITE_ONLY_BUSINESS_TYPES = {'car_lending'}
+    INVITE_ONLY_BUSINESS_TYPES = {'car_lending', 'cockpit'}
     if biz.business_type in INVITE_ONLY_BUSINESS_TYPES:
         raise HTTPException(
             status_code=403,
@@ -3344,13 +3345,13 @@ async def register(biz: BusinessCreate):
         'business_type': biz.business_type,
         'address': biz.address,
         'plan': plan,
-        # Live immediately on a free trial - no manual admin approval or
-        # payment needed to start using the app. subscription_expires_at
-        # doubles as the trial end date; the existing reminder cron already
-        # emails the owner as this gets close, and a real PayMongo payment
-        # later just extends it by SUBSCRIPTION_PERIOD_DAYS as normal.
+        # One-day setup access lets the owner configure the card before
+        # payment. A successful subscription payment extends access normally.
         'status': 'ACTIVE',
         'subscription_expires_at': trial_expires,
+        'setup_kit_requested': bool(biz.setup_kit_requested),
+        'setup_kit_paid': False,
+        'setup_kit_status': 'requested' if biz.setup_kit_requested else None,
         'created_at': datetime.utcnow().isoformat(),
     }
 
@@ -3976,9 +3977,14 @@ async def create_subscription_checkout(public_id: str):
         branch_count = 1
 
     plan = business.get('plan') or 'starter'
-    price = get_price_for_plan(plan, branch_count)
+    subscription_price = get_price_for_plan(plan, branch_count)
+    kit_due = bool(business.get('setup_kit_requested')) and not bool(business.get('setup_kit_paid'))
+    setup_kit_price = 150 if kit_due else 0
+    price = subscription_price + setup_kit_price
     plan_label = SUBSCRIPTION_PLANS.get(plan, {}).get('label', plan)
     description = f"LoyaltyTree {plan_label} subscription - {business.get('name', '')}"
+    if kit_due:
+        description += " + Sintra Board QR / PR Kit"
 
     checkout = create_qrph_checkout(
         amount_php=price,
@@ -3986,7 +3992,11 @@ async def create_subscription_checkout(public_id: str):
         billing_name=business.get('name') or 'Business Owner',
         billing_email=business.get('email') or '',
         billing_phone=business.get('phone'),
-        metadata={'business_public_id': public_id, 'plan': plan},
+        metadata={
+            'business_public_id': public_id,
+            'plan': plan,
+            'setup_kit_included': 'true' if kit_due else 'false',
+        },
     )
 
     payment_public_id = generate_public_id()
@@ -4126,6 +4136,11 @@ async def paymongo_webhook(request: Request):
                 "last_paid_at": now.date().isoformat(),
                 "subscription_expires_at": new_expiry,
             }
+            if str(metadata.get('setup_kit_included', '')).lower() == 'true':
+                business_update.update({
+                    'setup_kit_paid': True,
+                    'setup_kit_status': 'paid',
+                })
             # First payment activates the account automatically - no manual
             # admin approval needed. Only PENDING is auto-promoted; if an
             # admin has REJECTED or SUSPENDED this business, a stray/late
