@@ -20,6 +20,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
     reward_expiry_days: 30,
     program_logo_url: '',
     hero_image_url: '',
+    wallet_style: 'modern',
+    wallet_secondary_color: '#14b8a6',
+    wallet_show_background: true,
     description: '',
     google_review_url: '',
     // Points card only
@@ -91,6 +94,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
           reward_expiry_days: data.reward_expiry_days || 30,
           program_logo_url: data.program_logo_url || '',
           hero_image_url: data.hero_image_url || '',
+          wallet_style: data.wallet_style || 'modern',
+          wallet_secondary_color: data.wallet_secondary_color || '#14b8a6',
+          wallet_show_background: data.wallet_show_background !== false,
           description: data.description || '',
           google_review_url: data.google_review_url || '',
           points_per_amount: data.points_per_amount ?? 10,
@@ -178,6 +184,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
     reward_expiry_days: Number(form.reward_expiry_days) || 30,
     program_logo_url: form.program_logo_url || null,
     hero_image_url: form.hero_image_url || null,
+    wallet_style: form.wallet_style || 'modern',
+    wallet_secondary_color: form.wallet_secondary_color || null,
+    wallet_show_background: form.wallet_show_background !== false,
     description: form.description || '',
     google_review_url: form.google_review_url || null,
     points_per_amount: Number(form.points_per_amount) || 0,
@@ -875,6 +884,75 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
             <p style={styles.hint}>Wide banner image shown at the top of the Google Wallet pass. Optional. Paste a URL or upload a photo.</p>
           </div>
 
+          <div style={styles.wallet20Box}>
+            <div style={styles.wallet20TitleRow}>
+              <div>
+                <div style={styles.wallet20Eyebrow}>LoyaltyTree Wallet 2.0</div>
+                <h3 style={styles.wallet20Title}>Wallet appearance</h3>
+              </div>
+              <span style={styles.wallet20Badge}>Apple + Google</span>
+            </div>
+
+            <div style={styles.walletStyleGrid}>
+              {[
+                ['modern','Modern'],
+                ['premium','Premium'],
+                ['minimal','Minimal'],
+                ['dark','Dark'],
+              ].map(([value,label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => update('wallet_style', value)}
+                  style={{...styles.walletStyleBtn,...(form.wallet_style===value?styles.walletStyleBtnActive:{})}}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <div style={styles.row}>
+              <div style={{...styles.fieldGroup,flex:1}}>
+                <label style={styles.label}>Accent / secondary color</label>
+                <div style={styles.colorRow}>
+                  <input type="color" style={styles.colorSwatch} value={form.wallet_secondary_color || '#14b8a6'} onChange={e=>update('wallet_secondary_color',e.target.value)}/>
+                  <input style={{...styles.input,flex:1}} value={form.wallet_secondary_color || ''} onChange={e=>update('wallet_secondary_color',e.target.value)}/>
+                </div>
+              </div>
+              <label style={styles.walletToggle}>
+                <input type="checkbox" checked={form.wallet_show_background !== false} onChange={e=>update('wallet_show_background',e.target.checked)}/>
+                <span><strong>Show background / hero</strong><small>Use your uploaded photo, or a generated Wallet 2.0 banner.</small></span>
+              </label>
+            </div>
+
+            <div style={{
+              ...styles.wallet20Preview,
+              background: form.wallet_style==='dark'
+                ? '#111827'
+                : form.wallet_style==='premium'
+                ? `linear-gradient(135deg,#050505 0%,${form.primary_color} 135%)`
+                : `linear-gradient(135deg,${form.primary_color} 0%,${form.wallet_secondary_color || '#14b8a6'} 100%)`,
+            }}>
+              {form.wallet_show_background !== false && form.hero_image_url && <img src={form.hero_image_url} alt="" style={styles.wallet20PreviewBg}/>}
+              <div style={styles.wallet20PreviewShade}/>
+              <div style={styles.wallet20PreviewTop}>
+                <div style={styles.wallet20PreviewBrand}>
+                  {form.program_logo_url ? <img src={form.program_logo_url} alt="" style={styles.wallet20PreviewLogo}/> : <span style={styles.wallet20PreviewLogoFallback}>🌳</span>}
+                  <div><b>{form.card_name || 'Your Business Card'}</b><small>{form.card_type.toUpperCase()}</small></div>
+                </div>
+                <span style={styles.wallet20PreviewMenu}>•••</span>
+              </div>
+              <div style={styles.wallet20PreviewBottom}>
+                <div><small>MEMBER</small><strong>John Customer</strong></div>
+                <div style={styles.wallet20PreviewMetric}>
+                  <small>{form.card_type==='points'?'POINTS':form.card_type==='multipass'?'SESSIONS LEFT':form.card_type==='membership'?'STATUS':form.card_type==='vip'?'VIP TIER':'STAMPS'}</small>
+                  <strong>{form.card_type==='points'?'2,850':form.card_type==='multipass'?'5 / 10':form.card_type==='membership'?'ACTIVE':form.card_type==='vip'?'GOLD':'5 / 8'}</strong>
+                </div>
+              </div>
+            </div>
+            <p style={styles.hint}>Google and Apple control the native card layout, but Wallet 2.0 applies your logo, palette, hero image, cleaner labels, and richer tapped details automatically.</p>
+          </div>
+
           <div style={styles.fieldGroup}>
             <label style={styles.label}>Google review link</label>
             <input
@@ -1353,6 +1431,26 @@ const styles = {
     color: '#94a3b8',
     textAlign: 'center',
   },
+  wallet20Box:{border:'1px solid #dbeafe',background:'#f8fbff',borderRadius:16,padding:16,marginBottom:18},
+  wallet20TitleRow:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12,marginBottom:14},
+  wallet20Eyebrow:{fontSize:10.5,fontWeight:900,letterSpacing:.9,textTransform:'uppercase',color:'#2563eb'},
+  wallet20Title:{margin:'3px 0 0',fontSize:17,color:'#0f172a'},
+  wallet20Badge:{padding:'5px 9px',borderRadius:999,background:'#dbeafe',color:'#1d4ed8',fontSize:10,fontWeight:800},
+  walletStyleGrid:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:14},
+  walletStyleBtn:{padding:'9px 8px',border:'1px solid #cbd5e1',borderRadius:9,background:'#fff',color:'#475569',fontWeight:700,cursor:'pointer'},
+  walletStyleBtnActive:{borderColor:'#2563eb',background:'#eff6ff',color:'#1d4ed8',boxShadow:'0 0 0 2px rgba(37,99,235,.08)'},
+  walletToggle:{display:'flex',alignItems:'flex-start',gap:9,flex:1,minWidth:220,padding:'10px 0',color:'#334155',fontSize:12,cursor:'pointer'},
+  wallet20Preview:{height:220,borderRadius:18,overflow:'hidden',position:'relative',padding:18,color:'#fff',marginTop:8,boxShadow:'0 18px 40px rgba(15,23,42,.18)'},
+  wallet20PreviewBg:{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover'},
+  wallet20PreviewShade:{position:'absolute',inset:0,background:'linear-gradient(180deg,rgba(0,0,0,.10),rgba(0,0,0,.58))'},
+  wallet20PreviewTop:{position:'relative',zIndex:2,display:'flex',justifyContent:'space-between',alignItems:'flex-start'},
+  wallet20PreviewBrand:{display:'flex',gap:10,alignItems:'center'},
+  wallet20PreviewLogo:{width:40,height:40,borderRadius:10,objectFit:'cover',background:'#fff'},
+  wallet20PreviewLogoFallback:{width:40,height:40,borderRadius:10,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(255,255,255,.16)'},
+  wallet20PreviewMenu:{fontWeight:900,letterSpacing:2},
+  wallet20PreviewBottom:{position:'absolute',zIndex:2,left:18,right:18,bottom:18,display:'flex',justifyContent:'space-between',alignItems:'flex-end',gap:16},
+  wallet20PreviewBottom:{position:'absolute',zIndex:2,left:18,right:18,bottom:18,display:'flex',justifyContent:'space-between',alignItems:'flex-end',gap:16},
+  wallet20PreviewMetric:{textAlign:'right'},
   walletStatus: {
     display: 'flex',
     justifyContent: 'space-between',

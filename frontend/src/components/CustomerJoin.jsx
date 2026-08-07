@@ -104,6 +104,19 @@ function CustomerJoin({ API_BASE }) {
             <p style={styles.infoValue}>Show this QR code on every visit</p>
           </div>
 
+          <div style={{
+            ...styles.walletPreview,
+            background: businessInfo?.primary_color || '#0d9488',
+          }}>
+            {businessInfo?.logo_url && <img src={businessInfo.logo_url} alt="" style={styles.walletPreviewLogo}/>}
+            <div style={styles.walletPreviewMeta}>
+              <small>{businessInfo?.category?.label || 'LoyaltyTree'}</small>
+              <strong>{businessInfo?.name || 'Your loyalty card'}</strong>
+              <span>{businessInfo?.card_name || `${String(businessInfo?.card_type || 'stamp').toUpperCase()} CARD`}</span>
+            </div>
+            <div style={styles.walletPreviewMember}>Your Wallet 2.0 card is ready</div>
+          </div>
+
           <a href={appleWalletUrl} style={{ ...styles.walletBtn, ...styles.appleBtn }}>
             Add to Apple Wallet
           </a>
@@ -363,6 +376,10 @@ const styles = {
     lineHeight: 1.6,
     marginTop: 16,
   },
+  walletPreview:{position:'relative',overflow:'hidden',borderRadius:18,padding:18,minHeight:150,color:'#fff',textAlign:'left',marginBottom:18,boxShadow:'0 16px 35px rgba(15,23,42,.18)'},
+  walletPreviewLogo:{width:44,height:44,borderRadius:12,objectFit:'cover',background:'#fff',marginBottom:18},
+  walletPreviewMeta:{display:'flex',flexDirection:'column',gap:3},
+  walletPreviewMember:{position:'absolute',right:16,bottom:15,fontSize:11,fontWeight:800,opacity:.8},
   walletBtn: {
     display: 'block',
     boxSizing: 'border-box',

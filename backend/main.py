@@ -914,6 +914,10 @@ class LoyaltyConfig(BaseModel):
     program_logo_url: Optional[str] = None
     hero_image_url: Optional[str] = None
     card_name: Optional[str] = None
+    # --- LoyaltyTree Wallet 2.0 ---
+    wallet_style: Literal['modern', 'premium', 'minimal', 'dark'] = 'modern'
+    wallet_secondary_color: Optional[str] = None
+    wallet_show_background: bool = True
     description: Optional[str] = Field(default=None, max_length=140)  # short blurb shown below the card on the join page / wallet pass - also doubles as the multipass card's "what these sessions are for" description
     google_review_url: Optional[str] = None  # Growth/Pro only - link prompted after a redeemed reward
     # --- Points card only ---
@@ -1637,6 +1641,10 @@ def generate_personalized_hero_image_bytes(
     vip_tier_name: Optional[str] = None,
     membership_status: Optional[str] = None,
     membership_expires_at: Optional[str] = None,
+    secondary_color: Optional[str] = None,
+    wallet_style: str = 'modern',
+    business_name: Optional[str] = None,
+    card_label: Optional[str] = None,
 ) -> bytes:
     """Same gradient as generate_hero_image_bytes, but with a bottom banner
     burned in showing the reward/progress and short description - the
@@ -1647,8 +1655,36 @@ def generate_personalized_hero_image_bytes(
     instead of a reward name (points cards have no single fixed reward -
     see points_prizes on loyalty_programs) and the progress line reports
     the points balance instead of a stamp count."""
+    # Wallet 2.0 branded hero. Keep the image static (Google requirement)
+    # but make it look like a deliberate digital card instead of a plain gradient.
     img = _render_hero(primary_color).convert('RGBA')
     from PIL import ImageDraw, ImageFont
+
+    if secondary_color:
+        overlay = Image.new('RGBA', HERO_SIZE, (*_hex_to_rgb(secondary_color), 0))
+        overlay_px = overlay.load()
+        for y in range(HERO_SIZE[1]):
+            for x in range(HERO_SIZE[0]):
+                # Soft accent glow from top-right.
+                strength = max(0.0, 1.0 - (((HERO_SIZE[0]-x) + y) / (HERO_SIZE[0] + HERO_SIZE[1])))
+                overlay_px[x, y] = (*_hex_to_rgb(secondary_color), int(95 * strength))
+        img = Image.alpha_composite(img, overlay)
+
+    draw = ImageDraw.Draw(img)
+    # Subtle premium framing and large translucent LoyaltyTree leaf circles.
+    if wallet_style in ('premium', 'dark'):
+        draw.rounded_rectangle((18,18,HERO_SIZE[0]-18,HERO_SIZE[1]-18), radius=34, outline=(255,255,255,45), width=2)
+    for cx, cy, radius, alpha in [(890,55,120,28),(810,20,64,22),(970,160,76,18)]:
+        draw.ellipse((cx-radius,cy-radius,cx+radius,cy+radius), fill=(255,255,255,alpha))
+
+    if business_name:
+        font_brand = ImageFont.load_default(size=20)
+        draw.text((40, 28), str(business_name)[:38], font=font_brand, fill=(255,255,255,225))
+    if card_label:
+        font_label = ImageFont.load_default(size=16)
+        label = str(card_label).upper()
+        bbox = draw.textbbox((0,0), label, font=font_label)
+        draw.text((HERO_SIZE[0]-40-(bbox[2]-bbox[0]), 30), label, font=font_label, fill=(255,255,255,185))
 
     scrim_height = 150
     scrim = Image.new('RGBA', (HERO_SIZE[0], scrim_height), (0, 0, 0, 0))
@@ -1674,7 +1710,7 @@ def generate_personalized_hero_image_bytes(
         progress_line = (f'{sessions_remaining} of {sessions_total} sessions left' if sessions_remaining > 0
                          else 'All sessions used')
     elif card_type == 'vip':
-        reward_line = f'{vip_tier_name or "VIP"} VIP'
+        reward_line = str(vip_tier_name or 'VIP')
         progress_line = f'{vip_points} VIP points'
     elif card_type == 'membership':
         reward_line = f'Membership · {membership_status.upper() if membership_status else "INACTIVE"}'
@@ -1707,6 +1743,91 @@ def generate_personalized_hero_image_bytes(
     return _hero_to_png(img.convert('RGB'))
 
 # Google Wallet Helpers
+WALLET_CARD_LABELS = {
+    'stamp': 'STAMP CARD',
+    'points': 'POINTS CARD',
+    'membership': 'MEMBERSHIP',
+    'multipass': 'MULTIPASS',
+    'vip': 'VIP MEMBER',
+}
+
+def _normalize_hex_color(value: Optional[str], fallback: str = '#0d9488') -> str:
+    value = str(value or '').strip()
+    if re.fullmatch(r'#[0-9a-fA-F]{6}', value):
+        return value.lower()
+    if re.fullmatch(r'[0-9a-fA-F]{6}', value):
+        return f'#{value.lower()}'
+    return fallback
+
+def _mix_hex(color_a: str, color_b: str, ratio: float) -> str:
+    a = _hex_to_rgb(_normalize_hex_color(color_a))
+    b = _hex_to_rgb(_normalize_hex_color(color_b))
+    ratio = max(0.0, min(1.0, ratio))
+    rgb = tuple(round(a[i] * (1-ratio) + b[i] * ratio) for i in range(3))
+    return '#%02x%02x%02x' % rgb
+
+def wallet_20_design(business: dict, program: Optional[dict]) -> dict:
+    program = program or {}
+    category = business_category_meta(business.get('business_type'))
+    card_type = program.get('card_type') or 'stamp'
+    style = str(program.get('wallet_style') or 'modern').lower()
+    if style not in ('modern', 'premium', 'minimal', 'dark'):
+        style = 'modern'
+
+    primary = _normalize_hex_color(program.get('primary_color'), category.get('color') or '#0d9488')
+    secondary = _normalize_hex_color(
+        program.get('wallet_secondary_color'),
+        _mix_hex(primary, '#14b8a6', .42)
+    )
+
+    if style == 'dark':
+        background = '#111827'
+        secondary = _mix_hex(primary, '#111827', .30)
+    elif style == 'premium':
+        background = _mix_hex(primary, '#050505', .58)
+        secondary = _mix_hex(primary, '#d4af37', .28)
+    elif style == 'minimal':
+        background = _mix_hex(primary, '#ffffff', .12)
+        secondary = _mix_hex(primary, '#ffffff', .35)
+    else:
+        background = primary
+
+    return {
+        'version': '2.0',
+        'style': style,
+        'primary': primary,
+        'secondary': secondary,
+        'background': background,
+        'show_background': program.get('wallet_show_background') is not False,
+        'card_type': card_type,
+        'card_label': WALLET_CARD_LABELS.get(card_type, 'LOYALTY CARD'),
+        'category': category,
+    }
+
+def wallet_20_program_name(business: dict, program: Optional[dict]) -> str:
+    design = wallet_20_design(business, program)
+    biz_name = str(business.get('name') or 'LoyaltyTree')
+    # Keep Google Wallet's top line useful and prevent values such as
+    # "VIP VIP" when the owner happened to name the card "vip".
+    return f"{biz_name} · {design['card_label'].title()}"
+
+def wallet_20_short_status(customer: dict, business: dict, program: dict) -> tuple:
+    card_type = (program or {}).get('card_type', 'stamp')
+    if card_type == 'points':
+        return 'POINTS', f"{int(customer.get('points_balance') or 0):,}"
+    if card_type == 'multipass':
+        remaining = int(customer.get('multipass_sessions_remaining') or 0)
+        total = int(customer.get('multipass_total_sessions') or (program or {}).get('multipass_session_count') or 0)
+        return 'SESSIONS LEFT', f'{remaining} / {total}'
+    if card_type == 'membership':
+        return 'STATUS', membership_effective_status(customer).upper()
+    if card_type == 'vip':
+        tier = get_vip_tier(customer, program or {})
+        return 'VIP TIER', str(tier.get('name') or 'VIP').upper()
+    goal = int((program or {}).get('stamp_goal') or 8)
+    stamps = int(customer.get('stamp_count') or 0)
+    return 'STAMPS', f'{stamps} / {goal}'
+
 def get_google_wallet_credentials():
     creds_json = os.getenv('GOOGLE_WALLET_CREDENTIALS', '')
     if not creds_json:
@@ -1782,15 +1903,15 @@ def build_loyalty_class(business: dict, program: dict, review_status: str = 'UND
     if not class_id:
         class_id = f'{GOOGLE_WALLET_ISSUER_ID}.{biz_public_id}'
 
-    category = business_category_meta(business.get('business_type'))
-    configured_color = program.get('primary_color') if program else None
-    primary_color = configured_color or category['color']
+    design = wallet_20_design(business, program)
+    category = design['category']
+    primary_color = design['background']
     reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
     card_type = program.get('card_type', 'stamp') if program else 'stamp'
     card_name = program.get('card_name') if program else None
     description = program.get('description') if program else None
     biz_name = business.get('name', 'Loyalty')
-    program_name = card_name if card_name else f'{biz_name} Rewards'
+    program_name = wallet_20_program_name(business, program)
 
     if card_type == 'multipass':
         session_count = program.get('multipass_session_count', 12) if program else 12
@@ -1808,10 +1929,16 @@ def build_loyalty_class(business: dict, program: dict, review_status: str = 'UND
         'reviewStatus': review_status,
         'hexBackgroundColor': primary_color if primary_color.startswith('#') else f'#{primary_color}',
         'textModulesData': [
-            {'header': 'Business Type', 'body': f"{category['icon']} {category['label']}"},
-            {'header': 'Reward', 'body': reward_module_body},
-            {'header': 'About', 'body': description if description else 'Collect rewards and keep your card in your phone wallet'}
-        ]
+            {'header': 'CARD', 'body': design['card_label']},
+            {'header': 'BUSINESS TYPE', 'body': f"{category['icon']} {category['label']}"},
+            {'header': 'BENEFIT / REWARD', 'body': reward_module_body},
+            {'header': 'ABOUT', 'body': description if description else f"{biz_name} digital loyalty card powered by LoyaltyTree"}
+        ],
+        'linksModuleData': {
+            'uris': [
+                {'uri': f"{BASE_URL}/join/{biz_public_id}", 'description': 'Join / Share Card'}
+            ]
+        }
     }
 
     logo_url = business.get('logo_url')
@@ -1825,8 +1952,8 @@ def build_loyalty_class(business: dict, program: dict, review_status: str = 'UND
         logo_url = DEFAULT_LOGO_URL
     loyalty_class['programLogo'] = {'sourceUri': {'uri': logo_url}}
 
-    hero_url = program.get('hero_image_url') if program else None
-    if not hero_url:
+    hero_url = (program.get('hero_image_url') if program else None) if design['show_background'] else None
+    if not hero_url and design['show_background']:
         # No custom hero photo uploaded - generate the same diagonal gradient
         # used on the web/join page so the Wallet pass matches it, instead of
         # showing no banner at all. The color is baked into the URL itself:
@@ -1834,7 +1961,8 @@ def build_loyalty_class(business: dict, program: dict, review_status: str = 'UND
         # copy; a color change produces a new URL, forcing Google to refetch.
         color_key = primary_color.lstrip('#')
         hero_url = f'{BASE_URL}/api/v1/business/{biz_public_id}/hero-image.png?c={color_key}'
-    loyalty_class['heroImage'] = {'sourceUri': {'uri': hero_url}}
+    if hero_url:
+        loyalty_class['heroImage'] = {'sourceUri': {'uri': hero_url}}
 
     return loyalty_class
 
@@ -1851,7 +1979,8 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     sessions_total = customer.get('multipass_total_sessions', 0) or (program.get('multipass_session_count', 12) if program else 12)
     cust_name = customer.get('name', 'Member')
     biz_name = business.get('name', '')
-    category = business_category_meta(business.get('business_type'))
+    design = wallet_20_design(business, program)
+    category = design['category']
     membership_summary = (
         get_membership_summary(business.get('id'), customer.get('id'))
         if card_type == 'membership' else None
@@ -1906,13 +2035,17 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
             'balance': {'string': loyalty_points_balance}
         },
         'textModulesData': [
-            {'header': 'Business', 'body': biz_name},
-            {'header': 'Category', 'body': f"{category['icon']} {category['label']}"},
-            {'header': 'Reward', 'body': reward_body},
-            {'header': 'Progress', 'body': progress_body}
+            {'header': design['card_label'], 'body': cust_name},
+            {'header': loyalty_points_label.upper(), 'body': loyalty_points_balance},
+            {'header': 'STATUS / PROGRESS', 'body': progress_body},
+            {'header': 'BENEFITS / REWARD', 'body': reward_body},
+            {'header': 'BUSINESS', 'body': f"{category['icon']} {biz_name} · {category['label']}"},
         ],
         'linksModuleData': {
-            'uris': [{'uri': f'{BASE_URL}/wallet/{cust_public_id}', 'description': 'View Card Online'}]
+            'uris': [
+                {'uri': f'{BASE_URL}/wallet/{cust_public_id}', 'description': 'Open full LoyaltyTree card'},
+                {'uri': f'{BASE_URL}/stamp/{cust_public_id}', 'description': 'Present QR / Check in'}
+            ]
         }
     }
 
@@ -1921,8 +2054,8 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     # the gradient banner. Skipped when the business uploaded their own
     # hero photo, since baking text onto someone else's image would look
     # wrong; that photo is left to show as-is (inherited from the class).
-    if not (program and program.get('hero_image_url')):
-        primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
+    if design['show_background'] and not (program and program.get('hero_image_url')):
+        primary_color = design['background']
         description = program.get('description') if program else None
         color_key = primary_color.lstrip('#')
         if card_type == 'points':
@@ -2157,7 +2290,8 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     sessions_total = customer.get('multipass_total_sessions', 0) or (program.get('multipass_session_count', 12) if program else 12)
     multipass_expires_at = customer.get('multipass_expires_at')
     reward_unlocked = bool(customer.get('reward_unlocked'))
-    primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
+    design = wallet_20_design(business, program)
+    primary_color = design['background']
     r, g, b = _hex_to_rgb(primary_color)
     membership_summary = (
         get_membership_summary(business.get('id'), customer.get('id'))
@@ -2179,8 +2313,10 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     announcement_value = ann_title.strip() or ann_message.strip() or 'Check back for updates'
 
     back_fields = [
-        {'key': 'about', 'label': 'About', 'value': description or 'Collect stamps, earn rewards.'},
-        {'key': 'online', 'label': 'View Online', 'value': f'{BASE_URL}/wallet/{cust_public_id}'},
+        {'key': 'card', 'label': 'CARD', 'value': design['card_label']},
+        {'key': 'category', 'label': 'BUSINESS TYPE', 'value': f"{design['category']['icon']} {design['category']['label']}"},
+        {'key': 'about', 'label': 'ABOUT', 'value': description or f'{biz_name} digital loyalty card powered by LoyaltyTree.'},
+        {'key': 'online', 'label': 'FULL CARD & HISTORY', 'value': f'{BASE_URL}/wallet/{cust_public_id}'},
         {
             'key': 'announcement',
             'label': '📢 ANNOUNCEMENT',
@@ -2247,6 +2383,49 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         ]
     }
 
+def generate_apple_strip_bytes(customer: dict, business: dict, program: dict, width: int, height: int) -> bytes:
+    design = wallet_20_design(business, program)
+    card_type = (program or {}).get('card_type', 'stamp')
+    stamp_goal = int((program or {}).get('stamp_goal') or 8)
+    membership_summary = get_membership_summary(business.get('id'), customer.get('id')) if card_type == 'membership' else None
+    vip_tier = get_vip_tier(customer, program or {}) if card_type == 'vip' else None
+    raw = generate_personalized_hero_image_bytes(
+        design['background'],
+        (program or {}).get('reward_name') or 'Reward',
+        int(customer.get('stamp_count') or 0),
+        stamp_goal,
+        (program or {}).get('description'),
+        card_type=card_type,
+        points_balance=int(customer.get('points_balance') or 0),
+        sessions_remaining=int(customer.get('multipass_sessions_remaining') or 0),
+        sessions_total=int(customer.get('multipass_total_sessions') or (program or {}).get('multipass_session_count') or 0),
+        total_visits=(membership_summary or {}).get('total_visits', 0),
+        last_service_name=(membership_summary or {}).get('last_service_name'),
+        vip_points=int(customer.get('vip_points') or 0),
+        vip_tier_name=(vip_tier or {}).get('name'),
+        membership_status=membership_effective_status(customer) if card_type == 'membership' else None,
+        membership_expires_at=customer.get('membership_expires_at'),
+        secondary_color=design['secondary'],
+        wallet_style=design['style'],
+        business_name=business.get('name'),
+        card_label=design['card_label'],
+    )
+    img = Image.open(BytesIO(raw)).convert('RGB')
+    src_ratio = img.width / img.height
+    dst_ratio = width / height
+    if src_ratio > dst_ratio:
+        new_w = int(img.height * dst_ratio)
+        left = (img.width - new_w) // 2
+        img = img.crop((left, 0, left + new_w, img.height))
+    else:
+        new_h = int(img.width / dst_ratio)
+        top = (img.height - new_h) // 2
+        img = img.crop((0, top, img.width, top + new_h))
+    img = img.resize((width, height), Image.LANCZOS)
+    buf = BytesIO()
+    img.save(buf, format='PNG')
+    return buf.getvalue()
+
 def build_pkpass_bytes(customer: dict, business: dict, program: dict, announcement: Optional[dict] = None) -> Optional[bytes]:
     """Assembles and signs the full .pkpass zip. Returns None if Apple
     Wallet credentials aren't configured or signing fails - callers treat
@@ -2260,7 +2439,8 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
     if get_apple_pass_credentials() is None:
         return None
 
-    primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
+    design = wallet_20_design(business, program)
+    primary_color = design['background']
     biz_name = business.get('name', 'Loyalty')
     pass_json = build_apple_pass_json(customer, business, program, announcement)
 
@@ -2273,6 +2453,12 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
         'logo@2x.png': generate_apple_logo_bytes(biz_name, 320, 100),
         'logo@3x.png': generate_apple_logo_bytes(biz_name, 480, 150),
     }
+    if design['show_background']:
+        files.update({
+            'strip.png': generate_apple_strip_bytes(customer, business, program, 375, 123),
+            'strip@2x.png': generate_apple_strip_bytes(customer, business, program, 750, 246),
+            'strip@3x.png': generate_apple_strip_bytes(customer, business, program, 1125, 369),
+        })
 
     manifest = {name: hashlib.sha1(content).hexdigest() for name, content in files.items()}
     manifest_bytes = json.dumps(manifest).encode('utf-8')
@@ -5273,6 +5459,9 @@ async def get_loyalty_config(public_id: str, response: Response):
             "program_logo_url": None,
             "hero_image_url": None,
             "card_name": None,
+            "wallet_style": "modern",
+            "wallet_secondary_color": None,
+            "wallet_show_background": True,
             "description": None,
             "google_wallet_class_id": None,
             "points_per_amount": 10,
@@ -5336,6 +5525,9 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
         'stamp_goal': config.stamp_goal,
         'reward_name': config.reward_name,
         'primary_color': config.primary_color,
+        'wallet_style': config.wallet_style,
+        'wallet_secondary_color': config.wallet_secondary_color,
+        'wallet_show_background': bool(config.wallet_show_background),
         'reward_expiry_days': config.reward_expiry_days,
         'updated_at': datetime.utcnow().isoformat(),
     }
@@ -8612,12 +8804,22 @@ async def get_customer_hero_image(customer_public_id: str, s: Optional[str] = No
         if card_type == 'membership' else None
     )
 
+    design = wallet_20_design(business, program)
+    vip_tier = get_vip_tier(customer, program or {}) if card_type == 'vip' else None
     png_bytes = generate_personalized_hero_image_bytes(
-        primary_color, reward_name, stamps, stamp_goal, description,
+        design['background'], reward_name, stamps, stamp_goal, description,
         card_type=card_type, points_balance=points_balance,
         sessions_remaining=sessions_remaining, sessions_total=sessions_total,
         total_visits=(membership_summary['total_visits'] if membership_summary else 0),
         last_service_name=(membership_summary['last_service_name'] if membership_summary else None),
+        vip_points=int(customer.get('vip_points') or 0),
+        vip_tier_name=(vip_tier or {}).get('name'),
+        membership_status=membership_effective_status(customer) if card_type == 'membership' else None,
+        membership_expires_at=customer.get('membership_expires_at'),
+        secondary_color=design['secondary'],
+        wallet_style=design['style'],
+        business_name=business.get('name'),
+        card_label=design['card_label'],
     )
     return Response(
         content=png_bytes,
@@ -8737,9 +8939,37 @@ async def create_or_update_wallet_class(public_id: str):
                     db_data['created_at'] = datetime.utcnow().isoformat()
                     supabase.table("loyalty_programs").insert(db_data).execute()
                 
+                # Wallet 2.0: refresh existing saved member cards in the
+                # background. Customer balances/history are untouched; only
+                # the Wallet representation is patched and Apple devices are
+                # asked to refetch their signed pass.
+                async def refresh_existing_member_wallets():
+                    try:
+                        members = (
+                            supabase.table('customers')
+                            .select('*')
+                            .eq('business_id', business.get('id'))
+                            .execute()
+                            .data or []
+                        )
+                        current_program = safe_get_loyalty_program(business.get('id')) or program or {}
+                        semaphore = asyncio.Semaphore(8)
+
+                        async def refresh_one(member):
+                            async with semaphore:
+                                await asyncio.to_thread(sync_wallet_object, member, business, current_program)
+                                await asyncio.to_thread(push_apple_wallet_update, member.get('public_id'))
+
+                        await asyncio.gather(*(refresh_one(member) for member in members if member.get('public_id')))
+                        print(f"WALLET 2.0: refreshed {len(members)} member wallet representations for {business.get('name')}")
+                    except Exception as refresh_error:
+                        print(f"WALLET 2.0 bulk refresh error: {refresh_error}")
+
+                asyncio.create_task(refresh_existing_member_wallets())
+
                 return {
                     "success": True,
-                    "message": "Wallet class created/updated successfully",
+                    "message": "Wallet 2.0 published. Existing member cards are refreshing automatically.",
                     "class_id": class_id,
                     "review_status": review_status,
                     "google_response": result
@@ -8889,6 +9119,7 @@ async def get_cl_wallet_pass(customer_public_id: str):
             "business_name": business.get('name', ''),
             "business_type": normalize_business_type(business.get('business_type')),
             "business_category": business_category_meta(business.get('business_type')),
+            "wallet_design": wallet_20_design(business, program),
             "customer_name": customer.get('name', ''),
             "customer_id": customer_public_id,
             "has_active_loan": has_active_loan,
