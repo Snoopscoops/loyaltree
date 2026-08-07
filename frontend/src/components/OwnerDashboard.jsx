@@ -82,6 +82,9 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [memberHistoryLoading, setMemberHistoryLoading] = useState(false)
   const [memberVisitService, setMemberVisitService] = useState('')
   const [memberVisitNote, setMemberVisitNote] = useState('')
+  const [setupKit, setSetupKit] = useState(null)
+  const [setupKitForm, setSetupKitForm] = useState({recipient_name:'',contact_number:'',delivery_address:'',delivery_instructions:'',logo_url:''})
+  const [savingSetupKit, setSavingSetupKit] = useState(false)
 
   // Frontend URL for customer-facing pages
   const FRONTEND_URL = 'https://loyaltree-btw1.onrender.com'
@@ -143,7 +146,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   const loadData = async () => {
     try {
-      const [bizRes, custRes, staffRes, statsRes, progRes, stampCountRes, branchRes, subRes] = await Promise.all([
+      const [bizRes, custRes, staffRes, statsRes, progRes, stampCountRes, branchRes, subRes, kitRes] = await Promise.all([
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}`),
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers`),
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff`),
@@ -152,6 +155,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff/stamp-counts`),
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}/branches`),
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}/subscription`),
+        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/setup-kit`),
       ])
 
       const bizData = await bizRes.json().catch(() => null)
@@ -162,6 +166,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       const stampCountData = await stampCountRes.json().catch(() => [])
       const branchData = await branchRes.json().catch(() => [])
       const subData = await subRes.json().catch(() => null)
+      const kitData = await kitRes.json().catch(() => null)
 
       setBusiness(bizData)
       setCustomers(custData)
@@ -179,6 +184,12 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       }
       setBranches(Array.isArray(branchData) ? branchData : [])
       setSubscription(subData)
+      setSetupKit(kitData && !kitData.detail ? kitData : null)
+      if (kitData && !kitData.detail) setSetupKitForm({
+        recipient_name:kitData.recipient_name||'',contact_number:kitData.contact_number||'',
+        delivery_address:kitData.delivery_address||'',delivery_instructions:kitData.delivery_instructions||'',
+        logo_url:kitData.logo_url||bizData?.logo_url||''
+      })
 
       if (Array.isArray(stampCountData)) {
         const map = {}
@@ -578,6 +589,17 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     setDeletingStaff(false)
   }
 
+  const saveSetupKitDetails = async () => {
+    setSavingSetupKit(true)
+    try {
+      const res=await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/setup-kit`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(setupKitForm)})
+      const data=await res.json().catch(()=>({}))
+      if(!res.ok) throw new Error(data.detail||'Could not save QR kit details')
+      setSetupKit(data); setMessage('QR kit details saved'); loadData()
+    } catch(err){ setMessage(err.message) }
+    setSavingSetupKit(false)
+  }
+
   const goLive = async () => {
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/go-live`, { method: 'POST' })
@@ -971,6 +993,27 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 <p>Get the customer signup QR code</p>
               </div>
             </div>
+
+            {setupKit && <section style={styles.setupKitPanel}>
+              <div style={styles.setupKitHeader}>
+                <div><small style={styles.setupKitEyebrow}>PHYSICAL QR / PR KIT</small><h3 style={{margin:'4px 0'}}>Confirm logo and delivery</h3><p style={{margin:0,color:'#64748b',fontSize:13}}>Your join QR is generated automatically for printing.</p></div>
+                <span style={styles.setupKitStatus}>{String(setupKit.fulfillment_status||'requested').replaceAll('_',' ')}</span>
+              </div>
+              <div style={styles.setupKitGrid}>
+                <div style={styles.setupKitPreview}>
+                  {setupKitForm.logo_url?<img src={setupKitForm.logo_url} alt="Logo" style={styles.setupKitLogo}/>:<b>Logo needed</b>}
+                  <img src={setupKit.qr_image_url} alt="Join QR" style={styles.setupKitQr}/>
+                  <a href={setupKit.qr_join_url} target="_blank" rel="noreferrer">Open join link</a>
+                </div>
+                <div>
+                  <label style={styles.label}>Final logo URL</label><input style={styles.input} value={setupKitForm.logo_url} onChange={e=>setSetupKitForm({...setupKitForm,logo_url:e.target.value})}/>
+                  <div style={styles.setupKitTwoCol}><div><label style={styles.label}>Recipient</label><input style={styles.input} value={setupKitForm.recipient_name} onChange={e=>setSetupKitForm({...setupKitForm,recipient_name:e.target.value})}/></div><div><label style={styles.label}>Contact</label><input style={styles.input} value={setupKitForm.contact_number} onChange={e=>setSetupKitForm({...setupKitForm,contact_number:e.target.value})}/></div></div>
+                  <label style={styles.label}>Complete delivery address</label><textarea style={{...styles.input,minHeight:72}} value={setupKitForm.delivery_address} onChange={e=>setSetupKitForm({...setupKitForm,delivery_address:e.target.value})}/>
+                  <label style={styles.label}>Delivery instructions</label><textarea style={{...styles.input,minHeight:58}} value={setupKitForm.delivery_instructions} onChange={e=>setSetupKitForm({...setupKitForm,delivery_instructions:e.target.value})}/>
+                  <button style={styles.submitBtn} onClick={saveSetupKitDetails} disabled={savingSetupKit}>{savingSetupKit?'Saving...':'Save QR Kit Details'}</button>
+                </div>
+              </div>
+            </section>}
 
             <div style={styles.recentActivity}>
               <h3 style={styles.sectionTitle}>{cardExperience.icon} {cardExperience.recentTitle}</h3>
@@ -3071,6 +3114,15 @@ const styles = {
     cursor: 'pointer',
     marginTop: 8,
   },
+  setupKitPanel:{background:'#fff',border:'1px solid #99f6e4',borderRadius:18,padding:20,marginBottom:18},
+  setupKitHeader:{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start',flexWrap:'wrap',marginBottom:16},
+  setupKitEyebrow:{color:'#0d9488',fontWeight:900,letterSpacing:1},
+  setupKitStatus:{background:'#ccfbf1',color:'#0f766e',padding:'6px 10px',borderRadius:999,fontSize:11,fontWeight:900,textTransform:'uppercase'},
+  setupKitGrid:{display:'grid',gridTemplateColumns:'210px minmax(0,1fr)',gap:18},
+  setupKitPreview:{background:'#f8fafc',borderRadius:14,padding:12,display:'flex',flexDirection:'column',alignItems:'center',gap:9},
+  setupKitLogo:{maxWidth:145,maxHeight:65,objectFit:'contain'},
+  setupKitQr:{width:165,height:165},
+  setupKitTwoCol:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10},
 }
 
 export default OwnerDashboard

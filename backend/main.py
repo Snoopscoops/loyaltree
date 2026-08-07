@@ -471,6 +471,24 @@ class BusinessCreate(BaseModel):
     branch_count: int = Field(default=1, ge=1, le=50)
     plan: Optional[str] = None  # explicit plan choice; if omitted, derived from branch_count
     setup_kit_requested: bool = False
+    kit_recipient_name: Optional[str] = None
+    kit_contact_number: Optional[str] = None
+    kit_delivery_address: Optional[str] = None
+    kit_delivery_instructions: Optional[str] = None
+
+class SetupKitOwnerUpdate(BaseModel):
+    recipient_name: Optional[str] = None
+    contact_number: Optional[str] = None
+    delivery_address: Optional[str] = None
+    delivery_instructions: Optional[str] = None
+    logo_url: Optional[str] = None
+
+class SetupKitAdminUpdate(BaseModel):
+    fulfillment_status: Optional[Literal['requested','paid','preparing','ready_to_ship','shipped','delivered','cancelled']] = None
+    payment_status: Optional[Literal['unpaid','paid','refunded']] = None
+    courier: Optional[str] = None
+    tracking_number: Optional[str] = None
+    admin_notes: Optional[str] = None
 
 class LoginRequest(BaseModel):
     email: str
@@ -3355,11 +3373,38 @@ async def register(biz: BusinessCreate):
         'created_at': datetime.utcnow().isoformat(),
     }
 
+    if biz.setup_kit_requested:
+        if not (biz.logo_url or '').strip():
+            raise HTTPException(status_code=400, detail='Business logo is required for the physical QR kit')
+        if not (biz.kit_recipient_name or '').strip() or not (biz.kit_contact_number or '').strip() or not (biz.kit_delivery_address or '').strip():
+            raise HTTPException(status_code=400, detail='Complete delivery details are required for the physical QR kit')
+
     try:
         insert_res = supabase.table("businesses").insert(business_data).execute()
         business_id = insert_res.data[0]['id'] if insert_res.data else None
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Registration failed: {str(e)}")
+
+    if business_id and biz.setup_kit_requested:
+        try:
+            frontend_base = (FRONTEND_URL or BASE_URL).rstrip('/')
+            supabase.table('setup_kit_orders').insert({
+                'public_id': generate_public_id(),
+                'business_id': business_id,
+                'recipient_name': biz.kit_recipient_name.strip(),
+                'contact_number': biz.kit_contact_number.strip(),
+                'delivery_address': biz.kit_delivery_address.strip(),
+                'delivery_instructions': (biz.kit_delivery_instructions or '').strip() or None,
+                'logo_url': biz.logo_url,
+                'qr_join_url': f"{frontend_base}/join/{public_id}",
+                'amount': 150,
+                'payment_status': 'unpaid',
+                'fulfillment_status': 'requested',
+                'created_at': datetime.utcnow().isoformat(),
+                'updated_at': datetime.utcnow().isoformat(),
+            }).execute()
+        except Exception as e:
+            print(f"SETUP KIT ORDER create error: {e}")
 
     # Best-effort heads-up to the platform admin - never blocks signup if it fails.
     if SUPER_ADMIN_EMAIL:
@@ -3497,6 +3542,69 @@ async def list_plans():
 @app.get("/api/v1/admin/plans")
 async def admin_list_plans(_: bool = Depends(require_admin)):
     return SUBSCRIPTION_PLANS
+
+
+def setup_kit_payload(order: dict, business: dict) -> dict:
+    frontend_base = (FRONTEND_URL or BASE_URL).rstrip('/')
+    join_url = order.get('qr_join_url') or f"{frontend_base}/join/{business.get('public_id')}"
+    return {
+        **order,
+        'business_public_id': business.get('public_id'),
+        'business_name': business.get('name'),
+        'business_email': business.get('email'),
+        'business_phone': business.get('phone'),
+        'business_address': business.get('address'),
+        'logo_url': order.get('logo_url') or business.get('logo_url'),
+        'qr_join_url': join_url,
+        'qr_image_url': f"https://api.qrserver.com/v1/create-qr-code/?size=700x700&data={quote(join_url, safe='')}",
+    }
+
+@app.get("/api/v1/business/{public_id}/setup-kit")
+async def get_setup_kit(public_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    rows = supabase.table('setup_kit_orders').select('*').eq('business_id', business['id']).order('created_at', desc=True).limit(1).execute().data or []
+    return setup_kit_payload(rows[0], business) if rows else None
+
+@app.patch("/api/v1/business/{public_id}/setup-kit")
+async def update_setup_kit(public_id: str, item: SetupKitOwnerUpdate):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    rows = supabase.table('setup_kit_orders').select('*').eq('business_id', business['id']).order('created_at', desc=True).limit(1).execute().data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail='No QR kit order found')
+    patch = {k:v for k,v in item.model_dump().items() if v is not None}
+    if 'logo_url' in patch:
+        supabase.table('businesses').update({'logo_url':patch['logo_url'],'updated_at':datetime.utcnow().isoformat()}).eq('id',business['id']).execute()
+        business['logo_url'] = patch['logo_url']
+    patch['updated_at'] = datetime.utcnow().isoformat()
+    updated = supabase.table('setup_kit_orders').update(patch).eq('id',rows[0]['id']).execute().data[0]
+    return setup_kit_payload(updated,business)
+
+@app.get("/api/v1/admin/setup-kit-orders")
+async def admin_setup_kit_orders(_: bool = Depends(require_admin)):
+    orders = supabase.table('setup_kit_orders').select('*').order('created_at', desc=True).execute().data or []
+    ids = list({o['business_id'] for o in orders})
+    businesses = supabase.table('businesses').select('*').in_('id',ids).execute().data or [] if ids else []
+    by_id = {b['id']:b for b in businesses}
+    return [setup_kit_payload(o,by_id.get(o['business_id'],{})) for o in orders]
+
+@app.patch("/api/v1/admin/setup-kit-orders/{order_public_id}")
+async def admin_update_setup_kit_order(order_public_id: str, item: SetupKitAdminUpdate, _: bool = Depends(require_admin)):
+    rows = supabase.table('setup_kit_orders').select('*').eq('public_id',order_public_id).limit(1).execute().data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail='QR kit order not found')
+    patch = {k:v for k,v in item.model_dump().items() if v is not None}
+    now = datetime.utcnow().isoformat()
+    if patch.get('fulfillment_status') == 'shipped': patch['shipped_at'] = now
+    if patch.get('fulfillment_status') == 'delivered': patch['delivered_at'] = now
+    patch['updated_at'] = now
+    updated = supabase.table('setup_kit_orders').update(patch).eq('id',rows[0]['id']).execute().data[0]
+    supabase.table('businesses').update({'setup_kit_status':updated.get('fulfillment_status'),'updated_at':now}).eq('id',updated['business_id']).execute()
+    business = safe_get_business_by_id(updated['business_id']) or {}
+    return setup_kit_payload(updated,business)
 
 @app.get("/api/v1/admin/overview")
 async def admin_overview(_: bool = Depends(require_admin)):
@@ -4141,6 +4249,15 @@ async def paymongo_webhook(request: Request):
                     'setup_kit_paid': True,
                     'setup_kit_status': 'paid',
                 })
+                try:
+                    supabase.table('setup_kit_orders').update({
+                        'payment_status': 'paid',
+                        'fulfillment_status': 'paid',
+                        'paid_at': now.isoformat(),
+                        'updated_at': now.isoformat(),
+                    }).eq('business_id', business.get('id')).neq('fulfillment_status', 'cancelled').execute()
+                except Exception as e:
+                    print(f"WEBHOOK setup kit order update error: {e}")
             # First payment activates the account automatically - no manual
             # admin approval needed. Only PENDING is auto-promoted; if an
             # admin has REJECTED or SUSPENDED this business, a stray/late

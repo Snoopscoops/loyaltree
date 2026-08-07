@@ -30,6 +30,10 @@ function Signup({ API_BASE }) {
     branch_count: 1,
     plan: 'starter',
     setup_kit_requested: false,
+    kit_recipient_name: '',
+    kit_contact_number: '',
+    kit_delivery_address: '',
+    kit_delivery_instructions: '',
   })
   const [plans, setPlans] = useState(null)
   const [error, setError] = useState('')
@@ -58,6 +62,12 @@ function Signup({ API_BASE }) {
   const handleSignup = async (e) => {
     e.preventDefault()
     setError('')
+    if (form.setup_kit_requested) {
+      if (!form.logo_url.trim()) return setError('Business logo URL is required for the physical QR kit.')
+      if (!form.kit_recipient_name.trim() || !form.kit_contact_number.trim() || !form.kit_delivery_address.trim()) {
+        return setError('Complete recipient and delivery details are required for the physical QR kit.')
+      }
+    }
     setLoading(true)
     try {
       const res = await fetch(`${API_BASE}/api/v1/register`, {
@@ -221,6 +231,21 @@ function Signup({ API_BASE }) {
               </span>
             </label>
           </div>
+
+          {form.setup_kit_requested && (
+            <div style={styles.kitDeliveryCard}>
+              <strong style={styles.kitDeliveryTitle}>Delivery information</strong>
+              <span style={styles.kitDeliveryHint}>The QR is generated automatically. Confirm who will receive the printed kit.</span>
+              <label style={styles.label}>Recipient name</label>
+              <input name="kit_recipient_name" value={form.kit_recipient_name} onChange={handleChange} style={styles.input} required />
+              <label style={styles.label}>Delivery contact number</label>
+              <input name="kit_contact_number" value={form.kit_contact_number} onChange={handleChange} style={styles.input} required />
+              <label style={styles.label}>Complete delivery address</label>
+              <textarea name="kit_delivery_address" value={form.kit_delivery_address} onChange={handleChange} style={{...styles.input,minHeight:80,resize:'vertical'}} required />
+              <label style={styles.label}>Delivery instructions (optional)</label>
+              <textarea name="kit_delivery_instructions" value={form.kit_delivery_instructions} onChange={handleChange} style={{...styles.input,minHeight:60,resize:'vertical'}} />
+            </div>
+          )}
 
           <div style={styles.inputGroup}>
             <label style={styles.label}>Plan</label>
@@ -422,6 +447,12 @@ const styles = {
     fontSize: 13,
     lineHeight: 1.45,
   },
+  kitDeliveryCard: {
+    display: 'flex', flexDirection: 'column', gap: 7, padding: 16,
+    border: '1px solid #ccfbf1', borderRadius: 12, background: '#f8fffe',
+  },
+  kitDeliveryTitle: { color: '#134e4a', fontSize: 15 },
+  kitDeliveryHint: { color: '#64748b', fontSize: 12.5, lineHeight: 1.45, marginBottom: 4 },
   kitConfirmation: {
     display: 'flex',
     flexDirection: 'column',

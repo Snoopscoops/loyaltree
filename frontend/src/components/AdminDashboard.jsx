@@ -30,6 +30,8 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const [partnerUploading, setPartnerUploading] = useState(false)
   const [partnerSaving, setPartnerSaving] = useState(false)
   const [partnerRowUploading, setPartnerRowUploading] = useState(null)
+  const [setupKitOrders,setSetupKitOrders]=useState([])
+  const [kitSearch,setKitSearch]=useState('')
 
   const authedFetch = (path, opts = {}) => fetch(`${API_BASE}${path}`, {
     ...opts,
@@ -47,12 +49,13 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
       if (statusFilter) params.set('status', statusFilter)
       if (planFilter) params.set('plan', planFilter)
 
-      const [ovRes, plansRes, bizRes, pendingRes, partnersRes] = await Promise.all([
+      const [ovRes, plansRes, bizRes, pendingRes, partnersRes, kitRes] = await Promise.all([
         authedFetch('/api/v1/admin/overview'),
         authedFetch('/api/v1/admin/plans'),
         authedFetch(`/api/v1/admin/businesses?${params.toString()}`),
         authedFetch('/api/v1/admin/businesses?status=PENDING'),
         authedFetch('/api/v1/admin/partners'),
+        authedFetch('/api/v1/admin/setup-kit-orders'),
       ])
       if (ovRes.status === 401 || bizRes.status === 401) { onLogout(); return }
       setOverview(await ovRes.json().catch(() => null))
@@ -60,6 +63,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
       setBusinesses(await bizRes.json().catch(() => []))
       setPendingApps(await pendingRes.json().catch(() => []))
       setPartners(await partnersRes.json().catch(() => []))
+      setSetupKitOrders(await kitRes.json().catch(() => []))
     } catch (err) {
       console.error('Admin load error:', err)
     }
@@ -154,6 +158,16 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   }
 
 
+
+  const updateSetupKitOrder=async(order,patch)=>{
+    try{
+      const res=await authedFetch(`/api/v1/admin/setup-kit-orders/${order.public_id}`,{method:'PATCH',body:JSON.stringify(patch)})
+      const data=await res.json().catch(()=>({}))
+      if(!res.ok)throw new Error(data.detail||'Could not update QR kit order')
+      setSetupKitOrders(rows=>rows.map(row=>row.public_id===order.public_id?data:row))
+      setMessage('QR kit order updated')
+    }catch(err){setMessage(err.message)}
+  }
 
   const uploadPartnerImageToCloudinary = async (file) => {
     if (!file) throw new Error('Choose a logo image')
@@ -297,6 +311,22 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
           <button onClick={() => setShowCreateModal(true)} style={styles.approveBtn}>+ Create business</button>
         </div>
 
+
+        <section style={styles.kitAdminSection}>
+          <div style={styles.kitAdminHeader}><div><h2 style={styles.partnerAdminTitle}>📦 QR / PR Kit Orders</h2><p style={styles.partnerAdminSubtitle}>Logo, generated QR, delivery address, and fulfillment tracking.</p></div><input style={{...styles.input,maxWidth:300}} value={kitSearch} onChange={e=>setKitSearch(e.target.value)} placeholder="Search kit orders..."/></div>
+          <div style={styles.kitOrderGrid}>
+            {setupKitOrders.filter(o=>!kitSearch.trim()||[o.business_name,o.recipient_name,o.delivery_address,o.tracking_number,o.fulfillment_status].some(v=>String(v||'').toLowerCase().includes(kitSearch.toLowerCase()))).map(order=><article key={order.public_id} style={styles.kitOrderCard}>
+              <div style={styles.kitOrderTop}><div><b>{order.business_name}</b><div style={styles.bizEmail}>{order.business_email}</div></div><span style={styles.kitBadge}>{order.payment_status}</span></div>
+              <div style={styles.kitAssets}><div style={styles.kitAssetBox}>{order.logo_url?<img src={order.logo_url} alt="Logo" style={styles.kitLogo}/>:<span>No logo</span>}{order.logo_url&&<a href={order.logo_url} target="_blank" rel="noreferrer" style={styles.kitDownload}>Download logo</a>}</div><div style={styles.kitAssetBox}><img src={order.qr_image_url} alt="QR" style={styles.kitQr}/><a href={order.qr_image_url} target="_blank" rel="noreferrer" style={styles.kitDownload}>Download QR</a></div></div>
+              <div style={styles.kitAddress}><b>{order.recipient_name}</b><span>{order.contact_number}</span><span>{order.delivery_address}</span>{order.delivery_instructions&&<em>{order.delivery_instructions}</em>}</div>
+              <select style={styles.select} value={order.fulfillment_status||'requested'} onChange={e=>updateSetupKitOrder(order,{fulfillment_status:e.target.value})}><option value="requested">Requested</option><option value="paid">Paid</option><option value="preparing">Preparing</option><option value="ready_to_ship">Ready to ship</option><option value="shipped">Shipped</option><option value="delivered">Delivered</option><option value="cancelled">Cancelled</option></select>
+              <input style={styles.input} defaultValue={order.courier||''} placeholder="Courier" onBlur={e=>updateSetupKitOrder(order,{courier:e.target.value.trim()||null})}/>
+              <input style={styles.input} defaultValue={order.tracking_number||''} placeholder="Tracking number" onBlur={e=>updateSetupKitOrder(order,{tracking_number:e.target.value.trim()||null})}/>
+              <textarea style={{...styles.input,minHeight:65}} defaultValue={order.admin_notes||''} placeholder="Admin notes" onBlur={e=>updateSetupKitOrder(order,{admin_notes:e.target.value.trim()||null})}/>
+            </article>)}
+          </div>
+          {!setupKitOrders.length&&<div style={styles.partnerEmpty}>No QR / PR kit orders yet.</div>}
+        </section>
 
         <section style={styles.partnerAdminSection}>
           <h2 style={styles.partnerAdminTitle}>🤝 Homepage Partners</h2>
@@ -1157,6 +1187,18 @@ const styles = {
     padding: '10px 16px', background: '#dc2626', color: 'white',
     border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer', flex: 1,
   },
+  kitAdminSection:{background:'#fff',border:'1px solid #99f6e4',borderRadius:18,padding:22,marginBottom:24},
+  kitAdminHeader:{display:'flex',justifyContent:'space-between',gap:16,alignItems:'flex-start',flexWrap:'wrap',marginBottom:16},
+  kitOrderGrid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(330px,1fr))',gap:16},
+  kitOrderCard:{border:'1px solid #e2e8f0',borderRadius:15,padding:15,display:'flex',flexDirection:'column',gap:9},
+  kitOrderTop:{display:'flex',justifyContent:'space-between',gap:10},
+  kitBadge:{padding:'5px 9px',borderRadius:999,background:'#dcfce7',color:'#166534',fontSize:10,fontWeight:900,textTransform:'uppercase'},
+  kitAssets:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:9},
+  kitAssetBox:{minHeight:125,background:'#f8fafc',borderRadius:10,padding:9,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:6,color:'#94a3b8',fontSize:11},
+  kitLogo:{maxWidth:'100%',maxHeight:70,objectFit:'contain'},
+  kitQr:{width:92,height:92},
+  kitDownload:{color:'#0d9488',fontSize:11,fontWeight:800,textDecoration:'none'},
+  kitAddress:{display:'flex',flexDirection:'column',gap:3,background:'#f0fdfa',borderRadius:10,padding:11,fontSize:12,lineHeight:1.45},
 }
 
 export default AdminDashboard
