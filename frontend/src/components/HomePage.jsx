@@ -323,29 +323,46 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
     let cancelled = false
 
     const loadPartners = async () => {
-      try {
-        const configuredBase = API_BASE || import.meta.env.VITE_API_BASE_URL || ''
-        const base = configuredBase.replace(/\/$/, '')
-        const res = await fetch(`${base}/api/v1/public/partners?_=${Date.now()}`, {
-          cache: 'no-store',
-          headers: {
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
-            'Pragma': 'no-cache',
-          },
-        })
-        const raw = await res.text()
-        let data = []
-        try { data = raw ? JSON.parse(raw) : [] } catch (_) {}
+      const configuredBase = (API_BASE || import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
+      const candidates = [...new Set([
+        configuredBase,
+        'https://loyaltree-btw1.onrender.com',
+        window.location.origin,
+      ].filter(Boolean))]
+      const errors = []
 
-        if (!res.ok) {
-          throw new Error(data?.detail || `Partner API failed (${res.status})`)
+      try {
+        let partnerRows = null
+
+        for (const base of candidates) {
+          try {
+            const res = await fetch(`${base}/api/v1/public/partners?_=${Date.now()}`, {
+              cache: 'no-store',
+              headers: {
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Pragma': 'no-cache',
+              },
+            })
+            const raw = await res.text()
+            let data = null
+            try { data = raw ? JSON.parse(raw) : [] } catch (_) {}
+
+            if (!res.ok) throw new Error(data?.detail || `HTTP ${res.status}`)
+            if (!Array.isArray(data)) throw new Error('Invalid partner response')
+
+            partnerRows = data
+            break
+          } catch (err) {
+            errors.push(`${base}: ${err.message}`)
+          }
         }
-        if (!Array.isArray(data)) {
-          throw new Error('Partner API returned an invalid response')
+
+        if (partnerRows === null) {
+          throw new Error(errors.join(' | ') || 'No partner API could be reached')
         }
 
         if (!cancelled) {
-          setPartners(data.filter(partner => partner?.logo_url))
+          setPartners(partnerRows.filter(partner => partner?.logo_url && partner?.is_active !== false))
           setPartnersError('')
         }
       } catch (err) {
@@ -518,45 +535,49 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         </div>
       </section>
 
+      <style>{`
+        @media (max-width: 980px) {
+          .lt-card-available { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+          .lt-card-coming { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+        }
+        @media (max-width: 560px) {
+          .lt-card-available, .lt-card-coming { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+        }
+      `}</style>
       <section style={styles.section}>
         <h2 style={styles.h2}>Choose your card type</h2>
         <p style={styles.cardTypesIntro}>Choose the card that fits your business: rewards, subscriptions, session packs, or VIP tiers.</p>
-        <div style={styles.cardTypesGrid}>
-          {CARD_TYPES.map(c => (
-            <button
-              key={c.key}
-              onClick={() => openCard(c)}
-              style={{
-                ...styles.cardTypeItem,
-                ...(c.available ? styles.cardTypeItemAvailable : styles.cardTypeItemDisabled),
-              }}
-              disabled={!c.available}
-            >
-              <span style={styles.cardTypeIcon}>{c.icon}</span>
-              <span style={styles.cardTypeTitle}>{c.title}</span>
-              {c.available ? (
+
+        <div style={styles.cardTypeGroup}>
+          <div style={styles.cardTypeGroupLabel}>Available now</div>
+          <div className="lt-card-available" style={styles.cardTypesAvailableGrid}>
+            {CARD_TYPES.filter(c => c.available).map(c => (
+              <button
+                key={c.key}
+                onClick={() => openCard(c)}
+                style={{...styles.cardTypeItem, ...styles.cardTypeItemAvailable}}
+              >
+                <span style={styles.cardTypeIcon}>{c.icon}</span>
+                <span style={styles.cardTypeTitle}>{c.title}</span>
                 <span style={styles.availableBadge}>Available</span>
-              ) : (
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div style={{...styles.cardTypeGroup, marginTop:24}}>
+          <div style={{...styles.cardTypeGroupLabel, color:'#94a3b8'}}>Coming soon</div>
+          <div className="lt-card-coming" style={styles.cardTypesComingGrid}>
+            {CARD_TYPES.filter(c => !c.available).map(c => (
+              <button key={c.key} style={{...styles.cardTypeItem, ...styles.cardTypeItemDisabled}} disabled>
+                <span style={styles.cardTypeIcon}>{c.icon}</span>
+                <span style={styles.cardTypeTitle}>{c.title}</span>
                 <span style={styles.comingSoonBadge}>Coming soon</span>
-              )}
-            </button>
-          ))}
+              </button>
+            ))}
+          </div>
         </div>
       </section>
-
-      <section style={{ ...styles.section, background: '#f0fdf4' }}>
-        <h2 style={styles.h2}>How it works</h2>
-        <div style={styles.stepsRow}>
-          {STEPS.map(s => (
-            <div key={s.n} style={styles.step}>
-              <div style={styles.stepNumber}>{s.n}</div>
-              <h3 style={styles.featureTitle}>{s.title}</h3>
-              <p style={styles.featureBody}>{s.body}</p>
-            </div>
-          ))}
-        </div>
-      </section>
-
 
       {(partnersLoading || partnersError || partners.length > 0) && (
         <section style={{ ...styles.section, background: '#ffffff' }}>
@@ -614,6 +635,22 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
           })}
         </section>
       )}
+
+
+      <section style={{ ...styles.section, background: '#f0fdf4' }}>
+        <h2 style={styles.h2}>How it works</h2>
+        <div style={styles.stepsRow}>
+          {STEPS.map(s => (
+            <div key={s.n} style={styles.step}>
+              <div style={styles.stepNumber}>{s.n}</div>
+              <h3 style={styles.featureTitle}>{s.title}</h3>
+              <p style={styles.featureBody}>{s.body}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+
 
       <section style={styles.ctaSection}>
         <h2 style={{ ...styles.h2, color: 'white' }}>Ready to grow your regulars?</h2>
@@ -894,12 +931,21 @@ const styles = {
 
   // Card types section
   cardTypesIntro: { textAlign: 'center', fontSize: 14, color: '#64748b', margin: '-24px 0 32px' },
-  cardTypesGrid: {
-    display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 16,
+  cardTypeGroup: { maxWidth: 980, margin: '0 auto' },
+  cardTypeGroupLabel: {
+    marginBottom: 12, fontSize: 12, fontWeight: 800, color: '#0d9488',
+    textTransform: 'uppercase', letterSpacing: '.08em', textAlign: 'center',
+  },
+  cardTypesAvailableGrid: {
+    display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))', gap: 10,
+  },
+  cardTypesComingGrid: {
+    display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10,
+    maxWidth: 680, margin: '0 auto',
   },
   cardTypeItem: {
     display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
-    borderRadius: 16, padding: '24px 16px', fontFamily: 'inherit',
+    borderRadius: 14, padding: '18px 10px', minHeight: 150, fontFamily: 'inherit',
     border: '1.5px solid #e2e8f0', background: 'white', position: 'relative',
   },
   cardTypeItemAvailable: {
@@ -908,7 +954,7 @@ const styles = {
   cardTypeItemDisabled: {
     cursor: 'not-allowed', opacity: 0.55,
   },
-  cardTypeIcon: { fontSize: 30 },
+  cardTypeIcon: { fontSize: 27 },
   cardTypeTitle: { fontSize: 14, fontWeight: 700, color: '#0f172a', textAlign: 'center' },
   availableBadge: {
     fontSize: 11, fontWeight: 700, color: '#0d9488', background: '#ccfbf1',
