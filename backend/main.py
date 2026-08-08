@@ -8595,6 +8595,56 @@ async def get_multipass_history(public_id: str, customer_public_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
+
+@app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/points-history")
+async def get_points_history(public_id: str, customer_public_id: str):
+    """Every recorded points-earning sale for one customer, including date,
+    cashier and branch - same shape/pattern as stamp-history, just against
+    points_events (see log_points_event)."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    customer = safe_get_customer(customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+    try:
+        rows = (
+            supabase.table('points_events')
+            .select('*')
+            .eq('business_id', business.get('id'))
+            .eq('customer_id', customer.get('id'))
+            .order('created_at', desc=True)
+            .execute()
+        ).data or []
+        return attach_activity_location_names(rows)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+
+@app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/vip-history")
+async def get_vip_history(public_id: str, customer_public_id: str):
+    """Every recorded VIP points/tier movement for one customer, including
+    date, cashier and branch - same shape/pattern as stamp-history, just
+    against vip_events (see log_vip_event)."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    customer = safe_get_customer(customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+    try:
+        rows = (
+            supabase.table('vip_events')
+            .select('*')
+            .eq('business_id', business.get('id'))
+            .eq('customer_id', customer.get('id'))
+            .order('created_at', desc=True)
+            .execute()
+        ).data or []
+        return attach_activity_location_names(rows)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
 @app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/membership-history")
 async def get_membership_history(public_id: str, customer_public_id: str):
     business = safe_get_business(public_id)

@@ -315,6 +315,10 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         ? 'multipass-history'
         : program?.card_type === 'membership'
         ? 'leaves'
+        : program?.card_type === 'points'
+        ? 'points-history'
+        : program?.card_type === 'vip'
+        ? 'vip-history'
         : 'stamp-history'
       const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${customerPublicId}/${suffix}`)
       const data = await res.json().catch(() => [])
@@ -699,7 +703,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     fetchCoupons(customer.public_id)
     setMemberVisitService('')
     setMemberVisitNote('')
-    if (['stamp', 'membership', 'multipass'].includes(program?.card_type)) {
+    if (['stamp', 'membership', 'multipass', 'points', 'vip'].includes(program?.card_type)) {
       fetchMemberHistory(customer.public_id)
     } else {
       setMemberHistory([])
@@ -1510,9 +1514,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               </div>
             </div>
 
-            {(isMembershipCard || isMultipassCard || (!isPointsCard && !isVipCard)) && (
-              <div style={{marginBottom:18, padding:16, border:'1px solid #ccfbf1', background:'#f0fdfa', borderRadius:14}}>
-                {isMembershipCard && (
+            <div style={{marginBottom:18, padding:16, border:'1px solid #ccfbf1', background:'#f0fdfa', borderRadius:14}}>
+              {isMembershipCard && (
                   <>
                     <div style={{display:'grid', gridTemplateColumns:'repeat(2, minmax(0, 1fr))', gap:10, marginBottom:14}}>
                       <div style={{background:'white', border:'1px solid #99f6e4', borderRadius:12, padding:12}}>
@@ -1569,13 +1572,17 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:12, marginBottom:12}}>
                   <div>
                     <strong style={{fontSize:15,color:'#115e59'}}>
-                      {isMultipassCard ? 'Multi-Pass activity' : isMembershipCard ? 'Member visit analytics' : 'Stamp activity'}
+                      {isMultipassCard ? 'Multi-Pass activity' : isMembershipCard ? 'Member visit analytics' : isPointsCard ? 'Points activity' : isVipCard ? 'VIP activity' : 'Stamp activity'}
                     </strong>
                     <div style={{fontSize:12,color:'#64748b',marginTop:3}}>
                       {isMembershipCard
                         ? 'Service, notes, cashier, branch, and visit date'
                         : isMultipassCard
                         ? 'Every issued pass and stamped session'
+                        : isPointsCard
+                        ? 'Every points-earning sale, cashier, and branch'
+                        : isVipCard
+                        ? 'Every VIP points award and tier change'
                         : 'The date, cashier, and branch for every recorded stamp'}
                     </div>
                   </div>
@@ -1586,7 +1593,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                         : memberHistory.filter(item => !isMultipassCard || item.action === 'used').length}
                     </strong>
                     <span style={{fontSize:11,color:'#64748b'}}>
-                      {isMembershipCard ? 'Visits' : isMultipassCard ? 'Used' : 'Stamps'}
+                      {isMembershipCard ? 'Visits' : isMultipassCard ? 'Used' : isPointsCard ? 'Sales' : isVipCard ? 'Updates' : 'Stamps'}
                     </span>
                   </div>
                 </div>
@@ -1604,6 +1611,12 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                         ? (item.service_name || 'Visit')
                         : isMultipassCard
                         ? (item.action === 'issued' ? 'Pass issued' : 'Session stamped')
+                        : isPointsCard
+                        ? `+${item.points_earned ?? 0} pts earned`
+                        : isVipCard
+                        ? (item.action === 'tier_change' && item.new_tier
+                          ? `Tier: ${item.old_tier || '—'} → ${item.new_tier}`
+                          : `${(item.points_delta ?? 0) >= 0 ? '+' : ''}${item.points_delta ?? 0} VIP pts`)
                         : `Stamp #${item.stamp_number || (memberHistory.length - i)}`
 
                       return <div key={item.id || i} style={{display:'grid',gridTemplateColumns:'12px 1fr',gap:10,padding:'12px 0',borderBottom:i===memberHistory.length-1?'none':'1px solid #e2e8f0'}}>
@@ -1617,6 +1630,15 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                           </div>
                           {isMultipassCard && <div style={{fontSize:13,color:'#475569',marginTop:3}}>{item.sessions_remaining ?? 0} sessions remaining after this activity</div>}
                           {isMembershipCard && item.note && <div style={{fontSize:13,color:'#334155',whiteSpace:'pre-wrap',marginTop:6,padding:8,background:'#f8fafc',borderRadius:8}}>{item.note}</div>}
+                          {isPointsCard && item.amount_spent_pesos != null && <div style={{fontSize:13,color:'#475569',marginTop:3}}>₱{Number(item.amount_spent_pesos).toLocaleString()} spent</div>}
+                          {isVipCard && (item.amount_spent != null || item.points_balance != null) && (
+                            <div style={{fontSize:13,color:'#475569',marginTop:3}}>
+                              {item.amount_spent != null ? `₱${Number(item.amount_spent).toLocaleString()} spent` : null}
+                              {item.amount_spent != null && item.points_balance != null ? ' • ' : null}
+                              {item.points_balance != null ? `${item.points_balance} pts balance after` : null}
+                            </div>
+                          )}
+                          {isVipCard && item.note && <div style={{fontSize:13,color:'#334155',whiteSpace:'pre-wrap',marginTop:6,padding:8,background:'#f8fafc',borderRadius:8}}>{item.note}</div>}
                           {location && <div style={{fontSize:12,color:'#64748b',marginTop:5}}>{location}</div>}
                         </div>
                       </div>
@@ -1624,7 +1646,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                   </div>
                 )}
               </div>
-            )}
+            </div>
 
             {activeCoupon && (
               <div style={{ background: '#f0fdfa', border: '1.5px dashed #0d9488', borderRadius: 10, padding: '10px 14px', textAlign: 'center', marginBottom: 16 }}>
