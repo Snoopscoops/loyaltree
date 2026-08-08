@@ -231,6 +231,7 @@ function CashierApp({ API_BASE }) {
           ...prev,
           stamp_count: data.stamp_count,
           reward_unlocked: !!data.reward_unlocked,
+          active_coupon: data.active_coupon !== undefined ? data.active_coupon : prev.active_coupon,
         } : prev)
       } else {
         setMessage(`❌ Failed: ${data.detail || 'Unknown error'}`)
@@ -276,6 +277,7 @@ function CashierApp({ API_BASE }) {
         setCustomerData(prev => prev ? {
           ...prev,
           points_balance: data.points_balance,
+          active_coupon: data.active_coupon !== undefined ? data.active_coupon : prev.active_coupon,
         } : prev)
         setSaleAmount('')
       } else {
@@ -324,6 +326,7 @@ function CashierApp({ API_BASE }) {
         vip_points: data.vip_points,
         vip_tier: data.tier,
         vip_next_tier: data.next_tier,
+        active_coupon: data.active_coupon !== undefined ? data.active_coupon : prev.active_coupon,
       } : prev)
       setVipSaleAmount('')
 
@@ -400,6 +403,7 @@ function CashierApp({ API_BASE }) {
           ...prev,
           sessions_remaining: data.sessions_remaining,
           sessions_total: data.sessions_total,
+          active_coupon: data.active_coupon !== undefined ? data.active_coupon : prev.active_coupon,
         } : prev)
       } else {
         setMessage(`❌ ${data.detail || 'Could not use session'}`)

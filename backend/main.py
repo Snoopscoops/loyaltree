@@ -8010,6 +8010,7 @@ async def add_stamp(public_id: str, req: StampRequest, authorization: str = Head
                     "message": "Stamp added!",
                     "stamp_count": new_count,
                     "reward_unlocked": reward_unlocked,
+                    "active_coupon": safe_get_active_coupon(customer.get('id')),
                 }
             except Exception as e2:
                 error_msg = str(e2)
@@ -8029,6 +8030,7 @@ async def add_stamp(public_id: str, req: StampRequest, authorization: str = Head
         "message": "Stamp added!",
         "stamp_count": new_count,
         "reward_unlocked": reward_unlocked,
+        "active_coupon": safe_get_active_coupon(customer.get('id')),
     }
 
 
@@ -8075,6 +8077,7 @@ async def add_vip_sale(public_id: str, req: VIPSaleRequest, authorization: str =
             'vip_points': rate,
             'per_pesos': base,
         },
+        'active_coupon': safe_get_active_coupon(customer.get('id')),
     }
 
 @app.post("/api/v1/business/{public_id}/vip-adjust")
@@ -8185,6 +8188,7 @@ async def add_points_sale(public_id: str, req: PointsSaleRequest, authorization:
         "amount_spent": req.amount_spent,
         "points_earned": points_earned,
         "points_balance": new_balance,
+        "active_coupon": safe_get_active_coupon(customer.get('id')),
     }
 
 @app.post("/api/v1/business/{public_id}/points-redeem")
@@ -8444,6 +8448,7 @@ async def use_multipass_session(public_id: str, req: MultipassUseRequest, author
         "message": "Session used!",
         "sessions_remaining": new_remaining,
         "sessions_total": customer.get('multipass_total_sessions', 0),
+        "active_coupon": safe_get_active_coupon(customer.get('id')),
     }
 
 
