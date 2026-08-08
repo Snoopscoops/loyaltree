@@ -53,9 +53,6 @@ function RegisterWarranty({API_BASE,session}){
   const [step,setStep]=useState(1)
   const [busy,setBusy]=useState(false)
   const [error,setError]=useState('')
-  const [memberDetail,setMemberDetail]=useState(null)
-  const [detailLoading,setDetailLoading]=useState(false)
-  const [showQr,setShowQr]=useState(null)
   const [result,setResult]=useState(null)
   const [form,setForm]=useState({
     name:'',phone:'',email:'',address:'',city:'Cauayan City',province:'Isabela',
@@ -252,6 +249,9 @@ function Dashboard({level,API_BASE,session,onLogout}){
   const [rows,setRows]=useState([])
   const [loading,setLoading]=useState(false)
   const [error,setError]=useState('')
+  const [memberDetail,setMemberDetail]=useState(null)
+  const [detailLoading,setDetailLoading]=useState(false)
+  const [showQr,setShowQr]=useState(null)
   const auth={'Authorization':`Bearer ${session.token}`}
 
   useEffect(()=>{
