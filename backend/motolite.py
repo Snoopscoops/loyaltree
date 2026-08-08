@@ -275,7 +275,7 @@ async def motolite_health():
 @motolite_router.post("/regions")
 async def create_region(
     payload: RegionCreate,
-    x_motolite_role: Optional[str] = Header(default=None),
+    x_motolite_role: Optional[str] = Header(default=None, alias="X-Motolite-Role", description="Staff access level: national, regional, or local"),
 ):
     if (x_motolite_role or "").lower() != ROLE_NATIONAL:
         raise HTTPException(status_code=403, detail="National access required")
@@ -309,7 +309,7 @@ async def list_regions():
 @motolite_router.post("/branches")
 async def create_branch(
     payload: BranchCreate,
-    x_motolite_role: Optional[str] = Header(default=None),
+    x_motolite_role: Optional[str] = Header(default=None, alias="X-Motolite-Role", description="Staff access level: national, regional, or local"),
 ):
     if (x_motolite_role or "").lower() != ROLE_NATIONAL:
         raise HTTPException(status_code=403, detail="National access required")
@@ -348,9 +348,9 @@ async def list_branches(region_public_id: Optional[str] = None):
 @motolite_router.post("/members")
 async def create_member(
     payload: MemberCreate,
-    x_motolite_role: Optional[str] = Header(default=None),
-    x_motolite_region: Optional[str] = Header(default=None),
-    x_motolite_branch: Optional[str] = Header(default=None),
+    x_motolite_role: Optional[str] = Header(default=None, alias="X-Motolite-Role", description="Staff access level: national, regional, or local"),
+    x_motolite_region: Optional[str] = Header(default=None, alias="X-Motolite-Region", description="Region public_id. Required for regional staff."),
+    x_motolite_branch: Optional[str] = Header(default=None, alias="X-Motolite-Branch", description="Branch public_id. Required for local staff."),
 ):
     scope = _resolve_staff_scope(
         x_motolite_role,
@@ -443,9 +443,9 @@ async def update_member(member_public_id: str, payload: MemberUpdate):
 @motolite_router.get("/members")
 async def list_members(
     q: Optional[str] = None,
-    x_motolite_role: Optional[str] = Header(default=None),
-    x_motolite_region: Optional[str] = Header(default=None),
-    x_motolite_branch: Optional[str] = Header(default=None),
+    x_motolite_role: Optional[str] = Header(default=None, alias="X-Motolite-Role", description="Staff access level: national, regional, or local"),
+    x_motolite_region: Optional[str] = Header(default=None, alias="X-Motolite-Region", description="Region public_id. Required for regional staff."),
+    x_motolite_branch: Optional[str] = Header(default=None, alias="X-Motolite-Branch", description="Branch public_id. Required for local staff."),
 ):
     scope = _resolve_staff_scope(
         x_motolite_role,
@@ -520,9 +520,9 @@ async def create_vehicle(payload: VehicleCreate):
 @motolite_router.post("/batteries")
 async def register_battery(
     payload: BatteryCreate,
-    x_motolite_role: Optional[str] = Header(default=None),
-    x_motolite_region: Optional[str] = Header(default=None),
-    x_motolite_branch: Optional[str] = Header(default=None),
+    x_motolite_role: Optional[str] = Header(default=None, alias="X-Motolite-Role", description="Staff access level: national, regional, or local"),
+    x_motolite_region: Optional[str] = Header(default=None, alias="X-Motolite-Region", description="Region public_id. Required for regional staff."),
+    x_motolite_branch: Optional[str] = Header(default=None, alias="X-Motolite-Branch", description="Branch public_id. Required for local staff."),
 ):
     _resolve_staff_scope(
         x_motolite_role,
@@ -723,9 +723,9 @@ async def verify_warranty_qr(token: str):
 @motolite_router.post("/warranty-actions")
 async def create_warranty_action(
     payload: WarrantyActionCreate,
-    x_motolite_role: Optional[str] = Header(default=None),
-    x_motolite_region: Optional[str] = Header(default=None),
-    x_motolite_branch: Optional[str] = Header(default=None),
+    x_motolite_role: Optional[str] = Header(default=None, alias="X-Motolite-Role", description="Staff access level: national, regional, or local"),
+    x_motolite_region: Optional[str] = Header(default=None, alias="X-Motolite-Region", description="Region public_id. Required for regional staff."),
+    x_motolite_branch: Optional[str] = Header(default=None, alias="X-Motolite-Branch", description="Branch public_id. Required for local staff."),
 ):
     scope = _resolve_staff_scope(
         x_motolite_role,
@@ -899,7 +899,7 @@ def _dashboard_counts(branch_ids: Optional[List[str]] = None):
 
 @motolite_router.get("/dashboard/national")
 async def national_dashboard(
-    x_motolite_role: Optional[str] = Header(default=None),
+    x_motolite_role: Optional[str] = Header(default=None, alias="X-Motolite-Role", description="Staff access level: national, regional, or local"),
 ):
     if (x_motolite_role or "").lower() != ROLE_NATIONAL:
         raise HTTPException(status_code=403, detail="National access required.")
@@ -919,8 +919,8 @@ async def national_dashboard(
 @motolite_router.get("/dashboard/regional/{region_public_id}")
 async def regional_dashboard(
     region_public_id: str,
-    x_motolite_role: Optional[str] = Header(default=None),
-    x_motolite_region: Optional[str] = Header(default=None),
+    x_motolite_role: Optional[str] = Header(default=None, alias="X-Motolite-Role", description="Staff access level: national, regional, or local"),
+    x_motolite_region: Optional[str] = Header(default=None, alias="X-Motolite-Region", description="Region public_id. Required for regional staff."),
 ):
     role = (x_motolite_role or "").lower()
 
@@ -960,8 +960,8 @@ async def regional_dashboard(
 @motolite_router.get("/dashboard/local/{branch_public_id}")
 async def local_dashboard(
     branch_public_id: str,
-    x_motolite_role: Optional[str] = Header(default=None),
-    x_motolite_branch: Optional[str] = Header(default=None),
+    x_motolite_role: Optional[str] = Header(default=None, alias="X-Motolite-Role", description="Staff access level: national, regional, or local"),
+    x_motolite_branch: Optional[str] = Header(default=None, alias="X-Motolite-Branch", description="Branch public_id. Required for local staff."),
 ):
     role = (x_motolite_role or "").lower()
 
