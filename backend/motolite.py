@@ -200,16 +200,59 @@ def _require_roles(staff: dict, *roles):
         raise HTTPException(status_code=403, detail="You do not have permission for this action.")
 
 
-def _can_access_branch(staff: dict, branch_public_id: str) -> bool:
+def _scope_branch_ids(staff: dict) -> Optional[List[str]]:
+    """Return branch ids visible to the signed-in staff member.
+    None means national / unrestricted.
+    Regional = all branches in assigned region.
+    Local = all active branches in the city of the staff member's assigned branch.
+    """
     role = staff.get("role")
+    db = _supabase()
+
     if role == ROLE_NATIONAL:
-        return True
-    if role == ROLE_LOCAL:
-        return staff.get("branch_public_id") == branch_public_id
+        return None
+
     if role == ROLE_REGIONAL:
-        branch = _get_one("motolite_branches", "public_id", branch_public_id)
-        return bool(branch and branch.get("region_public_id") == staff.get("region_public_id"))
-    return False
+        rows = (
+            db.table("motolite_branches")
+            .select("public_id")
+            .eq("region_public_id", staff.get("region_public_id"))
+            .execute()
+            .data
+            or []
+        )
+        return [r["public_id"] for r in rows if r.get("public_id")]
+
+    if role == ROLE_LOCAL:
+        home = _get_one(
+            "motolite_branches",
+            "public_id",
+            staff.get("branch_public_id"),
+        )
+        if not home:
+            return []
+
+        city = (home.get("city") or "").strip()
+        if not city:
+            # Safe fallback for older branch rows with no city.
+            return [staff.get("branch_public_id")] if staff.get("branch_public_id") else []
+
+        rows = (
+            db.table("motolite_branches")
+            .select("public_id,city")
+            .eq("city", city)
+            .execute()
+            .data
+            or []
+        )
+        return [r["public_id"] for r in rows if r.get("public_id")]
+
+    return []
+
+
+def _can_access_branch(staff: dict, branch_public_id: str) -> bool:
+    visible = _scope_branch_ids(staff)
+    return visible is None or branch_public_id in visible
 
 
 class LoginRequest(BaseModel):
@@ -428,6 +471,8 @@ async def create_branch(payload: BranchCreate, staff: dict = Depends(current_sta
 
 
 def _branch_for_staff(staff: dict, requested: Optional[str]) -> Optional[str]:
+    # A Local account can SEE its entire city, but registrations are recorded
+    # against that employee's assigned/home branch for accountability.
     if staff["role"] == ROLE_LOCAL:
         return staff.get("branch_public_id")
     if requested and not _can_access_branch(staff, requested):
@@ -448,17 +493,23 @@ async def create_member(payload: MemberCreate, staff: dict = Depends(current_sta
 
 @motolite_router.get("/members")
 async def list_members(q: Optional[str] = None, staff: dict = Depends(current_staff)):
-    db = _supabase(); query = db.table("motolite_members").select("*")
-    if staff["role"] == ROLE_LOCAL:
-        query = query.eq("preferred_branch_public_id", staff.get("branch_public_id"))
-    elif staff["role"] == ROLE_REGIONAL:
-        bs = db.table("motolite_branches").select("public_id").eq("region_public_id", staff.get("region_public_id")).execute().data or []
-        ids = [b["public_id"] for b in bs]
-        if not ids: return []
-        query = query.in_("preferred_branch_public_id", ids)
+    db = _supabase()
+    query = db.table("motolite_members").select("*")
+    branch_ids = _scope_branch_ids(staff)
+    if branch_ids is not None:
+        if not branch_ids:
+            return []
+        query = query.in_("preferred_branch_public_id", branch_ids)
+
     rows = query.order("created_at", desc=True).limit(500).execute().data or []
     if q:
-        n=q.lower().strip(); rows=[r for r in rows if n in str(r.get("name","")).lower() or n in str(r.get("phone","")).lower() or n in str(r.get("member_number","")).lower()]
+        n = q.lower().strip()
+        rows = [
+            r for r in rows
+            if n in str(r.get("name", "")).lower()
+            or n in str(r.get("phone", "")).lower()
+            or n in str(r.get("member_number", "")).lower()
+        ]
     return rows
 
 
@@ -509,6 +560,43 @@ def _warranty_response(wid: str):
     return {"warranty":{**w,"computed_status":computed},"member":_get_one("motolite_members","public_id",w.get("member_public_id")),"battery":_get_one("motolite_batteries","public_id",w.get("battery_public_id")),"vehicle":_get_one("motolite_vehicles","public_id",w.get("vehicle_public_id")) if w.get("vehicle_public_id") else None,"original_branch":_get_one("motolite_branches","public_id",w.get("original_branch_public_id")),"history":db.table("motolite_warranty_actions").select("*").eq("warranty_public_id",wid).order("created_at",desc=True).execute().data or []}
 
 
+
+@motolite_router.get("/batteries")
+async def list_batteries(staff: dict = Depends(current_staff)):
+    db = _supabase()
+    query = db.table("motolite_batteries").select("*")
+    branch_ids = _scope_branch_ids(staff)
+    if branch_ids is not None:
+        if not branch_ids:
+            return []
+        query = query.in_("original_branch_public_id", branch_ids)
+    return query.order("created_at", desc=True).limit(500).execute().data or []
+
+
+@motolite_router.get("/warranties")
+async def list_warranties(staff: dict = Depends(current_staff)):
+    db = _supabase()
+    query = db.table("motolite_warranties").select("*")
+    branch_ids = _scope_branch_ids(staff)
+    if branch_ids is not None:
+        if not branch_ids:
+            return []
+        query = query.in_("original_branch_public_id", branch_ids)
+    return query.order("created_at", desc=True).limit(500).execute().data or []
+
+
+@motolite_router.get("/warranty-actions")
+async def list_warranty_actions(staff: dict = Depends(current_staff)):
+    db = _supabase()
+    query = db.table("motolite_warranty_actions").select("*")
+    branch_ids = _scope_branch_ids(staff)
+    if branch_ids is not None:
+        if not branch_ids:
+            return []
+        query = query.in_("servicing_branch_public_id", branch_ids)
+    return query.order("created_at", desc=True).limit(500).execute().data or []
+
+
 @motolite_router.get("/warranties/{warranty_public_id}")
 async def get_warranty(warranty_public_id: str, staff: dict = Depends(current_staff)):
     w=_require_record("motolite_warranties",warranty_public_id,"Warranty")
@@ -556,7 +644,15 @@ async def dashboard(staff: dict = Depends(current_staff)):
     if role==ROLE_REGIONAL:
         bs=db.table("motolite_branches").select("public_id").eq("region_public_id",staff.get("region_public_id")).execute().data or []; ids=[b["public_id"] for b in bs]
         return {"scope":"regional","region_public_id":staff.get("region_public_id"),"branches":len(ids),**_dashboard_counts(ids)}
-    return {"scope":"local","branch":_get_one("motolite_branches","public_id",staff.get("branch_public_id")),**_dashboard_counts([staff.get("branch_public_id")])}
+    home_branch = _get_one("motolite_branches","public_id",staff.get("branch_public_id"))
+    ids = _scope_branch_ids(staff) or []
+    return {
+        "scope":"local",
+        "branch":home_branch,
+        "city": (home_branch or {}).get("city"),
+        "branches": len(ids),
+        **_dashboard_counts(ids),
+    }
 
 
 def _wallet_payload(wid: str):

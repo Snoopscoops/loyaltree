@@ -244,11 +244,147 @@ function StaffManagement({API_BASE,session}){
 
 const dash={national:['National Dashboard','Philippines',['1,284,493','982,403','8,241','4,382']],regional:['Regional Dashboard','Region II',['82,103','64,280','42','531']],local:['Local Dashboard','Cauayan City Branch',['2,842','2,191','184','12']]}
 function Dashboard({level,API_BASE,session,onLogout}){
-  const [view,setView]=useState('overview'),[data,setData]=useState(null)
-  React.useEffect(()=>{fetch(`${API_BASE}/api/v1/motolite/dashboard`,{headers:{Authorization:`Bearer ${session.token}`}}).then(r=>r.json()).then(setData).catch(()=>{})},[])
+  const [view,setView]=useState('overview')
+  const [data,setData]=useState(null)
+  const [rows,setRows]=useState([])
+  const [loading,setLoading]=useState(false)
+  const [error,setError]=useState('')
+  const auth={'Authorization':`Bearer ${session.token}`}
+
+  useEffect(()=>{
+    fetch(`${API_BASE}/api/v1/motolite/dashboard`,{headers:auth})
+      .then(r=>r.json()).then(setData).catch(()=>{})
+  },[API_BASE,session.token])
+
+  useEffect(()=>{
+    if(!['members','warranties','batteries','claims'].includes(view))return
+    const endpoint={
+      members:'members',
+      warranties:'warranties',
+      batteries:'batteries',
+      claims:'warranty-actions'
+    }[view]
+    setLoading(true);setError('')
+    fetch(`${API_BASE}/api/v1/motolite/${endpoint}`,{headers:auth})
+      .then(async r=>{
+        const body=await r.json()
+        if(!r.ok)throw new Error(body.detail||'Could not load records')
+        return body
+      })
+      .then(x=>setRows(Array.isArray(x)?x:[]))
+      .catch(e=>{setRows([]);setError(e.message)})
+      .finally(()=>setLoading(false))
+  },[view,API_BASE,session.token])
+
   const title=level==='national'?'National Dashboard':level==='regional'?'Regional Dashboard':'Local Dashboard'
-  const stats=data?[["Members",data.members],["Active Warranties",data.active_warranties],[level==='national'?"Branches":level==='regional'?"Branches":"Warranties",level==='local'?data.warranties:data.branches],["Claims",data.claims]]:[["Members","—"],["Active Warranties","—"],["Warranties","—"],["Claims","—"]]
-  return <div className="dash"><aside><img src={motoliteLogo}/><small>{level.toUpperCase()} ACCESS</small><button className={view==='overview'?'current':''} onClick={()=>setView('overview')}>Overview</button>{level!=='local'&&<button className={view==='staff'?'current':''} onClick={()=>setView('staff')}>Staff Management</button>}<button>Members</button><button>Warranties</button><button>Batteries</button><button>Claims & Replacements</button><button className="bottom" onClick={()=>go('/motolite')}>Public Website</button><button onClick={onLogout}>Sign Out</button></aside><main><span className="kicker">{session.staff.full_name||level.toUpperCase()}</span><div className="dashTitleRow"><h1>{title}</h1><button className="redBtn" onClick={()=>go('/motolite/register')}>+ Register Warranty</button></div>{view==='staff'?<StaffManagement API_BASE={API_BASE} session={session}/>:<><div className="stats">{stats.map(([a,b])=><div key={a}><span>{a}</span><b>{b}</b><small>Current database</small></div>)}</div><div className="dashPanels"><section><h3>Access Scope</h3><p>Your signed-in account controls which region and branch records you can access. Roles can no longer be selected manually from the browser.</p></section><section><h3>Warranty Health</h3><strong className="health">{data?.warranties?Math.round((data.active_warranties/data.warranties)*100):0}%</strong><p>active warranties in your authorized scope.</p><div className="bar"><i/></div></section></div></>}</main></div>
+  const stats=data?[
+    ["Members",data.members],
+    ["Active Warranties",data.active_warranties],
+    [level==='national'||level==='regional'?"Branches":"Warranties",level==='local'?data.warranties:data.branches],
+    ["Claims",data.claims]
+  ]:[["Members","—"],["Active Warranties","—"],["Warranties","—"],["Claims","—"]]
+
+  function RecordTable(){
+    if(loading)return <div className="recordState">Loading records…</div>
+    if(error)return <div className="formError">{error}</div>
+    if(!rows.length)return <div className="recordState">No records found in your authorized scope.</div>
+
+    if(view==='members')return <div className="recordsTable">
+      <div className="recordsHead"><span>Member</span><span>Contact</span><span>Location</span><span>Member No.</span></div>
+      {rows.map(r=><div className="recordsRow" key={r.public_id}>
+        <span><b>{r.name}</b><small>{r.public_id}</small></span>
+        <span>{r.phone||'—'}<small>{r.email||''}</small></span>
+        <span>{[r.city,r.province].filter(Boolean).join(', ')||'—'}</span>
+        <span>{r.member_number||'—'}</span>
+      </div>)}
+    </div>
+
+    if(view==='warranties')return <div className="recordsTable">
+      <div className="recordsHead"><span>Warranty</span><span>Status</span><span>Start</span><span>Expires</span></div>
+      {rows.map(r=><div className="recordsRow" key={r.public_id}>
+        <span><b>{r.public_id}</b><small>{r.battery_public_id}</small></span>
+        <span><b className="statusText">{(r.status||'').toUpperCase()}</b></span>
+        <span>{r.start_date||'—'}</span><span>{r.expires_at||'—'}</span>
+      </div>)}
+    </div>
+
+    if(view==='batteries')return <div className="recordsTable">
+      <div className="recordsHead"><span>Battery</span><span>Serial</span><span>Installed</span><span>Status</span></div>
+      {rows.map(r=><div className="recordsRow" key={r.public_id}>
+        <span><b>{r.product_name}</b><small>{r.model_code||''}</small></span>
+        <span>{r.serial_number}</span><span>{r.installation_date||r.purchase_date||'—'}</span>
+        <span>{r.status||'—'}</span>
+      </div>)}
+    </div>
+
+    return <div className="recordsTable">
+      <div className="recordsHead"><span>Action</span><span>Warranty</span><span>Result</span><span>Date</span></div>
+      {rows.map(r=><div className="recordsRow" key={r.public_id}>
+        <span><b>{(r.service_type||'').replaceAll('_',' ')}</b></span>
+        <span>{r.warranty_public_id||'—'}</span><span>{r.result||r.notes||'—'}</span>
+        <span>{r.created_at?new Date(r.created_at).toLocaleDateString():'—'}</span>
+      </div>)}
+    </div>
+  }
+
+  return <div className="dash">
+    <aside>
+      <img src={motoliteLogo}/>
+      <small>{level.toUpperCase()} ACCESS</small>
+      <button className={view==='overview'?'current':''} onClick={()=>setView('overview')}>Overview</button>
+      {level!=='local'&&<button className={view==='staff'?'current':''} onClick={()=>setView('staff')}>Staff Management</button>}
+      <button className={view==='members'?'current':''} onClick={()=>setView('members')}>Members</button>
+      <button className={view==='warranties'?'current':''} onClick={()=>setView('warranties')}>Warranties</button>
+      <button className={view==='batteries'?'current':''} onClick={()=>setView('batteries')}>Batteries</button>
+      <button className={view==='claims'?'current':''} onClick={()=>setView('claims')}>Claims & Replacements</button>
+      <button className="bottom" onClick={()=>go('/motolite')}>Public Website</button>
+      <button onClick={onLogout}>Sign Out</button>
+    </aside>
+    <main>
+      <span className="kicker">
+        {session.staff.full_name||level.toUpperCase()}
+        {level==='local'&&data?.city?` · ${data.city}`:''}
+      </span>
+
+      <div className="dashTitleRow">
+        <h1>{
+          view==='overview'?title:
+          view==='staff'?'Staff Management':
+          view==='members'?'Members':
+          view==='warranties'?'Warranties':
+          view==='batteries'?'Batteries':'Claims & Replacements'
+        }</h1>
+        <button className="redBtn" onClick={()=>go('/motolite/register')}>+ Register Warranty</button>
+      </div>
+
+      {view==='staff'
+        ? <StaffManagement API_BASE={API_BASE} session={session}/>
+        : view!=='overview'
+          ? <section className="recordPanel"><RecordTable/></section>
+          : <>
+              <div className="stats">{stats.map(([a,b])=><div key={a}><span>{a}</span><b>{b}</b><small>Current database</small></div>)}</div>
+              <div className="dashPanels">
+                <section>
+                  <h3>Access Scope</h3>
+                  <p>{
+                    level==='national'
+                      ? 'You can view all Motolite member, battery, warranty and service records nationwide.'
+                      : level==='regional'
+                        ? 'You can view all Motolite records from branches inside your assigned region.'
+                        : `You can view all Motolite records from branches within ${data?.city||'your assigned city'}. Registrations are still recorded under your assigned home branch.`
+                  }</p>
+                </section>
+                <section>
+                  <h3>Warranty Health</h3>
+                  <strong className="health">{data?.warranties?Math.round((data.active_warranties/data.warranties)*100):0}%</strong>
+                  <p>active warranties in your authorized scope.</p>
+                  <div className="bar"><i style={{width:`${data?.warranties?Math.round((data.active_warranties/data.warranties)*100):0}%`}}/></div>
+                </section>
+              </div>
+            </>
+      }
+    </main>
+  </div>
 }
 
 export default function MotoliteApp({API_BASE=''}){
