@@ -2208,6 +2208,80 @@ def sign_pkpass_manifest(manifest_bytes: bytes) -> Optional[bytes]:
         print(f"APPLE WALLET: manifest signing error: {e}")
         return None
 
+def _fetch_image_bytes(url: Optional[str], timeout: float = 5.0) -> Optional[bytes]:
+    """Best-effort download of a business-uploaded image (logo or hero
+    photo) for baking into the Apple Wallet pass. Returns None on any
+    failure (missing url, network error, non-200, unreadable image) so
+    callers can fall back to the generated placeholder instead of ever
+    failing pass generation over a bad/slow image URL."""
+    if not url:
+        return None
+    try:
+        import httpx
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            resp = client.get(url)
+            if resp.status_code == 200 and resp.content:
+                return resp.content
+    except Exception as e:
+        print(f"IMAGE FETCH error ({url}): {e}")
+    return None
+
+def apple_icon_from_logo_bytes(logo_bytes: bytes, size: int) -> Optional[bytes]:
+    """Center-crops the business's real logo to a square and composites it
+    onto white (Apple's icon slot has no reliable transparency handling
+    across devices) - used instead of generate_apple_icon_bytes's
+    initial-letter placeholder whenever a real logo is available."""
+    try:
+        img = Image.open(BytesIO(logo_bytes)).convert('RGBA')
+        w, h = img.size
+        side = min(w, h)
+        left, top = (w - side) // 2, (h - side) // 2
+        img = img.crop((left, top, left + side, top + side)).resize((size, size), Image.LANCZOS)
+        bg = Image.new('RGB', (size, size), (255, 255, 255))
+        bg.paste(img, (0, 0), img)
+        return _hero_to_png(bg)
+    except Exception as e:
+        print(f"APPLE ICON from logo error: {e}")
+        return None
+
+def apple_logo_from_image_bytes(logo_bytes: bytes, width: int, height: int) -> Optional[bytes]:
+    """Fits the business's real logo (preserving aspect ratio, transparent
+    padding) into the pass-header logo slot - used instead of
+    generate_apple_logo_bytes's generated wordmark whenever a real logo is
+    available."""
+    try:
+        img = Image.open(BytesIO(logo_bytes)).convert('RGBA')
+        img.thumbnail((width, height), Image.LANCZOS)
+        canvas = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+        canvas.paste(img, ((width - img.width) // 2, (height - img.height) // 2), img)
+        return _hero_to_png(canvas)
+    except Exception as e:
+        print(f"APPLE LOGO from image error: {e}")
+        return None
+
+def apple_strip_from_image_bytes(image_bytes: bytes, width: int, height: int) -> Optional[bytes]:
+    """Center-crops/resizes the business's real hero photo to the strip
+    banner's aspect ratio - used instead of generate_apple_strip_bytes's
+    procedurally-drawn gradient whenever the business has uploaded one."""
+    try:
+        img = Image.open(BytesIO(image_bytes)).convert('RGB')
+        src_ratio, dst_ratio = img.width / img.height, width / height
+        if src_ratio > dst_ratio:
+            new_w = int(img.height * dst_ratio)
+            left = (img.width - new_w) // 2
+            img = img.crop((left, 0, left + new_w, img.height))
+        else:
+            new_h = int(img.width / dst_ratio)
+            top = (img.height - new_h) // 2
+            img = img.crop((0, top, img.width, top + new_h))
+        img = img.resize((width, height), Image.LANCZOS)
+        buf = BytesIO()
+        img.save(buf, format='PNG')
+        return buf.getvalue()
+    except Exception as e:
+        print(f"APPLE STRIP from image error: {e}")
+        return None
+
 def generate_apple_icon_bytes(primary_color: str, business_name: str, size: int) -> bytes:
     """Solid primary_color square with the business's first initial - the
     same 'colored circle + initial' look used for customer avatars in the
@@ -2441,20 +2515,39 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
     biz_name = business.get('name', 'Loyalty')
     pass_json = build_apple_pass_json(customer, business, program, announcement)
 
+    # Real branding when the business has uploaded it - same source URLs
+    # Google Wallet already uses (see build_loyalty_class) - so both wallets
+    # end up matching. Each falls back to the existing generated placeholder
+    # on any missing URL, fetch failure, or unreadable image.
+    logo_url = business.get('logo_url') or ((program or {}).get('program_logo_url'))
+    logo_bytes = _fetch_image_bytes(logo_url)
+
+    icon_29 = apple_icon_from_logo_bytes(logo_bytes, 29) if logo_bytes else None
+    icon_58 = apple_icon_from_logo_bytes(logo_bytes, 58) if logo_bytes else None
+    icon_87 = apple_icon_from_logo_bytes(logo_bytes, 87) if logo_bytes else None
+    logo_160 = apple_logo_from_image_bytes(logo_bytes, 160, 50) if logo_bytes else None
+    logo_320 = apple_logo_from_image_bytes(logo_bytes, 320, 100) if logo_bytes else None
+    logo_480 = apple_logo_from_image_bytes(logo_bytes, 480, 150) if logo_bytes else None
+
     files = {
         'pass.json': json.dumps(pass_json).encode('utf-8'),
-        'icon.png': generate_apple_icon_bytes(primary_color, biz_name, 29),
-        'icon@2x.png': generate_apple_icon_bytes(primary_color, biz_name, 58),
-        'icon@3x.png': generate_apple_icon_bytes(primary_color, biz_name, 87),
-        'logo.png': generate_apple_logo_bytes(biz_name, 160, 50),
-        'logo@2x.png': generate_apple_logo_bytes(biz_name, 320, 100),
-        'logo@3x.png': generate_apple_logo_bytes(biz_name, 480, 150),
+        'icon.png': icon_29 or generate_apple_icon_bytes(primary_color, biz_name, 29),
+        'icon@2x.png': icon_58 or generate_apple_icon_bytes(primary_color, biz_name, 58),
+        'icon@3x.png': icon_87 or generate_apple_icon_bytes(primary_color, biz_name, 87),
+        'logo.png': logo_160 or generate_apple_logo_bytes(biz_name, 160, 50),
+        'logo@2x.png': logo_320 or generate_apple_logo_bytes(biz_name, 320, 100),
+        'logo@3x.png': logo_480 or generate_apple_logo_bytes(biz_name, 480, 150),
     }
     if design['show_background']:
+        hero_url = (program or {}).get('hero_image_url')
+        hero_bytes = _fetch_image_bytes(hero_url)
+        strip_375 = apple_strip_from_image_bytes(hero_bytes, 375, 123) if hero_bytes else None
+        strip_750 = apple_strip_from_image_bytes(hero_bytes, 750, 246) if hero_bytes else None
+        strip_1125 = apple_strip_from_image_bytes(hero_bytes, 1125, 369) if hero_bytes else None
         files.update({
-            'strip.png': generate_apple_strip_bytes(customer, business, program, 375, 123),
-            'strip@2x.png': generate_apple_strip_bytes(customer, business, program, 750, 246),
-            'strip@3x.png': generate_apple_strip_bytes(customer, business, program, 1125, 369),
+            'strip.png': strip_375 or generate_apple_strip_bytes(customer, business, program, 375, 123),
+            'strip@2x.png': strip_750 or generate_apple_strip_bytes(customer, business, program, 750, 246),
+            'strip@3x.png': strip_1125 or generate_apple_strip_bytes(customer, business, program, 1125, 369),
         })
 
     manifest = {name: hashlib.sha1(content).hexdigest() for name, content in files.items()}
