@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Literal, List
 
 from fastapi import APIRouter, HTTPException, Header, Depends
-from fastapi.responses import Response, RedirectResponse
+from fastapi.responses import Response, RedirectResponse, HTMLResponse
 from pydantic import BaseModel, Field
 from supabase import create_client, Client
 
@@ -499,7 +499,7 @@ async def register_battery(payload: BatteryCreate, staff: dict = Depends(current
         try: db.table("motolite_batteries").delete().eq("public_id",bid).execute()
         except Exception: pass
         raise
-    return {"battery":b,"warranty":w,"qr_verification_url":f"{MOTOLITE_BASE_URL}/api/v1/motolite/warranty/verify/{warranty['qr_token']}","wallet":{"apple_url":f"{MOTOLITE_BASE_URL}/api/v1/motolite/wallet/apple/{wid}","google_url":f"{MOTOLITE_BASE_URL}/api/v1/motolite/wallet/google/{wid}"}}
+    return {"battery":b,"warranty":w,"qr_verification_url":f"{MOTOLITE_BASE_URL}/api/v1/motolite/warranty/verify/{warranty['qr_token']}","wallet":{"landing_url":f"{MOTOLITE_BASE_URL}/api/v1/motolite/wallet/{wid}","qr_svg_url":f"{MOTOLITE_BASE_URL}/api/v1/motolite/wallet/qr/{wid}.svg","apple_url":f"{MOTOLITE_BASE_URL}/api/v1/motolite/wallet/apple/{wid}","google_url":f"{MOTOLITE_BASE_URL}/api/v1/motolite/wallet/google/{wid}"}}
 
 
 def _warranty_response(wid: str):
@@ -625,6 +625,192 @@ async def google_wallet(warranty_public_id: str):
         return RedirectResponse(url=f"https://pay.google.com/gp/v/save/{token}",status_code=302)
     except HTTPException: raise
     except Exception as e: raise HTTPException(status_code=500,detail=f"Google Wallet generation failed: {e}")
+
+
+
+@motolite_router.get("/wallet/qr/{warranty_public_id}.svg")
+async def motolite_wallet_qr(warranty_public_id: str):
+    """Scannable QR that opens the customer's Motolite Wallet landing page."""
+    _wallet_payload(warranty_public_id)
+
+    landing_url = (
+        f"{MOTOLITE_BASE_URL}/api/v1/motolite/wallet/"
+        f"{warranty_public_id}"
+    )
+
+    try:
+        import main as platform_main
+        svg = platform_main.generate_qr_svg(landing_url)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not generate Motolite wallet QR: {exc}",
+        )
+
+    return Response(
+        content=svg,
+        media_type="image/svg+xml",
+        headers={
+            "Cache-Control": "public, max-age=300",
+            "Content-Disposition": (
+                f'inline; filename="motolite-wallet-{warranty_public_id}.svg"'
+            ),
+        },
+    )
+
+
+@motolite_router.get("/wallet/{warranty_public_id}", response_class=HTMLResponse)
+async def motolite_wallet_landing_page(warranty_public_id: str):
+    """
+    Customer-facing mobile landing page reached by scanning the branch QR.
+    Offers both Apple Wallet and Google Wallet from one permanent QR.
+    """
+    payload = _wallet_payload(warranty_public_id)
+
+    apple_url = (
+        f"{MOTOLITE_BASE_URL}/api/v1/motolite/wallet/apple/"
+        f"{warranty_public_id}"
+    )
+    google_url = (
+        f"{MOTOLITE_BASE_URL}/api/v1/motolite/wallet/google/"
+        f"{warranty_public_id}"
+    )
+    verify_url = payload.get("qr_verification_url") or "#"
+
+    import html as html_lib
+
+    member_name = html_lib.escape(
+        str(payload.get("member_name") or "Motolite Member")
+    )
+    member_number = html_lib.escape(
+        str(payload.get("member_number") or "")
+    )
+    battery = html_lib.escape(
+        str(payload.get("battery_product") or "Motolite Battery")
+    )
+    model = html_lib.escape(
+        str(payload.get("battery_model") or "—")
+    )
+    serial_number = html_lib.escape(
+        str(payload.get("serial_number") or "—")
+    )
+    vehicle = html_lib.escape(
+        str(payload.get("vehicle") or "—")
+    )
+    plate = html_lib.escape(
+        str(payload.get("plate_number") or "—")
+    )
+    expires = html_lib.escape(
+        str(payload.get("warranty_expires_at") or "—")
+    )
+    status = html_lib.escape(
+        str(payload.get("warranty_status") or "active").upper()
+    )
+
+    return HTMLResponse(
+        content=f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Motolite Digital Warranty</title>
+<style>
+*{{box-sizing:border-box}}
+body{{
+  margin:0;background:#f3f3f3;color:#171717;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif
+}}
+.wrap{{max-width:520px;margin:0 auto;padding:24px 16px 44px}}
+.brand{{
+  background:#d71920;color:#fff;border-radius:18px 18px 0 0;
+  padding:24px;text-align:center
+}}
+.brand .word{{font-size:34px;font-weight:950;letter-spacing:-1.5px}}
+.brand .sub{{font-size:11px;letter-spacing:.16em;font-weight:800;color:#ffd400;margin-top:5px}}
+.card{{
+  background:#fff;border-radius:0 0 18px 18px;padding:24px;
+  box-shadow:0 16px 45px rgba(0,0,0,.10)
+}}
+.status{{
+  display:inline-block;padding:7px 11px;border-radius:999px;
+  background:#e8f8ee;color:#178144;font-size:11px;font-weight:900
+}}
+h1{{font-size:26px;margin:15px 0 3px}}
+.member{{font-size:12px;color:#777;font-weight:700}}
+.battery{{font-size:19px;font-weight:900;margin:24px 0 5px}}
+.meta{{border-top:1px solid #eee;margin-top:20px}}
+.row{{display:grid;grid-template-columns:130px 1fr;gap:12px;padding:12px 0;border-bottom:1px solid #eee;font-size:13px}}
+.row span{{color:#777}} .row b{{text-align:right}}
+.wallets{{display:grid;gap:11px;margin-top:22px}}
+.wallet{{
+  display:flex;align-items:center;justify-content:center;text-decoration:none;
+  padding:15px 16px;border-radius:9px;font-weight:900;font-size:15px
+}}
+.apple{{background:#000;color:#fff}}
+.google{{background:#fff;color:#111;border:1px solid #ddd}}
+.verify{{display:block;text-align:center;color:#d71920;font-weight:800;font-size:13px;margin-top:20px;text-decoration:none}}
+.help{{font-size:11px;color:#888;text-align:center;line-height:1.55;margin-top:22px}}
+.device-note{{background:#fff7d6;border:1px solid #f0dc79;padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:14px;display:none}}
+@media(max-width:390px){{.row{{grid-template-columns:1fr}}.row b{{text-align:left}}}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="device-note" id="device-note"></div>
+  <div class="brand">
+    <div class="word">MOTOLITE</div>
+    <div class="sub">DIGITAL WARRANTY</div>
+  </div>
+  <div class="card">
+    <span class="status">WARRANTY {status}</span>
+    <h1>{member_name}</h1>
+    <div class="member">{member_number}</div>
+
+    <div class="battery">{battery}</div>
+
+    <div class="meta">
+      <div class="row"><span>Battery Model</span><b>{model}</b></div>
+      <div class="row"><span>Serial Number</span><b>{serial_number}</b></div>
+      <div class="row"><span>Vehicle</span><b>{vehicle}</b></div>
+      <div class="row"><span>Plate Number</span><b>{plate}</b></div>
+      <div class="row"><span>Warranty Until</span><b>{expires}</b></div>
+    </div>
+
+    <div class="wallets" id="wallets">
+      <a class="wallet apple" id="apple-wallet" href="{apple_url}"> Add to Apple Wallet</a>
+      <a class="wallet google" id="google-wallet" href="{google_url}">G&nbsp;&nbsp;Add to Google Wallet</a>
+    </div>
+
+    <a class="verify" href="{verify_url}">View verified warranty record →</a>
+    <div class="help">
+      This QR is linked to this registered Motolite warranty.
+      You can reopen this page anytime and add the card to a supported wallet.
+    </div>
+  </div>
+</div>
+<script>
+(function(){{
+  var ua=navigator.userAgent||"";
+  var ios=/iPhone|iPad|iPod/i.test(ua);
+  var android=/Android/i.test(ua);
+  var apple=document.getElementById("apple-wallet");
+  var google=document.getElementById("google-wallet");
+  var note=document.getElementById("device-note");
+
+  if(ios){{
+    apple.parentNode.insertBefore(apple, google);
+    note.textContent="iPhone detected — Apple Wallet is recommended for this device.";
+    note.style.display="block";
+  }}else if(android){{
+    google.parentNode.insertBefore(google, apple);
+    note.textContent="Android detected — Google Wallet is recommended for this device.";
+    note.style.display="block";
+  }}
+}})();
+</script>
+</body>
+</html>"""
+    )
 
 
 @motolite_router.get("/emergency")

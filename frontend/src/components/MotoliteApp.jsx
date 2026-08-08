@@ -131,6 +131,16 @@ function RegisterWarranty({API_BASE,session}){
           <div><span>Vehicle</span><b>{result.vehicle.make} {result.vehicle.model}</b></div>
           <div><span>Warranty Until</span><b>{w.expires_at}</b></div>
         </div>
+        <div className="customerQrBox">
+          <span className="qrLabel">CUSTOMER WALLET QR</span>
+          <img
+            src={result.wallet.qr_svg_url}
+            alt="Scan to add Motolite warranty to Apple Wallet or Google Wallet"
+            className="customerWalletQr"
+          />
+          <strong>Scan with the customer's phone</strong>
+          <p>The QR opens a secure Motolite page where the customer can choose Apple Wallet or Google Wallet.</p>
+        </div>
         <div className="walletBtns successWallets">
           <a className="walletApple" href={result.wallet.apple_url}> Add to Apple Wallet</a>
           <a className="walletGoogle" href={result.wallet.google_url} target="_blank" rel="noreferrer">G Add to Google Wallet</a>

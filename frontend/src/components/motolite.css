@@ -45,3 +45,36 @@
 .staffRow{display:grid;grid-template-columns:1.4fr 1.2fr .7fr .7fr .6fr;gap:10px;align-items:center;padding:13px 15px;border-top:1px solid #eee;font-size:13px}
 .staffRow:first-child{border-top:0}.staffHeader{background:#f7f7f7}.staffRow button{border:0;background:none;color:#d71920;font-weight:800;text-align:left}.rolePill{text-transform:capitalize;font-weight:800}
 @media(max-width:800px){.staffHead{flex-direction:column}.staffRow{grid-template-columns:1fr}.staffHeader{display:none}}
+
+
+/* Customer Wallet QR handoff */
+.customerQrBox{
+  margin:26px auto 18px;
+  max-width:330px;
+  padding:22px;
+  border:1px solid #e9e9e9;
+  border-radius:14px;
+  background:#fafafa;
+  text-align:center
+}
+.qrLabel{
+  display:block;
+  color:#d71920;
+  font-size:10px;
+  letter-spacing:.14em;
+  font-weight:900;
+  margin-bottom:14px
+}
+.customerWalletQr{
+  display:block;
+  width:210px;
+  height:210px;
+  max-width:100%;
+  margin:0 auto 14px;
+  background:#fff;
+  padding:8px;
+  border-radius:8px;
+  border:1px solid #eee
+}
+.customerQrBox strong{display:block;font-size:14px}
+.customerQrBox p{font-size:12px;color:#777;line-height:1.55;margin:7px 0 0}
