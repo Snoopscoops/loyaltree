@@ -48,8 +48,8 @@ function Benefit({icon,title}){return <div className="benefit"><span>{icon}</spa
 function Warranty(){return <div className="portal"><Header/><main className="section"><span className="kicker">MY MOTOLITE</span><h1 className="pageTitle">Digital Warranty</h1><div className="warrantyGrid"><div className="walletCard"><img src={motoliteLogo}/><small>DIGITAL WARRANTY MEMBER</small><h2>{sample.member}</h2><p>{sample.memberNo}</p><h3>{sample.battery}</h3><strong>● WARRANTY ACTIVE</strong><div className="qr">{Array.from({length:64}).map((_,i)=><i key={i} className={(i*7+i%5)%3?'on':''}/>)}</div><em>Scan at an authorized Motolite branch</em></div><div><div className="info"><div className="infoHead"><h3>Battery Details</h3><span>ACTIVE</span></div>{[['Battery',sample.battery],['Serial Number',sample.serial],['Vehicle',sample.vehicle],['Plate Number',sample.plate],['Installed',sample.installed],['Warranty Until',sample.expires],['Original Branch',sample.branch]].map(([a,b])=><div className="row" key={a}><span>{a}</span><b>{b}</b></div>)}</div><div className="walletBtns"><button> Add to Apple Wallet</button><button>G Add to Google Wallet</button></div><div className="tiles"><a href={`tel:${hotline}`}>☎<b>Emergency Assistance</b><span>{hotline}</span></a><button>◎<b>Find Nearest Branch</b><span>Use current location</span></button><button>▣<b>Service History</b><span>View warranty activity</span></button></div></div></div></main></div>}
 
 
-function RegisterWarranty({API_BASE}){
-  const branchId = 'mtb_07ab3a7504aa4ffeba114959f10e305e'
+function RegisterWarranty({API_BASE,session}){
+  const branchId = session?.staff?.branch_public_id || ''
   const [step,setStep]=useState(1)
   const [busy,setBusy]=useState(false)
   const [error,setError]=useState('')
@@ -66,8 +66,7 @@ function RegisterWarranty({API_BASE}){
   const set=(k,v)=>setForm(f=>({...f,[k]:v}))
   const headers={
     'Content-Type':'application/json',
-    'X-Motolite-Role':'local',
-    'X-Motolite-Branch':branchId
+    'Authorization':`Bearer ${session?.token||''}`
   }
 
   async function submit(){
@@ -143,7 +142,7 @@ function RegisterWarranty({API_BASE}){
   }
 
   return <div className="portal"><Header/><main className="section registerPage">
-    <span className="kicker">CAUAYAN CITY BRANCH</span>
+    <span className="kicker">{session?.staff?.role==='local'?'LOCAL BRANCH':session?.staff?.role==='regional'?'REGIONAL OFFICE':'NATIONAL OFFICE'}</span>
     <h1 className="pageTitle">Register Digital Warranty</h1>
     <p className="registerLead">Register the customer, vehicle and Motolite battery. The warranty is created automatically and can be added to Apple Wallet or Google Wallet.</p>
 
@@ -202,9 +201,59 @@ function Field({label,value,setValue,type='text',required=false}){
   return <label className="field"><span>{label}{required?' *':''}</span><input type={type} value={value} onChange={e=>setValue(e.target.value)}/></label>
 }
 
-function Login(){const [role,setRole]=useState('local'); const login=()=>go('/motolite/'+role); return <div className="login"><div className="loginBrand"><img src={motoliteLogo}/><h1>Warranty Operations</h1><p>National · Regional · Local</p></div><div className="loginBox"><h2>Staff Login</h2><p>Sample role routing for the warranty platform.</p><label>Access Level</label><div className="roles">{['national','regional','local'].map(r=><button key={r} onClick={()=>setRole(r)} className={role===r?'sel':''}>{r}</button>)}</div><label>Email</label><input placeholder="staff@motolite.com"/><label>Password</label><input type="password" placeholder="••••••••"/><button className="redBtn full" onClick={login}>Login</button><button className="back" onClick={()=>go('/motolite')}>← Back to website</button></div></div>}
+function Login({API_BASE,onLogin}){
+  const [username,setUsername]=useState('')
+  const [password,setPassword]=useState('')
+  const [busy,setBusy]=useState(false)
+  const [error,setError]=useState('')
+  async function login(){
+    setBusy(true);setError('')
+    try{
+      const r=await fetch(`${API_BASE}/api/v1/motolite/auth/login`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password})})
+      const data=await r.json()
+      if(!r.ok)throw new Error(data.detail||'Login failed')
+      onLogin(data)
+      go(`/motolite/${data.staff.role}`)
+    }catch(e){setError(e.message||String(e))}finally{setBusy(false)}
+  }
+  return <div className="login"><div className="loginBrand"><img src={motoliteLogo}/><h1>Warranty Operations</h1><p>National · Regional · Local</p></div><div className="loginBox"><h2>Staff Login</h2><p>Your account determines your National, Regional or Local access automatically.</p>{error&&<div className="formError">{error}</div>}<label>Username</label><input value={username} onChange={e=>setUsername(e.target.value)} placeholder="cauayan.admin"/><label>Password</label><input value={password} onChange={e=>setPassword(e.target.value)} type="password" placeholder="••••••••" onKeyDown={e=>e.key==='Enter'&&login()}/><button className="redBtn full" disabled={busy||!username||!password} onClick={login}>{busy?'Signing in...':'Login'}</button><button className="back" onClick={()=>go('/motolite')}>← Back to website</button></div></div>
+}
+
+function StaffManagement({API_BASE,session}){
+  const [staff,setStaff]=useState([]),[regions,setRegions]=useState([]),[branches,setBranches]=useState([]),[error,setError]=useState(''),[show,setShow]=useState(false)
+  const [f,setF]=useState({full_name:'',username:'',password:'',email:'',role:session.staff.role==='regional'?'local':'regional',region_public_id:session.staff.region_public_id||'',branch_public_id:''})
+  const auth={'Authorization':`Bearer ${session.token}`,'Content-Type':'application/json'}
+  async function load(){try{const [a,r,b]=await Promise.all([fetch(`${API_BASE}/api/v1/motolite/staff`,{headers:auth}),fetch(`${API_BASE}/api/v1/motolite/regions`),fetch(`${API_BASE}/api/v1/motolite/branches`)]);const ad=await a.json();if(!a.ok)throw new Error(ad.detail||'Could not load staff');setStaff(ad);setRegions(await r.json());setBranches(await b.json())}catch(e){setError(e.message)}}
+  React.useEffect(()=>{load()},[])
+  const set=(k,v)=>setF(x=>({...x,[k]:v}))
+  async function create(){setError('');const body={...f,region_public_id:f.role==='national'?null:(f.region_public_id||null),branch_public_id:f.role==='local'?(f.branch_public_id||null):null};const r=await fetch(`${API_BASE}/api/v1/motolite/staff`,{method:'POST',headers:auth,body:JSON.stringify(body)});const d=await r.json();if(!r.ok){setError(d.detail||'Could not create account');return}setShow(false);setF(x=>({...x,full_name:'',username:'',password:'',email:'',branch_public_id:''}));load()}
+  async function toggle(x){await fetch(`${API_BASE}/api/v1/motolite/staff/${x.public_id}/status`,{method:'PATCH',headers:auth,body:JSON.stringify({is_active:!x.is_active})});load()}
+  const allowedBranches=branches.filter(b=>!f.region_public_id||b.region_public_id===f.region_public_id)
+  return <section className="staffPanel"><div className="staffHead"><div><h2>Staff Accounts</h2><p>{session.staff.role==='national'?'Create National, Regional and Local accounts.':'Create and manage Local accounts in your region.'}</p></div><button className="redBtn" onClick={()=>setShow(!show)}>+ Create Account</button></div>{error&&<div className="formError">{error}</div>}{show&&<div className="staffCreate"><div className="formGrid"><Field label="Full Name" value={f.full_name} setValue={v=>set('full_name',v)} required/><Field label="Username" value={f.username} setValue={v=>set('username',v)} required/><Field label="Temporary Password" value={f.password} setValue={v=>set('password',v)} required/><Field label="Email" value={f.email} setValue={v=>set('email',v)}/><label className="field"><span>Role *</span><select value={f.role} onChange={e=>set('role',e.target.value)}>{session.staff.role==='national'&&<option value="national">National</option>}{session.staff.role==='national'&&<option value="regional">Regional</option>}<option value="local">Local</option></select></label>{f.role!=='national'&&<label className="field"><span>Region *</span><select value={f.region_public_id} onChange={e=>set('region_public_id',e.target.value)} disabled={session.staff.role==='regional'}><option value="">Select region</option>{regions.map(r=><option key={r.public_id} value={r.public_id}>{r.name}</option>)}</select></label>}{f.role==='local'&&<label className="field"><span>Branch *</span><select value={f.branch_public_id} onChange={e=>set('branch_public_id',e.target.value)}><option value="">Select branch</option>{allowedBranches.map(b=><option key={b.public_id} value={b.public_id}>{b.name}</option>)}</select></label>}</div><div className="formActions"><span/><button className="redBtn" onClick={create}>Create Staff Account</button></div></div>}<div className="staffTable"><div className="staffRow staffHeader"><b>Name</b><b>Username</b><b>Role</b><b>Status</b><b>Action</b></div>{staff.map(x=><div className="staffRow" key={x.public_id}><span>{x.full_name||'—'}</span><span>{x.username}</span><span className="rolePill">{x.role}</span><span>{x.is_active?'Active':'Disabled'}</span><button onClick={()=>toggle(x)}>{x.is_active?'Disable':'Enable'}</button></div>)}</div></section>
+}
 
 const dash={national:['National Dashboard','Philippines',['1,284,493','982,403','8,241','4,382']],regional:['Regional Dashboard','Region II',['82,103','64,280','42','531']],local:['Local Dashboard','Cauayan City Branch',['2,842','2,191','184','12']]}
-function Dashboard({level}){const [title,sub,s]=dash[level]; return <div className="dash"><aside><img src={motoliteLogo}/><small>{level.toUpperCase()} ACCESS</small>{['Overview','Members','Warranties','Batteries','Claims & Replacements','Notifications','Reports'].map((x,i)=><button className={i===0?'current':''} key={x}>{x}</button>)}<button className="bottom" onClick={()=>go('/motolite')}>Public Website</button></aside><main><span className="kicker">{sub}</span><div className="dashTitleRow"><h1>{title}</h1>{level==='local'&&<button className="redBtn" onClick={()=>go('/motolite/register')}>+ Register Warranty</button>}</div><div className="stats">{[['Members',s[0]],['Active Warranties',s[1]],[level==='local'?'Expiring in 30 Days':level==='regional'?'Branches':'Claims This Month',s[2]],[level==='local'?'Claims':'Replacements',s[3]]].map(([a,b])=><div><span>{a}</span><b>{b}</b><small>Live sample data</small></div>)}</div><div className="dashPanels"><section><h3>Recent Warranty Activity</h3>{[['MTL-2026-184201','Gold DIN66','Warranty activated'],['MTL-2026-184199','Excel N70','Battery inspection'],['MTL-2026-184188','Enduro NS40','Replacement approved'],['MTL-2026-184173','Gold DIN55','Warranty verified']].map(x=><div className="activity"><b>{x[0]}</b><span>{x[1]}</span><em>{x[2]}</em></div>)}</section><section><h3>Warranty Health</h3><strong className="health">92.4%</strong><p>of registered warranties in this scope are currently active.</p><div className="bar"><i/></div></section></div></main></div>}
+function Dashboard({level,API_BASE,session,onLogout}){
+  const [view,setView]=useState('overview'),[data,setData]=useState(null)
+  React.useEffect(()=>{fetch(`${API_BASE}/api/v1/motolite/dashboard`,{headers:{Authorization:`Bearer ${session.token}`}}).then(r=>r.json()).then(setData).catch(()=>{})},[])
+  const title=level==='national'?'National Dashboard':level==='regional'?'Regional Dashboard':'Local Dashboard'
+  const stats=data?[["Members",data.members],["Active Warranties",data.active_warranties],[level==='national'?"Branches":level==='regional'?"Branches":"Warranties",level==='local'?data.warranties:data.branches],["Claims",data.claims]]:[["Members","—"],["Active Warranties","—"],["Warranties","—"],["Claims","—"]]
+  return <div className="dash"><aside><img src={motoliteLogo}/><small>{level.toUpperCase()} ACCESS</small><button className={view==='overview'?'current':''} onClick={()=>setView('overview')}>Overview</button>{level!=='local'&&<button className={view==='staff'?'current':''} onClick={()=>setView('staff')}>Staff Management</button>}<button>Members</button><button>Warranties</button><button>Batteries</button><button>Claims & Replacements</button><button className="bottom" onClick={()=>go('/motolite')}>Public Website</button><button onClick={onLogout}>Sign Out</button></aside><main><span className="kicker">{session.staff.full_name||level.toUpperCase()}</span><div className="dashTitleRow"><h1>{title}</h1><button className="redBtn" onClick={()=>go('/motolite/register')}>+ Register Warranty</button></div>{view==='staff'?<StaffManagement API_BASE={API_BASE} session={session}/>:<><div className="stats">{stats.map(([a,b])=><div key={a}><span>{a}</span><b>{b}</b><small>Current database</small></div>)}</div><div className="dashPanels"><section><h3>Access Scope</h3><p>Your signed-in account controls which region and branch records you can access. Roles can no longer be selected manually from the browser.</p></section><section><h3>Warranty Health</h3><strong className="health">{data?.warranties?Math.round((data.active_warranties/data.warranties)*100):0}%</strong><p>active warranties in your authorized scope.</p><div className="bar"><i/></div></section></div></>}</main></div>
+}
 
-export default function MotoliteApp({API_BASE=''}){const p=usePath(); if(p==='/motolite/login')return <Login/>; if(p==='/motolite/register')return <RegisterWarranty API_BASE={API_BASE}/>; if(p==='/motolite/warranty')return <Warranty/>; if(p.startsWith('/motolite/national'))return <Dashboard level="national"/>; if(p.startsWith('/motolite/regional'))return <Dashboard level="regional"/>; if(p.startsWith('/motolite/local'))return <Dashboard level="local"/>; return <Home/>}
+export default function MotoliteApp({API_BASE=''}){
+  const p=usePath()
+  const [session,setSession]=useState(()=>{try{return JSON.parse(localStorage.getItem('motolite_staff_session'))}catch{return null}})
+  const save=s=>{setSession(s);localStorage.setItem('motolite_staff_session',JSON.stringify(s))}
+  const logout=()=>{setSession(null);localStorage.removeItem('motolite_staff_session');go('/motolite/login')}
+  if(p==='/motolite/login')return <Login API_BASE={API_BASE} onLogin={save}/>
+  if(p==='/motolite/warranty')return <Warranty/>
+  if(p==='/motolite/register')return session?<RegisterWarranty API_BASE={API_BASE} session={session}/>:<Login API_BASE={API_BASE} onLogin={save}/>
+  if(p.startsWith('/motolite/national')||p.startsWith('/motolite/regional')||p.startsWith('/motolite/local')){
+    if(!session)return <Login API_BASE={API_BASE} onLogin={save}/>
+    const required=p.split('/')[2]
+    if(required!==session.staff.role){go(`/motolite/${session.staff.role}`);return null}
+    return <Dashboard level={session.staff.role} API_BASE={API_BASE} session={session} onLogout={logout}/>
+  }
+  return <Home/>
+}

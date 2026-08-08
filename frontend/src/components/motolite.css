@@ -33,3 +33,15 @@
 .verifyLink{display:block;color:#d71920;font-weight:800;text-decoration:none;margin:20px 0}
 .dashTitleRow{display:flex;align-items:center;justify-content:space-between;gap:20px}
 @media(max-width:700px){.formGrid,.successDetails,.stepper{grid-template-columns:1fr}.dashTitleRow{align-items:flex-start;flex-direction:column}}
+
+
+/* Staff authentication + account management */
+.field select{border:1px solid #dcdcdc;border-radius:7px;padding:12px 13px;background:#fff;min-height:44px}
+.staffPanel{background:#fff;border-radius:12px;padding:25px;margin-top:22px}
+.staffHead{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;margin-bottom:20px}
+.staffHead h2{margin:0 0 5px}.staffHead p{margin:0;color:#777}
+.staffCreate{background:#f8f8f8;border:1px solid #eee;border-radius:10px;padding:20px;margin-bottom:20px}
+.staffTable{border:1px solid #eee;border-radius:9px;overflow:hidden}
+.staffRow{display:grid;grid-template-columns:1.4fr 1.2fr .7fr .7fr .6fr;gap:10px;align-items:center;padding:13px 15px;border-top:1px solid #eee;font-size:13px}
+.staffRow:first-child{border-top:0}.staffHeader{background:#f7f7f7}.staffRow button{border:0;background:none;color:#d71920;font-weight:800;text-align:left}.rolePill{text-transform:capitalize;font-weight:800}
+@media(max-width:800px){.staffHead{flex-direction:column}.staffRow{grid-template-columns:1fr}.staffHeader{display:none}}
