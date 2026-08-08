@@ -1992,38 +1992,43 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         if card_type == 'membership' else None
     )
 
+    details = []  # [(header, body), ...] - mirrors WalletPass.jsx's `view.details`
     if card_type == 'points':
         loyalty_points_label = 'Points'
         loyalty_points_balance = str(points_balance)
-        progress_body = f'{points_balance} points'
-        reward_body = 'Redeem prizes in-store'
+        details.append(('REWARD', reward_name))
     elif card_type == 'multipass':
         loyalty_points_label = 'Sessions'
         loyalty_points_balance = f'{sessions_remaining}/{sessions_total}'
-        progress_body = f'{sessions_remaining} of {sessions_total} sessions left'
-        reward_body = (program.get('description') if program else None) or 'Session pass'
+        multipass_expires_at = customer.get('multipass_expires_at')
+        details.append(('VALID UNTIL', multipass_expires_at or 'No expiry set'))
     elif card_type == 'vip':
         tier = get_vip_tier(customer, program or {})
         next_tier = get_next_vip_tier(customer, program or {})
         loyalty_points_label = 'VIP Points'
         loyalty_points_balance = str(int(customer.get('vip_points') or 0))
-        progress_body = f"{tier.get('name','VIP')} VIP" + (f" · {max(0,next_tier.get('threshold',0)-int(customer.get('vip_points') or 0))} points to {next_tier.get('name')}" if next_tier else ' · Highest tier')
-        reward_body = ', '.join(tier.get('benefits') or []) or 'VIP benefits'
+        details.append(('NEXT TIER', next_tier.get('name') if next_tier else 'Top tier'))
     elif card_type == 'membership':
         status = membership_effective_status(customer)
         expiry = customer.get('membership_expires_at')
         loyalty_points_label = 'Status'
         loyalty_points_balance = status.upper()
-        progress_body = ('Lifetime membership' if status == 'lifetime'
-                         else f'Valid until {expiry}' if expiry
-                         else status.title())
-        benefits = (program.get('membership_services') if program else None) or []
-        reward_body = ', '.join(benefits[:3]) if benefits else ((program.get('description') if program else None) or 'Membership benefits')
+        services = (program.get('membership_services') if program else None) or []
+        details.append(('ACTIVE UNTIL', 'Lifetime' if status == 'lifetime' else (expiry or 'Not activated')))
+        details.append(('MEMBER SINCE', customer.get('membership_started_at') or '—'))
+        details.append(('MEMBERSHIP TYPE', (program.get('card_name') if program else None) or design['card_label']))
+        details.append(('NEXT BENEFIT', services[0] if services else 'Rewards'))
     else:
         loyalty_points_label = 'Stamps'
         loyalty_points_balance = f'{stamps}/{stamp_goal}'
-        progress_body = f'{stamps} of {stamp_goal} stamps'
-        reward_body = reward_name
+        left = max(stamp_goal - stamps, 0)
+        details.append(('REWARD', reward_name if left == 0 else f'{left} more to {reward_name}'))
+    description = program.get('description') if program else None
+    if len(details) < 4 and description:
+        details.append(('ABOUT', description))
+    if len(details) < 4:
+        details.append(('BUSINESS', f"{category['icon']} {biz_name} · {category['label']}"))
+    details = details[:4]
 
     loyalty_object = {
         'id': object_id,
@@ -2042,10 +2047,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         },
         'textModulesData': [
             {'header': design['card_label'], 'body': cust_name},
-            {'header': loyalty_points_label.upper(), 'body': loyalty_points_balance},
-            {'header': 'STATUS / PROGRESS', 'body': progress_body},
-            {'header': 'BENEFITS / REWARD', 'body': reward_body},
-            {'header': 'BUSINESS', 'body': f"{category['icon']} {biz_name} · {category['label']}"},
+            *[{'header': header, 'body': str(body)} for header, body in details],
         ],
         'linksModuleData': {
             'uris': [
@@ -2392,9 +2394,32 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     ann_message = (announcement or {}).get('message', '') or ''
     announcement_value = ann_title.strip() or ann_message.strip() or 'Check back for updates'
 
+    # Same per-type detail rows as build_loyalty_object (Google) and
+    # WalletPass.jsx (website) - kept in sync so flipping to the back of the
+    # Apple pass shows the same Active Until / Member Since / Membership
+    # Type / Next Benefit style breakdown instead of duplicating whatever's
+    # already on the front (primary/secondary fields below).
+    apple_details = []
+    if card_type == 'multipass':
+        apple_details.append(('valid_until', 'VALID UNTIL', multipass_expires_at or 'No expiry set'))
+    elif card_type == 'vip':
+        next_tier = get_next_vip_tier(customer, program or {})
+        apple_details.append(('next_tier', 'NEXT TIER', next_tier.get('name') if next_tier else 'Top tier'))
+    elif card_type == 'membership':
+        status = membership_effective_status(customer)
+        expiry = customer.get('membership_expires_at')
+        services = (program.get('membership_services') if program else None) or []
+        apple_details.append(('active_until', 'ACTIVE UNTIL', 'Lifetime' if status == 'lifetime' else (expiry or 'Not activated')))
+        apple_details.append(('member_since', 'MEMBER SINCE', customer.get('membership_started_at') or '—'))
+        apple_details.append(('membership_type', 'MEMBERSHIP TYPE', (program.get('card_name') if program else None) or design['card_label']))
+        apple_details.append(('next_benefit', 'NEXT BENEFIT', services[0] if services else 'Rewards'))
+    else:
+        left = max(stamp_goal - stamps, 0)
+        apple_details.append(('reward_detail', 'REWARD', reward_name if left == 0 else f'{left} more to {reward_name}'))
+
     back_fields = [
         {'key': 'card', 'label': 'CARD', 'value': design['card_label']},
-        {'key': 'category', 'label': 'BUSINESS TYPE', 'value': f"{design['category']['icon']} {design['category']['label']}"},
+        *[{'key': key, 'label': label, 'value': str(value)} for key, label, value in apple_details],
         {'key': 'about', 'label': 'ABOUT', 'value': description or f'{biz_name} digital loyalty card powered by LoyaltyTree.'},
         {'key': 'online', 'label': 'FULL CARD & HISTORY', 'value': f'{BASE_URL}/wallet/{cust_public_id}'},
         {
