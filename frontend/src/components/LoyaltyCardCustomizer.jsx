@@ -796,8 +796,32 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
             </div>
           )}
 
-          <div style={styles.row}>
-            <div style={{ ...styles.fieldGroup, flex: 1 }}>
+          {form.card_type === 'stamp' && (
+            <div style={styles.fieldGroup}>
+              <label style={styles.label}>Reward expiry</label>
+              <div style={{...styles.colorRow, maxWidth: 150}}>
+                <input
+                  style={styles.input}
+                  type="number"
+                  min={1}
+                  value={form.reward_expiry_days}
+                  onChange={e => update('reward_expiry_days', e.target.value)}
+                />
+                <span style={styles.unit}>days</span>
+              </div>
+            </div>
+          )}
+
+          <div style={styles.wallet20Box}>
+            <div style={styles.wallet20TitleRow}>
+              <div>
+                <div style={styles.wallet20Eyebrow}>LoyaltyTree Wallet 2.0</div>
+                <h3 style={styles.wallet20Title}>Wallet appearance</h3>
+              </div>
+              <span style={styles.wallet20Badge}>Apple + Google</span>
+            </div>
+
+            <div style={styles.fieldGroup}>
               <label style={styles.label}>Card color</label>
               <div style={styles.colorRow}>
                 <input
@@ -813,84 +837,59 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
                 />
               </div>
             </div>
-            {form.card_type === 'stamp' && (
-              <div style={{ ...styles.fieldGroup, width: 150 }}>
-                <label style={styles.label}>Reward expiry</label>
-                <div style={styles.colorRow}>
+
+            <div style={styles.fieldGroup}>
+              <label style={styles.label}>Logo</label>
+              <div style={styles.uploadRow}>
+                <input
+                  style={styles.input}
+                  placeholder="https://..."
+                  value={form.program_logo_url}
+                  onChange={e => update('program_logo_url', e.target.value)}
+                />
+                <label style={{...styles.uploadBtn, ...(imageUpload.program_logo_url.uploading ? styles.uploadBtnDisabled : {})}}>
+                  {imageUpload.program_logo_url.uploading ? 'Uploading…' : '📤 Upload'}
                   <input
-                    style={styles.input}
-                    type="number"
-                    min={1}
-                    value={form.reward_expiry_days}
-                    onChange={e => update('reward_expiry_days', e.target.value)}
+                    type="file"
+                    accept="image/*"
+                    style={styles.uploadInputHidden}
+                    disabled={imageUpload.program_logo_url.uploading}
+                    onChange={e => { uploadImage('program_logo_url', e.target.files[0]); e.target.value = '' }}
                   />
-                  <span style={styles.unit}>days</span>
-                </div>
+                </label>
               </div>
-            )}
-          </div>
-
-          <div style={styles.fieldGroup}>
-            <label style={styles.label}>Logo</label>
-            <div style={styles.uploadRow}>
-              <input
-                style={styles.input}
-                placeholder="https://..."
-                value={form.program_logo_url}
-                onChange={e => update('program_logo_url', e.target.value)}
-              />
-              <label style={{...styles.uploadBtn, ...(imageUpload.program_logo_url.uploading ? styles.uploadBtnDisabled : {})}}>
-                {imageUpload.program_logo_url.uploading ? 'Uploading…' : '📤 Upload'}
-                <input
-                  type="file"
-                  accept="image/*"
-                  style={styles.uploadInputHidden}
-                  disabled={imageUpload.program_logo_url.uploading}
-                  onChange={e => { uploadImage('program_logo_url', e.target.files[0]); e.target.value = '' }}
-                />
-              </label>
+              {form.program_logo_url && (
+                <img src={form.program_logo_url} alt="" style={styles.uploadPreview} onError={e => { e.target.style.display = 'none' }} />
+              )}
+              {imageUpload.program_logo_url.error && <p style={styles.uploadError}>{imageUpload.program_logo_url.error}</p>}
+              <p style={styles.hint}>Square image works best. Shown on the wallet pass and join page. Paste a URL or upload a photo.</p>
             </div>
-            {form.program_logo_url && (
-              <img src={form.program_logo_url} alt="" style={styles.uploadPreview} onError={e => { e.target.style.display = 'none' }} />
-            )}
-            {imageUpload.program_logo_url.error && <p style={styles.uploadError}>{imageUpload.program_logo_url.error}</p>}
-            <p style={styles.hint}>Square image works best. Shown on the wallet pass and join page. Paste a URL or upload a photo.</p>
-          </div>
 
-          <div style={styles.fieldGroup}>
-            <label style={styles.label}>Hero / banner image</label>
-            <div style={styles.uploadRow}>
-              <input
-                style={styles.input}
-                placeholder="https://..."
-                value={form.hero_image_url}
-                onChange={e => update('hero_image_url', e.target.value)}
-              />
-              <label style={{...styles.uploadBtn, ...(imageUpload.hero_image_url.uploading ? styles.uploadBtnDisabled : {})}}>
-                {imageUpload.hero_image_url.uploading ? 'Uploading…' : '📤 Upload'}
+            <div style={styles.fieldGroup}>
+              <label style={styles.label}>Hero / banner image</label>
+              <div style={styles.uploadRow}>
                 <input
-                  type="file"
-                  accept="image/*"
-                  style={styles.uploadInputHidden}
-                  disabled={imageUpload.hero_image_url.uploading}
-                  onChange={e => { uploadImage('hero_image_url', e.target.files[0]); e.target.value = '' }}
+                  style={styles.input}
+                  placeholder="https://..."
+                  value={form.hero_image_url}
+                  onChange={e => update('hero_image_url', e.target.value)}
                 />
-              </label>
-            </div>
-            {form.hero_image_url && (
-              <img src={form.hero_image_url} alt="" style={styles.uploadPreviewWide} onError={e => { e.target.style.display = 'none' }} />
-            )}
-            {imageUpload.hero_image_url.error && <p style={styles.uploadError}>{imageUpload.hero_image_url.error}</p>}
-            <p style={styles.hint}>Wide banner image shown at the top of the Google Wallet pass. Optional. Paste a URL or upload a photo.</p>
-          </div>
-
-          <div style={styles.wallet20Box}>
-            <div style={styles.wallet20TitleRow}>
-              <div>
-                <div style={styles.wallet20Eyebrow}>LoyaltyTree Wallet 2.0</div>
-                <h3 style={styles.wallet20Title}>Wallet appearance</h3>
+                <label style={{...styles.uploadBtn, ...(imageUpload.hero_image_url.uploading ? styles.uploadBtnDisabled : {})}}>
+                  {imageUpload.hero_image_url.uploading ? 'Uploading…' : '📤 Upload'}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    style={styles.uploadInputHidden}
+                    disabled={imageUpload.hero_image_url.uploading}
+                    onChange={e => { uploadImage('hero_image_url', e.target.files[0]); e.target.value = '' }}
+                  />
+                </label>
               </div>
-              <span style={styles.wallet20Badge}>Apple + Google</span>
+              {form.hero_image_url && (
+                <img src={form.hero_image_url} alt="" style={styles.uploadPreviewWide} onError={e => { e.target.style.display = 'none' }} />
+              )}
+              {imageUpload.hero_image_url.error && <p style={styles.uploadError}>{imageUpload.hero_image_url.error}</p>}
+              <p style={styles.hint}>Wide banner image shown at the top of the Google Wallet pass. Optional. Paste a URL or upload a photo.</p>
             </div>
 
             <div style={styles.walletStyleGrid}>
@@ -943,14 +942,23 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
                 <span style={styles.wallet20PreviewMenu}>•••</span>
               </div>
               <div style={styles.wallet20PreviewBottom}>
-                <div><small>MEMBER</small><strong>John Customer</strong></div>
-                <div style={styles.wallet20PreviewMetric}>
-                  <small>{form.card_type==='points'?'POINTS':form.card_type==='multipass'?'SESSIONS LEFT':form.card_type==='membership'?'STATUS':form.card_type==='vip'?'VIP TIER':'STAMPS'}</small>
-                  <strong>{form.card_type==='points'?'2,850':form.card_type==='multipass'?'5 / 10':form.card_type==='membership'?'ACTIVE':form.card_type==='vip'?'GOLD':'5 / 8'}</strong>
+                <div style={styles.wallet20PreviewInfo}>
+                  <div><small>MEMBER</small><strong>John Customer</strong></div>
+                  <div style={styles.wallet20PreviewMetric}>
+                    <small>{form.card_type==='points'?'POINTS':form.card_type==='multipass'?'SESSIONS LEFT':form.card_type==='membership'?'STATUS':form.card_type==='vip'?'VIP TIER':'STAMPS'}</small>
+                    <strong>{form.card_type==='points'?'2,850':form.card_type==='multipass'?'5 / 10':form.card_type==='membership'?'ACTIVE':form.card_type==='vip'?'GOLD':'5 / 8'}</strong>
+                  </div>
+                </div>
+                <div style={styles.wallet20PreviewQrBox}>
+                  <img
+                    style={styles.wallet20PreviewQr}
+                    alt="QR preview"
+                    src={`https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(`${API_BASE}/join/${user?.business_slug || 'preview'}`)}`}
+                  />
                 </div>
               </div>
             </div>
-            <p style={styles.hint}>Google and Apple control the native card layout, but Wallet 2.0 applies your logo, palette, hero image, cleaner labels, and richer tapped details automatically.</p>
+            <p style={styles.hint}>Google and Apple control the native card layout, but Wallet 2.0 applies your logo, palette, hero image, QR placement, cleaner labels, and richer tapped details automatically.</p>
           </div>
 
           <div style={styles.fieldGroup}>
@@ -1449,8 +1457,10 @@ const styles = {
   wallet20PreviewLogoFallback:{width:40,height:40,borderRadius:10,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(255,255,255,.16)'},
   wallet20PreviewMenu:{fontWeight:900,letterSpacing:2},
   wallet20PreviewBottom:{position:'absolute',zIndex:2,left:18,right:18,bottom:18,display:'flex',justifyContent:'space-between',alignItems:'flex-end',gap:16},
-  wallet20PreviewBottom:{position:'absolute',zIndex:2,left:18,right:18,bottom:18,display:'flex',justifyContent:'space-between',alignItems:'flex-end',gap:16},
-  wallet20PreviewMetric:{textAlign:'right'},
+  wallet20PreviewInfo:{display:'flex',flexDirection:'column',gap:12,minWidth:0},
+  wallet20PreviewMetric:{},
+  wallet20PreviewQrBox:{width:64,height:64,flexShrink:0,background:'#fff',borderRadius:12,padding:6,boxShadow:'0 8px 22px rgba(0,0,0,.28)'},
+  wallet20PreviewQr:{display:'block',width:'100%',height:'100%'},
   walletStatus: {
     display: 'flex',
     justifyContent: 'space-between',
