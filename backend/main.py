@@ -2492,9 +2492,25 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         left = max(stamp_goal - stamps, 0)
         apple_details.append(('reward_detail', 'REWARD', reward_name if left == 0 else f'{left} more to {reward_name}'))
 
+    # Recent Activity: one backField per movement (stamp added, points
+    # earned/redeemed, session used, VIP tier change, membership visit -
+    # whichever event table this card type actually writes to, see
+    # get_recent_activity). Sits below the per-type summary above and
+    # above the static About/link/announcement rows so flipping the pass
+    # reads top-to-bottom as: status summary -> history -> about.
+    activity = get_recent_activity(business.get('id'), customer.get('id'), card_type)
+    activity_fields = []
+    if activity:
+        activity_fields.append({'key': 'activity_header', 'label': 'RECENT ACTIVITY', 'value': f'Last {len(activity)} movement{"s" if len(activity) != 1 else ""}'})
+        activity_fields += [
+            {'key': f'activity_{i}', 'label': format_activity_date(when), 'value': desc}
+            for i, (when, desc) in enumerate(activity)
+        ]
+
     back_fields = [
         {'key': 'card', 'label': 'CARD', 'value': design['card_label']},
         *[{'key': key, 'label': label, 'value': str(value)} for key, label, value in apple_details],
+        *activity_fields,
         {'key': 'about', 'label': 'ABOUT', 'value': description or f'{biz_name} digital loyalty card powered by LoyaltyTree.'},
         {'key': 'online', 'label': 'FULL CARD & HISTORY', 'value': f'{BASE_URL}/wallet/{cust_public_id}'},
         {
@@ -3534,6 +3550,106 @@ def get_membership_summary(business_id: int, customer_id: int) -> dict:
     except Exception as e:
         print(f"MEMBERSHIP SUMMARY error: {e}")
     return summary
+
+def format_activity_date(value) -> str:
+    """Renders either a 'YYYY-MM-DD' date (service_date) or a full ISO
+    timestamp (created_at) as 'Aug 8, 2026', same convention as
+    format_showroom_date. Falls back to the raw value on anything
+    unparseable rather than dropping the row."""
+    if not value:
+        return '—'
+    s = str(value)
+    try:
+        dt = datetime.fromisoformat(s.replace('Z', '+00:00')) if 'T' in s else datetime.strptime(s[:10], '%Y-%m-%d')
+        return dt.strftime('%b %-d, %Y')
+    except Exception:
+        return s[:10] or s
+
+def get_recent_activity(business_id: int, customer_id: int, card_type: str, limit: int = 15) -> List[tuple]:
+    """Best-effort per-customer movement log, newest first, pulled from
+    whichever event table this card type actually writes to (see
+    log_stamp_event/log_points_event/log_multipass_event/log_vip_event/
+    log_membership_event) plus redemption_events where a card type can
+    redeem. Powers the 'Recent Activity' section on the back of the Apple
+    Wallet pass. Returns a list of (raw_date, description) tuples, already
+    sorted/trimmed to `limit`. Never raises - a query failure (including a
+    table not existing yet) just means no activity section, same tradeoff
+    as get_membership_summary."""
+    entries = []
+    try:
+        if card_type == 'stamp':
+            rows = (supabase.table('stamp_events').select('created_at')
+                    .eq('business_id', business_id).eq('customer_id', customer_id)
+                    .order('created_at', desc=True).limit(limit).execute().data or [])
+            entries += [(r.get('created_at'), 'Stamp added') for r in rows]
+            redemptions = (supabase.table('redemption_events').select('created_at,prize_name')
+                    .eq('business_id', business_id).eq('customer_id', customer_id)
+                    .order('created_at', desc=True).limit(limit).execute().data or [])
+            entries += [(r.get('created_at'), f"Redeemed {r['prize_name']}" if r.get('prize_name') else 'Reward redeemed')
+                        for r in redemptions]
+
+        elif card_type == 'points':
+            rows = (supabase.table('points_events').select('created_at,amount_spent_pesos,points_earned')
+                    .eq('business_id', business_id).eq('customer_id', customer_id)
+                    .order('created_at', desc=True).limit(limit).execute().data or [])
+            for r in rows:
+                pts, amt = r.get('points_earned'), r.get('amount_spent_pesos')
+                desc = f"+{pts} pts" if pts is not None else 'Points earned'
+                if amt:
+                    desc += f" (₱{float(amt):,.0f} spent)"
+                entries.append((r.get('created_at'), desc))
+            redemptions = (supabase.table('redemption_events').select('created_at,prize_name,points_spent')
+                    .eq('business_id', business_id).eq('customer_id', customer_id)
+                    .order('created_at', desc=True).limit(limit).execute().data or [])
+            for r in redemptions:
+                pts, prize = r.get('points_spent'), (r.get('prize_name') or 'reward')
+                entries.append((r.get('created_at'), f"-{pts} pts • {prize}" if pts is not None else f"Redeemed {prize}"))
+
+        elif card_type == 'multipass':
+            rows = (supabase.table('multipass_events').select('created_at,action,sessions_remaining')
+                    .eq('business_id', business_id).eq('customer_id', customer_id)
+                    .order('created_at', desc=True).limit(limit).execute().data or [])
+            for r in rows:
+                action, remaining = (r.get('action') or '').lower(), r.get('sessions_remaining')
+                if action == 'used':
+                    desc = f"Session used • {remaining} left" if remaining is not None else 'Session used'
+                elif action == 'issued':
+                    desc = f"Sessions issued • {remaining} total" if remaining is not None else 'Sessions issued'
+                else:
+                    desc = action.capitalize() or 'Update'
+                entries.append((r.get('created_at'), desc))
+
+        elif card_type == 'vip':
+            rows = (supabase.table('vip_events').select('created_at,action,points_delta,points_balance,amount_spent,old_tier,new_tier')
+                    .eq('business_id', business_id).eq('customer_id', customer_id)
+                    .order('created_at', desc=True).limit(limit).execute().data or [])
+            for r in rows:
+                action, delta = (r.get('action') or '').lower(), r.get('points_delta')
+                if action == 'tier_change' and r.get('new_tier'):
+                    desc = f"Tier: {r.get('old_tier') or '—'} → {r.get('new_tier')}"
+                elif delta is not None:
+                    desc = f"{'+' if delta >= 0 else ''}{delta} VIP pts"
+                    if r.get('amount_spent'):
+                        desc += f" (₱{float(r['amount_spent']):,.0f})"
+                else:
+                    desc = action.replace('_', ' ').capitalize() or 'Update'
+                entries.append((r.get('created_at'), desc))
+
+        else:  # membership
+            rows = (supabase.table('membership_events').select('service_date,service_name,note')
+                    .eq('business_id', business_id).eq('customer_id', customer_id)
+                    .order('service_date', desc=True).order('created_at', desc=True).limit(limit).execute().data or [])
+            for r in rows:
+                desc = r.get('service_name') or 'Visit'
+                if r.get('note'):
+                    desc += f" — {r['note']}"
+                entries.append((r.get('service_date'), desc))
+    except Exception as e:
+        print(f"ACTIVITY LOG error: {e}")
+        return []
+
+    entries.sort(key=lambda item: str(item[0] or ''), reverse=True)
+    return entries[:limit]
 
 # FastAPI App
 app = FastAPI(title='LoyaltyTree API')
