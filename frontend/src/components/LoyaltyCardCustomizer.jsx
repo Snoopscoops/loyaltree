@@ -60,9 +60,12 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
     hero_image_url: { uploading: false, error: '' },
   })
   // 'picker' shows the Stamp vs Points choice first; 'form' shows the
-  // full editor for whichever type is selected. Always starts on the
-  // picker so the owner explicitly confirms the type every time they
-  // open the editor, even if one was already saved.
+  // full editor for whichever type is selected. Starts on 'form' once
+  // fetchConfig confirms a card type was already saved (is_configured) -
+  // re-showing the picker every time would be redundant for a business
+  // that already chose at onboarding. Only a genuinely new business (no
+  // saved program yet) lands on 'picker'. Owners can still get back to
+  // the picker any time via the "Change card type" button in the form.
   const [step, setStep] = useState('picker')
 
   // New-prize draft form (points card)
@@ -113,6 +116,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
           multipass_validity_days: data.multipass_validity_days ?? 90,
         }))
         setWalletClassId(data.google_wallet_class_id || null)
+        // Already chose a card type (at onboarding or a previous edit) -
+        // skip straight to the editor instead of making them re-pick.
+        if (data.is_configured) setStep('form')
       } else {
         setError(data.detail || 'Failed to load your card settings')
       }

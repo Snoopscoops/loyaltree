@@ -5805,8 +5805,15 @@ async def get_loyalty_config(public_id: str, response: Response):
             "vip_points_per_amount": 10,
             "vip_amount_pesos": 100,
             "vip_tiers": [],
+            # No loyalty_programs row saved yet - this is placeholder defaults,
+            # not a real choice the business made. is_configured lets the
+            # editor tell "brand new business, nothing chosen yet" apart from
+            # "already picked a card type" (see LoyaltyCardCustomizer's
+            # picker-skip logic) without guessing off field values that could
+            # legitimately be defaults either way.
+            "is_configured": False,
         }
-    return program
+    return {**program, "is_configured": True}
 
 
 @app.get("/api/v1/business/{public_id}/cashier-program")
