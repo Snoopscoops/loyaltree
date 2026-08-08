@@ -4,11 +4,13 @@ import hashlib
 import hmac
 import json
 import zipfile
+import re
+import asyncio
 from io import BytesIO
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import Optional, Literal, List
 
-from fastapi import APIRouter, HTTPException, Header, Depends
+from fastapi import APIRouter, HTTPException, Header, Depends, Request, BackgroundTasks
 from fastapi.responses import Response, RedirectResponse, HTMLResponse
 from pydantic import BaseModel, Field
 from supabase import create_client, Client
@@ -491,6 +493,12 @@ class VehicleCreate(BaseModel):
     color: Optional[str] = None
 
 
+class NotificationPush(BaseModel):
+    title: str = Field(min_length=1, max_length=150)
+    message: str = Field(min_length=1, max_length=500)
+    member_public_id: Optional[str] = None
+
+
 class BatteryCreate(BaseModel):
     member_public_id: str
     vehicle_public_id: Optional[str] = None
@@ -658,25 +666,42 @@ async def create_member(payload: MemberCreate, staff: dict = Depends(current_sta
 
 
 @motolite_router.get("/members")
-async def list_members(q: Optional[str] = None, staff: dict = Depends(current_staff)):
+async def list_members(
+    q: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 50,
+    staff: dict = Depends(current_staff),
+):
     db = _supabase()
-    query = db.table("motolite_members").select("*")
+    page = max(1, page)
+    page_size = max(10, min(page_size, 100))
+    start = (page - 1) * page_size
+    end = start + page_size - 1
+
+    query = db.table("motolite_members").select("*", count="exact")
     branch_ids = _scope_branch_ids(staff)
     if branch_ids is not None:
         if not branch_ids:
-            return []
+            return {"items": [], "total": 0, "page": page, "page_size": page_size}
         query = query.in_("preferred_branch_public_id", branch_ids)
 
-    rows = query.order("created_at", desc=True).limit(500).execute().data or []
-    if q:
-        n = q.lower().strip()
-        rows = [
-            r for r in rows
-            if n in str(r.get("name", "")).lower()
-            or n in str(r.get("phone", "")).lower()
-            or n in str(r.get("member_number", "")).lower()
-        ]
-    return rows
+    if q and q.strip():
+        # PostgREST OR search; keep punctuation conservative.
+        term = re.sub(r"[^A-Za-z0-9 @.+_()/-]", "", q.strip())[:100]
+        if term:
+            pattern = f"%{term}%"
+            query = query.or_(
+                f"name.ilike.{pattern},phone.ilike.{pattern},"
+                f"member_number.ilike.{pattern},email.ilike.{pattern}"
+            )
+
+    resp = query.order("created_at", desc=True).range(start, end).execute()
+    return {
+        "items": resp.data or [],
+        "total": int(resp.count or 0),
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 @motolite_router.get("/members/{member_public_id}")
@@ -756,7 +781,7 @@ async def register_battery(payload: BatteryCreate, staff: dict = Depends(current
     if _get_one("motolite_batteries","serial_number",payload.serial_number): raise HTTPException(status_code=409,detail="This battery serial number is already registered.")
     purchase=_parse_date(payload.purchase_date).strftime("%Y-%m-%d"); install=_parse_date(payload.installation_date).strftime("%Y-%m-%d") if payload.installation_date else purchase
     bid=_public_id("mtbat"); wid=_public_id("mtw")
-    battery={"public_id":bid,"member_public_id":payload.member_public_id,"vehicle_public_id":payload.vehicle_public_id,"original_branch_public_id":payload.original_branch_public_id,"product_name":payload.product_name,"model_code":payload.model_code,"serial_number":payload.serial_number,"purchase_date":purchase,"installation_date":install,"purchase_price":payload.purchase_price,"receipt_number":payload.receipt_number,"notes":payload.notes,"status":"installed","replacement_months":payload.replacement_months,"recommended_replacement_date":_date_months_after(installation,payload.replacement_months),"created_at":_now_iso(),"updated_at":_now_iso()}
+    battery={"public_id":bid,"member_public_id":payload.member_public_id,"vehicle_public_id":payload.vehicle_public_id,"original_branch_public_id":payload.original_branch_public_id,"product_name":payload.product_name,"model_code":payload.model_code,"serial_number":payload.serial_number,"purchase_date":purchase,"installation_date":install,"purchase_price":payload.purchase_price,"receipt_number":payload.receipt_number,"notes":payload.notes,"status":"installed","replacement_months":payload.replacement_months,"recommended_replacement_date":_date_months_after(install,payload.replacement_months),"created_at":_now_iso(),"updated_at":_now_iso()}
     warranty={"public_id":wid,"member_public_id":payload.member_public_id,"battery_public_id":bid,"vehicle_public_id":payload.vehicle_public_id,"original_branch_public_id":payload.original_branch_public_id,"region_public_id":branch.get("region_public_id"),"warranty_months":payload.warranty_months,"start_date":install,"expires_at":_warranty_expiry(install,payload.warranty_months),"status":WARRANTY_ACTIVE,"qr_token":_secure_qr_token(wid),"replacement_count":0,"created_at":_now_iso(),"updated_at":_now_iso()}
     db=_supabase(); b=(db.table("motolite_batteries").insert(battery).execute().data or [battery])[0]
     try: w=(db.table("motolite_warranties").insert(warranty).execute().data or [warranty])[0]
@@ -778,15 +803,20 @@ def _warranty_response(wid: str):
 
 @motolite_router.get("/reminders")
 async def list_scope_reminders(staff: dict = Depends(current_staff)):
-    members = await list_members(None, staff)
+    db = _supabase()
+    branch_ids = _scope_branch_ids(staff)
+    query = db.table("motolite_members").select("*")
+    if branch_ids is not None:
+        if not branch_ids:
+            return []
+        query = query.in_("preferred_branch_public_id", branch_ids)
+    members = query.order("created_at", desc=True).limit(1000).execute().data or []
+
     output = []
     for member in members:
         reminders = _member_reminders(member.get("public_id"))
         if reminders:
-            output.append({
-                "member": member,
-                "reminders": reminders,
-            })
+            output.append({"member": member, "reminders": reminders})
     return output
 
 
@@ -803,15 +833,94 @@ async def list_batteries(staff: dict = Depends(current_staff)):
 
 
 @motolite_router.get("/warranties")
-async def list_warranties(staff: dict = Depends(current_staff)):
+async def list_warranties(
+    q: Optional[str] = None,
+    expiry_bucket: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 50,
+    staff: dict = Depends(current_staff),
+):
     db = _supabase()
-    query = db.table("motolite_warranties").select("*")
+    page = max(1, page)
+    page_size = max(10, min(page_size, 100))
+    start_row = (page - 1) * page_size
+    end_row = start_row + page_size - 1
+
+    query = db.table("motolite_warranty_directory").select("*", count="exact")
     branch_ids = _scope_branch_ids(staff)
     if branch_ids is not None:
         if not branch_ids:
-            return []
+            return {"items": [], "total": 0, "page": page, "page_size": page_size}
         query = query.in_("original_branch_public_id", branch_ids)
-    return query.order("created_at", desc=True).limit(500).execute().data or []
+
+    if q and q.strip():
+        term = re.sub(r"[^A-Za-z0-9 @.+_()/-]", "", q.strip())[:100]
+        if term:
+            pattern = f"%{term}%"
+            query = query.or_(
+                f"warranty_public_id.ilike.{pattern},member_name.ilike.{pattern},"
+                f"member_number.ilike.{pattern},phone.ilike.{pattern},"
+                f"serial_number.ilike.{pattern},battery_product.ilike.{pattern},"
+                f"plate_number.ilike.{pattern}"
+            )
+
+    today = datetime.utcnow().date()
+    bucket_ranges = {
+        "3m": (today + timedelta(days=61), today + timedelta(days=90)),
+        "2m": (today + timedelta(days=31), today + timedelta(days=60)),
+        "1m": (today + timedelta(days=8), today + timedelta(days=30)),
+        "1w": (today, today + timedelta(days=7)),
+        "expired": (None, today - timedelta(days=1)),
+    }
+    if expiry_bucket in bucket_ranges:
+        low, high = bucket_ranges[expiry_bucket]
+        if low:
+            query = query.gte("expires_at", low.isoformat())
+        if high:
+            query = query.lte("expires_at", high.isoformat())
+
+    resp = query.order("expires_at", desc=False).range(start_row, end_row).execute()
+    return {
+        "items": resp.data or [],
+        "total": int(resp.count or 0),
+        "page": page,
+        "page_size": page_size,
+        "expiry_bucket": expiry_bucket,
+    }
+
+
+@motolite_router.get("/warranty-expiry-summary")
+async def warranty_expiry_summary(staff: dict = Depends(current_staff)):
+    db = _supabase()
+    branch_ids = _scope_branch_ids(staff)
+    today = datetime.utcnow().date()
+
+    ranges = {
+        "three_months": (today + timedelta(days=61), today + timedelta(days=90)),
+        "two_months": (today + timedelta(days=31), today + timedelta(days=60)),
+        "one_month": (today + timedelta(days=8), today + timedelta(days=30)),
+        "one_week": (today, today + timedelta(days=7)),
+        "expired": (None, today - timedelta(days=1)),
+    }
+
+    result = {}
+    for key, (low, high) in ranges.items():
+        query = db.table("motolite_warranty_directory").select(
+            "warranty_public_id", count="exact"
+        )
+        if branch_ids is not None:
+            if not branch_ids:
+                result[key] = 0
+                continue
+            query = query.in_("original_branch_public_id", branch_ids)
+        if low:
+            query = query.gte("expires_at", low.isoformat())
+        if high:
+            query = query.lte("expires_at", high.isoformat())
+        resp = query.limit(1).execute()
+        result[key] = int(resp.count or 0)
+
+    return result
 
 
 @motolite_router.get("/warranty-actions")
@@ -906,6 +1015,421 @@ async def dashboard(staff: dict = Depends(current_staff)):
     }
 
 
+
+def _latest_member_warranty(member_public_id: str) -> Optional[dict]:
+    rows = (
+        _supabase().table("motolite_warranties")
+        .select("*")
+        .eq("member_public_id", member_public_id)
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute().data or []
+    )
+    return rows[0] if rows else None
+
+
+def _push_motolite_wallet_notification(member: dict, title: str, message: str, message_id: str) -> dict:
+    result = {"google": False, "apple": 0}
+    warranty = _latest_member_warranty(member.get("public_id"))
+    if not warranty:
+        return result
+
+    wid = warranty.get("public_id")
+    try:
+        import main as pm
+        if GOOGLE_WALLET_ISSUER_ID:
+            object_id = f"{GOOGLE_WALLET_ISSUER_ID}.motolite_{wid}"
+            result["google"] = bool(
+                pm.send_wallet_object_message(
+                    object_id,
+                    title,
+                    message,
+                    message_id,
+                )
+            )
+        if APPLE_PASS_TYPE_IDENTIFIER:
+            # Motolite Apple passes register using serial motolite-{warranty_id}.
+            # Count actual saved Apple Wallet registrations before waking them.
+            serial = f"motolite-{wid}"
+            registrations = (
+                _supabase().table("apple_wallet_registrations")
+                .select("push_token")
+                .eq("serial_number", serial)
+                .eq("pass_type_identifier", APPLE_PASS_TYPE_IDENTIFIER)
+                .execute().data or []
+            )
+            if registrations:
+                pm.push_apple_wallet_update(serial)
+                result["apple"] = len([r for r in registrations if r.get("push_token")])
+    except Exception as exc:
+        print("MOTOLITE wallet notification error:", exc)
+    return result
+
+
+def _notification_targets(staff_snapshot: dict, member_public_id: Optional[str] = None) -> list:
+    db = _supabase()
+    if member_public_id:
+        m = _require_record("motolite_members", member_public_id, "Member")
+        if not _can_access_branch(staff_snapshot, m.get("preferred_branch_public_id")):
+            raise HTTPException(status_code=403, detail="Member is outside your authorized scope.")
+        return [m]
+
+    query = db.table("motolite_members").select("*")
+    branch_ids = _scope_branch_ids(staff_snapshot)
+    if branch_ids is not None:
+        if not branch_ids:
+            return []
+        query = query.in_("preferred_branch_public_id", branch_ids)
+    return query.limit(20000).execute().data or []
+
+
+def _run_notification_campaign(campaign_public_id: str, staff_snapshot: dict, payload_dict: dict):
+    db = _supabase()
+    sent_google = 0
+    sent_apple = 0
+    failed = 0
+    targets = []
+    try:
+        targets = _notification_targets(staff_snapshot, payload_dict.get("member_public_id"))
+        for member in targets:
+            nid = _public_id("mtn")
+            message_id = f"motolite-{campaign_public_id}-{member.get('public_id')}"
+            try:
+                db.table("motolite_notifications").insert({
+                    "public_id": nid,
+                    "member_public_id": member.get("public_id"),
+                    "title": payload_dict.get("title"),
+                    "message": payload_dict.get("message"),
+                    "notification_type": "manual_push",
+                    "status": "queued",
+                    "created_at": _now_iso(),
+                    "dedupe_key": message_id,
+                }).execute()
+            except Exception:
+                # A repeated campaign/member pair can safely skip duplicate row.
+                pass
+
+            pushed = _push_motolite_wallet_notification(
+                member,
+                payload_dict.get("title") or "Motolite",
+                payload_dict.get("message") or "",
+                message_id,
+            )
+            if pushed.get("google"):
+                sent_google += 1
+            if pushed.get("apple"):
+                sent_apple += 1
+            if not pushed.get("google") and not pushed.get("apple"):
+                failed += 1
+
+            try:
+                db.table("motolite_notifications").update({
+                    "status": "sent" if (pushed.get("google") or pushed.get("apple")) else "stored",
+                    "sent_at": _now_iso() if (pushed.get("google") or pushed.get("apple")) else None,
+                }).eq("dedupe_key", message_id).execute()
+            except Exception:
+                pass
+
+        db.table("motolite_notification_campaigns").update({
+            "status": "completed",
+            "recipient_count": len(targets),
+            "google_sent_count": sent_google,
+            "apple_sent_count": sent_apple,
+            "failed_count": failed,
+            "completed_at": _now_iso(),
+        }).eq("public_id", campaign_public_id).execute()
+    except Exception as exc:
+        print("MOTOLITE notification campaign error:", exc)
+        try:
+            db.table("motolite_notification_campaigns").update({
+                "status": "failed",
+                "failed_count": max(failed, 1),
+                "completed_at": _now_iso(),
+            }).eq("public_id", campaign_public_id).execute()
+        except Exception:
+            pass
+
+
+@motolite_router.post("/notifications/push")
+async def push_notification(
+    payload: NotificationPush,
+    background_tasks: BackgroundTasks,
+    staff: dict = Depends(current_staff),
+):
+    # All authenticated staff may notify one member or everyone in their own scope.
+    # National = nationwide; Regional = assigned region; Local = assigned city.
+    if payload.member_public_id:
+        _notification_targets(staff, payload.member_public_id)
+
+    campaign_id = _public_id("mtnc")
+    target_type = "member" if payload.member_public_id else "scope"
+    campaign = {
+        "public_id": campaign_id,
+        "created_by_staff_public_id": staff.get("public_id"),
+        "created_by_role": staff.get("role"),
+        "target_type": target_type,
+        "target_member_public_id": payload.member_public_id,
+        "title": payload.title,
+        "message": payload.message,
+        "status": "queued",
+        "created_at": _now_iso(),
+    }
+    _insert("motolite_notification_campaigns", campaign)
+
+    # Single-member sends are still run in the background, so the UI remains fast.
+    background_tasks.add_task(
+        _run_notification_campaign,
+        campaign_id,
+        dict(staff),
+        payload.model_dump(),
+    )
+    return {
+        "ok": True,
+        "campaign_public_id": campaign_id,
+        "status": "queued",
+        "target": target_type,
+    }
+
+
+@motolite_router.get("/notification-campaigns")
+async def list_notification_campaigns(
+    page: int = 1,
+    page_size: int = 25,
+    staff: dict = Depends(current_staff),
+):
+    db = _supabase()
+    page = max(1, page)
+    page_size = max(10, min(page_size, 100))
+    start = (page - 1) * page_size
+    end = start + page_size - 1
+
+    query = db.table("motolite_notification_campaigns").select("*", count="exact")
+    if staff.get("role") != ROLE_NATIONAL:
+        query = query.eq("created_by_staff_public_id", staff.get("public_id"))
+    resp = query.order("created_at", desc=True).range(start, end).execute()
+    return {
+        "items": resp.data or [],
+        "total": int(resp.count or 0),
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+
+# ============================================================
+# AUTOMATIC WARRANTY EXPIRY NOTIFICATIONS
+#
+# Non-overlapping reminder windows:
+#   61-90 days = 3 months
+#   31-60 days = 2 months
+#    8-30 days = 1 month
+#    1-7 days  = 1 week
+#    <=0 days  = expired
+#
+# A unique dedupe_key guarantees each warranty milestone is
+# sent only once, even if the worker restarts or checks again.
+# ============================================================
+
+_AUTO_REMINDER_CHECK_SECONDS = int(os.getenv("MOTOLITE_REMINDER_CHECK_SECONDS", "21600"))  # 6 hours
+_auto_reminder_task = None
+
+
+def _warranty_reminder_for_days(days_remaining: int):
+    if 61 <= days_remaining <= 90:
+        return (
+            "3_months",
+            "Warranty expires in about 3 months",
+            f"Your Motolite battery warranty has {days_remaining} days remaining. "
+            "Keep your digital warranty card available for service and warranty assistance."
+        )
+    if 31 <= days_remaining <= 60:
+        return (
+            "2_months",
+            "Warranty expires in about 2 months",
+            f"Your Motolite battery warranty has {days_remaining} days remaining. "
+            "You may visit an authorized Motolite branch if you need a battery or warranty check."
+        )
+    if 8 <= days_remaining <= 30:
+        return (
+            "1_month",
+            "Warranty expires soon",
+            f"Your Motolite battery warranty has {days_remaining} days remaining. "
+            "Please review your battery condition and warranty details."
+        )
+    if 1 <= days_remaining <= 7:
+        return (
+            "1_week",
+            "Warranty expires within 1 week",
+            f"Your Motolite battery warranty has only {days_remaining} day"
+            f"{'' if days_remaining == 1 else 's'} remaining."
+        )
+    if days_remaining <= 0:
+        return (
+            "expired",
+            "Motolite warranty expired",
+            "Your Motolite battery warranty has reached its expiry date. "
+            "Your digital card will continue to show your battery and service history."
+        )
+    return None
+
+
+def _automatic_warranty_reminder_scan() -> dict:
+    db = _supabase()
+    today = datetime.utcnow().date()
+
+    # Only warranties already inside the 90-day operational window are needed.
+    rows = (
+        db.table("motolite_warranty_directory")
+        .select("*")
+        .lte("expires_at", (today + timedelta(days=90)).isoformat())
+        .order("expires_at", desc=False)
+        .limit(20000)
+        .execute().data or []
+    )
+
+    checked = 0
+    created = 0
+    pushed_google = 0
+    pushed_apple = 0
+    skipped_duplicate = 0
+    errors = 0
+
+    for row in rows:
+        try:
+            expires_raw = row.get("expires_at")
+            if not expires_raw:
+                continue
+            expires = date.fromisoformat(str(expires_raw)[:10])
+            days_remaining = (expires - today).days
+            reminder = _warranty_reminder_for_days(days_remaining)
+            if not reminder:
+                continue
+
+            checked += 1
+            milestone, title, message = reminder
+            warranty_id = row.get("warranty_public_id")
+            member_id = row.get("member_public_id")
+            battery_id = row.get("battery_public_id")
+            if not warranty_id or not member_id:
+                continue
+
+            dedupe_key = f"motolite:warranty:{warranty_id}:{milestone}"
+
+            existing = (
+                db.table("motolite_notifications")
+                .select("public_id")
+                .eq("dedupe_key", dedupe_key)
+                .limit(1)
+                .execute().data or []
+            )
+            if existing:
+                skipped_duplicate += 1
+                continue
+
+            notification_id = _public_id("mtn")
+            notification = {
+                "public_id": notification_id,
+                "member_public_id": member_id,
+                "warranty_public_id": warranty_id,
+                "battery_public_id": battery_id,
+                "title": title,
+                "message": message,
+                "notification_type": f"warranty_{milestone}",
+                "status": "queued",
+                "scheduled_for": _now_iso(),
+                "created_at": _now_iso(),
+                "dedupe_key": dedupe_key,
+            }
+
+            # Insert first. The unique dedupe index is the final protection
+            # against two scans trying to send the same milestone.
+            try:
+                db.table("motolite_notifications").insert(notification).execute()
+            except Exception as insert_exc:
+                # If another worker inserted the same dedupe key first, skip.
+                if "duplicate" in str(insert_exc).lower() or "23505" in str(insert_exc):
+                    skipped_duplicate += 1
+                    continue
+                raise
+
+            created += 1
+            member = _require_record("motolite_members", member_id, "Member")
+            pushed = _push_motolite_wallet_notification(
+                member,
+                title,
+                message,
+                dedupe_key,
+            )
+            pushed_google += int(bool(pushed.get("google")))
+            pushed_apple += int(pushed.get("apple") or 0)
+
+            delivered = bool(pushed.get("google") or pushed.get("apple"))
+            db.table("motolite_notifications").update({
+                "status": "sent" if delivered else "stored",
+                "sent_at": _now_iso() if delivered else None,
+            }).eq("public_id", notification_id).execute()
+
+        except Exception as exc:
+            errors += 1
+            print("MOTOLITE automatic warranty reminder error:", exc)
+
+    result = {
+        "ok": True,
+        "checked": checked,
+        "created": created,
+        "google_sent": pushed_google,
+        "apple_sent": pushed_apple,
+        "duplicates_skipped": skipped_duplicate,
+        "errors": errors,
+        "checked_at": _now_iso(),
+    }
+    print("MOTOLITE automatic warranty reminder scan:", result)
+    return result
+
+
+async def _automatic_warranty_reminder_loop():
+    # Give the application time to finish booting before the first scan.
+    await asyncio.sleep(20)
+    while True:
+        try:
+            await asyncio.to_thread(_automatic_warranty_reminder_scan)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print("MOTOLITE reminder scheduler error:", exc)
+        await asyncio.sleep(max(3600, _AUTO_REMINDER_CHECK_SECONDS))
+
+
+@motolite_router.on_event("startup")
+async def start_motolite_warranty_reminder_scheduler():
+    global _auto_reminder_task
+    if _auto_reminder_task is None or _auto_reminder_task.done():
+        _auto_reminder_task = asyncio.create_task(_automatic_warranty_reminder_loop())
+        print(
+            "MOTOLITE automatic warranty reminders enabled; "
+            f"scan interval={max(3600, _AUTO_REMINDER_CHECK_SECONDS)} seconds"
+        )
+
+
+@motolite_router.on_event("shutdown")
+async def stop_motolite_warranty_reminder_scheduler():
+    global _auto_reminder_task
+    if _auto_reminder_task and not _auto_reminder_task.done():
+        _auto_reminder_task.cancel()
+        try:
+            await _auto_reminder_task
+        except asyncio.CancelledError:
+            pass
+    _auto_reminder_task = None
+
+
+@motolite_router.post("/automation/warranty-reminders/run")
+async def run_warranty_reminders_now(staff: dict = Depends(current_staff)):
+    # Manual "run now" is restricted to National staff.
+    _require_role(staff, ROLE_NATIONAL)
+    return await asyncio.to_thread(_automatic_warranty_reminder_scan)
+
+
 def _wallet_payload(wid: str):
     w = _require_record("motolite_warranties", wid, "Warranty")
     m = _require_record("motolite_members", w.get("member_public_id"), "Member")
@@ -951,6 +1475,11 @@ def _wallet_payload(wid: str):
         "qr_verification_url": f"{MOTOLITE_BASE_URL}/api/v1/motolite/warranty/verify/{w.get('qr_token')}",
         "activity_url": f"{MOTOLITE_BASE_URL}/api/v1/motolite/customer/activity/{w.get('qr_token')}",
         "emergency_number": MOTOLITE_EMERGENCY_NUMBER,
+        "latest_notification": (
+            (_supabase().table("motolite_notifications").select("title,message,created_at")
+             .eq("member_public_id", m.get("public_id"))
+             .order("created_at", desc=True).limit(1).execute().data or [None])[0]
+        ),
     }
 
 
@@ -1047,6 +1576,8 @@ def _apple_pkpass(wid: str):
             "organizationName": "Motolite",
             "description": "Motolite Digital Battery Warranty",
             "logoText": "MOTOLITE",
+            "webServiceURL": f"{MOTOLITE_BASE_URL}/api/v1/motolite/apple-wallet",
+            "authenticationToken": pm.apple_pass_auth_token(f"motolite-{wid}"),
             "foregroundColor": "rgb(255,255,255)",
             "backgroundColor": "rgb(215,25,32)",
             "labelColor": "rgb(255,215,0)",
@@ -1088,6 +1619,12 @@ def _apple_pkpass(wid: str):
                     {"key": "installed", "label": "Installation Date", "value": str(p.get("installation_date") or "—")},
                     {"key": "replacement", "label": "Recommended Battery Replacement", "value": str(p.get("recommended_replacement_date") or "—")},
                     {"key": "activity", "label": "Motolite Activity & Reminders", "value": activity},
+                    {"key": "latest_notice", "label": "Latest Motolite Update", "value": (
+                        ((p.get("latest_notification") or {}).get("title") or "") + (
+                            ": " + (p.get("latest_notification") or {}).get("message", "")
+                            if (p.get("latest_notification") or {}).get("message") else ""
+                        )
+                    ) or "No new notices", "changeMessage": "Motolite update: %@"},
                     {"key": "verification", "label": "Warranty Verification", "value": verification},
                     {"key": "emergency", "label": "Emergency Assistance", "value": str(p.get("emergency_number") or "Motolite Hotline")},
                 ],
@@ -1163,6 +1700,117 @@ async def google_wallet(warranty_public_id: str):
     except HTTPException: raise
     except Exception as e: raise HTTPException(status_code=500,detail=f"Google Wallet generation failed: {e}")
 
+
+
+
+def _motolite_apple_auth_ok(serial_number: str, authorization: Optional[str]) -> bool:
+    try:
+        import main as pm
+        return bool(pm.apple_auth_ok(serial_number, authorization))
+    except Exception:
+        return False
+
+
+@motolite_router.post("/apple-wallet/v1/devices/{device_library_identifier}/registrations/{pass_type_identifier}/{serial_number}")
+async def motolite_apple_register(
+    device_library_identifier: str,
+    pass_type_identifier: str,
+    serial_number: str,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    if not serial_number.startswith("motolite-") or not _motolite_apple_auth_ok(serial_number, authorization):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    body = await request.json()
+    push_token = body.get("pushToken")
+    if not push_token:
+        raise HTTPException(status_code=400, detail="Missing pushToken")
+    db = _supabase()
+    existing = (
+        db.table("apple_wallet_registrations").select("id")
+        .eq("device_library_identifier", device_library_identifier)
+        .eq("serial_number", serial_number)
+        .maybe_single().execute()
+    )
+    existing_id = existing.data.get("id") if existing and existing.data else None
+    if existing_id:
+        db.table("apple_wallet_registrations").update({
+            "push_token": push_token,
+        }).eq("id", existing_id).execute()
+        return Response(status_code=200)
+    db.table("apple_wallet_registrations").insert({
+        "device_library_identifier": device_library_identifier,
+        "pass_type_identifier": pass_type_identifier,
+        "serial_number": serial_number,
+        "push_token": push_token,
+        "created_at": _now_iso(),
+    }).execute()
+    return Response(status_code=201)
+
+
+@motolite_router.delete("/apple-wallet/v1/devices/{device_library_identifier}/registrations/{pass_type_identifier}/{serial_number}")
+async def motolite_apple_unregister(
+    device_library_identifier: str,
+    pass_type_identifier: str,
+    serial_number: str,
+    authorization: Optional[str] = Header(None),
+):
+    if not _motolite_apple_auth_ok(serial_number, authorization):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    _supabase().table("apple_wallet_registrations").delete().eq(
+        "device_library_identifier", device_library_identifier
+    ).eq("serial_number", serial_number).execute()
+    return Response(status_code=200)
+
+
+@motolite_router.get("/apple-wallet/v1/devices/{device_library_identifier}/registrations/{pass_type_identifier}")
+async def motolite_apple_updated(
+    device_library_identifier: str,
+    pass_type_identifier: str,
+    passesUpdatedSince: Optional[str] = None,
+):
+    rows = (
+        _supabase().table("apple_wallet_registrations").select("serial_number")
+        .eq("device_library_identifier", device_library_identifier)
+        .eq("pass_type_identifier", pass_type_identifier)
+        .like("serial_number", "motolite-%")
+        .execute().data or []
+    )
+    if not rows:
+        return Response(status_code=204)
+    return {
+        "serialNumbers": [r["serial_number"] for r in rows],
+        "lastUpdated": _now_iso(),
+    }
+
+
+@motolite_router.get("/apple-wallet/v1/passes/{pass_type_identifier}/{serial_number}")
+async def motolite_apple_updated_pass(
+    pass_type_identifier: str,
+    serial_number: str,
+    authorization: Optional[str] = Header(None),
+):
+    if not serial_number.startswith("motolite-") or not _motolite_apple_auth_ok(serial_number, authorization):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    wid = serial_number[len("motolite-"):]
+    data = _apple_pkpass(wid)
+    if data is None:
+        raise HTTPException(status_code=500, detail="Could not build Motolite pass")
+    return Response(
+        content=data,
+        media_type="application/vnd.apple.pkpass",
+        headers={"Last-Modified": _now_iso()},
+    )
+
+
+@motolite_router.post("/apple-wallet/v1/log")
+async def motolite_apple_log(request: Request):
+    try:
+        body = await request.json()
+        print("MOTOLITE APPLE WALLET LOG:", body)
+    except Exception:
+        pass
+    return Response(status_code=200)
 
 
 @motolite_router.get("/wallet/qr/{warranty_public_id}.svg")

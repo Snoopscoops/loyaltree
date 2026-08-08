@@ -249,38 +249,77 @@ function Dashboard({level,API_BASE,session,onLogout}){
   const [rows,setRows]=useState([])
   const [loading,setLoading]=useState(false)
   const [error,setError]=useState('')
+  const [search,setSearch]=useState('')
+  const [page,setPage]=useState(1)
+  const [total,setTotal]=useState(0)
+  const [expiryBucket,setExpiryBucket]=useState('')
+  const [expirySummary,setExpirySummary]=useState({})
   const [memberDetail,setMemberDetail]=useState(null)
   const [detailLoading,setDetailLoading]=useState(false)
   const [showQr,setShowQr]=useState(null)
+  const [notifyTarget,setNotifyTarget]=useState(null)
+  const [notifyTitle,setNotifyTitle]=useState('')
+  const [notifyMessage,setNotifyMessage]=useState('')
+  const [notifyBusy,setNotifyBusy]=useState(false)
+  const [notifyResult,setNotifyResult]=useState('')
+  const [campaigns,setCampaigns]=useState([])
+  const pageSize=50
   const auth={'Authorization':`Bearer ${session.token}`}
 
   useEffect(()=>{
     fetch(`${API_BASE}/api/v1/motolite/dashboard`,{headers:auth})
       .then(r=>r.json()).then(setData).catch(()=>{})
+    fetch(`${API_BASE}/api/v1/motolite/warranty-expiry-summary`,{headers:auth})
+      .then(r=>r.json()).then(setExpirySummary).catch(()=>{})
   },[API_BASE,session.token])
 
   useEffect(()=>{
-    if(!['members','warranties','batteries','claims','reminders'].includes(view))return
-    const endpoint={
-      members:'members',
-      warranties:'warranties',
-      batteries:'batteries',
-      claims:'warranty-actions',
-      reminders:'reminders'
-    }[view]
+    setPage(1)
+    setSearch('')
+    setExpiryBucket('')
+    setError('')
+  },[view])
+
+  useEffect(()=>{
+    if(!['members','warranties','batteries','claims','notifications'].includes(view))return
+    const t=setTimeout(()=>loadRecords(),300)
+    return()=>clearTimeout(t)
+  },[view,page,search,expiryBucket,API_BASE,session.token])
+
+  async function loadRecords(){
     setLoading(true);setError('')
-    fetch(`${API_BASE}/api/v1/motolite/${endpoint}`,{headers:auth})
-      .then(async r=>{
-        const body=await r.json()
-        if(!r.ok)throw new Error(body.detail||'Could not load records')
-        return body
-      })
-      .then(x=>setRows(Array.isArray(x)?x:[]))
-      .catch(e=>{setRows([]);setError(e.message)})
-      .finally(()=>setLoading(false))
-  },[view,API_BASE,session.token])
+    try{
+      if(view==='members'){
+        const p=new URLSearchParams({page:String(page),page_size:String(pageSize)})
+        if(search.trim())p.set('q',search.trim())
+        const r=await fetch(`${API_BASE}/api/v1/motolite/members?${p}`,{headers:auth})
+        const b=await r.json();if(!r.ok)throw new Error(b.detail||'Could not load members')
+        setRows(b.items||[]);setTotal(b.total||0)
+      }else if(view==='warranties'){
+        const p=new URLSearchParams({page:String(page),page_size:String(pageSize)})
+        if(search.trim())p.set('q',search.trim())
+        if(expiryBucket)p.set('expiry_bucket',expiryBucket)
+        const r=await fetch(`${API_BASE}/api/v1/motolite/warranties?${p}`,{headers:auth})
+        const b=await r.json();if(!r.ok)throw new Error(b.detail||'Could not load warranties')
+        setRows(b.items||[]);setTotal(b.total||0)
+      }else if(view==='notifications'){
+        const r=await fetch(`${API_BASE}/api/v1/motolite/notification-campaigns?page=1&page_size=25`,{headers:auth})
+        const b=await r.json();if(!r.ok)throw new Error(b.detail||'Could not load notification history')
+        setCampaigns(b.items||[]);setRows([]);setTotal(b.total||0)
+        const ex=await fetch(`${API_BASE}/api/v1/motolite/warranty-expiry-summary`,{headers:auth})
+        if(ex.ok)setExpirySummary(await ex.json())
+      }else{
+        const endpoint={batteries:'batteries',claims:'warranty-actions'}[view]
+        const r=await fetch(`${API_BASE}/api/v1/motolite/${endpoint}`,{headers:auth})
+        const b=await r.json();if(!r.ok)throw new Error(b.detail||'Could not load records')
+        setRows(Array.isArray(b)?b:[]);setTotal(Array.isArray(b)?b.length:0)
+      }
+    }catch(e){setRows([]);setError(e.message)}
+    finally{setLoading(false)}
+  }
 
   const title=level==='national'?'National Dashboard':level==='regional'?'Regional Dashboard':'Local Dashboard'
+  const scopeName=level==='national'?'Nationwide':level==='regional'?'Assigned Region':data?.city||'Assigned City'
   const stats=data?[
     ["Members",data.members],
     ["Active Warranties",data.active_warranties],
@@ -288,12 +327,18 @@ function Dashboard({level,API_BASE,session,onLogout}){
     ["Claims",data.claims]
   ]:[["Members","—"],["Active Warranties","—"],["Warranties","—"],["Claims","—"]]
 
+  const expiryCards=[
+    ['3m','3 Months',expirySummary.three_months||0,'61–90 days'],
+    ['2m','2 Months',expirySummary.two_months||0,'31–60 days'],
+    ['1m','1 Month',expirySummary.one_month||0,'8–30 days'],
+    ['1w','1 Week',expirySummary.one_week||0,'0–7 days']
+  ]
+
   async function openMemberDetail(memberId){
     setDetailLoading(true);setError('')
     try{
       const r=await fetch(`${API_BASE}/api/v1/motolite/members/${memberId}`,{headers:auth})
-      const body=await r.json()
-      if(!r.ok)throw new Error(body.detail||'Could not load member')
+      const body=await r.json();if(!r.ok)throw new Error(body.detail||'Could not load member')
       setMemberDetail(body)
     }catch(e){setError(e.message)}
     finally{setDetailLoading(false)}
@@ -303,15 +348,115 @@ function Dashboard({level,API_BASE,session,onLogout}){
     setDetailLoading(true);setError('')
     try{
       const r=await fetch(`${API_BASE}/api/v1/motolite/members/${memberId}`,{headers:auth})
-      const body=await r.json()
-      if(!r.ok)throw new Error(body.detail||'Could not load member wallet')
-      if(!body.wallet?.qr_svg_url)throw new Error('This member does not have an active wallet-ready warranty yet.')
+      const body=await r.json();if(!r.ok)throw new Error(body.detail||'Could not load member wallet')
+      if(!body.wallet?.qr_svg_url)throw new Error('This member does not have a wallet-ready warranty yet.')
       setShowQr({member:body.member,wallet:body.wallet})
     }catch(e){setError(e.message)}
     finally{setDetailLoading(false)}
   }
 
+  function beginNotify(member=null){
+    setNotifyTarget(member)
+    setNotifyTitle('')
+    setNotifyMessage('')
+    setNotifyResult('')
+  }
+
+  async function sendNotification(){
+    if(!notifyTitle.trim()||!notifyMessage.trim())return
+    setNotifyBusy(true);setNotifyResult('')
+    try{
+      const r=await fetch(`${API_BASE}/api/v1/motolite/notifications/push`,{
+        method:'POST',
+        headers:{...auth,'Content-Type':'application/json'},
+        body:JSON.stringify({
+          title:notifyTitle.trim(),
+          message:notifyMessage.trim(),
+          member_public_id:notifyTarget?.public_id||null
+        })
+      })
+      const b=await r.json()
+      if(!r.ok)throw new Error(b.detail||'Could not queue notification')
+      setNotifyResult(`Queued successfully · ${b.campaign_public_id}`)
+      setTimeout(()=>{setNotifyTarget(null);setNotifyResult('');if(view==='notifications')loadRecords()},1100)
+    }catch(e){setNotifyResult(e.message)}
+    finally{setNotifyBusy(false)}
+  }
+
+  function openExpiry(bucket){
+    setView('warranties')
+    setExpiryBucket(bucket)
+    setSearch('')
+    setPage(1)
+  }
+
+  function SearchTools(){
+    if(!['members','warranties'].includes(view))return null
+    return <div className="recordsToolbar">
+      <div className="searchBox">
+        <span>⌕</span>
+        <input
+          value={search}
+          onChange={e=>{setSearch(e.target.value);setPage(1)}}
+          placeholder={view==='members'
+            ?'Search name, member no., phone or email…'
+            :'Search member, warranty, serial, battery or plate…'}
+        />
+        {search&&<button onClick={()=>setSearch('')}>×</button>}
+      </div>
+      <div className="recordCount">{total.toLocaleString()} record{total===1?'':'s'}</div>
+    </div>
+  }
+
+  function ExpiryStrip(){
+    return <div className="expiryStrip">
+      {expiryCards.map(([key,label,count,range])=><button
+        key={key}
+        className={expiryBucket===key?'expiryCard activeExpiry':'expiryCard'}
+        onClick={()=>openExpiry(key)}
+      >
+        <span>{label}</span><b>{Number(count).toLocaleString()}</b><small>{range} remaining</small>
+      </button>)}
+    </div>
+  }
+
+  function Pagination(){
+    if(!['members','warranties'].includes(view)||total<=pageSize)return null
+    const pages=Math.max(1,Math.ceil(total/pageSize))
+    return <div className="pagination">
+      <button disabled={page<=1} onClick={()=>setPage(p=>Math.max(1,p-1))}>← Previous</button>
+      <span>Page <b>{page}</b> of {pages}</span>
+      <button disabled={page>=pages} onClick={()=>setPage(p=>Math.min(pages,p+1))}>Next →</button>
+    </div>
+  }
+
   function RecordTable(){
+    if(view==='notifications')return <div className="notificationCenter">
+      <div className="notificationHero">
+        <div>
+          <span className="kicker">WALLET NOTIFICATIONS</span>
+          <h2>Notify customers in your authorized scope</h2>
+          <p>Send to one member from the Members page, or send to everyone inside your {level==='national'?'national':level==='regional'?'regional':'city'} scope.</p>
+        </div>
+        <button className="redBtn" onClick={()=>beginNotify({scope:true})}>Push to All in {scopeName}</button>
+      </div>
+      <ExpiryStrip/>
+      <div className="campaignSection">
+        <h3>Recent notification campaigns</h3>
+        {!campaigns.length?<div className="recordState">No notification campaigns yet.</div>:
+        <div className="campaignList">{campaigns.map(c=><div className="campaignRow" key={c.public_id}>
+          <div><b>{c.title}</b><small>{c.message}</small></div>
+          <span className={`campaignStatus ${c.status}`}>{c.status}</span>
+          <div className="campaignCounts">
+            <span>Recipients <b>{c.recipient_count??'—'}</b></span>
+            <span>Google <b>{c.google_sent_count??'—'}</b></span>
+            <span>Apple <b>{c.apple_sent_count??'—'}</b></span>
+          </div>
+          <small>{c.created_at?new Date(c.created_at).toLocaleString():'—'}</small>
+        </div>)}</div>}
+      </div>
+    </div>
+
     if(loading)return <div className="recordState">Loading records…</div>
     if(error)return <div className="formError">{error}</div>
     if(!rows.length)return <div className="recordState">No records found in your authorized scope.</div>
@@ -324,17 +469,19 @@ function Dashboard({level,API_BASE,session,onLogout}){
         <span>{[r.city,r.province].filter(Boolean).join(', ')||'—'}</span>
         <span className="memberRowActions">
           <button className="miniBtn" onClick={()=>openMemberDetail(r.public_id)}>View Details</button>
-          <button className="miniBtn qrMiniBtn" onClick={()=>openMemberQr(r.public_id)}>Show Wallet QR</button>
+          <button className="miniBtn" onClick={()=>beginNotify(r)}>Notify</button>
+          <button className="miniBtn qrMiniBtn" onClick={()=>openMemberQr(r.public_id)}>Wallet QR</button>
         </span>
       </div>)}
     </div>
 
     if(view==='warranties')return <div className="recordsTable">
-      <div className="recordsHead"><span>Warranty</span><span>Status</span><span>Start</span><span>Expires</span></div>
-      {rows.map(r=><div className="recordsRow" key={r.public_id}>
-        <span><b>{r.public_id}</b><small>{r.battery_public_id}</small></span>
+      <div className="recordsHead"><span>Member / Warranty</span><span>Battery</span><span>Status</span><span>Expires</span></div>
+      {rows.map(r=><div className="recordsRow" key={r.warranty_public_id||r.public_id}>
+        <span><b>{r.member_name||'Member'}</b><small>{r.member_number||r.warranty_public_id}</small></span>
+        <span>{r.battery_product||'—'}<small>{r.serial_number||'—'}</small></span>
         <span><b className="statusText">{(r.status||'').toUpperCase()}</b></span>
-        <span>{r.start_date||'—'}</span><span>{r.expires_at||'—'}</span>
+        <span><b>{r.expires_at||'—'}</b><small>{r.branch_name||''}</small></span>
       </div>)}
     </div>
 
@@ -344,16 +491,6 @@ function Dashboard({level,API_BASE,session,onLogout}){
         <span><b>{r.product_name}</b><small>{r.model_code||''}</small></span>
         <span>{r.serial_number}</span><span>{r.installation_date||r.purchase_date||'—'}</span>
         <span>{r.status||'—'}</span>
-      </div>)}
-    </div>
-
-    if(view==='reminders')return <div className="reminderList">
-      {rows.map(x=><div className="reminderCard" key={x.member.public_id}>
-        <div><b>{x.member.name}</b><small>{x.member.member_number}</small></div>
-        <div className="reminderItems">
-          {x.reminders.map((r,i)=><span className={`reminderPill ${r.severity}`} key={i}>{r.title}: {r.message}</span>)}
-        </div>
-        <button className="miniBtn" onClick={()=>openMemberDetail(x.member.public_id)}>View Member</button>
       </div>)}
     </div>
 
@@ -377,10 +514,11 @@ function Dashboard({level,API_BASE,session,onLogout}){
       <button className={view==='warranties'?'current':''} onClick={()=>setView('warranties')}>Warranties</button>
       <button className={view==='batteries'?'current':''} onClick={()=>setView('batteries')}>Batteries</button>
       <button className={view==='claims'?'current':''} onClick={()=>setView('claims')}>Claims & Replacements</button>
-      <button className={view==='reminders'?'current':''} onClick={()=>setView('reminders')}>Notifications & Reminders</button>
+      <button className={view==='notifications'?'current':''} onClick={()=>setView('notifications')}>Notifications</button>
       <button className="bottom" onClick={()=>go('/motolite')}>Public Website</button>
       <button onClick={onLogout}>Sign Out</button>
     </aside>
+
     <main>
       <span className="kicker">
         {session.staff.full_name||level.toUpperCase()}
@@ -388,39 +526,44 @@ function Dashboard({level,API_BASE,session,onLogout}){
       </span>
 
       <div className="dashTitleRow">
-        <h1>{
-          view==='overview'?title:
-          view==='staff'?'Staff Management':
-          view==='members'?'Members':
-          view==='warranties'?'Warranties':
-          view==='batteries'?'Batteries':view==='reminders'?'Notifications & Reminders':'Claims & Replacements'
-        }</h1>
+        <div>
+          <h1>{
+            view==='overview'?title:
+            view==='staff'?'Staff Management':
+            view==='members'?'Members':
+            view==='warranties'?'Warranties':
+            view==='batteries'?'Batteries':
+            view==='notifications'?'Notifications':'Claims & Replacements'
+          }</h1>
+          {['members','warranties','notifications'].includes(view)&&<p className="viewSubtitle">Scope: {scopeName}</p>}
+        </div>
         <button className="redBtn" onClick={()=>go('/motolite/register')}>+ Register Warranty</button>
       </div>
 
       {view==='staff'
         ? <StaffManagement API_BASE={API_BASE} session={session}/>
         : view!=='overview'
-          ? <section className="recordPanel"><RecordTable/></section>
+          ? <>
+              {view==='warranties'&&<ExpiryStrip/>}
+              <SearchTools/>
+              <section className="recordPanel"><RecordTable/></section>
+              <Pagination/>
+            </>
           : <>
               <div className="stats">{stats.map(([a,b])=><div key={a}><span>{a}</span><b>{b}</b><small>Current database</small></div>)}</div>
+              <div className="opsSection">
+                <div className="opsHeading"><div><span className="kicker">EXPIRY WATCH</span><h3>Upcoming warranty expirations</h3></div><button className="miniBtn" onClick={()=>setView('warranties')}>View all warranties →</button></div>
+                <ExpiryStrip/>
+              </div>
               <div className="dashPanels">
-                <section>
-                  <h3>Access Scope</h3>
-                  <p>{
-                    level==='national'
-                      ? 'You can view all Motolite member, battery, warranty and service records nationwide.'
-                      : level==='regional'
-                        ? 'You can view all Motolite records from branches inside your assigned region.'
-                        : `You can view all Motolite records from branches within ${data?.city||'your assigned city'}. Registrations are still recorded under your assigned home branch.`
-                  }</p>
-                </section>
-                <section>
-                  <h3>Warranty Health</h3>
-                  <strong className="health">{data?.warranties?Math.round((data.active_warranties/data.warranties)*100):0}%</strong>
-                  <p>active warranties in your authorized scope.</p>
-                  <div className="bar"><i style={{width:`${data?.warranties?Math.round((data.active_warranties/data.warranties)*100):0}%`}}/></div>
-                </section>
+                <section><h3>Access Scope</h3><p>{
+                  level==='national'
+                    ?'You can search and manage all Motolite member, battery, warranty and service records nationwide.'
+                    :level==='regional'
+                      ?'You can search and manage all Motolite records from branches inside your assigned region.'
+                      :`You can search and manage Motolite records from all branches within ${data?.city||'your assigned city'}. Registrations remain credited to your home branch.`
+                }</p></section>
+                <section><h3>Warranty Health</h3><strong className="health">{data?.warranties?Math.round((data.active_warranties/data.warranties)*100):0}%</strong><p>active warranties in your authorized scope.</p><div className="bar"><i style={{width:`${data?.warranties?Math.round((data.active_warranties/data.warranties)*100):0}%`}}/></div></section>
               </div>
             </>
       }
@@ -429,32 +572,24 @@ function Dashboard({level,API_BASE,session,onLogout}){
 
       {memberDetail&&<div className="modalShade" onMouseDown={()=>setMemberDetail(null)}>
         <div className="memberModal" onMouseDown={e=>e.stopPropagation()}>
-          <div className="modalHead">
-            <div><span className="kicker">MEMBER DETAILS</span><h2>{memberDetail.member.name}</h2><small>{memberDetail.member.member_number}</small></div>
-            <button onClick={()=>setMemberDetail(null)}>×</button>
-          </div>
-
-          {memberDetail.reminders?.length>0&&<div className="alertStack">
-            {memberDetail.reminders.map((r,i)=><div className={`memberAlert ${r.severity}`} key={i}><b>{r.title}</b><span>{r.message}</span></div>)}
-          </div>}
-
+          <div className="modalHead"><div><span className="kicker">MEMBER DETAILS</span><h2>{memberDetail.member.name}</h2><small>{memberDetail.member.member_number}</small></div><button onClick={()=>setMemberDetail(null)}>×</button></div>
+          {memberDetail.reminders?.length>0&&<div className="alertStack">{memberDetail.reminders.map((r,i)=><div className={`memberAlert ${r.severity}`} key={i}><b>{r.title}</b><span>{r.message}</span></div>)}</div>}
           <div className="detailGrid">
             <div><span>Phone</span><b>{memberDetail.member.phone||'—'}</b></div>
             <div><span>Email</span><b>{memberDetail.member.email||'—'}</b></div>
             <div><span>City</span><b>{memberDetail.member.city||'—'}</b></div>
             <div><span>Branch</span><b>{memberDetail.branch?.name||'—'}</b></div>
           </div>
-
+          <div className="memberModalActions">
+            <button className="miniBtn" onClick={()=>beginNotify(memberDetail.member)}>Send Notification</button>
+            {memberDetail.wallet&&<button className="redBtn" onClick={()=>setShowQr({member:memberDetail.member,wallet:memberDetail.wallet})}>Show Customer Wallet QR</button>}
+          </div>
           <h3>Vehicles</h3>
           <div className="miniList">{memberDetail.vehicles.map(v=><div key={v.public_id}><b>{v.make} {v.model}</b><span>{v.year||''} · {v.plate_number||'No plate'}</span></div>)}</div>
-
-          <h3>Batteries & Warranties</h3>
+          <h3>Batteries</h3>
           <div className="miniList">{memberDetail.batteries.map(b=><div key={b.public_id}><b>{b.product_name}</b><span>{b.serial_number} · Installed {b.installation_date||b.purchase_date}</span><span>Recommended replacement: {b.recommended_replacement_date||'Not set'}</span></div>)}</div>
-
           <h3>Motolite Activity</h3>
           <div className="timeline">{memberDetail.activity.map((a,i)=><div className="timelineItem" key={i}><i/><div><b>{a.title}</b><span>{a.description}</span><small>{a.date?new Date(a.date).toLocaleString():'—'}</small></div></div>)}</div>
-
-          {memberDetail.wallet&&<button className="redBtn" onClick={()=>setShowQr({member:memberDetail.member,wallet:memberDetail.wallet})}>Show Customer Wallet QR</button>}
         </div>
       </div>}
 
@@ -462,11 +597,21 @@ function Dashboard({level,API_BASE,session,onLogout}){
         <div className="memberModal qrModal" onMouseDown={e=>e.stopPropagation()}>
           <div className="modalHead"><div><span className="kicker">CUSTOMER WALLET QR</span><h2>{showQr.member.name}</h2></div><button onClick={()=>setShowQr(null)}>×</button></div>
           <img className="bigWalletQr" src={showQr.wallet.qr_svg_url} alt="Customer wallet QR"/>
-          <p>Ask the customer to scan this QR using their phone camera. It opens the Motolite wallet page with Apple Wallet and Google Wallet options.</p>
-          <div className="walletBtns">
-            <a className="walletApple" href={showQr.wallet.apple_url}> Add to Apple Wallet</a>
-            <a className="walletGoogle" href={showQr.wallet.google_url} target="_blank" rel="noreferrer">G Add to Google Wallet</a>
+          <p>Ask the customer to scan this QR using their phone camera. It opens the Motolite page with Apple Wallet and Google Wallet options.</p>
+          <div className="walletBtns"><a className="walletApple" href={showQr.wallet.apple_url}> Add to Apple Wallet</a><a className="walletGoogle" href={showQr.wallet.google_url} target="_blank" rel="noreferrer">G Add to Google Wallet</a></div>
+        </div>
+      </div>}
+
+      {notifyTarget&&<div className="modalShade" onMouseDown={()=>!notifyBusy&&setNotifyTarget(null)}>
+        <div className="memberModal notifyModal" onMouseDown={e=>e.stopPropagation()}>
+          <div className="modalHead">
+            <div><span className="kicker">PUSH NOTIFICATION</span><h2>{notifyTarget.scope?`Everyone in ${scopeName}`:notifyTarget.name}</h2><small>{notifyTarget.scope?'All wallet-enabled members in your authorized scope':notifyTarget.member_number}</small></div>
+            <button disabled={notifyBusy} onClick={()=>setNotifyTarget(null)}>×</button>
           </div>
+          <label className="field"><span>Notification Title</span><input value={notifyTitle} maxLength={150} onChange={e=>setNotifyTitle(e.target.value)} placeholder="e.g. Warranty expiring soon"/></label>
+          <label className="field fullField"><span>Message</span><textarea value={notifyMessage} maxLength={500} onChange={e=>setNotifyMessage(e.target.value)} placeholder="Write the customer notification…"/></label>
+          {notifyResult&&<div className={notifyResult.startsWith('Queued')?'notifySuccess':'formError'}>{notifyResult}</div>}
+          <div className="formActions"><button className="ghostBtn" disabled={notifyBusy} onClick={()=>setNotifyTarget(null)}>Cancel</button><button className="redBtn" disabled={notifyBusy||!notifyTitle.trim()||!notifyMessage.trim()} onClick={sendNotification}>{notifyBusy?'Queuing…':notifyTarget.scope?'Push to All':'Push to Member'}</button></div>
         </div>
       </div>}
     </main>
