@@ -9,6 +9,7 @@ import CockpitDashboard from './components/CockpitDashboard'
 import CashierApp from './components/CashierApp'
 import AnalyticsDashboard from './components/AnalyticsDashboard'
 import AdminDashboard from './components/AdminDashboard'
+import MotoliteApp from './components/MotoliteApp'
 
 const API_BASE = 'https://loyaltree-btw1.onrender.com'
 
@@ -68,6 +69,7 @@ function App() {
         }
       `}</style>
       <Routes>
+        <Route path="/motolite/*" element={<MotoliteApp API_BASE={API_BASE} />} />
         <Route path="/" element={
           user ? (
             user.role === 'owner' ? <Navigate to="/dashboard" /> :
