@@ -14871,7 +14871,7 @@ async def cockpit_public_site(public_id: str):
     phone = esc(settings.get('contact_phone') or b.get('phone') or '')
     email = esc(settings.get('contact_email') or b.get('email') or '')
     address = esc(settings.get('address') or b.get('address') or 'Valenzuela City')
-    about = esc(settings.get('about_text') or 'Pinagkakatiwalaan, propesyonal, at may respeto. Ang opisyal na tahanan ng aming mga schedule, anunsyo, resulta, at komunidad.')
+    about = esc(settings.get('about_text') or 'Pinagkakatiwalaan, propesyonal, at may respeto. Ang opisyal na tahanan ng aming mga schedule, anunsyo, kampeon, at komunidad.')
     facebook = esc(settings.get('facebook_url') or 'https://www.facebook.com/valenzuelacockpit')
 
     def date_parts(value):
@@ -14912,11 +14912,11 @@ async def cockpit_public_site(public_id: str):
     result_cards = []
     for item in results[:4]:
         photo = esc(item.get('photo_url'))
-        image = f'<img src="{photo}" alt="Official result">' if photo else '<div class="result-placeholder">🏆</div>'
-        result_cards.append(f'''<article class="result-card">{image}<div><small>{esc(item.get('category') or 'OFFICIAL RESULT')}</small>
+        image = f'<img src="{photo}" alt="Official champion">' if photo else '<div class="result-placeholder">🏆</div>'
+        result_cards.append(f'''<article class="result-card">{image}<div><small>{esc(item.get('category') or 'CHAMPION')}</small>
           <h3>{esc(item.get('champion_name') or 'Champion to be announced')}</h3>
           <p>Runner-up: {esc(item.get('runner_up_name') or '—')}</p></div></article>''')
-    results_html = ''.join(result_cards) or '<div class="empty">No official results have been published.</div>'
+    results_html = ''.join(result_cards) or '<div class="empty">No champions have been announced yet.</div>'
 
     gallery_html = ''.join(f'<img loading="lazy" src="{esc(x.get("image_url"))}" alt="{esc(x.get("title") or "Arena gallery")}">' for x in gallery[:12]) or '<div class="empty">Gallery photos coming soon.</div>'
     sponsor_html = ''.join(f'''<a class="sponsor" href="{esc(x.get('website_url') or '#')}" target="_blank" rel="noopener">
@@ -14952,16 +14952,16 @@ footer{{border-top:1px solid #3b2d13;background:#050505;padding:35px 4% 20px}}.f
 @media(max-width:760px){{.topbar{{min-height:70px}}.brand{{min-width:0}}.brand-logo,.brand-mark{{width:48px;height:48px}}.brand-copy b{{font-size:17px}}.brand-copy small{{font-size:8px}}.menu{{display:block}}.nav{{display:none;position:absolute;left:0;right:0;top:70px;background:#080808;padding:20px;flex-direction:column;align-items:stretch}}.nav.open{{display:flex}}.hero{{min-height:600px;background-position:62% center;padding:45px 6%}}.hero-copy{{padding-top:120px}}.values{{grid-template-columns:1fr 1fr}}.value{{border-bottom:1px solid #282015}}.dashboard-grid{{grid-template-columns:1fr}}.gallery{{grid-template-columns:1fr 1fr}}.gallery img{{height:160px}}.about-member,.footer-grid{{grid-template-columns:1fr}}.section{{padding:38px 5%}}}}
 </style></head><body>
 <header class="topbar"><a class="brand" href="#home">{logo_html}<span class="brand-copy"><b>{arena}</b><small>{tagline}</small></span></a>
-<button class="menu" onclick="document.querySelector('.nav').classList.toggle('open')">☰</button><nav class="nav"><a href="#home">Home</a><a href="#schedule">Schedule</a><a href="#results">Results</a><a href="#gallery">Gallery</a><a href="#sponsors">Sponsors</a><a href="#about">About Us</a><a href="#contact">Contact</a></nav></header>
-<main id="home"><section class="hero" style="{hero_style}"><div class="hero-copy"><h1>Malinis at<br><span class="gold">maginoong sabong</span><br>ang aming <span class="red">tradisyon</span></h1><p>Pinagkakatiwalaan. Propesyonal. May respeto.<br><b>{arena}</b></p><div class="actions"><a class="btn primary" href="#schedule">View Schedule</a><a class="btn secondary" href="#results">Latest Results</a></div></div></section>
+<button class="menu" onclick="document.querySelector('.nav').classList.toggle('open')">☰</button><nav class="nav"><a href="#home">Home</a><a href="#schedule">Schedule</a><a href="#champions">Champions</a><a href="#gallery">Gallery</a><a href="#sponsors">Sponsors</a><a href="#about">About Us</a><a href="#contact">Contact</a></nav></header>
+<main id="home"><section class="hero" style="{hero_style}"><div class="hero-copy"><h1>Malinis at<br><span class="gold">maginoong sabong</span><br>ang aming <span class="red">tradisyon</span></h1><p>Pinagkakatiwalaan. Propesyonal. May respeto.<br><b>{arena}</b></p><div class="actions"><a class="btn primary" href="#schedule">View Schedule</a><a class="btn secondary" href="#champions">Latest Champions</a></div></div></section>
 <section class="values"><div class="value">🛡️<strong>Malinis</strong><span>Sinusunod ang lahat ng patakaran at regulasyon.</span></div><div class="value">👥<strong>Propesyonal</strong><span>Pinapatakbo nang may karanasan at propesyonalismo.</span></div><div class="value">🤝<strong>May respeto</strong><span>Respeto sa mananabong, manonood, at sa laro.</span></div><div class="value">🔒<strong>Walang dayaan</strong><span>Transparente at patas ang bawat laban.</span></div></section>
 <section id="schedule" class="section"><div class="section-head"><h2>Upcoming Events</h2><a href="#schedule">View all schedule</a></div><div class="event-list">{events_html}</div></section>
 <section class="section"><div class="dashboard-grid"><div class="box" style="grid-column:span 2"><h3>Weekly Schedule</h3>{schedule_html}</div><div class="box"><h3>Announcements</h3>{announcement_html}</div><div class="box"><h3>Be a Member</h3><p style="color:#bbb;line-height:1.6">Ang official digital membership ng {arena} ay kasalukuyang inihahanda.</p><div class="member-card"><b>{arena}</b><span>OFFICIAL DIGITAL MEMBERSHIP</span><code>COMING SOON</code></div><span class="btn primary" style="display:inline-flex;opacity:.72;cursor:not-allowed">Coming Soon</span></div></div></section>
-<section id="results" class="section"><div class="section-head"><h2>Latest Results</h2><a href="#results">View all results</a></div><div class="results-grid">{results_html}</div></section>
+<section id="champions" class="section"><div class="section-head"><h2>Latest Champions</h2><a href="#champions">View all champions</a></div><div class="results-grid">{results_html}</div></section>
 <section id="gallery" class="section"><div class="section-head"><h2>Gallery</h2><a href="#gallery">View all photos</a></div><div class="gallery">{gallery_html}</div></section>
-<section id="about" class="section"><div class="about-member"><div class="about"><h2>About {arena}</h2><p>{about}</p></div><div class="join"><h2>Stay Connected</h2><p>Follow the official Facebook page for upcoming derbies, announcements, results, event posters, and live updates.</p><a class="btn primary" href="{facebook}" target="_blank" rel="noopener noreferrer">Follow VCSA on Facebook</a></div></div></section>
+<section id="about" class="section"><div class="about-member"><div class="about"><h2>About {arena}</h2><p>{about}</p></div><div class="join"><h2>Stay Connected</h2><p>Follow the official Facebook page for upcoming derbies, announcements, champions, event posters, and live updates.</p><a class="btn primary" href="{facebook}" target="_blank" rel="noopener noreferrer">Follow VCSA on Facebook</a></div></div></section>
 <section id="sponsors" class="section"><div class="section-head"><h2>Our Sponsors</h2></div><div class="sponsors">{sponsor_html}</div></section></main>
-<footer id="contact"><div class="footer-grid"><div><h4>{arena}</h4><p>{tagline}</p></div><div><h4>Quick Links</h4><p><a href="#schedule">Schedule</a><br><a href="#results">Results</a><br><a href="#gallery">Gallery</a><br><a href="#sponsors">Sponsors</a></p></div><div><h4>Contact Us</h4><p>{phone}<br>{email}<br>{address}</p></div><div><h4>Follow Us</h4><p>{fb_html}</p></div></div><div class="copyright">© {datetime.utcnow().year} {arena}. All rights reserved.</div></footer>
+<footer id="contact"><div class="footer-grid"><div><h4>{arena}</h4><p>{tagline}</p></div><div><h4>Quick Links</h4><p><a href="#schedule">Schedule</a><br><a href="#champions">Champions</a><br><a href="#gallery">Gallery</a><br><a href="#sponsors">Sponsors</a></p></div><div><h4>Contact Us</h4><p>{phone}<br>{email}<br>{address}</p></div><div><h4>Follow Us</h4><p>{fb_html}</p></div></div><div class="copyright">© {datetime.utcnow().year} {arena}. All rights reserved.</div></footer>
 <script>document.querySelectorAll('.nav a').forEach(a=>a.addEventListener('click',()=>document.querySelector('.nav').classList.remove('open')))</script></body></html>'''
     return HTMLResponse(page)
 

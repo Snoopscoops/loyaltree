@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 
 const TABS = ['overview','events','announcements','results','gallery','sponsors','settings']
+const TAB_LABELS = { results:'Champions' }
 const empty = {
   events:{title:'',event_date:'',start_time:'',category:'',entry_fee:'',prize_details:'',description:'',special_note:'',poster_url:'',status:'upcoming'},
   announcements:{title:'',message:'',publish_date:'',is_pinned:false,is_active:true},
@@ -408,7 +409,7 @@ export default function CockpitDashboard({ API_BASE, user, onLogout }) {
       })
       setEditingEvent(null)
       await load()
-      flash(payload.champion_name ? 'Event updated and result published' : 'Event updated')
+      flash(payload.champion_name ? 'Event updated and champion published' : 'Event updated')
     } catch (e) {
       flash(e.message || 'Update failed')
     }
@@ -427,9 +428,9 @@ export default function CockpitDashboard({ API_BASE, user, onLogout }) {
   return <div style={S.page}><style>{`@media (max-width: 960px){.composer-shell{grid-template-columns:1fr!important}.composer-side{position:static!important}.studio-grid{grid-template-columns:1fr!important}} @media (max-width: 720px){.grid-four,.grid-three,.grid-two,.grid-two-compact,.contact-pair,.image-upload-row{grid-template-columns:1fr!important}.cockpit-main{padding:12px!important}.cockpit-panel{padding:14px!important}.composer-actions{align-items:stretch!important}.composer-actions>div:last-child{width:100%}.composer-actions button{flex:1}}`}</style>
     <header style={S.header}><div style={S.brandWrap}>{settings?.logo_url&&<img src={settings.logo_url} alt="Cockpit logo" style={S.brandLogo}/>}<div><h1 style={{margin:0}}>{user?.business_name || 'Cockpit Arena'}</h1><small>LoyaltyTree Cockpit Admin</small></div></div><div><a style={S.view} href={publicUrl} target="_blank" rel="noreferrer">View website</a><button style={S.logout} onClick={onLogout}>Log out</button></div></header>
     {message && <div style={S.toast}>{message}</div>}
-    <nav style={S.nav}>{TABS.map(x=><button key={x} style={{...S.tab,...(tab===x?S.active:{})}} onClick={()=>setTab(x)}>{x[0].toUpperCase()+x.slice(1)}</button>)}</nav>
+    <nav style={S.nav}>{TABS.map(x=><button key={x} style={{...S.tab,...(tab===x?S.active:{})}} onClick={()=>setTab(x)}>{TAB_LABELS[x] || (x[0].toUpperCase()+x.slice(1))}</button>)}</nav>
     <main className="cockpit-main" style={S.main}>
-      {tab==='overview' && <><div style={S.cards}>{[['Events',data.events.length],['Announcements',data.announcements.length],['Results',data.results.length],['Gallery',data.gallery.length],['Sponsors',data.sponsors.length]].map(([a,b])=><div style={S.card} key={a}><b style={{fontSize:30}}>{b}</b><div>{a}</div></div>)}</div><Panel title="Public website"><input style={S.input} readOnly value={publicUrl}/></Panel></>}
+      {tab==='overview' && <><div style={S.cards}>{[['Events',data.events.length],['Announcements',data.announcements.length],['Champions',data.results.length],['Gallery',data.gallery.length],['Sponsors',data.sponsors.length]].map(([a,b])=><div style={S.card} key={a}><b style={{fontSize:30}}>{b}</b><div>{a}</div></div>)}</div><Panel title="Public website"><input style={S.input} readOnly value={publicUrl}/></Panel></>}
       {tab==='events' && <><Crud title="Events" customLayout form={
         <div style={S.simpleComposer}>
           <ComposerSection icon="📅" title="Event basics" hint="Enter only the information customers need to see first.">
@@ -491,7 +492,7 @@ export default function CockpitDashboard({ API_BASE, user, onLogout }) {
           </aside>
         </div>
       } onSave={()=>create('announcements')} onPreview={()=>setShare({kind:'announcement',item:forms.announcements,config:{...announcementPostSettings,backgroundUrl:announcementPostSettings.backgroundUrl||settings?.hero_image_url||''}})} items={data.announcements} onDelete={id=>remove('announcements',id)} onShare={item=>setShare({kind:'announcement',item,config:{...announcementPostSettings,backgroundUrl:announcementPostSettings.backgroundUrl||settings?.hero_image_url||''}})}/>} 
-      {tab==='results' && <Crud title="Results" form={<><Select label="Event" value={forms.results.event_public_id} onChange={v=>setForm('results',{event_public_id:v})} options={data.events.map(e=>({value:e.public_id,label:e.title}))}/><Input label="Category" value={forms.results.category} onChange={v=>setForm('results',{category:v})}/><Input label="Champion" value={forms.results.champion_name} onChange={v=>setForm('results',{champion_name:v})}/><Input label="Runner-up" value={forms.results.runner_up_name} onChange={v=>setForm('results',{runner_up_name:v})}/><Input label="Third place" value={forms.results.third_place_name} onChange={v=>setForm('results',{third_place_name:v})}/><Input label="Notes" value={forms.results.notes} onChange={v=>setForm('results',{notes:v})}/><File label="Photo" onChange={f=>upload('results','photo_url',f)}/></>} onSave={()=>create('results')} items={data.results} onDelete={id=>remove('results',id)}/>} 
+      {tab==='results' && <Crud title="Champions" form={<><Select label="Event" value={forms.results.event_public_id} onChange={v=>setForm('results',{event_public_id:v})} options={data.events.map(e=>({value:e.public_id,label:e.title}))}/><Input label="Category" value={forms.results.category} onChange={v=>setForm('results',{category:v})}/><Input label="Champion" value={forms.results.champion_name} onChange={v=>setForm('results',{champion_name:v})}/><Input label="Runner-up" value={forms.results.runner_up_name} onChange={v=>setForm('results',{runner_up_name:v})}/><Input label="Third place" value={forms.results.third_place_name} onChange={v=>setForm('results',{third_place_name:v})}/><Input label="Notes" value={forms.results.notes} onChange={v=>setForm('results',{notes:v})}/><File label="Photo" onChange={f=>upload('results','photo_url',f)}/></>} onSave={()=>create('results')} items={data.results} onDelete={id=>remove('results',id)}/>} 
       {tab==='gallery' && <Crud title="Gallery" form={<><Input label="Title" value={forms.gallery.title} onChange={v=>setForm('gallery',{title:v})}/><Input label="Album" value={forms.gallery.album_name} onChange={v=>setForm('gallery',{album_name:v})}/><File label="Image" onChange={f=>upload('gallery','image_url',f)}/></>} onSave={()=>create('gallery')} items={data.gallery} onDelete={id=>remove('gallery',id)}/>} 
       {tab==='sponsors' && <Crud title="Sponsors" form={<><Input label="Name" value={forms.sponsors.name} onChange={v=>setForm('sponsors',{name:v})}/><Input label="Website" value={forms.sponsors.website_url} onChange={v=>setForm('sponsors',{website_url:v})}/><Input label="Description" value={forms.sponsors.description} onChange={v=>setForm('sponsors',{description:v})}/><File label="Logo" onChange={f=>upload('sponsors','logo_url',f)}/></>} onSave={()=>create('sponsors')} items={data.sponsors} onDelete={id=>remove('sponsors',id)}/>} 
       {tab==='settings' && <Panel title="Website Settings"><div style={S.grid}>{['arena_name','tagline','about_text','contact_phone','contact_email','address','facebook_url','map_embed_url'].map(k=><Input key={k} label={k.replaceAll('_',' ')} value={settings[k]||''} onChange={v=>setSettings({...settings,[k]:v})}/>)}</div><div style={S.grid}><File label="Hero image" onChange={async f=>{if(f)setSettings({...settings,hero_image_url:await uploadImage(API_BASE,businessId,f,'cockpit_settings')})}}/><File label="Logo" onChange={async f=>{if(f)setSettings({...settings,logo_url:await uploadImage(API_BASE,businessId,f,'cockpit_settings')})}}/></div><button style={S.primary} onClick={async()=>{try{await request(`/api/v1/business/${businessId}/cockpit/settings`,{method:'PUT',body:JSON.stringify(settings)});await load();flash('Settings saved')}catch(e){flash(e.message)}}}>Save settings</button></Panel>}
@@ -518,15 +519,15 @@ export default function CockpitDashboard({ API_BASE, user, onLogout }) {
         <TextArea label="Event details" value={editingEvent.event_details} onChange={v=>setEditingEvent({...editingEvent,event_details:v})} rows={4}/>
         <TextArea label="Special note" value={editingEvent.special_note} onChange={v=>setEditingEvent({...editingEvent,special_note:v})} rows={3}/>
         <details open={editingEvent.status==='finished'} style={S.resultOptionBox}>
-          <summary style={S.optionalSummary}>🏆 Champion / Latest Result (optional)</summary>
+          <summary style={S.optionalSummary}>🏆 Champion (optional)</summary>
           <div style={S.optionalBody}>
-            <p style={S.muted}>Adding a champion automatically publishes or updates this event in Latest Results.</p>
+            <p style={S.muted}>Adding a champion automatically publishes or updates this event in Latest Champions.</p>
             <div className="grid-three" style={S.formGridThree}>
               <Input label="Champion" value={editingEvent.champion_name} onChange={v=>setEditingEvent({...editingEvent,champion_name:v})}/>
               <Input label="Runner-up" value={editingEvent.runner_up_name} onChange={v=>setEditingEvent({...editingEvent,runner_up_name:v})}/>
               <Input label="Third place" value={editingEvent.third_place_name} onChange={v=>setEditingEvent({...editingEvent,third_place_name:v})}/>
             </div>
-            <TextArea label="Result notes" value={editingEvent.result_notes} onChange={v=>setEditingEvent({...editingEvent,result_notes:v})} rows={3}/>
+            <TextArea label="Champion notes" value={editingEvent.result_notes} onChange={v=>setEditingEvent({...editingEvent,result_notes:v})} rows={3}/>
           </div>
         </details>
         <div style={{...S.actionRow,justifyContent:'flex-end',marginTop:18}}>
