@@ -25,11 +25,11 @@ function Home(){return <div><Header/>
   <section className="hero"><div className="heroInner"><div>
     <span className="kicker yellow">THE BATTERY YOU CAN RELY ON</span>
     <h1>Pangmatagalan.<br/>Now digitally protected.</h1>
-    <p>A sample Motolite digital experience combining nationwide warranty records, QR verification, Apple Wallet, Google Wallet, emergency assistance and branch-level service access.</p>
+    <p>One secure digital warranty network for battery registration, QR verification, Apple Wallet, Google Wallet, service history and nationwide Motolite support.</p>
     <div className="heroBtns"><button className="redBtn" onClick={()=>go('/motolite/warranty')}>View My Warranty</button><a href="#batteries" className="whiteBtn">Find a Battery</a></div>
   </div><div className="preview"><img src={motoliteLogo}/><span className="active">ACTIVE</span><h3>{sample.battery}</h3><p>{sample.vehicle}</p><div className="mini"><span>Member</span><b>{sample.member}</b><span>Valid until</span><b>{sample.expires}</b></div><button onClick={()=>go('/motolite/warranty')}>Open Warranty Card</button></div></div></section>
 
-  <section className="quick"><Action icon="⚡" title="Find the Right Battery" text="Match your vehicle with the proper Motolite battery."/><Action icon="✓" title="Register Warranty" text="Register the member, vehicle and battery in one guided form." click={()=>go('/motolite/register')}/><Action icon="▣" title="Check Warranty" text="See status, battery details and service history." click={()=>go('/motolite/warranty')}/><Action icon="☎" title="Emergency Assistance" text="Fast access to Motolite support." href={`tel:${hotline}`}/></section>
+  <section className="quick"><Action icon="⚡" title="Find the Right Battery" text="Match your vehicle with the proper Motolite battery."/><Action icon="✓" title="Activate Warranty" text="Authorized Motolite staff can register the customer, vehicle and battery in one guided flow." click={()=>go('/motolite/login')}/><Action icon="▣" title="Check Warranty" text="See status, battery details and service history." click={()=>go('/motolite/warranty')}/><Action icon="☎" title="Emergency Assistance" text="Fast access to Motolite support." href={`tel:${hotline}`}/></section>
 
   <section id="batteries" className="section"><span className="kicker">MOTOLITE BATTERIES</span><h2>Built for every kind of drive.</h2><div className="cats">{['Automotive','Motorcycle','Heavy Commercial','Marine & Leisure','Industrial'].map(x=><div className="cat" key={x}><div className="battery"><i/></div><h3>{x}</h3><p>Reliable Motolite power for your application.</p><b>View more →</b></div>)}</div></section>
 
@@ -38,7 +38,7 @@ function Home(){return <div><Header/>
   <section id="advantage" className="section"><div className="center"><span className="kicker">THE DIGITAL MOTOLITE ADVANTAGE</span><h2>Your warranty follows you wherever you go.</h2><p>One national warranty record with localized branch access and a permanent digital member card.</p></div><div className="benefits"><Benefit icon="QR" title="Secure QR Warranty"/><Benefit icon="" title="Apple Wallet"/><Benefit icon="G" title="Google Wallet"/><Benefit icon="24/7" title="Emergency Call"/><Benefit icon="◎" title="Nearest Branch"/><Benefit icon="↻" title="Replacement Reminders"/></div></section>
 
   <section className="cta"><div><span className="kicker yellow">ONE NATIONAL WARRANTY NETWORK</span><h2>Purchased in one city. Serviced in another.</h2><p>National, regional and local dashboards share one warranty source of truth while access remains permission-based.</p></div><button onClick={()=>go('/motolite/login')}>Open Staff Portal</button></section>
-  <footer><img src={motoliteLogo}/><p>Sample digital warranty concept for demonstration purposes.</p></footer>
+  <footer><img src={motoliteLogo}/><p>Motolite Digital Warranty Network · Secure battery records, service history and wallet access.</p></footer>
 </div>}
 
 function Action({icon,title,text,click,href}){const c=<><span className="round">{icon}</span><div><h3>{title}</h3><p>{text}</p></div><b>→</b></>; return href?<a className="action" href={href}>{c}</a>:<button className="action" onClick={click}>{c}</button>}
@@ -226,7 +226,7 @@ function Login({API_BASE,onLogin}){
       go(`/motolite/${data.staff.role}`)
     }catch(e){setError(e.message||String(e))}finally{setBusy(false)}
   }
-  return <div className="login"><div className="loginBrand"><img src={motoliteLogo}/><h1>Warranty Operations</h1><p>National · Regional · Local</p></div><div className="loginBox"><h2>Staff Login</h2><p>Your account determines your National, Regional or Local access automatically.</p>{error&&<div className="formError">{error}</div>}<label>Username</label><input value={username} onChange={e=>setUsername(e.target.value)} placeholder="cauayan.admin"/><label>Password</label><input value={password} onChange={e=>setPassword(e.target.value)} type="password" placeholder="••••••••" onKeyDown={e=>e.key==='Enter'&&login()}/><button className="redBtn full" disabled={busy||!username||!password} onClick={login}>{busy?'Signing in...':'Login'}</button><button className="back" onClick={()=>go('/motolite')}>← Back to website</button></div></div>
+  return <div className="login"><div className="loginBrand"><img src={motoliteLogo}/><h1>Digital Warranty Operations</h1><p>Secure National · Regional · Local access</p></div><div className="loginBox"><span className="kicker">AUTHORIZED ACCESS</span><h2>Welcome back</h2><p>Sign in with your Motolite staff account. Your assigned role and service area are applied automatically.</p>{error&&<div className="formError">{error}</div>}<label>Username</label><input value={username} onChange={e=>setUsername(e.target.value)} placeholder="cauayan.admin"/><label>Password</label><input value={password} onChange={e=>setPassword(e.target.value)} type="password" placeholder="••••••••" onKeyDown={e=>e.key==='Enter'&&login()}/><button className="redBtn full" disabled={busy||!username||!password} onClick={login}>{busy?'Signing in...':'Login'}</button><button className="back" onClick={()=>go('/motolite')}>← Back to website</button></div></div>
 }
 
 function StaffManagement({API_BASE,session}){
