@@ -1825,8 +1825,14 @@ def wallet_20_design(business: dict, program: Optional[dict]) -> dict:
     }
 
 def wallet_20_program_name(business: dict, program: Optional[dict]) -> str:
-    # Wallet 2.1: business name only. Card type/status have their own fields.
-    return str(business.get('name') or 'LoyaltyTree')
+    # issuerName (small, top) already shows the business name - programName
+    # (big title) should be the card's own name so the two rows say
+    # different things instead of repeating the business name twice. Falls
+    # back to "<Business> Rewards" (matches the card-name default used
+    # elsewhere, e.g. get_wallet_pass) when the business hasn't set one.
+    biz_name = str(business.get('name') or 'LoyaltyTree')
+    card_name = str((program or {}).get('card_name') or '').strip()
+    return card_name or f'{biz_name} Rewards'
 
 def wallet_20_short_status(customer: dict, business: dict, program: dict) -> tuple:
     card_type = (program or {}).get('card_type', 'stamp')
