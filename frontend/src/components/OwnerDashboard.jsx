@@ -1614,10 +1614,16 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                         : isPointsCard
                         ? `+${item.points_earned ?? 0} pts earned`
                         : isVipCard
-                        ? (item.action === 'tier_change' && item.new_tier
-                          ? `Tier: ${item.old_tier || '—'} → ${item.new_tier}`
-                          : `${(item.points_delta ?? 0) >= 0 ? '+' : ''}${item.points_delta ?? 0} VIP pts`)
+                        ? `${(item.points_delta ?? 0) >= 0 ? '+' : ''}${item.points_delta ?? 0} VIP pts`
                         : `Stamp #${item.stamp_number || (memberHistory.length - i)}`
+                      // vip_events.action is always 'sale' or 'adjustment' -
+                      // never a distinct 'tier_change' value - so a tier
+                      // change is detected by comparing old_tier/new_tier on
+                      // the row, not by action, and shown as a second line
+                      // alongside the points-delta title rather than
+                      // replacing it (both can be true at once: a sale that
+                      // also pushed the customer into a new tier).
+                      const tierChanged = isVipCard && item.old_tier && item.new_tier && item.old_tier !== item.new_tier
 
                       return <div key={item.id || i} style={{display:'grid',gridTemplateColumns:'12px 1fr',gap:10,padding:'12px 0',borderBottom:i===memberHistory.length-1?'none':'1px solid #e2e8f0'}}>
                         <div style={{width:10,height:10,borderRadius:'50%',background:'#14b8a6',marginTop:5,boxShadow:'0 0 0 4px #ccfbf1'}} />
@@ -1631,6 +1637,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                           {isMultipassCard && <div style={{fontSize:13,color:'#475569',marginTop:3}}>{item.sessions_remaining ?? 0} sessions remaining after this activity</div>}
                           {isMembershipCard && item.note && <div style={{fontSize:13,color:'#334155',whiteSpace:'pre-wrap',marginTop:6,padding:8,background:'#f8fafc',borderRadius:8}}>{item.note}</div>}
                           {isPointsCard && item.amount_spent_pesos != null && <div style={{fontSize:13,color:'#475569',marginTop:3}}>₱{Number(item.amount_spent_pesos).toLocaleString()} spent</div>}
+                          {isVipCard && tierChanged && <div style={{fontSize:13,fontWeight:700,color:'#b45309',marginTop:3}}>🏆 Tier: {item.old_tier} → {item.new_tier}</div>}
                           {isVipCard && (item.amount_spent != null || item.points_balance != null) && (
                             <div style={{fontSize:13,color:'#475569',marginTop:3}}>
                               {item.amount_spent != null ? `₱${Number(item.amount_spent).toLocaleString()} spent` : null}
@@ -1646,7 +1653,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                   </div>
                 )}
               </div>
-            </div>
 
             {activeCoupon && (
               <div style={{ background: '#f0fdfa', border: '1.5px dashed #0d9488', borderRadius: 10, padding: '10px 14px', textAlign: 'center', marginBottom: 16 }}>
