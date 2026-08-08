@@ -2427,7 +2427,7 @@ def get_latest_active_announcement(business_id: int) -> Optional[dict]:
         return None
     return ann
 
-def build_apple_pass_json(customer: dict, business: dict, program: dict, announcement: Optional[dict] = None, has_custom_logo: bool = False) -> dict:
+def build_apple_pass_json(customer: dict, business: dict, program: dict, announcement: Optional[dict] = None) -> dict:
     cust_public_id = customer.get('public_id', '')
     cust_name = customer.get('name', 'Member')
     biz_name = business.get('name', 'Loyalty')
@@ -2555,13 +2555,12 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
             }
         ]
     }
-    # logoText is meant to sit next to a small graphic mark (icon.png) that
-    # has no text of its own. When there's no real uploaded logo, icon.png
-    # AND logo.png both fall back to a generated wordmark that already
-    # spells out the business name - setting logoText too would render that
-    # same name a second time, overlapping, right next to it.
-    if has_custom_logo:
-        pass_dict['logoText'] = biz_name[:20]
+    # No logoText: it sits at the top next to the logo icon on the same row
+    # as headerFields (e.g. "MEMBER: <name>"), and a business name of even
+    # moderate length collides/overlaps with that field on narrower phones.
+    # The logo image already carries the brand - headerFields already carry
+    # the member context - logoText is redundant and the most common source
+    # of the overlapping-text look on real devices.
     return pass_dict
 
 def generate_apple_strip_bytes(customer: dict, business: dict, program: dict, width: int, height: int) -> bytes:
@@ -2628,14 +2627,10 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
     # Real branding when the business has uploaded it - same source URLs
     # Google Wallet already uses (see build_loyalty_class) - so both wallets
     # end up matching. Each falls back to the existing generated placeholder
-    # on any missing URL, fetch failure, or unreadable image. Fetched before
-    # build_apple_pass_json so it can decide whether to also set logoText -
-    # the generated fallback logo already bakes the business name into the
-    # image itself, so also setting logoText would show the name twice,
-    # overlapping, next to the icon.
+    # on any missing URL, fetch failure, or unreadable image.
     logo_url = business.get('logo_url') or ((program or {}).get('program_logo_url'))
     logo_bytes = _fetch_image_bytes(logo_url)
-    pass_json = build_apple_pass_json(customer, business, program, announcement, has_custom_logo=bool(logo_bytes))
+    pass_json = build_apple_pass_json(customer, business, program, announcement)
 
     icon_29 = apple_icon_from_logo_bytes(logo_bytes, 29) if logo_bytes else None
     icon_58 = apple_icon_from_logo_bytes(logo_bytes, 58) if logo_bytes else None
@@ -2654,15 +2649,23 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
         'logo@3x.png': logo_480 or generate_apple_logo_bytes(biz_name, 480, 150),
     }
     if design['show_background']:
+        # Thumbnail, not a full-width strip: a strip image sits behind
+        # Apple's own header/primary/secondary fields, which it *always*
+        # overlays on top - no matter what we send, that's Apple's fixed
+        # storeCard behavior, and it's what was making the pass look like
+        # text stamped over a photo instead of a real card. A thumbnail
+        # sits beside the fields instead of under them, so nothing gets
+        # overlaid on top of the photo - closer to how an actual membership
+        # card / GoTyme-style bank card reads at a glance.
         hero_url = (program or {}).get('hero_image_url')
         hero_bytes = _fetch_image_bytes(hero_url)
-        strip_375 = apple_strip_from_image_bytes(hero_bytes, 375, 123) if hero_bytes else None
-        strip_750 = apple_strip_from_image_bytes(hero_bytes, 750, 246) if hero_bytes else None
-        strip_1125 = apple_strip_from_image_bytes(hero_bytes, 1125, 369) if hero_bytes else None
+        thumb_90 = apple_strip_from_image_bytes(hero_bytes, 90, 90) if hero_bytes else None
+        thumb_180 = apple_strip_from_image_bytes(hero_bytes, 180, 180) if hero_bytes else None
+        thumb_270 = apple_strip_from_image_bytes(hero_bytes, 270, 270) if hero_bytes else None
         files.update({
-            'strip.png': strip_375 or generate_apple_strip_bytes(customer, business, program, 375, 123),
-            'strip@2x.png': strip_750 or generate_apple_strip_bytes(customer, business, program, 750, 246),
-            'strip@3x.png': strip_1125 or generate_apple_strip_bytes(customer, business, program, 1125, 369),
+            'thumbnail.png': thumb_90 or generate_apple_strip_bytes(customer, business, program, 90, 90),
+            'thumbnail@2x.png': thumb_180 or generate_apple_strip_bytes(customer, business, program, 180, 180),
+            'thumbnail@3x.png': thumb_270 or generate_apple_strip_bytes(customer, business, program, 270, 270),
         })
 
     manifest = {name: hashlib.sha1(content).hexdigest() for name, content in files.items()}
