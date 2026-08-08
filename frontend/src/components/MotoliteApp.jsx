@@ -53,6 +53,9 @@ function RegisterWarranty({API_BASE,session}){
   const [step,setStep]=useState(1)
   const [busy,setBusy]=useState(false)
   const [error,setError]=useState('')
+  const [memberDetail,setMemberDetail]=useState(null)
+  const [detailLoading,setDetailLoading]=useState(false)
+  const [showQr,setShowQr]=useState(null)
   const [result,setResult]=useState(null)
   const [form,setForm]=useState({
     name:'',phone:'',email:'',address:'',city:'Cauayan City',province:'Isabela',
@@ -257,12 +260,13 @@ function Dashboard({level,API_BASE,session,onLogout}){
   },[API_BASE,session.token])
 
   useEffect(()=>{
-    if(!['members','warranties','batteries','claims'].includes(view))return
+    if(!['members','warranties','batteries','claims','reminders'].includes(view))return
     const endpoint={
       members:'members',
       warranties:'warranties',
       batteries:'batteries',
-      claims:'warranty-actions'
+      claims:'warranty-actions',
+      reminders:'reminders'
     }[view]
     setLoading(true);setError('')
     fetch(`${API_BASE}/api/v1/motolite/${endpoint}`,{headers:auth})
@@ -284,18 +288,44 @@ function Dashboard({level,API_BASE,session,onLogout}){
     ["Claims",data.claims]
   ]:[["Members","—"],["Active Warranties","—"],["Warranties","—"],["Claims","—"]]
 
+  async function openMemberDetail(memberId){
+    setDetailLoading(true);setError('')
+    try{
+      const r=await fetch(`${API_BASE}/api/v1/motolite/members/${memberId}`,{headers:auth})
+      const body=await r.json()
+      if(!r.ok)throw new Error(body.detail||'Could not load member')
+      setMemberDetail(body)
+    }catch(e){setError(e.message)}
+    finally{setDetailLoading(false)}
+  }
+
+  async function openMemberQr(memberId){
+    setDetailLoading(true);setError('')
+    try{
+      const r=await fetch(`${API_BASE}/api/v1/motolite/members/${memberId}`,{headers:auth})
+      const body=await r.json()
+      if(!r.ok)throw new Error(body.detail||'Could not load member wallet')
+      if(!body.wallet?.qr_svg_url)throw new Error('This member does not have an active wallet-ready warranty yet.')
+      setShowQr({member:body.member,wallet:body.wallet})
+    }catch(e){setError(e.message)}
+    finally{setDetailLoading(false)}
+  }
+
   function RecordTable(){
     if(loading)return <div className="recordState">Loading records…</div>
     if(error)return <div className="formError">{error}</div>
     if(!rows.length)return <div className="recordState">No records found in your authorized scope.</div>
 
-    if(view==='members')return <div className="recordsTable">
-      <div className="recordsHead"><span>Member</span><span>Contact</span><span>Location</span><span>Member No.</span></div>
+    if(view==='members')return <div className="recordsTable memberRecords">
+      <div className="recordsHead"><span>Member</span><span>Contact</span><span>Location</span><span>Actions</span></div>
       {rows.map(r=><div className="recordsRow" key={r.public_id}>
-        <span><b>{r.name}</b><small>{r.public_id}</small></span>
+        <span><b>{r.name}</b><small>{r.member_number||r.public_id}</small></span>
         <span>{r.phone||'—'}<small>{r.email||''}</small></span>
         <span>{[r.city,r.province].filter(Boolean).join(', ')||'—'}</span>
-        <span>{r.member_number||'—'}</span>
+        <span className="memberRowActions">
+          <button className="miniBtn" onClick={()=>openMemberDetail(r.public_id)}>View Details</button>
+          <button className="miniBtn qrMiniBtn" onClick={()=>openMemberQr(r.public_id)}>Show Wallet QR</button>
+        </span>
       </div>)}
     </div>
 
@@ -314,6 +344,16 @@ function Dashboard({level,API_BASE,session,onLogout}){
         <span><b>{r.product_name}</b><small>{r.model_code||''}</small></span>
         <span>{r.serial_number}</span><span>{r.installation_date||r.purchase_date||'—'}</span>
         <span>{r.status||'—'}</span>
+      </div>)}
+    </div>
+
+    if(view==='reminders')return <div className="reminderList">
+      {rows.map(x=><div className="reminderCard" key={x.member.public_id}>
+        <div><b>{x.member.name}</b><small>{x.member.member_number}</small></div>
+        <div className="reminderItems">
+          {x.reminders.map((r,i)=><span className={`reminderPill ${r.severity}`} key={i}>{r.title}: {r.message}</span>)}
+        </div>
+        <button className="miniBtn" onClick={()=>openMemberDetail(x.member.public_id)}>View Member</button>
       </div>)}
     </div>
 
@@ -337,6 +377,7 @@ function Dashboard({level,API_BASE,session,onLogout}){
       <button className={view==='warranties'?'current':''} onClick={()=>setView('warranties')}>Warranties</button>
       <button className={view==='batteries'?'current':''} onClick={()=>setView('batteries')}>Batteries</button>
       <button className={view==='claims'?'current':''} onClick={()=>setView('claims')}>Claims & Replacements</button>
+      <button className={view==='reminders'?'current':''} onClick={()=>setView('reminders')}>Notifications & Reminders</button>
       <button className="bottom" onClick={()=>go('/motolite')}>Public Website</button>
       <button onClick={onLogout}>Sign Out</button>
     </aside>
@@ -352,7 +393,7 @@ function Dashboard({level,API_BASE,session,onLogout}){
           view==='staff'?'Staff Management':
           view==='members'?'Members':
           view==='warranties'?'Warranties':
-          view==='batteries'?'Batteries':'Claims & Replacements'
+          view==='batteries'?'Batteries':view==='reminders'?'Notifications & Reminders':'Claims & Replacements'
         }</h1>
         <button className="redBtn" onClick={()=>go('/motolite/register')}>+ Register Warranty</button>
       </div>
@@ -383,6 +424,51 @@ function Dashboard({level,API_BASE,session,onLogout}){
               </div>
             </>
       }
+
+      {detailLoading&&<div className="modalShade"><div className="memberModal smallModal">Loading…</div></div>}
+
+      {memberDetail&&<div className="modalShade" onMouseDown={()=>setMemberDetail(null)}>
+        <div className="memberModal" onMouseDown={e=>e.stopPropagation()}>
+          <div className="modalHead">
+            <div><span className="kicker">MEMBER DETAILS</span><h2>{memberDetail.member.name}</h2><small>{memberDetail.member.member_number}</small></div>
+            <button onClick={()=>setMemberDetail(null)}>×</button>
+          </div>
+
+          {memberDetail.reminders?.length>0&&<div className="alertStack">
+            {memberDetail.reminders.map((r,i)=><div className={`memberAlert ${r.severity}`} key={i}><b>{r.title}</b><span>{r.message}</span></div>)}
+          </div>}
+
+          <div className="detailGrid">
+            <div><span>Phone</span><b>{memberDetail.member.phone||'—'}</b></div>
+            <div><span>Email</span><b>{memberDetail.member.email||'—'}</b></div>
+            <div><span>City</span><b>{memberDetail.member.city||'—'}</b></div>
+            <div><span>Branch</span><b>{memberDetail.branch?.name||'—'}</b></div>
+          </div>
+
+          <h3>Vehicles</h3>
+          <div className="miniList">{memberDetail.vehicles.map(v=><div key={v.public_id}><b>{v.make} {v.model}</b><span>{v.year||''} · {v.plate_number||'No plate'}</span></div>)}</div>
+
+          <h3>Batteries & Warranties</h3>
+          <div className="miniList">{memberDetail.batteries.map(b=><div key={b.public_id}><b>{b.product_name}</b><span>{b.serial_number} · Installed {b.installation_date||b.purchase_date}</span><span>Recommended replacement: {b.recommended_replacement_date||'Not set'}</span></div>)}</div>
+
+          <h3>Motolite Activity</h3>
+          <div className="timeline">{memberDetail.activity.map((a,i)=><div className="timelineItem" key={i}><i/><div><b>{a.title}</b><span>{a.description}</span><small>{a.date?new Date(a.date).toLocaleString():'—'}</small></div></div>)}</div>
+
+          {memberDetail.wallet&&<button className="redBtn" onClick={()=>setShowQr({member:memberDetail.member,wallet:memberDetail.wallet})}>Show Customer Wallet QR</button>}
+        </div>
+      </div>}
+
+      {showQr&&<div className="modalShade" onMouseDown={()=>setShowQr(null)}>
+        <div className="memberModal qrModal" onMouseDown={e=>e.stopPropagation()}>
+          <div className="modalHead"><div><span className="kicker">CUSTOMER WALLET QR</span><h2>{showQr.member.name}</h2></div><button onClick={()=>setShowQr(null)}>×</button></div>
+          <img className="bigWalletQr" src={showQr.wallet.qr_svg_url} alt="Customer wallet QR"/>
+          <p>Ask the customer to scan this QR using their phone camera. It opens the Motolite wallet page with Apple Wallet and Google Wallet options.</p>
+          <div className="walletBtns">
+            <a className="walletApple" href={showQr.wallet.apple_url}> Add to Apple Wallet</a>
+            <a className="walletGoogle" href={showQr.wallet.google_url} target="_blank" rel="noreferrer">G Add to Google Wallet</a>
+          </div>
+        </div>
+      </div>}
     </main>
   </div>
 }

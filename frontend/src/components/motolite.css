@@ -91,3 +91,27 @@
 .recordsRow small{color:#999;margin-top:4px;font-size:10px}
 .recordState{text-align:center;padding:55px 20px;color:#777}
 .statusText{color:#178144}
+
+
+/* Member CRM + QR + activity + reminders */
+.memberRowActions{display:flex!important;gap:7px;flex-wrap:wrap}
+.miniBtn{border:1px solid #ddd;background:#fff;padding:8px 10px;border-radius:6px;font-size:11px;font-weight:800}
+.qrMiniBtn{background:#171717;color:#fff;border-color:#171717}
+.modalShade{position:fixed;inset:0;background:#0008;z-index:1000;display:grid;place-items:center;padding:25px}
+.memberModal{width:min(760px,100%);max-height:90vh;overflow:auto;background:#fff;border-radius:16px;padding:26px;box-shadow:0 25px 80px #0005}
+.smallModal{width:auto;min-width:180px;text-align:center}
+.modalHead{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;border-bottom:1px solid #eee;padding-bottom:17px;margin-bottom:20px}
+.modalHead h2{margin:5px 0}.modalHead>button{border:0;background:#f3f3f3;width:34px;height:34px;border-radius:50%;font-size:22px}
+.detailGrid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:24px}
+.detailGrid>div,.miniList>div{border:1px solid #eee;border-radius:8px;padding:13px}
+.detailGrid span,.detailGrid b,.miniList span,.miniList b{display:block}
+.detailGrid span,.miniList span{font-size:11px;color:#777;margin-bottom:3px}
+.miniList{display:grid;gap:8px;margin-bottom:24px}
+.timeline{margin:5px 0 25px;border-left:2px solid #eee;padding-left:18px}
+.timelineItem{position:relative;padding:0 0 18px}
+.timelineItem i{position:absolute;width:10px;height:10px;border-radius:50%;background:#d71920;left:-24px;top:4px}
+.timelineItem b,.timelineItem span,.timelineItem small{display:block}.timelineItem span{font-size:12px;color:#555;margin:3px 0}.timelineItem small{font-size:10px;color:#999}
+.qrModal{text-align:center;max-width:470px}.qrModal .modalHead{text-align:left}.bigWalletQr{width:270px;height:270px;max-width:90%;padding:10px;border:1px solid #eee;border-radius:10px;background:#fff}.qrModal p{font-size:13px;color:#666;line-height:1.6}
+.alertStack{display:grid;gap:8px;margin-bottom:18px}.memberAlert{padding:12px;border-radius:8px;display:flex;flex-direction:column;gap:3px}.memberAlert.warning{background:#fff7d6;color:#806100}.memberAlert.urgent{background:#fff0f0;color:#a20d16}.memberAlert span{font-size:12px}
+.reminderList{display:grid;gap:10px}.reminderCard{display:grid;grid-template-columns:190px 1fr auto;align-items:center;gap:15px;border:1px solid #eee;padding:15px;border-radius:9px;background:#fff}.reminderCard small{display:block;color:#999;margin-top:3px}.reminderItems{display:flex;gap:6px;flex-wrap:wrap}.reminderPill{font-size:11px;padding:7px 9px;border-radius:999px}.reminderPill.warning{background:#fff5c2;color:#745800}.reminderPill.urgent{background:#ffe1e1;color:#a20d16}
+@media(max-width:700px){.detailGrid{grid-template-columns:1fr}.reminderCard{grid-template-columns:1fr}.memberRowActions{flex-direction:column}.bigWalletQr{width:230px;height:230px}}
