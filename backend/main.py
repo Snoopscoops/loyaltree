@@ -2083,6 +2083,64 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     return loyalty_object
 
 
+async def refresh_existing_member_wallets(business: dict, program: dict):
+    """Push a business's current design/status to every member's already-issued
+    Google Wallet object and Apple pass. Customer balances/history are
+    untouched - only the Wallet-side representation is patched (Google) or
+    flagged for re-fetch via APNs (Apple).
+
+    This is the single source of truth for 'my saved changes aren't showing
+    up on the actual phone' - a business's card design lives in our DB the
+    moment they hit Save, but Google/Apple only see it once we push. Call
+    this after ANY change that should be visible on already-issued passes
+    (color/style, card copy, reward text, membership status, etc), not just
+    from the explicit 'Publish' button."""
+    try:
+        members = (
+            supabase.table('customers')
+            .select('*')
+            .eq('business_id', business.get('id'))
+            .execute()
+            .data or []
+        )
+        current_program = safe_get_loyalty_program(business.get('id')) or program or {}
+        semaphore = asyncio.Semaphore(8)
+
+        async def refresh_one(member):
+            async with semaphore:
+                await asyncio.to_thread(sync_wallet_object, member, business, current_program)
+                await asyncio.to_thread(push_apple_wallet_update, member.get('public_id'))
+
+        await asyncio.gather(*(refresh_one(member) for member in members if member.get('public_id')))
+        print(f"WALLET SYNC: refreshed {len(members)} member wallet representations for {business.get('name')}")
+    except Exception as refresh_error:
+        print(f"WALLET SYNC bulk refresh error: {refresh_error}")
+
+async def republish_wallet_class_and_refresh(business: dict, program: dict):
+    """Best-effort: if this business has already published a Google Wallet
+    class, PUT the latest design (color/style/logo/hero) to it so existing
+    passes pick up the change, then refresh every member's issued pass
+    (Google object PATCH + Apple push). Silent no-op if Google Wallet isn't
+    configured yet or this business hasn't published a class - businesses
+    that haven't touched Wallet at all shouldn't get errors on a plain Save."""
+    class_id = (program or {}).get('google_wallet_class_id')
+    if class_id and GOOGLE_WALLET_ISSUER_ID:
+        try:
+            access_token = get_google_access_token()
+            if access_token:
+                import httpx
+                loyalty_class = build_loyalty_class(business, program, review_status='UNDER_REVIEW')
+                with httpx.Client() as client:
+                    resp = client.put(
+                        f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}',
+                        headers={"Authorization": f"Bearer {access_token}"},
+                        json=loyalty_class
+                    )
+                    print(f"WALLET SYNC: class PUT {resp.status_code}")
+        except Exception as e:
+            print(f"WALLET SYNC: class PUT error: {e}")
+    await refresh_existing_member_wallets(business, program)
+
 def sync_wallet_object(customer: dict, business: dict, program: dict,
                         notify_header: str = None, notify_body: str = None,
                         notify_message_id: str = None):
@@ -5750,6 +5808,13 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
                 ),
             )
 
+        # Keep already-issued Google/Apple passes in sync with what was just
+        # saved - without this, a business's card design/status only lives
+        # in our DB (and the web preview) until they separately hit
+        # "Publish", so a member's actual phone wallet can silently go stale
+        # (old color, old status) even though the dashboard looks current.
+        asyncio.create_task(republish_wallet_class_and_refresh(business, persisted))
+
         return {
             "message": "Configuration saved",
             "card_type": persisted_type,
@@ -9067,29 +9132,7 @@ async def create_or_update_wallet_class(public_id: str):
                 # background. Customer balances/history are untouched; only
                 # the Wallet representation is patched and Apple devices are
                 # asked to refetch their signed pass.
-                async def refresh_existing_member_wallets():
-                    try:
-                        members = (
-                            supabase.table('customers')
-                            .select('*')
-                            .eq('business_id', business.get('id'))
-                            .execute()
-                            .data or []
-                        )
-                        current_program = safe_get_loyalty_program(business.get('id')) or program or {}
-                        semaphore = asyncio.Semaphore(8)
-
-                        async def refresh_one(member):
-                            async with semaphore:
-                                await asyncio.to_thread(sync_wallet_object, member, business, current_program)
-                                await asyncio.to_thread(push_apple_wallet_update, member.get('public_id'))
-
-                        await asyncio.gather(*(refresh_one(member) for member in members if member.get('public_id')))
-                        print(f"WALLET 2.0: refreshed {len(members)} member wallet representations for {business.get('name')}")
-                    except Exception as refresh_error:
-                        print(f"WALLET 2.0 bulk refresh error: {refresh_error}")
-
-                asyncio.create_task(refresh_existing_member_wallets())
+                asyncio.create_task(refresh_existing_member_wallets(business, program))
 
                 return {
                     "success": True,
