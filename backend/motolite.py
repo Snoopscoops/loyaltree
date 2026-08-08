@@ -1508,6 +1508,7 @@ def _google_object(wid: str):
     p = _wallet_payload(wid)
     verification = p["qr_verification_url"]
     activity = p["activity_url"]
+    wallet_page = f"{MOTOLITE_BASE_URL}/api/v1/motolite/wallet/{wid}"
     expires = str(p.get("warranty_expires_at") or "—")
     status = str(p.get("warranty_display_status") or "ACTIVE")
 
@@ -1521,11 +1522,34 @@ def _google_object(wid: str):
             "label": "Warranty Status",
             "balance": {"string": status},
         },
+
+        # Primary QR on the pass remains the secure verified-warranty URL.
         "barcode": {
             "type": "QR_CODE",
             "value": verification,
             "alternateText": str(p.get("member_number") or ""),
         },
+
+        # Google Wallet renders appLinkData as a real call-to-action button
+        # on the front of the pass. This is intentionally used instead of
+        # relying only on the small links module at the bottom/details view.
+        "appLinkData": {
+            "webAppLinkInfo": {
+                "appTarget": {
+                    "targetUri": {
+                        "uri": wallet_page,
+                        "description": "Open Motolite Digital Warranty"
+                    }
+                }
+            },
+            "displayText": {
+                "defaultValue": {
+                    "language": "en-US",
+                    "value": "View Warranty & Activity"
+                }
+            }
+        },
+
         "textModulesData": [
             {"id":"valid_until","header":"WARRANTY VALID UNTIL","body":expires},
             {"id":"battery","header":"BATTERY MODEL","body":str(p.get("battery_product") or "—")},
@@ -1536,10 +1560,18 @@ def _google_object(wid: str):
             {"id":"installed","header":"INSTALLATION DATE","body":str(p.get("installation_date") or "—")},
             {"id":"replacement","header":"RECOMMENDED REPLACEMENT","body":str(p.get("recommended_replacement_date") or "—")},
         ],
+
+        # Keep the two explicit links in the detail view as secondary actions.
         "linksModuleData": {
             "uris": [
-                {"uri": verification, "description": "View verified warranty"},
-                {"uri": activity, "description": "View Motolite activity & reminders"},
+                {
+                    "uri": verification,
+                    "description": "Verified Warranty Details"
+                },
+                {
+                    "uri": activity,
+                    "description": "Motolite Activity & Reminders"
+                },
             ]
         },
     }
@@ -1548,11 +1580,18 @@ def _google_object(wid: str):
         obj["validTimeInterval"] = {
             "end": {"date": f"{p['warranty_expires_at']}T23:59:59Z"}
         }
+
     if MOTOLITE_WALLET_HERO_URL:
         obj["heroImage"] = {
             "sourceUri": {"uri": MOTOLITE_WALLET_HERO_URL},
-            "contentDescription": {"defaultValue": {"language": "en-US", "value": "Motolite Digital Battery Warranty"}},
+            "contentDescription": {
+                "defaultValue": {
+                    "language": "en-US",
+                    "value": "Motolite Digital Battery Warranty"
+                }
+            },
         }
+
     return obj
 
 
@@ -1618,15 +1657,52 @@ def _apple_pkpass(wid: str):
                     {"key": "branch", "label": "Installation Branch", "value": str(p.get("branch_name") or "—")},
                     {"key": "installed", "label": "Installation Date", "value": str(p.get("installation_date") or "—")},
                     {"key": "replacement", "label": "Recommended Battery Replacement", "value": str(p.get("recommended_replacement_date") or "—")},
-                    {"key": "activity", "label": "Motolite Activity & Reminders", "value": activity},
-                    {"key": "latest_notice", "label": "Latest Motolite Update", "value": (
+                    {
+                        "key": "online_card",
+                        "label": "ONLINE WARRANTY",
+                        "value": "View Warranty & Activity",
+                        "attributedValue": (
+                            f'<a href="{MOTOLITE_BASE_URL}/api/v1/motolite/wallet/{wid}">'
+                            "View Warranty & Activity</a>"
+                        ),
+                    },
+                    {
+                        "key": "verification",
+                        "label": "VERIFIED WARRANTY",
+                        "value": "View Verified Warranty Details",
+                        "attributedValue": (
+                            f'<a href="{verification}">View Verified Warranty Details</a>'
+                        ),
+                    },
+                    {
+                        "key": "activity",
+                        "label": "ACTIVITY & REMINDERS",
+                        "value": "View Motolite Activity & Reminders",
+                        "attributedValue": (
+                            f'<a href="{activity}">View Motolite Activity & Reminders</a>'
+                        ),
+                    },
+                    {"key": "latest_notice", "label": "LATEST MOTOLITE UPDATE", "value": (
                         ((p.get("latest_notification") or {}).get("title") or "") + (
                             ": " + (p.get("latest_notification") or {}).get("message", "")
                             if (p.get("latest_notification") or {}).get("message") else ""
                         )
                     ) or "No new notices", "changeMessage": "Motolite update: %@"},
-                    {"key": "verification", "label": "Warranty Verification", "value": verification},
-                    {"key": "emergency", "label": "Emergency Assistance", "value": str(p.get("emergency_number") or "Motolite Hotline")},
+                    {
+                        "key": "emergency",
+                        "label": "EMERGENCY ASSISTANCE",
+                        "value": str(p.get("emergency_number") or "Motolite Hotline"),
+                        **(
+                            {
+                                "attributedValue": (
+                                    f'<a href="tel:{p.get("emergency_number")}">'
+                                    f'Call {p.get("emergency_number")}</a>'
+                                )
+                            }
+                            if p.get("emergency_number")
+                            else {}
+                        ),
+                    },
                 ],
             },
         }
@@ -1895,6 +1971,9 @@ async def motolite_wallet_landing_page(warranty_public_id: str):
     status = html_lib.escape(
         str(payload.get("warranty_status") or "active").upper()
     )
+    emergency_number = str(payload.get("emergency_number") or "").strip()
+    emergency_display = html_lib.escape(emergency_number)
+    emergency_tel = re.sub(r"[^0-9+]", "", emergency_number)
 
     return HTMLResponse(
         content=f"""<!doctype html>
@@ -1938,6 +2017,11 @@ h1{{font-size:26px;margin:15px 0 3px}}
 .apple{{background:#000;color:#fff}}
 .google{{background:#fff;color:#111;border:1px solid #ddd}}
 .verify{{display:block;text-align:center;color:#d71920;font-weight:800;font-size:13px;margin-top:20px;text-decoration:none}}
+.emergencyBox{{margin-top:22px;padding:16px;border-radius:12px;background:#fff4f4;border:1px solid #f0c8cb;text-align:center}}
+.emergencyBox strong{{display:block;font-size:13px;margin-bottom:5px}}
+.emergencyBox p{{font-size:11px;color:#777;line-height:1.5;margin:0 0 12px}}
+.emergencyCall{{display:flex;align-items:center;justify-content:center;gap:8px;background:#d71920;color:#fff;text-decoration:none;border-radius:9px;padding:14px 16px;font-size:14px;font-weight:900}}
+.emergencyCall small{{font-size:11px;font-weight:700;opacity:.9}}
 .help{{font-size:11px;color:#888;text-align:center;line-height:1.55;margin-top:22px}}
 .device-note{{background:#fff7d6;border:1px solid #f0dc79;padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:14px;display:none}}
 @media(max-width:390px){{.row{{grid-template-columns:1fr}}.row b{{text-align:left}}}}
@@ -1969,6 +2053,16 @@ h1{{font-size:26px;margin:15px 0 3px}}
       <a class="wallet apple" id="apple-wallet" href="{apple_url}"> Add to Apple Wallet</a>
       <a class="wallet google" id="google-wallet" href="{google_url}">G&nbsp;&nbsp;Add to Google Wallet</a>
     </div>
+
+    {(
+      f'<div class="emergencyBox">'
+      f'<strong>Need emergency battery help?</strong>'
+      f'<p>Call Motolite assistance directly from your phone.</p>'
+      f'<a class="emergencyCall" href="tel:{emergency_tel}">'
+      f'☎ Call Emergency Help <small>{emergency_display}</small></a>'
+      f'</div>'
+      if emergency_tel else ''
+    )}
 
     <a class="verify" href="{verify_url}">View verified warranty record →</a>
     <a class="verify" href="{activity_url}">View Motolite activity & reminders →</a>
