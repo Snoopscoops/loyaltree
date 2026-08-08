@@ -14910,12 +14910,16 @@ async def cockpit_public_site(public_id: str):
     announcement_html = ''.join(announcement_rows) or '<div class="empty small">No announcements posted.</div>'
 
     result_cards = []
-    for item in results[:4]:
+    for item in results[:10]:
         photo = esc(item.get('photo_url'))
         image = f'<img src="{photo}" alt="Official champion">' if photo else '<div class="result-placeholder">🏆</div>'
-        result_cards.append(f'''<article class="result-card">{image}<div><small>{esc(item.get('category') or 'CHAMPION')}</small>
-          <h3>{esc(item.get('champion_name') or 'Champion to be announced')}</h3>
+        champion_plain = str(item.get('champion_name') or 'Champion to be announced')
+        search_blob = ' '.join(str(item.get(k) or '') for k in ('champion_name','runner_up_name','third_place_name','category','notes')).lower()
+        result_cards.append(f'''<article class="result-card" data-search="{esc(search_blob)}">{image}<div><small>{esc(item.get('category') or 'CHAMPION')}</small>
+          <h3>{esc(champion_plain)}</h3>
           <p>Runner-up: {esc(item.get('runner_up_name') or '—')}</p></div></article>''')
+    champions_search_html = '<div class="search-wrap"><input type="text" id="champion-search" class="search-input" placeholder="Search champions by name, category, or runner-up..."></div>' if results else ''
+    no_champions_html = '<div id="no-champions" class="empty" style="display:none">No champions match your search.</div>' if results else ''
     results_html = ''.join(result_cards) or '<div class="empty">No champions have been announced yet.</div>'
 
     gallery_html = ''.join(f'<img loading="lazy" src="{esc(x.get("image_url"))}" alt="{esc(x.get("title") or "Arena gallery")}">' for x in gallery[:12]) or '<div class="empty">Gallery photos coming soon.</div>'
@@ -14944,6 +14948,7 @@ async def cockpit_public_site(public_id: str):
 .announcement-row{{display:grid;grid-template-columns:55px 1fr;gap:12px;padding:11px 0;border-bottom:1px solid #262626}}.mini-date{{width:55px;min-width:55px}}.mini-date strong{{font-size:20px;padding:6px;display:block}}.announcement-row h4{{margin:0 0 5px;color:var(--gold)}}.announcement-row p{{margin:0;color:#bbb;font-size:12px;line-height:1.4}}
 .member-card{{background:linear-gradient(145deg,#2a0808,#100707);border:1px solid #63311e;padding:17px;border-radius:7px;margin:20px 0;transform:rotate(-2deg)}}.member-card b{{font-size:18px}}.member-card span{{display:block;color:var(--gold);font-size:11px;margin-top:25px}}.member-card code{{display:block;margin-top:8px;color:#fff}}
 .results-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}}.result-card{{display:grid;grid-template-columns:110px 1fr;gap:15px;background:#101010;border:1px solid #3a2a10;padding:12px;align-items:center}}.result-card img,.result-placeholder{{width:110px;height:105px;object-fit:cover;background:#1d100b;display:grid;place-items:center;font-size:43px}}.result-card h3{{margin:7px 0 4px;text-transform:uppercase}}.result-card p{{margin:0;color:#aaa;font-size:13px}}
+.search-wrap{{margin-bottom:16px}}.search-input{{width:100%;box-sizing:border-box;padding:13px 16px;border:1px solid #3a2a10;border-radius:5px;background:#0b0b0b;color:var(--text);font:inherit}}.search-input::placeholder{{color:#888}}.search-input:focus{{outline:none;border-color:var(--gold)}}
 .gallery{{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}}.gallery img{{width:100%;height:210px;object-fit:cover;border:1px solid #473515;border-radius:3px;transition:.2s}}.gallery img:hover{{transform:scale(1.02);border-color:var(--gold)}}
 .about-member{{display:grid;grid-template-columns:1.4fr .8fr;gap:18px}}.about{{background:#0e0e0e;border:1px solid #342710;padding:26px}}.about p{{color:#c8c8c8;line-height:1.8}}.join{{background:linear-gradient(145deg,#1f1308,#320908);border:1px solid var(--gold);padding:26px}}.join p{{color:#ccc;line-height:1.6}}
 .sponsors{{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}}.sponsor{{min-height:100px;background:#101010;border:1px solid #272727;display:flex;align-items:center;justify-content:center;gap:10px;padding:15px;text-decoration:none;font-weight:800}}.sponsor img{{max-width:120px;max-height:60px;object-fit:contain}}.empty{{padding:30px;color:#888;border:1px dashed #333;text-align:center}}.empty.small{{padding:15px}}
@@ -14957,11 +14962,27 @@ footer{{border-top:1px solid #3b2d13;background:#050505;padding:35px 4% 20px}}.f
 <section class="values"><div class="value">🛡️<strong>Malinis</strong><span>Sinusunod ang lahat ng patakaran at regulasyon.</span></div><div class="value">👥<strong>Propesyonal</strong><span>Pinapatakbo nang may karanasan at propesyonalismo.</span></div><div class="value">🤝<strong>May respeto</strong><span>Respeto sa mananabong, manonood, at sa laro.</span></div><div class="value">🔒<strong>Walang dayaan</strong><span>Transparente at patas ang bawat laban.</span></div></section>
 <section id="schedule" class="section"><div class="section-head"><h2>Upcoming Events</h2><a href="#schedule">View all schedule</a></div><div class="event-list">{events_html}</div></section>
 <section class="section"><div class="dashboard-grid"><div class="box" style="grid-column:span 2"><h3>Weekly Schedule</h3>{schedule_html}</div><div class="box"><h3>Announcements</h3>{announcement_html}</div><div class="box"><h3>Be a Member</h3><p style="color:#bbb;line-height:1.6">Ang official digital membership ng {arena} ay kasalukuyang inihahanda.</p><div class="member-card"><b>{arena}</b><span>OFFICIAL DIGITAL MEMBERSHIP</span><code>COMING SOON</code></div><span class="btn primary" style="display:inline-flex;opacity:.72;cursor:not-allowed">Coming Soon</span></div></div></section>
-<section id="champions" class="section"><div class="section-head"><h2>Latest Champions</h2><a href="#champions">View all champions</a></div><div class="results-grid">{results_html}</div></section>
+<section id="champions" class="section"><div class="section-head"><h2>Latest Champions</h2><a href="#champions">View all champions</a></div>{champions_search_html}<div class="results-grid">{results_html}</div>{no_champions_html}</section>
 <section id="gallery" class="section"><div class="section-head"><h2>Gallery</h2><a href="#gallery">View all photos</a></div><div class="gallery">{gallery_html}</div></section>
 <section id="about" class="section"><div class="about-member"><div class="about"><h2>About {arena}</h2><p>{about}</p></div><div class="join"><h2>Stay Connected</h2><p>Follow the official Facebook page for upcoming derbies, announcements, champions, event posters, and live updates.</p><a class="btn primary" href="{facebook}" target="_blank" rel="noopener noreferrer">Follow VCSA on Facebook</a></div></div></section>
 <section id="sponsors" class="section"><div class="section-head"><h2>Our Sponsors</h2></div><div class="sponsors">{sponsor_html}</div></section></main>
 <footer id="contact"><div class="footer-grid"><div><h4>{arena}</h4><p>{tagline}</p></div><div><h4>Quick Links</h4><p><a href="#schedule">Schedule</a><br><a href="#champions">Champions</a><br><a href="#gallery">Gallery</a><br><a href="#sponsors">Sponsors</a></p></div><div><h4>Contact Us</h4><p>{phone}<br>{email}<br>{address}</p></div><div><h4>Follow Us</h4><p>{fb_html}</p></div></div><div class="copyright">© {datetime.utcnow().year} {arena}. All rights reserved.</div></footer>
-<script>document.querySelectorAll('.nav a').forEach(a=>a.addEventListener('click',()=>document.querySelector('.nav').classList.remove('open')))</script></body></html>'''
+<script>document.querySelectorAll('.nav a').forEach(a=>a.addEventListener('click',()=>document.querySelector('.nav').classList.remove('open')))
+var championSearch=document.getElementById('champion-search');
+if(championSearch){{
+  championSearch.addEventListener('input',function(){{
+    var q=championSearch.value.trim().toLowerCase();
+    var cards=document.querySelectorAll('#champions .result-card');
+    var visible=0;
+    cards.forEach(function(card){{
+      var match=!q||(card.getAttribute('data-search')||'').indexOf(q)!==-1;
+      card.style.display=match?'':'none';
+      if(match)visible++;
+    }});
+    var empty=document.getElementById('no-champions');
+    if(empty)empty.style.display=visible===0?'':'none';
+  }});
+}}
+</script></body></html>'''
     return HTMLResponse(page)
 
