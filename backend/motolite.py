@@ -31,6 +31,8 @@ APPLE_PASS_TYPE_IDENTIFIER = os.getenv("APPLE_PASS_TYPE_IDENTIFIER", "")
 APPLE_TEAM_IDENTIFIER = os.getenv("APPLE_TEAM_IDENTIFIER", "")
 MOTOLITE_GOOGLE_WALLET_CLASS_SUFFIX = os.getenv("MOTOLITE_GOOGLE_WALLET_CLASS_SUFFIX", "motolite_warranty")
 MOTOLITE_WALLET_BACKGROUND_COLOR = os.getenv("MOTOLITE_WALLET_BACKGROUND_COLOR", "#d71920")
+MOTOLITE_WALLET_LOGO_URL = os.getenv("MOTOLITE_WALLET_LOGO_URL", "")
+MOTOLITE_WALLET_HERO_URL = os.getenv("MOTOLITE_WALLET_HERO_URL", "")
 
 ROLE_NATIONAL = "national"
 ROLE_REGIONAL = "regional"
@@ -905,8 +907,51 @@ async def dashboard(staff: dict = Depends(current_staff)):
 
 
 def _wallet_payload(wid: str):
-    w=_require_record("motolite_warranties",wid,"Warranty"); m=_require_record("motolite_members",w.get("member_public_id"),"Member"); b=_require_record("motolite_batteries",w.get("battery_public_id"),"Battery"); v=_get_one("motolite_vehicles","public_id",w.get("vehicle_public_id")) if w.get("vehicle_public_id") else None
-    return {"member_public_id":m.get("public_id"),"member_number":m.get("member_number"),"member_name":m.get("name"),"battery_product":b.get("product_name"),"battery_model":b.get("model_code"),"serial_number":b.get("serial_number"),"vehicle":f"{v.get('make')} {v.get('model')}" if v else None,"plate_number":v.get("plate_number") if v else None,"warranty_public_id":w.get("public_id"),"warranty_status":w.get("status"),"warranty_expires_at":w.get("expires_at"),"qr_token":w.get("qr_token"),"qr_verification_url":f"{MOTOLITE_BASE_URL}/api/v1/motolite/warranty/verify/{w.get('qr_token')}","emergency_number":MOTOLITE_EMERGENCY_NUMBER}
+    w = _require_record("motolite_warranties", wid, "Warranty")
+    m = _require_record("motolite_members", w.get("member_public_id"), "Member")
+    b = _require_record("motolite_batteries", w.get("battery_public_id"), "Battery")
+    v = _get_one("motolite_vehicles", "public_id", w.get("vehicle_public_id")) if w.get("vehicle_public_id") else None
+    branch = _get_one("motolite_branches", "public_id", w.get("original_branch_public_id")) if w.get("original_branch_public_id") else None
+
+    expires = w.get("expires_at")
+    days = _days_until(expires)
+    status = str(w.get("status") or "active").lower()
+    if days is not None and days < 0:
+        display_status = "EXPIRED"
+    elif status != "active":
+        display_status = status.upper()
+    elif days is not None and days <= 30:
+        display_status = f"EXPIRES IN {max(days, 0)} DAYS"
+    elif days is not None and days <= 60:
+        display_status = "EXPIRING SOON"
+    else:
+        display_status = "ACTIVE"
+
+    replacement = b.get("recommended_replacement_date")
+    return {
+        "member_public_id": m.get("public_id"),
+        "member_number": m.get("member_number"),
+        "member_name": m.get("name"),
+        "battery_product": b.get("product_name"),
+        "battery_model": b.get("model_code"),
+        "serial_number": b.get("serial_number"),
+        "purchase_date": b.get("purchase_date"),
+        "installation_date": b.get("installation_date") or b.get("purchase_date"),
+        "recommended_replacement_date": replacement,
+        "vehicle": f"{v.get('make')} {v.get('model')}" if v else None,
+        "plate_number": v.get("plate_number") if v else None,
+        "branch_name": branch.get("name") if branch else None,
+        "warranty_public_id": w.get("public_id"),
+        "warranty_status": w.get("status"),
+        "warranty_display_status": display_status,
+        "warranty_expires_at": expires,
+        "warranty_days_remaining": days,
+        "warranty_months": w.get("warranty_months"),
+        "qr_token": w.get("qr_token"),
+        "qr_verification_url": f"{MOTOLITE_BASE_URL}/api/v1/motolite/warranty/verify/{w.get('qr_token')}",
+        "activity_url": f"{MOTOLITE_BASE_URL}/api/v1/motolite/customer/activity/{w.get('qr_token')}",
+        "emergency_number": MOTOLITE_EMERGENCY_NUMBER,
+    }
 
 
 def _google_class_id(): return f"{GOOGLE_WALLET_ISSUER_ID}.{MOTOLITE_GOOGLE_WALLET_CLASS_SUFFIX}"
@@ -921,7 +966,7 @@ def _ensure_google_class():
         with httpx.Client(timeout=20) as c:
             r=c.get(f"https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{cid}",headers=headers)
             if r.status_code==200:return True
-            logo=getattr(pm,"DEFAULT_LOGO_URL",None)
+            logo=MOTOLITE_WALLET_LOGO_URL or getattr(pm,"DEFAULT_LOGO_URL",None)
             body={"id":cid,"issuerName":"Motolite","programName":"Motolite Digital Warranty","reviewStatus":"UNDER_REVIEW","hexBackgroundColor":MOTOLITE_WALLET_BACKGROUND_COLOR}
             if logo:body["programLogo"]={"sourceUri":{"uri":logo}}
             r=c.post("https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass",headers=headers,json=body)
@@ -931,24 +976,171 @@ def _ensure_google_class():
 
 
 def _google_object(wid: str):
-    p=_wallet_payload(wid); verification=p["qr_verification_url"]
-    return {"id":f"{GOOGLE_WALLET_ISSUER_ID}.motolite_{wid}","classId":_google_class_id(),"state":"active","accountId":str(p.get("member_number")),"accountName":str(p.get("member_name")),"loyaltyPoints":{"label":"Warranty","balance":{"string":str(p.get("warranty_status") or "active").upper()}},"barcode":{"type":"QR_CODE","value":verification,"alternateText":str(p.get("member_number"))},"textModulesData":[{"header":"Motolite Digital Warranty","body":str(p.get("member_name"))},{"header":"BATTERY","body":str(p.get("battery_product"))},{"header":"SERIAL","body":str(p.get("serial_number"))},{"header":"VEHICLE","body":f"{p.get('vehicle') or '—'} · {p.get('plate_number') or '—'}"},{"header":"VALID UNTIL","body":str(p.get("warranty_expires_at"))}],"linksModuleData":{"uris":[{"uri":verification,"description":"Open verified warranty details"}]}}
+    p = _wallet_payload(wid)
+    verification = p["qr_verification_url"]
+    activity = p["activity_url"]
+    expires = str(p.get("warranty_expires_at") or "—")
+    status = str(p.get("warranty_display_status") or "ACTIVE")
+
+    obj = {
+        "id": f"{GOOGLE_WALLET_ISSUER_ID}.motolite_{wid}",
+        "classId": _google_class_id(),
+        "state": "active" if status != "EXPIRED" else "expired",
+        "accountId": str(p.get("member_number") or ""),
+        "accountName": str(p.get("member_name") or ""),
+        "loyaltyPoints": {
+            "label": "Warranty Status",
+            "balance": {"string": status},
+        },
+        "barcode": {
+            "type": "QR_CODE",
+            "value": verification,
+            "alternateText": str(p.get("member_number") or ""),
+        },
+        "textModulesData": [
+            {"id":"valid_until","header":"WARRANTY VALID UNTIL","body":expires},
+            {"id":"battery","header":"BATTERY MODEL","body":str(p.get("battery_product") or "—")},
+            {"id":"serial","header":"SERIAL NUMBER","body":str(p.get("serial_number") or "—")},
+            {"id":"vehicle","header":"VEHICLE","body":str(p.get("vehicle") or "—")},
+            {"id":"plate","header":"PLATE NUMBER","body":str(p.get("plate_number") or "—")},
+            {"id":"branch","header":"INSTALLATION BRANCH","body":str(p.get("branch_name") or "—")},
+            {"id":"installed","header":"INSTALLATION DATE","body":str(p.get("installation_date") or "—")},
+            {"id":"replacement","header":"RECOMMENDED REPLACEMENT","body":str(p.get("recommended_replacement_date") or "—")},
+        ],
+        "linksModuleData": {
+            "uris": [
+                {"uri": verification, "description": "View verified warranty"},
+                {"uri": activity, "description": "View Motolite activity & reminders"},
+            ]
+        },
+    }
+
+    if p.get("warranty_expires_at"):
+        obj["validTimeInterval"] = {
+            "end": {"date": f"{p['warranty_expires_at']}T23:59:59Z"}
+        }
+    if MOTOLITE_WALLET_HERO_URL:
+        obj["heroImage"] = {
+            "sourceUri": {"uri": MOTOLITE_WALLET_HERO_URL},
+            "contentDescription": {"defaultValue": {"language": "en-US", "value": "Motolite Digital Battery Warranty"}},
+        }
+    return obj
 
 
 def _apple_pkpass(wid: str):
     try:
         import main as pm
-        if pm.get_apple_pass_credentials() is None:return None
-        p=_wallet_payload(wid); verification=p["qr_verification_url"]
-        pj={"formatVersion":1,"passTypeIdentifier":APPLE_PASS_TYPE_IDENTIFIER,"serialNumber":f"motolite-{wid}","teamIdentifier":APPLE_TEAM_IDENTIFIER,"organizationName":"Motolite","description":"Motolite Digital Warranty","logoText":"Motolite","foregroundColor":"rgb(255,255,255)","backgroundColor":"rgb(215,25,32)","labelColor":"rgb(255,215,0)","barcode":{"format":"PKBarcodeFormatQR","message":verification,"messageEncoding":"iso-8859-1","altText":str(p.get("member_number"))},"barcodes":[{"format":"PKBarcodeFormatQR","message":verification,"messageEncoding":"iso-8859-1","altText":str(p.get("member_number"))}],"storeCard":{"headerFields":[{"key":"status","label":"WARRANTY","value":str(p.get("warranty_status") or "active").upper()}],"primaryFields":[{"key":"member","label":"MEMBER","value":str(p.get("member_name"))}],"secondaryFields":[{"key":"battery","label":"BATTERY","value":str(p.get("battery_product"))},{"key":"expiry","label":"VALID UNTIL","value":str(p.get("warranty_expires_at"))}],"auxiliaryFields":[{"key":"member_number","label":"MEMBER ID","value":str(p.get("member_number"))},{"key":"serial","label":"SERIAL","value":str(p.get("serial_number"))}],"backFields":[{"key":"vehicle","label":"Vehicle","value":str(p.get("vehicle") or "—")},{"key":"plate","label":"Plate Number","value":str(p.get("plate_number") or "—")},{"key":"verification","label":"Warranty Verification","value":verification},{"key":"emergency","label":"Emergency Assistance","value":str(p.get("emergency_number") or "Motolite Hotline")} ]}}
-        files={"pass.json":json.dumps(pj).encode(),"icon.png":pm.generate_apple_icon_bytes(MOTOLITE_WALLET_BACKGROUND_COLOR,"M",29),"icon@2x.png":pm.generate_apple_icon_bytes(MOTOLITE_WALLET_BACKGROUND_COLOR,"M",58),"icon@3x.png":pm.generate_apple_icon_bytes(MOTOLITE_WALLET_BACKGROUND_COLOR,"M",87),"logo.png":pm.generate_apple_logo_bytes("Motolite",160,50),"logo@2x.png":pm.generate_apple_logo_bytes("Motolite",320,100),"logo@3x.png":pm.generate_apple_logo_bytes("Motolite",480,150)}
-        manifest={n:hashlib.sha1(c).hexdigest() for n,c in files.items()}; mb=json.dumps(manifest).encode(); sig=pm.sign_pkpass_manifest(mb)
-        if sig is None:return None
-        buf=BytesIO(); z=zipfile.ZipFile(buf,"w",zipfile.ZIP_DEFLATED)
-        for n,c in files.items():z.writestr(n,c)
-        z.writestr("manifest.json",mb); z.writestr("signature",sig); z.close(); return buf.getvalue()
+        if pm.get_apple_pass_credentials() is None:
+            return None
+
+        p = _wallet_payload(wid)
+        verification = p["qr_verification_url"]
+        activity = p["activity_url"]
+        expires = str(p.get("warranty_expires_at") or "—")
+        status = str(p.get("warranty_display_status") or "ACTIVE")
+
+        pj = {
+            "formatVersion": 1,
+            "passTypeIdentifier": APPLE_PASS_TYPE_IDENTIFIER,
+            "serialNumber": f"motolite-{wid}",
+            "teamIdentifier": APPLE_TEAM_IDENTIFIER,
+            "organizationName": "Motolite",
+            "description": "Motolite Digital Battery Warranty",
+            "logoText": "MOTOLITE",
+            "foregroundColor": "rgb(255,255,255)",
+            "backgroundColor": "rgb(215,25,32)",
+            "labelColor": "rgb(255,215,0)",
+            "barcode": {
+                "format": "PKBarcodeFormatQR",
+                "message": verification,
+                "messageEncoding": "iso-8859-1",
+                "altText": str(p.get("member_number") or ""),
+            },
+            "barcodes": [{
+                "format": "PKBarcodeFormatQR",
+                "message": verification,
+                "messageEncoding": "iso-8859-1",
+                "altText": str(p.get("member_number") or ""),
+            }],
+            "storeCard": {
+                "headerFields": [{
+                    "key": "status",
+                    "label": "WARRANTY",
+                    "value": status,
+                }],
+                "primaryFields": [{
+                    "key": "expiry",
+                    "label": "WARRANTY VALID UNTIL",
+                    "value": expires,
+                }],
+                "secondaryFields": [
+                    {"key": "member", "label": "CUSTOMER", "value": str(p.get("member_name") or "—")},
+                    {"key": "battery", "label": "BATTERY", "value": str(p.get("battery_product") or "—")},
+                ],
+                "auxiliaryFields": [
+                    {"key": "serial", "label": "SERIAL", "value": str(p.get("serial_number") or "—")},
+                    {"key": "plate", "label": "PLATE", "value": str(p.get("plate_number") or "—")},
+                ],
+                "backFields": [
+                    {"key": "member_number", "label": "Member Number", "value": str(p.get("member_number") or "—")},
+                    {"key": "vehicle", "label": "Vehicle", "value": str(p.get("vehicle") or "—")},
+                    {"key": "branch", "label": "Installation Branch", "value": str(p.get("branch_name") or "—")},
+                    {"key": "installed", "label": "Installation Date", "value": str(p.get("installation_date") or "—")},
+                    {"key": "replacement", "label": "Recommended Battery Replacement", "value": str(p.get("recommended_replacement_date") or "—")},
+                    {"key": "activity", "label": "Motolite Activity & Reminders", "value": activity},
+                    {"key": "verification", "label": "Warranty Verification", "value": verification},
+                    {"key": "emergency", "label": "Emergency Assistance", "value": str(p.get("emergency_number") or "Motolite Hotline")},
+                ],
+            },
+        }
+
+        files = {
+            "pass.json": json.dumps(pj).encode(),
+            "icon.png": pm.generate_apple_icon_bytes(MOTOLITE_WALLET_BACKGROUND_COLOR, "M", 29),
+            "icon@2x.png": pm.generate_apple_icon_bytes(MOTOLITE_WALLET_BACKGROUND_COLOR, "M", 58),
+            "icon@3x.png": pm.generate_apple_icon_bytes(MOTOLITE_WALLET_BACKGROUND_COLOR, "M", 87),
+        }
+
+        # Prefer the real Motolite logo supplied through a public HTTPS URL.
+        # If it cannot be fetched, fall back to the existing generated Motolite text logo.
+        logo_added = False
+        if MOTOLITE_WALLET_LOGO_URL:
+            try:
+                import httpx
+                from PIL import Image
+                logo_bytes = httpx.get(MOTOLITE_WALLET_LOGO_URL, timeout=15).content
+                img = Image.open(BytesIO(logo_bytes)).convert("RGBA")
+                for name, size in [("logo.png",(160,50)),("logo@2x.png",(320,100)),("logo@3x.png",(480,150))]:
+                    copy = img.copy()
+                    copy.thumbnail(size)
+                    canvas = Image.new("RGBA", size, (0,0,0,0))
+                    canvas.alpha_composite(copy, ((size[0]-copy.width)//2,(size[1]-copy.height)//2))
+                    b = BytesIO(); canvas.save(b, format="PNG"); files[name] = b.getvalue()
+                logo_added = True
+            except Exception as e:
+                print("MOTOLITE wallet logo fetch error", e)
+
+        if not logo_added:
+            files["logo.png"] = pm.generate_apple_logo_bytes("MOTOLITE",160,50)
+            files["logo@2x.png"] = pm.generate_apple_logo_bytes("MOTOLITE",320,100)
+            files["logo@3x.png"] = pm.generate_apple_logo_bytes("MOTOLITE",480,150)
+
+        manifest = {n: hashlib.sha1(c).hexdigest() for n,c in files.items()}
+        mb = json.dumps(manifest).encode()
+        sig = pm.sign_pkpass_manifest(mb)
+        if sig is None:
+            return None
+        buf = BytesIO()
+        z = zipfile.ZipFile(buf,"w",zipfile.ZIP_DEFLATED)
+        for n,c in files.items():
+            z.writestr(n,c)
+        z.writestr("manifest.json",mb)
+        z.writestr("signature",sig)
+        z.close()
+        return buf.getvalue()
     except Exception as e:
-        print("MOTOLITE Apple pass error",e); return None
+        print("MOTOLITE Apple pass error",e)
+        return None
 
 
 @motolite_router.get("/wallet/apple/{warranty_public_id}")
