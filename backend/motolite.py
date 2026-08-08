@@ -1758,9 +1758,101 @@ def _apple_pkpass(wid: str):
 
 @motolite_router.get("/wallet/apple/{warranty_public_id}")
 async def apple_wallet(warranty_public_id: str):
-    _wallet_payload(warranty_public_id); data=_apple_pkpass(warranty_public_id)
-    if data is None: raise HTTPException(status_code=500,detail="Apple Wallet pass could not be generated. Check Apple Wallet credentials.")
-    return Response(content=data,media_type="application/vnd.apple.pkpass",headers={"Content-Disposition":f'attachment; filename="motolite-{warranty_public_id}.pkpass"'})
+    _wallet_payload(warranty_public_id)
+    data = _apple_pkpass(warranty_public_id)
+    if data is None:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Apple Wallet pass could not be generated. "
+                "Check Pass Type ID, Team ID, certificate, private key and WWDR certificate."
+            ),
+        )
+
+    # Safari / iOS Wallet handles application/vnd.apple.pkpass directly.
+    # 'inline' avoids treating the pass like an arbitrary file download.
+    return Response(
+        content=data,
+        media_type="application/vnd.apple.pkpass",
+        headers={
+            "Content-Disposition": (
+                f'inline; filename="motolite-{warranty_public_id}.pkpass"'
+            ),
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+        },
+    )
+
+
+@motolite_router.get("/wallet/apple/{warranty_public_id}/diagnostic")
+async def apple_wallet_diagnostic(
+    warranty_public_id: str,
+    staff: dict = Depends(current_staff),
+):
+    # Keep diagnostic details away from the public/customer endpoint.
+    _require_role(staff, ROLE_NATIONAL)
+
+    payload = _wallet_payload(warranty_public_id)
+    result = {
+        "ok": False,
+        "warranty_public_id": warranty_public_id,
+        "pass_type_identifier_configured": bool(APPLE_PASS_TYPE_IDENTIFIER),
+        "team_identifier_configured": bool(APPLE_TEAM_IDENTIFIER),
+        "base_url_https": str(MOTOLITE_BASE_URL).lower().startswith("https://"),
+        "web_service_url": (
+            f"{MOTOLITE_BASE_URL}/api/v1/motolite/apple-wallet"
+        ),
+        "serial_number": f"motolite-{warranty_public_id}",
+        "member_number": payload.get("member_number"),
+    }
+
+    try:
+        import main as pm
+        creds = pm.get_apple_pass_credentials()
+        result["signing_credentials_loaded"] = bool(creds)
+        result["authentication_token_generated"] = bool(
+            pm.apple_pass_auth_token(f"motolite-{warranty_public_id}")
+        )
+
+        pass_bytes = _apple_pkpass(warranty_public_id)
+        result["pkpass_generated"] = bool(pass_bytes)
+        result["pkpass_size_bytes"] = len(pass_bytes) if pass_bytes else 0
+
+        if pass_bytes:
+            try:
+                with zipfile.ZipFile(BytesIO(pass_bytes), "r") as z:
+                    names = set(z.namelist())
+                    result["contains_pass_json"] = "pass.json" in names
+                    result["contains_manifest"] = "manifest.json" in names
+                    result["contains_signature"] = "signature" in names
+                    pj = json.loads(z.read("pass.json").decode("utf-8"))
+                    result["pass_type_matches_env"] = (
+                        pj.get("passTypeIdentifier") == APPLE_PASS_TYPE_IDENTIFIER
+                    )
+                    result["team_identifier_matches_env"] = (
+                        pj.get("teamIdentifier") == APPLE_TEAM_IDENTIFIER
+                    )
+                    result["has_web_service_url"] = bool(pj.get("webServiceURL"))
+                    result["has_authentication_token"] = bool(
+                        pj.get("authenticationToken")
+                    )
+                    result["has_barcode"] = bool(
+                        pj.get("barcode") or pj.get("barcodes")
+                    )
+            except Exception as inspect_exc:
+                result["package_inspection_error"] = str(inspect_exc)
+
+        result["ok"] = bool(
+            result.get("signing_credentials_loaded")
+            and result.get("pkpass_generated")
+            and result.get("contains_signature")
+            and result.get("pass_type_matches_env")
+            and result.get("team_identifier_matches_env")
+        )
+    except Exception as exc:
+        result["error"] = str(exc)
+
+    return result
 
 
 @motolite_router.get("/wallet/google/{warranty_public_id}")
