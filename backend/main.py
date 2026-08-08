@@ -1645,6 +1645,7 @@ def generate_personalized_hero_image_bytes(
     wallet_style: str = 'modern',
     business_name: Optional[str] = None,
     card_label: Optional[str] = None,
+    include_text_overlay: bool = True,
 ) -> bytes:
     """Same gradient as generate_hero_image_bytes, but with a bottom banner
     burned in showing the reward/progress and short description - the
@@ -1686,14 +1687,24 @@ def generate_personalized_hero_image_bytes(
     img = Image.alpha_composite(img, deco)
     draw = ImageDraw.Draw(img)
 
-    if business_name:
+    if include_text_overlay and business_name:
         font_brand = ImageFont.load_default(size=20)
         draw.text((40, 28), str(business_name)[:38], font=font_brand, fill=(255,255,255,225))
-    if card_label:
+    if include_text_overlay and card_label:
         font_label = ImageFont.load_default(size=16)
         label = str(card_label).upper()
         bbox = draw.textbbox((0,0), label, font=font_label)
         draw.text((HERO_SIZE[0]-40-(bbox[2]-bbox[0]), 30), label, font=font_label, fill=(255,255,255,185))
+
+    if not include_text_overlay:
+        # Apple's storeCard already overlays organization name (logoText),
+        # MEMBER/status headerFields+primaryFields, and the reward/progress
+        # detail on backFields - baking the same text into the strip image
+        # AGAIN (as done for Google's hero image below) just produces
+        # doubled, overlapping text on top of Apple's own chrome. Return the
+        # plain branded gradient background only; let native fields do the
+        # talking.
+        return _hero_to_png(img.convert('RGB'))
 
     scrim_height = 150
     scrim = Image.new('RGBA', (HERO_SIZE[0], scrim_height), (0, 0, 0, 0))
@@ -2416,7 +2427,7 @@ def get_latest_active_announcement(business_id: int) -> Optional[dict]:
         return None
     return ann
 
-def build_apple_pass_json(customer: dict, business: dict, program: dict, announcement: Optional[dict] = None) -> dict:
+def build_apple_pass_json(customer: dict, business: dict, program: dict, announcement: Optional[dict] = None, has_custom_logo: bool = False) -> dict:
     cust_public_id = customer.get('public_id', '')
     cust_name = customer.get('name', 'Member')
     biz_name = business.get('name', 'Loyalty')
@@ -2490,14 +2501,13 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     if ann_message.strip() and ann_message.strip() != announcement_value:
         back_fields.append({'key': 'announcement_detail', 'label': ' ', 'value': ann_message.strip()[:400]})
 
-    return {
+    pass_dict = {
         'formatVersion': 1,
         'passTypeIdentifier': APPLE_PASS_TYPE_IDENTIFIER,
         'teamIdentifier': APPLE_TEAM_IDENTIFIER,
         'organizationName': biz_name,
         'serialNumber': cust_public_id,
         'description': f'{biz_name} Loyalty Card',
-        'logoText': biz_name[:20],
         'backgroundColor': f'rgb({r}, {g}, {b})',
         'foregroundColor': 'rgb(255, 255, 255)',
         'labelColor': 'rgba(255, 255, 255, 0.75)',
@@ -2545,6 +2555,14 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
             }
         ]
     }
+    # logoText is meant to sit next to a small graphic mark (icon.png) that
+    # has no text of its own. When there's no real uploaded logo, icon.png
+    # AND logo.png both fall back to a generated wordmark that already
+    # spells out the business name - setting logoText too would render that
+    # same name a second time, overlapping, right next to it.
+    if has_custom_logo:
+        pass_dict['logoText'] = biz_name[:20]
+    return pass_dict
 
 def generate_apple_strip_bytes(customer: dict, business: dict, program: dict, width: int, height: int) -> bytes:
     design = wallet_20_design(business, program)
@@ -2572,6 +2590,7 @@ def generate_apple_strip_bytes(customer: dict, business: dict, program: dict, wi
         wallet_style=design['style'],
         business_name=business.get('name'),
         card_label=design['card_label'],
+        include_text_overlay=False,
     )
     img = Image.open(BytesIO(raw)).convert('RGB')
     src_ratio = img.width / img.height
@@ -2605,14 +2624,18 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
     design = wallet_20_design(business, program)
     primary_color = design['background']
     biz_name = business.get('name', 'Loyalty')
-    pass_json = build_apple_pass_json(customer, business, program, announcement)
 
     # Real branding when the business has uploaded it - same source URLs
     # Google Wallet already uses (see build_loyalty_class) - so both wallets
     # end up matching. Each falls back to the existing generated placeholder
-    # on any missing URL, fetch failure, or unreadable image.
+    # on any missing URL, fetch failure, or unreadable image. Fetched before
+    # build_apple_pass_json so it can decide whether to also set logoText -
+    # the generated fallback logo already bakes the business name into the
+    # image itself, so also setting logoText would show the name twice,
+    # overlapping, next to the icon.
     logo_url = business.get('logo_url') or ((program or {}).get('program_logo_url'))
     logo_bytes = _fetch_image_bytes(logo_url)
+    pass_json = build_apple_pass_json(customer, business, program, announcement, has_custom_logo=bool(logo_bytes))
 
     icon_29 = apple_icon_from_logo_bytes(logo_bytes, 29) if logo_bytes else None
     icon_58 = apple_icon_from_logo_bytes(logo_bytes, 58) if logo_bytes else None
