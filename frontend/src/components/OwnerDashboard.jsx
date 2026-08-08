@@ -1370,12 +1370,15 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       {/* Customer Loyalty Card Modal */}
       {showCardModal && selectedCustomer && (
         <div style={styles.modalOverlay} onClick={() => setShowCardModal(false)}>
-          <div style={{...styles.modal, maxWidth: 380}} onClick={e => e.stopPropagation()}>
+          <div style={{...styles.modal, maxWidth: 900}} onClick={e => e.stopPropagation()}>
             {/* Digital Card Preview */}
             <div style={{
               ...styles.loyaltyCard,
               background: `linear-gradient(135deg, ${program?.primary_color || '#0d9488'} 0%, ${program?.primary_color || '#14b8a6'} 100%)`,
             }}>
+              <div style={styles.ownerCardQr}>
+                <img src={`https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(`${API_BASE}/stamp/${selectedCustomer.public_id}`)}`} alt="Member QR" style={styles.ownerCardQrImage}/>
+              </div>
               <div style={styles.cardHeader}>
                 <img src={logo64} alt="LoyaltyTree" style={styles.cardLogo} />
                 <span style={styles.cardBusiness}>{user?.business_name}</span>
@@ -3013,11 +3016,16 @@ const styles = {
     boxShadow: '0 20px 40px rgba(0,0,0,0.2)',
   },
   loyaltyCard: {
-    borderRadius: 16,
-    padding: 24,
-    color: 'white',
-    boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
+    position:'relative',
+    overflow:'hidden',
+    borderRadius:22,
+    padding:'28px 230px 28px 28px',
+    minHeight:330,
+    color:'white',
+    boxShadow:'0 18px 45px rgba(0,0,0,.22)',
   },
+  ownerCardQr:{position:'absolute',right:28,top:'50%',transform:'translateY(-50%)',width:170,background:'#fff',borderRadius:16,padding:9,boxShadow:'0 12px 30px rgba(0,0,0,.24)'},
+  ownerCardQrImage:{display:'block',width:'100%',aspectRatio:'1 / 1'},
   cardHeader: {
     display: 'flex',
     alignItems: 'center',
@@ -3039,7 +3047,7 @@ const styles = {
     fontWeight: 700,
   },
   cardBody: {
-    textAlign: 'center',
+    textAlign: 'left',
   },
   cardName: {
     margin: '0 0 4px 0',

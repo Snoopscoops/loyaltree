@@ -1805,11 +1805,8 @@ def wallet_20_design(business: dict, program: Optional[dict]) -> dict:
     }
 
 def wallet_20_program_name(business: dict, program: Optional[dict]) -> str:
-    design = wallet_20_design(business, program)
-    biz_name = str(business.get('name') or 'LoyaltyTree')
-    # Keep Google Wallet's top line useful and prevent values such as
-    # "VIP VIP" when the owner happened to name the card "vip".
-    return f"{biz_name} · {design['card_label'].title()}"
+    # Wallet 2.1: business name only. Card type/status have their own fields.
+    return str(business.get('name') or 'LoyaltyTree')
 
 def wallet_20_short_status(customer: dict, business: dict, program: dict) -> tuple:
     card_type = (program or {}).get('card_type', 'stamp')
@@ -12823,170 +12820,142 @@ async def agent_inventory_page(business_public_id: str):
 async def customer_wallet_page(customer_public_id: str):
     customer = safe_get_customer(customer_public_id)
     if not customer:
-        return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Card not found</h1><p>This loyalty card does not exist.</p></div>")
+        return HTMLResponse("<div style='padding:40px;text-align:center;font-family:sans-serif'><h1>Card not found</h1></div>")
 
     business = safe_get_business_by_id(customer.get('business_id'))
     if not business:
-        return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Business not found</h1></div>")
+        return HTMLResponse("<div style='padding:40px;text-align:center;font-family:sans-serif'><h1>Business not found</h1></div>")
 
-    program = safe_get_loyalty_program(business.get('id'))
-    primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
-    stamp_goal = program.get('stamp_goal', 8) if program else 8
-    reward_name = program.get('reward_name', 'Free Service') if program else 'Free Service'
-    card_type = program.get('card_type', 'stamp') if program else 'stamp'
-    points_balance = customer.get('points_balance', 0)
-    points_prizes = (program.get('points_prizes') or []) if program else []
-    card_name = program.get('card_name') if program else None
-    display_name = card_name if card_name else (business.get('name', '') + ' Rewards')
-    logo_url = business.get('logo_url')
+    program = safe_get_loyalty_program(business.get('id')) or {}
+    design = wallet_20_design(business, program)
+    card_type = program.get('card_type', 'stamp')
+    business_name = business.get('name') or 'LoyaltyTree'
+    customer_name = customer.get('name') or 'Member'
+    logo_url = program.get('program_logo_url') or business.get('logo_url')
+    hero_url = program.get('hero_image_url') if design['show_background'] else None
+    description = program.get('description') or ''
+    reward_name = program.get('reward_name') or 'Reward'
 
-    stamps = customer.get('stamp_count', 0) % stamp_goal
-    filled = stamps
+    labels = {
+        'stamp': 'STAMP CARD',
+        'points': 'POINTS CARD',
+        'membership': 'MEMBERSHIP CARD',
+        'multipass': 'MULTIPASS',
+        'vip': 'VIP CARD',
+    }
+    card_label = labels.get(card_type, 'LOYALTY CARD')
 
-    stars_html = ''
-    for i in range(stamp_goal):
-        if i < filled:
-            stars_html += '<span style="width:32px;height:32px;border-radius:16px;background:' + primary_color + ';color:white;display:inline-flex;align-items:center;justify-content:center;font-size:14px;margin:3px;">&#9733;</span>'
-        else:
-            stars_html += '<span style="width:32px;height:32px;border-radius:16px;background:rgba(255,255,255,0.25);color:white;display:inline-flex;align-items:center;justify-content:center;font-size:14px;margin:3px;">&#9733;</span>'
+    metric_label = 'STAMPS'
+    metric_value = ''
+    metric_sub = ''
+    details = []
 
-    # Points-card progress block - shown instead of the star grid below when
-    # this business is running a points card. Lists the prize catalog
-    # (points_prizes, set from LoyaltyCardCustomizer.jsx) so the customer
-    # can see what their balance can be redeemed for, same info the cashier
-    # sees when processing a points sale.
-    prizes_html = ''
-    for prize in points_prizes:
-        prize_name = html_lib.escape(str(prize.get('name', '')))
-        prize_cost = prize.get('points_cost', 0)
-        affordable = points_balance >= prize_cost
-        prizes_html += (
-            '<div style="display:flex;justify-content:space-between;align-items:center;'
-            'padding:8px 0;' + ('' if affordable else 'opacity:0.5;') + '">'
-            '<span style="font-size:13px;color:white;">' + prize_name + '</span>'
-            '<span style="font-size:12px;font-weight:700;color:white;">' + str(prize_cost) + ' pts</span>'
-            '</div>'
-        )
-    points_html = (
-        '<div style="text-align:center;margin:16px 0;">'
-        '<div style="font-size:40px;font-weight:800;color:white;">' + str(points_balance) + '</div>'
-        '<div style="font-size:13px;color:rgba(255,255,255,0.85);margin-top:2px;">points</div>'
-        '</div>'
-        + ('<div style="border-top:1px solid rgba(255,255,255,0.25);padding-top:8px;">' + prizes_html + '</div>' if prizes_html else '')
+    if card_type == 'points':
+        points = int(customer.get('points_balance') or 0)
+        metric_label, metric_value, metric_sub = 'POINTS BALANCE', f'{points:,}', 'points'
+        details = [('Reward', reward_name)]
+    elif card_type == 'multipass':
+        remaining = int(customer.get('multipass_sessions_remaining') or 0)
+        total = int(customer.get('multipass_total_sessions') or program.get('multipass_session_count') or 0)
+        metric_label, metric_value, metric_sub = 'SESSIONS LEFT', f'{remaining} / {total}', 'sessions'
+        details = [('Valid until', customer.get('multipass_expires_at') or 'No expiry')]
+    elif card_type == 'membership':
+        status = membership_effective_status(customer).upper()
+        summary = get_membership_summary(business.get('id'), customer.get('id'))
+        metric_label, metric_value, metric_sub = 'STATUS', status, 'member'
+        details = [
+            ('Active until', customer.get('membership_expires_at') or ('Lifetime' if status == 'LIFETIME' else '—')),
+            ('Member since', str(customer.get('membership_started_at') or '—')[:10]),
+            ('Visits', str(int((summary or {}).get('total_visits') or 0))),
+        ]
+    elif card_type == 'vip':
+        tier = get_vip_tier(customer, program)
+        next_tier = get_next_vip_tier(customer, program)
+        points = int(customer.get('vip_points') or 0)
+        metric_label = 'VIP TIER'
+        metric_value = str(tier.get('name') or 'VIP').upper()
+        metric_sub = f'{points:,} VIP points'
+        details = [('Next tier', str((next_tier or {}).get('name') or 'Top tier'))]
+    else:
+        goal = int(program.get('stamp_goal') or 8)
+        current = min(int(customer.get('stamp_count') or 0), goal)
+        metric_value = f'{current} / {goal}'
+        remaining = max(goal - current, 0)
+        metric_sub = reward_name if remaining == 0 else f'{remaining} more to {reward_name}'
+        details = [('Reward', reward_name)]
+
+    if description:
+        details.append(('About', description))
+    category = design['category']
+    details.append(('Business type', f"{category['icon']} {category['label']}"))
+
+    details_html = ''.join(
+        '<div class="detail"><span>' + html_lib.escape(str(k)) + '</span><strong>' + html_lib.escape(str(v)) + '</strong></div>'
+        for k, v in details[:4]
     )
 
-    logo_html = ''
-    if logo_url:
-        logo_html = '<img src="' + logo_url + '" style="width:64px;height:64px;border-radius:16px;object-fit:cover;margin-bottom:12px;" alt="Logo"/>'
-
-    reward_badge = ''
-    if customer.get('reward_unlocked'):
-        reward_badge = '<span style="display:inline-block;padding:6px 14px;background:#fef3c7;color:#92400e;border-radius:20px;font-size:13px;font-weight:600;margin-top:12px;">&#127873; ' + reward_name + ' Ready!</span>'
-
-    coupon_html = ''
-    active_coupon = safe_get_active_coupon(customer.get('id'))
-    if active_coupon:
-        coupon_html = (
-            '<div style="background:#f0fdfa;border:1.5px dashed #0d9488;border-radius:12px;'
-            'padding:14px 16px;margin-bottom:16px;text-align:center;">'
-            '<div style="font-size:11px;font-weight:700;color:#0f766e;text-transform:uppercase;'
-            'letter-spacing:0.5px;margin-bottom:4px;">&#127903; Coupon Available</div>'
-            '<div style="font-size:15px;font-weight:600;color:#0f172a;">' + html_lib.escape(active_coupon.get('reward_text', '')) + '</div>'
-            '<div style="font-size:12px;color:#64748b;margin-top:6px;">Show this card to your cashier to redeem</div>'
-            '</div>'
-        )
-
-    display_name_json = json.dumps(display_name)
-    biz_name_json = json.dumps(business.get('name', ''))
-
-    # Google's save link needs a signed JWT describing the pass, not the
-    # customer's raw public_id - build_loyalty_object()/create_google_wallet_jwt()
-    # are the same helpers get_wallet_pass() (the JSON API WalletPass.jsx
-    # calls) already uses for this. Falls back to omitting the button
-    # entirely if Google Wallet isn't configured (missing JWT), rather than
-    # linking to a save URL that will 404.
-    loyalty_object = build_loyalty_object(customer, business, program)
-    google_jwt = create_google_wallet_jwt(loyalty_object)
-    google_wallet_html = ''
-    if google_jwt:
-        google_wallet_html = (
-            '<a href="https://pay.google.com/gp/v/save/' + google_jwt + '" class="wallet-btn google-btn">'
-            '&#127903; Add to Google Wallet'
-            '</a>'
-        )
-
-    # Same .pkpass download link as WalletPass.jsx/CustomerJoin.jsx use -
-    # Safari on iOS/macOS recognizes the content type and shows the native
-    # "Add to Apple Wallet" sheet; other browsers just download the file.
-    apple_wallet_html = (
-        '<a href="' + BASE_URL + '/api/v1/customer/' + customer.get("public_id", "") + '/apple-wallet-pass" class="wallet-btn apple-btn">'
-        '&#63743; Add to Apple Wallet'
-        '</a>'
+    logo_html = (
+        '<img class="logo" src="' + html_lib.escape(logo_url) + '" alt="Logo">'
+        if logo_url else
+        '<div class="logo fallback">' + html_lib.escape(category['icon']) + '</div>'
+    )
+    hero_html = (
+        '<img class="hero" src="' + html_lib.escape(hero_url) + '" alt="">'
+        if hero_url else ''
     )
 
-    html = (
-        '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
-        '<title>My ' + display_name + '</title>'
-        '<style>'
-        '*{box-sizing:border-box;margin:0;padding:0}'
-        'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;'
-        'background:linear-gradient(135deg,' + primary_color + ' 0%,#1e293b 100%);'
-        'min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}'
-        '.card{background:white;border-radius:24px;padding:32px;max-width:400px;width:100%;'
-        'box-shadow:0 20px 60px rgba(0,0,0,0.3);text-align:center}'
-        '.loyalty-card{background:linear-gradient(135deg,' + primary_color + ' 0%,#14b8a6 100%);'
-        'border-radius:16px;padding:24px;color:white;margin-bottom:20px}'
-        '.loyalty-card h2{font-size:20px;margin-bottom:4px}'
-        '.loyalty-card h3{font-size:16px;opacity:0.9;margin-bottom:8px}'
-        '.loyalty-card .id{font-size:12px;opacity:0.7;font-family:monospace}'
-        '.stars{margin:16px 0}'
-        '.stamp-count{font-size:14px;margin-top:8px;opacity:0.9}'
-        '.qr-section{background:#f8fafc;border-radius:12px;padding:16px;margin-bottom:16px}'
-        '.qr-section img{width:160px;height:160px;border-radius:12px}'
-        '.qr-section p{font-size:12px;color:#94a3b8;margin-top:8px}'
-        '.wallet-btn{display:block;width:100%;padding:14px;background:#1a73e8;color:white;'
-        'text-decoration:none;border-radius:10px;font-weight:600;margin-bottom:12px;text-align:center}'
-        '.apple-btn{background:#000000}'
-        '.share-btn{width:100%;padding:14px;background:#f0fdf4;color:#0d9488;'
-        'border:1px solid #a7f3d0;border-radius:10px;font-weight:600;cursor:pointer}'
-        '</style></head><body>'
-        '<div class="card">'
-        '<div class="loyalty-card">'
-        + logo_html +
-        '<h2>' + display_name + '</h2>'
-        '<h3>' + customer.get("name", "") + '</h3>'
-        '<p class="id">ID: ' + customer.get("public_id", "")[:12] + '...</p>'
-        + (
-            points_html if card_type == 'points' else
-            '<div class="stars">' + stars_html + '</div>'
-            '<p class="stamp-count">' + str(stamps) + ' / ' + str(stamp_goal) + ' stamps</p>'
-        )
-        + reward_badge +
-        '</div>'
-        + coupon_html +
-        '<div class="qr-section">'
-        '<img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + quote(f'{BASE_URL}/stamp/{customer.get("public_id", "")}', safe="") + '" alt="Your QR Code"/>'
-        '<p>Scan at checkout to earn ' + ('points' if card_type == 'points' else 'stamps') + '</p>'
-        '</div>'
-        + apple_wallet_html
-        + google_wallet_html +
-        '<button id="shareBtn" class="share-btn">'
-        '&#128279; Share Card'
-        '</button>'
-        '<script>'
-        '(function(){'
-        'const dName=' + display_name_json + ';'
-        'const bName=' + biz_name_json + ';'
-        'document.getElementById("shareBtn").addEventListener("click",function(){'
-        'navigator.share({title:"My "+dName,text:"My card for "+bName,url:window.location.href});'
-        '});'
-        '})();'
-        '</script>'
-        '</div></body></html>'
+    qr_image = "https://api.qrserver.com/v1/create-qr-code/?size=420x420&data=" + quote(
+        f"{BASE_URL}/stamp/{customer_public_id}", safe=""
     )
 
+    obj = build_loyalty_object(customer, business, program)
+    jwt_token = create_google_wallet_jwt(obj)
+    google_btn = (
+        '<a class="btn google" href="https://pay.google.com/gp/v/save/' + jwt_token + '">Add to Google Wallet</a>'
+        if jwt_token else ''
+    )
+    apple_btn = (
+        '<a class="btn apple" href="' + BASE_URL + '/api/v1/customer/' + customer_public_id + '/apple-wallet-pass">Add to Apple Wallet</a>'
+    )
+
+    active_class = ' active' if metric_value in ('ACTIVE', 'LIFETIME') else ''
+
+    html = f'''<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{html_lib.escape(business_name)}</title>
+<style>
+*{{box-sizing:border-box}}body{{margin:0;background:#080b12;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif}}
+.wrap{{max-width:1120px;margin:auto;padding:24px 16px 44px}}
+.top{{display:flex;justify-content:space-between;color:#8390a5;font-size:12px;margin-bottom:14px}}
+.top b{{color:#fff}}
+.card{{position:relative;overflow:hidden;isolation:isolate;aspect-ratio:1.72/1;min-height:320px;border-radius:28px;padding:clamp(22px,4vw,44px);background:linear-gradient(135deg,{design["background"]},{design["secondary"]});border:1px solid rgba(255,255,255,.14);box-shadow:0 28px 80px rgba(0,0,0,.46)}}
+.hero{{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:-3}}
+.card:before{{content:"";position:absolute;inset:0;background:linear-gradient(90deg,rgba(3,6,16,.86),rgba(3,6,16,.63) 52%,rgba(3,6,16,.26));z-index:-2}}
+.grid{{height:100%;display:grid;grid-template-columns:minmax(0,1fr) minmax(170px,29%);gap:clamp(18px,4vw,48px)}}
+.left{{display:flex;flex-direction:column;min-width:0}}.brand{{display:flex;align-items:center;gap:13px}}
+.logo{{width:58px;height:58px;border-radius:16px;object-fit:cover;background:#fff;border:1px solid rgba(255,255,255,.3)}}.fallback{{display:grid;place-items:center;font-size:27px;background:rgba(255,255,255,.12)}}
+.biz{{font-size:clamp(20px,3vw,34px);font-weight:850;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}.type{{font-size:10px;letter-spacing:1.4px;font-weight:800;color:rgba(255,255,255,.62);margin-top:6px}}
+.member{{margin-top:auto}}.eyebrow{{font-size:9px;letter-spacing:1.3px;font-weight:800;color:rgba(255,255,255,.58)}}.name{{font-size:clamp(25px,4.5vw,48px);font-weight:720;line-height:1.06;margin:7px 0 20px}}
+.metric{{font-size:clamp(30px,5vw,54px);font-weight:850;line-height:.95;margin-top:6px}}.metric.active{{color:#4ade80}}.sub{{font-size:11px;color:rgba(255,255,255,.72);margin-top:7px}}
+.right{{display:flex;flex-direction:column;justify-content:center;align-items:flex-end}}.qrbox{{width:min(100%,260px);padding:11px;background:#fff;border-radius:19px;box-shadow:0 14px 35px rgba(0,0,0,.28)}}.qrbox img{{display:block;width:100%;aspect-ratio:1/1}}.scan{{font-size:9px;letter-spacing:1.2px;font-weight:800;color:rgba(255,255,255,.62);margin:10px auto 0}}
+.details{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:14px}}.detail{{background:#111827;border:1px solid #202a3b;border-radius:13px;padding:12px 13px;min-width:0}}.detail span{{display:block;color:#75839a;font-size:9px;text-transform:uppercase;letter-spacing:.7px;margin-bottom:5px}}.detail strong{{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}}
+.actions{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:13px}}.btn,.share{{border:0;border-radius:12px;padding:14px;text-align:center;text-decoration:none;font-weight:750;font-size:13px;cursor:pointer}}.google{{background:#1a73e8;color:#fff}}.apple{{background:#fff;color:#050505}}.share{{grid-column:1/-1;background:#151b28;color:#dbe4f1;border:1px solid #273247}}
+@media(max-width:680px){{.wrap{{padding:12px 9px 30px}}.card{{min-height:245px;aspect-ratio:1.58/1;padding:16px;border-radius:20px}}.grid{{grid-template-columns:minmax(0,1fr) 34%;gap:11px}}.logo{{width:39px;height:39px;border-radius:10px}}.biz{{font-size:17px}}.type{{font-size:7px}}.name{{font-size:21px;margin:5px 0 11px}}.metric{{font-size:25px}}.sub{{font-size:8px}}.qrbox{{padding:7px;border-radius:11px}}.scan{{font-size:6px;margin-top:6px}}.details{{grid-template-columns:1fr 1fr}}.actions{{grid-template-columns:1fr}}.share{{grid-column:auto}}}}
+</style></head>
+<body><main class="wrap">
+<div class="top"><b>🌳 LoyaltyTree</b><span>{html_lib.escape(card_label)}</span></div>
+<section class="card">{hero_html}<div class="grid">
+<div class="left"><div class="brand">{logo_html}<div><div class="biz">{html_lib.escape(business_name)}</div><div class="type">{html_lib.escape(card_label)}</div></div></div>
+<div class="member"><div class="eyebrow">MEMBER</div><div class="name">{html_lib.escape(customer_name)}</div><div class="eyebrow">{html_lib.escape(metric_label)}</div><div class="metric{active_class}">{html_lib.escape(metric_value)}</div><div class="sub">{html_lib.escape(metric_sub)}</div></div></div>
+<div class="right"><div class="qrbox"><img src="{qr_image}" alt="Member QR"></div><div class="scan">PRESENT TO CHECK IN</div></div>
+</div></section>
+<section class="details">{details_html}</section>
+<section class="actions">{google_btn}{apple_btn}<button class="share" id="share">Share Card</button></section>
+</main><script>
+document.getElementById("share").onclick=async()=>{{const p={{title:{json.dumps(business_name)},text:"My LoyaltyTree card",url:location.href}};if(navigator.share){{try{{await navigator.share(p)}}catch(e){{}}}}else{{await navigator.clipboard.writeText(location.href);alert("Card link copied")}}}};
+</script></body></html>'''
     return HTMLResponse(html)
+
 
 # CASHIER STAMP PAGE - opened when a cashier scans a customer's QR with
 # their phone's native Camera app (rather than the in-app scanner in
@@ -13635,25 +13604,38 @@ async def get_wallet_pass(customer_public_id: str):
         # the other's fields being misleadingly present.
         "pass_data": {
             "business_name": business.get('name', ''),
+            "business_type": normalize_business_type(business.get('business_type')),
+            "business_category": business_category_meta(business.get('business_type')),
             "customer_name": customer.get('name', ''),
             "customer_id": customer_public_id,
             "card_type": card_type,
+            "card_name": program.get('card_name') if program else None,
+            "description": program.get('description') if program else None,
+            "program_logo_url": (program.get('program_logo_url') if program else None) or business.get('logo_url'),
+            "hero_image_url": program.get('hero_image_url') if program else None,
+            "wallet_design": wallet_20_design(business, program),
             "stamps": customer.get('stamp_count', 0),
             "goal": stamp_goal,
             "reward_name": reward_name,
             "points_balance": customer.get('points_balance', 0),
             "points_prizes": points_prizes,
-            # --- Multipass-only fields ---
             "sessions_remaining": sessions_remaining,
             "sessions_total": sessions_total,
             "multipass_description": multipass_description,
             "multipass_expires_at": multipass_expires_at,
             "multipass_expired": multipass_expired,
-            # --- Membership-only fields ---
             "membership_services": membership_services,
+            "membership_status": customer.get('membership_status'),
+            "membership_effective_status": membership_effective_status(customer) if card_type == 'membership' else None,
+            "membership_started_at": customer.get('membership_started_at'),
+            "membership_expires_at": customer.get('membership_expires_at'),
+            "membership_terms": program.get('membership_terms') if program else None,
             "total_visits": (membership_summary['total_visits'] if membership_summary else 0),
             "last_service_name": (membership_summary['last_service_name'] if membership_summary else None),
             "last_service_date": (membership_summary['last_service_date'] if membership_summary else None),
+            "vip_points": customer.get('vip_points', 0),
+            "vip_tier": get_vip_tier(customer, program or {}) if card_type == 'vip' else None,
+            "vip_next_tier": get_next_vip_tier(customer, program or {}) if card_type == 'vip' else None,
             "primary_color": primary_color,
             "reward_unlocked": bool(customer.get('reward_unlocked')),
             "qr_code": f"{BASE_URL}/stamp/{customer_public_id}",

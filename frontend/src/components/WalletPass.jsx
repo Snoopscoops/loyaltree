@@ -1,467 +1,96 @@
-import React, { useState, useEffect } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router-dom'
 
-function WalletPass({ API_BASE }) {
-  const { customerId } = useParams()
-  const [passData, setPassData] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+const CARD_LABELS = {stamp:'STAMP CARD',points:'POINTS CARD',membership:'MEMBERSHIP CARD',multipass:'MULTIPASS',vip:'VIP CARD'}
 
-  useEffect(() => {
+function formatDate(value){
+  if(!value)return '—'
+  const d=new Date(value)
+  return Number.isNaN(d.getTime())?String(value):d.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'})
+}
+
+function WalletPass({API_BASE}){
+  const {customerId}=useParams()
+  const [data,setData]=useState(null)
+  const [error,setError]=useState('')
+  useEffect(()=>{
     fetch(`${API_BASE}/api/v1/customer/${customerId}/wallet-pass`)
-      .then(r => r.json())
-      .then(data => {
-        if (data.pass_data) {
-          setPassData(data)
-        } else {
-          setError('Pass not found')
-        }
-        setLoading(false)
-      })
-      .catch(() => {
-        setError('Failed to load pass')
-        setLoading(false)
-      })
-  }, [customerId])
+      .then(async r=>{const j=await r.json();if(!r.ok||!j.pass_data)throw new Error(j.detail||'Pass not found');setData(j)})
+      .catch(e=>setError(e.message||'Failed to load pass'))
+  },[API_BASE,customerId])
 
-  const addToGoogleWallet = () => {
-    if (passData?.save_url && passData.save_url.includes('pay.google.com')) {
-      window.open(passData.save_url, '_blank')
-    } else {
-      alert('Save this page to your home screen for quick access!')
-    }
-  }
+  const view=useMemo(()=>{
+    const p=data?.pass_data
+    if(!p)return null
+    const type=p.card_type||'stamp'
+    let metricLabel='STAMPS',metricValue=`${p.stamps||0} / ${p.goal||8}`,metricSub=p.reward_name||'Reward'
+    const details=[]
+    if(type==='points'){metricLabel='POINTS BALANCE';metricValue=Number(p.points_balance||0).toLocaleString();metricSub='points';details.push(['Reward',p.reward_name||'Rewards'])}
+    else if(type==='multipass'){metricLabel='SESSIONS LEFT';metricValue=`${p.sessions_remaining??0} / ${p.sessions_total||0}`;metricSub='sessions';details.push(['Valid until',formatDate(p.multipass_expires_at)])}
+    else if(type==='membership'){
+      const s=String(p.membership_effective_status||p.membership_status||'inactive').toUpperCase()
+      metricLabel='STATUS';metricValue=s;metricSub='member'
+      details.push(['Active until',s==='LIFETIME'?'Lifetime':formatDate(p.membership_expires_at)],['Member since',formatDate(p.membership_started_at)],['Visits',String(p.total_visits||0)])
+    }else if(type==='vip'){metricLabel='VIP TIER';metricValue=String(p.vip_tier?.name||'VIP').toUpperCase();metricSub=`${Number(p.vip_points||0).toLocaleString()} VIP points`;details.push(['Next tier',p.vip_next_tier?.name||'Top tier'])}
+    else{const left=Math.max(Number(p.goal||8)-Number(p.stamps||0),0);metricSub=left?`${left} more to ${p.reward_name||'reward'}`:`${p.reward_name||'Reward'} ready`;details.push(['Reward',p.reward_name||'Reward'])}
+    if(p.description)details.push(['About',p.description])
+    if(p.business_category?.label)details.push(['Business',`${p.business_category.icon||''} ${p.business_category.label}`])
+    return {label:CARD_LABELS[type]||'LOYALTY CARD',metricLabel,metricValue,metricSub,details:details.slice(0,4)}
+  },[data])
 
-  // Apple Wallet has no JS API to trigger from - it's a direct link to a
-  // signed .pkpass file. Safari on iOS/macOS recognizes the file's content
-  // type and shows the native "Add to Apple Wallet" sheet; other browsers
-  // just download the file. So this is a plain <a href>, not a click handler.
-  const appleWalletUrl = passData?.apple_pass_url || `${API_BASE}/api/v1/customer/${customerId}/apple-wallet-pass`
-
-  const shareCard = async () => {
-    if (navigator.share) {
-      try {
-        await navigator.share({
-          title: `${passData?.pass_data?.business_name} Loyalty Card`,
-          text: `My loyalty card for ${passData?.pass_data?.business_name}`,
-          url: window.location.href
-        })
-      } catch (err) {
-        // User cancelled
-      }
-    } else {
-      navigator.clipboard.writeText(window.location.href)
-      alert('Card link copied to clipboard!')
-    }
-  }
-
-  if (loading) return <div style={styles.container}><p>Loading your loyalty card...</p></div>
-  if (error) return <div style={styles.container}><p>{error}</p></div>
-
-  const { pass_data } = passData
-  const isPoints = pass_data.card_type === 'points'
-  const isMultipass = pass_data.card_type === 'multipass'
-  const isStamp = !isPoints && !isMultipass
-  const progress = isStamp ? (pass_data.stamps / pass_data.goal) * 100 : 0
-  const sessionsTotal = pass_data.sessions_total || 0
-  const sessionsRemaining = pass_data.sessions_remaining ?? 0
-  const sessionsUsed = Math.max(sessionsTotal - sessionsRemaining, 0)
-  const sessionProgress = sessionsTotal > 0 ? (sessionsUsed / sessionsTotal) * 100 : 0
-  const multipassDone = isMultipass && sessionsRemaining <= 0
-  const multipassExpired = isMultipass && !!pass_data.multipass_expired
-
-  return (
-    <div style={styles.container}>
-      <div style={{ ...styles.card, background: pass_data.primary_color || '#0d9488' }}>
-        <div style={styles.cardHeader}>
-          <div style={styles.logo}>🌳</div>
-          <div>
-            <h2 style={styles.businessName}>{pass_data.business_name}</h2>
-            <p style={styles.memberId}>Member: {pass_data.customer_id?.slice(0, 8)}</p>
+  if(error)return <div style={S.state}>{error}</div>
+  if(!data||!view)return <div style={S.state}>Loading your card…</div>
+  const p=data.pass_data
+  const design=p.wallet_design||{}
+  const bg=design.background||p.primary_color||'#0d9488'
+  const secondary=design.secondary||'#14b8a6'
+  const share=async()=>{const payload={title:p.business_name,text:'My LoyaltyTree card',url:location.href};if(navigator.share){try{await navigator.share(payload)}catch{}}else{await navigator.clipboard.writeText(location.href);alert('Card link copied')}}
+  return <main style={S.page}>
+    <div style={S.top}><b>🌳 LoyaltyTree</b><span>{view.label}</span></div>
+    <section style={{...S.card,background:`linear-gradient(135deg,${bg},${secondary})`}}>
+      {design.show_background!==false&&p.hero_image_url&&<img src={p.hero_image_url} alt="" style={S.hero}/>}
+      <div style={S.overlay}/>
+      <div className="ltgrid" style={S.grid}>
+        <div style={S.left}>
+          <div style={S.brand}>
+            {p.program_logo_url?<img src={p.program_logo_url} alt="" style={S.logo}/>:<div style={S.logoFallback}>{p.business_category?.icon||'🌳'}</div>}
+            <div style={{minWidth:0}}><div style={S.biz}>{p.business_name}</div><div style={S.type}>{view.label}</div></div>
+          </div>
+          <div style={S.member}>
+            <div style={S.eyebrow}>MEMBER</div><div style={S.name}>{p.customer_name}</div>
+            <div style={S.eyebrow}>{view.metricLabel}</div>
+            <div style={{...S.metric,color:['ACTIVE','LIFETIME'].includes(view.metricValue)?'#4ade80':'#fff'}}>{view.metricValue}</div>
+            <div style={S.sub}>{view.metricSub}</div>
           </div>
         </div>
-
-        <div style={styles.memberSection}>
-          <div style={styles.avatar}>{pass_data.customer_name?.[0]?.toUpperCase() || '?'}</div>
-          <div>
-            <h3 style={styles.customerName}>{pass_data.customer_name}</h3>
-            <p style={styles.tier}>Loyalty Member</p>
-          </div>
-        </div>
-
-        {isPoints ? (
-          <div style={styles.pointsSection}>
-            <div style={styles.pointsBalance}>{pass_data.points_balance ?? 0}</div>
-            <p style={styles.pointsLabel}>points</p>
-            {pass_data.points_prizes?.length > 0 && (
-              <div style={styles.prizeList}>
-                {pass_data.points_prizes.map((prize, i) => {
-                  const affordable = (pass_data.points_balance ?? 0) >= prize.points_cost
-                  return (
-                    <div key={prize.id || i} style={{ ...styles.prizeRow, opacity: affordable ? 1 : 0.5 }}>
-                      <span>{prize.name}</span>
-                      <span style={styles.prizeCost}>{prize.points_cost} pts</span>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-          </div>
-        ) : isMultipass ? (
-          <>
-            <div style={styles.pointsSection}>
-              <div style={styles.pointsBalance}>{sessionsRemaining}</div>
-              <p style={styles.pointsLabel}>
-                {sessionsRemaining === 1 ? 'session left' : 'sessions left'} of {sessionsTotal}
-              </p>
-            </div>
-
-            <div style={styles.progressSection}>
-              <div style={styles.progressBar}>
-                <div style={{ ...styles.progressFill, width: `${sessionProgress}%` }}></div>
-              </div>
-            </div>
-
-            {pass_data.multipass_description && (
-              <p style={styles.multipassDescription}>{pass_data.multipass_description}</p>
-            )}
-
-            {sessionsTotal > 0 && sessionsTotal <= 20 && (
-              <div style={styles.stampGrid}>
-                {Array.from({ length: sessionsTotal }).map((_, i) => (
-                  <div key={i} style={{
-                    ...styles.stampSlot,
-                    background: i < sessionsUsed ? 'rgba(255,255,255,0.15)' : '#fbbf24',
-                    borderColor: i < sessionsUsed ? 'rgba(255,255,255,0.25)' : '#f59e0b'
-                  }}>
-                    {i < sessionsUsed ? '✓' : ''}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {pass_data.multipass_expires_at && (
-              <p style={styles.expiryText}>
-                {multipassExpired ? 'Expired' : 'Valid until'} {pass_data.multipass_expires_at}
-              </p>
-            )}
-          </>
-        ) : (
-          <>
-            <div style={styles.progressSection}>
-              <div style={styles.progressBar}>
-                <div style={{ ...styles.progressFill, width: `${progress}%` }}></div>
-              </div>
-              <p style={styles.progressText}>{pass_data.stamps} / {pass_data.goal} stamps</p>
-            </div>
-
-            <div style={styles.stampGrid}>
-              {Array.from({ length: pass_data.goal }).map((_, i) => (
-                <div key={i} style={{
-                  ...styles.stampSlot,
-                  background: i < pass_data.stamps ? '#fbbf24' : 'rgba(255,255,255,0.2)',
-                  borderColor: i < pass_data.stamps ? '#f59e0b' : 'rgba(255,255,255,0.3)'
-                }}>
-                  {i < pass_data.stamps ? '★' : ''}
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-
-        {isStamp && pass_data.reward_unlocked && (
-          <div style={styles.rewardBanner}>
-            <span style={styles.rewardIcon}>🎉</span>
-            <span>Reward Unlocked!</span>
-          </div>
-        )}
-
-        {isMultipass && multipassExpired && (
-          <div style={{ ...styles.rewardBanner, background: '#fecaca', color: '#991b1b' }}>
-            <span style={styles.rewardIcon}>⏰</span>
-            <span>Pass expired - ask about a new one</span>
-          </div>
-        )}
-
-        {isMultipass && !multipassExpired && multipassDone && (
-          <div style={styles.rewardBanner}>
-            <span style={styles.rewardIcon}>🎉</span>
-            <span>All sessions used - come back for a new pass!</span>
-          </div>
-        )}
-
-        <div style={styles.qrSection}>
-          <p style={styles.qrLabel}>Show this QR code to cashier</p>
-          <div style={styles.qrWrapper}>
-            <img 
-              src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(pass_data.qr_code)}`}
-              alt="QR Code"
-              style={styles.qrImage}
-              onError={(e) => {
-                e.target.style.display = 'none'
-                e.target.nextSibling.style.display = 'flex'
-              }}
-            />
-            <div style={{...styles.qrFallback, display: 'none'}}>
-              <p style={{margin: 0, fontSize: 11}}>QR: {pass_data.qr_code}</p>
-            </div>
-          </div>
+        <div style={S.right}>
+          <div style={S.qrbox}><img src={`https://api.qrserver.com/v1/create-qr-code/?size=420x420&data=${encodeURIComponent(p.qr_code)}`} alt="QR" style={S.qr}/></div>
+          <div style={S.scan}>PRESENT TO CHECK IN</div>
         </div>
       </div>
-
-      <div style={styles.actions}>
-        <button onClick={addToGoogleWallet} style={styles.googleBtn}>
-          <span style={styles.googleIcon}>G</span>
-          Add to Google Wallet
-        </button>
-        <a href={appleWalletUrl} style={{ ...styles.googleBtn, ...styles.appleBtn, marginTop: 10 }}>
-          <span style={styles.googleIcon}></span>
-          Add to Apple Wallet
-        </a>
-        <button onClick={shareCard} style={{ ...styles.googleBtn, background: '#0d9488', marginTop: 10 }}>
-          <span style={styles.googleIcon}>🔗</span>
-          Share Card
-        </button>
-        <p style={styles.note}>
-          💡 <strong>Tip:</strong> Screenshot this card or save this page to your home screen for quick access!
-        </p>
-      </div>
-    </div>
-  )
+    </section>
+    <section style={S.details}>{view.details.map(([k,v])=><div key={k} style={S.detail}><span style={S.detailLabel}>{k}</span><strong style={S.detailValue}>{v||'—'}</strong></div>)}</section>
+    <section style={S.actions}>
+      {data.save_url&&<button style={{...S.btn,...S.google}} onClick={()=>window.open(data.save_url,'_blank')}>Add to Google Wallet</button>}
+      <a style={{...S.btn,...S.apple}} href={data.apple_pass_url||`${API_BASE}/api/v1/customer/${customerId}/apple-wallet-pass`}>Add to Apple Wallet</a>
+      <button style={{...S.btn,...S.share}} onClick={share}>Share Card</button>
+    </section>
+    <style>{`@media(max-width:680px){.ltgrid{grid-template-columns:minmax(0,1fr) 34%!important;gap:11px!important}}`}</style>
+  </main>
 }
 
-const styles = {
-  container: {
-    minHeight: '100vh',
-    background: '#f5f5f5',
-    padding: 20,
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-  },
-  card: {
-    width: '100%',
-    maxWidth: 400,
-    borderRadius: 20,
-    padding: 30,
-    color: 'white',
-    boxShadow: '0 20px 40px rgba(0,0,0,0.2)',
-    marginBottom: 20,
-  },
-  cardHeader: {
-    display: 'flex',
-    alignItems: 'center',
-    marginBottom: 25,
-    borderBottom: '1px solid rgba(255,255,255,0.2)',
-    paddingBottom: 15,
-  },
-  logo: {
-    fontSize: 36,
-    marginRight: 12,
-  },
-  businessName: {
-    margin: 0,
-    fontSize: 20,
-    fontWeight: 700,
-  },
-  memberId: {
-    margin: 0,
-    fontSize: 12,
-    opacity: 0.8,
-  },
-  memberSection: {
-    display: 'flex',
-    alignItems: 'center',
-    marginBottom: 25,
-  },
-  avatar: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    background: 'rgba(255,255,255,0.2)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: 28,
-    fontWeight: 'bold',
-    marginRight: 15,
-  },
-  customerName: {
-    margin: 0,
-    fontSize: 22,
-    fontWeight: 600,
-  },
-  tier: {
-    margin: 0,
-    fontSize: 14,
-    opacity: 0.8,
-  },
-  pointsSection: {
-    textAlign: 'center',
-    marginBottom: 20,
-  },
-  pointsBalance: {
-    fontSize: 44,
-    fontWeight: 800,
-    lineHeight: 1,
-  },
-  pointsLabel: {
-    fontSize: 13,
-    opacity: 0.85,
-    marginTop: 4,
-  },
-  prizeList: {
-    marginTop: 16,
-    borderTop: '1px solid rgba(255,255,255,0.25)',
-    paddingTop: 10,
-    textAlign: 'left',
-  },
-  prizeRow: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '6px 0',
-    fontSize: 13,
-  },
-  prizeCost: {
-    fontSize: 12,
-    fontWeight: 700,
-  },
-  progressSection: {
-    marginBottom: 20,
-  },
-  progressBar: {
-    height: 12,
-    background: 'rgba(255,255,255,0.2)',
-    borderRadius: 6,
-    overflow: 'hidden',
-  },
-  progressFill: {
-    height: '100%',
-    background: '#fbbf24',
-    borderRadius: 6,
-    transition: 'width 0.5s ease',
-  },
-  progressText: {
-    textAlign: 'center',
-    marginTop: 8,
-    fontSize: 14,
-    fontWeight: 600,
-  },
-  multipassDescription: {
-    textAlign: 'center',
-    fontSize: 13.5,
-    opacity: 0.9,
-    margin: '4px 0 16px',
-  },
-  expiryText: {
-    textAlign: 'center',
-    fontSize: 12.5,
-    opacity: 0.8,
-    marginTop: -8,
-    marginBottom: 20,
-  },
-  stampGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(4, 1fr)',
-    gap: 10,
-    marginBottom: 20,
-  },
-  stampSlot: {
-    aspectRatio: '1',
-    borderRadius: 10,
-    border: '2px solid',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#92400e',
-  },
-  rewardBanner: {
-    background: '#fbbf24',
-    color: '#92400e',
-    padding: 15,
-    borderRadius: 12,
-    textAlign: 'center',
-    fontWeight: 700,
-    fontSize: 16,
-    marginBottom: 20,
-  },
-  rewardIcon: {
-    marginRight: 8,
-  },
-  qrSection: {
-    background: 'rgba(255,255,255,0.15)',
-    borderRadius: 12,
-    padding: 20,
-    textAlign: 'center',
-  },
-  qrLabel: {
-    margin: 0,
-    marginBottom: 10,
-    fontSize: 14,
-    opacity: 0.9,
-  },
-  qrWrapper: {
-    background: 'white',
-    borderRadius: 8,
-    padding: 10,
-    display: 'inline-block',
-  },
-  qrImage: {
-    width: 200,
-    height: 200,
-    display: 'block',
-  },
-  qrFallback: {
-    width: 200,
-    height: 200,
-    background: '#f0f0f0',
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-    textAlign: 'center',
-    color: '#333',
-    wordBreak: 'break-all',
-    padding: 10,
-    boxSizing: 'border-box',
-  },
-  actions: {
-    width: '100%',
-    maxWidth: 400,
-  },
-  googleBtn: {
-    width: '100%',
-    padding: 16,
-    background: '#4285f4',
-    color: 'white',
-    border: 'none',
-    borderRadius: 12,
-    fontSize: 16,
-    fontWeight: 600,
-    cursor: 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-  },
-  googleIcon: {
-    fontSize: 20,
-  },
-  appleBtn: {
-    background: '#000000',
-    textDecoration: 'none',
-  },
-  note: {
-    marginTop: 15,
-    padding: 12,
-    background: '#e0f2fe',
-    borderRadius: 8,
-    fontSize: 13,
-    color: '#0369a1',
-    textAlign: 'center',
-  },
+const S={
+  page:{minHeight:'100vh',background:'#080b12',color:'#fff',padding:'24px 16px 44px',fontFamily:'-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif'},
+  state:{minHeight:'100vh',display:'grid',placeItems:'center',background:'#080b12',color:'#fff',fontFamily:'sans-serif'},
+  top:{maxWidth:1120,margin:'0 auto 14px',display:'flex',justifyContent:'space-between',fontSize:12,color:'#8390a5'},
+  card:{position:'relative',isolation:'isolate',overflow:'hidden',maxWidth:1120,margin:'0 auto',aspectRatio:'1.72 / 1',minHeight:320,borderRadius:28,padding:'clamp(22px,4vw,44px)',border:'1px solid rgba(255,255,255,.14)',boxShadow:'0 28px 80px rgba(0,0,0,.46)'},
+  hero:{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover',zIndex:-3},overlay:{position:'absolute',inset:0,zIndex:-2,background:'linear-gradient(90deg,rgba(3,6,16,.86),rgba(3,6,16,.63) 52%,rgba(3,6,16,.26))'},
+  grid:{height:'100%',display:'grid',gridTemplateColumns:'minmax(0,1fr) minmax(170px,29%)',gap:'clamp(18px,4vw,48px)',position:'relative',zIndex:2},
+  left:{display:'flex',flexDirection:'column',minWidth:0},brand:{display:'flex',alignItems:'center',gap:13},logo:{width:58,height:58,borderRadius:16,objectFit:'cover',background:'#fff'},logoFallback:{width:58,height:58,borderRadius:16,display:'grid',placeItems:'center',fontSize:27,background:'rgba(255,255,255,.12)'},
+  biz:{fontSize:'clamp(20px,3vw,34px)',fontWeight:850,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'},type:{fontSize:10,letterSpacing:1.4,fontWeight:800,color:'rgba(255,255,255,.62)',marginTop:6},
+  member:{marginTop:'auto'},eyebrow:{fontSize:9,letterSpacing:1.3,fontWeight:800,color:'rgba(255,255,255,.58)'},name:{fontSize:'clamp(25px,4.5vw,48px)',fontWeight:720,lineHeight:1.06,margin:'7px 0 20px'},metric:{fontSize:'clamp(30px,5vw,54px)',fontWeight:850,lineHeight:.95,marginTop:6},sub:{fontSize:11,color:'rgba(255,255,255,.72)',marginTop:7},
+  right:{display:'flex',flexDirection:'column',justifyContent:'center',alignItems:'flex-end'},qrbox:{width:'min(100%,260px)',padding:11,background:'#fff',borderRadius:19,boxShadow:'0 14px 35px rgba(0,0,0,.28)'},qr:{display:'block',width:'100%',aspectRatio:'1 / 1'},scan:{fontSize:9,letterSpacing:1.2,fontWeight:800,color:'rgba(255,255,255,.62)',margin:'10px auto 0'},
+  details:{maxWidth:1120,margin:'14px auto 0',display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))',gap:10},detail:{background:'#111827',border:'1px solid #202a3b',borderRadius:13,padding:'12px 13px',minWidth:0},detailLabel:{display:'block',color:'#75839a',fontSize:9,textTransform:'uppercase',letterSpacing:.7,marginBottom:5},detailValue:{display:'block',fontSize:12,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'},
+  actions:{maxWidth:1120,margin:'13px auto 0',display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',gap:10},btn:{border:0,borderRadius:12,padding:14,textAlign:'center',textDecoration:'none',fontWeight:750,fontSize:13,cursor:'pointer'},google:{background:'#1a73e8',color:'#fff'},apple:{background:'#fff',color:'#050505'},share:{background:'#151b28',color:'#dbe4f1',border:'1px solid #273247'}
 }
-
 export default WalletPass
