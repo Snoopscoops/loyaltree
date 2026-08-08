@@ -3654,6 +3654,14 @@ def get_recent_activity(business_id: int, customer_id: int, card_type: str, limi
 # FastAPI App
 app = FastAPI(title='LoyaltyTree API')
 
+# Motolite All-in-One Digital Warranty Platform
+# The Motolite backend is intentionally kept in its own package so National,
+# Regional, Local/Branch, QR verification, warranty records, and Wallet
+# integrations can evolve without bloating this already-large main.py.
+# Deploy the `motolite/` folder beside this file.
+from motolite import motolite_router
+app.include_router(motolite_router)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=['*'],
