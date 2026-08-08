@@ -3,10 +3,14 @@ import os
 import uuid
 import hashlib
 import hmac
+import json
+import zipfile
+from io import BytesIO
 from datetime import datetime
 from typing import Optional, Literal, List
 
 from fastapi import APIRouter, HTTPException, Header
+from fastapi.responses import Response, RedirectResponse
 from pydantic import BaseModel, Field
 from supabase import create_client, Client
 
@@ -32,6 +36,14 @@ GOOGLE_WALLET_ISSUER_ID = os.getenv("GOOGLE_WALLET_ISSUER_ID", "")
 GOOGLE_WALLET_CLASS_SUFFIX = os.getenv("GOOGLE_WALLET_CLASS_SUFFIX", "")
 APPLE_PASS_TYPE_IDENTIFIER = os.getenv("APPLE_PASS_TYPE_IDENTIFIER", "")
 APPLE_TEAM_IDENTIFIER = os.getenv("APPLE_TEAM_IDENTIFIER", "")
+MOTOLITE_GOOGLE_WALLET_CLASS_SUFFIX = os.getenv(
+    "MOTOLITE_GOOGLE_WALLET_CLASS_SUFFIX",
+    "motolite_warranty",
+)
+MOTOLITE_WALLET_BACKGROUND_COLOR = os.getenv(
+    "MOTOLITE_WALLET_BACKGROUND_COLOR",
+    "#d71920",
+)
 
 ROLE_NATIONAL = "national"
 ROLE_REGIONAL = "regional"
@@ -1038,38 +1050,380 @@ def _wallet_payload(warranty_public_id: str) -> dict:
     }
 
 
-@motolite_router.get("/wallet/apple/{warranty_public_id}")
-async def apple_wallet_adapter(warranty_public_id: str):
+
+def _motolite_google_wallet_class_id() -> str:
+    return f"{GOOGLE_WALLET_ISSUER_ID}.{MOTOLITE_GOOGLE_WALLET_CLASS_SUFFIX}"
+
+
+def _ensure_motolite_google_wallet_class() -> bool:
+    """Create the dedicated Motolite loyalty class once, if it does not exist."""
+    if not GOOGLE_WALLET_ISSUER_ID:
+        return False
+
+    try:
+        import main as platform_main
+        import httpx
+
+        access_token = platform_main.get_google_access_token()
+        if not access_token:
+            return False
+
+        class_id = _motolite_google_wallet_class_id()
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+
+        with httpx.Client(timeout=20) as client:
+            existing = client.get(
+                f"https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}",
+                headers=headers,
+            )
+            if existing.status_code == 200:
+                return True
+
+            payload = {
+                "id": class_id,
+                "issuerName": "Motolite",
+                "programName": "Motolite Digital Warranty",
+                "programLogo": {
+                    "sourceUri": {
+                        "uri": "https://www.motolite.com/cdn/shop/files/Motolite_Logo.png"
+                    }
+                },
+                "hexBackgroundColor": MOTOLITE_WALLET_BACKGROUND_COLOR,
+                "reviewStatus": "UNDER_REVIEW",
+            }
+
+            created = client.post(
+                "https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass",
+                headers=headers,
+                json=payload,
+            )
+
+            if created.status_code in (200, 201):
+                return True
+
+            # If another request created it between GET and POST, accept conflict.
+            if created.status_code == 409:
+                return True
+
+            print(
+                "MOTOLITE Google Wallet class error:",
+                created.status_code,
+                created.text,
+            )
+            return False
+    except Exception as exc:
+        print("MOTOLITE Google Wallet class setup error:", exc)
+        return False
+
+
+def _build_motolite_google_wallet_object(warranty_public_id: str) -> dict:
     payload = _wallet_payload(warranty_public_id)
 
+    object_id = (
+        f"{GOOGLE_WALLET_ISSUER_ID}."
+        f"motolite_{warranty_public_id.replace('-', '_')}"
+    )
+
+    verification_url = payload["qr_verification_url"]
+    status = str(payload.get("warranty_status") or "active").upper()
+
+    details = [
+        {
+            "header": "Battery",
+            "body": str(payload.get("battery_product") or "Motolite Battery"),
+        },
+        {
+            "header": "Model / Serial",
+            "body": (
+                f"{payload.get('battery_model') or '—'} · "
+                f"{payload.get('serial_number') or '—'}"
+            ),
+        },
+        {
+            "header": "Vehicle",
+            "body": (
+                f"{payload.get('vehicle') or '—'}"
+                + (
+                    f" · {payload.get('plate_number')}"
+                    if payload.get("plate_number")
+                    else ""
+                )
+            ),
+        },
+        {
+            "header": "Warranty Until",
+            "body": str(payload.get("warranty_expires_at") or "—"),
+        },
+    ]
+
     return {
-        "configured": bool(
-            APPLE_PASS_TYPE_IDENTIFIER and APPLE_TEAM_IDENTIFIER
-        ),
-        "provider": "apple",
-        "message": (
-            "Connect this Motolite warranty payload to the existing "
-            "Apple PassKit generator in main.py."
-        ),
-        "payload": payload,
+        "id": object_id,
+        "classId": _motolite_google_wallet_class_id(),
+        "state": "active",
+        "accountId": str(payload.get("member_number") or payload.get("member_public_id")),
+        "accountName": str(payload.get("member_name") or "Motolite Member"),
+        "loyaltyPoints": {
+            "label": "Warranty",
+            "balance": {"string": status},
+        },
+        "barcode": {
+            "type": "QR_CODE",
+            "value": verification_url,
+            "alternateText": str(payload.get("member_number") or "Motolite Warranty"),
+        },
+        "textModulesData": [
+            {
+                "header": "Motolite Digital Warranty",
+                "body": str(payload.get("member_name") or "Motolite Member"),
+            },
+            *details,
+        ],
+        "linksModuleData": {
+            "uris": [
+                {
+                    "uri": verification_url,
+                    "description": "Open verified warranty details",
+                }
+            ]
+        },
     }
+
+
+def _build_motolite_apple_pkpass(warranty_public_id: str) -> Optional[bytes]:
+    """Build a real signed Apple Wallet pass using main.py's PassKit signer."""
+    if not APPLE_PASS_TYPE_IDENTIFIER or not APPLE_TEAM_IDENTIFIER:
+        return None
+
+    try:
+        import main as platform_main
+
+        if platform_main.get_apple_pass_credentials() is None:
+            return None
+
+        payload = _wallet_payload(warranty_public_id)
+        verification_url = payload["qr_verification_url"]
+
+        serial = f"motolite-{warranty_public_id}"
+        member_name = str(payload.get("member_name") or "Motolite Member")
+        member_number = str(payload.get("member_number") or "")
+        battery = str(payload.get("battery_product") or "Motolite Battery")
+        serial_number = str(payload.get("serial_number") or "—")
+        expires = str(payload.get("warranty_expires_at") or "—")
+        status = str(payload.get("warranty_status") or "active").upper()
+
+        pass_json = {
+            "formatVersion": 1,
+            "passTypeIdentifier": APPLE_PASS_TYPE_IDENTIFIER,
+            "serialNumber": serial,
+            "teamIdentifier": APPLE_TEAM_IDENTIFIER,
+            "organizationName": "Motolite",
+            "description": "Motolite Digital Warranty",
+            "logoText": "Motolite",
+            "foregroundColor": "rgb(255,255,255)",
+            "backgroundColor": "rgb(215,25,32)",
+            "labelColor": "rgb(255,215,0)",
+            "barcode": {
+                "format": "PKBarcodeFormatQR",
+                "message": verification_url,
+                "messageEncoding": "iso-8859-1",
+                "altText": member_number,
+            },
+            "barcodes": [
+                {
+                    "format": "PKBarcodeFormatQR",
+                    "message": verification_url,
+                    "messageEncoding": "iso-8859-1",
+                    "altText": member_number,
+                }
+            ],
+            "storeCard": {
+                "headerFields": [
+                    {
+                        "key": "status",
+                        "label": "WARRANTY",
+                        "value": status,
+                    }
+                ],
+                "primaryFields": [
+                    {
+                        "key": "member",
+                        "label": "MEMBER",
+                        "value": member_name,
+                    }
+                ],
+                "secondaryFields": [
+                    {
+                        "key": "battery",
+                        "label": "BATTERY",
+                        "value": battery,
+                    },
+                    {
+                        "key": "expiry",
+                        "label": "VALID UNTIL",
+                        "value": expires,
+                    },
+                ],
+                "auxiliaryFields": [
+                    {
+                        "key": "member_number",
+                        "label": "MEMBER ID",
+                        "value": member_number,
+                    },
+                    {
+                        "key": "serial",
+                        "label": "SERIAL",
+                        "value": serial_number,
+                    },
+                ],
+                "backFields": [
+                    {
+                        "key": "vehicle",
+                        "label": "Vehicle",
+                        "value": str(payload.get("vehicle") or "—"),
+                    },
+                    {
+                        "key": "plate",
+                        "label": "Plate Number",
+                        "value": str(payload.get("plate_number") or "—"),
+                    },
+                    {
+                        "key": "verification",
+                        "label": "Warranty Verification",
+                        "value": verification_url,
+                    },
+                    {
+                        "key": "emergency",
+                        "label": "Emergency Assistance",
+                        "value": str(payload.get("emergency_number") or "Motolite Hotline"),
+                    },
+                ],
+            },
+        }
+
+        icon_29 = platform_main.generate_apple_icon_bytes(
+            MOTOLITE_WALLET_BACKGROUND_COLOR,
+            "M",
+            29,
+        )
+        icon_58 = platform_main.generate_apple_icon_bytes(
+            MOTOLITE_WALLET_BACKGROUND_COLOR,
+            "M",
+            58,
+        )
+        icon_87 = platform_main.generate_apple_icon_bytes(
+            MOTOLITE_WALLET_BACKGROUND_COLOR,
+            "M",
+            87,
+        )
+        logo_160 = platform_main.generate_apple_logo_bytes("Motolite", 160, 50)
+        logo_320 = platform_main.generate_apple_logo_bytes("Motolite", 320, 100)
+        logo_480 = platform_main.generate_apple_logo_bytes("Motolite", 480, 150)
+
+        files = {
+            "pass.json": json.dumps(pass_json).encode("utf-8"),
+            "icon.png": icon_29,
+            "icon@2x.png": icon_58,
+            "icon@3x.png": icon_87,
+            "logo.png": logo_160,
+            "logo@2x.png": logo_320,
+            "logo@3x.png": logo_480,
+        }
+
+        manifest = {
+            name: hashlib.sha1(content).hexdigest()
+            for name, content in files.items()
+        }
+        manifest_bytes = json.dumps(manifest).encode("utf-8")
+        signature = platform_main.sign_pkpass_manifest(manifest_bytes)
+
+        if signature is None:
+            return None
+
+        buffer = BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            for name, content in files.items():
+                archive.writestr(name, content)
+            archive.writestr("manifest.json", manifest_bytes)
+            archive.writestr("signature", signature)
+
+        return buffer.getvalue()
+    except Exception as exc:
+        print("MOTOLITE Apple Wallet generation error:", exc)
+        return None
+
+
+@motolite_router.get("/wallet/apple/{warranty_public_id}")
+async def apple_wallet_pass(warranty_public_id: str):
+    # Validate record before building the pass.
+    _wallet_payload(warranty_public_id)
+
+    pkpass_bytes = _build_motolite_apple_pkpass(warranty_public_id)
+    if pkpass_bytes is None:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Apple Wallet pass could not be generated. "
+                "Check the existing Apple Wallet credentials in Render."
+            ),
+        )
+
+    return Response(
+        content=pkpass_bytes,
+        media_type="application/vnd.apple.pkpass",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="motolite-{warranty_public_id}.pkpass"'
+            )
+        },
+    )
 
 
 @motolite_router.get("/wallet/google/{warranty_public_id}")
-async def google_wallet_adapter(warranty_public_id: str):
-    payload = _wallet_payload(warranty_public_id)
+async def google_wallet_pass(warranty_public_id: str):
+    _wallet_payload(warranty_public_id)
 
-    return {
-        "configured": bool(
-            GOOGLE_WALLET_ISSUER_ID and GOOGLE_WALLET_CLASS_SUFFIX
-        ),
-        "provider": "google",
-        "message": (
-            "Connect this Motolite warranty payload to the existing "
-            "Google Wallet generator in main.py."
-        ),
-        "payload": payload,
-    }
+    if not GOOGLE_WALLET_ISSUER_ID:
+        raise HTTPException(
+            status_code=500,
+            detail="Google Wallet issuer is not configured.",
+        )
+
+    try:
+        import main as platform_main
+
+        if not _ensure_motolite_google_wallet_class():
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Could not create or access the Motolite Google Wallet class."
+                ),
+            )
+
+        wallet_object = _build_motolite_google_wallet_object(
+            warranty_public_id
+        )
+        jwt_token = platform_main.create_google_wallet_jwt(wallet_object)
+
+        if not jwt_token:
+            raise HTTPException(
+                status_code=500,
+                detail="Could not generate Google Wallet save token.",
+            )
+
+        return RedirectResponse(
+            url=f"https://pay.google.com/gp/v/save/{jwt_token}",
+            status_code=302,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Google Wallet generation failed: {exc}",
+        )
 
 
 @motolite_router.get("/emergency")
