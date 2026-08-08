@@ -1670,12 +1670,21 @@ def generate_personalized_hero_image_bytes(
                 overlay_px[x, y] = (*_hex_to_rgb(secondary_color), int(95 * strength))
         img = Image.alpha_composite(img, overlay)
 
-    draw = ImageDraw.Draw(img)
-    # Subtle premium framing and large translucent LoyaltyTree leaf circles.
+    # Subtle premium framing + a single soft rectangular accent in the top
+    # right corner. Drawn on their own transparent layer and alpha_composite'd
+    # in - drawing translucent fills straight onto `img` with ImageDraw looks
+    # right in-memory, but this function ends with img.convert('RGB'), which
+    # DROPS the alpha channel instead of blending it, so any "translucent"
+    # shape drawn directly renders fully opaque instead. (This is also why
+    # the old three-circle version showed up as a solid white blob instead of
+    # a soft accent - same bug, not just the wrong shape.)
+    deco = Image.new('RGBA', HERO_SIZE, (0, 0, 0, 0))
+    deco_draw = ImageDraw.Draw(deco)
     if wallet_style in ('premium', 'dark'):
-        draw.rounded_rectangle((18,18,HERO_SIZE[0]-18,HERO_SIZE[1]-18), radius=34, outline=(255,255,255,45), width=2)
-    for cx, cy, radius, alpha in [(890,55,120,28),(810,20,64,22),(970,160,76,18)]:
-        draw.ellipse((cx-radius,cy-radius,cx+radius,cy+radius), fill=(255,255,255,alpha))
+        deco_draw.rounded_rectangle((18,18,HERO_SIZE[0]-18,HERO_SIZE[1]-18), radius=34, outline=(255,255,255,45), width=2)
+    deco_draw.rounded_rectangle((HERO_SIZE[0]-300, -60, HERO_SIZE[0]+40, 150), radius=36, fill=(255,255,255,22))
+    img = Image.alpha_composite(img, deco)
+    draw = ImageDraw.Draw(img)
 
     if business_name:
         font_brand = ImageFont.load_default(size=20)
