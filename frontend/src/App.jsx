@@ -10,6 +10,7 @@ import CashierApp from './components/CashierApp'
 import AnalyticsDashboard from './components/AnalyticsDashboard'
 import AdminDashboard from './components/AdminDashboard'
 import MotoliteApp from './components/MotoliteApp'
+import CustomerJoin from './components/CustomerJoin'
 
 const API_BASE = 'https://loyaltree-btw1.onrender.com'
 
@@ -99,7 +100,7 @@ function App() {
         <Route path="/analytics" element={
           user?.role === 'owner' ? <AnalyticsDashboard API_BASE={API_BASE} user={user} /> : <Navigate to="/login" />
         } />
-        <Route path="/join/:businessSlug" element={<RedirectToBackend base={API_BASE} sub="join" />} />
+        <Route path="/join/:businessSlug" element={<CustomerJoin API_BASE={API_BASE} />} />
         <Route path="/admin" element={
           user?.role === 'super_admin' ? <AdminDashboard API_BASE={API_BASE} user={user} onLogout={() => setUser(null)} /> : <Navigate to="/login" />
         } />

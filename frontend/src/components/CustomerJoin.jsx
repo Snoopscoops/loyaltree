@@ -82,6 +82,8 @@ function CustomerJoin({ API_BASE }) {
           birthday: form.birthday || null,
           occupation: form.occupation || null,
           gender: form.gender || null,
+          privacy_consent: true,
+          privacy_consent_version: '2026-08-09-v1',
         })
       })
       const data = await res.json()

@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Literal
 
 from fastapi import FastAPI, HTTPException, Request, Depends, Header
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from supabase import create_client, Client
@@ -948,6 +948,8 @@ class CustomerSignup(BaseModel):
     occupation: Optional[str] = None  # 'working' | 'business_owner' | 'unemployed'
     gender: Optional[str] = None  # 'male' | 'female' | 'rather_not_say'
     last_order_date: Optional[str] = None  # 'YYYY-MM-DD'
+    privacy_consent: bool = False
+    privacy_consent_version: Optional[str] = Field(default=None, max_length=40)
 
 class CustomerUpdate(BaseModel):
     name: Optional[str] = None
@@ -7919,7 +7921,8 @@ async def get_qr_code(public_id: str):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
-    join_url = f'{BASE_URL}/join/{public_id}'
+    join_base = (FRONTEND_URL or BASE_URL).rstrip('/')
+    join_url = f'{join_base}/join/{public_id}'
     svg = generate_qr_svg(join_url)
     return JSONResponse({
         "svg": svg,
@@ -9643,6 +9646,12 @@ async def cl_customer_wallet_page(customer_public_id: str):
 
 @app.get("/join/{business_public_id}", response_class=HTMLResponse)
 async def customer_join_page(business_public_id: str):
+    # Existing/printed LoyaltyTree QR codes point at the backend BASE_URL.
+    # When FRONTEND_URL is configured, forward them to the React join page,
+    # which contains the required privacy consent UI.
+    if FRONTEND_URL:
+        frontend = FRONTEND_URL.rstrip('/')
+        return RedirectResponse(url=f"{frontend}/join/{business_public_id}", status_code=307)
     try:
         business = safe_get_business(business_public_id)
         if not business:
@@ -9824,6 +9833,17 @@ async def customer_join_page(business_public_id: str):
 
 @app.post("/api/v1/join/{business_public_id}")
 async def customer_signup(business_public_id: str, signup: CustomerSignup):
+    if not signup.privacy_consent:
+        raise HTTPException(
+            status_code=400,
+            detail="Privacy & Membership Consent is required before joining."
+        )
+    if not signup.privacy_consent_version:
+        raise HTTPException(
+            status_code=400,
+            detail="Privacy consent version is required."
+        )
+
     business = safe_get_business(business_public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -9851,6 +9871,9 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup):
         'occupation': signup.occupation,
         'gender': signup.gender,
         'last_order_date': signup.last_order_date,
+        'privacy_consent': True,
+        'privacy_consent_at': datetime.utcnow().isoformat(),
+        'privacy_consent_version': signup.privacy_consent_version,
         'stamp_count': 0,
         'points_balance': 0,
         'created_at': datetime.utcnow().isoformat(),
