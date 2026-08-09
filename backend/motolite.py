@@ -7,6 +7,7 @@ import zipfile
 import re
 import base64
 import asyncio
+import math
 from io import BytesIO
 from datetime import datetime, timedelta, date
 from typing import Optional, Literal, List
@@ -503,9 +504,9 @@ class NotificationPush(BaseModel):
 
 class EmergencyHelpSettingsUpdate(BaseModel):
     phone_number: str = Field(min_length=3, max_length=40)
-    button_label: str = Field(default="Call Emergency Help", min_length=1, max_length=60)
+    button_label: str = Field(default="Call Customer Service", min_length=1, max_length=60)
     help_text: str = Field(
-        default="Need emergency battery help? Call Motolite assistance directly from your phone.",
+        default="Need help with your battery or warranty? Call Motolite customer service directly from your phone.",
         min_length=1,
         max_length=240,
     )
@@ -1050,17 +1051,45 @@ async def motolite_verified_warranty_page(token: str):
     if not activity_html:
         activity_html = '<div class="empty">No recorded Motolite activity yet.</div>'
 
-    emergency_html = ""
-    if emergency_tel:
-        emergency_html = f"""
-        <section class="emergency">
-          <div>
-            <strong>Need emergency battery help?</strong>
-            <p>Call Motolite assistance directly from your phone.</p>
-          </div>
-          <a href="tel:{emergency_tel}">☎ Call Emergency Help <small>{emergency_display}</small></a>
-        </section>
-        """
+    emergency_html = f"""
+    <section class="emergency">
+      <div>
+        <strong>Need help with your battery or warranty?</strong>
+        <p>Call Motolite customer service, or use Emergency Battery Service to find the nearest branch for battery delivery.</p>
+      </div>
+      {f'<a class="customerService" href="tel:{emergency_tel}">☎ Call Customer Service <small>{emergency_display}</small></a>' if emergency_tel else '<div class="serviceUnavailable">Customer service number is not configured yet.</div>'}
+      <button class="emergencyLocate" type="button" onclick="findNearestMotoliteBranch(this)">⚡ Emergency Battery Service</button>
+      <div class="nearestBranch" hidden></div>
+    </section>
+    """
+
+    emergency_location_script = r"""<script>
+async function findNearestMotoliteBranch(button) {
+  const box = button.closest('.emergency').querySelector('.nearestBranch');
+  box.hidden = false;
+  box.innerHTML = '<p>Requesting your location…</p>';
+  if (!navigator.geolocation) { box.innerHTML = '<p>Your browser does not support location services.</p>'; return; }
+  button.disabled = true;
+  navigator.geolocation.getCurrentPosition(async (pos) => {
+    try {
+      const lat = pos.coords.latitude, lon = pos.coords.longitude;
+      box.innerHTML = '<p>Finding the nearest Motolite branch…</p>';
+      const res = await fetch(`/api/v1/motolite/emergency/nearest?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Could not find a nearby branch.');
+      const b = data.branch || {}, phone = b.phone || '', tel = phone.replace(/[^0-9+]/g, '');
+      const address = [b.address,b.city,b.province].filter(Boolean).join(', ');
+      const mapUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(b.latitude+','+b.longitude)}`;
+      box.innerHTML = `<h3>Nearest Motolite Branch</h3><p><strong>${escapeHtml(b.name||'Motolite Branch')}</strong></p><p class="distance">Approximately ${Number(data.distance_km).toFixed(1)} km away</p><p>${escapeHtml(address||'Branch address unavailable')}</p><p>${phone ? 'Delivery service: '+escapeHtml(phone) : 'Branch phone number is not configured.'}</p><div class="nearestActions">${tel ? `<a class="deliveryCall" href="tel:${tel}">☎ Call for Battery Delivery</a>` : ''}<a class="mapsLink" href="${mapUrl}" target="_blank" rel="noopener">⌖ Open in Maps</a></div>`;
+    } catch (err) { box.innerHTML = `<p>${escapeHtml(err.message || 'Unable to find a nearby Motolite branch.')}</p>`; }
+    finally { button.disabled = false; }
+  }, (err) => {
+    const msg = err.code === 1 ? 'Location permission was denied. Please allow location access to find the nearest Motolite branch.' : 'Your location could not be determined. Please try again.';
+    box.innerHTML = `<p>${escapeHtml(msg)}</p>`; button.disabled = false;
+  }, {enableHighAccuracy:true,timeout:12000,maximumAge:60000});
+}
+function escapeHtml(value) { const d=document.createElement('div'); d.textContent=String(value??''); return d.innerHTML; }
+</script>"""
 
     return HTMLResponse(content=f"""<!doctype html>
 <html lang="en">
@@ -1095,9 +1124,15 @@ h1{{font-size:26px;margin:14px 0 3px}}
 .wallets a{{display:flex;align-items:center;justify-content:center;text-decoration:none;border-radius:9px;padding:13px;font-size:12px;font-weight:900}}
 .apple{{background:#000;color:#fff}}.google{{border:1px solid #ddd;color:#111;background:#fff}}
 .emergency{{background:#fff1f2;border:1px solid #efc5c9;border-radius:14px;padding:15px;margin-top:14px;display:grid;gap:12px}}
-.emergency strong{{font-size:13px}}.emergency p{{margin:3px 0 0;font-size:11px;color:#777}}
-.emergency a{{display:flex;justify-content:center;align-items:center;gap:7px;background:#d71920;color:#fff;text-decoration:none;border-radius:9px;padding:13px;font-size:13px;font-weight:900}}
+.emergency strong{{font-size:13px}}.emergency p{{margin:3px 0 0;font-size:11px;color:#777;line-height:1.5}}
+.emergency a,.emergency button{{display:flex;justify-content:center;align-items:center;gap:7px;text-decoration:none;border-radius:9px;padding:13px;font-size:13px;font-weight:900;border:0;cursor:pointer;font-family:inherit}}
 .emergency a small{{font-size:10px;opacity:.9}}
+.customerService{{background:#252525;color:#fff}}.emergencyLocate{{background:#d71920;color:#fff;width:100%}}
+.serviceUnavailable{{padding:11px;border-radius:9px;background:#fff;color:#777;font-size:11px;text-align:center}}
+.nearestBranch{{background:#fff;border:1px solid #ead6d7;border-radius:12px;padding:14px}}
+.nearestBranch h3{{font-size:14px;margin:0 0 5px;color:#d71920}}.nearestBranch p{{font-size:11px;margin:4px 0;color:#555}}.nearestBranch .distance{{font-weight:900;color:#111}}
+.nearestActions{{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:11px}}.nearestActions a{{font-size:11px;padding:11px}}
+.deliveryCall{{background:#d71920;color:#fff}}.mapsLink{{background:#fff;color:#d71920;border:1px solid #d71920}}
 .section h2{{font-size:17px;margin:0 0 14px}}
 .notice{{padding:12px;border-radius:9px;margin:8px 0;display:flex;flex-direction:column;gap:4px}}
 .notice.warning{{background:#fff7d6;color:#765900}}.notice.urgent{{background:#fff0f1;color:#a20d16}}
@@ -1171,6 +1206,7 @@ h1{{font-size:26px;margin:14px 0 3px}}
     This warranty record is verified by the Motolite Digital Warranty system.
   </div>
 </div>
+{emergency_location_script}
 </body>
 </html>""")
 
@@ -1246,8 +1282,8 @@ def _motolite_emergency_settings() -> dict:
     """National-managed emergency contact used by web + Wallet passes."""
     default = {
         "phone_number": MOTOLITE_EMERGENCY_NUMBER,
-        "button_label": "Call Emergency Help",
-        "help_text": "Need emergency battery help? Call Motolite assistance directly from your phone.",
+        "button_label": "Call Customer Service",
+        "help_text": "Need help with your battery or warranty? Call Motolite customer service directly from your phone.",
     }
     try:
         rows = (
@@ -1920,7 +1956,7 @@ def _wallet_payload(wid: str):
         "verified_warranty_page_url": f"{MOTOLITE_BASE_URL}/api/v1/motolite/warranty/view/{w.get('qr_token')}",
         "activity_url": f"{MOTOLITE_BASE_URL}/api/v1/motolite/customer/activity/{w.get('qr_token')}",
         "emergency_number": emergency_settings.get("phone_number") or "",
-        "emergency_button_label": emergency_settings.get("button_label") or "Call Emergency Help",
+        "emergency_button_label": emergency_settings.get("button_label") or "Call Customer Service",
         "emergency_help_text": emergency_settings.get("help_text") or "",
         "card_settings": card_settings,
         "latest_notification": (
@@ -2084,7 +2120,7 @@ def _google_object(wid: str):
     if emergency_tel:
         obj["linksModuleData"]["uris"].insert(0, {
             "uri": f"tel:{emergency_tel}",
-            "description": str(p.get("emergency_button_label") or "Call Emergency Help"),
+            "description": str(p.get("emergency_button_label") or "Call Customer Service"),
         })
 
     if p.get("warranty_expires_at"):
@@ -2691,16 +2727,43 @@ async def motolite_wallet_landing_page(warranty_public_id: str):
     if not activity_html:
         activity_html = '<div class="emptyNotice">No recorded Motolite activity yet.</div>'
 
-    emergency_html = ""
-    if emergency_tel:
-        emergency_html = (
-            '<div class="emergencyBox">'
-            '<div><strong>Need emergency battery help?</strong>'
-            '<p>Call Motolite assistance directly from your phone.</p></div>'
-            f'<a class="emergencyCall" href="tel:{emergency_tel}">'
-            f'☎ Call Emergency Help <small>{emergency_display}</small></a>'
-            '</div>'
-        )
+    emergency_html = (
+        '<div class="emergencyBox">'
+        '<div><strong>Need help with your battery or warranty?</strong>'
+        '<p>Call Motolite customer service, or find the nearest branch for emergency battery delivery.</p></div>'
+        + (f'<a class="customerServiceCall" href="tel:{emergency_tel}">☎ Call Customer Service <small>{emergency_display}</small></a>' if emergency_tel else '<div class="serviceUnavailable">Customer service number is not configured yet.</div>')
+        + '<button class="emergencyLocate" type="button" onclick="findNearestMotoliteBranch(this)">⚡ Emergency Battery Service</button>'
+        + '<div class="nearestBranch" hidden></div>'
+        + '</div>'
+    )
+
+    emergency_location_script = r"""<script>
+async function findNearestMotoliteBranch(button) {
+  const box = button.closest('.emergencyBox').querySelector('.nearestBranch');
+  box.hidden = false;
+  box.innerHTML = '<p>Requesting your location…</p>';
+  if (!navigator.geolocation) { box.innerHTML = '<p>Your browser does not support location services.</p>'; return; }
+  button.disabled = true;
+  navigator.geolocation.getCurrentPosition(async (pos) => {
+    try {
+      const lat = pos.coords.latitude, lon = pos.coords.longitude;
+      box.innerHTML = '<p>Finding the nearest Motolite branch…</p>';
+      const res = await fetch(`/api/v1/motolite/emergency/nearest?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Could not find a nearby branch.');
+      const b = data.branch || {}, phone = b.phone || '', tel = phone.replace(/[^0-9+]/g, '');
+      const address = [b.address,b.city,b.province].filter(Boolean).join(', ');
+      const mapUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(b.latitude+','+b.longitude)}`;
+      box.innerHTML = `<h3>Nearest Motolite Branch</h3><p><strong>${escapeHtml(b.name||'Motolite Branch')}</strong></p><p class="distance">Approximately ${Number(data.distance_km).toFixed(1)} km away</p><p>${escapeHtml(address||'Branch address unavailable')}</p><p>${phone ? 'Delivery service: '+escapeHtml(phone) : 'Branch phone number is not configured.'}</p><div class="nearestActions">${tel ? `<a class="deliveryCall" href="tel:${tel}">☎ Call for Battery Delivery</a>` : ''}<a class="mapsLink" href="${mapUrl}" target="_blank" rel="noopener">⌖ Open in Maps</a></div>`;
+    } catch (err) { box.innerHTML = `<p>${escapeHtml(err.message || 'Unable to find a nearby Motolite branch.')}</p>`; }
+    finally { button.disabled = false; }
+  }, (err) => {
+    const msg = err.code === 1 ? 'Location permission was denied. Please allow location access to find the nearest Motolite branch.' : 'Your location could not be determined. Please try again.';
+    box.innerHTML = `<p>${escapeHtml(msg)}</p>`; button.disabled = false;
+  }, {enableHighAccuracy:true,timeout:12000,maximumAge:60000});
+}
+function escapeHtml(value) { const d=document.createElement('div'); d.textContent=String(value??''); return d.innerHTML; }
+</script>"""
 
     return HTMLResponse(content=f"""<!doctype html>
 <html lang="en">
@@ -2734,8 +2797,14 @@ h1{{font-size:25px;margin:14px 0 3px;letter-spacing:-.02em}}
 .apple{{background:#000;color:#fff}}.google{{background:#fff;color:#111;border:1px solid #ddd}}
 .emergencyBox{{margin-top:18px;padding:15px;border-radius:12px;background:#fff3f3;border:1px solid #efc8cb;display:grid;gap:12px}}
 .emergencyBox strong{{font-size:13px}}.emergencyBox p{{margin:3px 0 0;color:#777;font-size:11px;line-height:1.5}}
-.emergencyCall{{display:flex;justify-content:center;align-items:center;gap:7px;background:#d71920;color:#fff;text-decoration:none;border-radius:9px;padding:13px;font-size:13px;font-weight:900}}
-.emergencyCall small{{font-size:10px;opacity:.9}}
+.emergencyBox a,.emergencyBox button{{display:flex;justify-content:center;align-items:center;gap:7px;text-decoration:none;border-radius:9px;padding:13px;font-size:13px;font-weight:900;border:0;cursor:pointer;font-family:inherit}}
+.emergencyBox a small{{font-size:10px;opacity:.9}}
+.customerServiceCall{{background:#252525;color:#fff}}.emergencyLocate{{background:#d71920;color:#fff;width:100%}}
+.serviceUnavailable{{padding:11px;border-radius:9px;background:#fff;color:#777;font-size:11px;text-align:center}}
+.nearestBranch{{background:#fff;border:1px solid #ead6d7;border-radius:12px;padding:14px}}
+.nearestBranch h3{{font-size:14px;margin:0 0 5px;color:#d71920}}.nearestBranch p{{font-size:11px;margin:4px 0;color:#555}}.nearestBranch .distance{{font-weight:900;color:#111}}
+.nearestActions{{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:11px}}.nearestActions a{{font-size:11px;padding:11px}}
+.deliveryCall{{background:#d71920;color:#fff}}.mapsLink{{background:#fff;color:#d71920;border:1px solid #d71920}}
 .section{{margin-top:16px;background:#fff;border-radius:14px;padding:20px;box-shadow:0 5px 20px rgba(0,0,0,.04)}}
 .section h2{{font-size:17px;margin:0 0 14px}}
 .notice{{padding:12px;border-radius:9px;margin:8px 0;display:flex;flex-direction:column;gap:4px}}
@@ -2805,12 +2874,48 @@ h1{{font-size:25px;margin:14px 0 3px;letter-spacing:-.02em}}
     activity shown here comes from the Motolite warranty system.
   </div>
 </div>
+{emergency_location_script}
 </body>
 </html>""")
 
 
+def _distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Haversine distance between two GPS points in kilometers."""
+    radius = 6371.0088
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return radius * (2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
+
+
+@motolite_router.get("/emergency/nearest")
+async def nearest_emergency_branch(latitude: float, longitude: float):
+    """Find the nearest active branch after a customer grants browser location permission."""
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        raise HTTPException(status_code=400, detail="Invalid customer location.")
+    rows = (_supabase().table("motolite_branches")
+            .select("public_id,name,address,city,province,latitude,longitude,phone,is_active")
+            .eq("is_active", True).execute().data or [])
+    candidates = []
+    for branch in rows:
+        try:
+            blat, blon = float(branch.get("latitude")), float(branch.get("longitude"))
+        except (TypeError, ValueError):
+            continue
+        if -90 <= blat <= 90 and -180 <= blon <= 180:
+            candidates.append((_distance_km(latitude, longitude, blat, blon), branch))
+    if not candidates:
+        raise HTTPException(status_code=404, detail="No active Motolite branches with GPS coordinates are configured yet.")
+    distance, branch = min(candidates, key=lambda item: item[0])
+    return {"ok": True, "distance_km": round(distance, 2), "branch": {**branch, "latitude": float(branch["latitude"]), "longitude": float(branch["longitude"])}}
+
+
 @motolite_router.get("/emergency")
-async def emergency(): return {"phone":MOTOLITE_EMERGENCY_NUMBER,"tel_url":f"tel:{MOTOLITE_EMERGENCY_NUMBER}" if MOTOLITE_EMERGENCY_NUMBER else None,"configured":bool(MOTOLITE_EMERGENCY_NUMBER)}
+async def emergency():
+    settings = _motolite_emergency_settings()
+    phone = str(settings.get("phone_number") or MOTOLITE_EMERGENCY_NUMBER or "").strip()
+    return {"phone": phone, "tel_url": f"tel:{re.sub(r'[^0-9+]', '', phone)}" if phone else None, "configured": bool(phone), "button_label": "Call Customer Service"}
 
 
 @motolite_router.get("/setup/check")
