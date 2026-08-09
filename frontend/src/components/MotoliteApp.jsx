@@ -247,6 +247,7 @@ function CardManagement({API_BASE,session}){
   const auth={'Authorization':`Bearer ${session.token}`,'Content-Type':'application/json'}
   const [card,setCard]=useState({
     logo_url:'',
+    hero_url:'',
     background_color:'#d71920',
     foreground_color:'#ffffff',
     label_color:'#ffd400',
@@ -264,13 +265,42 @@ function CardManagement({API_BASE,session}){
   })
   const [emergency,setEmergency]=useState({
     phone_number:'',
-    button_label:'Call Emergency Help',
-    help_text:'Need emergency battery help? Call Motolite assistance directly from your phone.'
+    button_label:'Call Customer Service',
+    help_text:'Need help with your battery or warranty? Call Motolite customer service directly from your phone.'
   })
   const [loading,setLoading]=useState(true)
   const [saving,setSaving]=useState(false)
   const [message,setMessage]=useState('')
   const [error,setError]=useState('')
+  const [uploading,setUploading]=useState('')
+
+  async function uploadBrandImage(file,purpose){
+    if(!file)return
+    if(!String(file.type||'').startsWith('image/')){setError('Please choose an image file.');return}
+    if(file.size>8*1024*1024){setError('Branding images must be under 8 MB.');return}
+    setUploading(purpose);setError('');setMessage('')
+    try{
+      const sigRes=await fetch(`${API_BASE}/api/v1/motolite/settings/card/upload-signature?purpose=${encodeURIComponent(purpose)}`,{
+        method:'POST',
+        headers:{'Authorization':`Bearer ${session.token}`}
+      })
+      const sig=await sigRes.json()
+      if(!sigRes.ok)throw new Error(sig.detail||'Could not start image upload')
+      const body=new FormData()
+      body.append('file',file)
+      body.append('api_key',sig.api_key)
+      body.append('timestamp',String(sig.timestamp))
+      body.append('signature',sig.signature)
+      if(sig.upload_preset)body.append('upload_preset',sig.upload_preset)
+      if(sig.folder)body.append('folder',sig.folder)
+      const uploadRes=await fetch(`https://api.cloudinary.com/v1_1/${sig.cloud_name}/image/upload`,{method:'POST',body})
+      const uploaded=await uploadRes.json()
+      if(!uploadRes.ok||!uploaded.secure_url)throw new Error(uploaded?.error?.message||'Image upload failed')
+      setC(purpose==='hero'?'hero_url':'logo_url',uploaded.secure_url)
+      setMessage(`${purpose==='hero'?'Wallet hero image':'Motolite logo'} uploaded. Click Save & Publish to apply it nationwide.`)
+    }catch(err){setError(err.message)}
+    finally{setUploading('')}
+  }
 
   useEffect(()=>{
     let active=true
@@ -302,6 +332,7 @@ function CardManagement({API_BASE,session}){
           method:'PUT',headers:auth,
           body:JSON.stringify({
             logo_url:card.logo_url||'',
+            hero_url:card.hero_url||'',
             background_color:card.background_color,
             foreground_color:card.foreground_color,
             label_color:card.label_color,
@@ -360,9 +391,28 @@ function CardManagement({API_BASE,session}){
       <div className="cardEditorGrid">
         <div className="cardEditorForm">
           <div className="settingsGroup">
-            <h3>Branding</h3>
-            <label className="field"><span>Logo URL</span><input value={card.logo_url||''} onChange={e=>setC('logo_url',e.target.value)} placeholder="https://.../motolite-logo.png"/></label>
-            <small className="settingHint">Leave blank to use the built-in Motolite logo. Custom logos must use a public HTTPS image URL.</small>
+            <h3>Branding Images</h3>
+            <div className="brandUploadGrid">
+              <div className="brandUploadCard">
+                <span className="brandUploadLabel">Motolite Logo</span>
+                <div className="brandUploadPreview">{card.logo_url?<img src={card.logo_url} alt="Uploaded Motolite logo"/>:<img src={motoliteLogo} alt="Built-in Motolite logo"/>}</div>
+                <label className="uploadImageBtn">
+                  {uploading==='logo'?'Uploading…':'Upload Logo'}
+                  <input type="file" accept="image/png,image/jpeg,image/webp" disabled={!!uploading} onChange={e=>{const f=e.target.files?.[0];e.target.value='';uploadBrandImage(f,'logo')}}/>
+                </label>
+                {card.logo_url&&<button type="button" className="miniBtn" onClick={()=>setC('logo_url','')}>Use built-in logo</button>}
+              </div>
+              <div className="brandUploadCard">
+                <span className="brandUploadLabel">Wallet Hero / Banner</span>
+                <div className="brandUploadPreview heroPreview">{card.hero_url?<img src={card.hero_url} alt="Uploaded wallet hero"/>:<span>No custom banner</span>}</div>
+                <label className="uploadImageBtn">
+                  {uploading==='hero'?'Uploading…':'Upload Banner'}
+                  <input type="file" accept="image/png,image/jpeg,image/webp" disabled={!!uploading} onChange={e=>{const f=e.target.files?.[0];e.target.value='';uploadBrandImage(f,'hero')}}/>
+                </label>
+                {card.hero_url&&<button type="button" className="miniBtn" onClick={()=>setC('hero_url','')}>Remove banner</button>}
+              </div>
+            </div>
+            <small className="settingHint">National uploads the actual image files here. No image URL needs to be entered manually. PNG, JPG and WebP up to 8 MB.</small>
             <div className="colorGrid">
               <label className="field"><span>Card Color</span><div className="colorInput"><input type="color" value={card.background_color} onChange={e=>setC('background_color',e.target.value)}/><input value={card.background_color} onChange={e=>setC('background_color',e.target.value)}/></div></label>
               <label className="field"><span>Text Color</span><div className="colorInput"><input type="color" value={card.foreground_color} onChange={e=>setC('foreground_color',e.target.value)}/><input value={card.foreground_color} onChange={e=>setC('foreground_color',e.target.value)}/></div></label>
@@ -401,6 +451,7 @@ function CardManagement({API_BASE,session}){
         <aside className="cardPreviewWrap">
           <span className="kicker">LIVE PREVIEW</span>
           <div className="managedCardPreview" style={{background:card.background_color,color:card.foreground_color}}>
+            {card.hero_url&&<div className="managedHero"><img src={card.hero_url} alt="Wallet hero"/></div>}
             <div className="managedLogo">
               <img src={card.logo_url||motoliteLogo} onError={e=>{e.currentTarget.src=motoliteLogo}}/>
             </div>
