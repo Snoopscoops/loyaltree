@@ -501,6 +501,16 @@ class NotificationPush(BaseModel):
     member_public_id: Optional[str] = None
 
 
+class EmergencyHelpSettingsUpdate(BaseModel):
+    phone_number: str = Field(min_length=3, max_length=40)
+    button_label: str = Field(default="Call Emergency Help", min_length=1, max_length=60)
+    help_text: str = Field(
+        default="Need emergency battery help? Call Motolite assistance directly from your phone.",
+        min_length=1,
+        max_length=240,
+    )
+
+
 class BatteryCreate(BaseModel):
     member_public_id: str
     vehicle_public_id: Optional[str] = None
@@ -1200,6 +1210,77 @@ def _dashboard_counts(branch_ids: Optional[List[str]]):
     return {"members":len(ms),"warranties":len(ws),"active_warranties":active,"replacements":sum(a.get("service_type")=="replacement" for a in acts),"claims":sum(a.get("service_type")=="warranty_claim" for a in acts)}
 
 
+
+def _motolite_emergency_settings() -> dict:
+    """National-managed emergency contact used by web + Wallet passes."""
+    default = {
+        "phone_number": MOTOLITE_EMERGENCY_NUMBER,
+        "button_label": "Call Emergency Help",
+        "help_text": "Need emergency battery help? Call Motolite assistance directly from your phone.",
+    }
+    try:
+        rows = (
+            _supabase().table("motolite_settings")
+            .select("setting_value")
+            .eq("setting_key", "emergency_help")
+            .limit(1)
+            .execute().data or []
+        )
+        if rows and isinstance(rows[0].get("setting_value"), dict):
+            saved = rows[0]["setting_value"]
+            default.update({k: v for k, v in saved.items() if v is not None})
+    except Exception as exc:
+        # Env var remains a safe fallback during SQL migration/deployment.
+        print("MOTOLITE emergency settings fallback:", exc)
+    return default
+
+
+@motolite_router.get("/settings/emergency-help")
+async def get_emergency_help_settings(staff: dict = Depends(current_staff)):
+    # Any staff can read the current hotline for display; only National can edit.
+    return {"ok": True, **_motolite_emergency_settings(), "editable": staff.get("role") == ROLE_NATIONAL}
+
+
+@motolite_router.put("/settings/emergency-help")
+async def update_emergency_help_settings(
+    payload: EmergencyHelpSettingsUpdate,
+    staff: dict = Depends(current_staff),
+):
+    _require_roles(staff, ROLE_NATIONAL)
+
+    phone = payload.phone_number.strip()
+    tel = re.sub(r"[^0-9+]", "", phone)
+    if len(re.sub(r"\D", "", tel)) < 7:
+        raise HTTPException(status_code=400, detail="Enter a valid emergency phone number.")
+
+    value = {
+        "phone_number": phone,
+        "button_label": payload.button_label.strip(),
+        "help_text": payload.help_text.strip(),
+    }
+    db = _supabase()
+    existing = (
+        db.table("motolite_settings")
+        .select("id")
+        .eq("setting_key", "emergency_help")
+        .limit(1)
+        .execute().data or []
+    )
+    row = {
+        "setting_key": "emergency_help",
+        "setting_value": value,
+        "updated_by_staff_public_id": staff.get("public_id"),
+        "updated_at": _now_iso(),
+    }
+    if existing:
+        db.table("motolite_settings").update(row).eq("setting_key", "emergency_help").execute()
+    else:
+        row["created_at"] = _now_iso()
+        db.table("motolite_settings").insert(row).execute()
+
+    return {"ok": True, **value}
+
+
 @motolite_router.get("/dashboard")
 async def dashboard(staff: dict = Depends(current_staff)):
     db=_supabase(); role=staff["role"]
@@ -1694,7 +1775,9 @@ def _wallet_payload(wid: str):
         "qr_verification_url": f"{MOTOLITE_BASE_URL}/api/v1/motolite/warranty/verify/{w.get('qr_token')}",
         "verified_warranty_page_url": f"{MOTOLITE_BASE_URL}/api/v1/motolite/warranty/view/{w.get('qr_token')}",
         "activity_url": f"{MOTOLITE_BASE_URL}/api/v1/motolite/customer/activity/{w.get('qr_token')}",
-        "emergency_number": MOTOLITE_EMERGENCY_NUMBER,
+        "emergency_number": _motolite_emergency_settings().get("phone_number") or "",
+        "emergency_button_label": _motolite_emergency_settings().get("button_label") or "Call Emergency Help",
+        "emergency_help_text": _motolite_emergency_settings().get("help_text") or "",
         "latest_notification": (
             (_supabase().table("motolite_notifications").select("title,message,created_at")
              .eq("member_public_id", m.get("public_id"))
@@ -1786,6 +1869,8 @@ def _google_object(wid: str):
     p = _wallet_payload(wid)
     wallet_page = f"{MOTOLITE_BASE_URL}/api/v1/motolite/wallet/{wid}"
     verified_page = p.get("verified_warranty_page_url") or wallet_page
+    emergency_number = str(p.get("emergency_number") or "").strip()
+    emergency_tel = re.sub(r"[^0-9+]", "", emergency_number)
     expires = str(p.get("warranty_expires_at") or "—")
     status = str(p.get("warranty_display_status") or "ACTIVE")
 
@@ -1854,6 +1939,12 @@ def _google_object(wid: str):
             ]
         },
     }
+
+    if emergency_tel:
+        obj["linksModuleData"]["uris"].insert(0, {
+            "uri": f"tel:{emergency_tel}",
+            "description": "Call Emergency Help",
+        })
 
     if p.get("warranty_expires_at"):
         obj["validTimeInterval"] = {
