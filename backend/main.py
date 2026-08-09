@@ -1922,15 +1922,48 @@ def get_google_access_token() -> str:
         print(f"Access token error: {e}")
         return ''
 
-def build_loyalty_class(business: dict, program: dict, review_status: str = 'UNDER_REVIEW') -> dict:
+
+def _google_wallet_base_class_id(business: dict, program: dict) -> str:
+    """Stable root Google Wallet class ID for this business."""
+    if program and program.get('google_wallet_class_id'):
+        return str(program.get('google_wallet_class_id'))
+    return f'{GOOGLE_WALLET_ISSUER_ID}.{business.get("public_id", "")}'
+
+
+def _google_wallet_safe_fragment(value: str, fallback: str = "tier") -> str:
+    """Google class identifiers allow only alphanumerics, dots, underscores and hyphens."""
+    value = re.sub(r'[^A-Za-z0-9._-]+', '-', str(value or '').strip()).strip('._-')
+    return (value or fallback)[:60]
+
+
+def google_wallet_vip_class_id(business: dict, program: dict, tier: dict) -> str:
+    """One shared Google LoyaltyClass per VIP tier so its background can match the tier."""
+    base = _google_wallet_base_class_id(business, program)
+    tier_key = _google_wallet_safe_fragment((tier or {}).get('id') or (tier or {}).get('name') or 'vip')
+    return f'{base}-vip-{tier_key}'
+
+
+def google_wallet_class_id_for_customer(customer: dict, business: dict, program: dict) -> str:
+    """Return the normal class, or the customer's current tier class for VIP."""
+    if (program or {}).get('card_type') == 'vip':
+        return google_wallet_vip_class_id(business, program, get_vip_tier(customer, program or {}))
+    return _google_wallet_base_class_id(business, program)
+
+
+def build_loyalty_class(
+    business: dict,
+    program: dict,
+    review_status: str = 'UNDER_REVIEW',
+    class_id_override: Optional[str] = None,
+    background_color_override: Optional[str] = None,
+    vip_tier_name: Optional[str] = None,
+) -> dict:
     biz_public_id = business.get('public_id', '')
-    class_id = program.get('google_wallet_class_id') if program else None
-    if not class_id:
-        class_id = f'{GOOGLE_WALLET_ISSUER_ID}.{biz_public_id}'
+    class_id = class_id_override or _google_wallet_base_class_id(business, program)
 
     design = wallet_20_design(business, program)
     category = design['category']
-    primary_color = design['background']
+    primary_color = background_color_override or design['background']
     reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
     card_type = program.get('card_type', 'stamp') if program else 'stamp'
     card_name = program.get('card_name') if program else None
@@ -1944,6 +1977,10 @@ def build_loyalty_class(business: dict, program: dict, review_status: str = 'UND
     elif card_type == 'membership':
         services = (program.get('membership_services') if program else None) or []
         reward_module_body = ', '.join(services) if services else 'Membership'
+    elif card_type == 'vip':
+        reward_module_body = f'{vip_tier_name or "VIP"} tier'
+        if vip_tier_name:
+            program_name = f'{program_name} · {vip_tier_name}'
     else:
         reward_module_body = reward_name
 
@@ -1993,7 +2030,7 @@ def build_loyalty_class(business: dict, program: dict, review_status: str = 'UND
 
 def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     cust_public_id = customer.get('public_id', '')
-    class_id = program.get('google_wallet_class_id') if program and program.get('google_wallet_class_id') else f'{GOOGLE_WALLET_ISSUER_ID}.{GOOGLE_WALLET_CLASS_SUFFIX}'
+    class_id = google_wallet_class_id_for_customer(customer, business, program or {})
     object_id = f'{GOOGLE_WALLET_ISSUER_ID}.{cust_public_id}'
     card_type = program.get('card_type', 'stamp') if program else 'stamp'
     stamp_goal = program.get('stamp_goal', 8) if program else 8
@@ -2082,7 +2119,11 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     # hero photo, since baking text onto someone else's image would look
     # wrong; that photo is left to show as-is (inherited from the class).
     if design['show_background'] and not (program and program.get('hero_image_url')):
-        primary_color = design['background']
+        primary_color = (
+            get_vip_tier(customer, program or {}).get('color') or '#111827'
+            if card_type == 'vip'
+            else design['background']
+        )
         description = program.get('description') if program else None
         color_key = primary_color.lstrip('#')
         if card_type == 'points':
@@ -2091,6 +2132,8 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
             progress_key = sessions_remaining
         elif card_type == 'membership':
             progress_key = membership_summary['total_visits']
+        elif card_type == 'vip':
+            progress_key = int(customer.get('vip_points') or 0)
         else:
             progress_key = stamps
         hero_url = (
@@ -2136,26 +2179,40 @@ async def refresh_existing_member_wallets(business: dict, program: dict):
         print(f"WALLET SYNC bulk refresh error: {refresh_error}")
 
 async def republish_wallet_class_and_refresh(business: dict, program: dict):
-    """Best-effort: if this business has already published a Google Wallet
-    class, PUT the latest design (color/style/logo/hero) to it so existing
-    passes pick up the change, then refresh every member's issued pass
-    (Google object PATCH + Apple push). Silent no-op if Google Wallet isn't
-    configured yet or this business hasn't published a class - businesses
-    that haven't touched Wallet at all shouldn't get errors on a plain Save."""
+    """Republish the normal class, or every VIP tier class, then refresh objects."""
     class_id = (program or {}).get('google_wallet_class_id')
     if class_id and GOOGLE_WALLET_ISSUER_ID:
         try:
             access_token = get_google_access_token()
             if access_token:
                 import httpx
-                loyalty_class = build_loyalty_class(business, program, review_status='UNDER_REVIEW')
+                class_specs = [(class_id, None, None)]
+                if (program or {}).get('card_type') == 'vip':
+                    class_specs = [
+                        (
+                            google_wallet_vip_class_id(business, program, tier),
+                            tier.get('color') or '#111827',
+                            tier.get('name') or 'VIP',
+                        )
+                        for tier in normalize_vip_tiers(program or {})
+                    ] or [(google_wallet_vip_class_id(business, program, get_vip_tier({}, program or {})), '#111827', 'VIP')]
+
                 with httpx.Client() as client:
-                    resp = client.put(
-                        f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}',
-                        headers={"Authorization": f"Bearer {access_token}"},
-                        json=loyalty_class
-                    )
-                    print(f"WALLET SYNC: class PUT {resp.status_code}")
+                    for target_id, target_color, tier_name in class_specs:
+                        loyalty_class = build_loyalty_class(
+                            business,
+                            program,
+                            review_status='UNDER_REVIEW',
+                            class_id_override=target_id,
+                            background_color_override=target_color,
+                            vip_tier_name=tier_name,
+                        )
+                        resp = client.put(
+                            f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{target_id}',
+                            headers={"Authorization": f"Bearer {access_token}"},
+                            json=loyalty_class
+                        )
+                        print(f"WALLET SYNC: class PUT {target_id} -> {resp.status_code}")
         except Exception as e:
             print(f"WALLET SYNC: class PUT error: {e}")
     await refresh_existing_member_wallets(business, program)
@@ -2187,6 +2244,23 @@ def sync_wallet_object(customer: dict, business: dict, program: dict,
                 headers={"Authorization": f"Bearer {access_token}"},
                 json=loyalty_object
             )
+
+            # VIP objects can move from one tier LoyaltyClass to another.
+            # If PATCH rejects the class migration, retry as a full object
+            # update. The object ID stays the same, so the member does not
+            # receive a duplicate card.
+            if (
+                (program or {}).get('card_type') == 'vip'
+                and resp.status_code not in (200, 201, 404)
+            ):
+                put_resp = client.put(
+                    f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyObject/{object_id}',
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    json=loyalty_object
+                )
+                if put_resp.status_code in (200, 201):
+                    resp = put_resp
+
             if resp.status_code in (200, 201):
                 print(f"WALLET SYNC: updated {object_id}")
                 if notify_header and notify_message_id:
@@ -9212,8 +9286,9 @@ async def get_customer_hero_image(customer_public_id: str, s: Optional[str] = No
 
     design = wallet_20_design(business, program)
     vip_tier = get_vip_tier(customer, program or {}) if card_type == 'vip' else None
+    rendered_primary_color = (vip_tier or {}).get('color') or design['background']
     png_bytes = generate_personalized_hero_image_bytes(
-        design['background'], reward_name, stamps, stamp_goal, description,
+        rendered_primary_color, reward_name, stamps, stamp_goal, description,
         card_type=card_type, points_balance=points_balance,
         sessions_remaining=sessions_remaining, sessions_total=sessions_total,
         total_visits=(membership_summary['total_visits'] if membership_summary else 0),
@@ -9263,12 +9338,20 @@ async def get_wallet_class(public_id: str):
         except Exception as e:
             print(f"Google class fetch error: {e}")
 
+    vip_tier_class_ids = []
+    if (program or {}).get('card_type') == 'vip':
+        vip_tier_class_ids = [
+            google_wallet_vip_class_id(business, program or {}, tier)
+            for tier in normalize_vip_tiers(program or {})
+        ]
+
     return {
         "class_id": class_id,
         "business_name": business.get("name", ""),
         "program": program,
         "google_class_exists": google_data is not None,
         "google_class_data": google_data,
+        "vip_tier_class_ids": vip_tier_class_ids,
     }
 
 @app.post("/api/v1/business/{public_id}/wallet-class")
@@ -9283,96 +9366,131 @@ async def create_or_update_wallet_class(public_id: str):
             detail="GOOGLE_WALLET_ISSUER_ID is not set in environment variables. Set it to your Google Wallet Issuer ID and redeploy."
         )
 
-    program = safe_get_loyalty_program(business.get('id'))
-
-    class_id = None
+    program = safe_get_loyalty_program(business.get('id')) or {}
+    base_class_id = _google_wallet_base_class_id(business, program)
     review_status = 'UNDER_REVIEW'
-    if program and program.get('google_wallet_class_id'):
-        class_id = program.get('google_wallet_class_id')
-    else:
-        class_id = f'{GOOGLE_WALLET_ISSUER_ID}.{business.get("public_id", "")}'
-
-    loyalty_class = build_loyalty_class(business, program, review_status=review_status)
 
     access_token = get_google_access_token()
     if not access_token:
         raise HTTPException(status_code=500, detail="Could not get Google access token. Check GOOGLE_WALLET_CREDENTIALS.")
 
     def parse_response(resp):
-        """Google usually returns JSON, but on some errors (auth failures,
-        malformed requests) it can return plain text/HTML instead - calling
-        .json() on that raises and used to mask the real error behind a
-        bare 500. Fall back to raw text so the actual cause always surfaces."""
         try:
             return resp.json()
         except Exception:
             return {"raw_response": resp.text[:2000]}
 
-    try:
-        import httpx
-        with httpx.Client() as client:
-            resp = client.put(
-                f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}',
+    def upsert_class(client, loyalty_class):
+        target_id = loyalty_class['id']
+        resp = client.put(
+            f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{target_id}',
+            headers={"Authorization": f"Bearer {access_token}"},
+            json=loyalty_class
+        )
+        result = parse_response(resp)
+
+        if resp.status_code == 404:
+            resp = client.post(
+                'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass',
                 headers={"Authorization": f"Bearer {access_token}"},
                 json=loyalty_class
             )
             result = parse_response(resp)
-            print(f"Google Wallet class PUT response: {resp.status_code} - {result}")
 
-            # Class doesn't exist yet - create it instead of updating it.
-            # If Google reports a conflict because the class became available
-            # between the PUT and POST, immediately retry the PUT. This removes
-            # the common "first publish errors, second tap works" race.
-            if resp.status_code == 404:
-                resp = client.post(
-                    'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass',
+            # Handle create/update race without making the owner tap Publish twice.
+            if resp.status_code == 409:
+                resp = client.put(
+                    f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{target_id}',
                     headers={"Authorization": f"Bearer {access_token}"},
                     json=loyalty_class
                 )
                 result = parse_response(resp)
-                print(f"Google Wallet class POST (create) response: {resp.status_code} - {result}")
 
-                if resp.status_code == 409:
-                    resp = client.put(
-                        f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}',
-                        headers={"Authorization": f"Bearer {access_token}"},
-                        json=loyalty_class
+        print(f"Google Wallet class upsert {target_id}: {resp.status_code} - {result}")
+        return resp, result
+
+    try:
+        import httpx
+
+        class_specs = []
+        if program.get('card_type') == 'vip':
+            tiers = normalize_vip_tiers(program)
+            if not tiers:
+                tiers = [get_vip_tier({}, program)]
+
+            for tier in tiers:
+                class_specs.append({
+                    'class_id': google_wallet_vip_class_id(business, program, tier),
+                    'color': tier.get('color') or '#111827',
+                    'tier_name': tier.get('name') or 'VIP',
+                })
+        else:
+            class_specs.append({
+                'class_id': base_class_id,
+                'color': None,
+                'tier_name': None,
+            })
+
+        published_ids = []
+        google_results = {}
+
+        with httpx.Client() as client:
+            for spec in class_specs:
+                loyalty_class = build_loyalty_class(
+                    business,
+                    program,
+                    review_status=review_status,
+                    class_id_override=spec['class_id'],
+                    background_color_override=spec['color'],
+                    vip_tier_name=spec['tier_name'],
+                )
+                resp, result = upsert_class(client, loyalty_class)
+                google_results[spec['class_id']] = result
+
+                if resp.status_code not in (200, 201):
+                    error_detail = result.get('error', result) if isinstance(result, dict) else result
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Google API error for {spec['class_id']} ({resp.status_code}): {error_detail}"
                     )
-                    result = parse_response(resp)
-                    print(f"Google Wallet class PUT after create conflict: {resp.status_code} - {result}")
+                published_ids.append(spec['class_id'])
 
-            if resp.status_code in (200, 201):
-                db_data = {
-                    'google_wallet_class_id': class_id,
-                    'updated_at': datetime.utcnow().isoformat(),
-                }
-                if program:
-                    supabase.table("loyalty_programs").update(db_data).eq("business_id", business.get("id")).execute()
-                else:
-                    db_data['business_id'] = business.get('id')
-                    db_data['stamp_goal'] = 8
-                    db_data['reward_name'] = 'Free Service'
-                    db_data['primary_color'] = '#3b82f6'
-                    db_data['reward_expiry_days'] = 30
-                    db_data['created_at'] = datetime.utcnow().isoformat()
-                    supabase.table("loyalty_programs").insert(db_data).execute()
-                
-                # Wallet 2.0: refresh existing saved member cards in the
-                # background. Customer balances/history are untouched; only
-                # the Wallet representation is patched and Apple devices are
-                # asked to refetch their signed pass.
-                asyncio.create_task(refresh_existing_member_wallets(business, program))
+        # Keep the stable root in DB. VIP tier class IDs are deterministic
+        # children of this ID, so no schema migration is needed.
+        db_data = {
+            'google_wallet_class_id': base_class_id,
+            'updated_at': datetime.utcnow().isoformat(),
+        }
+        if program and program.get('id'):
+            supabase.table("loyalty_programs").update(db_data).eq("business_id", business.get("id")).execute()
+        else:
+            db_data.update({
+                'business_id': business.get('id'),
+                'stamp_goal': 8,
+                'reward_name': 'Free Service',
+                'primary_color': '#3b82f6',
+                'reward_expiry_days': 30,
+                'created_at': datetime.utcnow().isoformat(),
+            })
+            supabase.table("loyalty_programs").insert(db_data).execute()
 
-                return {
-                    "success": True,
-                    "message": "Wallet 2.0 published. Existing member cards are refreshing automatically.",
-                    "class_id": class_id,
-                    "review_status": review_status,
-                    "google_response": result
-                }
-            else:
-                error_detail = result.get('error', result) if isinstance(result, dict) else result
-                raise HTTPException(status_code=500, detail=f"Google API error ({resp.status_code}): {error_detail}")
+        # Refresh existing objects only after every required class exists.
+        current_program = safe_get_loyalty_program(business.get('id')) or program
+        asyncio.create_task(refresh_existing_member_wallets(business, current_program))
+
+        return {
+            "success": True,
+            "message": (
+                f"VIP Wallet published with {len(published_ids)} tier classes. Existing member cards are refreshing automatically."
+                if program.get('card_type') == 'vip'
+                else "Wallet 2.0 published. Existing member cards are refreshing automatically."
+            ),
+            "class_id": base_class_id,
+            "vip_tier_class_ids": published_ids if program.get('card_type') == 'vip' else [],
+            "review_status": review_status,
+            "google_response": google_results,
+        }
+
     except HTTPException:
         raise
     except Exception as e:
@@ -9380,6 +9498,7 @@ async def create_or_update_wallet_class(public_id: str):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 # CAR LENDING / SHOWROOM - GOOGLE WALLET CLASS MANAGEMENT
 # Same PUT-then-fall-back-to-POST pattern as the loyalty version above,
