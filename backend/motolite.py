@@ -1175,10 +1175,23 @@ h1{{font-size:26px;margin:14px 0 3px}}
 </html>""")
 
 
-@motolite_router.get("/warranty/verify/{token}")
+@motolite_router.get("/warranty/verify/{token}", response_class=HTMLResponse)
 async def verify_warranty(token: str):
-    wid=_verify_qr_token(token)
-    if not wid: raise HTTPException(status_code=400,detail="Invalid warranty QR token.")
+    """Customer-facing QR verification page.
+
+    Keep the existing /warranty/verify/<token> URL used by printed QR codes and
+    Wallet passes, but render the polished Motolite warranty page instead of
+    returning raw JSON.
+    """
+    return await motolite_verified_warranty_page(token)
+
+
+@motolite_router.get("/warranty/verify/{token}/json")
+async def verify_warranty_json(token: str):
+    """Machine-readable version of the verified warranty for integrations."""
+    wid = _verify_qr_token(token)
+    if not wid:
+        raise HTTPException(status_code=400, detail="Invalid warranty QR token.")
     return _warranty_response(wid)
 
 
