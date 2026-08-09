@@ -47,7 +47,6 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
     multipass_validity_days: 90,
   })
   const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
   const [publishing, setPublishing] = useState(false)
   const [walletClassId, setWalletClassId] = useState(null)
   const [error, setError] = useState('')
@@ -257,58 +256,65 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
     return data
   }
 
-  const handleSave = async (e) => {
-    e.preventDefault()
-    setSaving(true)
-    setError('')
-    setSaved(false)
-    try {
-      const savedData = await postConfig()
-      const verifyRes = await fetch(
-        `${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config?_=${Date.now()}`,
-        { cache: 'no-store' }
-      )
-      const verified = await verifyRes.json()
+  const handlePublish = async (e) => {
+    if (e?.preventDefault) e.preventDefault()
+    if (publishing) return
 
-      if (!verifyRes.ok || verified.card_type !== form.card_type) {
-        throw new Error(
-          `Save verification failed. Selected: ${form.card_type}; database returned: ${verified.card_type || 'none'}.`
-        )
-      }
-
-      setForm(current => ({ ...current, card_type: savedData.card_type }))
-      setSaved(true)
-      if (onSaved) onSaved()
-      setTimeout(() => setSaved(false), 3000)
-    } catch (err) {
-      setError(err.message || 'Network error')
-    }
-    setSaving(false)
-  }
-
-  const handlePublish = async () => {
     setPublishing(true)
     setError('')
     setSaved(false)
+
     try {
-      await postConfig()
-      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/wallet-class`, {
-        method: 'POST',
-        headers: (user?.token ? { 'Authorization': `Bearer ${user.token}` } : {}),
-      })
-      const data = await res.json()
-      if (res.ok && data.success) {
-        setWalletClassId(data.class_id)
-        setSaved(true)
-        if (onSaved) onSaved()
-        setTimeout(() => setSaved(false), 3000)
-      } else {
-        setError(data.detail ? `Publish failed: ${JSON.stringify(data.detail)}` : 'Publish failed')
+      // One tap does both jobs: persist the latest editor settings first,
+      // then publish/update the Google Wallet class.
+      const savedData = await postConfig()
+      setForm(current => ({ ...current, card_type: savedData.card_type }))
+
+      // The Google Wallet class endpoint can occasionally fail on the first
+      // create/update request while the just-saved config/class state settles.
+      // Retry transient server/rate-limit errors automatically so the owner
+      // still only taps Publish once.
+      let published = null
+      let lastError = null
+
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (attempt > 0) {
+          await new Promise(resolve => setTimeout(resolve, 650 * attempt))
+        }
+
+        try {
+          const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/wallet-class`, {
+            method: 'POST',
+            headers: (user?.token ? { 'Authorization': `Bearer ${user.token}` } : {}),
+          })
+          const data = await res.json().catch(() => ({}))
+
+          if (res.ok && data.success) {
+            published = data
+            break
+          }
+
+          const detail = data.detail ? (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) : `HTTP ${res.status}`
+          lastError = new Error(`Publish failed: ${detail}`)
+
+          // Validation/configuration failures will not improve by retrying.
+          if (![409, 429, 500, 502, 503, 504].includes(res.status)) break
+        } catch (err) {
+          lastError = err
+        }
       }
+
+      if (!published) throw lastError || new Error('Publish failed')
+
+      setWalletClassId(published.class_id)
+      setSaved(true)
+      if (onSaved) await onSaved()
+      setTimeout(() => setSaved(false), 3500)
     } catch (err) {
       setError(err.message || 'Network error publishing card design')
+    } finally {
+      setPublishing(false)
     }
-    setPublishing(false)
   }
 
   if (loading) {
@@ -417,7 +423,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
           <div className="lc-preview-sticky" style={styles.previewSticky}>
             <div style={styles.previewLabel}>Live preview</div>
             <div style={styles.card}>
-              <div style={{ ...styles.cardHeader, background: form.primary_color || '#0d9488' }}>
+              <div style={{ ...styles.cardHeader, background: form.card_type === 'vip' ? ((form.vip_tiers||[]).find(t=>String(t.name||'').toLowerCase()==='gold')?.color || (form.vip_tiers||[])[0]?.color || '#111827') : (form.primary_color || '#0d9488') }}>
                 <span style={styles.cardHeaderTitle}>
                   {form.card_type === 'points'
                     ? 'Points Rewards'
@@ -481,7 +487,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
                   </>
                 ) : form.card_type === 'vip' ? (
                   <>
-                    <div style={styles.previewPointsBalance}><span style={{color:form.primary_color||'#0d9488'}}>GOLD VIP</span></div>
+                    <div style={styles.previewPointsBalance}><span style={{color:(form.vip_tiers||[]).find(t=>String(t.name||'').toLowerCase()==='gold')?.color || (form.vip_tiers||[])[0]?.color || '#111827'}}>GOLD VIP</span></div>
                     <div style={styles.cardFoot}>3,450 VIP points · progressing automatically</div>
                     <div style={styles.previewPrizeList}>{(form.vip_tiers||[]).slice(0,4).map((t,i)=><div key={t.id||i} style={styles.previewPrizeRow}><span>{t.name}</span><span>{t.threshold} pts</span></div>)}</div>
                   </>
@@ -532,9 +538,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
         </div>
 
         {/* Form */}
-        <form onSubmit={handleSave} style={{ ...styles.form, gridArea: 'form' }}>
+        <form onSubmit={handlePublish} style={{ ...styles.form, gridArea: 'form' }}>
           {error && <div style={styles.error}>{error}</div>}
-          {saved && <div style={styles.success}>✓ Saved</div>}
+          {saved && <div style={styles.success}>✓ Card published successfully</div>}
 
           <div style={styles.typeSummary}>
             <span style={styles.typeSummaryText}>
@@ -827,22 +833,29 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
               <span style={styles.wallet20Badge}>Apple + Google</span>
             </div>
 
-            <div style={styles.fieldGroup}>
-              <label style={styles.label}>Card color</label>
-              <div style={styles.colorRow}>
-                <input
-                  type="color"
-                  style={styles.colorSwatch}
-                  value={form.primary_color}
-                  onChange={e => update('primary_color', e.target.value)}
-                />
-                <input
-                  style={{ ...styles.input, flex: 1 }}
-                  value={form.primary_color}
-                  onChange={e => update('primary_color', e.target.value)}
-                />
+            {form.card_type !== 'vip' && (
+              <div style={styles.fieldGroup}>
+                <label style={styles.label}>Card color</label>
+                <div style={styles.colorRow}>
+                  <input
+                    type="color"
+                    style={styles.colorSwatch}
+                    value={form.primary_color}
+                    onChange={e => update('primary_color', e.target.value)}
+                  />
+                  <input
+                    style={{ ...styles.input, flex: 1 }}
+                    value={form.primary_color}
+                    onChange={e => update('primary_color', e.target.value)}
+                  />
+                </div>
               </div>
-            </div>
+            )}
+            {form.card_type === 'vip' && (
+              <p style={styles.vipColorNotice}>
+                VIP card color is controlled by each tier. Customers automatically use the color of their current VIP tier.
+              </p>
+            )}
 
             <div style={styles.fieldGroup}>
               <label style={styles.label}>Logo</label>
@@ -932,7 +945,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
 
             <div style={{
               ...styles.wallet20Preview,
-              background: form.wallet_style==='dark'
+              background: form.card_type==='vip'
+                ? `linear-gradient(135deg,${((form.vip_tiers||[]).find(t=>String(t.name||'').toLowerCase()==='gold')?.color || (form.vip_tiers||[])[0]?.color || '#111827')} 0%,#111827 120%)`
+                : form.wallet_style==='dark'
                 ? '#111827'
                 : form.wallet_style==='premium'
                 ? `linear-gradient(135deg,#050505 0%,${form.primary_color} 135%)`
@@ -986,16 +1001,12 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
           </div>
 
           <div style={styles.btnRow}>
-            <button type="submit" style={styles.saveBtn} disabled={saving || publishing}>
-              {saving ? 'Saving...' : 'Save changes'}
-            </button>
             <button
-              type="button"
-              onClick={handlePublish}
+              type="submit"
               style={styles.publishBtn}
-              disabled={saving || publishing}
+              disabled={publishing}
             >
-              {publishing ? 'Publishing...' : (walletClassId ? '🔄 Save & re-publish to Wallet' : '🎨 Save & publish to Wallet')}
+              {publishing ? 'Publishing card...' : (walletClassId ? '🔄 Publish Card Changes' : '🎨 Publish Card')}
             </button>
           </div>
         </form>
@@ -1445,7 +1456,8 @@ const styles = {
     color: '#94a3b8',
     textAlign: 'center',
   },
-  wallet20Box:{border:'1px solid #dbeafe',background:'#f8fbff',borderRadius:16,padding:16,marginBottom:18},
+  vipColorNotice:{margin:'0 0 14px',padding:'11px 13px',borderRadius:10,background:'#f8fafc',border:'1px solid #e2e8f0',color:'#475569',fontSize:12,lineHeight:1.55,fontWeight:600},
+    wallet20Box:{border:'1px solid #dbeafe',background:'#f8fbff',borderRadius:16,padding:16,marginBottom:18},
   wallet20TitleRow:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12,marginBottom:14},
   wallet20Eyebrow:{fontSize:10.5,fontWeight:900,letterSpacing:.9,textTransform:'uppercase',color:'#2563eb'},
   wallet20Title:{margin:'3px 0 0',fontSize:17,color:'#0f172a'},

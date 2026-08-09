@@ -75,8 +75,9 @@ function WalletPass({API_BASE}){
   if(!data||!view)return <div style={S.state}>Loading your card…</div>
   const p=data.pass_data
   const design=p.wallet_design||{}
-  const bg=design.background||p.primary_color||'#0d9488'
-  const secondary=design.secondary||'#14b8a6'
+  const vipTierColor=p.card_type==='vip' ? (p.vip_tier?.color || '#111827') : null
+  const bg=vipTierColor || design.background || p.primary_color || '#0d9488'
+  const secondary=p.card_type==='vip' ? '#111827' : (design.secondary || '#14b8a6')
   const statusGood=GOOD_STATUS.includes(view.metricValue)
   const share=async()=>{const payload={title:p.business_name,text:'My LoyaltyTree card',url:location.href};if(navigator.share){try{await navigator.share(payload)}catch{}}else{await navigator.clipboard.writeText(location.href);alert('Card link copied')}}
   return <main style={S.page}>

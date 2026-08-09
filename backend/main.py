@@ -2448,7 +2448,11 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     multipass_expires_at = customer.get('multipass_expires_at')
     reward_unlocked = bool(customer.get('reward_unlocked'))
     design = wallet_20_design(business, program)
-    primary_color = design['background']
+    if card_type == 'vip':
+        vip_tier_color = get_vip_tier(customer, program or {}).get('color') or '#111827'
+        primary_color = _normalize_hex_color(vip_tier_color, '#111827')
+    else:
+        primary_color = design['background']
     r, g, b = _hex_to_rgb(primary_color)
     membership_summary = (
         get_membership_summary(business.get('id'), customer.get('id'))
@@ -9312,7 +9316,10 @@ async def create_or_update_wallet_class(public_id: str):
             result = parse_response(resp)
             print(f"Google Wallet class PUT response: {resp.status_code} - {result}")
 
-            # Class doesn't exist yet - create it instead of updating it
+            # Class doesn't exist yet - create it instead of updating it.
+            # If Google reports a conflict because the class became available
+            # between the PUT and POST, immediately retry the PUT. This removes
+            # the common "first publish errors, second tap works" race.
             if resp.status_code == 404:
                 resp = client.post(
                     'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass',
@@ -9321,6 +9328,15 @@ async def create_or_update_wallet_class(public_id: str):
                 )
                 result = parse_response(resp)
                 print(f"Google Wallet class POST (create) response: {resp.status_code} - {result}")
+
+                if resp.status_code == 409:
+                    resp = client.put(
+                        f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}',
+                        headers={"Authorization": f"Bearer {access_token}"},
+                        json=loyalty_class
+                    )
+                    result = parse_response(resp)
+                    print(f"Google Wallet class PUT after create conflict: {resp.status_code} - {result}")
 
             if resp.status_code in (200, 201):
                 db_data = {
