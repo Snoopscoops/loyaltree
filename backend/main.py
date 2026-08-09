@@ -15018,3 +15018,13 @@ renderChampions();
 </script></body></html>'''
     return HTMLResponse(page)
 
+# --- Motolite module registration ---
+# Keep Motolite in its own file, but mount its routes on the main LoyaltyTree API.
+# Import here after the main app/routes are defined to avoid circular-import issues.
+try:
+    from motolite import motolite_router
+    app.include_router(motolite_router)
+    print("MOTOLITE router registered at /api/v1/motolite")
+except Exception as exc:
+    print("MOTOLITE router registration failed:", exc)
+
