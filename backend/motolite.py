@@ -511,6 +511,24 @@ class EmergencyHelpSettingsUpdate(BaseModel):
     )
 
 
+class WalletCardSettingsUpdate(BaseModel):
+    logo_url: Optional[str] = Field(default="", max_length=1000)
+    background_color: str = Field(default="#d71920", min_length=4, max_length=9)
+    foreground_color: str = Field(default="#ffffff", min_length=4, max_length=9)
+    label_color: str = Field(default="#ffd400", min_length=4, max_length=9)
+    card_title: str = Field(default="Motolite Digital Warranty", min_length=1, max_length=80)
+    card_subtitle: str = Field(default="Digital Battery Warranty", min_length=1, max_length=100)
+    warranty_label: str = Field(default="Warranty", min_length=1, max_length=40)
+    expiry_label: str = Field(default="Warranty Valid Until", min_length=1, max_length=60)
+    show_member_name: bool = True
+    show_battery: bool = True
+    show_serial: bool = True
+    show_vehicle: bool = True
+    show_plate: bool = True
+    show_branch: bool = True
+    show_replacement: bool = True
+
+
 class BatteryCreate(BaseModel):
     member_public_id: str
     vehicle_public_id: Optional[str] = None
@@ -1281,6 +1299,117 @@ async def update_emergency_help_settings(
     return {"ok": True, **value}
 
 
+
+def _motolite_card_settings() -> dict:
+    default = {
+        "logo_url": MOTOLITE_WALLET_LOGO_URL or "",
+        "background_color": MOTOLITE_WALLET_BACKGROUND_COLOR or "#d71920",
+        "foreground_color": "#ffffff",
+        "label_color": "#ffd400",
+        "card_title": "Motolite Digital Warranty",
+        "card_subtitle": "Digital Battery Warranty",
+        "warranty_label": "Warranty",
+        "expiry_label": "Warranty Valid Until",
+        "show_member_name": True,
+        "show_battery": True,
+        "show_serial": True,
+        "show_vehicle": True,
+        "show_plate": True,
+        "show_branch": True,
+        "show_replacement": True,
+    }
+    try:
+        rows = (
+            _supabase().table("motolite_settings")
+            .select("setting_value")
+            .eq("setting_key", "wallet_card")
+            .limit(1)
+            .execute().data or []
+        )
+        if rows and isinstance(rows[0].get("setting_value"), dict):
+            saved = rows[0]["setting_value"]
+            default.update({k: v for k, v in saved.items() if v is not None})
+    except Exception as exc:
+        print("MOTOLITE card settings fallback:", exc)
+    return default
+
+
+def _valid_hex_color(value: str, field_name: str) -> str:
+    value = str(value or "").strip()
+    if not re.fullmatch(r"#[0-9A-Fa-f]{6}", value):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} must use a 6-digit hex color such as #d71920.",
+        )
+    return value.lower()
+
+
+def _wallet_rgb(value: str, fallback: str) -> str:
+    color = str(value or fallback).strip()
+    if not re.fullmatch(r"#[0-9A-Fa-f]{6}", color):
+        color = fallback
+    return f"rgb({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)})"
+
+
+@motolite_router.get("/settings/card")
+async def get_wallet_card_settings(staff: dict = Depends(current_staff)):
+    # Readable by staff for consistency; editable only by National.
+    return {
+        "ok": True,
+        **_motolite_card_settings(),
+        "editable": staff.get("role") == ROLE_NATIONAL,
+    }
+
+
+@motolite_router.put("/settings/card")
+async def update_wallet_card_settings(
+    payload: WalletCardSettingsUpdate,
+    staff: dict = Depends(current_staff),
+):
+    _require_roles(staff, ROLE_NATIONAL)
+
+    value = payload.model_dump()
+    value["background_color"] = _valid_hex_color(
+        value["background_color"], "Background color"
+    )
+    value["foreground_color"] = _valid_hex_color(
+        value["foreground_color"], "Text color"
+    )
+    value["label_color"] = _valid_hex_color(
+        value["label_color"], "Label color"
+    )
+    value["logo_url"] = str(value.get("logo_url") or "").strip()
+    if value["logo_url"] and not value["logo_url"].lower().startswith("https://"):
+        raise HTTPException(
+            status_code=400,
+            detail="Logo URL must be a public HTTPS URL.",
+        )
+
+    db = _supabase()
+    existing = (
+        db.table("motolite_settings")
+        .select("id")
+        .eq("setting_key", "wallet_card")
+        .limit(1)
+        .execute().data or []
+    )
+    row = {
+        "setting_key": "wallet_card",
+        "setting_value": value,
+        "updated_by_staff_public_id": staff.get("public_id"),
+        "updated_at": _now_iso(),
+    }
+    if existing:
+        db.table("motolite_settings").update(row).eq(
+            "setting_key", "wallet_card"
+        ).execute()
+    else:
+        row["created_at"] = _now_iso()
+        db.table("motolite_settings").insert(row).execute()
+
+    return {"ok": True, **value}
+
+
 @motolite_router.get("/dashboard")
 async def dashboard(staff: dict = Depends(current_staff)):
     db=_supabase(); role=staff["role"]
@@ -1752,6 +1881,8 @@ def _wallet_payload(wid: str):
         display_status = "ACTIVE"
 
     replacement = b.get("recommended_replacement_date")
+    card_settings = _motolite_card_settings()
+    emergency_settings = _motolite_emergency_settings()
     return {
         "member_public_id": m.get("public_id"),
         "member_number": m.get("member_number"),
@@ -1775,9 +1906,10 @@ def _wallet_payload(wid: str):
         "qr_verification_url": f"{MOTOLITE_BASE_URL}/api/v1/motolite/warranty/verify/{w.get('qr_token')}",
         "verified_warranty_page_url": f"{MOTOLITE_BASE_URL}/api/v1/motolite/warranty/view/{w.get('qr_token')}",
         "activity_url": f"{MOTOLITE_BASE_URL}/api/v1/motolite/customer/activity/{w.get('qr_token')}",
-        "emergency_number": _motolite_emergency_settings().get("phone_number") or "",
-        "emergency_button_label": _motolite_emergency_settings().get("button_label") or "Call Emergency Help",
-        "emergency_help_text": _motolite_emergency_settings().get("help_text") or "",
+        "emergency_number": emergency_settings.get("phone_number") or "",
+        "emergency_button_label": emergency_settings.get("button_label") or "Call Emergency Help",
+        "emergency_help_text": emergency_settings.get("help_text") or "",
+        "card_settings": card_settings,
         "latest_notification": (
             (_supabase().table("motolite_notifications").select("title,message,created_at")
              .eq("member_public_id", m.get("public_id"))
@@ -1803,15 +1935,16 @@ def _ensure_google_class():
             "Content-Type": "application/json",
         }
 
+        card = _motolite_card_settings()
         logo = (
-            MOTOLITE_WALLET_LOGO_URL
+            card.get("logo_url")
             or f"{MOTOLITE_BASE_URL}/api/v1/motolite/wallet/assets/motolite-logo.png"
         )
 
         class_fields = {
             "issuerName": "Motolite",
-            "programName": "Motolite Digital Warranty",
-            "hexBackgroundColor": MOTOLITE_WALLET_BACKGROUND_COLOR,
+            "programName": str(card.get("card_title") or "Motolite Digital Warranty"),
+            "hexBackgroundColor": str(card.get("background_color") or "#d71920"),
             "programLogo": {
                 "sourceUri": {"uri": logo},
                 "contentDescription": {
@@ -1867,6 +2000,7 @@ def _ensure_google_class():
 
 def _google_object(wid: str):
     p = _wallet_payload(wid)
+    card = p.get("card_settings") or _motolite_card_settings()
     wallet_page = f"{MOTOLITE_BASE_URL}/api/v1/motolite/wallet/{wid}"
     verified_page = p.get("verified_warranty_page_url") or wallet_page
     emergency_number = str(p.get("emergency_number") or "").strip()
@@ -1874,29 +2008,41 @@ def _google_object(wid: str):
     expires = str(p.get("warranty_expires_at") or "—")
     status = str(p.get("warranty_display_status") or "ACTIVE")
 
+    text_modules = [{
+        "id": "valid_until",
+        "header": str(card.get("expiry_label") or "WARRANTY VALID UNTIL").upper(),
+        "body": expires,
+    }]
+    if card.get("show_member_name", True):
+        text_modules.append({"id":"customer","header":"MEMBER NAME","body":str(p.get("member_name") or "—")})
+    if card.get("show_battery", True):
+        text_modules.append({"id":"battery","header":"BATTERY","body":str(p.get("battery_product") or "—")})
+    if card.get("show_serial", True):
+        text_modules.append({"id":"serial","header":"SERIAL","body":str(p.get("serial_number") or "—")})
+    if card.get("show_vehicle", True):
+        text_modules.append({"id":"vehicle","header":"VEHICLE","body":str(p.get("vehicle") or "—")})
+    if card.get("show_plate", True):
+        text_modules.append({"id":"plate","header":"PLATE","body":str(p.get("plate_number") or "—")})
+    if card.get("show_branch", True):
+        text_modules.append({"id":"branch","header":"INSTALLATION BRANCH","body":str(p.get("branch_name") or "—")})
+    if card.get("show_replacement", True):
+        text_modules.append({"id":"replacement","header":"RECOMMENDED REPLACEMENT","body":str(p.get("recommended_replacement_date") or "—")})
+
     obj = {
         "id": f"{GOOGLE_WALLET_ISSUER_ID}.motolite_{wid}",
         "classId": _google_class_id(),
         "state": "active" if status != "EXPIRED" else "expired",
-
-        # Keep Google's native member/account header concise. The member's
-        # name is displayed once below in the structured detail fields.
         "accountId": str(p.get("member_number") or ""),
         "accountName": "Motolite Member",
-
         "loyaltyPoints": {
-            "label": "Warranty",
+            "label": str(card.get("warranty_label") or "Warranty"),
             "balance": {"string": status},
         },
-
-        # Scan opens the polished online warranty card, not raw JSON.
         "barcode": {
             "type": "QR_CODE",
             "value": wallet_page,
             "alternateText": str(p.get("member_number") or ""),
         },
-
-        # Prominent Google Wallet action button.
         "appLinkData": {
             "webAppLinkInfo": {
                 "appTarget": {
@@ -1913,29 +2059,11 @@ def _google_object(wid: str):
                 }
             },
         },
-
-        "textModulesData": [
-            {"id":"customer","header":"MEMBER NAME","body":str(p.get("member_name") or "—")},
-            {"id":"valid_until","header":"WARRANTY VALID UNTIL","body":expires},
-            {"id":"battery","header":"BATTERY","body":str(p.get("battery_product") or "—")},
-            {"id":"serial","header":"SERIAL","body":str(p.get("serial_number") or "—")},
-            {"id":"vehicle","header":"VEHICLE","body":str(p.get("vehicle") or "—")},
-            {"id":"plate","header":"PLATE","body":str(p.get("plate_number") or "—")},
-            {"id":"branch","header":"INSTALLATION BRANCH","body":str(p.get("branch_name") or "—")},
-            {"id":"replacement","header":"RECOMMENDED REPLACEMENT","body":str(p.get("recommended_replacement_date") or "—")},
-        ],
-
-        # Keep secondary actions clean; neither opens the JSON API.
+        "textModulesData": text_modules,
         "linksModuleData": {
             "uris": [
-                {
-                    "uri": verified_page,
-                    "description": "Verified Warranty Details",
-                },
-                {
-                    "uri": f"{wallet_page}#activity",
-                    "description": "Motolite Activity & Reminders",
-                },
+                {"uri": verified_page, "description": "Verified Warranty Details"},
+                {"uri": f"{wallet_page}#activity", "description": "Motolite Activity & Reminders"},
             ]
         },
     }
@@ -1943,7 +2071,7 @@ def _google_object(wid: str):
     if emergency_tel:
         obj["linksModuleData"]["uris"].insert(0, {
             "uri": f"tel:{emergency_tel}",
-            "description": "Call Emergency Help",
+            "description": str(p.get("emergency_button_label") or "Call Emergency Help"),
         })
 
     if p.get("warranty_expires_at"):
@@ -1957,11 +2085,10 @@ def _google_object(wid: str):
             "contentDescription": {
                 "defaultValue": {
                     "language": "en-US",
-                    "value": "Motolite Digital Battery Warranty",
+                    "value": str(card.get("card_subtitle") or "Motolite Digital Battery Warranty"),
                 }
             },
         }
-
     return obj
 
 
@@ -1972,6 +2099,7 @@ def _apple_pkpass(wid: str):
             return None
 
         p = _wallet_payload(wid)
+        card = p.get("card_settings") or _motolite_card_settings()
         verification = p["qr_verification_url"]
         verified_page = p.get("verified_warranty_page_url") or verification
         activity = p["activity_url"]
@@ -1984,13 +2112,13 @@ def _apple_pkpass(wid: str):
             "serialNumber": f"motolite-{wid}",
             "teamIdentifier": APPLE_TEAM_IDENTIFIER,
             "organizationName": "Motolite",
-            "description": "Motolite Digital Battery Warranty",
-            "logoText": "MOTOLITE",
+            "description": str(card.get("card_title") or "Motolite Digital Warranty"),
+            "logoText": str(card.get("card_subtitle") or "MOTOLITE"),
             "webServiceURL": f"{MOTOLITE_BASE_URL}/api/v1/motolite/apple-wallet",
             "authenticationToken": pm.apple_pass_auth_token(f"motolite-{wid}"),
-            "foregroundColor": "rgb(255,255,255)",
-            "backgroundColor": "rgb(215,25,32)",
-            "labelColor": "rgb(255,215,0)",
+            "foregroundColor": _wallet_rgb(card.get("foreground_color"), "#ffffff"),
+            "backgroundColor": _wallet_rgb(card.get("background_color"), "#d71920"),
+            "labelColor": _wallet_rgb(card.get("label_color"), "#ffd400"),
             "barcode": {
                 "format": "PKBarcodeFormatQR",
                 "message": verification,
@@ -2006,28 +2134,49 @@ def _apple_pkpass(wid: str):
             "storeCard": {
                 "headerFields": [{
                     "key": "status",
-                    "label": "WARRANTY",
+                    "label": str(card.get("warranty_label") or "Warranty").upper(),
                     "value": status,
                 }],
                 "primaryFields": [{
                     "key": "expiry",
-                    "label": "WARRANTY VALID UNTIL",
+                    "label": str(card.get("expiry_label") or "Warranty Valid Until").upper(),
                     "value": expires,
                 }],
                 "secondaryFields": [
-                    {"key": "member", "label": "CUSTOMER", "value": str(p.get("member_name") or "—")},
-                    {"key": "battery", "label": "BATTERY", "value": str(p.get("battery_product") or "—")},
+                    *(
+                        [{"key": "member", "label": "CUSTOMER", "value": str(p.get("member_name") or "—")}]
+                        if card.get("show_member_name", True) else []
+                    ),
+                    *(
+                        [{"key": "battery", "label": "BATTERY", "value": str(p.get("battery_product") or "—")}]
+                        if card.get("show_battery", True) else []
+                    ),
                 ],
                 "auxiliaryFields": [
-                    {"key": "serial", "label": "SERIAL", "value": str(p.get("serial_number") or "—")},
-                    {"key": "plate", "label": "PLATE", "value": str(p.get("plate_number") or "—")},
+                    *(
+                        [{"key": "serial", "label": "SERIAL", "value": str(p.get("serial_number") or "—")}]
+                        if card.get("show_serial", True) else []
+                    ),
+                    *(
+                        [{"key": "plate", "label": "PLATE", "value": str(p.get("plate_number") or "—")}]
+                        if card.get("show_plate", True) else []
+                    ),
                 ],
                 "backFields": [
                     {"key": "member_number", "label": "Member Number", "value": str(p.get("member_number") or "—")},
-                    {"key": "vehicle", "label": "Vehicle", "value": str(p.get("vehicle") or "—")},
-                    {"key": "branch", "label": "Installation Branch", "value": str(p.get("branch_name") or "—")},
+                    *(
+                        [{"key": "vehicle", "label": "Vehicle", "value": str(p.get("vehicle") or "—")}]
+                        if card.get("show_vehicle", True) else []
+                    ),
+                    *(
+                        [{"key": "branch", "label": "Installation Branch", "value": str(p.get("branch_name") or "—")}]
+                        if card.get("show_branch", True) else []
+                    ),
                     {"key": "installed", "label": "Installation Date", "value": str(p.get("installation_date") or "—")},
-                    {"key": "replacement", "label": "Recommended Battery Replacement", "value": str(p.get("recommended_replacement_date") or "—")},
+                    *(
+                        [{"key": "replacement", "label": "Recommended Battery Replacement", "value": str(p.get("recommended_replacement_date") or "—")}]
+                        if card.get("show_replacement", True) else []
+                    ),
                     {
                         "key": "online_card",
                         "label": "ONLINE WARRANTY",
@@ -2088,11 +2237,12 @@ def _apple_pkpass(wid: str):
         # Prefer the real Motolite logo supplied through a public HTTPS URL.
         # If it cannot be fetched, fall back to the existing generated Motolite text logo.
         logo_added = False
-        if MOTOLITE_WALLET_LOGO_URL:
+        card_logo_url = str(card.get("logo_url") or "").strip()
+        if card_logo_url:
             try:
                 import httpx
                 from PIL import Image
-                logo_bytes = httpx.get(MOTOLITE_WALLET_LOGO_URL, timeout=15).content
+                logo_bytes = httpx.get(card_logo_url, timeout=15).content
                 img = Image.open(BytesIO(logo_bytes)).convert("RGBA")
                 for name, size in [("logo.png",(160,50)),("logo@2x.png",(320,100)),("logo@3x.png",(480,150))]:
                     copy = img.copy()

@@ -242,6 +242,192 @@ function StaffManagement({API_BASE,session}){
   return <section className="staffPanel"><div className="staffHead"><div><h2>Staff Accounts</h2><p>{session.staff.role==='national'?'Create National, Regional and Local accounts.':'Create and manage Local accounts in your region.'}</p></div><button className="redBtn" onClick={()=>setShow(!show)}>+ Create Account</button></div>{error&&<div className="formError">{error}</div>}{show&&<div className="staffCreate"><div className="formGrid"><Field label="Full Name" value={f.full_name} setValue={v=>set('full_name',v)} required/><Field label="Username" value={f.username} setValue={v=>set('username',v)} required/><Field label="Temporary Password" value={f.password} setValue={v=>set('password',v)} required/><Field label="Email" value={f.email} setValue={v=>set('email',v)}/><label className="field"><span>Role *</span><select value={f.role} onChange={e=>set('role',e.target.value)}>{session.staff.role==='national'&&<option value="national">National</option>}{session.staff.role==='national'&&<option value="regional">Regional</option>}<option value="local">Local</option></select></label>{f.role!=='national'&&<label className="field"><span>Region *</span><select value={f.region_public_id} onChange={e=>set('region_public_id',e.target.value)} disabled={session.staff.role==='regional'}><option value="">Select region</option>{regions.map(r=><option key={r.public_id} value={r.public_id}>{r.name}</option>)}</select></label>}{f.role==='local'&&<label className="field"><span>Branch *</span><select value={f.branch_public_id} onChange={e=>set('branch_public_id',e.target.value)}><option value="">Select branch</option>{allowedBranches.map(b=><option key={b.public_id} value={b.public_id}>{b.name}</option>)}</select></label>}</div><div className="formActions"><span/><button className="redBtn" onClick={create}>Create Staff Account</button></div></div>}<div className="staffTable"><div className="staffRow staffHeader"><b>Name</b><b>Username</b><b>Role</b><b>Status</b><b>Action</b></div>{staff.map(x=><div className="staffRow" key={x.public_id}><span>{x.full_name||'—'}</span><span>{x.username}</span><span className="rolePill">{x.role}</span><span>{x.is_active?'Active':'Disabled'}</span><button onClick={()=>toggle(x)}>{x.is_active?'Disable':'Enable'}</button></div>)}</div></section>
 }
 
+
+function CardManagement({API_BASE,session}){
+  const auth={'Authorization':`Bearer ${session.token}`,'Content-Type':'application/json'}
+  const [card,setCard]=useState({
+    logo_url:'',
+    background_color:'#d71920',
+    foreground_color:'#ffffff',
+    label_color:'#ffd400',
+    card_title:'Motolite Digital Warranty',
+    card_subtitle:'Digital Battery Warranty',
+    warranty_label:'Warranty',
+    expiry_label:'Warranty Valid Until',
+    show_member_name:true,
+    show_battery:true,
+    show_serial:true,
+    show_vehicle:true,
+    show_plate:true,
+    show_branch:true,
+    show_replacement:true,
+  })
+  const [emergency,setEmergency]=useState({
+    phone_number:'',
+    button_label:'Call Emergency Help',
+    help_text:'Need emergency battery help? Call Motolite assistance directly from your phone.'
+  })
+  const [loading,setLoading]=useState(true)
+  const [saving,setSaving]=useState(false)
+  const [message,setMessage]=useState('')
+  const [error,setError]=useState('')
+
+  useEffect(()=>{
+    let active=true
+    async function load(){
+      try{
+        const [cr,er]=await Promise.all([
+          fetch(`${API_BASE}/api/v1/motolite/settings/card`,{headers:auth}),
+          fetch(`${API_BASE}/api/v1/motolite/settings/emergency-help`,{headers:auth})
+        ])
+        const c=await cr.json(),e=await er.json()
+        if(!cr.ok)throw new Error(c.detail||'Could not load card settings')
+        if(!er.ok)throw new Error(e.detail||'Could not load emergency settings')
+        if(active){setCard(x=>({...x,...c}));setEmergency(x=>({...x,...e}))}
+      }catch(err){if(active)setError(err.message)}
+      finally{if(active)setLoading(false)}
+    }
+    load()
+    return()=>{active=false}
+  },[API_BASE,session.token])
+
+  const setC=(k,v)=>setCard(x=>({...x,[k]:v}))
+  const setE=(k,v)=>setEmergency(x=>({...x,[k]:v}))
+
+  async function save(){
+    setSaving(true);setError('');setMessage('')
+    try{
+      const [cr,er]=await Promise.all([
+        fetch(`${API_BASE}/api/v1/motolite/settings/card`,{
+          method:'PUT',headers:auth,
+          body:JSON.stringify({
+            logo_url:card.logo_url||'',
+            background_color:card.background_color,
+            foreground_color:card.foreground_color,
+            label_color:card.label_color,
+            card_title:card.card_title,
+            card_subtitle:card.card_subtitle,
+            warranty_label:card.warranty_label,
+            expiry_label:card.expiry_label,
+            show_member_name:!!card.show_member_name,
+            show_battery:!!card.show_battery,
+            show_serial:!!card.show_serial,
+            show_vehicle:!!card.show_vehicle,
+            show_plate:!!card.show_plate,
+            show_branch:!!card.show_branch,
+            show_replacement:!!card.show_replacement,
+          })
+        }),
+        fetch(`${API_BASE}/api/v1/motolite/settings/emergency-help`,{
+          method:'PUT',headers:auth,
+          body:JSON.stringify({
+            phone_number:emergency.phone_number,
+            button_label:emergency.button_label,
+            help_text:emergency.help_text,
+          })
+        })
+      ])
+      const c=await cr.json(),e=await er.json()
+      if(!cr.ok)throw new Error(c.detail||'Could not save card settings')
+      if(!er.ok)throw new Error(e.detail||'Could not save emergency settings')
+      setMessage('Card settings saved. New and refreshed Wallet cards will use these settings.')
+    }catch(err){setError(err.message)}
+    finally{setSaving(false)}
+  }
+
+  if(loading)return <section className="cardManagementPanel"><div className="recordState">Loading card settings…</div></section>
+
+  const visible=[
+    ['show_member_name','Member name'],
+    ['show_battery','Battery'],
+    ['show_serial','Serial number'],
+    ['show_vehicle','Vehicle'],
+    ['show_plate','Plate number'],
+    ['show_branch','Installation branch'],
+    ['show_replacement','Recommended replacement'],
+  ]
+
+  return <div className="cardManagement">
+    <section className="cardManagementPanel">
+      <div className="cardManagementHead">
+        <div><span className="kicker">NATIONAL ONLY</span><h2>Wallet Card Management</h2><p>Control the Motolite card branding and customer-facing details for Apple Wallet and Google Wallet nationwide.</p></div>
+        <button className="redBtn" disabled={saving} onClick={save}>{saving?'Saving…':'Save & Publish'}</button>
+      </div>
+
+      {error&&<div className="formError">{error}</div>}
+      {message&&<div className="notifySuccess">{message}</div>}
+
+      <div className="cardEditorGrid">
+        <div className="cardEditorForm">
+          <div className="settingsGroup">
+            <h3>Branding</h3>
+            <label className="field"><span>Logo URL</span><input value={card.logo_url||''} onChange={e=>setC('logo_url',e.target.value)} placeholder="https://.../motolite-logo.png"/></label>
+            <small className="settingHint">Leave blank to use the built-in Motolite logo. Custom logos must use a public HTTPS image URL.</small>
+            <div className="colorGrid">
+              <label className="field"><span>Card Color</span><div className="colorInput"><input type="color" value={card.background_color} onChange={e=>setC('background_color',e.target.value)}/><input value={card.background_color} onChange={e=>setC('background_color',e.target.value)}/></div></label>
+              <label className="field"><span>Text Color</span><div className="colorInput"><input type="color" value={card.foreground_color} onChange={e=>setC('foreground_color',e.target.value)}/><input value={card.foreground_color} onChange={e=>setC('foreground_color',e.target.value)}/></div></label>
+              <label className="field"><span>Label Color</span><div className="colorInput"><input type="color" value={card.label_color} onChange={e=>setC('label_color',e.target.value)}/><input value={card.label_color} onChange={e=>setC('label_color',e.target.value)}/></div></label>
+            </div>
+          </div>
+
+          <div className="settingsGroup">
+            <h3>Card Text</h3>
+            <div className="formGrid">
+              <label className="field"><span>Card Title</span><input value={card.card_title} onChange={e=>setC('card_title',e.target.value)}/></label>
+              <label className="field"><span>Card Subtitle</span><input value={card.card_subtitle} onChange={e=>setC('card_subtitle',e.target.value)}/></label>
+              <label className="field"><span>Warranty Label</span><input value={card.warranty_label} onChange={e=>setC('warranty_label',e.target.value)}/></label>
+              <label className="field"><span>Expiry Label</span><input value={card.expiry_label} onChange={e=>setC('expiry_label',e.target.value)}/></label>
+            </div>
+          </div>
+
+          <div className="settingsGroup">
+            <h3>Visible Card Details</h3>
+            <div className="toggleGrid">
+              {visible.map(([key,label])=><label className="settingToggle" key={key}><input type="checkbox" checked={!!card[key]} onChange={e=>setC(key,e.target.checked)}/><span><b>{label}</b><small>{card[key]?'Shown on card':'Hidden from card'}</small></span></label>)}
+            </div>
+          </div>
+
+          <div className="settingsGroup emergencySettings">
+            <h3>Emergency Help</h3>
+            <div className="formGrid">
+              <label className="field"><span>Emergency Number</span><input value={emergency.phone_number||''} onChange={e=>setE('phone_number',e.target.value)} placeholder="0917 891 6686"/></label>
+              <label className="field"><span>Button Label</span><input value={emergency.button_label} onChange={e=>setE('button_label',e.target.value)}/></label>
+            </div>
+            <label className="field fullField"><span>Help Text</span><textarea value={emergency.help_text} onChange={e=>setE('help_text',e.target.value)}/></label>
+            <small className="settingHint">This number is used by Google Wallet, Apple Wallet details, the verified warranty page and the Warranty & Activity page.</small>
+          </div>
+        </div>
+
+        <aside className="cardPreviewWrap">
+          <span className="kicker">LIVE PREVIEW</span>
+          <div className="managedCardPreview" style={{background:card.background_color,color:card.foreground_color}}>
+            <div className="managedLogo">
+              <img src={card.logo_url||motoliteLogo} onError={e=>{e.currentTarget.src=motoliteLogo}}/>
+            </div>
+            <small style={{color:card.label_color}}>{card.card_subtitle}</small>
+            <h3>{card.card_title}</h3>
+            <div className="previewStatus"><span style={{color:card.label_color}}>{card.warranty_label}</span><b>ACTIVE</b></div>
+            <div className="previewExpiry"><span style={{color:card.label_color}}>{card.expiry_label}</span><b>AUG 8, 2028</b></div>
+            <div className="previewDetails">
+              {card.show_member_name&&<div><span>MEMBER</span><b>Juan Dela Cruz</b></div>}
+              {card.show_battery&&<div><span>BATTERY</span><b>Motolite Gold DIN66</b></div>}
+              {card.show_serial&&<div><span>SERIAL</span><b>MG66-829134</b></div>}
+              {card.show_vehicle&&<div><span>VEHICLE</span><b>Montero Sport</b></div>}
+              {card.show_plate&&<div><span>PLATE</span><b>ABC 1234</b></div>}
+              {card.show_branch&&<div><span>BRANCH</span><b>Cauayan City</b></div>}
+              {card.show_replacement&&<div><span>REPLACEMENT</span><b>AUG 8, 2028</b></div>}
+            </div>
+            <div className="previewQr">QR</div>
+            {emergency.phone_number&&<div className="previewEmergency">☎ {emergency.button_label}<small>{emergency.phone_number}</small></div>}
+          </div>
+          <p className="previewDisclaimer">Apple and Google control their native Wallet layouts, so the exact spacing can differ. The preview reflects the branding, labels and data visibility National controls.</p>
+        </aside>
+      </div>
+    </section>
+  </div>
+}
+
+
 const dash={national:['National Dashboard','Philippines',['1,284,493','982,403','8,241','4,382']],regional:['Regional Dashboard','Region II',['82,103','64,280','42','531']],local:['Local Dashboard','Cauayan City Branch',['2,842','2,191','184','12']]}
 function Dashboard({level,API_BASE,session,onLogout}){
   const [view,setView]=useState('overview')
@@ -510,6 +696,7 @@ function Dashboard({level,API_BASE,session,onLogout}){
       <small>{level.toUpperCase()} ACCESS</small>
       <button className={view==='overview'?'current':''} onClick={()=>setView('overview')}>Overview</button>
       {level!=='local'&&<button className={view==='staff'?'current':''} onClick={()=>setView('staff')}>Staff Management</button>}
+      {level==='national'&&<button className={view==='card'?'current':''} onClick={()=>setView('card')}>Card Management</button>}
       <button className={view==='members'?'current':''} onClick={()=>setView('members')}>Members</button>
       <button className={view==='warranties'?'current':''} onClick={()=>setView('warranties')}>Warranties</button>
       <button className={view==='batteries'?'current':''} onClick={()=>setView('batteries')}>Batteries</button>
@@ -530,6 +717,7 @@ function Dashboard({level,API_BASE,session,onLogout}){
           <h1>{
             view==='overview'?title:
             view==='staff'?'Staff Management':
+            view==='card'?'Card Management':
             view==='members'?'Members':
             view==='warranties'?'Warranties':
             view==='batteries'?'Batteries':
@@ -537,11 +725,13 @@ function Dashboard({level,API_BASE,session,onLogout}){
           }</h1>
           {['members','warranties','notifications'].includes(view)&&<p className="viewSubtitle">Scope: {scopeName}</p>}
         </div>
-        <button className="redBtn" onClick={()=>go('/motolite/register')}>+ Register Warranty</button>
+        {view!=='card'&&<button className="redBtn" onClick={()=>go('/motolite/register')}>+ Register Warranty</button>}
       </div>
 
       {view==='staff'
         ? <StaffManagement API_BASE={API_BASE} session={session}/>
+        : view==='card' && level==='national'
+          ? <CardManagement API_BASE={API_BASE} session={session}/>
         : view!=='overview'
           ? <>
               {view==='warranties'&&<ExpiryStrip/>}

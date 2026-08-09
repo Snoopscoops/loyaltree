@@ -306,3 +306,30 @@ footer img{width:180px}footer p{font-size:12px}
 .memberModalActions{display:flex;justify-content:flex-end;gap:8px;margin:-5px 0 24px}
 @media(max-width:900px){.expiryStrip{grid-template-columns:repeat(2,1fr)}.campaignRow{grid-template-columns:1fr 1fr}.notificationHero{align-items:flex-start;flex-direction:column}.searchBox{min-width:0;flex:1}}
 @media(max-width:620px){.recordsToolbar{align-items:stretch;flex-direction:column}.searchBox{width:100%;max-width:none}.expiryStrip{grid-template-columns:1fr 1fr}.campaignRow{grid-template-columns:1fr}.campaignCounts{flex-wrap:wrap}.memberModalActions{align-items:stretch;flex-direction:column}.memberModalActions button{width:100%}}
+
+
+/* ---------- National Card Management ---------- */
+.cardManagementPanel{background:#fff;border:1px solid var(--line);border-radius:16px;box-shadow:0 8px 28px rgba(20,24,31,.045);overflow:hidden}
+.cardManagementHead{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:25px 28px;border-bottom:1px solid var(--line);background:linear-gradient(120deg,#fff,#fffafa)}
+.cardManagementHead h2{font-size:22px;letter-spacing:-.025em;margin:5px 0 7px}.cardManagementHead p{margin:0;color:#747983;font-size:12px;line-height:1.6;max-width:700px}
+.cardEditorGrid{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(300px,.7fr);gap:0}
+.cardEditorForm{padding:26px 28px;border-right:1px solid var(--line)}
+.settingsGroup{padding:0 0 26px;margin-bottom:25px;border-bottom:1px solid var(--line)}.settingsGroup:last-child{border-bottom:0;margin-bottom:0}
+.settingsGroup h3{font-size:15px;margin:0 0 17px}.settingHint{display:block;color:#8b9097;font-size:9.5px;line-height:1.5;margin-top:7px}
+.colorGrid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:17px}
+.colorInput{display:grid;grid-template-columns:43px 1fr;gap:7px}.colorInput input[type="color"]{width:43px;height:43px;padding:3px;border:1px solid #dcdfe4;border-radius:9px;background:#fff}
+.toggleGrid{display:grid;grid-template-columns:repeat(2,1fr);gap:9px}
+.settingToggle{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:10px;padding:12px;background:#fcfcfd;cursor:pointer}
+.settingToggle input{width:17px;height:17px;accent-color:var(--motolite)}.settingToggle span,.settingToggle b,.settingToggle small{display:block}.settingToggle b{font-size:11px}.settingToggle small{font-size:9px;color:#8c9198;margin-top:3px}
+.emergencySettings{background:#fff8f8;border:1px solid #f1d7d9!important;border-radius:12px;padding:18px!important;margin:0!important}
+.cardPreviewWrap{position:sticky;top:0;align-self:start;padding:28px;background:#f8f9fa;min-height:100%}.cardPreviewWrap>.kicker{display:block;margin-bottom:14px}
+.managedCardPreview{border-radius:20px;padding:22px;box-shadow:0 25px 60px rgba(15,18,24,.20);min-height:440px;position:relative;overflow:hidden}
+.managedCardPreview:after{content:"";position:absolute;width:220px;height:220px;border:1px solid rgba(255,255,255,.12);border-radius:50%;right:-100px;bottom:-90px}
+.managedLogo img{width:190px;max-width:78%;max-height:65px;object-fit:contain;display:block}.managedCardPreview>small{display:block;font-size:8px;font-weight:900;letter-spacing:.13em;margin-top:15px;text-transform:uppercase}
+.managedCardPreview h3{font-size:17px;margin:5px 0 18px}.previewStatus,.previewExpiry{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;margin-top:12px}.previewStatus span,.previewExpiry span{font-size:8px;font-weight:900;letter-spacing:.08em;text-transform:uppercase}.previewStatus b{font-size:12px}.previewExpiry b{font-size:18px;letter-spacing:-.02em}
+.previewDetails{display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;margin:20px 0}.previewDetails div span,.previewDetails div b{display:block}.previewDetails div span{font-size:7px;opacity:.7;margin-bottom:2px}.previewDetails div b{font-size:9px;overflow-wrap:anywhere}
+.previewQr{width:70px;height:70px;border-radius:8px;background:#fff;color:#111;display:grid;place-items:center;font-size:9px;font-weight:950;margin:15px 0}
+.previewEmergency{border-top:1px solid rgba(255,255,255,.25);padding-top:12px;font-size:10px;font-weight:900;position:relative;z-index:1}.previewEmergency small{display:block;font-size:8px;opacity:.8;margin-top:2px}
+.previewDisclaimer{font-size:9px;color:#858a92;line-height:1.55;margin:16px 2px 0}
+@media(max-width:1100px){.cardEditorGrid{grid-template-columns:1fr}.cardEditorForm{border-right:0;border-bottom:1px solid var(--line)}.cardPreviewWrap{position:static}.managedCardPreview{max-width:430px}}
+@media(max-width:700px){.cardManagementHead{align-items:flex-start;flex-direction:column}.cardManagementHead .redBtn{width:100%}.colorGrid,.toggleGrid{grid-template-columns:1fr}.cardEditorForm,.cardPreviewWrap{padding:20px}}
