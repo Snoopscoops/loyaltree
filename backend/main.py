@@ -14887,7 +14887,7 @@ async def cockpit_public_site(public_id: str):
             return 'TBA', '--', ''
 
     event_cards = []
-    for item in events[:6]:
+    for item in events[:3]:
         mon, day, dow = date_parts(item.get('event_date'))
         poster = esc(item.get('poster_url'))
         image_style = f"background-image:linear-gradient(90deg,rgba(8,8,8,.94),rgba(8,8,8,.25)),url('{poster}')" if poster else 'background:linear-gradient(130deg,#171717,#35110d)'
@@ -14902,10 +14902,11 @@ async def cockpit_public_site(public_id: str):
     events_html = ''.join(event_cards) or '<div class="empty">No upcoming events have been posted.</div>'
 
     schedule_rows = []
-    for item in events[:7]:
+    for item in events:
         mon, day, dow = date_parts(item.get('event_date'))
         schedule_rows.append(f'<div class="schedule-row"><span>{dow or mon}</span><b>{esc(item.get("title"))}</b><em>{esc(item.get("start_time") or "TBA")}</em></div>')
     schedule_html = ''.join(schedule_rows) or '<div class="empty small">Schedule coming soon.</div>'
+    schedule_pager_html = '<div class="schedule-pager" id="schedule-pager"><button type="button" id="schedule-prev">← Previous</button><span id="schedule-page-label"></span><button type="button" id="schedule-next">Next →</button></div>' if schedule_rows else ''
 
     announcement_rows = []
     for item in announcements[:4]:
@@ -14962,7 +14963,7 @@ async def cockpit_public_site(public_id: str):
 .section{{padding:52px 4%;max-width:1600px;margin:auto}}.section-head{{display:flex;align-items:end;justify-content:space-between;margin-bottom:20px}}.section h2{{margin:0;text-transform:uppercase;font-size:26px;border-left:4px solid var(--red);padding-left:12px}}.section-head a{{color:var(--red);font-weight:800;font-size:12px;text-transform:uppercase;text-decoration:none}}
 .dashboard-grid{{display:grid;grid-template-columns:1.25fr .8fr 1fr .9fr;gap:15px}}.box{{background:linear-gradient(180deg,#121212,#0b0b0b);border:1px solid #32260f;border-radius:5px;padding:18px;min-height:290px}}.box h3{{margin:0 0 18px;text-transform:uppercase;font-size:18px}}
 .event-list{{display:grid;gap:14px}}.event-card{{min-height:210px;background-size:cover!important;background-position:center!important;border:1px solid #54350f;border-radius:5px;padding:20px;display:flex;gap:18px;align-items:center}}.date-box,.mini-date{{width:68px;min-width:68px;border:1px solid var(--red);text-align:center;background:#0b0b0bdd}}.date-box b,.mini-date b{{display:block;background:#36100e;color:#ffb1a7;padding:5px;font-size:12px}}.date-box strong{{display:block;font-size:31px;padding-top:6px}}.date-box span{{display:block;color:#ddd;font-size:11px;padding-bottom:7px}}.event-copy small,.result-card small{{color:var(--gold);font-weight:900}}.event-copy h3{{font-size:27px;margin:5px 0 11px}}.event-copy p{{color:#ccc;font-size:12px}}.prize{{color:var(--gold);font-weight:900;margin-top:16px;text-transform:uppercase}}
-.schedule-row{{display:grid;grid-template-columns:42px 1fr auto;gap:10px;padding:10px 0;border-bottom:1px solid #262626;align-items:center;font-size:12px}}.schedule-row span{{color:var(--red);font-weight:900}}.schedule-row em{{font-style:normal;color:var(--gold)}}
+.schedule-row{{display:grid;grid-template-columns:42px 1fr auto;gap:10px;padding:10px 0;border-bottom:1px solid #262626;align-items:center;font-size:12px}}.schedule-row span{{color:var(--red);font-weight:900}}.schedule-row em{{font-style:normal;color:var(--gold)}}.schedule-pager{{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:16px;padding-top:14px;border-top:1px solid #262626}}.schedule-pager button{{border:1px solid #54401c;background:#101010;color:#fff;padding:8px 12px;border-radius:6px;font:inherit;font-size:12px;font-weight:800;cursor:pointer}}.schedule-pager button:hover:not(:disabled){{border-color:var(--gold);color:var(--gold)}}.schedule-pager button:disabled{{opacity:.35;cursor:not-allowed}}.schedule-pager span{{min-width:90px;text-align:center;color:#aaa;font-size:11px;font-weight:800}}
 .announcement-row{{display:grid;grid-template-columns:55px 1fr;gap:12px;padding:11px 0;border-bottom:1px solid #262626}}.mini-date{{width:55px;min-width:55px}}.mini-date strong{{font-size:20px;padding:6px;display:block}}.announcement-row h4{{margin:0 0 5px;color:var(--gold)}}.announcement-row p{{margin:0;color:#bbb;font-size:12px;line-height:1.4}}
 .member-card{{background:linear-gradient(145deg,#2a0808,#100707);border:1px solid #63311e;padding:17px;border-radius:7px;margin:20px 0;transform:rotate(-2deg)}}.member-card b{{font-size:18px}}.member-card span{{display:block;color:var(--gold);font-size:11px;margin-top:25px}}.member-card code{{display:block;margin-top:8px;color:#fff}}
 .results-grid{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}}.result-card{{display:flex;flex-direction:column;min-width:0;background:linear-gradient(180deg,#121212,#0b0b0b);border:1px solid #493512;border-radius:10px;overflow:hidden;transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease}}.result-card:hover{{transform:translateY(-3px);border-color:var(--gold);box-shadow:0 12px 28px rgba(0,0,0,.35)}}.result-photo{{width:100%;aspect-ratio:4/3;background:#1d100b;overflow:hidden}}.result-card img,.result-placeholder{{width:100%;height:100%;object-fit:cover;background:#1d100b;display:grid;place-items:center;font-size:58px}}.result-copy{{padding:15px 16px 17px}}.result-card h3{{margin:6px 0 5px;text-transform:uppercase;font-size:21px}}.result-card p{{margin:0;color:#aaa;font-size:13px}}.result-date{{display:block;margin-top:11px;padding-top:10px;border-top:1px solid #292929;color:#cfcfcf;font-size:12px}}.champion-pager{{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:22px}}.champion-pager button{{border:1px solid #54401c;background:#101010;color:#fff;padding:10px 16px;border-radius:7px;font:inherit;font-weight:800;cursor:pointer}}.champion-pager button:hover:not(:disabled){{border-color:var(--gold);color:var(--gold)}}.champion-pager button:disabled{{opacity:.35;cursor:not-allowed}}.champion-pager span{{min-width:115px;text-align:center;color:#aaa;font-size:12px;font-weight:800}}
@@ -14980,13 +14981,36 @@ footer{{border-top:1px solid #3b2d13;background:#050505;padding:35px 4% 20px}}.f
 <main id="home"><section class="hero" style="{hero_style}"><div class="hero-copy"><h1>Malinis at<br><span class="gold">maginoong sabong</span><br>ang aming <span class="red">tradisyon</span></h1><p>Pinagkakatiwalaan. Propesyonal. May respeto.<br><b>{arena}</b></p><div class="actions"><a class="btn primary" href="#schedule">View Schedule</a><a class="btn secondary" href="#champions">Latest Champions</a></div></div></section>
 <section class="values"><div class="value">🛡️<strong>Malinis</strong><span>Sinusunod ang lahat ng patakaran at regulasyon.</span></div><div class="value">👥<strong>Propesyonal</strong><span>Pinapatakbo nang may karanasan at propesyonalismo.</span></div><div class="value">🤝<strong>May respeto</strong><span>Respeto sa mananabong, manonood, at sa laro.</span></div><div class="value">🔒<strong>Walang dayaan</strong><span>Transparente at patas ang bawat laban.</span></div></section>
 <section id="schedule" class="section"><div class="section-head"><h2>Upcoming Events</h2><a href="#schedule">View all schedule</a></div><div class="event-list">{events_html}</div></section>
-<section class="section"><div class="dashboard-grid"><div class="box" style="grid-column:span 2"><h3>Weekly Schedule</h3>{schedule_html}</div><div class="box"><h3>Announcements</h3>{announcement_html}</div><div class="box"><h3>Be a Member</h3><p style="color:#bbb;line-height:1.6">Ang official digital membership ng {arena} ay kasalukuyang inihahanda.</p><div class="member-card"><b>{arena}</b><span>OFFICIAL DIGITAL MEMBERSHIP</span><code>COMING SOON</code></div><span class="btn primary" style="display:inline-flex;opacity:.72;cursor:not-allowed">Coming Soon</span></div></div></section>
+<section class="section"><div class="dashboard-grid"><div class="box" style="grid-column:span 2"><h3>Weekly Schedule</h3><div id="weekly-schedule">{schedule_html}</div>{schedule_pager_html}</div><div class="box"><h3>Announcements</h3>{announcement_html}</div><div class="box"><h3>Be a Member</h3><p style="color:#bbb;line-height:1.6">Ang official digital membership ng {arena} ay kasalukuyang inihahanda.</p><div class="member-card"><b>{arena}</b><span>OFFICIAL DIGITAL MEMBERSHIP</span><code>COMING SOON</code></div><span class="btn primary" style="display:inline-flex;opacity:.72;cursor:not-allowed">Coming Soon</span></div></div></section>
 <section id="champions" class="section"><div class="section-head"><h2>Latest Champions</h2><a href="#champions">Up to 20 champions</a></div>{champions_search_html}<div class="results-grid" id="champion-grid">{results_html}</div>{no_champions_html}{champion_pager_html}</section>
 <section id="gallery" class="section"><div class="section-head"><h2>Gallery</h2><a href="#gallery">View all photos</a></div><div class="gallery">{gallery_html}</div></section>
 <section id="about" class="section"><div class="about-member"><div class="about"><h2>About {arena}</h2><p>{about}</p></div><div class="join"><h2>Stay Connected</h2><p>Follow the official Facebook page for upcoming derbies, announcements, champions, event posters, and live updates.</p><a class="btn primary" href="{facebook}" target="_blank" rel="noopener noreferrer">Follow VCSA on Facebook</a></div></div></section>
 <section id="sponsors" class="section"><div class="section-head"><h2>Our Sponsors</h2></div><div class="sponsors">{sponsor_html}</div></section></main>
 <footer id="contact"><div class="footer-grid"><div><h4>{arena}</h4><p>{tagline}</p></div><div><h4>Quick Links</h4><p><a href="#schedule">Schedule</a><br><a href="#champions">Champions</a><br><a href="#gallery">Gallery</a><br><a href="#sponsors">Sponsors</a></p></div><div><h4>Contact Us</h4><p>{phone}<br>{email}<br>{address}</p></div><div><h4>Follow Us</h4><p>{fb_html}</p></div></div><div class="copyright">© {datetime.utcnow().year} {arena}. All rights reserved.</div></footer>
 <script>document.querySelectorAll('.nav a').forEach(a=>a.addEventListener('click',()=>document.querySelector('.nav').classList.remove('open')))
+var scheduleRows=Array.prototype.slice.call(document.querySelectorAll('#weekly-schedule .schedule-row'));
+var schedulePrev=document.getElementById('schedule-prev');
+var scheduleNext=document.getElementById('schedule-next');
+var schedulePageLabel=document.getElementById('schedule-page-label');
+var schedulePager=document.getElementById('schedule-pager');
+var schedulePage=0;
+var schedulePageSize=10;
+function renderSchedule(){{
+  var pages=Math.max(1,Math.ceil(scheduleRows.length/schedulePageSize));
+  if(schedulePage>=pages)schedulePage=pages-1;
+  if(schedulePage<0)schedulePage=0;
+  scheduleRows.forEach(function(row){{row.style.display='none';}});
+  var start=schedulePage*schedulePageSize;
+  scheduleRows.slice(start,start+schedulePageSize).forEach(function(row){{row.style.display='grid';}});
+  if(schedulePager)schedulePager.style.display=scheduleRows.length>schedulePageSize?'flex':'none';
+  if(schedulePrev)schedulePrev.disabled=schedulePage===0;
+  if(scheduleNext)scheduleNext.disabled=schedulePage>=pages-1;
+  if(schedulePageLabel)schedulePageLabel.textContent=scheduleRows.length?('Page '+(schedulePage+1)+' of '+pages):'';
+}}
+if(schedulePrev)schedulePrev.addEventListener('click',function(){{if(schedulePage>0){{schedulePage--;renderSchedule();}}}});
+if(scheduleNext)scheduleNext.addEventListener('click',function(){{if(schedulePage<Math.ceil(scheduleRows.length/schedulePageSize)-1){{schedulePage++;renderSchedule();}}}});
+renderSchedule();
+
 var championSearch=document.getElementById('champion-search');
 var championCards=Array.prototype.slice.call(document.querySelectorAll('#champions .result-card'));
 var championPrev=document.getElementById('champion-prev');
