@@ -1950,6 +1950,75 @@ def google_wallet_class_id_for_customer(customer: dict, business: dict, program:
     return _google_wallet_base_class_id(business, program)
 
 
+def ensure_google_wallet_vip_class(customer: dict, business: dict, program: dict) -> bool:
+    """Ensure the current member's tier LoyaltyClass exists before issuing a Save URL.
+
+    A newly-created VIP member can open their wallet immediately, even if the
+    owner has not manually pressed Publish Card since tier-class support was
+    deployed. This avoids generating a LoyaltyObject that references a class
+    Google does not know about yet.
+    """
+    if (program or {}).get('card_type') != 'vip':
+        return True
+
+    access_token = get_google_access_token()
+    if not access_token:
+        print("GOOGLE VIP CLASS: no Google access token")
+        return False
+
+    tier = get_vip_tier(customer, program or {})
+    class_id = google_wallet_vip_class_id(business, program or {}, tier)
+    loyalty_class = build_loyalty_class(
+        business,
+        program or {},
+        review_status='UNDER_REVIEW',
+        class_id_override=class_id,
+        background_color_override=tier.get('color') or '#111827',
+        vip_tier_name=tier.get('name') or 'VIP',
+    )
+
+    try:
+        import httpx
+        with httpx.Client(timeout=20) as client:
+            # Fast path: class already exists.
+            check = client.get(
+                f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}',
+                headers={"Authorization": f"Bearer {access_token}"}
+            )
+            if check.status_code == 200:
+                return True
+
+            if check.status_code != 404:
+                print(f"GOOGLE VIP CLASS: GET {class_id} failed {check.status_code} - {check.text[:1000]}")
+                return False
+
+            # Missing class: create it now.
+            created = client.post(
+                'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass',
+                headers={"Authorization": f"Bearer {access_token}"},
+                json=loyalty_class
+            )
+
+            if created.status_code in (200, 201):
+                print(f"GOOGLE VIP CLASS: created {class_id}")
+                return True
+
+            # Concurrent request may have created it between GET and POST.
+            if created.status_code == 409:
+                verify = client.get(
+                    f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}',
+                    headers={"Authorization": f"Bearer {access_token}"}
+                )
+                if verify.status_code == 200:
+                    return True
+
+            print(f"GOOGLE VIP CLASS: create {class_id} failed {created.status_code} - {created.text[:1500]}")
+            return False
+    except Exception as e:
+        print(f"GOOGLE VIP CLASS error: {e}")
+        return False
+
+
 def build_loyalty_class(
     business: dict,
     program: dict,
@@ -14151,10 +14220,23 @@ async def get_wallet_pass(customer_public_id: str):
     )
 
     loyalty_object = build_loyalty_object(customer, business, program)
-    jwt_token = create_google_wallet_jwt(loyalty_object)
+
+    google_class_ready = True
+    if card_type == 'vip':
+        google_class_ready = ensure_google_wallet_vip_class(customer, business, program or {})
+        if not google_class_ready:
+            print(
+                "WALLET-PASS: VIP tier Google class is not ready for "
+                f"{loyalty_object.get('classId')}"
+            )
+
+    jwt_token = create_google_wallet_jwt(loyalty_object) if google_class_ready else ''
     save_url = f"https://pay.google.com/gp/v/save/{jwt_token}" if jwt_token else None
     if not jwt_token:
-        print("WALLET-PASS: Google JWT generation failed (check GOOGLE_WALLET_CREDENTIALS)")
+        if card_type == 'vip' and not google_class_ready:
+            print("WALLET-PASS: Google Save URL withheld because VIP tier class could not be created")
+        else:
+            print("WALLET-PASS: Google JWT generation failed (check GOOGLE_WALLET_CREDENTIALS)")
 
     print(f"WALLET-PASS: Prepared pass data for customer {customer_public_id}")
 
@@ -14203,6 +14285,8 @@ async def get_wallet_pass(customer_public_id: str):
             "qr_code": f"{BASE_URL}/stamp/{customer_public_id}",
         },
         "save_url": save_url,
+        "google_class_ready": google_class_ready,
+        "google_class_id": loyalty_object.get("classId"),
         "apple_pass_url": f"{BASE_URL}/api/v1/customer/{customer_public_id}/apple-wallet-pass",
         "loyalty_object": loyalty_object,
     }
