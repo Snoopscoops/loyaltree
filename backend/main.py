@@ -2168,7 +2168,11 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         'accountName': cust_name,
         'loyaltyPoints': {
             'label': loyalty_points_label,
-            'balance': {'string': loyalty_points_balance}
+            'balance': (
+                {'int': int(customer.get('vip_points') or 0)}
+                if card_type == 'vip'
+                else {'string': loyalty_points_balance}
+            )
         },
         'textModulesData': [
             {'header': design['card_label'], 'body': cust_name},
@@ -2289,57 +2293,121 @@ async def republish_wallet_class_and_refresh(business: dict, program: dict):
 def sync_wallet_object(customer: dict, business: dict, program: dict,
                         notify_header: str = None, notify_body: str = None,
                         notify_message_id: str = None):
-    """Push the customer's latest stamp count to Google Wallet.
-    Google only creates its own copy of the loyaltyObject when the customer taps
-    "Add to Google Wallet" - after that, changes in our DB never reach the saved
-    pass unless we PATCH it here. Best-effort: never raises, so a Wallet API hiccup
-    never blocks the stamp/redeem response to the cashier.
+    """Push the customer's latest loyalty state to an already-saved Google pass.
 
-    Pass notify_header/notify_body/notify_message_id to also fire a
-    TEXT_AND_NOTIFY addMessage call (via send_wallet_object_message) after the
-    patch succeeds - the PATCH alone silently updates the pass's data with no
-    visible notification to the customer. Omit them (as the owner's manual
-    dashboard stamp-count edit does) to keep the sync silent."""
+    For VIP, points are always patched even if a tier/class migration cannot be
+    completed yet. This prevents the website balance from updating while Google
+    Wallet remains stale.
+    """
     access_token = get_google_access_token()
     if not access_token:
         return
+
     try:
         import httpx
-        loyalty_object = build_loyalty_object(customer, business, program)
-        object_id = loyalty_object['id']
-        with httpx.Client() as client:
-            resp = client.patch(
+
+        # A tier upgrade may require a new class. Make sure it exists before we
+        # attempt to move this member to it.
+        if (program or {}).get('card_type') == 'vip':
+            ensure_google_wallet_vip_class(customer, business, program or {})
+
+        desired = build_loyalty_object(customer, business, program)
+        object_id = desired['id']
+        desired_class_id = desired.get('classId')
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        with httpx.Client(timeout=20) as client:
+            current_resp = client.get(
                 f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyObject/{object_id}',
-                headers={"Authorization": f"Bearer {access_token}"},
-                json=loyalty_object
+                headers=headers
             )
 
-            # VIP objects can move from one tier LoyaltyClass to another.
-            # If PATCH rejects the class migration, retry as a full object
-            # update. The object ID stays the same, so the member does not
-            # receive a duplicate card.
-            if (
-                (program or {}).get('card_type') == 'vip'
-                and resp.status_code not in (200, 201, 404)
-            ):
-                put_resp = client.put(
-                    f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyObject/{object_id}',
-                    headers={"Authorization": f"Bearer {access_token}"},
-                    json=loyalty_object
-                )
-                if put_resp.status_code in (200, 201):
-                    resp = put_resp
+            if current_resp.status_code == 404:
+                print(f"WALLET SYNC: {object_id} not found - customer hasn't added it to Google Wallet yet")
+                return
+            if current_resp.status_code != 200:
+                print(f"WALLET SYNC: GET failed {current_resp.status_code} - {current_resp.text[:1200]}")
+                return
 
+            current = current_resp.json()
+            current_class_id = current.get('classId')
+
+            # Only patch fields that belong to the individual member. This is
+            # safer than PATCHing the complete object every sale/check-in.
+            member_patch = {
+                'loyaltyPoints': desired.get('loyaltyPoints'),
+                'accountId': desired.get('accountId'),
+                'accountName': desired.get('accountName'),
+                'barcode': desired.get('barcode'),
+                'textModulesData': desired.get('textModulesData'),
+                'linksModuleData': desired.get('linksModuleData'),
+                'state': desired.get('state', 'active'),
+                # Ask Google to surface eligible field changes to the holder.
+                'notifyPreference': 'NOTIFY',
+            }
+            if desired.get('heroImage'):
+                member_patch['heroImage'] = desired.get('heroImage')
+
+            # Same VIP tier/class (the common case): update the member data only.
+            if current_class_id == desired_class_id:
+                resp = client.patch(
+                    f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyObject/{object_id}',
+                    headers=headers,
+                    json=member_patch
+                )
+                if resp.status_code in (200, 201):
+                    print(
+                        f"WALLET SYNC: updated {object_id} "
+                        f"points={customer.get('vip_points') if (program or {}).get('card_type') == 'vip' else 'n/a'}"
+                    )
+                    if notify_header and notify_message_id:
+                        send_wallet_object_message(object_id, notify_header, notify_body or '', notify_message_id)
+                    return
+
+                print(f"WALLET SYNC: member PATCH failed {resp.status_code} - {resp.text[:1500]}")
+                return
+
+            # Tier changed. Try a full update so the object adopts the new
+            # tier-specific class/color while keeping the same object ID.
+            resp = client.put(
+                f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyObject/{object_id}',
+                headers=headers,
+                json=desired
+            )
             if resp.status_code in (200, 201):
-                print(f"WALLET SYNC: updated {object_id}")
+                print(
+                    f"WALLET SYNC: moved {object_id} from {current_class_id} "
+                    f"to {desired_class_id}; points={customer.get('vip_points')}"
+                )
                 if notify_header and notify_message_id:
                     send_wallet_object_message(object_id, notify_header, notify_body or '', notify_message_id)
-            elif resp.status_code == 404:
-                print(f"WALLET SYNC: {object_id} not found - customer hasn't added it to their wallet yet")
+                return
+
+            # If Google refuses the class move, do not lose the important
+            # balance update. Keep the existing class/color temporarily and
+            # patch the latest points/details into the saved card.
+            print(
+                f"WALLET SYNC: tier-class move failed {resp.status_code} - "
+                f"{resp.text[:1200]}; patching balance on existing class instead"
+            )
+            fallback = client.patch(
+                f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyObject/{object_id}',
+                headers=headers,
+                json=member_patch
+            )
+            if fallback.status_code in (200, 201):
+                print(
+                    f"WALLET SYNC: fallback points update succeeded for {object_id}; "
+                    f"points={customer.get('vip_points')}"
+                )
+                if notify_header and notify_message_id:
+                    send_wallet_object_message(object_id, notify_header, notify_body or '', notify_message_id)
             else:
-                print(f"WALLET SYNC: failed {resp.status_code} - {resp.text}")
+                print(f"WALLET SYNC: fallback PATCH failed {fallback.status_code} - {fallback.text[:1500]}")
+
     except Exception as e:
         print(f"WALLET SYNC error: {e}")
+
 
 # Apple Wallet (PassKit) Helpers
 #
