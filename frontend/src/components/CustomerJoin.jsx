@@ -24,6 +24,7 @@ function CustomerJoin({ API_BASE }) {
   const [walletData, setWalletData] = useState(null)
   const [walletLoading, setWalletLoading] = useState(false)
   const [businessInfo,setBusinessInfo]=useState(null)
+  const [privacyConsent,setPrivacyConsent]=useState(false)
 
   useEffect(()=>{
     fetch(`${API_BASE}/api/v1/public/business/${businessSlug}/join-config`)
@@ -63,6 +64,10 @@ function CustomerJoin({ API_BASE }) {
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError('')
+    if (!privacyConsent) {
+      setError('Please review and accept the Privacy & Membership Consent before continuing.')
+      return
+    }
     setLoading(true)
     try {
       const res = await fetch(`${API_BASE}/api/v1/join/${businessSlug}`, {
@@ -237,7 +242,35 @@ function CustomerJoin({ API_BASE }) {
               type="email"
             />
           </div>
-          <button type="submit" disabled={loading} style={styles.button}>
+          <div style={styles.consentBox}>
+            <div style={styles.consentTitle}>Privacy & Membership Consent</div>
+            <p style={styles.consentText}>
+              By joining, you agree that the information you provide may be collected and used by this business and LoyaltyTree to create and manage your digital loyalty membership, provide rewards and membership services, and send relevant membership or promotional updates.
+            </p>
+            <p style={styles.consentText}>
+              Your information will be handled in accordance with applicable privacy requirements. You may request access, correction, or deletion of your personal information, subject to applicable legal and operational requirements.
+            </p>
+            <label style={styles.consentCheckRow}>
+              <input
+                type="checkbox"
+                checked={privacyConsent}
+                onChange={e => setPrivacyConsent(e.target.checked)}
+                style={styles.consentCheckbox}
+              />
+              <span>
+                I have read and agree to the Privacy & Membership Consent, and I confirm that the information I provided is accurate.
+              </span>
+            </label>
+          </div>
+
+          <button
+            type="submit"
+            disabled={loading || !privacyConsent}
+            style={{
+              ...styles.button,
+              ...(loading || !privacyConsent ? styles.buttonDisabled : {}),
+            }}
+          >
             {loading ? 'Creating...' : 'Get My Loyalty Card'}
           </button>
         </form>
@@ -245,8 +278,7 @@ function CustomerJoin({ API_BASE }) {
         {error && <div style={styles.error}>{error}</div>}
 
         <p style={styles.terms}>
-          By joining, you agree to receive updates about your rewards.<br/>
-          No spam, ever.
+          LoyaltyTree helps the business manage your loyalty membership and digital card. Please contact the business if you want to review or update the information connected to your membership.
         </p>
       </div>
     </div>
@@ -350,6 +382,46 @@ const styles = {
     color: '#94a3b8',
     marginTop: 20,
     lineHeight: 1.6,
+  },
+  consentBox: {
+    padding: '14px 15px',
+    border: '1px solid #dbe4ea',
+    background: '#f8fafc',
+    borderRadius: 12,
+    marginTop: 2,
+  },
+  consentTitle: {
+    fontSize: 13,
+    fontWeight: 800,
+    color: '#0f172a',
+    marginBottom: 7,
+  },
+  consentText: {
+    margin: '0 0 8px',
+    color: '#64748b',
+    fontSize: 12,
+    lineHeight: 1.55,
+  },
+  consentCheckRow: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: 9,
+    color: '#334155',
+    fontSize: 12,
+    lineHeight: 1.5,
+    fontWeight: 600,
+    cursor: 'pointer',
+  },
+  consentCheckbox: {
+    marginTop: 2,
+    width: 16,
+    height: 16,
+    accentColor: '#0d9488',
+    flexShrink: 0,
+  },
+  buttonDisabled: {
+    opacity: 0.5,
+    cursor: 'not-allowed',
   },
   infoBox: {
     background: '#f0fdf4',
