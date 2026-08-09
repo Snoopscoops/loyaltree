@@ -22,6 +22,7 @@ from io import BytesIO
 from PIL import Image
 import zipfile
 import calendar
+import time
 
 # Environment
 SUPABASE_URL = os.getenv('SUPABASE_URL', '')
@@ -88,7 +89,7 @@ CLOUDINARY_API_KEY = os.getenv('CLOUDINARY_API_KEY', '')
 CLOUDINARY_API_SECRET = os.getenv('CLOUDINARY_API_SECRET', '')
 CLOUDINARY_UPLOAD_PRESET = os.getenv('CLOUDINARY_UPLOAD_PRESET', 'LoyaltyTree_Images')
 SUBSCRIPTION_PERIOD_DAYS = 30  # how long a successful payment extends access for
-TRIAL_PERIOD_DAYS = 7  # free trial length granted automatically on signup, no payment/approval needed
+TRIAL_PERIOD_DAYS = 1  # one-day setup access granted automatically on signup
 
 # Subscription expiry reminder emails, sent via Resend (resend.com). Get
 # RESEND_API_KEY from Resend's dashboard once you've verified a sending
@@ -458,6 +459,35 @@ else:
         ENV_ERROR = str(e)
         supabase = None
 
+
+# LoyaltyTree self-serve business categories. Car Lending and Cockpit stay
+# supported by the backend but remain invite-only specialized systems.
+BUSINESS_CATEGORY_META = {
+    'spa': {'label': 'Spa', 'icon': '🌿', 'color': '#0f766e', 'recommended_cards': ['membership','vip','stamp']},
+    'salon': {'label': 'Salon / Barber', 'icon': '✂️', 'color': '#7c3aed', 'recommended_cards': ['vip','stamp','points']},
+    'fitness': {'label': 'Gym / Fitness', 'icon': '🏋️', 'color': '#2563eb', 'recommended_cards': ['membership','multipass','vip']},
+    'restaurant': {'label': 'Restaurant / Food', 'icon': '🍽️', 'color': '#ea580c', 'recommended_cards': ['stamp','points','vip']},
+    'coffee': {'label': 'Coffee Shop / Café', 'icon': '☕', 'color': '#92400e', 'recommended_cards': ['stamp','points','vip']},
+    'retail': {'label': 'Retail / Store', 'icon': '🛍️', 'color': '#d97706', 'recommended_cards': ['points','vip','stamp']},
+    'clinic': {'label': 'Clinic / Wellness', 'icon': '🩺', 'color': '#0891b2', 'recommended_cards': ['membership','multipass','vip']},
+    'laundry': {'label': 'Laundry Shop', 'icon': '🧺', 'color': '#0284c7', 'recommended_cards': ['stamp','points','membership']},
+    'gas_station': {'label': 'Gasoline Station', 'icon': '⛽', 'color': '#dc2626', 'recommended_cards': ['points','vip','stamp']},
+    'car_wash': {'label': 'Car Wash', 'icon': '🚿', 'color': '#0369a1', 'recommended_cards': ['stamp','multipass','points']},
+    'pharmacy': {'label': 'Pharmacy', 'icon': '💊', 'color': '#16a34a', 'recommended_cards': ['points','vip','stamp']},
+    'bakery': {'label': 'Bakery', 'icon': '🥐', 'color': '#b45309', 'recommended_cards': ['stamp','points','vip']},
+    'hotel': {'label': 'Hotel / Resort', 'icon': '🏨', 'color': '#4338ca', 'recommended_cards': ['vip','membership','points']},
+    'other': {'label': 'Other Business', 'icon': '🏪', 'color': '#0d9488', 'recommended_cards': ['stamp','points','vip']},
+    'car_lending': {'label': 'Car Lending / Showroom', 'icon': '🚗', 'color': '#0f172a', 'recommended_cards': []},
+    'cockpit': {'label': 'Cockpit Arena', 'icon': '🏆', 'color': '#713f12', 'recommended_cards': []},
+}
+
+def normalize_business_type(value: Optional[str]) -> str:
+    value = (value or 'other').strip().lower()
+    return value if value in BUSINESS_CATEGORY_META else 'other'
+
+def business_category_meta(value: Optional[str]) -> dict:
+    return BUSINESS_CATEGORY_META.get(normalize_business_type(value), BUSINESS_CATEGORY_META['other'])
+
 # Pydantic Models
 class BusinessCreate(BaseModel):
     name: str
@@ -469,6 +499,25 @@ class BusinessCreate(BaseModel):
     address: Optional[str] = None  # business's main address - lets super admin organize businesses by location
     branch_count: int = Field(default=1, ge=1, le=50)
     plan: Optional[str] = None  # explicit plan choice; if omitted, derived from branch_count
+    setup_kit_requested: bool = False
+    kit_recipient_name: Optional[str] = None
+    kit_contact_number: Optional[str] = None
+    kit_delivery_address: Optional[str] = None
+    kit_delivery_instructions: Optional[str] = None
+
+class SetupKitOwnerUpdate(BaseModel):
+    recipient_name: Optional[str] = None
+    contact_number: Optional[str] = None
+    delivery_address: Optional[str] = None
+    delivery_instructions: Optional[str] = None
+    logo_url: Optional[str] = None
+
+class SetupKitAdminUpdate(BaseModel):
+    fulfillment_status: Optional[Literal['requested','paid','preparing','ready_to_ship','shipped','delivered','cancelled']] = None
+    payment_status: Optional[Literal['unpaid','paid','refunded']] = None
+    courier: Optional[str] = None
+    tracking_number: Optional[str] = None
+    admin_notes: Optional[str] = None
 
 class LoginRequest(BaseModel):
     email: str
@@ -865,6 +914,10 @@ class LoyaltyConfig(BaseModel):
     program_logo_url: Optional[str] = None
     hero_image_url: Optional[str] = None
     card_name: Optional[str] = None
+    # --- LoyaltyTree Wallet 2.0 ---
+    wallet_style: Literal['modern', 'premium', 'minimal', 'dark'] = 'modern'
+    wallet_secondary_color: Optional[str] = None
+    wallet_show_background: bool = True
     description: Optional[str] = Field(default=None, max_length=140)  # short blurb shown below the card on the join page / wallet pass - also doubles as the multipass card's "what these sessions are for" description
     google_review_url: Optional[str] = None  # Growth/Pro only - link prompted after a redeemed reward
     # --- Points card only ---
@@ -1588,6 +1641,11 @@ def generate_personalized_hero_image_bytes(
     vip_tier_name: Optional[str] = None,
     membership_status: Optional[str] = None,
     membership_expires_at: Optional[str] = None,
+    secondary_color: Optional[str] = None,
+    wallet_style: str = 'modern',
+    business_name: Optional[str] = None,
+    card_label: Optional[str] = None,
+    include_text_overlay: bool = True,
 ) -> bytes:
     """Same gradient as generate_hero_image_bytes, but with a bottom banner
     burned in showing the reward/progress and short description - the
@@ -1598,8 +1656,55 @@ def generate_personalized_hero_image_bytes(
     instead of a reward name (points cards have no single fixed reward -
     see points_prizes on loyalty_programs) and the progress line reports
     the points balance instead of a stamp count."""
+    # Wallet 2.0 branded hero. Keep the image static (Google requirement)
+    # but make it look like a deliberate digital card instead of a plain gradient.
     img = _render_hero(primary_color).convert('RGBA')
     from PIL import ImageDraw, ImageFont
+
+    if secondary_color:
+        overlay = Image.new('RGBA', HERO_SIZE, (*_hex_to_rgb(secondary_color), 0))
+        overlay_px = overlay.load()
+        for y in range(HERO_SIZE[1]):
+            for x in range(HERO_SIZE[0]):
+                # Soft accent glow from top-right.
+                strength = max(0.0, 1.0 - (((HERO_SIZE[0]-x) + y) / (HERO_SIZE[0] + HERO_SIZE[1])))
+                overlay_px[x, y] = (*_hex_to_rgb(secondary_color), int(95 * strength))
+        img = Image.alpha_composite(img, overlay)
+
+    # Subtle premium framing + a single soft rectangular accent in the top
+    # right corner. Drawn on their own transparent layer and alpha_composite'd
+    # in - drawing translucent fills straight onto `img` with ImageDraw looks
+    # right in-memory, but this function ends with img.convert('RGB'), which
+    # DROPS the alpha channel instead of blending it, so any "translucent"
+    # shape drawn directly renders fully opaque instead. (This is also why
+    # the old three-circle version showed up as a solid white blob instead of
+    # a soft accent - same bug, not just the wrong shape.)
+    deco = Image.new('RGBA', HERO_SIZE, (0, 0, 0, 0))
+    deco_draw = ImageDraw.Draw(deco)
+    if wallet_style in ('premium', 'dark'):
+        deco_draw.rounded_rectangle((18,18,HERO_SIZE[0]-18,HERO_SIZE[1]-18), radius=34, outline=(255,255,255,45), width=2)
+    deco_draw.rounded_rectangle((HERO_SIZE[0]-300, -60, HERO_SIZE[0]+40, 150), radius=36, fill=(255,255,255,22))
+    img = Image.alpha_composite(img, deco)
+    draw = ImageDraw.Draw(img)
+
+    if include_text_overlay and business_name:
+        font_brand = ImageFont.load_default(size=20)
+        draw.text((40, 28), str(business_name)[:38], font=font_brand, fill=(255,255,255,225))
+    if include_text_overlay and card_label:
+        font_label = ImageFont.load_default(size=16)
+        label = str(card_label).upper()
+        bbox = draw.textbbox((0,0), label, font=font_label)
+        draw.text((HERO_SIZE[0]-40-(bbox[2]-bbox[0]), 30), label, font=font_label, fill=(255,255,255,185))
+
+    if not include_text_overlay:
+        # Apple's storeCard already overlays organization name (logoText),
+        # MEMBER/status headerFields+primaryFields, and the reward/progress
+        # detail on backFields - baking the same text into the strip image
+        # AGAIN (as done for Google's hero image below) just produces
+        # doubled, overlapping text on top of Apple's own chrome. Return the
+        # plain branded gradient background only; let native fields do the
+        # talking.
+        return _hero_to_png(img.convert('RGB'))
 
     scrim_height = 150
     scrim = Image.new('RGBA', (HERO_SIZE[0], scrim_height), (0, 0, 0, 0))
@@ -1625,7 +1730,7 @@ def generate_personalized_hero_image_bytes(
         progress_line = (f'{sessions_remaining} of {sessions_total} sessions left' if sessions_remaining > 0
                          else 'All sessions used')
     elif card_type == 'vip':
-        reward_line = f'{vip_tier_name or "VIP"} VIP'
+        reward_line = str(vip_tier_name or 'VIP')
         progress_line = f'{vip_points} VIP points'
     elif card_type == 'membership':
         reward_line = f'Membership · {membership_status.upper() if membership_status else "INACTIVE"}'
@@ -1658,6 +1763,94 @@ def generate_personalized_hero_image_bytes(
     return _hero_to_png(img.convert('RGB'))
 
 # Google Wallet Helpers
+WALLET_CARD_LABELS = {
+    'stamp': 'STAMP CARD',
+    'points': 'POINTS CARD',
+    'membership': 'MEMBERSHIP',
+    'multipass': 'MULTIPASS',
+    'vip': 'VIP MEMBER',
+}
+
+def _normalize_hex_color(value: Optional[str], fallback: str = '#0d9488') -> str:
+    value = str(value or '').strip()
+    if re.fullmatch(r'#[0-9a-fA-F]{6}', value):
+        return value.lower()
+    if re.fullmatch(r'[0-9a-fA-F]{6}', value):
+        return f'#{value.lower()}'
+    return fallback
+
+def _mix_hex(color_a: str, color_b: str, ratio: float) -> str:
+    a = _hex_to_rgb(_normalize_hex_color(color_a))
+    b = _hex_to_rgb(_normalize_hex_color(color_b))
+    ratio = max(0.0, min(1.0, ratio))
+    rgb = tuple(round(a[i] * (1-ratio) + b[i] * ratio) for i in range(3))
+    return '#%02x%02x%02x' % rgb
+
+def wallet_20_design(business: dict, program: Optional[dict]) -> dict:
+    program = program or {}
+    category = business_category_meta(business.get('business_type'))
+    card_type = program.get('card_type') or 'stamp'
+    style = str(program.get('wallet_style') or 'modern').lower()
+    if style not in ('modern', 'premium', 'minimal', 'dark'):
+        style = 'modern'
+
+    primary = _normalize_hex_color(program.get('primary_color'), category.get('color') or '#0d9488')
+    secondary = _normalize_hex_color(
+        program.get('wallet_secondary_color'),
+        _mix_hex(primary, '#14b8a6', .42)
+    )
+
+    if style == 'dark':
+        background = '#111827'
+        secondary = _mix_hex(primary, '#111827', .30)
+    elif style == 'premium':
+        background = _mix_hex(primary, '#050505', .58)
+        secondary = _mix_hex(primary, '#d4af37', .28)
+    elif style == 'minimal':
+        background = _mix_hex(primary, '#ffffff', .12)
+        secondary = _mix_hex(primary, '#ffffff', .35)
+    else:
+        background = primary
+
+    return {
+        'version': '2.0',
+        'style': style,
+        'primary': primary,
+        'secondary': secondary,
+        'background': background,
+        'show_background': program.get('wallet_show_background') is not False,
+        'card_type': card_type,
+        'card_label': WALLET_CARD_LABELS.get(card_type, 'LOYALTY CARD'),
+        'category': category,
+    }
+
+def wallet_20_program_name(business: dict, program: Optional[dict]) -> str:
+    # issuerName (small, top) already shows the business name - programName
+    # (big title) should be the card's own name so the two rows say
+    # different things instead of repeating the business name twice. Falls
+    # back to "<Business> Rewards" (matches the card-name default used
+    # elsewhere, e.g. get_wallet_pass) when the business hasn't set one.
+    biz_name = str(business.get('name') or 'LoyaltyTree')
+    card_name = str((program or {}).get('card_name') or '').strip()
+    return card_name or f'{biz_name} Rewards'
+
+def wallet_20_short_status(customer: dict, business: dict, program: dict) -> tuple:
+    card_type = (program or {}).get('card_type', 'stamp')
+    if card_type == 'points':
+        return 'POINTS', f"{int(customer.get('points_balance') or 0):,}"
+    if card_type == 'multipass':
+        remaining = int(customer.get('multipass_sessions_remaining') or 0)
+        total = int(customer.get('multipass_total_sessions') or (program or {}).get('multipass_session_count') or 0)
+        return 'SESSIONS LEFT', f'{remaining} / {total}'
+    if card_type == 'membership':
+        return 'STATUS', membership_effective_status(customer).upper()
+    if card_type == 'vip':
+        tier = get_vip_tier(customer, program or {})
+        return 'VIP TIER', str(tier.get('name') or 'VIP').upper()
+    goal = int((program or {}).get('stamp_goal') or 8)
+    stamps = int(customer.get('stamp_count') or 0)
+    return 'STAMPS', f'{stamps} / {goal}'
+
 def get_google_wallet_credentials():
     creds_json = os.getenv('GOOGLE_WALLET_CREDENTIALS', '')
     if not creds_json:
@@ -1733,13 +1926,15 @@ def build_loyalty_class(business: dict, program: dict, review_status: str = 'UND
     if not class_id:
         class_id = f'{GOOGLE_WALLET_ISSUER_ID}.{biz_public_id}'
 
-    primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
+    design = wallet_20_design(business, program)
+    category = design['category']
+    primary_color = design['background']
     reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
     card_type = program.get('card_type', 'stamp') if program else 'stamp'
     card_name = program.get('card_name') if program else None
     description = program.get('description') if program else None
     biz_name = business.get('name', 'Loyalty')
-    program_name = card_name if card_name else f'{biz_name} Rewards'
+    program_name = wallet_20_program_name(business, program)
 
     if card_type == 'multipass':
         session_count = program.get('multipass_session_count', 12) if program else 12
@@ -1757,9 +1952,16 @@ def build_loyalty_class(business: dict, program: dict, review_status: str = 'UND
         'reviewStatus': review_status,
         'hexBackgroundColor': primary_color if primary_color.startswith('#') else f'#{primary_color}',
         'textModulesData': [
-            {'header': 'Reward', 'body': reward_module_body},
-            {'header': 'About', 'body': description if description else 'Collect stamps, earn rewards'}
-        ]
+            {'header': 'CARD', 'body': design['card_label']},
+            {'header': 'BUSINESS TYPE', 'body': f"{category['icon']} {category['label']}"},
+            {'header': 'BENEFIT / REWARD', 'body': reward_module_body},
+            {'header': 'ABOUT', 'body': description if description else f"{biz_name} digital loyalty card powered by LoyaltyTree"}
+        ],
+        'linksModuleData': {
+            'uris': [
+                {'uri': f"{BASE_URL}/join/{biz_public_id}", 'description': 'Join / Share Card'}
+            ]
+        }
     }
 
     logo_url = business.get('logo_url')
@@ -1773,8 +1975,8 @@ def build_loyalty_class(business: dict, program: dict, review_status: str = 'UND
         logo_url = DEFAULT_LOGO_URL
     loyalty_class['programLogo'] = {'sourceUri': {'uri': logo_url}}
 
-    hero_url = program.get('hero_image_url') if program else None
-    if not hero_url:
+    hero_url = (program.get('hero_image_url') if program else None) if design['show_background'] else None
+    if not hero_url and design['show_background']:
         # No custom hero photo uploaded - generate the same diagonal gradient
         # used on the web/join page so the Wallet pass matches it, instead of
         # showing no banner at all. The color is baked into the URL itself:
@@ -1782,7 +1984,8 @@ def build_loyalty_class(business: dict, program: dict, review_status: str = 'UND
         # copy; a color change produces a new URL, forcing Google to refetch.
         color_key = primary_color.lstrip('#')
         hero_url = f'{BASE_URL}/api/v1/business/{biz_public_id}/hero-image.png?c={color_key}'
-    loyalty_class['heroImage'] = {'sourceUri': {'uri': hero_url}}
+    if hero_url:
+        loyalty_class['heroImage'] = {'sourceUri': {'uri': hero_url}}
 
     return loyalty_class
 
@@ -1799,43 +2002,50 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     sessions_total = customer.get('multipass_total_sessions', 0) or (program.get('multipass_session_count', 12) if program else 12)
     cust_name = customer.get('name', 'Member')
     biz_name = business.get('name', '')
+    design = wallet_20_design(business, program)
+    category = design['category']
     membership_summary = (
         get_membership_summary(business.get('id'), customer.get('id'))
         if card_type == 'membership' else None
     )
 
+    details = []  # [(header, body), ...] - mirrors WalletPass.jsx's `view.details`
     if card_type == 'points':
         loyalty_points_label = 'Points'
         loyalty_points_balance = str(points_balance)
-        progress_body = f'{points_balance} points'
-        reward_body = 'Redeem prizes in-store'
+        details.append(('REWARD', reward_name))
     elif card_type == 'multipass':
         loyalty_points_label = 'Sessions'
         loyalty_points_balance = f'{sessions_remaining}/{sessions_total}'
-        progress_body = f'{sessions_remaining} of {sessions_total} sessions left'
-        reward_body = (program.get('description') if program else None) or 'Session pass'
+        multipass_expires_at = customer.get('multipass_expires_at')
+        details.append(('VALID UNTIL', multipass_expires_at or 'No expiry set'))
     elif card_type == 'vip':
         tier = get_vip_tier(customer, program or {})
         next_tier = get_next_vip_tier(customer, program or {})
         loyalty_points_label = 'VIP Points'
         loyalty_points_balance = str(int(customer.get('vip_points') or 0))
-        progress_body = f"{tier.get('name','VIP')} VIP" + (f" · {max(0,next_tier.get('threshold',0)-int(customer.get('vip_points') or 0))} points to {next_tier.get('name')}" if next_tier else ' · Highest tier')
-        reward_body = ', '.join(tier.get('benefits') or []) or 'VIP benefits'
+        details.append(('NEXT TIER', next_tier.get('name') if next_tier else 'Top tier'))
     elif card_type == 'membership':
         status = membership_effective_status(customer)
         expiry = customer.get('membership_expires_at')
         loyalty_points_label = 'Status'
         loyalty_points_balance = status.upper()
-        progress_body = ('Lifetime membership' if status == 'lifetime'
-                         else f'Valid until {expiry}' if expiry
-                         else status.title())
-        benefits = (program.get('membership_services') if program else None) or []
-        reward_body = ', '.join(benefits[:3]) if benefits else ((program.get('description') if program else None) or 'Membership benefits')
+        services = (program.get('membership_services') if program else None) or []
+        details.append(('ACTIVE UNTIL', 'Lifetime' if status == 'lifetime' else (expiry or 'Not activated')))
+        details.append(('MEMBER SINCE', customer.get('membership_started_at') or '—'))
+        details.append(('MEMBERSHIP TYPE', (program.get('card_name') if program else None) or design['card_label']))
+        details.append(('NEXT BENEFIT', services[0] if services else 'Rewards'))
     else:
         loyalty_points_label = 'Stamps'
         loyalty_points_balance = f'{stamps}/{stamp_goal}'
-        progress_body = f'{stamps} of {stamp_goal} stamps'
-        reward_body = reward_name
+        left = max(stamp_goal - stamps, 0)
+        details.append(('REWARD', reward_name if left == 0 else f'{left} more to {reward_name}'))
+    description = program.get('description') if program else None
+    if len(details) < 4 and description:
+        details.append(('ABOUT', description))
+    if len(details) < 4:
+        details.append(('BUSINESS', f"{category['icon']} {biz_name} · {category['label']}"))
+    details = details[:4]
 
     loyalty_object = {
         'id': object_id,
@@ -1853,12 +2063,14 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
             'balance': {'string': loyalty_points_balance}
         },
         'textModulesData': [
-            {'header': 'Business', 'body': biz_name},
-            {'header': 'Reward', 'body': reward_body},
-            {'header': 'Progress', 'body': progress_body}
+            {'header': design['card_label'], 'body': cust_name},
+            *[{'header': header, 'body': str(body)} for header, body in details],
         ],
         'linksModuleData': {
-            'uris': [{'uri': f'{BASE_URL}/wallet/{cust_public_id}', 'description': 'View Card Online'}]
+            'uris': [
+                {'uri': f'{BASE_URL}/wallet/{cust_public_id}', 'description': 'Open full LoyaltyTree card'},
+                {'uri': f'{BASE_URL}/stamp/{cust_public_id}', 'description': 'Present QR / Check in'}
+            ]
         }
     }
 
@@ -1867,8 +2079,8 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     # the gradient banner. Skipped when the business uploaded their own
     # hero photo, since baking text onto someone else's image would look
     # wrong; that photo is left to show as-is (inherited from the class).
-    if not (program and program.get('hero_image_url')):
-        primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
+    if design['show_background'] and not (program and program.get('hero_image_url')):
+        primary_color = design['background']
         description = program.get('description') if program else None
         color_key = primary_color.lstrip('#')
         if card_type == 'points':
@@ -1887,6 +2099,64 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
 
     return loyalty_object
 
+
+async def refresh_existing_member_wallets(business: dict, program: dict):
+    """Push a business's current design/status to every member's already-issued
+    Google Wallet object and Apple pass. Customer balances/history are
+    untouched - only the Wallet-side representation is patched (Google) or
+    flagged for re-fetch via APNs (Apple).
+
+    This is the single source of truth for 'my saved changes aren't showing
+    up on the actual phone' - a business's card design lives in our DB the
+    moment they hit Save, but Google/Apple only see it once we push. Call
+    this after ANY change that should be visible on already-issued passes
+    (color/style, card copy, reward text, membership status, etc), not just
+    from the explicit 'Publish' button."""
+    try:
+        members = (
+            supabase.table('customers')
+            .select('*')
+            .eq('business_id', business.get('id'))
+            .execute()
+            .data or []
+        )
+        current_program = safe_get_loyalty_program(business.get('id')) or program or {}
+        semaphore = asyncio.Semaphore(8)
+
+        async def refresh_one(member):
+            async with semaphore:
+                await asyncio.to_thread(sync_wallet_object, member, business, current_program)
+                await asyncio.to_thread(push_apple_wallet_update, member.get('public_id'))
+
+        await asyncio.gather(*(refresh_one(member) for member in members if member.get('public_id')))
+        print(f"WALLET SYNC: refreshed {len(members)} member wallet representations for {business.get('name')}")
+    except Exception as refresh_error:
+        print(f"WALLET SYNC bulk refresh error: {refresh_error}")
+
+async def republish_wallet_class_and_refresh(business: dict, program: dict):
+    """Best-effort: if this business has already published a Google Wallet
+    class, PUT the latest design (color/style/logo/hero) to it so existing
+    passes pick up the change, then refresh every member's issued pass
+    (Google object PATCH + Apple push). Silent no-op if Google Wallet isn't
+    configured yet or this business hasn't published a class - businesses
+    that haven't touched Wallet at all shouldn't get errors on a plain Save."""
+    class_id = (program or {}).get('google_wallet_class_id')
+    if class_id and GOOGLE_WALLET_ISSUER_ID:
+        try:
+            access_token = get_google_access_token()
+            if access_token:
+                import httpx
+                loyalty_class = build_loyalty_class(business, program, review_status='UNDER_REVIEW')
+                with httpx.Client() as client:
+                    resp = client.put(
+                        f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}',
+                        headers={"Authorization": f"Bearer {access_token}"},
+                        json=loyalty_class
+                    )
+                    print(f"WALLET SYNC: class PUT {resp.status_code}")
+        except Exception as e:
+            print(f"WALLET SYNC: class PUT error: {e}")
+    await refresh_existing_member_wallets(business, program)
 
 def sync_wallet_object(customer: dict, business: dict, program: dict,
                         notify_header: str = None, notify_body: str = None,
@@ -2024,6 +2294,80 @@ def sign_pkpass_manifest(manifest_bytes: bytes) -> Optional[bytes]:
         print(f"APPLE WALLET: manifest signing error: {e}")
         return None
 
+def _fetch_image_bytes(url: Optional[str], timeout: float = 5.0) -> Optional[bytes]:
+    """Best-effort download of a business-uploaded image (logo or hero
+    photo) for baking into the Apple Wallet pass. Returns None on any
+    failure (missing url, network error, non-200, unreadable image) so
+    callers can fall back to the generated placeholder instead of ever
+    failing pass generation over a bad/slow image URL."""
+    if not url:
+        return None
+    try:
+        import httpx
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            resp = client.get(url)
+            if resp.status_code == 200 and resp.content:
+                return resp.content
+    except Exception as e:
+        print(f"IMAGE FETCH error ({url}): {e}")
+    return None
+
+def apple_icon_from_logo_bytes(logo_bytes: bytes, size: int) -> Optional[bytes]:
+    """Center-crops the business's real logo to a square and composites it
+    onto white (Apple's icon slot has no reliable transparency handling
+    across devices) - used instead of generate_apple_icon_bytes's
+    initial-letter placeholder whenever a real logo is available."""
+    try:
+        img = Image.open(BytesIO(logo_bytes)).convert('RGBA')
+        w, h = img.size
+        side = min(w, h)
+        left, top = (w - side) // 2, (h - side) // 2
+        img = img.crop((left, top, left + side, top + side)).resize((size, size), Image.LANCZOS)
+        bg = Image.new('RGB', (size, size), (255, 255, 255))
+        bg.paste(img, (0, 0), img)
+        return _hero_to_png(bg)
+    except Exception as e:
+        print(f"APPLE ICON from logo error: {e}")
+        return None
+
+def apple_logo_from_image_bytes(logo_bytes: bytes, width: int, height: int) -> Optional[bytes]:
+    """Fits the business's real logo (preserving aspect ratio, transparent
+    padding) into the pass-header logo slot - used instead of
+    generate_apple_logo_bytes's generated wordmark whenever a real logo is
+    available."""
+    try:
+        img = Image.open(BytesIO(logo_bytes)).convert('RGBA')
+        img.thumbnail((width, height), Image.LANCZOS)
+        canvas = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+        canvas.paste(img, ((width - img.width) // 2, (height - img.height) // 2), img)
+        return _hero_to_png(canvas)
+    except Exception as e:
+        print(f"APPLE LOGO from image error: {e}")
+        return None
+
+def apple_strip_from_image_bytes(image_bytes: bytes, width: int, height: int) -> Optional[bytes]:
+    """Center-crops/resizes the business's real hero photo to the strip
+    banner's aspect ratio - used instead of generate_apple_strip_bytes's
+    procedurally-drawn gradient whenever the business has uploaded one."""
+    try:
+        img = Image.open(BytesIO(image_bytes)).convert('RGB')
+        src_ratio, dst_ratio = img.width / img.height, width / height
+        if src_ratio > dst_ratio:
+            new_w = int(img.height * dst_ratio)
+            left = (img.width - new_w) // 2
+            img = img.crop((left, 0, left + new_w, img.height))
+        else:
+            new_h = int(img.width / dst_ratio)
+            top = (img.height - new_h) // 2
+            img = img.crop((0, top, img.width, top + new_h))
+        img = img.resize((width, height), Image.LANCZOS)
+        buf = BytesIO()
+        img.save(buf, format='PNG')
+        return buf.getvalue()
+    except Exception as e:
+        print(f"APPLE STRIP from image error: {e}")
+        return None
+
 def generate_apple_icon_bytes(primary_color: str, business_name: str, size: int) -> bytes:
     """Solid primary_color square with the business's first initial - the
     same 'colored circle + initial' look used for customer avatars in the
@@ -2103,7 +2447,8 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     sessions_total = customer.get('multipass_total_sessions', 0) or (program.get('multipass_session_count', 12) if program else 12)
     multipass_expires_at = customer.get('multipass_expires_at')
     reward_unlocked = bool(customer.get('reward_unlocked'))
-    primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
+    design = wallet_20_design(business, program)
+    primary_color = design['background']
     r, g, b = _hex_to_rgb(primary_color)
     membership_summary = (
         get_membership_summary(business.get('id'), customer.get('id'))
@@ -2124,9 +2469,50 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     ann_message = (announcement or {}).get('message', '') or ''
     announcement_value = ann_title.strip() or ann_message.strip() or 'Check back for updates'
 
+    # Same per-type detail rows as build_loyalty_object (Google) and
+    # WalletPass.jsx (website) - kept in sync so flipping to the back of the
+    # Apple pass shows the same Active Until / Member Since / Membership
+    # Type / Next Benefit style breakdown instead of duplicating whatever's
+    # already on the front (primary/secondary fields below).
+    apple_details = []
+    if card_type == 'multipass':
+        apple_details.append(('valid_until', 'VALID UNTIL', multipass_expires_at or 'No expiry set'))
+    elif card_type == 'vip':
+        next_tier = get_next_vip_tier(customer, program or {})
+        apple_details.append(('next_tier', 'NEXT TIER', next_tier.get('name') if next_tier else 'Top tier'))
+    elif card_type == 'membership':
+        status = membership_effective_status(customer)
+        expiry = customer.get('membership_expires_at')
+        services = (program.get('membership_services') if program else None) or []
+        apple_details.append(('active_until', 'ACTIVE UNTIL', 'Lifetime' if status == 'lifetime' else (expiry or 'Not activated')))
+        apple_details.append(('member_since', 'MEMBER SINCE', customer.get('membership_started_at') or '—'))
+        apple_details.append(('membership_type', 'MEMBERSHIP TYPE', (program.get('card_name') if program else None) or design['card_label']))
+        apple_details.append(('next_benefit', 'NEXT BENEFIT', services[0] if services else 'Rewards'))
+    else:
+        left = max(stamp_goal - stamps, 0)
+        apple_details.append(('reward_detail', 'REWARD', reward_name if left == 0 else f'{left} more to {reward_name}'))
+
+    # Recent Activity: one backField per movement (stamp added, points
+    # earned/redeemed, session used, VIP tier change, membership visit -
+    # whichever event table this card type actually writes to, see
+    # get_recent_activity). Sits below the per-type summary above and
+    # above the static About/link/announcement rows so flipping the pass
+    # reads top-to-bottom as: status summary -> history -> about.
+    activity = get_recent_activity(business.get('id'), customer.get('id'), card_type)
+    activity_fields = []
+    if activity:
+        activity_fields.append({'key': 'activity_header', 'label': 'RECENT ACTIVITY', 'value': f'Last {len(activity)} movement{"s" if len(activity) != 1 else ""}'})
+        activity_fields += [
+            {'key': f'activity_{i}', 'label': format_activity_date(when), 'value': desc}
+            for i, (when, desc) in enumerate(activity)
+        ]
+
     back_fields = [
-        {'key': 'about', 'label': 'About', 'value': description or 'Collect stamps, earn rewards.'},
-        {'key': 'online', 'label': 'View Online', 'value': f'{BASE_URL}/wallet/{cust_public_id}'},
+        {'key': 'card', 'label': 'CARD', 'value': design['card_label']},
+        *[{'key': key, 'label': label, 'value': str(value)} for key, label, value in apple_details],
+        *activity_fields,
+        {'key': 'about', 'label': 'ABOUT', 'value': description or f'{biz_name} digital loyalty card powered by LoyaltyTree.'},
+        {'key': 'online', 'label': 'FULL CARD & HISTORY', 'value': f'{BASE_URL}/wallet/{cust_public_id}'},
         {
             'key': 'announcement',
             'label': '📢 ANNOUNCEMENT',
@@ -2137,14 +2523,13 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     if ann_message.strip() and ann_message.strip() != announcement_value:
         back_fields.append({'key': 'announcement_detail', 'label': ' ', 'value': ann_message.strip()[:400]})
 
-    return {
+    pass_dict = {
         'formatVersion': 1,
         'passTypeIdentifier': APPLE_PASS_TYPE_IDENTIFIER,
         'teamIdentifier': APPLE_TEAM_IDENTIFIER,
         'organizationName': biz_name,
         'serialNumber': cust_public_id,
         'description': f'{biz_name} Loyalty Card',
-        'logoText': biz_name[:20],
         'backgroundColor': f'rgb({r}, {g}, {b})',
         'foregroundColor': 'rgb(255, 255, 255)',
         'labelColor': 'rgba(255, 255, 255, 0.75)',
@@ -2192,6 +2577,57 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
             }
         ]
     }
+    # No logoText: it sits at the top next to the logo icon on the same row
+    # as headerFields (e.g. "MEMBER: <name>"), and a business name of even
+    # moderate length collides/overlaps with that field on narrower phones.
+    # The logo image already carries the brand - headerFields already carry
+    # the member context - logoText is redundant and the most common source
+    # of the overlapping-text look on real devices.
+    return pass_dict
+
+def generate_apple_strip_bytes(customer: dict, business: dict, program: dict, width: int, height: int) -> bytes:
+    design = wallet_20_design(business, program)
+    card_type = (program or {}).get('card_type', 'stamp')
+    stamp_goal = int((program or {}).get('stamp_goal') or 8)
+    membership_summary = get_membership_summary(business.get('id'), customer.get('id')) if card_type == 'membership' else None
+    vip_tier = get_vip_tier(customer, program or {}) if card_type == 'vip' else None
+    raw = generate_personalized_hero_image_bytes(
+        design['background'],
+        (program or {}).get('reward_name') or 'Reward',
+        int(customer.get('stamp_count') or 0),
+        stamp_goal,
+        (program or {}).get('description'),
+        card_type=card_type,
+        points_balance=int(customer.get('points_balance') or 0),
+        sessions_remaining=int(customer.get('multipass_sessions_remaining') or 0),
+        sessions_total=int(customer.get('multipass_total_sessions') or (program or {}).get('multipass_session_count') or 0),
+        total_visits=(membership_summary or {}).get('total_visits', 0),
+        last_service_name=(membership_summary or {}).get('last_service_name'),
+        vip_points=int(customer.get('vip_points') or 0),
+        vip_tier_name=(vip_tier or {}).get('name'),
+        membership_status=membership_effective_status(customer) if card_type == 'membership' else None,
+        membership_expires_at=customer.get('membership_expires_at'),
+        secondary_color=design['secondary'],
+        wallet_style=design['style'],
+        business_name=business.get('name'),
+        card_label=design['card_label'],
+        include_text_overlay=False,
+    )
+    img = Image.open(BytesIO(raw)).convert('RGB')
+    src_ratio = img.width / img.height
+    dst_ratio = width / height
+    if src_ratio > dst_ratio:
+        new_w = int(img.height * dst_ratio)
+        left = (img.width - new_w) // 2
+        img = img.crop((left, 0, left + new_w, img.height))
+    else:
+        new_h = int(img.width / dst_ratio)
+        top = (img.height - new_h) // 2
+        img = img.crop((0, top, img.width, top + new_h))
+    img = img.resize((width, height), Image.LANCZOS)
+    buf = BytesIO()
+    img.save(buf, format='PNG')
+    return buf.getvalue()
 
 def build_pkpass_bytes(customer: dict, business: dict, program: dict, announcement: Optional[dict] = None) -> Optional[bytes]:
     """Assembles and signs the full .pkpass zip. Returns None if Apple
@@ -2206,19 +2642,53 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
     if get_apple_pass_credentials() is None:
         return None
 
-    primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
+    design = wallet_20_design(business, program)
+    primary_color = design['background']
     biz_name = business.get('name', 'Loyalty')
+
+    # Real branding when the business has uploaded it - same source URLs
+    # Google Wallet already uses (see build_loyalty_class) - so both wallets
+    # end up matching. Each falls back to the existing generated placeholder
+    # on any missing URL, fetch failure, or unreadable image.
+    logo_url = business.get('logo_url') or ((program or {}).get('program_logo_url'))
+    logo_bytes = _fetch_image_bytes(logo_url)
     pass_json = build_apple_pass_json(customer, business, program, announcement)
+
+    icon_29 = apple_icon_from_logo_bytes(logo_bytes, 29) if logo_bytes else None
+    icon_58 = apple_icon_from_logo_bytes(logo_bytes, 58) if logo_bytes else None
+    icon_87 = apple_icon_from_logo_bytes(logo_bytes, 87) if logo_bytes else None
+    logo_160 = apple_logo_from_image_bytes(logo_bytes, 160, 50) if logo_bytes else None
+    logo_320 = apple_logo_from_image_bytes(logo_bytes, 320, 100) if logo_bytes else None
+    logo_480 = apple_logo_from_image_bytes(logo_bytes, 480, 150) if logo_bytes else None
 
     files = {
         'pass.json': json.dumps(pass_json).encode('utf-8'),
-        'icon.png': generate_apple_icon_bytes(primary_color, biz_name, 29),
-        'icon@2x.png': generate_apple_icon_bytes(primary_color, biz_name, 58),
-        'icon@3x.png': generate_apple_icon_bytes(primary_color, biz_name, 87),
-        'logo.png': generate_apple_logo_bytes(biz_name, 160, 50),
-        'logo@2x.png': generate_apple_logo_bytes(biz_name, 320, 100),
-        'logo@3x.png': generate_apple_logo_bytes(biz_name, 480, 150),
+        'icon.png': icon_29 or generate_apple_icon_bytes(primary_color, biz_name, 29),
+        'icon@2x.png': icon_58 or generate_apple_icon_bytes(primary_color, biz_name, 58),
+        'icon@3x.png': icon_87 or generate_apple_icon_bytes(primary_color, biz_name, 87),
+        'logo.png': logo_160 or generate_apple_logo_bytes(biz_name, 160, 50),
+        'logo@2x.png': logo_320 or generate_apple_logo_bytes(biz_name, 320, 100),
+        'logo@3x.png': logo_480 or generate_apple_logo_bytes(biz_name, 480, 150),
     }
+    if design['show_background']:
+        # Thumbnail, not a full-width strip: a strip image sits behind
+        # Apple's own header/primary/secondary fields, which it *always*
+        # overlays on top - no matter what we send, that's Apple's fixed
+        # storeCard behavior, and it's what was making the pass look like
+        # text stamped over a photo instead of a real card. A thumbnail
+        # sits beside the fields instead of under them, so nothing gets
+        # overlaid on top of the photo - closer to how an actual membership
+        # card / GoTyme-style bank card reads at a glance.
+        hero_url = (program or {}).get('hero_image_url')
+        hero_bytes = _fetch_image_bytes(hero_url)
+        thumb_90 = apple_strip_from_image_bytes(hero_bytes, 90, 90) if hero_bytes else None
+        thumb_180 = apple_strip_from_image_bytes(hero_bytes, 180, 180) if hero_bytes else None
+        thumb_270 = apple_strip_from_image_bytes(hero_bytes, 270, 270) if hero_bytes else None
+        files.update({
+            'thumbnail.png': thumb_90 or generate_apple_strip_bytes(customer, business, program, 90, 90),
+            'thumbnail@2x.png': thumb_180 or generate_apple_strip_bytes(customer, business, program, 180, 180),
+            'thumbnail@3x.png': thumb_270 or generate_apple_strip_bytes(customer, business, program, 270, 270),
+        })
 
     manifest = {name: hashlib.sha1(content).hexdigest() for name, content in files.items()}
     manifest_bytes = json.dumps(manifest).encode('utf-8')
@@ -3081,6 +3551,106 @@ def get_membership_summary(business_id: int, customer_id: int) -> dict:
         print(f"MEMBERSHIP SUMMARY error: {e}")
     return summary
 
+def format_activity_date(value) -> str:
+    """Renders either a 'YYYY-MM-DD' date (service_date) or a full ISO
+    timestamp (created_at) as 'Aug 8, 2026', same convention as
+    format_showroom_date. Falls back to the raw value on anything
+    unparseable rather than dropping the row."""
+    if not value:
+        return '—'
+    s = str(value)
+    try:
+        dt = datetime.fromisoformat(s.replace('Z', '+00:00')) if 'T' in s else datetime.strptime(s[:10], '%Y-%m-%d')
+        return dt.strftime('%b %-d, %Y')
+    except Exception:
+        return s[:10] or s
+
+def get_recent_activity(business_id: int, customer_id: int, card_type: str, limit: int = 15) -> List[tuple]:
+    """Best-effort per-customer movement log, newest first, pulled from
+    whichever event table this card type actually writes to (see
+    log_stamp_event/log_points_event/log_multipass_event/log_vip_event/
+    log_membership_event) plus redemption_events where a card type can
+    redeem. Powers the 'Recent Activity' section on the back of the Apple
+    Wallet pass. Returns a list of (raw_date, description) tuples, already
+    sorted/trimmed to `limit`. Never raises - a query failure (including a
+    table not existing yet) just means no activity section, same tradeoff
+    as get_membership_summary."""
+    entries = []
+    try:
+        if card_type == 'stamp':
+            rows = (supabase.table('stamp_events').select('created_at')
+                    .eq('business_id', business_id).eq('customer_id', customer_id)
+                    .order('created_at', desc=True).limit(limit).execute().data or [])
+            entries += [(r.get('created_at'), 'Stamp added') for r in rows]
+            redemptions = (supabase.table('redemption_events').select('created_at,prize_name')
+                    .eq('business_id', business_id).eq('customer_id', customer_id)
+                    .order('created_at', desc=True).limit(limit).execute().data or [])
+            entries += [(r.get('created_at'), f"Redeemed {r['prize_name']}" if r.get('prize_name') else 'Reward redeemed')
+                        for r in redemptions]
+
+        elif card_type == 'points':
+            rows = (supabase.table('points_events').select('created_at,amount_spent_pesos,points_earned')
+                    .eq('business_id', business_id).eq('customer_id', customer_id)
+                    .order('created_at', desc=True).limit(limit).execute().data or [])
+            for r in rows:
+                pts, amt = r.get('points_earned'), r.get('amount_spent_pesos')
+                desc = f"+{pts} pts" if pts is not None else 'Points earned'
+                if amt:
+                    desc += f" (₱{float(amt):,.0f} spent)"
+                entries.append((r.get('created_at'), desc))
+            redemptions = (supabase.table('redemption_events').select('created_at,prize_name,points_spent')
+                    .eq('business_id', business_id).eq('customer_id', customer_id)
+                    .order('created_at', desc=True).limit(limit).execute().data or [])
+            for r in redemptions:
+                pts, prize = r.get('points_spent'), (r.get('prize_name') or 'reward')
+                entries.append((r.get('created_at'), f"-{pts} pts • {prize}" if pts is not None else f"Redeemed {prize}"))
+
+        elif card_type == 'multipass':
+            rows = (supabase.table('multipass_events').select('created_at,action,sessions_remaining')
+                    .eq('business_id', business_id).eq('customer_id', customer_id)
+                    .order('created_at', desc=True).limit(limit).execute().data or [])
+            for r in rows:
+                action, remaining = (r.get('action') or '').lower(), r.get('sessions_remaining')
+                if action == 'used':
+                    desc = f"Session used • {remaining} left" if remaining is not None else 'Session used'
+                elif action == 'issued':
+                    desc = f"Sessions issued • {remaining} total" if remaining is not None else 'Sessions issued'
+                else:
+                    desc = action.capitalize() or 'Update'
+                entries.append((r.get('created_at'), desc))
+
+        elif card_type == 'vip':
+            rows = (supabase.table('vip_events').select('created_at,action,points_delta,points_balance,amount_spent,old_tier,new_tier')
+                    .eq('business_id', business_id).eq('customer_id', customer_id)
+                    .order('created_at', desc=True).limit(limit).execute().data or [])
+            for r in rows:
+                action, delta = (r.get('action') or '').lower(), r.get('points_delta')
+                if action == 'tier_change' and r.get('new_tier'):
+                    desc = f"Tier: {r.get('old_tier') or '—'} → {r.get('new_tier')}"
+                elif delta is not None:
+                    desc = f"{'+' if delta >= 0 else ''}{delta} VIP pts"
+                    if r.get('amount_spent'):
+                        desc += f" (₱{float(r['amount_spent']):,.0f})"
+                else:
+                    desc = action.replace('_', ' ').capitalize() or 'Update'
+                entries.append((r.get('created_at'), desc))
+
+        else:  # membership
+            rows = (supabase.table('membership_events').select('service_date,service_name,note')
+                    .eq('business_id', business_id).eq('customer_id', customer_id)
+                    .order('service_date', desc=True).order('created_at', desc=True).limit(limit).execute().data or [])
+            for r in rows:
+                desc = r.get('service_name') or 'Visit'
+                if r.get('note'):
+                    desc += f" — {r['note']}"
+                entries.append((r.get('service_date'), desc))
+    except Exception as e:
+        print(f"ACTIVITY LOG error: {e}")
+        return []
+
+    entries.sort(key=lambda item: str(item[0] or ''), reverse=True)
+    return entries[:limit]
+
 # FastAPI App
 app = FastAPI(title='LoyaltyTree API')
 
@@ -3307,7 +3877,8 @@ async def register(biz: BusinessCreate):
     # Some business types are invite-only / admin-provisioned (specialized
     # dashboards set up by us, not self-serve) - block them here rather than
     # just hiding the option in the UI, since this endpoint is public.
-    INVITE_ONLY_BUSINESS_TYPES = {'car_lending'}
+    biz.business_type = normalize_business_type(biz.business_type)
+    INVITE_ONLY_BUSINESS_TYPES = {'car_lending', 'cockpit'}
     if biz.business_type in INVITE_ONLY_BUSINESS_TYPES:
         raise HTTPException(
             status_code=403,
@@ -3343,21 +3914,48 @@ async def register(biz: BusinessCreate):
         'business_type': biz.business_type,
         'address': biz.address,
         'plan': plan,
-        # Live immediately on a free trial - no manual admin approval or
-        # payment needed to start using the app. subscription_expires_at
-        # doubles as the trial end date; the existing reminder cron already
-        # emails the owner as this gets close, and a real PayMongo payment
-        # later just extends it by SUBSCRIPTION_PERIOD_DAYS as normal.
+        # One-day setup access lets the owner configure the card before
+        # payment. A successful subscription payment extends access normally.
         'status': 'ACTIVE',
         'subscription_expires_at': trial_expires,
+        'setup_kit_requested': bool(biz.setup_kit_requested),
+        'setup_kit_paid': False,
+        'setup_kit_status': 'requested' if biz.setup_kit_requested else None,
         'created_at': datetime.utcnow().isoformat(),
     }
+
+    if biz.setup_kit_requested:
+        if not (biz.logo_url or '').strip():
+            raise HTTPException(status_code=400, detail='Business logo is required for the physical QR kit')
+        if not (biz.kit_recipient_name or '').strip() or not (biz.kit_contact_number or '').strip() or not (biz.kit_delivery_address or '').strip():
+            raise HTTPException(status_code=400, detail='Complete delivery details are required for the physical QR kit')
 
     try:
         insert_res = supabase.table("businesses").insert(business_data).execute()
         business_id = insert_res.data[0]['id'] if insert_res.data else None
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Registration failed: {str(e)}")
+
+    if business_id and biz.setup_kit_requested:
+        try:
+            frontend_base = (FRONTEND_URL or BASE_URL).rstrip('/')
+            supabase.table('setup_kit_orders').insert({
+                'public_id': generate_public_id(),
+                'business_id': business_id,
+                'recipient_name': biz.kit_recipient_name.strip(),
+                'contact_number': biz.kit_contact_number.strip(),
+                'delivery_address': biz.kit_delivery_address.strip(),
+                'delivery_instructions': (biz.kit_delivery_instructions or '').strip() or None,
+                'logo_url': biz.logo_url,
+                'qr_join_url': f"{frontend_base}/join/{public_id}",
+                'amount': 150,
+                'payment_status': 'unpaid',
+                'fulfillment_status': 'requested',
+                'created_at': datetime.utcnow().isoformat(),
+                'updated_at': datetime.utcnow().isoformat(),
+            }).execute()
+        except Exception as e:
+            print(f"SETUP KIT ORDER create error: {e}")
 
     # Best-effort heads-up to the platform admin - never blocks signup if it fails.
     if SUPER_ADMIN_EMAIL:
@@ -3372,7 +3970,7 @@ async def register(biz: BusinessCreate):
                 f"<li><b>Phone:</b> {html_lib.escape(biz.phone or '')}</li>"
                 f"<li><b>Plan:</b> {SUBSCRIPTION_PLANS.get(plan, {}).get('label', plan)}</li>"
                 f"<li><b>Branches:</b> {biz.branch_count}</li>"
-                f"<li><b>Status:</b> ACTIVE (7-day free trial, expires {trial_expires})</li>"
+                f"<li><b>Status:</b> ACTIVE (1-day setup access, expires {trial_expires})</li>"
                 f"</ul>"
             ),
         )
@@ -3495,6 +4093,69 @@ async def list_plans():
 @app.get("/api/v1/admin/plans")
 async def admin_list_plans(_: bool = Depends(require_admin)):
     return SUBSCRIPTION_PLANS
+
+
+def setup_kit_payload(order: dict, business: dict) -> dict:
+    frontend_base = (FRONTEND_URL or BASE_URL).rstrip('/')
+    join_url = order.get('qr_join_url') or f"{frontend_base}/join/{business.get('public_id')}"
+    return {
+        **order,
+        'business_public_id': business.get('public_id'),
+        'business_name': business.get('name'),
+        'business_email': business.get('email'),
+        'business_phone': business.get('phone'),
+        'business_address': business.get('address'),
+        'logo_url': order.get('logo_url') or business.get('logo_url'),
+        'qr_join_url': join_url,
+        'qr_image_url': f"https://api.qrserver.com/v1/create-qr-code/?size=700x700&data={quote(join_url, safe='')}",
+    }
+
+@app.get("/api/v1/business/{public_id}/setup-kit")
+async def get_setup_kit(public_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    rows = supabase.table('setup_kit_orders').select('*').eq('business_id', business['id']).order('created_at', desc=True).limit(1).execute().data or []
+    return setup_kit_payload(rows[0], business) if rows else None
+
+@app.patch("/api/v1/business/{public_id}/setup-kit")
+async def update_setup_kit(public_id: str, item: SetupKitOwnerUpdate):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    rows = supabase.table('setup_kit_orders').select('*').eq('business_id', business['id']).order('created_at', desc=True).limit(1).execute().data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail='No QR kit order found')
+    patch = {k:v for k,v in item.model_dump().items() if v is not None}
+    if 'logo_url' in patch:
+        supabase.table('businesses').update({'logo_url':patch['logo_url'],'updated_at':datetime.utcnow().isoformat()}).eq('id',business['id']).execute()
+        business['logo_url'] = patch['logo_url']
+    patch['updated_at'] = datetime.utcnow().isoformat()
+    updated = supabase.table('setup_kit_orders').update(patch).eq('id',rows[0]['id']).execute().data[0]
+    return setup_kit_payload(updated,business)
+
+@app.get("/api/v1/admin/setup-kit-orders")
+async def admin_setup_kit_orders(_: bool = Depends(require_admin)):
+    orders = supabase.table('setup_kit_orders').select('*').order('created_at', desc=True).execute().data or []
+    ids = list({o['business_id'] for o in orders})
+    businesses = supabase.table('businesses').select('*').in_('id',ids).execute().data or [] if ids else []
+    by_id = {b['id']:b for b in businesses}
+    return [setup_kit_payload(o,by_id.get(o['business_id'],{})) for o in orders]
+
+@app.patch("/api/v1/admin/setup-kit-orders/{order_public_id}")
+async def admin_update_setup_kit_order(order_public_id: str, item: SetupKitAdminUpdate, _: bool = Depends(require_admin)):
+    rows = supabase.table('setup_kit_orders').select('*').eq('public_id',order_public_id).limit(1).execute().data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail='QR kit order not found')
+    patch = {k:v for k,v in item.model_dump().items() if v is not None}
+    now = datetime.utcnow().isoformat()
+    if patch.get('fulfillment_status') == 'shipped': patch['shipped_at'] = now
+    if patch.get('fulfillment_status') == 'delivered': patch['delivered_at'] = now
+    patch['updated_at'] = now
+    updated = supabase.table('setup_kit_orders').update(patch).eq('id',rows[0]['id']).execute().data[0]
+    supabase.table('businesses').update({'setup_kit_status':updated.get('fulfillment_status'),'updated_at':now}).eq('id',updated['business_id']).execute()
+    business = safe_get_business_by_id(updated['business_id']) or {}
+    return setup_kit_payload(updated,business)
 
 @app.get("/api/v1/admin/overview")
 async def admin_overview(_: bool = Depends(require_admin)):
@@ -3723,7 +4384,7 @@ async def admin_update_business(public_id: str, update: AdminBusinessUpdate, _: 
     if update.phone is not None:
         data['phone'] = update.phone
     if update.business_type is not None:
-        data['business_type'] = update.business_type
+        data['business_type'] = normalize_business_type(update.business_type)
     if update.logo_url is not None:
         data['logo_url'] = update.logo_url
     if update.subscription_expires_at is not None:
@@ -3764,15 +4425,55 @@ async def admin_delete_business(public_id: str, _: bool = Depends(require_admin)
 
 
 @app.get("/api/v1/public/partners")
-async def public_list_partners():
+async def public_list_partners(response: Response):
+    # Partner logos are public homepage content. Prevent browser/CDN caching so
+    # additions and replacement logos appear as soon as the admin saves them.
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+
+    fields = (
+        "public_id,name,logo_url,sector,plan_segment,website_url,"
+        "sort_order,is_active,updated_at"
+    )
     try:
-        res = supabase.table("platform_partners").select(
-            "public_id,name,logo_url,sector,plan_segment,website_url,sort_order"
-        ).eq("is_active", True).order("plan_segment").order("sort_order").order("name").execute()
+        res = (
+            supabase.table("platform_partners")
+            .select(fields)
+            .eq("is_active", True)
+            .order("plan_segment")
+            .order("sort_order")
+            .order("name")
+            .execute()
+        )
         return res.data or []
-    except Exception as e:
-        print(f"PUBLIC PARTNERS error: {e}")
-        return []
+    except Exception as ordered_error:
+        # Some older PostgREST/Supabase deployments reject chained ordering or
+        # briefly retain an old schema cache. Retry with a simpler query rather
+        # than silently making the whole homepage partner section disappear.
+        print(f"PUBLIC PARTNERS ordered query failed: {ordered_error}")
+        try:
+            fallback = (
+                supabase.table("platform_partners")
+                .select(fields)
+                .eq("is_active", True)
+                .execute()
+            )
+            rows = fallback.data or []
+            return sorted(
+                rows,
+                key=lambda row: (
+                    str(row.get("plan_segment") or "partners"),
+                    int(row.get("sort_order") or 0),
+                    str(row.get("name") or "").lower(),
+                ),
+            )
+        except Exception as fallback_error:
+            print(f"PUBLIC PARTNERS fallback query failed: {fallback_error}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Could not load homepage partners: {friendly_db_error(fallback_error)}",
+            )
 
 @app.get("/api/v1/admin/partners")
 async def admin_list_partners(_: bool = Depends(require_admin)):
@@ -3935,9 +4636,14 @@ async def create_subscription_checkout(public_id: str):
         branch_count = 1
 
     plan = business.get('plan') or 'starter'
-    price = get_price_for_plan(plan, branch_count)
+    subscription_price = get_price_for_plan(plan, branch_count)
+    kit_due = bool(business.get('setup_kit_requested')) and not bool(business.get('setup_kit_paid'))
+    setup_kit_price = 150 if kit_due else 0
+    price = subscription_price + setup_kit_price
     plan_label = SUBSCRIPTION_PLANS.get(plan, {}).get('label', plan)
     description = f"LoyaltyTree {plan_label} subscription - {business.get('name', '')}"
+    if kit_due:
+        description += " + Sintra Board QR / PR Kit"
 
     checkout = create_qrph_checkout(
         amount_php=price,
@@ -3945,7 +4651,11 @@ async def create_subscription_checkout(public_id: str):
         billing_name=business.get('name') or 'Business Owner',
         billing_email=business.get('email') or '',
         billing_phone=business.get('phone'),
-        metadata={'business_public_id': public_id, 'plan': plan},
+        metadata={
+            'business_public_id': public_id,
+            'plan': plan,
+            'setup_kit_included': 'true' if kit_due else 'false',
+        },
     )
 
     payment_public_id = generate_public_id()
@@ -4085,6 +4795,20 @@ async def paymongo_webhook(request: Request):
                 "last_paid_at": now.date().isoformat(),
                 "subscription_expires_at": new_expiry,
             }
+            if str(metadata.get('setup_kit_included', '')).lower() == 'true':
+                business_update.update({
+                    'setup_kit_paid': True,
+                    'setup_kit_status': 'paid',
+                })
+                try:
+                    supabase.table('setup_kit_orders').update({
+                        'payment_status': 'paid',
+                        'fulfillment_status': 'paid',
+                        'paid_at': now.isoformat(),
+                        'updated_at': now.isoformat(),
+                    }).eq('business_id', business.get('id')).neq('fulfillment_status', 'cancelled').execute()
+                except Exception as e:
+                    print(f"WEBHOOK setup kit order update error: {e}")
             # First payment activates the account automatically - no manual
             # admin approval needed. Only PENDING is auto-promoted; if an
             # admin has REJECTED or SUSPENDED this business, a stray/late
@@ -4910,8 +5634,69 @@ async def get_analytics(public_id: str, range: str = '30d'):
         if g not in gender_counts:
             g = 'rather_not_say'
         gender_counts[g] += 1
+    # Age breakdown - all-time distribution. Prefer the explicitly stored
+    # customers.age value; when it is missing, derive age from birthday so
+    # older customer records can still be included. Unknown/invalid values
+    # stay visible instead of being silently dropped.
+    age_counts = {
+        "under_18": 0,
+        "18_24": 0,
+        "25_34": 0,
+        "35_44": 0,
+        "45_54": 0,
+        "55_64": 0,
+        "65_plus": 0,
+        "unknown": 0,
+    }
+
+    def _customer_age(customer: dict) -> Optional[int]:
+        raw_age = customer.get("age")
+        try:
+            if raw_age is not None and str(raw_age).strip() != "":
+                age_value = int(raw_age)
+                return age_value if 0 <= age_value <= 120 else None
+        except (TypeError, ValueError):
+            pass
+
+        birthday = customer.get("birthday")
+        if not birthday:
+            return None
+        try:
+            birthday_date = datetime.fromisoformat(str(birthday).replace("Z", "+00:00")).date()
+        except (TypeError, ValueError):
+            try:
+                birthday_date = datetime.strptime(str(birthday)[:10], "%Y-%m-%d").date()
+            except (TypeError, ValueError):
+                return None
+
+        today = now.date()
+        derived_age = today.year - birthday_date.year - (
+            (today.month, today.day) < (birthday_date.month, birthday_date.day)
+        )
+        return derived_age if 0 <= derived_age <= 120 else None
+
+    for c in customers:
+        age_value = _customer_age(c)
+        if age_value is None:
+            age_counts["unknown"] += 1
+        elif age_value < 18:
+            age_counts["under_18"] += 1
+        elif age_value <= 24:
+            age_counts["18_24"] += 1
+        elif age_value <= 34:
+            age_counts["25_34"] += 1
+        elif age_value <= 44:
+            age_counts["35_44"] += 1
+        elif age_value <= 54:
+            age_counts["45_54"] += 1
+        elif age_value <= 64:
+            age_counts["55_64"] += 1
+        else:
+            age_counts["65_plus"] += 1
+
     demographics_block = {
         "gender": gender_counts,
+        "age": age_counts,
     }
 
     # Proxy for "how many customers hit the goal": for stamp cards, that's
@@ -5004,6 +5789,9 @@ async def get_loyalty_config(public_id: str, response: Response):
             "program_logo_url": None,
             "hero_image_url": None,
             "card_name": None,
+            "wallet_style": "modern",
+            "wallet_secondary_color": None,
+            "wallet_show_background": True,
             "description": None,
             "google_wallet_class_id": None,
             "points_per_amount": 10,
@@ -5017,8 +5805,15 @@ async def get_loyalty_config(public_id: str, response: Response):
             "vip_points_per_amount": 10,
             "vip_amount_pesos": 100,
             "vip_tiers": [],
+            # No loyalty_programs row saved yet - this is placeholder defaults,
+            # not a real choice the business made. is_configured lets the
+            # editor tell "brand new business, nothing chosen yet" apart from
+            # "already picked a card type" (see LoyaltyCardCustomizer's
+            # picker-skip logic) without guessing off field values that could
+            # legitimately be defaults either way.
+            "is_configured": False,
         }
-    return program
+    return {**program, "is_configured": True}
 
 
 @app.get("/api/v1/business/{public_id}/cashier-program")
@@ -5067,6 +5862,9 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
         'stamp_goal': config.stamp_goal,
         'reward_name': config.reward_name,
         'primary_color': config.primary_color,
+        'wallet_style': config.wallet_style,
+        'wallet_secondary_color': config.wallet_secondary_color,
+        'wallet_show_background': bool(config.wallet_show_background),
         'reward_expiry_days': config.reward_expiry_days,
         'updated_at': datetime.utcnow().isoformat(),
     }
@@ -5164,6 +5962,13 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
                     f"but database returned {persisted_type or 'none'}."
                 ),
             )
+
+        # Keep already-issued Google/Apple passes in sync with what was just
+        # saved - without this, a business's card design/status only lives
+        # in our DB (and the web preview) until they separately hit
+        # "Publish", so a member's actual phone wallet can silently go stale
+        # (old color, old status) even though the dashboard looks current.
+        asyncio.create_task(republish_wallet_class_and_refresh(business, persisted))
 
         return {
             "message": "Configuration saved",
@@ -7205,6 +8010,7 @@ async def add_stamp(public_id: str, req: StampRequest, authorization: str = Head
                     "message": "Stamp added!",
                     "stamp_count": new_count,
                     "reward_unlocked": reward_unlocked,
+                    "active_coupon": safe_get_active_coupon(customer.get('id')),
                 }
             except Exception as e2:
                 error_msg = str(e2)
@@ -7224,6 +8030,7 @@ async def add_stamp(public_id: str, req: StampRequest, authorization: str = Head
         "message": "Stamp added!",
         "stamp_count": new_count,
         "reward_unlocked": reward_unlocked,
+        "active_coupon": safe_get_active_coupon(customer.get('id')),
     }
 
 
@@ -7270,6 +8077,7 @@ async def add_vip_sale(public_id: str, req: VIPSaleRequest, authorization: str =
             'vip_points': rate,
             'per_pesos': base,
         },
+        'active_coupon': safe_get_active_coupon(customer.get('id')),
     }
 
 @app.post("/api/v1/business/{public_id}/vip-adjust")
@@ -7380,6 +8188,7 @@ async def add_points_sale(public_id: str, req: PointsSaleRequest, authorization:
         "amount_spent": req.amount_spent,
         "points_earned": points_earned,
         "points_balance": new_balance,
+        "active_coupon": safe_get_active_coupon(customer.get('id')),
     }
 
 @app.post("/api/v1/business/{public_id}/points-redeem")
@@ -7639,6 +8448,7 @@ async def use_multipass_session(public_id: str, req: MultipassUseRequest, author
         "message": "Session used!",
         "sessions_remaining": new_remaining,
         "sessions_total": customer.get('multipass_total_sessions', 0),
+        "active_coupon": safe_get_active_coupon(customer.get('id')),
     }
 
 
@@ -7780,6 +8590,56 @@ async def get_multipass_history(public_id: str, customer_public_id: str):
     try:
         rows = (
             supabase.table('multipass_events')
+            .select('*')
+            .eq('business_id', business.get('id'))
+            .eq('customer_id', customer.get('id'))
+            .order('created_at', desc=True)
+            .execute()
+        ).data or []
+        return attach_activity_location_names(rows)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+
+@app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/points-history")
+async def get_points_history(public_id: str, customer_public_id: str):
+    """Every recorded points-earning sale for one customer, including date,
+    cashier and branch - same shape/pattern as stamp-history, just against
+    points_events (see log_points_event)."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    customer = safe_get_customer(customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+    try:
+        rows = (
+            supabase.table('points_events')
+            .select('*')
+            .eq('business_id', business.get('id'))
+            .eq('customer_id', customer.get('id'))
+            .order('created_at', desc=True)
+            .execute()
+        ).data or []
+        return attach_activity_location_names(rows)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+
+@app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/vip-history")
+async def get_vip_history(public_id: str, customer_public_id: str):
+    """Every recorded VIP points/tier movement for one customer, including
+    date, cashier and branch - same shape/pattern as stamp-history, just
+    against vip_events (see log_vip_event)."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    customer = safe_get_customer(customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+    try:
+        rows = (
+            supabase.table('vip_events')
             .select('*')
             .eq('business_id', business.get('id'))
             .eq('customer_id', customer.get('id'))
@@ -8343,12 +9203,22 @@ async def get_customer_hero_image(customer_public_id: str, s: Optional[str] = No
         if card_type == 'membership' else None
     )
 
+    design = wallet_20_design(business, program)
+    vip_tier = get_vip_tier(customer, program or {}) if card_type == 'vip' else None
     png_bytes = generate_personalized_hero_image_bytes(
-        primary_color, reward_name, stamps, stamp_goal, description,
+        design['background'], reward_name, stamps, stamp_goal, description,
         card_type=card_type, points_balance=points_balance,
         sessions_remaining=sessions_remaining, sessions_total=sessions_total,
         total_visits=(membership_summary['total_visits'] if membership_summary else 0),
         last_service_name=(membership_summary['last_service_name'] if membership_summary else None),
+        vip_points=int(customer.get('vip_points') or 0),
+        vip_tier_name=(vip_tier or {}).get('name'),
+        membership_status=membership_effective_status(customer) if card_type == 'membership' else None,
+        membership_expires_at=customer.get('membership_expires_at'),
+        secondary_color=design['secondary'],
+        wallet_style=design['style'],
+        business_name=business.get('name'),
+        card_label=design['card_label'],
     )
     return Response(
         content=png_bytes,
@@ -8468,9 +9338,15 @@ async def create_or_update_wallet_class(public_id: str):
                     db_data['created_at'] = datetime.utcnow().isoformat()
                     supabase.table("loyalty_programs").insert(db_data).execute()
                 
+                # Wallet 2.0: refresh existing saved member cards in the
+                # background. Customer balances/history are untouched; only
+                # the Wallet representation is patched and Apple devices are
+                # asked to refetch their signed pass.
+                asyncio.create_task(refresh_existing_member_wallets(business, program))
+
                 return {
                     "success": True,
-                    "message": "Wallet class created/updated successfully",
+                    "message": "Wallet 2.0 published. Existing member cards are refreshing automatically.",
                     "class_id": class_id,
                     "review_status": review_status,
                     "google_response": result
@@ -8618,6 +9494,9 @@ async def get_cl_wallet_pass(customer_public_id: str):
     return {
         "pass_data": {
             "business_name": business.get('name', ''),
+            "business_type": normalize_business_type(business.get('business_type')),
+            "business_category": business_category_meta(business.get('business_type')),
+            "wallet_design": wallet_20_design(business, program),
             "customer_name": customer.get('name', ''),
             "customer_id": customer_public_id,
             "has_active_loan": has_active_loan,
@@ -12321,170 +13200,142 @@ async def agent_inventory_page(business_public_id: str):
 async def customer_wallet_page(customer_public_id: str):
     customer = safe_get_customer(customer_public_id)
     if not customer:
-        return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Card not found</h1><p>This loyalty card does not exist.</p></div>")
+        return HTMLResponse("<div style='padding:40px;text-align:center;font-family:sans-serif'><h1>Card not found</h1></div>")
 
     business = safe_get_business_by_id(customer.get('business_id'))
     if not business:
-        return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Business not found</h1></div>")
+        return HTMLResponse("<div style='padding:40px;text-align:center;font-family:sans-serif'><h1>Business not found</h1></div>")
 
-    program = safe_get_loyalty_program(business.get('id'))
-    primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
-    stamp_goal = program.get('stamp_goal', 8) if program else 8
-    reward_name = program.get('reward_name', 'Free Service') if program else 'Free Service'
-    card_type = program.get('card_type', 'stamp') if program else 'stamp'
-    points_balance = customer.get('points_balance', 0)
-    points_prizes = (program.get('points_prizes') or []) if program else []
-    card_name = program.get('card_name') if program else None
-    display_name = card_name if card_name else (business.get('name', '') + ' Rewards')
-    logo_url = business.get('logo_url')
+    program = safe_get_loyalty_program(business.get('id')) or {}
+    design = wallet_20_design(business, program)
+    card_type = program.get('card_type', 'stamp')
+    business_name = business.get('name') or 'LoyaltyTree'
+    customer_name = customer.get('name') or 'Member'
+    logo_url = program.get('program_logo_url') or business.get('logo_url')
+    hero_url = program.get('hero_image_url') if design['show_background'] else None
+    description = program.get('description') or ''
+    reward_name = program.get('reward_name') or 'Reward'
 
-    stamps = customer.get('stamp_count', 0) % stamp_goal
-    filled = stamps
+    labels = {
+        'stamp': 'STAMP CARD',
+        'points': 'POINTS CARD',
+        'membership': 'MEMBERSHIP CARD',
+        'multipass': 'MULTIPASS',
+        'vip': 'VIP CARD',
+    }
+    card_label = labels.get(card_type, 'LOYALTY CARD')
 
-    stars_html = ''
-    for i in range(stamp_goal):
-        if i < filled:
-            stars_html += '<span style="width:32px;height:32px;border-radius:16px;background:' + primary_color + ';color:white;display:inline-flex;align-items:center;justify-content:center;font-size:14px;margin:3px;">&#9733;</span>'
-        else:
-            stars_html += '<span style="width:32px;height:32px;border-radius:16px;background:rgba(255,255,255,0.25);color:white;display:inline-flex;align-items:center;justify-content:center;font-size:14px;margin:3px;">&#9733;</span>'
+    metric_label = 'STAMPS'
+    metric_value = ''
+    metric_sub = ''
+    details = []
 
-    # Points-card progress block - shown instead of the star grid below when
-    # this business is running a points card. Lists the prize catalog
-    # (points_prizes, set from LoyaltyCardCustomizer.jsx) so the customer
-    # can see what their balance can be redeemed for, same info the cashier
-    # sees when processing a points sale.
-    prizes_html = ''
-    for prize in points_prizes:
-        prize_name = html_lib.escape(str(prize.get('name', '')))
-        prize_cost = prize.get('points_cost', 0)
-        affordable = points_balance >= prize_cost
-        prizes_html += (
-            '<div style="display:flex;justify-content:space-between;align-items:center;'
-            'padding:8px 0;' + ('' if affordable else 'opacity:0.5;') + '">'
-            '<span style="font-size:13px;color:white;">' + prize_name + '</span>'
-            '<span style="font-size:12px;font-weight:700;color:white;">' + str(prize_cost) + ' pts</span>'
-            '</div>'
-        )
-    points_html = (
-        '<div style="text-align:center;margin:16px 0;">'
-        '<div style="font-size:40px;font-weight:800;color:white;">' + str(points_balance) + '</div>'
-        '<div style="font-size:13px;color:rgba(255,255,255,0.85);margin-top:2px;">points</div>'
-        '</div>'
-        + ('<div style="border-top:1px solid rgba(255,255,255,0.25);padding-top:8px;">' + prizes_html + '</div>' if prizes_html else '')
+    if card_type == 'points':
+        points = int(customer.get('points_balance') or 0)
+        metric_label, metric_value, metric_sub = 'POINTS BALANCE', f'{points:,}', 'points'
+        details = [('Reward', reward_name)]
+    elif card_type == 'multipass':
+        remaining = int(customer.get('multipass_sessions_remaining') or 0)
+        total = int(customer.get('multipass_total_sessions') or program.get('multipass_session_count') or 0)
+        metric_label, metric_value, metric_sub = 'SESSIONS LEFT', f'{remaining} / {total}', 'sessions'
+        details = [('Valid until', customer.get('multipass_expires_at') or 'No expiry')]
+    elif card_type == 'membership':
+        status = membership_effective_status(customer).upper()
+        summary = get_membership_summary(business.get('id'), customer.get('id'))
+        metric_label, metric_value, metric_sub = 'STATUS', status, 'member'
+        details = [
+            ('Active until', customer.get('membership_expires_at') or ('Lifetime' if status == 'LIFETIME' else '—')),
+            ('Member since', str(customer.get('membership_started_at') or '—')[:10]),
+            ('Visits', str(int((summary or {}).get('total_visits') or 0))),
+        ]
+    elif card_type == 'vip':
+        tier = get_vip_tier(customer, program)
+        next_tier = get_next_vip_tier(customer, program)
+        points = int(customer.get('vip_points') or 0)
+        metric_label = 'VIP TIER'
+        metric_value = str(tier.get('name') or 'VIP').upper()
+        metric_sub = f'{points:,} VIP points'
+        details = [('Next tier', str((next_tier or {}).get('name') or 'Top tier'))]
+    else:
+        goal = int(program.get('stamp_goal') or 8)
+        current = min(int(customer.get('stamp_count') or 0), goal)
+        metric_value = f'{current} / {goal}'
+        remaining = max(goal - current, 0)
+        metric_sub = reward_name if remaining == 0 else f'{remaining} more to {reward_name}'
+        details = [('Reward', reward_name)]
+
+    if description:
+        details.append(('About', description))
+    category = design['category']
+    details.append(('Business type', f"{category['icon']} {category['label']}"))
+
+    details_html = ''.join(
+        '<div class="detail"><span>' + html_lib.escape(str(k)) + '</span><strong>' + html_lib.escape(str(v)) + '</strong></div>'
+        for k, v in details[:4]
     )
 
-    logo_html = ''
-    if logo_url:
-        logo_html = '<img src="' + logo_url + '" style="width:64px;height:64px;border-radius:16px;object-fit:cover;margin-bottom:12px;" alt="Logo"/>'
-
-    reward_badge = ''
-    if customer.get('reward_unlocked'):
-        reward_badge = '<span style="display:inline-block;padding:6px 14px;background:#fef3c7;color:#92400e;border-radius:20px;font-size:13px;font-weight:600;margin-top:12px;">&#127873; ' + reward_name + ' Ready!</span>'
-
-    coupon_html = ''
-    active_coupon = safe_get_active_coupon(customer.get('id'))
-    if active_coupon:
-        coupon_html = (
-            '<div style="background:#f0fdfa;border:1.5px dashed #0d9488;border-radius:12px;'
-            'padding:14px 16px;margin-bottom:16px;text-align:center;">'
-            '<div style="font-size:11px;font-weight:700;color:#0f766e;text-transform:uppercase;'
-            'letter-spacing:0.5px;margin-bottom:4px;">&#127903; Coupon Available</div>'
-            '<div style="font-size:15px;font-weight:600;color:#0f172a;">' + html_lib.escape(active_coupon.get('reward_text', '')) + '</div>'
-            '<div style="font-size:12px;color:#64748b;margin-top:6px;">Show this card to your cashier to redeem</div>'
-            '</div>'
-        )
-
-    display_name_json = json.dumps(display_name)
-    biz_name_json = json.dumps(business.get('name', ''))
-
-    # Google's save link needs a signed JWT describing the pass, not the
-    # customer's raw public_id - build_loyalty_object()/create_google_wallet_jwt()
-    # are the same helpers get_wallet_pass() (the JSON API WalletPass.jsx
-    # calls) already uses for this. Falls back to omitting the button
-    # entirely if Google Wallet isn't configured (missing JWT), rather than
-    # linking to a save URL that will 404.
-    loyalty_object = build_loyalty_object(customer, business, program)
-    google_jwt = create_google_wallet_jwt(loyalty_object)
-    google_wallet_html = ''
-    if google_jwt:
-        google_wallet_html = (
-            '<a href="https://pay.google.com/gp/v/save/' + google_jwt + '" class="wallet-btn google-btn">'
-            '&#127903; Add to Google Wallet'
-            '</a>'
-        )
-
-    # Same .pkpass download link as WalletPass.jsx/CustomerJoin.jsx use -
-    # Safari on iOS/macOS recognizes the content type and shows the native
-    # "Add to Apple Wallet" sheet; other browsers just download the file.
-    apple_wallet_html = (
-        '<a href="' + BASE_URL + '/api/v1/customer/' + customer.get("public_id", "") + '/apple-wallet-pass" class="wallet-btn apple-btn">'
-        '&#63743; Add to Apple Wallet'
-        '</a>'
+    logo_html = (
+        '<img class="logo" src="' + html_lib.escape(logo_url) + '" alt="Logo">'
+        if logo_url else
+        '<div class="logo fallback">' + html_lib.escape(category['icon']) + '</div>'
+    )
+    hero_html = (
+        '<img class="hero" src="' + html_lib.escape(hero_url) + '" alt="">'
+        if hero_url else ''
     )
 
-    html = (
-        '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
-        '<title>My ' + display_name + '</title>'
-        '<style>'
-        '*{box-sizing:border-box;margin:0;padding:0}'
-        'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;'
-        'background:linear-gradient(135deg,' + primary_color + ' 0%,#1e293b 100%);'
-        'min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}'
-        '.card{background:white;border-radius:24px;padding:32px;max-width:400px;width:100%;'
-        'box-shadow:0 20px 60px rgba(0,0,0,0.3);text-align:center}'
-        '.loyalty-card{background:linear-gradient(135deg,' + primary_color + ' 0%,#14b8a6 100%);'
-        'border-radius:16px;padding:24px;color:white;margin-bottom:20px}'
-        '.loyalty-card h2{font-size:20px;margin-bottom:4px}'
-        '.loyalty-card h3{font-size:16px;opacity:0.9;margin-bottom:8px}'
-        '.loyalty-card .id{font-size:12px;opacity:0.7;font-family:monospace}'
-        '.stars{margin:16px 0}'
-        '.stamp-count{font-size:14px;margin-top:8px;opacity:0.9}'
-        '.qr-section{background:#f8fafc;border-radius:12px;padding:16px;margin-bottom:16px}'
-        '.qr-section img{width:160px;height:160px;border-radius:12px}'
-        '.qr-section p{font-size:12px;color:#94a3b8;margin-top:8px}'
-        '.wallet-btn{display:block;width:100%;padding:14px;background:#1a73e8;color:white;'
-        'text-decoration:none;border-radius:10px;font-weight:600;margin-bottom:12px;text-align:center}'
-        '.apple-btn{background:#000000}'
-        '.share-btn{width:100%;padding:14px;background:#f0fdf4;color:#0d9488;'
-        'border:1px solid #a7f3d0;border-radius:10px;font-weight:600;cursor:pointer}'
-        '</style></head><body>'
-        '<div class="card">'
-        '<div class="loyalty-card">'
-        + logo_html +
-        '<h2>' + display_name + '</h2>'
-        '<h3>' + customer.get("name", "") + '</h3>'
-        '<p class="id">ID: ' + customer.get("public_id", "")[:12] + '...</p>'
-        + (
-            points_html if card_type == 'points' else
-            '<div class="stars">' + stars_html + '</div>'
-            '<p class="stamp-count">' + str(stamps) + ' / ' + str(stamp_goal) + ' stamps</p>'
-        )
-        + reward_badge +
-        '</div>'
-        + coupon_html +
-        '<div class="qr-section">'
-        '<img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + quote(f'{BASE_URL}/stamp/{customer.get("public_id", "")}', safe="") + '" alt="Your QR Code"/>'
-        '<p>Scan at checkout to earn ' + ('points' if card_type == 'points' else 'stamps') + '</p>'
-        '</div>'
-        + apple_wallet_html
-        + google_wallet_html +
-        '<button id="shareBtn" class="share-btn">'
-        '&#128279; Share Card'
-        '</button>'
-        '<script>'
-        '(function(){'
-        'const dName=' + display_name_json + ';'
-        'const bName=' + biz_name_json + ';'
-        'document.getElementById("shareBtn").addEventListener("click",function(){'
-        'navigator.share({title:"My "+dName,text:"My card for "+bName,url:window.location.href});'
-        '});'
-        '})();'
-        '</script>'
-        '</div></body></html>'
+    qr_image = "https://api.qrserver.com/v1/create-qr-code/?size=420x420&data=" + quote(
+        f"{BASE_URL}/stamp/{customer_public_id}", safe=""
     )
 
+    obj = build_loyalty_object(customer, business, program)
+    jwt_token = create_google_wallet_jwt(obj)
+    google_btn = (
+        '<a class="btn google" href="https://pay.google.com/gp/v/save/' + jwt_token + '">Add to Google Wallet</a>'
+        if jwt_token else ''
+    )
+    apple_btn = (
+        '<a class="btn apple" href="' + BASE_URL + '/api/v1/customer/' + customer_public_id + '/apple-wallet-pass">Add to Apple Wallet</a>'
+    )
+
+    active_class = ' active' if metric_value in ('ACTIVE', 'LIFETIME') else ''
+
+    html = f'''<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{html_lib.escape(business_name)}</title>
+<style>
+*{{box-sizing:border-box}}body{{margin:0;background:#080b12;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif}}
+.wrap{{max-width:1120px;margin:auto;padding:24px 16px 44px}}
+.top{{display:flex;justify-content:space-between;color:#8390a5;font-size:12px;margin-bottom:14px}}
+.top b{{color:#fff}}
+.card{{position:relative;overflow:hidden;isolation:isolate;aspect-ratio:1.72/1;min-height:320px;border-radius:28px;padding:clamp(22px,4vw,44px);background:linear-gradient(135deg,{design["background"]},{design["secondary"]});border:1px solid rgba(255,255,255,.14);box-shadow:0 28px 80px rgba(0,0,0,.46)}}
+.hero{{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:-3}}
+.card:before{{content:"";position:absolute;inset:0;background:linear-gradient(90deg,rgba(3,6,16,.86),rgba(3,6,16,.63) 52%,rgba(3,6,16,.26));z-index:-2}}
+.grid{{height:100%;display:grid;grid-template-columns:minmax(0,1fr) minmax(170px,29%);gap:clamp(18px,4vw,48px)}}
+.left{{display:flex;flex-direction:column;min-width:0}}.brand{{display:flex;align-items:center;gap:13px}}
+.logo{{width:58px;height:58px;border-radius:16px;object-fit:cover;background:#fff;border:1px solid rgba(255,255,255,.3)}}.fallback{{display:grid;place-items:center;font-size:27px;background:rgba(255,255,255,.12)}}
+.biz{{font-size:clamp(20px,3vw,34px);font-weight:850;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}.type{{font-size:10px;letter-spacing:1.4px;font-weight:800;color:rgba(255,255,255,.62);margin-top:6px}}
+.member{{margin-top:auto}}.eyebrow{{font-size:9px;letter-spacing:1.3px;font-weight:800;color:rgba(255,255,255,.58)}}.name{{font-size:clamp(25px,4.5vw,48px);font-weight:720;line-height:1.06;margin:7px 0 20px}}
+.metric{{font-size:clamp(30px,5vw,54px);font-weight:850;line-height:.95;margin-top:6px}}.metric.active{{color:#4ade80}}.sub{{font-size:11px;color:rgba(255,255,255,.72);margin-top:7px}}
+.right{{display:flex;flex-direction:column;justify-content:center;align-items:flex-end}}.qrbox{{width:min(100%,260px);padding:11px;background:#fff;border-radius:19px;box-shadow:0 14px 35px rgba(0,0,0,.28)}}.qrbox img{{display:block;width:100%;aspect-ratio:1/1}}.scan{{font-size:9px;letter-spacing:1.2px;font-weight:800;color:rgba(255,255,255,.62);margin:10px auto 0}}
+.details{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:14px}}.detail{{background:#111827;border:1px solid #202a3b;border-radius:13px;padding:12px 13px;min-width:0}}.detail span{{display:block;color:#75839a;font-size:9px;text-transform:uppercase;letter-spacing:.7px;margin-bottom:5px}}.detail strong{{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}}
+.actions{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:13px}}.btn,.share{{border:0;border-radius:12px;padding:14px;text-align:center;text-decoration:none;font-weight:750;font-size:13px;cursor:pointer}}.google{{background:#1a73e8;color:#fff}}.apple{{background:#fff;color:#050505}}.share{{grid-column:1/-1;background:#151b28;color:#dbe4f1;border:1px solid #273247}}
+@media(max-width:680px){{.wrap{{padding:12px 9px 30px}}.card{{min-height:245px;aspect-ratio:1.58/1;padding:16px;border-radius:20px}}.grid{{grid-template-columns:minmax(0,1fr) 34%;gap:11px}}.logo{{width:39px;height:39px;border-radius:10px}}.biz{{font-size:17px}}.type{{font-size:7px}}.name{{font-size:21px;margin:5px 0 11px}}.metric{{font-size:25px}}.sub{{font-size:8px}}.qrbox{{padding:7px;border-radius:11px}}.scan{{font-size:6px;margin-top:6px}}.details{{grid-template-columns:1fr 1fr}}.actions{{grid-template-columns:1fr}}.share{{grid-column:auto}}}}
+</style></head>
+<body><main class="wrap">
+<div class="top"><b>🌳 LoyaltyTree</b><span>{html_lib.escape(card_label)}</span></div>
+<section class="card">{hero_html}<div class="grid">
+<div class="left"><div class="brand">{logo_html}<div><div class="biz">{html_lib.escape(business_name)}</div><div class="type">{html_lib.escape(card_label)}</div></div></div>
+<div class="member"><div class="eyebrow">MEMBER</div><div class="name">{html_lib.escape(customer_name)}</div><div class="eyebrow">{html_lib.escape(metric_label)}</div><div class="metric{active_class}">{html_lib.escape(metric_value)}</div><div class="sub">{html_lib.escape(metric_sub)}</div></div></div>
+<div class="right"><div class="qrbox"><img src="{qr_image}" alt="Member QR"></div><div class="scan">PRESENT TO CHECK IN</div></div>
+</div></section>
+<section class="details">{details_html}</section>
+<section class="actions">{google_btn}{apple_btn}<button class="share" id="share">Share Card</button></section>
+</main><script>
+document.getElementById("share").onclick=async()=>{{const p={{title:{json.dumps(business_name)},text:"My LoyaltyTree card",url:location.href}};if(navigator.share){{try{{await navigator.share(p)}}catch(e){{}}}}else{{await navigator.clipboard.writeText(location.href);alert("Card link copied")}}}};
+</script></body></html>'''
     return HTMLResponse(html)
+
 
 # CASHIER STAMP PAGE - opened when a cashier scans a customer's QR with
 # their phone's native Camera app (rather than the in-app scanner in
@@ -13068,6 +13919,24 @@ async def announcement_detail_page(business_public_id: str, announcement_id: str
 
 # WALLET PASS (Google + Apple)
 
+@app.get("/api/v1/public/business/{public_id}/join-config")
+async def public_business_join_config(public_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    program = safe_get_loyalty_program(business.get('id')) or {}
+    category = business_category_meta(business.get('business_type'))
+    return {
+        'public_id': business.get('public_id'),
+        'name': business.get('name'),
+        'logo_url': business.get('logo_url'),
+        'business_type': normalize_business_type(business.get('business_type')),
+        'category': category,
+        'card_type': program.get('card_type', 'stamp'),
+        'primary_color': program.get('primary_color') or category['color'],
+        'card_name': program.get('card_name'),
+    }
+
 @app.get("/api/v1/customer/{customer_public_id}/wallet-pass")
 async def get_wallet_pass(customer_public_id: str):
     print(f"WALLET-PASS: Requested for customer {customer_public_id}")
@@ -13115,25 +13984,38 @@ async def get_wallet_pass(customer_public_id: str):
         # the other's fields being misleadingly present.
         "pass_data": {
             "business_name": business.get('name', ''),
+            "business_type": normalize_business_type(business.get('business_type')),
+            "business_category": business_category_meta(business.get('business_type')),
             "customer_name": customer.get('name', ''),
             "customer_id": customer_public_id,
             "card_type": card_type,
+            "card_name": program.get('card_name') if program else None,
+            "description": program.get('description') if program else None,
+            "program_logo_url": (program.get('program_logo_url') if program else None) or business.get('logo_url'),
+            "hero_image_url": program.get('hero_image_url') if program else None,
+            "wallet_design": wallet_20_design(business, program),
             "stamps": customer.get('stamp_count', 0),
             "goal": stamp_goal,
             "reward_name": reward_name,
             "points_balance": customer.get('points_balance', 0),
             "points_prizes": points_prizes,
-            # --- Multipass-only fields ---
             "sessions_remaining": sessions_remaining,
             "sessions_total": sessions_total,
             "multipass_description": multipass_description,
             "multipass_expires_at": multipass_expires_at,
             "multipass_expired": multipass_expired,
-            # --- Membership-only fields ---
             "membership_services": membership_services,
+            "membership_status": customer.get('membership_status'),
+            "membership_effective_status": membership_effective_status(customer) if card_type == 'membership' else None,
+            "membership_started_at": customer.get('membership_started_at'),
+            "membership_expires_at": customer.get('membership_expires_at'),
+            "membership_terms": program.get('membership_terms') if program else None,
             "total_visits": (membership_summary['total_visits'] if membership_summary else 0),
             "last_service_name": (membership_summary['last_service_name'] if membership_summary else None),
             "last_service_date": (membership_summary['last_service_date'] if membership_summary else None),
+            "vip_points": customer.get('vip_points', 0),
+            "vip_tier": get_vip_tier(customer, program or {}) if card_type == 'vip' else None,
+            "vip_next_tier": get_next_vip_tier(customer, program or {}) if card_type == 'vip' else None,
             "primary_color": primary_color,
             "reward_unlocked": bool(customer.get('reward_unlocked')),
             "qr_code": f"{BASE_URL}/stamp/{customer_public_id}",
@@ -13726,6 +14608,23 @@ class CockpitEventCreate(BaseModel):
     status: Literal['upcoming', 'open', 'closed', 'finished', 'cancelled'] = 'upcoming'
     is_featured: bool = False
 
+class CockpitEventUpdate(BaseModel):
+    title: Optional[str] = None
+    event_date: Optional[str] = None
+    start_time: Optional[str] = None
+    category: Optional[str] = None
+    entry_fee: Optional[float] = Field(default=None, ge=0)
+    prize_details: Optional[str] = None
+    description: Optional[str] = None
+    poster_url: Optional[str] = None
+    status: Optional[Literal['upcoming', 'open', 'closed', 'finished', 'cancelled']] = None
+    is_featured: Optional[bool] = None
+    champion_name: Optional[str] = None
+    runner_up_name: Optional[str] = None
+    third_place_name: Optional[str] = None
+    result_notes: Optional[str] = None
+    result_photo_url: Optional[str] = None
+
 class CockpitAnnouncementCreate(BaseModel):
     title: str
     message: str
@@ -13817,6 +14716,78 @@ async def add_cockpit_event(public_id: str, item: CockpitEventCreate):
     row.update({'business_id': b['id'], 'public_id': generate_public_id()})
     return supabase.table('cockpit_events').insert(row).execute().data[0]
 
+@app.patch('/api/v1/business/{public_id}/cockpit/events/{event_public_id}')
+async def update_cockpit_event(public_id: str, event_public_id: str, item: CockpitEventUpdate):
+    b = cockpit_business(public_id)
+    event_rows = (
+        supabase.table('cockpit_events')
+        .select('*')
+        .eq('business_id', b['id'])
+        .eq('public_id', event_public_id)
+        .limit(1)
+        .execute()
+        .data or []
+    )
+    if not event_rows:
+        raise HTTPException(status_code=404, detail='Event not found')
+    event = event_rows[0]
+
+    payload = item.model_dump()
+    champion_name = (payload.pop('champion_name', None) or '').strip()
+    runner_up_name = payload.pop('runner_up_name', None)
+    third_place_name = payload.pop('third_place_name', None)
+    result_notes = payload.pop('result_notes', None)
+    result_photo_url = payload.pop('result_photo_url', None)
+
+    event_patch = {key: value for key, value in payload.items() if value is not None}
+    if event_patch:
+        event_patch['updated_at'] = datetime.utcnow().isoformat()
+        updated_rows = (
+            supabase.table('cockpit_events')
+            .update(event_patch)
+            .eq('business_id', b['id'])
+            .eq('public_id', event_public_id)
+            .execute()
+            .data or []
+        )
+        if updated_rows:
+            event = updated_rows[0]
+
+    result = None
+    if champion_name:
+        result_row = {
+            'business_id': b['id'],
+            'event_id': event['id'],
+            'category': event.get('category'),
+            'champion_name': champion_name,
+            'runner_up_name': runner_up_name,
+            'third_place_name': third_place_name,
+            'notes': result_notes,
+            'photo_url': result_photo_url or event.get('poster_url'),
+        }
+        existing_rows = (
+            supabase.table('cockpit_results')
+            .select('id')
+            .eq('business_id', b['id'])
+            .eq('event_id', event['id'])
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        if existing_rows:
+            result = (
+                supabase.table('cockpit_results')
+                .update(result_row)
+                .eq('id', existing_rows[0]['id'])
+                .execute()
+                .data[0]
+            )
+        else:
+            result_row['public_id'] = generate_public_id()
+            result = supabase.table('cockpit_results').insert(result_row).execute().data[0]
+
+    return {'event': event, 'result': result}
+
 @app.post('/api/v1/business/{public_id}/cockpit/announcements')
 async def add_cockpit_announcement(public_id: str, item: CockpitAnnouncementCreate):
     b = cockpit_business(public_id)
@@ -13887,7 +14858,11 @@ async def cockpit_public_site(public_id: str):
     settings_res = supabase.table('cockpit_settings').select('*').eq('business_id', b['id']).limit(1).execute()
     settings_rows = settings_res.data or []
     settings = settings_rows[0] if settings_rows else {}
-    events = cockpit_list('cockpit_events', b['id'])
+    all_events = cockpit_list('cockpit_events', b['id'])
+    events = [
+        event for event in all_events
+        if str(event.get('status') or 'upcoming').lower() in ('upcoming', 'open')
+    ]
     announcements = [x for x in cockpit_list('cockpit_announcements', b['id']) if x.get('is_active')]
     results = cockpit_list('cockpit_results', b['id'])
     gallery = cockpit_list('cockpit_gallery', b['id'])
@@ -13901,7 +14876,7 @@ async def cockpit_public_site(public_id: str):
     phone = esc(settings.get('contact_phone') or b.get('phone') or '')
     email = esc(settings.get('contact_email') or b.get('email') or '')
     address = esc(settings.get('address') or b.get('address') or 'Valenzuela City')
-    about = esc(settings.get('about_text') or 'Pinagkakatiwalaan, propesyonal, at may respeto. Ang opisyal na tahanan ng aming mga schedule, anunsyo, resulta, at komunidad.')
+    about = esc(settings.get('about_text') or 'Pinagkakatiwalaan, propesyonal, at may respeto. Ang opisyal na tahanan ng aming mga schedule, anunsyo, kampeon, at komunidad.')
     facebook = esc(settings.get('facebook_url') or 'https://www.facebook.com/valenzuelacockpit')
 
     def date_parts(value):
@@ -13912,7 +14887,7 @@ async def cockpit_public_site(public_id: str):
             return 'TBA', '--', ''
 
     event_cards = []
-    for item in events[:6]:
+    for item in events[:3]:
         mon, day, dow = date_parts(item.get('event_date'))
         poster = esc(item.get('poster_url'))
         image_style = f"background-image:linear-gradient(90deg,rgba(8,8,8,.94),rgba(8,8,8,.25)),url('{poster}')" if poster else 'background:linear-gradient(130deg,#171717,#35110d)'
@@ -13927,10 +14902,11 @@ async def cockpit_public_site(public_id: str):
     events_html = ''.join(event_cards) or '<div class="empty">No upcoming events have been posted.</div>'
 
     schedule_rows = []
-    for item in events[:7]:
+    for item in events:
         mon, day, dow = date_parts(item.get('event_date'))
         schedule_rows.append(f'<div class="schedule-row"><span>{dow or mon}</span><b>{esc(item.get("title"))}</b><em>{esc(item.get("start_time") or "TBA")}</em></div>')
     schedule_html = ''.join(schedule_rows) or '<div class="empty small">Schedule coming soon.</div>'
+    schedule_pager_html = '<div class="schedule-pager" id="schedule-pager"><button type="button" id="schedule-prev">← Previous</button><span id="schedule-page-label"></span><button type="button" id="schedule-next">Next →</button></div>' if schedule_rows else ''
 
     announcement_rows = []
     for item in announcements[:4]:
@@ -13939,14 +14915,31 @@ async def cockpit_public_site(public_id: str):
           <div><h4>{esc(item.get('title'))}</h4><p>{esc(item.get('message'))}</p></div></article>''')
     announcement_html = ''.join(announcement_rows) or '<div class="empty small">No announcements posted.</div>'
 
+    # Public champions gallery: keep the newest 20 records only. Pagination is handled
+    # in the browser so search can still filter across all 20 without another API call.
     result_cards = []
-    for item in results[:4]:
+    for item in results[:20]:
         photo = esc(item.get('photo_url'))
-        image = f'<img src="{photo}" alt="Official result">' if photo else '<div class="result-placeholder">🏆</div>'
-        result_cards.append(f'''<article class="result-card">{image}<div><small>{esc(item.get('category') or 'OFFICIAL RESULT')}</small>
-          <h3>{esc(item.get('champion_name') or 'Champion to be announced')}</h3>
-          <p>Runner-up: {esc(item.get('runner_up_name') or '—')}</p></div></article>''')
-    results_html = ''.join(result_cards) or '<div class="empty">No official results have been published.</div>'
+        image = f'<img loading="lazy" src="{photo}" alt="Official champion">' if photo else '<div class="result-placeholder">🏆</div>'
+        champion_plain = str(item.get('champion_name') or 'Champion to be announced')
+        search_blob = ' '.join(str(item.get(k) or '') for k in ('champion_name','runner_up_name','third_place_name','category','notes')).lower()
+        event_date = item.get('event_date') or item.get('created_at') or ''
+        date_label = ''
+        if event_date:
+            try:
+                date_label = datetime.strptime(str(event_date)[:10], '%Y-%m-%d').strftime('%b %d, %Y')
+            except Exception:
+                date_label = str(event_date)[:10]
+        result_cards.append(f'''<article class="result-card" data-search="{esc(search_blob)}">
+          <div class="result-photo">{image}</div>
+          <div class="result-copy"><small>{esc(item.get('category') or 'CHAMPION')}</small>
+          <h3>{esc(champion_plain)}</h3>
+          <p>Runner-up: {esc(item.get('runner_up_name') or '—')}</p>
+          {f'<span class="result-date">{esc(date_label)}</span>' if date_label else ''}</div></article>''')
+    champions_search_html = '<div class="search-wrap"><input type="text" id="champion-search" class="search-input" placeholder="Search champions by name, category, or runner-up..."></div>' if results else ''
+    no_champions_html = '<div id="no-champions" class="empty" style="display:none">No champions match your search.</div>' if results else ''
+    results_html = ''.join(result_cards) or '<div class="empty">No champions have been announced yet.</div>'
+    champion_pager_html = '<div class="champion-pager" id="champion-pager"><button type="button" id="champion-prev">← Back</button><span id="champion-page-label"></span><button type="button" id="champion-next">Next →</button></div>' if result_cards else ''
 
     gallery_html = ''.join(f'<img loading="lazy" src="{esc(x.get("image_url"))}" alt="{esc(x.get("title") or "Arena gallery")}">' for x in gallery[:12]) or '<div class="empty">Gallery photos coming soon.</div>'
     sponsor_html = ''.join(f'''<a class="sponsor" href="{esc(x.get('website_url') or '#')}" target="_blank" rel="noopener">
@@ -13970,27 +14963,92 @@ async def cockpit_public_site(public_id: str):
 .section{{padding:52px 4%;max-width:1600px;margin:auto}}.section-head{{display:flex;align-items:end;justify-content:space-between;margin-bottom:20px}}.section h2{{margin:0;text-transform:uppercase;font-size:26px;border-left:4px solid var(--red);padding-left:12px}}.section-head a{{color:var(--red);font-weight:800;font-size:12px;text-transform:uppercase;text-decoration:none}}
 .dashboard-grid{{display:grid;grid-template-columns:1.25fr .8fr 1fr .9fr;gap:15px}}.box{{background:linear-gradient(180deg,#121212,#0b0b0b);border:1px solid #32260f;border-radius:5px;padding:18px;min-height:290px}}.box h3{{margin:0 0 18px;text-transform:uppercase;font-size:18px}}
 .event-list{{display:grid;gap:14px}}.event-card{{min-height:210px;background-size:cover!important;background-position:center!important;border:1px solid #54350f;border-radius:5px;padding:20px;display:flex;gap:18px;align-items:center}}.date-box,.mini-date{{width:68px;min-width:68px;border:1px solid var(--red);text-align:center;background:#0b0b0bdd}}.date-box b,.mini-date b{{display:block;background:#36100e;color:#ffb1a7;padding:5px;font-size:12px}}.date-box strong{{display:block;font-size:31px;padding-top:6px}}.date-box span{{display:block;color:#ddd;font-size:11px;padding-bottom:7px}}.event-copy small,.result-card small{{color:var(--gold);font-weight:900}}.event-copy h3{{font-size:27px;margin:5px 0 11px}}.event-copy p{{color:#ccc;font-size:12px}}.prize{{color:var(--gold);font-weight:900;margin-top:16px;text-transform:uppercase}}
-.schedule-row{{display:grid;grid-template-columns:42px 1fr auto;gap:10px;padding:10px 0;border-bottom:1px solid #262626;align-items:center;font-size:12px}}.schedule-row span{{color:var(--red);font-weight:900}}.schedule-row em{{font-style:normal;color:var(--gold)}}
+.schedule-row{{display:grid;grid-template-columns:42px 1fr auto;gap:10px;padding:10px 0;border-bottom:1px solid #262626;align-items:center;font-size:12px}}.schedule-row span{{color:var(--red);font-weight:900}}.schedule-row em{{font-style:normal;color:var(--gold)}}.schedule-pager{{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:16px;padding-top:14px;border-top:1px solid #262626}}.schedule-pager button{{border:1px solid #54401c;background:#101010;color:#fff;padding:8px 12px;border-radius:6px;font:inherit;font-size:12px;font-weight:800;cursor:pointer}}.schedule-pager button:hover:not(:disabled){{border-color:var(--gold);color:var(--gold)}}.schedule-pager button:disabled{{opacity:.35;cursor:not-allowed}}.schedule-pager span{{min-width:90px;text-align:center;color:#aaa;font-size:11px;font-weight:800}}
 .announcement-row{{display:grid;grid-template-columns:55px 1fr;gap:12px;padding:11px 0;border-bottom:1px solid #262626}}.mini-date{{width:55px;min-width:55px}}.mini-date strong{{font-size:20px;padding:6px;display:block}}.announcement-row h4{{margin:0 0 5px;color:var(--gold)}}.announcement-row p{{margin:0;color:#bbb;font-size:12px;line-height:1.4}}
-.results-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}}.result-card{{display:grid;grid-template-columns:110px 1fr;gap:15px;background:#101010;border:1px solid #3a2a10;padding:12px;align-items:center}}.result-card img,.result-placeholder{{width:110px;height:105px;object-fit:cover;background:#1d100b;display:grid;place-items:center;font-size:43px}}.result-card h3{{margin:7px 0 4px;text-transform:uppercase}}.result-card p{{margin:0;color:#aaa;font-size:13px}}
+.member-card{{background:linear-gradient(145deg,#2a0808,#100707);border:1px solid #63311e;padding:17px;border-radius:7px;margin:20px 0;transform:rotate(-2deg)}}.member-card b{{font-size:18px}}.member-card span{{display:block;color:var(--gold);font-size:11px;margin-top:25px}}.member-card code{{display:block;margin-top:8px;color:#fff}}
+.results-grid{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}}.result-card{{display:flex;flex-direction:column;min-width:0;background:linear-gradient(180deg,#121212,#0b0b0b);border:1px solid #493512;border-radius:10px;overflow:hidden;transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease}}.result-card:hover{{transform:translateY(-3px);border-color:var(--gold);box-shadow:0 12px 28px rgba(0,0,0,.35)}}.result-photo{{width:100%;aspect-ratio:4/3;background:#1d100b;overflow:hidden}}.result-card img,.result-placeholder{{width:100%;height:100%;object-fit:cover;background:#1d100b;display:grid;place-items:center;font-size:58px}}.result-copy{{padding:15px 16px 17px}}.result-card h3{{margin:6px 0 5px;text-transform:uppercase;font-size:21px}}.result-card p{{margin:0;color:#aaa;font-size:13px}}.result-date{{display:block;margin-top:11px;padding-top:10px;border-top:1px solid #292929;color:#cfcfcf;font-size:12px}}.champion-pager{{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:22px}}.champion-pager button{{border:1px solid #54401c;background:#101010;color:#fff;padding:10px 16px;border-radius:7px;font:inherit;font-weight:800;cursor:pointer}}.champion-pager button:hover:not(:disabled){{border-color:var(--gold);color:var(--gold)}}.champion-pager button:disabled{{opacity:.35;cursor:not-allowed}}.champion-pager span{{min-width:115px;text-align:center;color:#aaa;font-size:12px;font-weight:800}}
+.search-wrap{{margin-bottom:16px}}.search-input{{width:100%;box-sizing:border-box;padding:13px 16px;border:1px solid #3a2a10;border-radius:5px;background:#0b0b0b;color:var(--text);font:inherit}}.search-input::placeholder{{color:#888}}.search-input:focus{{outline:none;border-color:var(--gold)}}
 .gallery{{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}}.gallery img{{width:100%;height:210px;object-fit:cover;border:1px solid #473515;border-radius:3px;transition:.2s}}.gallery img:hover{{transform:scale(1.02);border-color:var(--gold)}}
 .about-member{{display:grid;grid-template-columns:1.4fr .8fr;gap:18px}}.about{{background:#0e0e0e;border:1px solid #342710;padding:26px}}.about p{{color:#c8c8c8;line-height:1.8}}.join{{background:linear-gradient(145deg,#1f1308,#320908);border:1px solid var(--gold);padding:26px}}.join p{{color:#ccc;line-height:1.6}}
-.empty{{padding:30px;color:#888;border:1px dashed #333;text-align:center}}.empty.small{{padding:15px}}
+.sponsors{{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}}.sponsor{{min-height:100px;background:#101010;border:1px solid #272727;display:flex;align-items:center;justify-content:center;gap:10px;padding:15px;text-decoration:none;font-weight:800}}.sponsor img{{max-width:120px;max-height:60px;object-fit:contain}}.empty{{padding:30px;color:#888;border:1px dashed #333;text-align:center}}.empty.small{{padding:15px}}
 footer{{border-top:1px solid #3b2d13;background:#050505;padding:35px 4% 20px}}.footer-grid{{display:grid;grid-template-columns:1.1fr .7fr 1fr .8fr;gap:28px;max-width:1500px;margin:auto}}footer h4{{text-transform:uppercase;margin:0 0 13px}}footer p,footer a{{color:#aaa;font-size:13px;line-height:1.7;text-decoration:none}}.copyright{{border-top:1px solid #222;margin-top:25px;padding-top:18px;text-align:center;color:#777;font-size:12px}}
-@media(max-width:1050px){{.dashboard-grid{{grid-template-columns:1fr 1fr}}.gallery{{grid-template-columns:repeat(3,1fr)}}.nav{{gap:12px}}}}
-@media(max-width:760px){{.topbar{{min-height:70px}}.brand{{min-width:0}}.brand-logo,.brand-mark{{width:48px;height:48px}}.brand-copy b{{font-size:17px}}.brand-copy small{{font-size:8px}}.menu{{display:block}}.nav{{display:none;position:absolute;left:0;right:0;top:70px;background:#080808;padding:20px;flex-direction:column;align-items:stretch}}.nav.open{{display:flex}}.hero{{min-height:600px;background-position:62% center;padding:45px 6%}}.hero-copy{{padding-top:120px}}.values{{grid-template-columns:1fr 1fr}}.value{{border-bottom:1px solid #282015}}.dashboard-grid{{grid-template-columns:1fr}}.gallery{{grid-template-columns:1fr 1fr}}.gallery img{{height:160px}}.about-member,.footer-grid{{grid-template-columns:1fr}}.section{{padding:38px 5%}}}}
+@media(max-width:1050px){{.dashboard-grid{{grid-template-columns:1fr 1fr}}.results-grid{{grid-template-columns:repeat(3,minmax(0,1fr))}}.gallery{{grid-template-columns:repeat(3,1fr)}}.nav{{gap:12px}}}}
+@media(max-width:760px){{.topbar{{min-height:70px}}.brand{{min-width:0}}.brand-logo,.brand-mark{{width:48px;height:48px}}.brand-copy b{{font-size:17px}}.brand-copy small{{font-size:8px}}.menu{{display:block}}.nav{{display:none;position:absolute;left:0;right:0;top:70px;background:#080808;padding:20px;flex-direction:column;align-items:stretch}}.nav.open{{display:flex}}.hero{{min-height:600px;background-position:62% center;padding:45px 6%}}.hero-copy{{padding-top:120px}}.values{{grid-template-columns:1fr 1fr}}.value{{border-bottom:1px solid #282015}}.dashboard-grid{{grid-template-columns:1fr}}.results-grid{{grid-template-columns:repeat(2,minmax(0,1fr))}}.gallery{{grid-template-columns:1fr 1fr}}.gallery img{{height:160px}}.about-member,.footer-grid{{grid-template-columns:1fr}}.section{{padding:38px 5%}}}}
+@media(max-width:480px){{.results-grid{{grid-template-columns:1fr}}.champion-pager{{gap:8px}}.champion-pager button{{padding:9px 12px}}}}
 </style></head><body>
 <header class="topbar"><a class="brand" href="#home">{logo_html}<span class="brand-copy"><b>{arena}</b><small>{tagline}</small></span></a>
-<button class="menu" onclick="document.querySelector('.nav').classList.toggle('open')">☰</button><nav class="nav"><a href="#home">Home</a><a href="#schedule">Schedule</a><a href="#results">Results</a><a href="#gallery">Gallery</a><a href="#about">About Us</a><a href="#contact">Contact</a></nav></header>
-<main id="home"><section class="hero" style="{hero_style}"><div class="hero-copy"><h1>Malinis at<br><span class="gold">maginoong sabong</span><br>ang aming <span class="red">tradisyon</span></h1><p>Pinagkakatiwalaan. Propesyonal. May respeto.<br><b>{arena}</b></p><div class="actions"><a class="btn primary" href="#schedule">View Schedule</a><a class="btn secondary" href="#results">Latest Results</a></div></div></section>
+<button class="menu" onclick="document.querySelector('.nav').classList.toggle('open')">☰</button><nav class="nav"><a href="#home">Home</a><a href="#schedule">Schedule</a><a href="#champions">Champions</a><a href="#gallery">Gallery</a><a href="#about">About Us</a><a href="#contact">Contact</a></nav></header>
+<main id="home"><section class="hero" style="{hero_style}"><div class="hero-copy"><h1>Malinis at<br><span class="gold">maginoong sabong</span><br>ang aming <span class="red">tradisyon</span></h1><p>Pinagkakatiwalaan. Propesyonal. May respeto.<br><b>{arena}</b></p><div class="actions"><a class="btn primary" href="#schedule">View Schedule</a><a class="btn secondary" href="#champions">Latest Champions</a></div></div></section>
 <section class="values"><div class="value">🛡️<strong>Malinis</strong><span>Sinusunod ang lahat ng patakaran at regulasyon.</span></div><div class="value">👥<strong>Propesyonal</strong><span>Pinapatakbo nang may karanasan at propesyonalismo.</span></div><div class="value">🤝<strong>May respeto</strong><span>Respeto sa mananabong, manonood, at sa laro.</span></div><div class="value">🔒<strong>Walang dayaan</strong><span>Transparente at patas ang bawat laban.</span></div></section>
 <section id="schedule" class="section"><div class="section-head"><h2>Upcoming Events</h2><a href="#schedule">View all schedule</a></div><div class="event-list">{events_html}</div></section>
-<section class="section"><div class="dashboard-grid"><div class="box" style="grid-column:span 2"><h3>Weekly Schedule</h3>{schedule_html}</div><div class="box" style="grid-column:span 2"><h3>Announcements</h3>{announcement_html}</div></div></section>
-<section id="results" class="section"><div class="section-head"><h2>Latest Results</h2><a href="#results">View all results</a></div><div class="results-grid">{results_html}</div></section>
+<section class="section"><div class="dashboard-grid"><div class="box" style="grid-column:span 2"><h3>Weekly Schedule</h3><div id="weekly-schedule">{schedule_html}</div>{schedule_pager_html}</div><div class="box" style="grid-column:span 2"><h3>Announcements</h3>{announcement_html}</div></div></section>
+<section id="champions" class="section"><div class="section-head"><h2>Latest Champions</h2><a href="#champions">Up to 20 champions</a></div>{champions_search_html}<div class="results-grid" id="champion-grid">{results_html}</div>{no_champions_html}{champion_pager_html}</section>
 <section id="gallery" class="section"><div class="section-head"><h2>Gallery</h2><a href="#gallery">View all photos</a></div><div class="gallery">{gallery_html}</div></section>
-<section id="about" class="section"><div class="about-member"><div class="about"><h2>About {arena}</h2><p>{about}</p></div><div class="join"><h2>Stay Connected</h2><p>Follow the official Facebook page for upcoming derbies, announcements, results, event posters, and live updates.</p><a class="btn primary" href="{facebook}" target="_blank" rel="noopener noreferrer">Follow VCSA on Facebook</a></div></div></section>
+<section id="about" class="section"><div class="about-member"><div class="about"><h2>About {arena}</h2><p>{about}</p></div><div class="join"><h2>Stay Connected</h2><p>Follow the official Facebook page for upcoming derbies, announcements, champions, event posters, and live updates.</p><a class="btn primary" href="{facebook}" target="_blank" rel="noopener noreferrer">Follow VCSA on Facebook</a></div></div></section>
 </main>
-<footer id="contact"><div class="footer-grid"><div><h4>{arena}</h4><p>{tagline}</p></div><div><h4>Quick Links</h4><p><a href="#schedule">Schedule</a><br><a href="#results">Results</a><br><a href="#gallery">Gallery</a></p></div><div><h4>Contact Us</h4><p>{phone}<br>{email}<br>{address}</p></div><div><h4>Follow Us</h4><p>{fb_html}</p></div></div><div class="copyright">© {datetime.utcnow().year} {arena}. All rights reserved.</div></footer>
-<script>document.querySelectorAll('.nav a').forEach(a=>a.addEventListener('click',()=>document.querySelector('.nav').classList.remove('open')))</script></body></html>'''
+<footer id="contact"><div class="footer-grid"><div><h4>{arena}</h4><p>{tagline}</p></div><div><h4>Quick Links</h4><p><a href="#schedule">Schedule</a><br><a href="#champions">Champions</a><br><a href="#gallery">Gallery</a></p></div><div><h4>Contact Us</h4><p>{phone}<br>{email}<br>{address}</p></div><div><h4>Follow Us</h4><p>{fb_html}</p></div></div><div class="copyright">© {datetime.utcnow().year} {arena}. All rights reserved.</div></footer>
+<script>document.querySelectorAll('.nav a').forEach(a=>a.addEventListener('click',()=>document.querySelector('.nav').classList.remove('open')))
+var scheduleRows=Array.prototype.slice.call(document.querySelectorAll('#weekly-schedule .schedule-row'));
+var schedulePrev=document.getElementById('schedule-prev');
+var scheduleNext=document.getElementById('schedule-next');
+var schedulePageLabel=document.getElementById('schedule-page-label');
+var schedulePager=document.getElementById('schedule-pager');
+var schedulePage=0;
+var schedulePageSize=10;
+function renderSchedule(){{
+  var pages=Math.max(1,Math.ceil(scheduleRows.length/schedulePageSize));
+  if(schedulePage>=pages)schedulePage=pages-1;
+  if(schedulePage<0)schedulePage=0;
+  scheduleRows.forEach(function(row){{row.style.display='none';}});
+  var start=schedulePage*schedulePageSize;
+  scheduleRows.slice(start,start+schedulePageSize).forEach(function(row){{row.style.display='grid';}});
+  if(schedulePager)schedulePager.style.display=scheduleRows.length>schedulePageSize?'flex':'none';
+  if(schedulePrev)schedulePrev.disabled=schedulePage===0;
+  if(scheduleNext)scheduleNext.disabled=schedulePage>=pages-1;
+  if(schedulePageLabel)schedulePageLabel.textContent=scheduleRows.length?('Page '+(schedulePage+1)+' of '+pages):'';
+}}
+if(schedulePrev)schedulePrev.addEventListener('click',function(){{if(schedulePage>0){{schedulePage--;renderSchedule();}}}});
+if(scheduleNext)scheduleNext.addEventListener('click',function(){{if(schedulePage<Math.ceil(scheduleRows.length/schedulePageSize)-1){{schedulePage++;renderSchedule();}}}});
+renderSchedule();
+
+var championSearch=document.getElementById('champion-search');
+var championCards=Array.prototype.slice.call(document.querySelectorAll('#champions .result-card'));
+var championPrev=document.getElementById('champion-prev');
+var championNext=document.getElementById('champion-next');
+var championPageLabel=document.getElementById('champion-page-label');
+var championPager=document.getElementById('champion-pager');
+var championPage=0;
+var championPageSize=8;
+function renderChampions(){{
+  var q=championSearch?championSearch.value.trim().toLowerCase():'';
+  var matches=championCards.filter(function(card){{return !q||(card.getAttribute('data-search')||'').indexOf(q)!==-1;}});
+  var pages=Math.max(1,Math.ceil(matches.length/championPageSize));
+  if(championPage>=pages)championPage=pages-1;
+  if(championPage<0)championPage=0;
+  championCards.forEach(function(card){{card.style.display='none';}});
+  var start=championPage*championPageSize;
+  matches.slice(start,start+championPageSize).forEach(function(card){{card.style.display='';}});
+  var empty=document.getElementById('no-champions');
+  if(empty)empty.style.display=matches.length===0?'':'none';
+  if(championPager)championPager.style.display=matches.length>championPageSize?'flex':'none';
+  if(championPrev)championPrev.disabled=championPage===0;
+  if(championNext)championNext.disabled=championPage>=pages-1;
+  if(championPageLabel)championPageLabel.textContent=matches.length?('Page '+(championPage+1)+' of '+pages):'';
+}}
+if(championSearch)championSearch.addEventListener('input',function(){{championPage=0;renderChampions();}});
+if(championPrev)championPrev.addEventListener('click',function(){{if(championPage>0){{championPage--;renderChampions();document.getElementById('champions').scrollIntoView({{behavior:'smooth',block:'start'}});}}}});
+if(championNext)championNext.addEventListener('click',function(){{championPage++;renderChampions();document.getElementById('champions').scrollIntoView({{behavior:'smooth',block:'start'}});}});
+renderChampions();
+</script></body></html>'''
     return HTMLResponse(page)
+
+# --- Motolite module registration ---
+# Keep Motolite in its own file, but mount its routes on the main LoyaltyTree API.
+# Import here after the main app/routes are defined to avoid circular-import issues.
+try:
+    from motolite import motolite_router
+    app.include_router(motolite_router)
+    print("MOTOLITE router registered at /api/v1/motolite")
+except Exception as exc:
+    print("MOTOLITE router registration failed:", exc)
 
