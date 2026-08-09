@@ -20,7 +20,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
     reward_expiry_days: 30,
     program_logo_url: '',
     hero_image_url: '',
-    wallet_style: 'modern',
+    wallet_style: 'gradient',
     wallet_secondary_color: '#14b8a6',
     wallet_show_background: true,
     description: '',
@@ -96,7 +96,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
           reward_expiry_days: data.reward_expiry_days || 30,
           program_logo_url: data.program_logo_url || '',
           hero_image_url: data.hero_image_url || '',
-          wallet_style: data.wallet_style || 'modern',
+          wallet_style: data.wallet_style || 'gradient',
           wallet_secondary_color: data.wallet_secondary_color || '#14b8a6',
           wallet_show_background: data.wallet_show_background !== false,
           description: data.description || '',
@@ -189,7 +189,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
     reward_expiry_days: Number(form.reward_expiry_days) || 30,
     program_logo_url: form.program_logo_url || null,
     hero_image_url: form.hero_image_url || null,
-    wallet_style: form.wallet_style || 'modern',
+    wallet_style: form.wallet_style || 'gradient',
     wallet_secondary_color: form.wallet_secondary_color || null,
     wallet_show_background: form.wallet_show_background !== false,
     description: form.description || '',
@@ -326,6 +326,18 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
   const multipassSessionCount = Math.min(200, Math.max(2, Number(form.multipass_session_count) || 12))
   const multipassPreviewUsed = Math.ceil(multipassSessionCount / 3)
   const displayName = form.card_name || `${user?.business_name || 'Your Business'} Rewards`
+
+  const walletPreset = form.wallet_style === 'minimal' ? 'classic' : (form.wallet_style || 'gradient')
+  const previewVipTier = (form.vip_tiers || []).find(t => String(t.name || '').toLowerCase() === 'gold') || (form.vip_tiers || [])[0] || {}
+  const previewPrimary = form.card_type === 'vip' ? (previewVipTier.color || '#111827') : (form.primary_color || '#0d9488')
+  const previewSecondary = form.card_type === 'vip'
+    ? (previewVipTier.secondary_color || form.wallet_secondary_color || '#111827')
+    : (form.wallet_secondary_color || '#14b8a6')
+  const walletPreviewBackground = walletPreset === 'classic'
+    ? previewPrimary
+    : walletPreset === 'premium'
+    ? `linear-gradient(135deg,#050505 0%,${previewPrimary} 135%)`
+    : `linear-gradient(135deg,${previewPrimary} 0%,${previewSecondary} 100%)`
 
   if (step === 'picker') {
     return (
@@ -827,138 +839,124 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
           <div style={styles.wallet20Box}>
             <div style={styles.wallet20TitleRow}>
               <div>
-                <div style={styles.wallet20Eyebrow}>LoyaltyTree Wallet 2.0</div>
-                <h3 style={styles.wallet20Title}>Wallet appearance</h3>
+                <div style={styles.wallet20Eyebrow}>Card Design</div>
+                <h3 style={styles.wallet20Title}>Make it look like your business</h3>
               </div>
               <span style={styles.wallet20Badge}>Apple + Google</span>
             </div>
 
-            {form.card_type !== 'vip' && (
+            <div style={styles.walletExplain}>
+              <strong>One design, both wallets.</strong>
+              <span>Choose the look you want once. LoyaltyTree adapts it automatically for Apple Wallet and Google Wallet, so you do not need separate designs.</span>
+            </div>
+
+            <div style={styles.fieldGroup}>
+              <label style={styles.label}>1. Choose a look</label>
+              <div style={styles.walletStyleGrid}>
+                {[
+                  ['classic','Classic','One clean brand color'],
+                  ['gradient','Gradient','Two brand colors · recommended'],
+                  ['premium','Dark Premium','Dark base with your brand color'],
+                ].map(([value,label,desc]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => update('wallet_style', value)}
+                    style={{...styles.walletStyleBtn,...(walletPreset===value?styles.walletStyleBtnActive:{})}}
+                  >
+                    <b>{label}</b>
+                    <small>{desc}</small>
+                  </button>
+                ))}
+              </div>
+              <p style={styles.hint}>Gradient gives the closest matching branded look across the website, Apple Wallet and Google Wallet.</p>
+            </div>
+
+            {form.card_type !== 'vip' ? (
               <div style={styles.fieldGroup}>
-                <label style={styles.label}>Card color</label>
-                <div style={styles.colorRow}>
-                  <input
-                    type="color"
-                    style={styles.colorSwatch}
-                    value={form.primary_color}
-                    onChange={e => update('primary_color', e.target.value)}
-                  />
-                  <input
-                    style={{ ...styles.input, flex: 1 }}
-                    value={form.primary_color}
-                    onChange={e => update('primary_color', e.target.value)}
-                  />
+                <label style={styles.label}>2. Choose your brand colors</label>
+                <div style={styles.simpleColorGrid}>
+                  <div>
+                    <span style={styles.miniLabel}>Main color</span>
+                    <div style={styles.colorRow}>
+                      <input type="color" style={styles.colorSwatch} value={form.primary_color} onChange={e=>update('primary_color',e.target.value)}/>
+                      <input style={{...styles.input,flex:1}} value={form.primary_color} onChange={e=>update('primary_color',e.target.value)}/>
+                    </div>
+                  </div>
+                  {walletPreset === 'gradient' && (
+                    <div>
+                      <span style={styles.miniLabel}>Accent color</span>
+                      <div style={styles.colorRow}>
+                        <input type="color" style={styles.colorSwatch} value={form.wallet_secondary_color || '#14b8a6'} onChange={e=>update('wallet_secondary_color',e.target.value)}/>
+                        <input style={{...styles.input,flex:1}} value={form.wallet_secondary_color || ''} onChange={e=>update('wallet_secondary_color',e.target.value)}/>
+                      </div>
+                    </div>
+                  )}
                 </div>
+                <p style={styles.hint}>
+                  {walletPreset === 'classic'
+                    ? 'Your main color becomes the clean native card color.'
+                    : walletPreset === 'premium'
+                    ? 'Your main color is blended with a dark premium base.'
+                    : 'Main + accent create the two-tone branded header. Native wallet areas use the closest matching main color.'}
+                </p>
               </div>
-            )}
-            {form.card_type === 'vip' && (
-              <p style={styles.vipColorNotice}>
-                VIP card color is controlled by each tier. Customers automatically use the color of their current VIP tier.
-              </p>
+            ) : (
+              <div style={styles.vipColorNotice}>
+                <strong>VIP colors follow the member's tier.</strong><br/>
+                Bronze, Silver, Gold and your custom tiers keep their own main colors. The accent color below gives every tier the same branded two-tone finish.
+                {walletPreset === 'gradient' && (
+                  <div style={{...styles.colorRow,marginTop:10}}>
+                    <input type="color" style={styles.colorSwatch} value={form.wallet_secondary_color || '#111827'} onChange={e=>update('wallet_secondary_color',e.target.value)}/>
+                    <input style={{...styles.input,flex:1}} value={form.wallet_secondary_color || ''} onChange={e=>update('wallet_secondary_color',e.target.value)}/>
+                  </div>
+                )}
+              </div>
             )}
 
             <div style={styles.fieldGroup}>
-              <label style={styles.label}>Logo</label>
+              <label style={styles.label}>3. Add your logo</label>
               <div style={styles.uploadRow}>
-                <input
-                  style={styles.input}
-                  placeholder="https://..."
-                  value={form.program_logo_url}
-                  onChange={e => update('program_logo_url', e.target.value)}
-                />
-                <label style={{...styles.uploadBtn, ...(imageUpload.program_logo_url.uploading ? styles.uploadBtnDisabled : {})}}>
-                  {imageUpload.program_logo_url.uploading ? 'Uploading…' : '📤 Upload'}
-                  <input
-                    type="file"
-                    accept="image/*"
-                    style={styles.uploadInputHidden}
-                    disabled={imageUpload.program_logo_url.uploading}
-                    onChange={e => { uploadImage('program_logo_url', e.target.files[0]); e.target.value = '' }}
-                  />
+                <input style={styles.input} placeholder="https://..." value={form.program_logo_url} onChange={e=>update('program_logo_url',e.target.value)}/>
+                <label style={{...styles.uploadBtn,...(imageUpload.program_logo_url.uploading?styles.uploadBtnDisabled:{})}}>
+                  {imageUpload.program_logo_url.uploading?'Uploading…':'📤 Upload logo'}
+                  <input type="file" accept="image/*" style={styles.uploadInputHidden} disabled={imageUpload.program_logo_url.uploading} onChange={e=>{uploadImage('program_logo_url',e.target.files[0]);e.target.value=''}}/>
                 </label>
               </div>
-              {form.program_logo_url && (
-                <img src={form.program_logo_url} alt="" style={styles.uploadPreview} onError={e => { e.target.style.display = 'none' }} />
-              )}
+              {form.program_logo_url && <img src={form.program_logo_url} alt="" style={styles.uploadPreview} onError={e=>{e.target.style.display='none'}}/>}
               {imageUpload.program_logo_url.error && <p style={styles.uploadError}>{imageUpload.program_logo_url.error}</p>}
-              <p style={styles.hint}>Square image works best. Shown on the wallet pass and join page. Paste a URL or upload a photo.</p>
+              <p style={styles.hint}>Use a square or circular logo with a clean background. LoyaltyTree places it appropriately on both wallet cards.</p>
             </div>
 
-            <div style={styles.fieldGroup}>
-              <label style={styles.label}>Hero / banner image</label>
-              <div style={styles.uploadRow}>
-                <input
-                  style={styles.input}
-                  placeholder="https://..."
-                  value={form.hero_image_url}
-                  onChange={e => update('hero_image_url', e.target.value)}
-                />
-                <label style={{...styles.uploadBtn, ...(imageUpload.hero_image_url.uploading ? styles.uploadBtnDisabled : {})}}>
-                  {imageUpload.hero_image_url.uploading ? 'Uploading…' : '📤 Upload'}
-                  <input
-                    type="file"
-                    accept="image/*"
-                    style={styles.uploadInputHidden}
-                    disabled={imageUpload.hero_image_url.uploading}
-                    onChange={e => { uploadImage('hero_image_url', e.target.files[0]); e.target.value = '' }}
-                  />
-                </label>
-              </div>
-              {form.hero_image_url && (
-                <img src={form.hero_image_url} alt="" style={styles.uploadPreviewWide} onError={e => { e.target.style.display = 'none' }} />
-              )}
-              {imageUpload.hero_image_url.error && <p style={styles.uploadError}>{imageUpload.hero_image_url.error}</p>}
-              <p style={styles.hint}>Wide banner image shown at the top of the Google Wallet pass. Optional. Paste a URL or upload a photo.</p>
-            </div>
-
-            <div style={styles.walletStyleGrid}>
-              {[
-                ['modern','Modern'],
-                ['premium','Premium'],
-                ['minimal','Minimal'],
-                ['dark','Dark'],
-              ].map(([value,label]) => (
-                <button
-                  key={value}
-                  type="button"
-                  onClick={() => update('wallet_style', value)}
-                  style={{...styles.walletStyleBtn,...(form.wallet_style===value?styles.walletStyleBtnActive:{})}}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-
-            <div style={styles.row}>
-              <div style={{...styles.fieldGroup,flex:1}}>
-                <label style={styles.label}>Accent / secondary color</label>
-                <div style={styles.colorRow}>
-                  <input type="color" style={styles.colorSwatch} value={form.wallet_secondary_color || '#14b8a6'} onChange={e=>update('wallet_secondary_color',e.target.value)}/>
-                  <input style={{...styles.input,flex:1}} value={form.wallet_secondary_color || ''} onChange={e=>update('wallet_secondary_color',e.target.value)}/>
+            <details style={styles.optionalBranding}>
+              <summary>Optional: add a photo banner</summary>
+              <div style={{...styles.fieldGroup,marginTop:12}}>
+                <div style={styles.uploadRow}>
+                  <input style={styles.input} placeholder="https://..." value={form.hero_image_url} onChange={e=>update('hero_image_url',e.target.value)}/>
+                  <label style={{...styles.uploadBtn,...(imageUpload.hero_image_url.uploading?styles.uploadBtnDisabled:{})}}>
+                    {imageUpload.hero_image_url.uploading?'Uploading…':'📤 Upload photo'}
+                    <input type="file" accept="image/*" style={styles.uploadInputHidden} disabled={imageUpload.hero_image_url.uploading} onChange={e=>{uploadImage('hero_image_url',e.target.files[0]);e.target.value=''}}/>
+                  </label>
                 </div>
+                {form.hero_image_url && <img src={form.hero_image_url} alt="" style={styles.uploadPreviewWide} onError={e=>{e.target.style.display='none'}}/>}
+                {imageUpload.hero_image_url.error && <p style={styles.uploadError}>{imageUpload.hero_image_url.error}</p>}
+                <p style={styles.hint}>Optional. A wide business photo can appear as branded artwork where the wallet platform supports it.</p>
               </div>
-              <label style={styles.walletToggle}>
-                <input type="checkbox" checked={form.wallet_show_background !== false} onChange={e=>update('wallet_show_background',e.target.checked)}/>
-                <span><strong>Show background / hero</strong><small>Use your uploaded photo, or a generated Wallet 2.0 banner.</small></span>
-              </label>
+            </details>
+
+            <div style={styles.walletPlatformNote}>
+              <div><b> Apple Wallet</b><span>Uses your main color plus LoyaltyTree's branded artwork for the closest match.</span></div>
+              <div><b>Google Wallet</b><span>Uses your main native color plus the matching branded hero/header treatment.</span></div>
             </div>
 
-            <div style={{
-              ...styles.wallet20Preview,
-              background: form.card_type==='vip'
-                ? `linear-gradient(135deg,${((form.vip_tiers||[]).find(t=>String(t.name||'').toLowerCase()==='gold')?.color || (form.vip_tiers||[])[0]?.color || '#111827')} 0%,#111827 120%)`
-                : form.wallet_style==='dark'
-                ? '#111827'
-                : form.wallet_style==='premium'
-                ? `linear-gradient(135deg,#050505 0%,${form.primary_color} 135%)`
-                : `linear-gradient(135deg,${form.primary_color} 0%,${form.wallet_secondary_color || '#14b8a6'} 100%)`,
-            }}>
-              {form.wallet_show_background !== false && form.hero_image_url && <img src={form.hero_image_url} alt="" style={styles.wallet20PreviewBg}/>}
+            <div style={styles.previewLabel}>Approximate customer view</div>
+            <div style={{...styles.wallet20Preview,background:walletPreviewBackground}}>
+              {form.hero_image_url && <img src={form.hero_image_url} alt="" style={styles.wallet20PreviewBg}/>}
               <div style={styles.wallet20PreviewShade}/>
               <div style={styles.wallet20PreviewTop}>
                 <div style={styles.wallet20PreviewBrand}>
-                  {form.program_logo_url ? <img src={form.program_logo_url} alt="" style={styles.wallet20PreviewLogo}/> : <span style={styles.wallet20PreviewLogoFallback}>🌳</span>}
-                  <div><b>{form.card_name || 'Your Business Card'}</b><small>{form.card_type.toUpperCase()}</small></div>
+                  {form.program_logo_url?<img src={form.program_logo_url} alt="" style={styles.wallet20PreviewLogo}/>:<span style={styles.wallet20PreviewLogoFallback}>🌳</span>}
+                  <div><b>{form.card_name||'Your Business Card'}</b><small>{form.card_type.toUpperCase()}</small></div>
                 </div>
                 <span style={styles.wallet20PreviewMenu}>•••</span>
               </div>
@@ -971,15 +969,11 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
                   </div>
                 </div>
                 <div style={styles.wallet20PreviewQrBox}>
-                  <img
-                    style={styles.wallet20PreviewQr}
-                    alt="QR preview"
-                    src={`https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(`${API_BASE}/join/${user?.business_slug || 'preview'}`)}`}
-                  />
+                  <img style={styles.wallet20PreviewQr} alt="QR preview" src={`https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(`${API_BASE}/join/${user?.business_slug||'preview'}`)}`}/>
                 </div>
               </div>
             </div>
-            <p style={styles.hint}>Google and Apple control the native card layout, but Wallet 2.0 applies your logo, palette, hero image, QR placement, cleaner labels, and richer tapped details automatically.</p>
+            <p style={styles.hint}>Preview is intentionally approximate: Apple and Google control parts of their native layout. LoyaltyTree keeps your logo, colors and customer information as consistent as each platform allows.</p>
           </div>
 
           <div style={styles.fieldGroup}>
@@ -1457,13 +1451,19 @@ const styles = {
     textAlign: 'center',
   },
   vipColorNotice:{margin:'0 0 14px',padding:'11px 13px',borderRadius:10,background:'#f8fafc',border:'1px solid #e2e8f0',color:'#475569',fontSize:12,lineHeight:1.55,fontWeight:600},
+  walletExplain:{display:'flex',flexDirection:'column',gap:4,padding:'12px 14px',margin:'12px 0 16px',borderRadius:12,background:'#f8fafc',border:'1px solid #e2e8f0',color:'#475569',fontSize:12,lineHeight:1.55},
+  simpleColorGrid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:12},
+  miniLabel:{display:'block',fontSize:11,fontWeight:800,color:'#64748b',marginBottom:6},
+  optionalBranding:{margin:'4px 0 16px',padding:'12px 14px',border:'1px solid #e2e8f0',borderRadius:12,background:'#fff',color:'#334155',fontSize:12},
+  walletPlatformNote:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(210px,1fr))',gap:10,margin:'12px 0 16px'},
+
     wallet20Box:{border:'1px solid #dbeafe',background:'#f8fbff',borderRadius:16,padding:16,marginBottom:18},
   wallet20TitleRow:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12,marginBottom:14},
   wallet20Eyebrow:{fontSize:10.5,fontWeight:900,letterSpacing:.9,textTransform:'uppercase',color:'#2563eb'},
   wallet20Title:{margin:'3px 0 0',fontSize:17,color:'#0f172a'},
   wallet20Badge:{padding:'5px 9px',borderRadius:999,background:'#dbeafe',color:'#1d4ed8',fontSize:10,fontWeight:800},
   walletStyleGrid:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:14},
-  walletStyleBtn:{padding:'9px 8px',border:'1px solid #cbd5e1',borderRadius:9,background:'#fff',color:'#475569',fontWeight:700,cursor:'pointer'},
+  walletStyleBtn:{padding:'11px 10px',border:'1px solid #cbd5e1',borderRadius:10,background:'#fff',color:'#475569',fontWeight:700,cursor:'pointer',display:'flex',flexDirection:'column',gap:3,textAlign:'left'},
   walletStyleBtnActive:{borderColor:'#2563eb',background:'#eff6ff',color:'#1d4ed8',boxShadow:'0 0 0 2px rgba(37,99,235,.08)'},
   walletToggle:{display:'flex',alignItems:'flex-start',gap:9,flex:1,minWidth:220,padding:'10px 0',color:'#334155',fontSize:12,cursor:'pointer'},
   wallet20Preview:{height:220,borderRadius:18,overflow:'hidden',position:'relative',padding:18,color:'#fff',marginTop:8,boxShadow:'0 18px 40px rgba(15,23,42,.18)'},
