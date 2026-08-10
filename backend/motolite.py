@@ -657,9 +657,58 @@ async def reset_staff_password(staff_public_id: str, payload: StaffPasswordReset
     return {"ok": True}
 
 
+PHILIPPINE_REGIONS = [
+    ("NCR", "National Capital Region (NCR)"),
+    ("CAR", "Cordillera Administrative Region (CAR)"),
+    ("REGION-I", "Region I - Ilocos Region"),
+    ("REGION-II", "Region II - Cagayan Valley"),
+    ("REGION-III", "Region III - Central Luzon"),
+    ("REGION-IV-A", "Region IV-A - CALABARZON"),
+    ("MIMAROPA", "MIMAROPA Region"),
+    ("REGION-V", "Region V - Bicol Region"),
+    ("REGION-VI", "Region VI - Western Visayas"),
+    ("NIR", "Negros Island Region (NIR)"),
+    ("REGION-VII", "Region VII - Central Visayas"),
+    ("REGION-VIII", "Region VIII - Eastern Visayas"),
+    ("REGION-IX", "Region IX - Zamboanga Peninsula"),
+    ("REGION-X", "Region X - Northern Mindanao"),
+    ("REGION-XI", "Region XI - Davao Region"),
+    ("REGION-XII", "Region XII - SOCCSKSARGEN"),
+    ("REGION-XIII", "Region XIII - Caraga"),
+    ("BARMM", "Bangsamoro Autonomous Region in Muslim Mindanao (BARMM)"),
+]
+
+def _ensure_philippine_regions():
+    """Idempotently add any missing Philippine administrative regions."""
+    db = _supabase()
+    existing = db.table("motolite_regions").select("public_id,name,code").execute().data or []
+    existing_codes = {str(r.get("code") or "").strip().upper() for r in existing}
+    existing_names = {str(r.get("name") or "").strip().lower() for r in existing}
+    now = _now_iso()
+    missing = []
+    for code, name in PHILIPPINE_REGIONS:
+        if code.upper() in existing_codes or name.lower() in existing_names:
+            continue
+        missing.append({
+            "public_id": _public_id("mtr"), "name": name, "code": code,
+            "is_active": True, "created_at": now, "updated_at": now,
+        })
+    if missing:
+        db.table("motolite_regions").insert(missing).execute()
+    return db.table("motolite_regions").select("*").order("name").execute().data or []
+
+
 @motolite_router.get("/regions")
 async def regions():
     return _supabase().table("motolite_regions").select("*").order("name").execute().data or []
+
+
+@motolite_router.post("/regions/bootstrap-philippines")
+async def bootstrap_philippine_regions(staff: dict = Depends(current_staff)):
+    """National-only, safe-to-repeat bootstrap for the complete PH region list."""
+    _require_roles(staff, ROLE_NATIONAL)
+    rows = _ensure_philippine_regions()
+    return {"ok": True, "regions": rows, "count": len(rows)}
 
 
 @motolite_router.post("/regions")
@@ -1060,7 +1109,7 @@ async def motolite_verified_warranty_page(token: str):
         activity_html = '<div class="empty">No recorded Motolite activity yet.</div>'
 
     emergency_html = f"""
-    <section class="emergency">
+    <section class="emergency" id="emergency-location-services">
       <div>
         <strong>Need help with your battery or warranty?</strong>
         <p>Call Motolite customer service, or use Emergency Battery Service to find the nearest branch for battery delivery.</p>
@@ -2322,6 +2371,15 @@ def _apple_pkpass(wid: str):
                             }
                             if p.get("emergency_number")
                             else {}
+                        ),
+                    },
+                    {
+                        "key": "location_services",
+                        "label": "LOCATION SERVICES",
+                        "value": "Find Nearest Motolite Branch",
+                        "attributedValue": (
+                            f'<a href="{MOTOLITE_BASE_URL}/api/v1/motolite/wallet/{wid}#emergency-location-services">'
+                            "Open Emergency Location Services</a>"
                         ),
                     },
                 ],

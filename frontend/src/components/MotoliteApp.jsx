@@ -233,7 +233,17 @@ function StaffManagement({API_BASE,session}){
   const [staff,setStaff]=useState([]),[regions,setRegions]=useState([]),[branches,setBranches]=useState([]),[error,setError]=useState(''),[show,setShow]=useState(false)
   const [f,setF]=useState({full_name:'',username:'',password:'',email:'',role:session.staff.role==='regional'?'local':'regional',region_public_id:session.staff.region_public_id||'',branch_public_id:''})
   const auth={'Authorization':`Bearer ${session.token}`,'Content-Type':'application/json'}
-  async function load(){try{const [a,r,b]=await Promise.all([fetch(`${API_BASE}/api/v1/motolite/staff`,{headers:auth}),fetch(`${API_BASE}/api/v1/motolite/regions`),fetch(`${API_BASE}/api/v1/motolite/branches`)]);const ad=await a.json();if(!a.ok)throw new Error(ad.detail||'Could not load staff');setStaff(ad);setRegions(await r.json());setBranches(await b.json())}catch(e){setError(e.message)}}
+  async function load(){try{
+    // National keeps the canonical Philippine region list complete. The endpoint is idempotent.
+    if(session.staff.role==='national'){
+      const boot=await fetch(`${API_BASE}/api/v1/motolite/regions/bootstrap-philippines`,{method:'POST',headers:auth})
+      const bd=await boot.json()
+      if(!boot.ok)throw new Error(bd.detail||'Could not initialize Philippine regions')
+    }
+    const [a,r,b]=await Promise.all([fetch(`${API_BASE}/api/v1/motolite/staff`,{headers:auth}),fetch(`${API_BASE}/api/v1/motolite/regions`),fetch(`${API_BASE}/api/v1/motolite/branches`)])
+    const ad=await a.json();if(!a.ok)throw new Error(ad.detail||'Could not load staff')
+    setStaff(ad);setRegions(await r.json());setBranches(await b.json())
+  }catch(e){setError(e.message)}}
   React.useEffect(()=>{load()},[])
   const set=(k,v)=>setF(x=>({...x,[k]:v}))
   async function create(){setError('');const body={...f,region_public_id:f.role==='national'?null:(f.region_public_id||null),branch_public_id:f.role==='local'?(f.branch_public_id||null):null};const r=await fetch(`${API_BASE}/api/v1/motolite/staff`,{method:'POST',headers:auth,body:JSON.stringify(body)});const d=await r.json();if(!r.ok){setError(d.detail||'Could not create account');return}setShow(false);setF(x=>({...x,full_name:'',username:'',password:'',email:'',branch_public_id:''}));load()}
@@ -444,7 +454,7 @@ function CardManagement({API_BASE,session}){
               <label className="field"><span>Button Label</span><input value={emergency.button_label} onChange={e=>setE('button_label',e.target.value)}/></label>
             </div>
             <label className="field fullField"><span>Help Text</span><textarea value={emergency.help_text} onChange={e=>setE('help_text',e.target.value)}/></label>
-            <small className="settingHint">This number is used by Google Wallet, Apple Wallet details, the verified warranty page and the Warranty & Activity page.</small>
+            <small className="settingHint">This number is used by Google Wallet, Apple Wallet details, the verified warranty page and the Warranty & Activity page. Apple Wallet also includes a Location Services link to the emergency nearest-branch finder.</small>
           </div>
         </div>
 
