@@ -105,13 +105,13 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   // Frontend URL for customer-facing pages
   const FRONTEND_URL = 'https://loyaltree-btw1.onrender.com'
-  const VIBER_SUPPORT_NUMBER = '639397992144'
+  const FACEBOOK_SUPPORT_URL = 'https://web.facebook.com/theloyaltytree/'
 
   const contactLoyaltyTreeSupport = async () => {
     const businessName = business?.business_name || user?.business_name || 'Not available'
     const businessId = business?.public_id || business?.business_slug || user?.business_slug || 'Not available'
     const supportMessage = [
-      'Hi Alfred! I need assistance with my LoyaltyTree account.',
+      'Hi LoyaltyTree Support! I need assistance with my account.',
       '',
       `Business: ${businessName}`,
       `Business ID: ${businessId}`,
@@ -120,23 +120,18 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       'Please describe your concern here.'
     ].join('\n')
 
-    // Personal-number Viber chat links do not reliably support a `text=`
-    // parameter on Safari/iOS. Copy the prefilled support message first,
-    // then open Alfred's Viber chat with the OS-appropriate number format.
+    // Facebook Page links are normal HTTPS links, so they work reliably in
+    // Safari/Chrome even when the Messenger app is not installed.
+    // Copy the useful account context first so the owner can paste it into
+    // Messenger/Page chat in one tap.
     try {
       await navigator.clipboard.writeText(supportMessage)
-      setMessage('Support message copied — paste it in Viber after the chat opens.')
+      setMessage('Support message copied — paste it into the LoyaltyTree Facebook chat.')
     } catch (_) {
-      // Clipboard can be blocked by browser permissions; Viber can still open.
+      setMessage('Opening LoyaltyTree Support on Facebook.')
     }
 
-    const isApple = /iPhone|iPad|iPod|Macintosh/i.test(navigator.userAgent)
-    const viberNumber = isApple ? `+${VIBER_SUPPORT_NUMBER}` : VIBER_SUPPORT_NUMBER
-    const viberUrl = `viber://chat?number=${viberNumber}`
-
-    // Must happen directly from the button click so Safari treats it as an
-    // app-opening user gesture instead of a scripted redirect.
-    window.location.assign(viberUrl)
+    window.open(FACEBOOK_SUPPORT_URL, '_blank', 'noopener,noreferrer')
   }
 
   const onboardingKey = user?.business_slug ? `loyaltree_onboarding_seen_${user.business_slug}` : null
@@ -914,7 +909,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           <button
             onClick={contactLoyaltyTreeSupport}
             style={styles.supportBtn}
-            title="Open Viber and contact LoyaltyTree Support"
+            title="Open LoyaltyTree Support on Facebook"
           >
             💬 Support
           </button>
