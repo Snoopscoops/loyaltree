@@ -892,7 +892,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     <div style={styles.container}>
       {/* Header */}
       <header style={{...styles.header,...(isTablet?styles.headerTablet:{}),...(isMobile?styles.headerMobile:{})}}>
-        <div style={{...styles.brand,...(isTablet||isMobile?styles.brandResponsive:{})}}>
+        <div style={{...styles.brand,...(isTablet||isMobile?styles.brandResponsive:{}),...(isMobile?styles.brandMobile:{})}}>
           <img src={logo192} alt="LoyaltyTree" style={styles.logo} />
           <div>
             <h1 style={styles.brandName}>LoyaltyTree</h1>
@@ -905,10 +905,10 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             onClick={() => setMobileHeaderOpen(v => !v)}
             style={styles.mobileMenuBtn}
             aria-expanded={mobileHeaderOpen}
-            aria-label="Toggle dashboard menu"
+            aria-label={mobileHeaderOpen ? 'Close dashboard navigation' : 'Open dashboard navigation'}
+            title="Dashboard navigation"
           >
-            <span>{mobileHeaderOpen ? '✕' : '☰'}</span>
-            <span>{mobileHeaderOpen ? 'Close Menu' : 'Dashboard Menu'}</span>
+            <span aria-hidden="true">{mobileHeaderOpen ? '✕' : '☰'}</span>
           </button>
         )}
         {(!isMobile || mobileHeaderOpen) && (
@@ -916,7 +916,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           <span style={{...styles.planBadge,...(isTablet?styles.planBadgeTablet:{}),...(isMobile?styles.planBadgeMobile:{})}}>{user?.business_name}</span>
           {needsRenewal && (
             <button
-              onClick={() => setActiveTab('billing')}
+              onClick={() => { setActiveTab('billing'); if (isMobile) setMobileHeaderOpen(false) }}
               style={{
                 ...styles.navBtn,
                 ...(subStatus === 'expired' ? styles.renewalBtnExpired : styles.renewalBtnWarning),
@@ -929,17 +929,17 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 : `⏰ Renews in ${subscription.days_left}d — Pay now`}
             </button>
           )}
-          <button onClick={() => { setOnboardingStep(0); setShowOnboarding(true) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>🎓 Setup Guide</button>
-          <button onClick={() => { setShowAnnouncements(true); markAnnouncementsChecked() }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>📢 Announcements</button>
-          <button onClick={() => { markAnalyticsChecked(); navigate('/analytics') }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>📊 Analytics</button>
+          <button onClick={() => { setOnboardingStep(0); setShowOnboarding(true); if (isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>🎓 Setup Guide</button>
+          <button onClick={() => { setShowAnnouncements(true); markAnnouncementsChecked(); if (isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>📢 Announcements</button>
+          <button onClick={() => { markAnalyticsChecked(); navigate('/analytics'); if (isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>📊 Analytics</button>
           <button
-            onClick={contactLoyaltyTreeSupport}
+            onClick={() => { setMobileHeaderOpen(false); contactLoyaltyTreeSupport() }}
             style={{...styles.supportBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}
             title="Chat with LoyaltyTree Support on Messenger"
           >
             💬 Support
           </button>
-          <button onClick={onLogout} style={{...styles.logoutBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>Logout</button>
+          <button onClick={() => { setMobileHeaderOpen(false); onLogout() }} style={{...styles.logoutBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>Logout</button>
         </div>
         )}
       </header>
@@ -2500,41 +2500,54 @@ const styles = {
     gridTemplateColumns: 'repeat(2,minmax(0,1fr))',
     gap: 8,
   },
+  brandMobile: {
+    paddingRight: 58,
+  },
   mobileMenuBtn: {
-    width: '100%',
-    minHeight: 46,
+    width: 44,
+    height: 44,
+    minWidth: 44,
+    minHeight: 44,
     boxSizing: 'border-box',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
-    padding: '10px 14px',
+    padding: 0,
     border: '1px solid #99f6e4',
-    borderRadius: 10,
+    borderRadius: 11,
     background: '#f0fdfa',
     color: '#0f766e',
-    fontSize: 14,
-    fontWeight: 800,
+    fontSize: 24,
+    fontWeight: 900,
+    lineHeight: 1,
     cursor: 'pointer',
-    position: 'relative',
-    zIndex: 102,
+    position: 'absolute',
+    top: 14,
+    right: 12,
+    zIndex: 1002,
+    boxShadow: '0 5px 16px rgba(15,118,110,0.14)',
   },
   headerActionsMobile: {
-    width: '100%',
-    maxWidth: '100%',
+    width: 'calc(100% - 24px)',
+    maxWidth: 360,
     minWidth: 0,
     boxSizing: 'border-box',
     display: 'grid',
     gridTemplateColumns: '1fr',
     gap: 8,
-    position: 'relative',
-    left: 0,
-    right: 'auto',
+    position: 'absolute',
+    top: 68,
+    right: 12,
+    left: 'auto',
     transform: 'none',
     margin: 0,
-    padding: 0,
+    padding: 10,
     overflow: 'visible',
-    zIndex: 101,
+    zIndex: 1001,
+    background: '#ffffff',
+    border: '1px solid #dff7f2',
+    borderRadius: 14,
+    boxShadow: '0 18px 45px rgba(15,23,42,0.18)',
   },
   planBadgeTablet: {
     gridColumn: '1 / -1',
