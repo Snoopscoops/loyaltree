@@ -105,7 +105,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   // Frontend URL for customer-facing pages
   const FRONTEND_URL = 'https://loyaltree-btw1.onrender.com'
-  const FACEBOOK_SUPPORT_URL = 'https://web.facebook.com/theloyaltytree/'
+  const FACEBOOK_SUPPORT_URL = 'https://m.me/theloyaltytree'
 
   const contactLoyaltyTreeSupport = async () => {
     const businessName = business?.business_name || user?.business_name || 'Not available'
@@ -120,15 +120,14 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       'Please describe your concern here.'
     ].join('\n')
 
-    // Facebook Page links are normal HTTPS links, so they work reliably in
-    // Safari/Chrome even when the Messenger app is not installed.
+    // Open the LoyaltyTree Messenger conversation directly.
     // Copy the useful account context first so the owner can paste it into
-    // Messenger/Page chat in one tap.
+    // the chat immediately.
     try {
       await navigator.clipboard.writeText(supportMessage)
-      setMessage('Support message copied — paste it into the LoyaltyTree Facebook chat.')
+      setMessage('Support message copied — paste it into the LoyaltyTree Messenger chat.')
     } catch (_) {
-      setMessage('Opening LoyaltyTree Support on Facebook.')
+      setMessage('Opening LoyaltyTree Support in Messenger.')
     }
 
     window.open(FACEBOOK_SUPPORT_URL, '_blank', 'noopener,noreferrer')
@@ -909,7 +908,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           <button
             onClick={contactLoyaltyTreeSupport}
             style={styles.supportBtn}
-            title="Open LoyaltyTree Support on Facebook"
+            title="Chat with LoyaltyTree Support on Messenger"
           >
             💬 Support
           </button>
