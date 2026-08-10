@@ -448,6 +448,15 @@ class StaffCreate(BaseModel):
     branch_public_id: Optional[str] = None
 
 
+class StaffUpdate(BaseModel):
+    full_name: str = Field(min_length=1, max_length=160)
+    username: str = Field(min_length=3, max_length=80)
+    email: Optional[str] = None
+    role: Literal["national", "regional", "local"]
+    region_public_id: Optional[str] = None
+    branch_public_id: Optional[str] = None
+
+
 class StaffStatusUpdate(BaseModel):
     is_active: bool
 
@@ -631,6 +640,38 @@ async def create_staff(payload: StaffCreate, staff: dict = Depends(current_staff
         "password_salt": salt, "password_hash": pwd_hash, "role": payload.role,
         "region_public_id": region_id, "branch_public_id": payload.branch_public_id if payload.role == ROLE_LOCAL else None,
         "is_active": True, "created_by_public_id": staff["public_id"], "created_at": _now_iso(), "updated_at": _now_iso(),
+    })
+    return _public_staff(row)
+
+
+@motolite_router.put("/staff/{staff_public_id}")
+async def update_staff(staff_public_id: str, payload: StaffUpdate, staff: dict = Depends(current_staff)):
+    _require_roles(staff, ROLE_NATIONAL)
+    target = _require_record("motolite_staff_scope", staff_public_id, "Staff")
+    if payload.username.strip() != target.get("username"):
+        existing = _get_one("motolite_staff_scope", "username", payload.username.strip())
+        if existing and existing.get("public_id") != staff_public_id:
+            raise HTTPException(status_code=409, detail="Username already exists.")
+    region_id = None
+    branch_id = None
+    if payload.role == ROLE_REGIONAL:
+        if not payload.region_public_id:
+            raise HTTPException(status_code=400, detail="Regional account requires a region.")
+        _require_record("motolite_regions", payload.region_public_id, "Region")
+        region_id = payload.region_public_id
+    elif payload.role == ROLE_LOCAL:
+        if not payload.branch_public_id:
+            raise HTTPException(status_code=400, detail="Local account requires a branch.")
+        branch = _require_record("motolite_branches", payload.branch_public_id, "Branch")
+        region_id = payload.region_public_id or branch.get("region_public_id")
+        if branch.get("region_public_id") != region_id:
+            raise HTTPException(status_code=400, detail="Branch does not belong to the selected region.")
+        branch_id = payload.branch_public_id
+    row = _update("motolite_staff_scope", staff_public_id, {
+        "full_name": payload.full_name.strip(), "username": payload.username.strip(),
+        "email": payload.email or None, "role": payload.role,
+        "region_public_id": region_id, "branch_public_id": branch_id,
+        "updated_at": _now_iso(),
     })
     return _public_staff(row)
 

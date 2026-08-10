@@ -333,3 +333,16 @@ footer img{width:180px}footer p{font-size:12px}
 .previewDisclaimer{font-size:9px;color:#858a92;line-height:1.55;margin:16px 2px 0}
 @media(max-width:1100px){.cardEditorGrid{grid-template-columns:1fr}.cardEditorForm{border-right:0;border-bottom:1px solid var(--line)}.cardPreviewWrap{position:static}.managedCardPreview{max-width:430px}}
 @media(max-width:700px){.cardManagementHead{align-items:flex-start;flex-direction:column}.cardManagementHead .redBtn{width:100%}.colorGrid,.toggleGrid{grid-template-columns:1fr}.cardEditorForm,.cardPreviewWrap{padding:20px}}
+
+/* ---------- Branding upload layout fix ---------- */
+.brandUploadGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-bottom:10px}
+.brandUploadCard{min-width:0;border:1px solid var(--line);border-radius:12px;padding:14px;background:#fafbfc;overflow:hidden}
+.brandUploadLabel{display:block;font-size:11px;font-weight:850;color:#565b64;margin-bottom:9px}
+.brandUploadPreview{height:118px;border:1px dashed #d7dae0;border-radius:10px;background:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden;padding:12px;color:#8b9097;font-size:11px}
+.brandUploadPreview img{display:block;width:100%;height:100%;max-width:100%;max-height:100%;object-fit:contain}
+.brandUploadPreview.heroPreview{height:118px}
+.uploadImageBtn{margin-top:10px;display:inline-flex;align-items:center;justify-content:center;background:#17191d;color:#fff;border-radius:8px;padding:10px 13px;font-size:11px;font-weight:850;cursor:pointer}
+.uploadImageBtn input{display:none}
+.brandUploadCard .miniBtn{margin:10px 0 0 8px}
+.staffActions{display:flex;gap:6px;flex-wrap:wrap}
+@media(max-width:700px){.brandUploadGrid{grid-template-columns:1fr}}
