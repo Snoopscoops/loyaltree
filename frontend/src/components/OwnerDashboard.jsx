@@ -906,6 +906,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               style={{
                 ...styles.navBtn,
                 ...(subStatus === 'expired' ? styles.renewalBtnExpired : styles.renewalBtnWarning),
+                ...(isTablet || isMobile ? styles.headerActionResponsive : {}),
+                ...(isMobile ? styles.renewalBtnMobile : {}),
               }}
             >
               {subStatus === 'expired'
@@ -1075,7 +1077,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 <div><small style={styles.setupKitEyebrow}>PHYSICAL QR / PR KIT</small><h3 style={{margin:'4px 0'}}>Confirm logo and delivery</h3><p style={{margin:0,color:'#64748b',fontSize:13}}>Your join QR is generated automatically for printing.</p></div>
                 <span style={styles.setupKitStatus}>{String(setupKit.fulfillment_status||'requested').replaceAll('_',' ')}</span>
               </div>
-              <div style={styles.setupKitGrid}>
+              <div style={{...styles.setupKitGrid,...(isMobile?styles.setupKitGridMobile:{})}}>
                 <div style={styles.setupKitPreview}>
                   {setupKitForm.logo_url?<img src={setupKitForm.logo_url} alt="Logo" style={styles.setupKitLogo}/>:<b>Logo needed</b>}
                   <img src={setupKit.qr_image_url} alt="Join QR" style={styles.setupKitQr}/>
@@ -1083,7 +1085,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 </div>
                 <div>
                   <label style={styles.label}>Final logo URL</label><input style={styles.input} value={setupKitForm.logo_url} onChange={e=>setSetupKitForm({...setupKitForm,logo_url:e.target.value})}/>
-                  <div style={styles.setupKitTwoCol}><div><label style={styles.label}>Recipient</label><input style={styles.input} value={setupKitForm.recipient_name} onChange={e=>setSetupKitForm({...setupKitForm,recipient_name:e.target.value})}/></div><div><label style={styles.label}>Contact</label><input style={styles.input} value={setupKitForm.contact_number} onChange={e=>setSetupKitForm({...setupKitForm,contact_number:e.target.value})}/></div></div>
+                  <div style={{...styles.setupKitTwoCol,...(isMobile?styles.setupKitTwoColMobile:{})}}><div><label style={styles.label}>Recipient</label><input style={styles.input} value={setupKitForm.recipient_name} onChange={e=>setSetupKitForm({...setupKitForm,recipient_name:e.target.value})}/></div><div><label style={styles.label}>Contact</label><input style={styles.input} value={setupKitForm.contact_number} onChange={e=>setSetupKitForm({...setupKitForm,contact_number:e.target.value})}/></div></div>
                   <label style={styles.label}>Complete delivery address</label><textarea style={{...styles.input,minHeight:72}} value={setupKitForm.delivery_address} onChange={e=>setSetupKitForm({...setupKitForm,delivery_address:e.target.value})}/>
                   <label style={styles.label}>Delivery instructions</label><textarea style={{...styles.input,minHeight:58}} value={setupKitForm.delivery_instructions} onChange={e=>setSetupKitForm({...setupKitForm,delivery_instructions:e.target.value})}/>
                   <button style={styles.submitBtn} onClick={saveSetupKitDetails} disabled={savingSetupKit}>{savingSetupKit?'Saving...':'Save QR Kit Details'}</button>
@@ -1129,7 +1131,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             {filteredCustomers.length === 0 && (
               <p style={styles.searchEmptyText}>No {cardExperience.customerLabel.toLowerCase()} match "{customerSearch}".</p>
             )}
-            <div style={styles.customerGrid}>
+            <div style={{...styles.customerGrid,...(isMobile?styles.singleColumnGridMobile:{})}}>
               {filteredCustomers.map(c => (
                 <div key={c.public_id} style={styles.customerCard}>
                   <div style={styles.customerAvatar}>{c.name?.[0]?.toUpperCase() || '?'}</div>
@@ -1281,7 +1283,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               </div>
             </div>
 
-            <div style={styles.staffGrid}>
+            <div style={{...styles.staffGrid,...(isMobile?styles.singleColumnGridMobile:{})}}>
               {filteredStaff.map(s => (
                 <div key={s.public_id} style={styles.staffCard}>
                   <div style={styles.staffAvatar}>{s.name?.[0]?.toUpperCase()}</div>
@@ -2326,6 +2328,10 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 const styles = {
   container: {
     minHeight: '100vh',
+    width: '100%',
+    maxWidth: '100vw',
+    overflowX: 'hidden',
+    boxSizing: 'border-box',
     background: 'linear-gradient(180deg, #f0fdfa 0%, #f8fafc 38%, #f6f8fb 100%)',
     color: '#172033',
     fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
@@ -2346,6 +2352,9 @@ const styles = {
   },
   header: {
     display: 'flex',
+    width: '100%',
+    maxWidth: '100vw',
+    boxSizing: 'border-box',
     justifyContent: 'space-between',
     alignItems: 'center',
     flexWrap: 'wrap',
@@ -2434,6 +2443,10 @@ const styles = {
   },
   headerMobile: {
     flexDirection: 'column',
+    width: '100%',
+    maxWidth: '100%',
+    boxSizing: 'border-box',
+    overflow: 'hidden',
     alignItems: 'stretch',
     gap: 10,
     padding: '10px 12px',
@@ -2450,6 +2463,9 @@ const styles = {
   },
   headerActionsMobile: {
     width: '100%',
+    maxWidth: '100%',
+    minWidth: 0,
+    boxSizing: 'border-box',
     display: 'grid',
     gridTemplateColumns: 'repeat(2,minmax(0,1fr))',
     gap: 7,
@@ -2465,18 +2481,29 @@ const styles = {
   },
   planBadgeMobile: {
     gridColumn: '1 / -1',
+    width: '100%',
+    maxWidth: '100%',
+    minWidth: 0,
+    boxSizing: 'border-box',
     justifyContent: 'center',
     textAlign: 'center',
     whiteSpace: 'normal',
   },
   headerActionResponsive: {
     width: '100%',
+    maxWidth: '100%',
+    boxSizing: 'border-box',
     minWidth: 0,
     padding: '9px 8px',
     textAlign: 'center',
     whiteSpace: 'nowrap',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
+  },
+  renewalBtnMobile: {
+    gridColumn: '1 / -1',
+    whiteSpace: 'normal',
+    lineHeight: 1.25,
   },
   dashboardShellTablet: {
     width: '100vw',
@@ -2490,6 +2517,10 @@ const styles = {
   },
   dashboardShellMobile: {
     width: 'calc(100% - 20px)',
+    maxWidth: 'calc(100vw - 20px)',
+    marginLeft: 'auto',
+    marginRight: 'auto',
+    boxSizing: 'border-box',
     marginTop: 12,
   },
   dashboardHeroTablet: {
@@ -2503,6 +2534,10 @@ const styles = {
   },
   dashboardHeroMobile: {
     display: 'flex',
+    width: '100%',
+    maxWidth: '100%',
+    minWidth: 0,
+    boxSizing: 'border-box',
     flexDirection: 'column',
     alignItems: 'stretch',
     gap: 14,
@@ -2550,7 +2585,11 @@ const styles = {
     overflowX: 'visible',
   },
   tabsMobile: {
+    width: '100%',
+    maxWidth: '100%',
+    boxSizing: 'border-box',
     overflowX: 'auto',
+    WebkitOverflowScrolling: 'touch',
     justifyContent: 'flex-start',
   },
   contentTablet: {
@@ -2562,6 +2601,10 @@ const styles = {
     boxSizing: 'border-box',
   },
   contentMobile: {
+    width: '100%',
+    maxWidth: '100vw',
+    boxSizing: 'border-box',
+    overflowX: 'hidden',
     padding: '16px 10px 36px',
   },
   actionCardsTablet: {
@@ -2570,7 +2613,22 @@ const styles = {
     gap: 14,
   },
   actionCardsMobile: {
-    gridTemplateColumns: '1fr',
+    width: '100%',
+    minWidth: 0,
+    gridTemplateColumns: 'minmax(0,1fr)',
+  },
+  singleColumnGridMobile: {
+    width: '100%',
+    minWidth: 0,
+    gridTemplateColumns: 'minmax(0,1fr)',
+  },
+  setupKitGridMobile: {
+    width: '100%',
+    minWidth: 0,
+    gridTemplateColumns: 'minmax(0,1fr)',
+  },
+  setupKitTwoColMobile: {
+    gridTemplateColumns: 'minmax(0,1fr)',
   },
   actionCardTablet: {
     minHeight: 170,
@@ -2953,6 +3011,9 @@ const styles = {
   },
   recentActivity: {
     background: 'white',
+    width: '100%',
+    minWidth: 0,
+    boxSizing: 'border-box',
     borderRadius: 16,
     padding: 20,
     boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
@@ -3053,6 +3114,8 @@ const styles = {
   },
   customerCard: {
     background: 'white',
+    minWidth: 0,
+    boxSizing: 'border-box',
     borderRadius: 16,
     padding: 20,
     boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
@@ -3380,7 +3443,7 @@ const styles = {
     cursor: 'pointer',
     marginTop: 8,
   },
-  setupKitPanel:{background:'#fff',border:'1px solid #99f6e4',borderRadius:18,padding:20,marginBottom:18},
+  setupKitPanel:{width:'100%',minWidth:0,boxSizing:'border-box',overflow:'hidden',background:'#fff',border:'1px solid #99f6e4',borderRadius:18,padding:20,marginBottom:18},
   setupKitHeader:{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start',flexWrap:'wrap',marginBottom:16},
   setupKitEyebrow:{color:'#0d9488',fontWeight:900,letterSpacing:1},
   setupKitStatus:{background:'#ccfbf1',color:'#0f766e',padding:'6px 10px',borderRadius:999,fontSize:11,fontWeight:900,textTransform:'uppercase'},
