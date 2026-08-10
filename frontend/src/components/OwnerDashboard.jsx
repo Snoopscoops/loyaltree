@@ -892,18 +892,18 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     <div style={styles.container}>
       {/* Header */}
       <header style={{...styles.header,...(isTablet?styles.headerTablet:{}),...(isMobile?styles.headerMobile:{})}}>
-        <div style={{...styles.brand,...(isTablet||isMobile?styles.brandResponsive:{}),...(isMobile?styles.brandMobile:{})}}>
+        <div style={{...styles.brand,...(isTablet||isMobile?styles.brandResponsive:{}),...((isTablet||isMobile)?styles.brandMobile:{})}}>
           <img src={logo192} alt="LoyaltyTree" style={styles.logo} />
           <div>
             <h1 style={styles.brandName}>LoyaltyTree</h1>
             <p style={styles.brandTagline}>{cardExperience.dashboardLabel} · {cardExperience.editDescription}</p>
           </div>
         </div>
-        {isMobile && (
+        {(isTablet || isMobile) && (
           <button
             type="button"
             onClick={() => setMobileHeaderOpen(v => !v)}
-            style={styles.mobileMenuBtn}
+            style={{...styles.mobileMenuBtn,...(isTablet?{right:20}:{} )}}
             aria-expanded={mobileHeaderOpen}
             aria-label={mobileHeaderOpen ? 'Close dashboard navigation' : 'Open dashboard navigation'}
             title="Dashboard navigation"
@@ -911,12 +911,12 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             <span aria-hidden="true">{mobileHeaderOpen ? '✕' : '☰'}</span>
           </button>
         )}
-        {(!isMobile || mobileHeaderOpen) && (
-        <div style={{...styles.headerActions,...(isTablet?styles.headerActionsTablet:{}),...(isMobile?styles.headerActionsMobile:{})}}>
+        {(!(isTablet || isMobile) || mobileHeaderOpen) && (
+        <div style={{...styles.headerActions,...((isTablet||isMobile)?styles.headerActionsMobile:{}),...(isTablet?{width:380,maxWidth:'calc(100vw - 40px)',right:20,top:72}:{})}}>
           <span style={{...styles.planBadge,...(isTablet?styles.planBadgeTablet:{}),...(isMobile?styles.planBadgeMobile:{})}}>{user?.business_name}</span>
           {needsRenewal && (
             <button
-              onClick={() => { setActiveTab('billing'); if (isMobile) setMobileHeaderOpen(false) }}
+              onClick={() => { setActiveTab('billing'); if (isTablet || isMobile) setMobileHeaderOpen(false) }}
               style={{
                 ...styles.navBtn,
                 ...(subStatus === 'expired' ? styles.renewalBtnExpired : styles.renewalBtnWarning),
@@ -929,9 +929,9 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 : `⏰ Renews in ${subscription.days_left}d — Pay now`}
             </button>
           )}
-          <button onClick={() => { setOnboardingStep(0); setShowOnboarding(true); if (isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>🎓 Setup Guide</button>
-          <button onClick={() => { setShowAnnouncements(true); markAnnouncementsChecked(); if (isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>📢 Announcements</button>
-          <button onClick={() => { markAnalyticsChecked(); navigate('/analytics'); if (isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>📊 Analytics</button>
+          <button onClick={() => { setOnboardingStep(0); setShowOnboarding(true); if (isTablet || isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>🎓 Setup Guide</button>
+          <button onClick={() => { setShowAnnouncements(true); markAnnouncementsChecked(); if (isTablet || isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>📢 Announcements</button>
+          <button onClick={() => { markAnalyticsChecked(); navigate('/analytics'); if (isTablet || isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>📊 Analytics</button>
           <button
             onClick={() => { setMobileHeaderOpen(false); contactLoyaltyTreeSupport() }}
             style={{...styles.supportBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}
@@ -2465,9 +2465,14 @@ const styles = {
   },
   headerTablet: {
     flexDirection: 'column',
+    width: '100%',
+    maxWidth: '100%',
+    minWidth: 0,
+    boxSizing: 'border-box',
+    overflow: 'visible',
     alignItems: 'stretch',
     gap: 10,
-    padding: '12px 20px 10px',
+    padding: '12px 20px 12px',
     position: 'relative',
   },
   headerMobile: {
