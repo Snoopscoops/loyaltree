@@ -107,7 +107,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const FRONTEND_URL = 'https://loyaltree-btw1.onrender.com'
   const VIBER_SUPPORT_NUMBER = '639397992144'
 
-  const contactLoyaltyTreeSupport = () => {
+  const contactLoyaltyTreeSupport = async () => {
     const businessName = business?.business_name || user?.business_name || 'Not available'
     const businessId = business?.public_id || business?.business_slug || user?.business_slug || 'Not available'
     const supportMessage = [
@@ -120,10 +120,23 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       'Please describe your concern here.'
     ].join('\n')
 
-    // Viber's chat deep-link opens Alfred's support chat when Viber is installed.
-    // Keep the full international-format number without "+" in the URI.
-    const viberUrl = `viber://chat?number=%2B${VIBER_SUPPORT_NUMBER}&text=${encodeURIComponent(supportMessage)}`
-    window.location.href = viberUrl
+    // Personal-number Viber chat links do not reliably support a `text=`
+    // parameter on Safari/iOS. Copy the prefilled support message first,
+    // then open Alfred's Viber chat with the OS-appropriate number format.
+    try {
+      await navigator.clipboard.writeText(supportMessage)
+      setMessage('Support message copied — paste it in Viber after the chat opens.')
+    } catch (_) {
+      // Clipboard can be blocked by browser permissions; Viber can still open.
+    }
+
+    const isApple = /iPhone|iPad|iPod|Macintosh/i.test(navigator.userAgent)
+    const viberNumber = isApple ? `+${VIBER_SUPPORT_NUMBER}` : VIBER_SUPPORT_NUMBER
+    const viberUrl = `viber://chat?number=${viberNumber}`
+
+    // Must happen directly from the button click so Safari treats it as an
+    // app-opening user gesture instead of a scripted redirect.
+    window.location.assign(viberUrl)
   }
 
   const onboardingKey = user?.business_slug ? `loyaltree_onboarding_seen_${user.business_slug}` : null
