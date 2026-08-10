@@ -103,6 +103,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [viewportWidth, setViewportWidth] = useState(() => typeof window !== 'undefined' ? window.innerWidth : 1280)
   const [setupKitForm, setSetupKitForm] = useState({recipient_name:'',contact_number:'',delivery_address:'',delivery_instructions:'',logo_url:''})
   const [savingSetupKit, setSavingSetupKit] = useState(false)
+  const [mobileHeaderOpen, setMobileHeaderOpen] = useState(false)
 
   // Frontend URL for customer-facing pages
   const FRONTEND_URL = 'https://loyaltree-btw1.onrender.com'
@@ -898,6 +899,19 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             <p style={styles.brandTagline}>{cardExperience.dashboardLabel} · {cardExperience.editDescription}</p>
           </div>
         </div>
+        {isMobile && (
+          <button
+            type="button"
+            onClick={() => setMobileHeaderOpen(v => !v)}
+            style={styles.mobileMenuBtn}
+            aria-expanded={mobileHeaderOpen}
+            aria-label="Toggle dashboard menu"
+          >
+            <span>{mobileHeaderOpen ? '✕' : '☰'}</span>
+            <span>{mobileHeaderOpen ? 'Close Menu' : 'Dashboard Menu'}</span>
+          </button>
+        )}
+        {(!isMobile || mobileHeaderOpen) && (
         <div style={{...styles.headerActions,...(isTablet?styles.headerActionsTablet:{}),...(isMobile?styles.headerActionsMobile:{})}}>
           <span style={{...styles.planBadge,...(isTablet?styles.planBadgeTablet:{}),...(isMobile?styles.planBadgeMobile:{})}}>{user?.business_name}</span>
           {needsRenewal && (
@@ -927,6 +941,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           </button>
           <button onClick={onLogout} style={{...styles.logoutBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>Logout</button>
         </div>
+        )}
       </header>
 
       <PlatformPromoBanner API_BASE={API_BASE} businessSlug={user?.business_slug} />
@@ -2457,14 +2472,18 @@ const styles = {
   },
   headerMobile: {
     flexDirection: 'column',
-    width: '100%',
-    maxWidth: '100%',
+    width: '100vw',
+    maxWidth: '100vw',
+    minWidth: 0,
     boxSizing: 'border-box',
     overflow: 'visible',
     alignItems: 'stretch',
     gap: 10,
     padding: '10px 12px 12px',
-    position: 'relative',
+    position: 'sticky',
+    left: 0,
+    right: 0,
+    margin: 0,
   },
   brandResponsive: {
     width: '100%',
@@ -2481,14 +2500,41 @@ const styles = {
     gridTemplateColumns: 'repeat(2,minmax(0,1fr))',
     gap: 8,
   },
+  mobileMenuBtn: {
+    width: '100%',
+    minHeight: 46,
+    boxSizing: 'border-box',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    padding: '10px 14px',
+    border: '1px solid #99f6e4',
+    borderRadius: 10,
+    background: '#f0fdfa',
+    color: '#0f766e',
+    fontSize: 14,
+    fontWeight: 800,
+    cursor: 'pointer',
+    position: 'relative',
+    zIndex: 102,
+  },
   headerActionsMobile: {
     width: '100%',
     maxWidth: '100%',
     minWidth: 0,
     boxSizing: 'border-box',
     display: 'grid',
-    gridTemplateColumns: 'repeat(2,minmax(0,1fr))',
-    gap: 10,
+    gridTemplateColumns: '1fr',
+    gap: 8,
+    position: 'relative',
+    left: 0,
+    right: 'auto',
+    transform: 'none',
+    margin: 0,
+    padding: 0,
+    overflow: 'visible',
+    zIndex: 101,
   },
   planBadgeTablet: {
     gridColumn: '1 / -1',
