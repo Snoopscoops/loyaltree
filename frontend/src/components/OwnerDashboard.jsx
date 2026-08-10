@@ -907,7 +907,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 ...styles.navBtn,
                 ...(subStatus === 'expired' ? styles.renewalBtnExpired : styles.renewalBtnWarning),
                 ...(isTablet || isMobile ? styles.headerActionResponsive : {}),
-                ...(isMobile ? styles.renewalBtnMobile : {}),
+                ...((isTablet || isMobile) ? styles.renewalBtnMobile : {}),
               }}
             >
               {subStatus === 'expired'
@@ -2446,19 +2446,25 @@ const styles = {
     width: '100%',
     maxWidth: '100%',
     boxSizing: 'border-box',
-    overflow: 'hidden',
+    overflow: 'visible',
     alignItems: 'stretch',
     gap: 10,
-    padding: '10px 12px',
+    padding: '10px 12px 12px',
     position: 'relative',
   },
   brandResponsive: {
     width: '100%',
+    maxWidth: '100%',
+    minWidth: 0,
+    boxSizing: 'border-box',
   },
   headerActionsTablet: {
     width: '100%',
+    maxWidth: '100%',
+    minWidth: 0,
+    boxSizing: 'border-box',
     display: 'grid',
-    gridTemplateColumns: 'minmax(180px,1.4fr) repeat(5,minmax(0,1fr))',
+    gridTemplateColumns: 'repeat(2,minmax(0,1fr))',
     gap: 8,
   },
   headerActionsMobile: {
@@ -2471,6 +2477,9 @@ const styles = {
     gap: 7,
   },
   planBadgeTablet: {
+    gridColumn: '1 / -1',
+    width: '100%',
+    boxSizing: 'border-box',
     minWidth: 0,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
