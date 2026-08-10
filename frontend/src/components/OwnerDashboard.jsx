@@ -2479,8 +2479,14 @@ const styles = {
     textOverflow: 'ellipsis',
   },
   dashboardShellTablet: {
-    width: 'calc(100% - 28px)',
+    width: '100vw',
+    maxWidth: 'none',
     marginTop: 18,
+    marginLeft: 'calc(50% - 50vw)',
+    marginRight: 'calc(50% - 50vw)',
+    paddingLeft: 14,
+    paddingRight: 14,
+    boxSizing: 'border-box',
   },
   dashboardShellMobile: {
     width: 'calc(100% - 20px)',
@@ -2492,6 +2498,8 @@ const styles = {
     alignItems: 'center',
     gap: 16,
     padding: '22px',
+    width: '100%',
+    boxSizing: 'border-box',
   },
   dashboardHeroMobile: {
     display: 'flex',
@@ -2546,12 +2554,18 @@ const styles = {
     justifyContent: 'flex-start',
   },
   contentTablet: {
+    width: '100vw',
+    maxWidth: 'none',
+    marginLeft: 'calc(50% - 50vw)',
+    marginRight: 'calc(50% - 50vw)',
     padding: '20px 14px 42px',
+    boxSizing: 'border-box',
   },
   contentMobile: {
     padding: '16px 10px 36px',
   },
   actionCardsTablet: {
+    width: '100%',
     gridTemplateColumns: 'repeat(2,minmax(0,1fr))',
     gap: 14,
   },
@@ -2895,6 +2909,7 @@ const styles = {
     margin: '0 auto',
   },
   treeTab: {
+    width: '100%',
     display: 'flex',
     flexDirection: 'column',
     gap: 20,
