@@ -446,6 +446,7 @@ class StaffCreate(BaseModel):
     role: Literal["national", "regional", "local"]
     region_public_id: Optional[str] = None
     branch_public_id: Optional[str] = None
+    branch_name: Optional[str] = Field(default=None, max_length=180)
 
 
 class StaffUpdate(BaseModel):
@@ -455,6 +456,7 @@ class StaffUpdate(BaseModel):
     role: Literal["national", "regional", "local"]
     region_public_id: Optional[str] = None
     branch_public_id: Optional[str] = None
+    branch_name: Optional[str] = Field(default=None, max_length=180)
 
 
 class StaffStatusUpdate(BaseModel):
@@ -607,6 +609,30 @@ async def list_staff(staff: dict = Depends(current_staff)):
     return [_public_staff(x) for x in rows]
 
 
+def _resolve_or_create_branch(region_public_id: str, branch_public_id: Optional[str], branch_name: Optional[str]) -> dict:
+    db = _supabase()
+    if branch_public_id:
+        branch = _require_record("motolite_branches", branch_public_id, "Branch")
+        if branch.get("region_public_id") != region_public_id:
+            raise HTTPException(status_code=400, detail="Branch does not belong to the selected region.")
+        return branch
+    name = (branch_name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Local account requires a branch name.")
+    rows = db.table("motolite_branches").select("*").eq("region_public_id", region_public_id).execute().data or []
+    wanted = re.sub(r"\s+", " ", name).strip().casefold()
+    for row in rows:
+        existing = re.sub(r"\s+", " ", str(row.get("name") or "")).strip().casefold()
+        if existing == wanted:
+            return row
+    return _insert("motolite_branches", {
+        "public_id": _public_id("mtb"), "region_public_id": region_public_id,
+        "name": name, "branch_code": None, "address": None, "city": None,
+        "province": None, "latitude": None, "longitude": None, "phone": None,
+        "is_active": True, "created_at": _now_iso(), "updated_at": _now_iso(),
+    })
+
+
 @motolite_router.post("/staff")
 async def create_staff(payload: StaffCreate, staff: dict = Depends(current_staff)):
     _require_roles(staff, ROLE_NATIONAL, ROLE_REGIONAL)
@@ -620,16 +646,16 @@ async def create_staff(payload: StaffCreate, staff: dict = Depends(current_staff
             raise HTTPException(status_code=400, detail="Regional account requires a region.")
         _require_record("motolite_regions", payload.region_public_id, "Region")
     if payload.role == ROLE_LOCAL:
-        if not payload.branch_public_id:
-            raise HTTPException(status_code=400, detail="Local account requires a branch.")
-        branch = _require_record("motolite_branches", payload.branch_public_id, "Branch")
-        region_id = payload.region_public_id or branch.get("region_public_id")
-        if branch.get("region_public_id") != region_id:
-            raise HTTPException(status_code=400, detail="Branch does not belong to the selected region.")
+        region_id = payload.region_public_id or (staff.get("region_public_id") if staff["role"] == ROLE_REGIONAL else None)
+        if not region_id:
+            raise HTTPException(status_code=400, detail="Local account requires a region.")
+        _require_record("motolite_regions", region_id, "Region")
         if staff["role"] == ROLE_REGIONAL and region_id != staff.get("region_public_id"):
             raise HTTPException(status_code=403, detail="Branch is outside your region.")
+        branch = _resolve_or_create_branch(region_id, payload.branch_public_id, payload.branch_name)
     else:
         region_id = payload.region_public_id
+        branch = None
     if _get_one("motolite_staff_scope", "username", payload.username.strip()):
         raise HTTPException(status_code=409, detail="Username already exists.")
     salt, pwd_hash = _hash_password(payload.password)
@@ -638,7 +664,7 @@ async def create_staff(payload: StaffCreate, staff: dict = Depends(current_staff
         "public_id": pid, "user_id": pid, "full_name": payload.full_name,
         "username": payload.username.strip(), "email": payload.email,
         "password_salt": salt, "password_hash": pwd_hash, "role": payload.role,
-        "region_public_id": region_id, "branch_public_id": payload.branch_public_id if payload.role == ROLE_LOCAL else None,
+        "region_public_id": region_id, "branch_public_id": branch.get("public_id") if payload.role == ROLE_LOCAL and branch else None,
         "is_active": True, "created_by_public_id": staff["public_id"], "created_at": _now_iso(), "updated_at": _now_iso(),
     })
     return _public_staff(row)
@@ -660,13 +686,12 @@ async def update_staff(staff_public_id: str, payload: StaffUpdate, staff: dict =
         _require_record("motolite_regions", payload.region_public_id, "Region")
         region_id = payload.region_public_id
     elif payload.role == ROLE_LOCAL:
-        if not payload.branch_public_id:
-            raise HTTPException(status_code=400, detail="Local account requires a branch.")
-        branch = _require_record("motolite_branches", payload.branch_public_id, "Branch")
-        region_id = payload.region_public_id or branch.get("region_public_id")
-        if branch.get("region_public_id") != region_id:
-            raise HTTPException(status_code=400, detail="Branch does not belong to the selected region.")
-        branch_id = payload.branch_public_id
+        region_id = payload.region_public_id
+        if not region_id:
+            raise HTTPException(status_code=400, detail="Local account requires a region.")
+        _require_record("motolite_regions", region_id, "Region")
+        branch = _resolve_or_create_branch(region_id, payload.branch_public_id, payload.branch_name)
+        branch_id = branch.get("public_id")
     row = _update("motolite_staff_scope", staff_public_id, {
         "full_name": payload.full_name.strip(), "username": payload.username.strip(),
         "email": payload.email or None, "role": payload.role,
@@ -764,6 +789,40 @@ async def branches(region_public_id: Optional[str] = None):
     if region_public_id:
         q = q.eq("region_public_id", region_public_id)
     return q.order("name").execute().data or []
+
+
+@motolite_router.post("/branches/dedupe")
+async def dedupe_branches(staff: dict = Depends(current_staff)):
+    _require_roles(staff, ROLE_NATIONAL)
+    db = _supabase()
+    rows = db.table("motolite_branches").select("*").order("created_at").execute().data or []
+    groups = {}
+    for row in rows:
+        norm = re.sub(r"\s+", " ", str(row.get("name") or "")).strip().casefold()
+        if norm:
+            groups.setdefault((row.get("region_public_id"), norm), []).append(row)
+    refs = [
+        ("motolite_staff_scope","branch_public_id"),
+        ("motolite_members","preferred_branch_public_id"),
+        ("motolite_members","created_by_branch_public_id"),
+        ("motolite_batteries","original_branch_public_id"),
+        ("motolite_warranties","original_branch_public_id"),
+        ("motolite_warranty_actions","servicing_branch_public_id"),
+    ]
+    removed=0; merged=[]
+    for group in [g for g in groups.values() if len(g)>1]:
+        keeper=group[0]
+        dupes=[r["public_id"] for r in group[1:] if r.get("public_id")]
+        for duplicate_id in dupes:
+            for table,column in refs:
+                try:
+                    db.table(table).update({column:keeper["public_id"]}).eq(column,duplicate_id).execute()
+                except Exception as exc:
+                    print(f"MOTOLITE BRANCH DEDUPE skipped {table}.{column}: {exc}")
+            db.table("motolite_branches").delete().eq("public_id",duplicate_id).execute()
+            removed+=1
+        merged.append({"name":keeper.get("name"),"region_public_id":keeper.get("region_public_id"),"removed":dupes})
+    return {"ok":True,"removed":removed,"groups":merged}
 
 
 @motolite_router.post("/branches")
