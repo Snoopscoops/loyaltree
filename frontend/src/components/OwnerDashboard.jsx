@@ -100,6 +100,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [memberVisitService, setMemberVisitService] = useState('')
   const [memberVisitNote, setMemberVisitNote] = useState('')
   const [setupKit, setSetupKit] = useState(null)
+  const [viewportWidth, setViewportWidth] = useState(() => typeof window !== 'undefined' ? window.innerWidth : 1280)
   const [setupKitForm, setSetupKitForm] = useState({recipient_name:'',contact_number:'',delivery_address:'',delivery_instructions:'',logo_url:''})
   const [savingSetupKit, setSavingSetupKit] = useState(false)
 
@@ -137,6 +138,16 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const announcementsCheckedKey = user?.business_slug ? `loyaltree_checked_announcements_${user.business_slug}` : null
   const analyticsCheckedKey = user?.business_slug ? `loyaltree_checked_analytics_${user.business_slug}` : null
   const isActive = (business?.status || '').toUpperCase() === 'ACTIVE'
+
+  const isTablet = viewportWidth >= 600 && viewportWidth <= 1100
+  const isMobile = viewportWidth < 600
+
+  useEffect(() => {
+    const onResize = () => setViewportWidth(window.innerWidth)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
 
   const cardSetUp = !!program?.google_wallet_class_id
   const cashierSetUp = staff.length > 0
@@ -879,16 +890,16 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   return (
     <div style={styles.container}>
       {/* Header */}
-      <header style={styles.header}>
-        <div style={styles.brand}>
+      <header style={{...styles.header,...(isTablet?styles.headerTablet:{}),...(isMobile?styles.headerMobile:{})}}>
+        <div style={{...styles.brand,...(isTablet||isMobile?styles.brandResponsive:{})}}>
           <img src={logo192} alt="LoyaltyTree" style={styles.logo} />
           <div>
             <h1 style={styles.brandName}>LoyaltyTree</h1>
             <p style={styles.brandTagline}>{cardExperience.dashboardLabel} · {cardExperience.editDescription}</p>
           </div>
         </div>
-        <div style={styles.headerActions}>
-          <span style={styles.planBadge}>{user?.business_name}</span>
+        <div style={{...styles.headerActions,...(isTablet?styles.headerActionsTablet:{}),...(isMobile?styles.headerActionsMobile:{})}}>
+          <span style={{...styles.planBadge,...(isTablet?styles.planBadgeTablet:{}),...(isMobile?styles.planBadgeMobile:{})}}>{user?.business_name}</span>
           {needsRenewal && (
             <button
               onClick={() => setActiveTab('billing')}
@@ -902,17 +913,17 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 : `⏰ Renews in ${subscription.days_left}d — Pay now`}
             </button>
           )}
-          <button onClick={() => { setOnboardingStep(0); setShowOnboarding(true) }} style={styles.navBtn}>🎓 Setup Guide</button>
-          <button onClick={() => { setShowAnnouncements(true); markAnnouncementsChecked() }} style={styles.navBtn}>📢 Announcements</button>
-          <button onClick={() => { markAnalyticsChecked(); navigate('/analytics') }} style={styles.navBtn}>📊 Analytics</button>
+          <button onClick={() => { setOnboardingStep(0); setShowOnboarding(true) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>🎓 Setup Guide</button>
+          <button onClick={() => { setShowAnnouncements(true); markAnnouncementsChecked() }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>📢 Announcements</button>
+          <button onClick={() => { markAnalyticsChecked(); navigate('/analytics') }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>📊 Analytics</button>
           <button
             onClick={contactLoyaltyTreeSupport}
-            style={styles.supportBtn}
+            style={{...styles.supportBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}
             title="Chat with LoyaltyTree Support on Messenger"
           >
             💬 Support
           </button>
-          <button onClick={onLogout} style={styles.logoutBtn}>Logout</button>
+          <button onClick={onLogout} style={{...styles.logoutBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>Logout</button>
         </div>
       </header>
 
@@ -925,9 +936,9 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       )}
 
       {/* Professional dashboard summary */}
-      <section style={styles.dashboardShell}>
-        <div style={styles.dashboardHero}>
-          <div style={styles.heroTreeWrap} aria-hidden="true">
+      <section style={{...styles.dashboardShell,...(isTablet?styles.dashboardShellTablet:{}),...(isMobile?styles.dashboardShellMobile:{})}}>
+        <div style={{...styles.dashboardHero,...(isTablet?styles.dashboardHeroTablet:{}),...(isMobile?styles.dashboardHeroMobile:{})}}>
+          <div style={{...styles.heroTreeWrap,...(isTablet?styles.heroTreeWrapTablet:{}),...(isMobile?styles.heroTreeWrapMobile:{})}} aria-hidden="true">
             <div style={styles.heroTreeGlow}></div>
             <div style={styles.heroTree}>🌳</div>
             <div style={styles.heroTreeGround}>
@@ -935,7 +946,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             </div>
           </div>
 
-          <div style={styles.heroIdentity}>
+          <div style={{...styles.heroIdentity,...(isTablet?styles.heroIdentityTablet:{}),...(isMobile?styles.heroIdentityMobile:{})}}>
             <div style={{minWidth: 0}}>
               <p style={styles.heroEyebrow}>{industry.icon} {industry.label} · {cardExperience.dashboardLabel}</p>
               <h2 style={styles.heroTitle}>{user?.business_name}</h2>
@@ -949,7 +960,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             </div>
           </div>
 
-          <div style={styles.heroQuickActions}>
+          <div style={{...styles.heroQuickActions,...(isTablet?styles.heroQuickActionsTablet:{}),...(isMobile?styles.heroQuickActionsMobile:{})}}>
             <button
               onClick={() => navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name } })}
               style={{...styles.primaryActionBtn, background: '#0d9488'}}
@@ -960,7 +971,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           </div>
         </div>
 
-        <div style={styles.metricsGrid}>
+        <div style={{...styles.metricsGrid,...(isTablet?styles.metricsGridTablet:{}),...(isMobile?styles.metricsGridMobile:{})}}>
           {(isVipCard
             ? [{value:customers.length,label:'VIP Customers',hint:'Enrolled in your VIP program'},{value:totalVipPoints,label:'VIP Points',hint:'Current points across customers'},{value:customers.filter(c=>c.vip_tier?.name).length,label:'Tiered Customers',hint:'Customers with an assigned tier'}]
             : isMembershipCard
@@ -997,7 +1008,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         </div>
 
         {/* Navigation Tabs */}
-        <nav style={styles.tabs} aria-label="Owner dashboard sections">
+        <nav style={{...styles.tabs,...(isTablet?styles.tabsTablet:{}),...(isMobile?styles.tabsMobile:{})}} aria-label="Owner dashboard sections">
           {[
             { id: 'tree', label: 'Overview', icon: cardExperience.icon },
             { id: 'customers', label: cardExperience.customerLabel, icon: cardExperience.customerIcon },
@@ -1025,7 +1036,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       </section>
 
       {/* Tab Content */}
-      <div style={styles.content}>
+      <div style={{...styles.content,...(isTablet?styles.contentTablet:{}),...(isMobile?styles.contentMobile:{})}}>
         {activeTab === 'tree' && (
           <div style={styles.treeTab}>
             <div style={styles.industryInsight}>
@@ -1036,23 +1047,23 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 <div style={styles.industryInsightText}>Focus analytics: {industry.focus}.</div>
               </div>
             </div>
-            <div style={styles.actionCards}>
-              <div style={{...styles.actionCard, borderColor: cardExperience.border}} onClick={() => setActiveTab('customers')}>
+            <div style={{...styles.actionCards,...(isTablet?styles.actionCardsTablet:{}),...(isMobile?styles.actionCardsMobile:{})}}>
+              <div style={{...styles.actionCard,...(isTablet?styles.actionCardTablet:{}), borderColor: cardExperience.border}} onClick={() => setActiveTab('customers')}>
                 <div style={styles.actionIcon}>{cardExperience.customerIcon}</div>
                 <h3>View {cardExperience.customerLabel}</h3>
                 <p>{customers.length} connected</p>
               </div>
-              <div style={{...styles.actionCard, borderColor: cardExperience.border}} onClick={() => navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name } })}>
+              <div style={{...styles.actionCard,...(isTablet?styles.actionCardTablet:{}), borderColor: cardExperience.border}} onClick={() => navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name } })}>
                 <div style={styles.actionIcon}>📷</div>
                 <h3>{cardExperience.scanTitle}</h3>
                 <p>{cardExperience.scanDescription}</p>
               </div>
-              <div style={{...styles.actionCard, borderColor: cardExperience.border}} onClick={() => setShowInviteModal(true)}>
+              <div style={{...styles.actionCard,...(isTablet?styles.actionCardTablet:{}), borderColor: cardExperience.border}} onClick={() => setShowInviteModal(true)}>
                 <div style={styles.actionIcon}>🌿</div>
                 <h3>Manage Team</h3>
                 <p>Invite staff members</p>
               </div>
-              <div style={{...styles.actionCard, borderColor: cardExperience.border}} onClick={fetchQRImage}>
+              <div style={{...styles.actionCard,...(isTablet?styles.actionCardTablet:{}), borderColor: cardExperience.border}} onClick={fetchQRImage}>
                 <div style={styles.actionIcon}>🔗</div>
                 <h3>Share Join Link</h3>
                 <p>Get the customer signup QR code</p>
@@ -2414,6 +2425,146 @@ const styles = {
     fontSize: 13,
     cursor: 'pointer',
   },
+  headerTablet: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: 10,
+    padding: '12px 20px 10px',
+    position: 'relative',
+  },
+  headerMobile: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: 10,
+    padding: '10px 12px',
+    position: 'relative',
+  },
+  brandResponsive: {
+    width: '100%',
+  },
+  headerActionsTablet: {
+    width: '100%',
+    display: 'grid',
+    gridTemplateColumns: 'minmax(180px,1.4fr) repeat(5,minmax(0,1fr))',
+    gap: 8,
+  },
+  headerActionsMobile: {
+    width: '100%',
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2,minmax(0,1fr))',
+    gap: 7,
+  },
+  planBadgeTablet: {
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  planBadgeMobile: {
+    gridColumn: '1 / -1',
+    justifyContent: 'center',
+    textAlign: 'center',
+    whiteSpace: 'normal',
+  },
+  headerActionResponsive: {
+    width: '100%',
+    minWidth: 0,
+    padding: '9px 8px',
+    textAlign: 'center',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  },
+  dashboardShellTablet: {
+    width: 'calc(100% - 28px)',
+    marginTop: 18,
+  },
+  dashboardShellMobile: {
+    width: 'calc(100% - 20px)',
+    marginTop: 12,
+  },
+  dashboardHeroTablet: {
+    display: 'grid',
+    gridTemplateColumns: '96px minmax(0,1fr)',
+    alignItems: 'center',
+    gap: 16,
+    padding: '22px',
+  },
+  dashboardHeroMobile: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: 14,
+    padding: '18px',
+  },
+  heroTreeWrapTablet: {
+    width: 92,
+    height: 88,
+  },
+  heroTreeWrapMobile: {
+    width: 82,
+    height: 78,
+    alignSelf: 'center',
+  },
+  heroIdentityTablet: {
+    minWidth: 0,
+    width: '100%',
+  },
+  heroIdentityMobile: {
+    width: '100%',
+    flex: '0 0 auto',
+    textAlign: 'center',
+    justifyContent: 'center',
+  },
+  heroQuickActionsTablet: {
+    gridColumn: '1 / -1',
+    width: '100%',
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2,minmax(0,1fr))',
+  },
+  heroQuickActionsMobile: {
+    width: '100%',
+    display: 'grid',
+    gridTemplateColumns: '1fr',
+  },
+  metricsGridTablet: {
+    gridTemplateColumns: 'repeat(3,minmax(0,1fr))',
+    gap: 12,
+  },
+  metricsGridMobile: {
+    gridTemplateColumns: '1fr',
+  },
+  tabsTablet: {
+    justifyContent: 'space-between',
+    overflowX: 'visible',
+  },
+  tabsMobile: {
+    overflowX: 'auto',
+    justifyContent: 'flex-start',
+  },
+  contentTablet: {
+    padding: '20px 14px 42px',
+  },
+  contentMobile: {
+    padding: '16px 10px 36px',
+  },
+  actionCardsTablet: {
+    gridTemplateColumns: 'repeat(2,minmax(0,1fr))',
+    gap: 14,
+  },
+  actionCardsMobile: {
+    gridTemplateColumns: '1fr',
+  },
+  actionCardTablet: {
+    minHeight: 170,
+    padding: 20,
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'center',
+  },
   toast: {
     position: 'fixed',
     top: 80,
@@ -2652,6 +2803,7 @@ const styles = {
     gap: 10,
   },
   primaryActionBtn: {
+    width: '100%',
     padding: '11px 16px',
     color: 'white',
     border: 'none',
@@ -2661,6 +2813,7 @@ const styles = {
     cursor: 'pointer',
   },
   secondaryActionBtn: {
+    width: '100%',
     padding: '11px 16px',
     color: '#344054',
     background: 'white',
