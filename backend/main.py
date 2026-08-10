@@ -2552,7 +2552,12 @@ def apple_logo_from_image_bytes(logo_bytes: bytes, width: int, height: int) -> O
         img = Image.open(BytesIO(logo_bytes)).convert('RGBA')
         img.thumbnail((width, height), Image.LANCZOS)
         canvas = Image.new('RGBA', (width, height), (0, 0, 0, 0))
-        canvas.paste(img, ((width - img.width) // 2, (height - img.height) // 2), img)
+        # PassKit positions the logo slot itself, so we cannot remove Apple's
+        # native outer margin. What we *can* remove is our own transparent
+        # left padding. Anchor the uploaded logo at x=0 instead of centering
+        # it inside the 160x50 / @2x / @3x logo canvas. This makes the visible
+        # artwork sit as close to Apple's top-left edge as PassKit permits.
+        canvas.paste(img, (0, (height - img.height) // 2), img)
         return _hero_to_png(canvas)
     except Exception as e:
         print(f"APPLE LOGO from image error: {e}")
@@ -2613,7 +2618,9 @@ def generate_apple_logo_bytes(business_name: str, width: int, height: int) -> by
         bbox = draw.textbbox((0, 0), text, font=font)
         tw = bbox[2] - bbox[0]
     th = bbox[3] - bbox[1]
-    draw.text(((width - tw) / 2 - bbox[0], (height - th) / 2 - bbox[1]), text, font=font, fill=(255, 255, 255, 255))
+    # Left-anchor the generated fallback too, matching uploaded logos and
+    # avoiding extra transparent padding before Apple's own native margin.
+    draw.text((max(0, -bbox[0]), (height - th) / 2 - bbox[1]), text, font=font, fill=(255, 255, 255, 255))
     return _hero_to_png(img)
 
 def get_latest_active_announcement(business_id: int) -> Optional[dict]:
