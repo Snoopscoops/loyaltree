@@ -2354,6 +2354,7 @@ const styles = {
     display: 'flex',
     width: '100%',
     maxWidth: '100vw',
+    minWidth: 0,
     boxSizing: 'border-box',
     justifyContent: 'space-between',
     alignItems: 'center',
@@ -2372,6 +2373,7 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     gap: 12,
+    minWidth: 0,
   },
   logo: {
     width: 40,
@@ -2395,6 +2397,11 @@ const styles = {
     gap: 8,
     alignItems: 'center',
     flexWrap: 'wrap',
+    width: '100%',
+    maxWidth: '100%',
+    minWidth: 0,
+    boxSizing: 'border-box',
+    justifyContent: 'flex-end',
   },
   planBadge: {
     padding: '6px 12px',
@@ -2403,6 +2410,8 @@ const styles = {
     borderRadius: 20,
     fontSize: 13,
     fontWeight: 600,
+    boxSizing: 'border-box',
+    maxWidth: '100%',
   },
   navBtn: {
     padding: '8px 16px',
@@ -2413,6 +2422,9 @@ const styles = {
     fontSize: 13,
     fontWeight: 600,
     cursor: 'pointer',
+    boxSizing: 'border-box',
+    maxWidth: '100%',
+    flexShrink: 0,
   },
   renewalBtnWarning: {
     background: '#fffbeb',
@@ -2424,7 +2436,7 @@ const styles = {
     color: '#dc2626',
     border: '1.5px solid #fecaca',
   },
-  supportBtn:{padding:'9px 14px',border:'1px solid #c4b5fd',borderRadius:10,background:'#f5f3ff',color:'#6d28d9',fontSize:13,fontWeight:800,cursor:'pointer',whiteSpace:'nowrap'},
+  supportBtn:{padding:'9px 14px',border:'1px solid #c4b5fd',borderRadius:10,background:'#f5f3ff',color:'#6d28d9',fontSize:13,fontWeight:800,cursor:'pointer',whiteSpace:'nowrap',boxSizing:'border-box',maxWidth:'100%',flexShrink:0},
   logoutBtn: {
     padding: '8px 16px',
     background: 'transparent',
@@ -2433,6 +2445,9 @@ const styles = {
     borderRadius: 8,
     fontSize: 13,
     cursor: 'pointer',
+    boxSizing: 'border-box',
+    maxWidth: '100%',
+    flexShrink: 0,
   },
   headerTablet: {
     flexDirection: 'column',
