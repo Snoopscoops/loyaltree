@@ -105,6 +105,27 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   // Frontend URL for customer-facing pages
   const FRONTEND_URL = 'https://loyaltree-btw1.onrender.com'
+  const VIBER_SUPPORT_NUMBER = '639397992144'
+
+  const contactLoyaltyTreeSupport = () => {
+    const businessName = business?.business_name || user?.business_name || 'Not available'
+    const businessId = business?.public_id || business?.business_slug || user?.business_slug || 'Not available'
+    const supportMessage = [
+      'Hi Alfred! I need assistance with my LoyaltyTree account.',
+      '',
+      `Business: ${businessName}`,
+      `Business ID: ${businessId}`,
+      '',
+      'Concern:',
+      'Please describe your concern here.'
+    ].join('\n')
+
+    // Viber's chat deep-link opens Alfred's support chat when Viber is installed.
+    // Keep the full international-format number without "+" in the URI.
+    const viberUrl = `viber://chat?number=%2B${VIBER_SUPPORT_NUMBER}&text=${encodeURIComponent(supportMessage)}`
+    window.location.href = viberUrl
+  }
+
   const onboardingKey = user?.business_slug ? `loyaltree_onboarding_seen_${user.business_slug}` : null
   const announcementsCheckedKey = user?.business_slug ? `loyaltree_checked_announcements_${user.business_slug}` : null
   const analyticsCheckedKey = user?.business_slug ? `loyaltree_checked_analytics_${user.business_slug}` : null
@@ -877,6 +898,13 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           <button onClick={() => { setOnboardingStep(0); setShowOnboarding(true) }} style={styles.navBtn}>🎓 Setup Guide</button>
           <button onClick={() => { setShowAnnouncements(true); markAnnouncementsChecked() }} style={styles.navBtn}>📢 Announcements</button>
           <button onClick={() => { markAnalyticsChecked(); navigate('/analytics') }} style={styles.navBtn}>📊 Analytics</button>
+          <button
+            onClick={contactLoyaltyTreeSupport}
+            style={styles.supportBtn}
+            title="Open Viber and contact LoyaltyTree Support"
+          >
+            💬 Support
+          </button>
           <button onClick={onLogout} style={styles.logoutBtn}>Logout</button>
         </div>
       </header>
@@ -2369,6 +2397,7 @@ const styles = {
     color: '#dc2626',
     border: '1.5px solid #fecaca',
   },
+  supportBtn:{padding:'9px 14px',border:'1px solid #c4b5fd',borderRadius:10,background:'#f5f3ff',color:'#6d28d9',fontSize:13,fontWeight:800,cursor:'pointer',whiteSpace:'nowrap'},
   logoutBtn: {
     padding: '8px 16px',
     background: 'transparent',
