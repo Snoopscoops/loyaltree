@@ -5,7 +5,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 // Only shows the raw scan/debug panel in local dev - never in a production
 // build, since it prints internal API paths and response codes on-screen.
 const DEBUG = import.meta.env.DEV
-const CASHIER_BUILD = 'VIP-MEMBERSHIP-MULTIPASS-V15-INDUSTRIES'
+const CASHIER_BUILD = 'VIP-MEMBERSHIP-MULTIPASS-V16-NFC-READY'
 const BUSINESS_ICONS={spa:'🌿',salon:'✂️',fitness:'🏋️',restaurant:'🍽️',coffee:'☕',retail:'🛍️',clinic:'🩺',laundry:'🧺',gas_station:'⛽',car_wash:'🚿',pharmacy:'💊',bakery:'🥐',hotel:'🏨',other:'🏪',car_lending:'🚗',cockpit:'🏆'}
 
 function CashierApp({ API_BASE }) {
@@ -26,6 +26,7 @@ function CashierApp({ API_BASE }) {
   // every scan, so the PIN itself only crosses the wire once per shift.
   const [sessionToken, setSessionToken] = useState('')
   const lastScanRef = useRef({ id: null, time: 0 })
+  const lastNfcRef = useRef({ token: null, time: 0 })
   const [customerData, setCustomerData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('')
@@ -93,6 +94,63 @@ function CashierApp({ API_BASE }) {
       scanner.clear().catch(() => {})
     }
   }, [businessSlug, staffPin, sessionToken, staffName, customerData, isOwner])
+
+  // External NFC reader/native bridge hand-off. If the customer taps before
+  // the cashier has logged in, the query stays in the URL; after verify-pin
+  // succeeds this effect runs automatically and continues the pending tap.
+  useEffect(() => {
+    const params = new URLSearchParams(location.search)
+    const nfcToken = params.get('nfc')
+    if (!nfcToken || customerData || loading) return
+    if (!businessSlug || !staffName) return
+
+    // The NFC resolve endpoint deliberately requires a real cashier session.
+    // Owner-mode QR scanning is still supported, but owner NFC should later be
+    // wired through an authenticated native reader rather than bypassing auth.
+    if (!sessionToken) return
+
+    const source = params.get('nfc_source') || 'terminal'
+    resolveNfcToken(nfcToken, source)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.search, businessSlug, staffName, sessionToken, customerData])
+
+  // NFC itself is read by a Smart Tap/VAS terminal or native reader.
+  // That reader can open /scanner?nfc=<token>&nfc_source=google_wallet|apple_wallet.
+  // Once the cashier has logged in, we resolve that signed token to the same
+  // customer public_id the existing QR flow already understands.
+  const resolveNfcToken = async (token, source = 'terminal') => {
+    if (!token || !businessSlug || !sessionToken) return
+
+    const now = Date.now()
+    if (lastNfcRef.current.token === token && now - lastNfcRef.current.time < 3000) return
+    lastNfcRef.current = { token, time: now }
+
+    setLoading(true)
+    setMessage('Reading NFC member…')
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/nfc/resolve`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${sessionToken}`,
+        },
+        body: JSON.stringify({ token, source }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.customer_public_id) {
+        throw new Error(data.detail || 'Could not identify NFC member')
+      }
+
+      setScanResult(data.customer_public_id)
+      // Remove the one-time NFC payload from the address bar before loading
+      // the customer, so Reset/refresh cannot accidentally resolve it again.
+      navigate('/scanner', { replace: true })
+      await fetchCustomer(data.customer_public_id)
+    } catch (err) {
+      setMessage(`❌ ${err.message || 'NFC read failed'}`)
+    }
+    setLoading(false)
+  }
 
   const fetchCustomer = async (customerId) => {
     setLoading(true)

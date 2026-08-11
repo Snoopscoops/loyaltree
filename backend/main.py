@@ -32,6 +32,23 @@ GOOGLE_WALLET_ISSUER_ID = os.getenv('GOOGLE_WALLET_ISSUER_ID', '')
 GOOGLE_WALLET_CLASS_SUFFIX = os.getenv('GOOGLE_WALLET_CLASS_SUFFIX', '')
 DEFAULT_LOGO_URL = os.getenv('DEFAULT_LOGO_URL', 'https://placehold.co/300x300/0d9488/ffffff.png?text=LoyaltyTree')
 
+
+# Contactless / NFC loyalty. These switches are intentionally opt-in so the
+# existing QR + Wallet passes keep working before Apple/Google approve the
+# NFC credentials for this account.
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ('1', 'true', 'yes', 'on')
+
+NFC_TOKEN_SECRET = os.getenv('NFC_TOKEN_SECRET', '')
+GOOGLE_SMART_TAP_ENABLED = _env_bool('GOOGLE_SMART_TAP_ENABLED', False)
+GOOGLE_SMART_TAP_REDEMPTION_ISSUER_ID = os.getenv('GOOGLE_SMART_TAP_REDEMPTION_ISSUER_ID', '')
+APPLE_NFC_ENABLED = _env_bool('APPLE_NFC_ENABLED', False)
+APPLE_NFC_ENCRYPTION_PUBLIC_KEY = os.getenv('APPLE_NFC_ENCRYPTION_PUBLIC_KEY', '')
+APPLE_NFC_REQUIRES_AUTHENTICATION = _env_bool('APPLE_NFC_REQUIRES_AUTHENTICATION', False)
+
 # Apple Wallet (PassKit). Preferred setup: APPLE_PASS_CERTIFICATE is a
 # base64-encoded PEM certificate and APPLE_PASS_PRIVATE_KEY is a
 # base64-encoded PEM private key, both extracted from your Pass Type ID
@@ -974,6 +991,14 @@ class StampRequest(BaseModel):
     customer_public_id: str
     staff_pin: Optional[str] = None
     as_owner: Optional[bool] = False
+
+
+class NfcResolveRequest(BaseModel):
+    # The opaque-ish, signed LoyaltyTree value delivered by Apple VAS or
+    # Google Smart Tap. NFC only identifies a member; all points/stamps/etc.
+    # continue to live in the normal LoyaltyTree database.
+    token: str = Field(min_length=10, max_length=256)
+    source: Optional[Literal['apple_wallet', 'google_wallet', 'android_hce', 'terminal']] = None
 
 class PointsSaleRequest(BaseModel):
     customer_public_id: str
@@ -2095,6 +2120,12 @@ def build_loyalty_class(
     if hero_url:
         loyalty_class['heroImage'] = {'sourceUri': {'uri': hero_url}}
 
+    # Smart Tap is added only after Google has enabled the merchant/issuer.
+    # Until then this class remains a normal QR loyalty pass.
+    if GOOGLE_SMART_TAP_ENABLED and GOOGLE_SMART_TAP_REDEMPTION_ISSUER_ID:
+        loyalty_class['enableSmartTap'] = True
+        loyalty_class['redemptionIssuers'] = [str(GOOGLE_SMART_TAP_REDEMPTION_ISSUER_ID)]
+
     return loyalty_class
 
 def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
@@ -2214,6 +2245,11 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
             f'?s={progress_key}&g={stamp_goal}&c={color_key}'
         )
         loyalty_object['heroImage'] = {'sourceUri': {'uri': hero_url}}
+
+
+    contactless_token = contactless_member_token(cust_public_id)
+    if GOOGLE_SMART_TAP_ENABLED and GOOGLE_SMART_TAP_REDEMPTION_ISSUER_ID and contactless_token:
+        loyalty_object['smartTapRedemptionValue'] = contactless_token
 
     return loyalty_object
 
@@ -2487,6 +2523,33 @@ def apple_auth_ok(serial_number: str, authorization: Optional[str]) -> bool:
         return False
     token = authorization[len('ApplePass '):].strip()
     return hmac.compare_digest(token, apple_pass_auth_token(serial_number))
+
+
+# Keep the NFC message below Apple's 64-byte pass NFC message limit. A
+# customer's public_id is already random; the HMAC prevents somebody from
+# inventing another customer's value. Format is LT1:<32-char-id>:<16-hex-mac>
+def contactless_member_token(customer_public_id: str) -> Optional[str]:
+    if not NFC_TOKEN_SECRET or not customer_public_id:
+        return None
+    public_id = str(customer_public_id).strip()
+    mac = hmac.new(NFC_TOKEN_SECRET.encode(), public_id.encode(), hashlib.sha256).hexdigest()[:16]
+    token = f'LT1:{public_id}:{mac}'
+    return token if len(token.encode('utf-8')) <= 64 else None
+
+
+def verify_contactless_member_token(token: str) -> Optional[str]:
+    if not NFC_TOKEN_SECRET or not token:
+        return None
+    try:
+        prefix, public_id, supplied_mac = token.strip().split(':', 2)
+    except ValueError:
+        return None
+    if prefix != 'LT1' or not public_id or len(supplied_mac) != 16:
+        return None
+    expected = hmac.new(NFC_TOKEN_SECRET.encode(), public_id.encode(), hashlib.sha256).hexdigest()[:16]
+    if not hmac.compare_digest(supplied_mac, expected):
+        return None
+    return public_id
 
 def sign_pkpass_manifest(manifest_bytes: bytes) -> Optional[bytes]:
     creds = get_apple_pass_credentials()
@@ -2801,6 +2864,19 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
             }
         ]
     }
+
+    # Keep the QR fallback exactly as it is, and layer Apple VAS NFC on top
+    # only when the Apple-issued NFC entitlement/certificate is configured.
+    contactless_token = contactless_member_token(cust_public_id)
+    if APPLE_NFC_ENABLED and APPLE_NFC_ENCRYPTION_PUBLIC_KEY and contactless_token:
+        pass_dict['nfc'] = {
+            'message': contactless_token,
+            'encryptionPublicKey': APPLE_NFC_ENCRYPTION_PUBLIC_KEY,
+            'requiresAuthentication': bool(APPLE_NFC_REQUIRES_AUTHENTICATION),
+        }
+        if APPLE_NFC_REQUIRES_AUTHENTICATION:
+            pass_dict['sharingProhibited'] = True
+
     # No logoText: it sits at the top next to the logo icon on the same row
     # as headerFields (e.g. "MEMBER: <name>"), and a business name of even
     # moderate length collides/overlaps with that field on narrower phones.
@@ -8147,6 +8223,39 @@ async def get_qr_code(public_id: str):
         "join_url": join_url,
         "business_name": business.get("name", ""),
     })
+
+@app.post("/api/v1/business/{public_id}/nfc/resolve")
+async def resolve_nfc_member(public_id: str, req: NfcResolveRequest, authorization: str = Header(default="")):
+    """Resolve an Apple/Google contactless value to the existing customer.
+
+    This endpoint intentionally does not mutate stamps/points/membership. It
+    only performs the same identification job the QR scanner already does.
+    A cashier session is required so a random NFC reader cannot enumerate
+    customer accounts.
+    """
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    session_claims = get_staff_session_claims(public_id, authorization)
+    if not session_claims:
+        raise HTTPException(status_code=401, detail="Cashier session required before NFC tap")
+
+    customer_public_id = verify_contactless_member_token(req.token)
+    if not customer_public_id:
+        raise HTTPException(status_code=400, detail="Invalid NFC member token")
+
+    customer = safe_get_customer(customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+
+    return {
+        "success": True,
+        "customer_public_id": customer.get('public_id'),
+        "customer_name": customer.get('name') or 'Member',
+        "source": req.source,
+    }
+
 
 @app.post("/api/v1/business/{public_id}/stamp")
 async def add_stamp(public_id: str, req: StampRequest, authorization: str = Header(default="")):
@@ -14315,7 +14424,16 @@ async def get_wallet_pass(customer_public_id: str):
 
     print(f"WALLET-PASS: Prepared pass data for customer {customer_public_id}")
 
+    contactless_ready = bool(contactless_member_token(customer_public_id))
+    nfc_status = {
+        'token_ready': contactless_ready,
+        'google_smart_tap_configured': bool(contactless_ready and GOOGLE_SMART_TAP_ENABLED and GOOGLE_SMART_TAP_REDEMPTION_ISSUER_ID),
+        'apple_nfc_configured': bool(contactless_ready and APPLE_NFC_ENABLED and APPLE_NFC_ENCRYPTION_PUBLIC_KEY),
+        'qr_fallback_enabled': True,
+    }
+
     return {
+        'nfc_status': nfc_status,
         # Shape WalletPass.jsx renders the card from. card_type tells the
         # frontend whether to render the stamp grid or the points balance -
         # stamps/goal/reward_unlocked stay stamp-only, points_balance/
