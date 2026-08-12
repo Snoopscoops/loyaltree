@@ -253,7 +253,7 @@ const PLANS = [
     prices: { '1': 350, '2-3': 650, '5': 1300 },
     features: [
       'Google Wallet & Apple Wallet',
-      '2 announcements per month',
+      '2 active announcements',
       'Full digital system',
       'Full loyalty card customization',
       'Analytics',
@@ -268,7 +268,7 @@ const PLANS = [
     prices: { '1': 550, '2-3': 1050, '5': 2100 },
     features: [
       'Google Wallet & Apple Wallet',
-      '5 announcements per month',
+      'Up to 5 active announcements',
       'Full digital system',
       'Full loyalty card customization',
       'Analytics',
@@ -285,7 +285,7 @@ const PLANS = [
     prices: { '1': 750, '2-3': 1450, '5': 2900 },
     features: [
       'Google Wallet & Apple Wallet',
-      '7 announcements per month',
+      'Up to 7 active announcements',
       'Full digital system',
       'Full loyalty card customization',
       'Analytics',
@@ -305,7 +305,7 @@ const PLANS = [
     features: [
       'Specialized system for your business',
       'Google Wallet & Apple Wallet',
-      '5 announcements per month',
+      'Up to 5 active announcements',
       'Full digital system',
       'Full loyalty card customization',
       'Analytics',

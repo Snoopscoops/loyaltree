@@ -73,7 +73,7 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
         setForm({ title: '', message: '', type: 'info', is_active: true, end_date: '' })
         setEditing(null)
         fetchAnnouncements()
-        if (!editing) fetchPlanInfo()
+        fetchPlanInfo()
       } else {
         const errData = await res.json().catch(() => ({}))
         setBanner({ type: 'warn', text: errData.detail || 'Could not save announcement.' })
@@ -102,6 +102,7 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
         method: 'DELETE'
       })
       fetchAnnouncements()
+      fetchPlanInfo()
     } catch (err) {
       console.error(err)
     }
@@ -141,7 +142,7 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
   }
 
   const quotaReached = !!(planInfo && planInfo.usage.announcements_limit !== null &&
-    planInfo.usage.announcements_used_this_month >= planInfo.usage.announcements_limit)
+    (planInfo.usage.active_announcements ?? planInfo.usage.announcements_used_this_month ?? 0) >= planInfo.usage.announcements_limit)
 
   return (
     <div style={styles.overlay}>
@@ -166,13 +167,14 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
             <div style={styles.quotaNote}>
               <strong>{planInfo.plan_label} plan:</strong>{' '}
               {planInfo.usage.announcements_limit === null
-                ? 'unlimited announcements this month'
+                ? 'unlimited active announcements'
                 : (() => {
-                    const left = Math.max(planInfo.usage.announcements_limit - planInfo.usage.announcements_used_this_month, 0)
-                    return `${left} of ${planInfo.usage.announcements_limit} announcements left this month`
+                    const active = planInfo.usage.active_announcements ?? planInfo.usage.announcements_used_this_month ?? 0
+                    const left = Math.max(planInfo.usage.announcements_limit - active, 0)
+                    return `${active} of ${planInfo.usage.announcements_limit} active · ${left} slot${left === 1 ? '' : 's'} available`
                   })()}
               {planInfo.usage.announcements_limit !== null &&
-                planInfo.usage.announcements_used_this_month >= planInfo.usage.announcements_limit && (
+                (planInfo.usage.active_announcements ?? planInfo.usage.announcements_used_this_month ?? 0) >= planInfo.usage.announcements_limit && (
                   <span style={styles.quotaUpgrade}> · upgrade your plan for more</span>
                 )}
             </div>
@@ -226,14 +228,22 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
                   />
                 </div>
               </div>
+              <label style={styles.activeToggle}>
+                <input
+                  type="checkbox"
+                  checked={form.is_active}
+                  onChange={e => setForm({...form, is_active: e.target.checked})}
+                />
+                <span><strong>Active announcement</strong><small>Active announcements use one slot in your plan. Turn this off to save it without occupying a slot.</small></span>
+              </label>
               <div style={styles.formFooter}>
                 {editing && (
                   <button type="button" onClick={handleNew} style={styles.newBtn}>
                     + New
                   </button>
                 )}
-                <button type="submit" disabled={saving || (!editing && quotaReached)} style={styles.saveBtn}>
-                  {saving ? 'Saving...' : quotaReached && !editing ? 'Monthly limit reached' : (editing ? 'Update' : 'Post Announcement')}
+                <button type="submit" disabled={saving || (!editing && form.is_active && quotaReached)} style={styles.saveBtn}>
+                  {saving ? 'Saving...' : quotaReached && !editing && form.is_active ? 'Active limit reached' : (editing ? 'Update' : 'Post Announcement')}
                 </button>
               </div>
             </form>
@@ -252,8 +262,13 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
                   const style = typeColors[ann.type] || typeColors.info
                   return (
                     <div key={ann.id} style={styles.annCard}>
-                      <div style={{...styles.annBadge, background: style.bg, color: style.text}}>
-                        {style.icon} {ann.type}
+                      <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                        <div style={{...styles.annBadge, background: style.bg, color: style.text}}>
+                          {style.icon} {ann.type}
+                        </div>
+                        <div style={{...styles.annBadge, background: ann.is_active !== false ? '#dcfce7' : '#f1f5f9', color: ann.is_active !== false ? '#166534' : '#64748b'}}>
+                          {ann.is_active !== false ? '● Active' : '○ Inactive'}
+                        </div>
                       </div>
                       <h4 style={styles.annTitle}>{ann.title}</h4>
                       <p style={styles.annMessage}>{ann.message}</p>
@@ -423,6 +438,10 @@ const styles = {
   row: {
     display: 'flex',
     gap: 12,
+  },
+  activeToggle: {
+    display: 'flex', alignItems: 'flex-start', gap: 10, margin: '4px 0 16px',
+    padding: '11px 12px', borderRadius: 10, background: '#f8fafc', color: '#334155', fontSize: 13,
   },
   formFooter: {
     display: 'flex',

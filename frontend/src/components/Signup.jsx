@@ -225,11 +225,12 @@ function Signup({ API_BASE }) {
                 name="branch_count"
                 type="number"
                 min={1}
-                max={50}
+                max={5}
                 value={form.branch_count}
                 onChange={handleChange}
                 style={styles.input}
               />
+              <span style={styles.businessTip}>Self-serve plans support up to 5 branches. Need more? Contact LoyaltyTree for a specialized setup.</span>
             </div>
           </div>
 

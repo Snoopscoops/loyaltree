@@ -123,7 +123,7 @@ SUBSCRIPTION_REMINDER_RESEND_DAYS = 3  # don't re-email more often than this whi
 # truth the admin dashboard AND the API's feature gates read from - nothing
 # else needs to change to introduce a new plan or adjust a limit.
 #
-# announcements_per_month: int limit, or None for unlimited
+# announcements_per_month: legacy field name; now used as max concurrently-active announcements
 # max_loyalty_cards: how many concurrent loyalty_programs rows a business
 #   may run at once (multi-card support itself is not implemented yet -
 #   this limit is reserved for that follow-up feature)
@@ -133,24 +133,25 @@ SUBSCRIPTION_PLANS = {
     'starter': {
         'label': 'Starter',
         'price_month': 350,
-        'price_tiers': {'1': 350, '2-3': 550, '5': 750},
-        'customer_limit': 100,
+        'price_tiers': {'1': 350, '2-3': 650, '5': 1300},
+        'customer_limit': None,  # unlimited customers
         'google_wallet': True,
         'apple_wallet': True,
+        # Maximum concurrently-active customer announcements (not a monthly post quota).
         'announcements_per_month': 2,
         'analytics': True,
         'google_review_prompt': False,
-        'birthday_greetings': False,
+        'birthday_greetings': True,
         'max_loyalty_cards': 1,
         'win_back': False,
-        'max_branches': 1,
+        'max_branches': 5,
         'geofence_notifications': False,
     },
     'growth': {
         'label': 'Growth',
         'price_month': 550,
-        'price_tiers': {'1': 550, '2-3': 750, '5': 950},
-        'customer_limit': 1000,
+        'price_tiers': {'1': 550, '2-3': 1050, '5': 2100},
+        'customer_limit': None,  # unlimited customers
         'google_wallet': True,
         'apple_wallet': True,
         'announcements_per_month': 5,
@@ -158,28 +159,25 @@ SUBSCRIPTION_PLANS = {
         'google_review_prompt': True,
         'birthday_greetings': True,
         'max_loyalty_cards': 1,
-        'win_back': False,
-        'max_branches': 3,
+        'win_back': True,
+        'max_branches': 5,
         'geofence_notifications': False,
     },
     'pro': {
         'label': 'Pro',
         'price_month': 750,
-        'price_tiers': {'1': 750, '2-3': 950, '5': 1150},
-        'customer_limit': None,
+        'price_tiers': {'1': 750, '2-3': 1450, '5': 2900},
+        'customer_limit': None,  # unlimited customers
         'google_wallet': True,
         'apple_wallet': True,
-        'announcements_per_month': 5,
+        'announcements_per_month': 7,
         'analytics': True,
         'google_review_prompt': True,
         'birthday_greetings': True,
         'max_loyalty_cards': 3,
         'win_back': True,
-        'max_branches': None,  # unlimited
-        # Reserved for the geotag/geofence notification feature (push a
-        # notification when a customer's device enters the business's
-        # geofence) - this is an Ultra-tier feature, not included in Pro.
-        # Not implemented yet either way.
+        'max_branches': 5,
+        # Reserved until geotag/geofence delivery is implemented and enabled.
         'geofence_notifications': False,
     },
 }
@@ -191,7 +189,7 @@ def get_plan_features(plan: Optional[str]) -> dict:
     return SUBSCRIPTION_PLANS.get(plan or 'starter', SUBSCRIPTION_PLANS['starter'])
 
 def get_effective_announcement_limit(business: dict) -> Optional[int]:
-    """The plan's announcements_per_month (2/5/5 for Starter/Growth/Pro),
+    """The plan's active announcement cap (2/5/7 for Starter/Growth/Pro),
     adjusted by whatever an admin has manually granted or deducted for this
     specific business (businesses.announcement_limit_adjustment, e.g. +3 as
     a goodwill bonus or -1 to rein in an abuser) - see admin_update_business.
@@ -208,6 +206,34 @@ def get_effective_announcement_limit(business: dict) -> Optional[int]:
     except (TypeError, ValueError):
         adjustment = 0
     return max(0, min(99, base_limit + adjustment))
+
+def count_active_announcements(business_id: int, exclude_id: Optional[str] = None) -> int:
+    """Count announcements that are active *right now*. Expired rows do not
+    consume a plan slot, and editing an existing row can exclude itself.
+    This matches the public pricing language: Starter 2, Growth 5, Pro 7
+    concurrently-active announcements."""
+    today = datetime.utcnow().date().isoformat()
+    try:
+        rows = (
+            supabase.table("announcements")
+            .select("id,is_active,end_date")
+            .eq("business_id", business_id)
+            .eq("is_active", True)
+            .execute()
+            .data or []
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    active = 0
+    for row in rows:
+        if exclude_id is not None and str(row.get('id')) == str(exclude_id):
+            continue
+        end_date = row.get('end_date')
+        if end_date and str(end_date)[:10] < today:
+            continue
+        active += 1
+    return active
 
 def branch_price_bracket(branch_count: int) -> str:
     """Maps an actual branch count to one of the pricing brackets shown on
@@ -5621,7 +5647,7 @@ async def get_stats(public_id: str):
 async def get_plan_info(public_id: str):
     """Plan name, feature flags/limits, and current usage against those
     limits - lets the owner dashboard show/hide Pro-only UI and display
-    'X of Y announcements used this month' without duplicating the plan
+    'X of Y active announcements' without duplicating the plan
     matrix on the frontend."""
     business = safe_get_business(public_id)
     if not business:
@@ -5630,29 +5656,21 @@ async def get_plan_info(public_id: str):
     plan = business.get('plan', 'starter')
     features = get_plan_features(plan)
 
-    announcements_used = 0
     limit = get_effective_announcement_limit(business)
-    if limit is not None:
-        month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        try:
-            count_res = (
-                supabase.table("announcements")
-                .select("id", count="exact")
-                .eq("business_id", business.get("id"))
-                .gte("created_at", month_start.isoformat())
-                .execute()
-            )
-            announcements_used = count_res.count or 0
-        except Exception:
-            announcements_used = 0
+    try:
+        active_announcements = count_active_announcements(business.get('id'))
+    except HTTPException:
+        active_announcements = 0
 
     return {
         "plan": plan,
         "plan_label": SUBSCRIPTION_PLANS.get(plan, {}).get("label", plan),
         "features": features,
         "usage": {
-            "announcements_used_this_month": announcements_used,
+            "active_announcements": active_announcements,
             "announcements_limit": limit,
+            # Backward-compatible alias for older frontends; semantics are now active slots, not monthly posts.
+            "announcements_used_this_month": active_announcements,
         },
         "last_paid_at": business.get("last_paid_at"),
         "subscription_expires_at": business.get("subscription_expires_at"),
@@ -7978,28 +7996,17 @@ async def create_announcement(public_id: str, ann: AnnouncementCreate):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
+    is_active = ann.is_active if ann.is_active is not None else True
+    not_expired = not ann.end_date or str(ann.end_date)[:10] >= datetime.utcnow().date().isoformat()
     limit = get_effective_announcement_limit(business)
-    if limit is not None:
-        month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        try:
-            count_res = (
-                supabase.table("announcements")
-                .select("id", count="exact")
-                .eq("business_id", business.get("id"))
-                .gte("created_at", month_start.isoformat())
-                .execute()
-            )
-            used = count_res.count or 0
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=friendly_db_error(e))
+    if is_active and not_expired and limit is not None:
+        used = count_active_announcements(business.get('id'))
         if used >= limit:
             plan_label = SUBSCRIPTION_PLANS.get(business.get('plan', 'starter'), {}).get('label', 'your plan')
             raise HTTPException(
                 status_code=403,
-                detail=f"You've used all {limit} announcements included in {plan_label} this month. Upgrade your plan for more."
+                detail=f"{plan_label} allows up to {limit} active announcements at a time. Deactivate or delete one before activating another, or upgrade your plan."
             )
-
-    is_active = ann.is_active if ann.is_active is not None else True
     data = {
         'business_id': business.get('id'),
         'title': ann.title,
@@ -8082,6 +8089,21 @@ async def update_announcement(public_id: str, announcement_id: str, ann: Announc
     update_data = {k: v for k, v in ann.dict(exclude_unset=True).items() if v is not None}
     if not update_data:
         return existing.data
+
+    # If this edit will leave the announcement active, enforce the active-slot cap.
+    resulting_active = update_data.get('is_active', existing.data.get('is_active', True))
+    resulting_end_date = update_data.get('end_date', existing.data.get('end_date'))
+    not_expired = not resulting_end_date or str(resulting_end_date)[:10] >= datetime.utcnow().date().isoformat()
+    limit = get_effective_announcement_limit(business)
+    if resulting_active and not_expired and limit is not None:
+        used_elsewhere = count_active_announcements(business.get('id'), exclude_id=announcement_id)
+        if used_elsewhere >= limit:
+            plan_label = SUBSCRIPTION_PLANS.get(business.get('plan', 'starter'), {}).get('label', 'your plan')
+            raise HTTPException(
+                status_code=403,
+                detail=f"{plan_label} allows up to {limit} active announcements at a time. Deactivate or delete one before activating this announcement."
+            )
+
     update_data['updated_at'] = datetime.utcnow().isoformat()
 
     try:
