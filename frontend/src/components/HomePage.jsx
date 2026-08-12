@@ -304,6 +304,7 @@ const PLANS = [
     comingSoon: true,
     features: [
       'Specialized system for your business',
+      'NFC integration available for Specialized Businesses only',
       'Google Wallet & Apple Wallet',
       'Up to 5 active announcements',
       'Full digital system',
