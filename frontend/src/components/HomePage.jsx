@@ -250,7 +250,7 @@ const PLANS = [
   {
     key: 'starter',
     name: 'Starter',
-    prices: { '1': 350, '2-3': 550, '5': 750 },
+    prices: { '1': 350, '2-3': 650, '5': 1300 },
     features: [
       'Google Wallet & Apple Wallet',
       '2 announcements per month',
@@ -265,7 +265,7 @@ const PLANS = [
     key: 'growth',
     name: 'Growth',
     highlight: true,
-    prices: { '1': 550, '2-3': 750, '5': 950 },
+    prices: { '1': 550, '2-3': 1050, '5': 2100 },
     features: [
       'Google Wallet & Apple Wallet',
       '5 announcements per month',
@@ -282,9 +282,10 @@ const PLANS = [
     key: 'pro',
     name: 'Pro',
     comingSoon: true,
+    prices: { '1': 750, '2-3': 1450, '5': 2900 },
     features: [
       'Google Wallet & Apple Wallet',
-      '5 announcements per month',
+      '7 announcements per month',
       'Full digital system',
       'Full loyalty card customization',
       'Analytics',
@@ -732,13 +733,16 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
                     <div key={p.key} style={{ ...styles.planCard, ...(p.highlight ? styles.planCardHighlight : {}) }}>
                       {p.highlight && <div style={styles.planBadge}>Most popular</div>}
                       <div style={styles.planName}>{p.name}</div>
-                      {p.comingSoon ? (
-                        <div style={styles.planPriceComingSoon}>Coming soon</div>
+                      {p.prices ? (
+                        <>
+                          <div style={styles.planPrice}>
+                            ₱{p.prices[branchTier].toLocaleString()}
+                            <span style={styles.planPriceUnit}>/mo</span>
+                          </div>
+                          {p.comingSoon && <div style={styles.planPriceComingSoon}>Coming soon</div>}
+                        </>
                       ) : (
-                        <div style={styles.planPrice}>
-                          ₱{p.prices[branchTier].toLocaleString()}
-                          <span style={styles.planPriceUnit}>/mo</span>
-                        </div>
+                        <div style={styles.planPriceComingSoon}>Upon discussion</div>
                       )}
                       <ul style={styles.planFeatureList}>
                         {p.features.map(f => (
@@ -752,7 +756,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
                 </div>
 
                 <p style={styles.contactNote}>
-                  6 branches or more? Let's talk it through together &mdash; email{' '}
+                  Need more than 5 branches or a specialized system? Let's talk it through together &mdash; email{' '}
                   <a href="mailto:theloyaltytree@gmail.com" style={styles.contactLink}>theloyaltytree@gmail.com</a>
                 </p>
 
