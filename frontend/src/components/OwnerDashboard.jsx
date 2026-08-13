@@ -1706,7 +1706,11 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     <strong style={{display:'block',fontSize:20,color:'#0f766e'}}>
                       {isMembershipCard
                         ? (selectedCustomer.membership_visit_count || memberHistory.length || 0)
-                        : memberHistory.filter(item => !isMultipassCard || item.action === 'used').length}
+                        : isMultipassCard
+                        ? memberHistory.filter(item => item.action === 'used').length
+                        : isPointsCard || isVipCard
+                        ? memberHistory.length
+                        : (selectedCustomer.stamp_count ?? 0)}
                     </strong>
                     <span style={{fontSize:11,color:'#64748b'}}>
                       {isMembershipCard ? 'Visits' : isMultipassCard ? 'Used' : isPointsCard ? 'Sales' : isVipCard ? 'Updates' : 'Stamps'}

@@ -5398,7 +5398,8 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
             retry_data = {k: v for k, v in update_data.items() if k != 'reward_unlocked'}
             try:
                 res = supabase.table("customers").update(retry_data).eq("id", customer.get("id")).execute()
-                return res.data[0] if res.data else {**customer, **retry_data}
+                updated_customer = res.data[0] if res.data else {**customer, **retry_data}
+                update_data = retry_data
             except Exception as e2:
                 error_msg = str(e2)
         is_schema_mismatch = (
@@ -5416,6 +5417,31 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
                 ),
             )
         raise HTTPException(status_code=500, detail=error_msg)
+
+    # Owner-dashboard stamp edits use this generic customer PATCH endpoint.
+    # Keep those manual corrections in the same Stamp Activity audit trail as
+    # /stamp/adjust so removals (and manual additions) never disappear from history.
+    if 'stamp_count' in update_data:
+        old_count = int(customer.get('stamp_count') or 0)
+        new_count = int(updated_customer.get('stamp_count') or 0)
+        delta = new_count - old_count
+        if delta != 0:
+            try:
+                supabase.table('stamp_adjustments').insert({
+                    'business_id': business.get('id'),
+                    'customer_id': customer.get('id'),
+                    'staff_id': None,
+                    'branch_id': None,
+                    'delta': delta,
+                    'old_count': old_count,
+                    'new_count': new_count,
+                    'reason': 'Owner correction',
+                    'created_at': datetime.utcnow().isoformat(),
+                }).execute()
+            except Exception as e:
+                # Balance correction is already persisted; expose audit failures in
+                # Render logs without rolling back the owner's successful edit.
+                print(f"STAMP ADJUSTMENT audit warning (owner customer edit): {e}")
 
     if 'stamp_count' in update_data or 'points_balance' in update_data or 'multipass_sessions_remaining' in update_data:
         try:
