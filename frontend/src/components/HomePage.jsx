@@ -546,7 +546,65 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         </div>
       </section>
 
+
+
+      <section style={styles.dashboardSection}>
+        <div style={styles.dashboardHeader}>
+          <span style={styles.partnerEyebrow}>Everything in one place</span>
+          <h2 style={{...styles.h2, marginBottom: 12}}>Run your loyalty program from one dashboard.</h2>
+          <p style={styles.dashboardIntro}>Manage customers, staff, rewards, branches, wallet cards and marketing without juggling multiple systems.</p>
+        </div>
+
+        <div className="lt-dashboard-showcase" style={styles.dashboardShowcase}>
+          <div style={styles.dashboardMock}>
+            <div style={styles.dashboardMockTop}>
+              <div>
+                <div style={styles.dashboardMockLabel}>LoyaltyTree Dashboard</div>
+                <div style={styles.dashboardMockTitle}>Business Overview</div>
+              </div>
+              <span style={styles.dashboardLiveBadge}>● Live</span>
+            </div>
+            <div style={styles.dashboardStats}>
+              {[['Customers','1,248'],['Visits','3,906'],['Rewards','286']].map(([label,value]) => (
+                <div key={label} style={styles.dashboardStat}>
+                  <div style={styles.dashboardStatLabel}>{label}</div>
+                  <div style={styles.dashboardStatValue}>{value}</div>
+                </div>
+              ))}
+            </div>
+            <div style={styles.dashboardChart}>
+              <div style={styles.dashboardChartHead}><strong>Customer activity</strong><span>Last 30 days</span></div>
+              <div style={styles.dashboardBars}>
+                {[42,58,46,72,63,86,78,94,69,88,96,82].map((h,i) => <span key={i} style={{...styles.dashboardBar,height:`${h}%`}} />)}
+              </div>
+            </div>
+            <div style={styles.dashboardMockBottom}>
+              <span>Recent activity</span><span style={{color:'#0d9488',fontWeight:700}}>View all →</span>
+            </div>
+          </div>
+
+          <div style={styles.dashboardFeatureList}>
+            {[
+              ['👥','Customer management','View customers, cards, activity, rewards and loyalty progress.'],
+              ['📊','Analytics','Track visits, redemptions, repeat customers and program performance.'],
+              ['🔑','Team & cashiers','Manage staff access and individual cashier PINs from one place.'],
+              ['🏪','Branch management','Keep multiple locations organized under the same business account.'],
+              ['📣','Marketing tools','Send announcements, greetings, review prompts and win-back messages.'],
+              ['💳','Wallet & rewards','Manage digital cards, rewards and customer wallet experiences.'],
+            ].map(([icon,title,body]) => (
+              <div key={title} style={styles.dashboardFeature}>
+                <div style={styles.dashboardFeatureIcon}>{icon}</div>
+                <div><div style={styles.dashboardFeatureTitle}>{title}</div><div style={styles.dashboardFeatureBody}>{body}</div></div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
       <style>{`
+        @media (max-width: 760px) {
+          .lt-dashboard-showcase { grid-template-columns: 1fr !important; }
+        }
         @media (max-width: 980px) {
           .lt-card-available { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
           .lt-card-coming { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
@@ -855,7 +913,33 @@ const styles = {
   industryIcon:{fontSize:28,marginBottom:10},industryTitle:{fontSize:15,fontWeight:800,color:'#0f172a'},
   industryBody:{fontSize:12.5,lineHeight:1.5,color:'#64748b',minHeight:56},industryCards:{fontSize:11,fontWeight:800,color:'#0d9488'},
 
-  // Marketing / Retention / Zero Waste pillars
+
+  // Business dashboard showcase
+  dashboardSection: { padding: '72px 32px', maxWidth: 1100, margin: '0 auto', background: '#f0fdfa' },
+  dashboardHeader: { maxWidth: 720, margin: '0 auto 38px', textAlign: 'center' },
+  dashboardIntro: { fontSize: 15, lineHeight: 1.7, color: '#64748b', maxWidth: 650, margin: '0 auto' },
+  dashboardShowcase: { display: 'grid', gridTemplateColumns: 'minmax(0,1.2fr) minmax(300px,.8fr)', gap: 24, alignItems: 'stretch' },
+  dashboardMock: { background: '#fff', border: '1px solid #dbe5e4', borderRadius: 20, padding: 22, boxShadow: '0 16px 40px rgba(15,23,42,.08)', minHeight: 430 },
+  dashboardMockTop: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingBottom: 18, borderBottom: '1px solid #f1f5f9' },
+  dashboardMockLabel: { fontSize: 11, fontWeight: 800, color: '#0d9488', textTransform: 'uppercase', letterSpacing: '.08em' },
+  dashboardMockTitle: { fontSize: 21, fontWeight: 850, color: '#0f172a', marginTop: 4 },
+  dashboardLiveBadge: { fontSize: 11, fontWeight: 800, color: '#0f766e', background: '#ccfbf1', borderRadius: 999, padding: '6px 10px' },
+  dashboardStats: { display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, margin: '18px 0' },
+  dashboardStat: { background: '#f8fafc', border: '1px solid #eef2f7', borderRadius: 13, padding: '14px 12px' },
+  dashboardStatLabel: { fontSize: 11, color: '#64748b', fontWeight: 650 },
+  dashboardStatValue: { fontSize: 23, color: '#0f172a', fontWeight: 850, marginTop: 4 },
+  dashboardChart: { height: 210, background: '#f8fafc', border: '1px solid #eef2f7', borderRadius: 14, padding: '16px 16px 12px' },
+  dashboardChartHead: { display: 'flex', justifyContent: 'space-between', color: '#475569', fontSize: 11.5 },
+  dashboardBars: { height: 145, display: 'flex', alignItems: 'flex-end', gap: 7, marginTop: 16 },
+  dashboardBar: { flex: 1, minWidth: 5, background: '#0d9488', borderRadius: '5px 5px 2px 2px', opacity: .82 },
+  dashboardMockBottom: { display: 'flex', justifyContent: 'space-between', paddingTop: 16, fontSize: 12, color: '#64748b' },
+  dashboardFeatureList: { display: 'grid', gap: 10 },
+  dashboardFeature: { display: 'flex', gap: 13, alignItems: 'flex-start', background: '#fff', border: '1px solid #dbe5e4', borderRadius: 15, padding: '15px 16px', boxShadow: '0 5px 15px rgba(15,23,42,.035)' },
+  dashboardFeatureIcon: { width: 38, height: 38, flexShrink: 0, borderRadius: 11, background: '#ccfbf1', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 19 },
+  dashboardFeatureTitle: { fontSize: 13.5, fontWeight: 800, color: '#0f172a', marginBottom: 3 },
+  dashboardFeatureBody: { fontSize: 11.5, lineHeight: 1.5, color: '#64748b' },
+
+    // Marketing / Retention / Zero Waste pillars
   pillarSection: {
     padding: '0 32px 64px', maxWidth: 1100, margin: '0 auto',
   },
