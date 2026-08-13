@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import html as html_lib
 from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime, parsedate_to_datetime
 from typing import Optional, List, Literal
 
 from fastapi import FastAPI, HTTPException, Request, Depends, Header
@@ -2356,21 +2357,20 @@ async def republish_wallet_class_and_refresh(business: dict, program: dict):
 def sync_wallet_object(customer: dict, business: dict, program: dict,
                         notify_header: str = None, notify_body: str = None,
                         notify_message_id: str = None):
-    """Push the customer's latest loyalty state to an already-saved Google pass.
+    """Push the latest member state to an already-saved Google Wallet pass.
 
-    For VIP, points are always patched even if a tier/class migration cannot be
-    completed yet. This prevents the website balance from updating while Google
-    Wallet remains stale.
+    Returns a small diagnostic dict. Existing callers do not need to use it,
+    but transaction endpoints can surface it so a database success is not
+    mistaken for a Wallet success.
     """
     access_token = get_google_access_token()
     if not access_token:
-        return
+        print("WALLET SYNC: skipped - Google access token unavailable")
+        return {"status": "not_configured", "detail": "Google Wallet access token unavailable"}
 
     try:
         import httpx
 
-        # A tier upgrade may require a new class. Make sure it exists before we
-        # attempt to move this member to it.
         if (program or {}).get('card_type') == 'vip':
             ensure_google_wallet_vip_class(customer, business, program or {})
 
@@ -2386,17 +2386,17 @@ def sync_wallet_object(customer: dict, business: dict, program: dict,
             )
 
             if current_resp.status_code == 404:
-                print(f"WALLET SYNC: {object_id} not found - customer hasn't added it to Google Wallet yet")
-                return
+                detail = "Customer has not added this pass to Google Wallet yet"
+                print(f"WALLET SYNC: {object_id} not found - {detail}")
+                return {"status": "not_saved", "http_status": 404, "detail": detail}
             if current_resp.status_code != 200:
-                print(f"WALLET SYNC: GET failed {current_resp.status_code} - {current_resp.text[:1200]}")
-                return
+                detail = current_resp.text[:1200]
+                print(f"WALLET SYNC: GET failed {current_resp.status_code} - {detail}")
+                return {"status": "error", "stage": "get", "http_status": current_resp.status_code, "detail": detail}
 
             current = current_resp.json()
             current_class_id = current.get('classId')
 
-            # Only patch fields that belong to the individual member. This is
-            # safer than PATCHing the complete object every sale/check-in.
             member_patch = {
                 'loyaltyPoints': desired.get('loyaltyPoints'),
                 'accountId': desired.get('accountId'),
@@ -2405,13 +2405,11 @@ def sync_wallet_object(customer: dict, business: dict, program: dict,
                 'textModulesData': desired.get('textModulesData'),
                 'linksModuleData': desired.get('linksModuleData'),
                 'state': desired.get('state', 'active'),
-                # Ask Google to surface eligible field changes to the holder.
                 'notifyPreference': 'NOTIFY',
             }
             if desired.get('heroImage'):
                 member_patch['heroImage'] = desired.get('heroImage')
 
-            # Same VIP tier/class (the common case): update the member data only.
             if current_class_id == desired_class_id:
                 resp = client.patch(
                     f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyObject/{object_id}',
@@ -2421,17 +2419,25 @@ def sync_wallet_object(customer: dict, business: dict, program: dict,
                 if resp.status_code in (200, 201):
                     print(
                         f"WALLET SYNC: updated {object_id} "
-                        f"points={customer.get('vip_points') if (program or {}).get('card_type') == 'vip' else 'n/a'}"
+                        f"stamps={customer.get('stamp_count')} "
+                        f"points={customer.get('points_balance')}"
                     )
+                    message_sent = None
                     if notify_header and notify_message_id:
-                        send_wallet_object_message(object_id, notify_header, notify_body or '', notify_message_id)
-                    return
+                        message_sent = send_wallet_object_message(
+                            object_id, notify_header, notify_body or '', notify_message_id
+                        )
+                    return {
+                        "status": "updated",
+                        "http_status": resp.status_code,
+                        "object_id": object_id,
+                        "notification_sent": message_sent,
+                    }
 
-                print(f"WALLET SYNC: member PATCH failed {resp.status_code} - {resp.text[:1500]}")
-                return
+                detail = resp.text[:1500]
+                print(f"WALLET SYNC: member PATCH failed {resp.status_code} - {detail}")
+                return {"status": "error", "stage": "patch", "http_status": resp.status_code, "detail": detail}
 
-            # Tier changed. Try a full update so the object adopts the new
-            # tier-specific class/color while keeping the same object ID.
             resp = client.put(
                 f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyObject/{object_id}',
                 headers=headers,
@@ -2442,16 +2448,21 @@ def sync_wallet_object(customer: dict, business: dict, program: dict,
                     f"WALLET SYNC: moved {object_id} from {current_class_id} "
                     f"to {desired_class_id}; points={customer.get('vip_points')}"
                 )
+                message_sent = None
                 if notify_header and notify_message_id:
-                    send_wallet_object_message(object_id, notify_header, notify_body or '', notify_message_id)
-                return
+                    message_sent = send_wallet_object_message(
+                        object_id, notify_header, notify_body or '', notify_message_id
+                    )
+                return {
+                    "status": "updated",
+                    "http_status": resp.status_code,
+                    "object_id": object_id,
+                    "notification_sent": message_sent,
+                }
 
-            # If Google refuses the class move, do not lose the important
-            # balance update. Keep the existing class/color temporarily and
-            # patch the latest points/details into the saved card.
             print(
                 f"WALLET SYNC: tier-class move failed {resp.status_code} - "
-                f"{resp.text[:1200]}; patching balance on existing class instead"
+                f"{resp.text[:1200]}; patching member balance on existing class instead"
             )
             fallback = client.patch(
                 f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyObject/{object_id}',
@@ -2459,17 +2470,27 @@ def sync_wallet_object(customer: dict, business: dict, program: dict,
                 json=member_patch
             )
             if fallback.status_code in (200, 201):
-                print(
-                    f"WALLET SYNC: fallback points update succeeded for {object_id}; "
-                    f"points={customer.get('vip_points')}"
-                )
+                print(f"WALLET SYNC: fallback member update succeeded for {object_id}")
+                message_sent = None
                 if notify_header and notify_message_id:
-                    send_wallet_object_message(object_id, notify_header, notify_body or '', notify_message_id)
-            else:
-                print(f"WALLET SYNC: fallback PATCH failed {fallback.status_code} - {fallback.text[:1500]}")
+                    message_sent = send_wallet_object_message(
+                        object_id, notify_header, notify_body or '', notify_message_id
+                    )
+                return {
+                    "status": "updated",
+                    "stage": "fallback_patch",
+                    "http_status": fallback.status_code,
+                    "object_id": object_id,
+                    "notification_sent": message_sent,
+                }
+
+            detail = fallback.text[:1500]
+            print(f"WALLET SYNC: fallback PATCH failed {fallback.status_code} - {detail}")
+            return {"status": "error", "stage": "fallback_patch", "http_status": fallback.status_code, "detail": detail}
 
     except Exception as e:
         print(f"WALLET SYNC error: {e}")
+        return {"status": "error", "stage": "exception", "detail": str(e)}
 
 
 # Apple Wallet (PassKit) Helpers
@@ -3109,11 +3130,17 @@ def _send_apple_wallet_pushes(push_tokens: list) -> int:
     return sent
 
 def push_apple_wallet_update(serial_number: str):
-    """Tells every device that has this one customer's pass saved to
-    refetch it. Best-effort and silent on failure, same contract as
-    sync_wallet_object() - a push hiccup must never block a stamp/redeem."""
+    """Wake Apple Wallet so it refetches this member's newly-built pass.
+
+    Returns diagnostics but remains best-effort: a Wallet push failure must
+    never roll back a valid loyalty transaction in Supabase.
+    """
     if not supabase or not APPLE_PASS_TYPE_IDENTIFIER:
-        return
+        print("APPLE WALLET SYNC: skipped - PassKit is not configured")
+        return {"status": "not_configured", "registrations": 0, "pushes_sent": 0}
+    if not serial_number:
+        print("APPLE WALLET SYNC: skipped - missing serial number")
+        return {"status": "error", "detail": "Missing serial number", "registrations": 0, "pushes_sent": 0}
     try:
         rows = (
             supabase.table("apple_wallet_registrations")
@@ -3122,9 +3149,19 @@ def push_apple_wallet_update(serial_number: str):
             .eq("pass_type_identifier", APPLE_PASS_TYPE_IDENTIFIER)
             .execute()
         ).data or []
-    except Exception:
-        return
-    _send_apple_wallet_pushes([row.get('push_token') for row in rows])
+    except Exception as e:
+        print(f"APPLE WALLET SYNC: registration lookup failed for {serial_number}: {e}")
+        return {"status": "error", "stage": "registration_lookup", "detail": str(e), "registrations": 0, "pushes_sent": 0}
+
+    tokens = [row.get('push_token') for row in rows if row.get('push_token')]
+    if not tokens:
+        print(f"APPLE WALLET SYNC: no saved Apple pass registration for {serial_number}")
+        return {"status": "not_saved", "registrations": 0, "pushes_sent": 0}
+
+    sent = _send_apple_wallet_pushes(tokens)
+    status = "push_sent" if sent > 0 else "push_failed"
+    print(f"APPLE WALLET SYNC: {serial_number} registrations={len(tokens)} pushes_sent={sent}")
+    return {"status": status, "registrations": len(tokens), "pushes_sent": sent}
 
 def push_apple_wallet_announcement(business_id: int) -> int:
     """Companion to send_wallet_class_message() for announcements, but for
@@ -3175,12 +3212,12 @@ def push_apple_wallet_announcement(business_id: int) -> int:
     return _send_apple_wallet_pushes(push_tokens)
 
 def sync_apple_wallet_pass(customer: dict):
-    """Companion to sync_wallet_object() - call alongside it wherever a
-    customer's stamp_count changes. Never raises."""
+    """Companion to sync_wallet_object(); never raises, but returns status."""
     try:
-        push_apple_wallet_update(customer.get('public_id', ''))
+        return push_apple_wallet_update(customer.get('public_id', ''))
     except Exception as e:
         print(f"APPLE WALLET sync error: {e}")
+        return {"status": "error", "stage": "exception", "detail": str(e), "registrations": 0, "pushes_sent": 0}
 
 def send_wallet_class_message(class_id: str, header: str, body: str, message_id: str, detail_url: str = None) -> bool:
     """Push a notification to every customer who has saved a loyalty card
@@ -5685,12 +5722,39 @@ async def get_plan_info(public_id: str):
 # untracked rather than estimated. See the `revenue` block below.
 
 def _parse_ts(value):
+    """Parse either our Supabase ISO timestamps or an RFC HTTP date.
+
+    Apple Wallet sends If-Modified-Since as an HTTP date (for example
+    'Thu, 13 Aug 2026 03:40:12 GMT'), while our database stores ISO-8601.
+    Normalize both to naive UTC datetimes so the existing comparisons in
+    this file keep working consistently.
+    """
     if not value:
         return None
+    raw = str(value).strip()
     try:
-        return datetime.fromisoformat(str(value).replace('Z', '+00:00')).replace(tzinfo=None)
+        parsed = datetime.fromisoformat(raw.replace('Z', '+00:00'))
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
+    except Exception:
+        pass
+    try:
+        parsed = parsedate_to_datetime(raw)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
     except Exception:
         return None
+
+
+def _http_date(value=None) -> str:
+    """Return an RFC 7231/IMF-fixdate suitable for Last-Modified."""
+    parsed = _parse_ts(value) if value else datetime.utcnow()
+    if parsed is None:
+        parsed = datetime.utcnow()
+    aware = parsed.replace(tzinfo=timezone.utc)
+    return format_datetime(aware, usegmt=True)
 
 def _range_to_days(range_key: str):
     return {'7d': 7, '30d': 30, '90d': 90}.get(range_key)  # None -> all time
@@ -8298,25 +8362,22 @@ async def add_stamp(public_id: str, req: StampRequest, authorization: str = Head
     stamping_staff_id = None
     stamping_branch_id = None
 
-    # Preferred path: a session token from /staff/verify-pin. Raises its own
-    # HTTPException on a bad/expired/mismatched token; returns None only
-    # when no token was sent at all, so we fall through to the legacy path.
     session_claims = get_staff_session_claims(public_id, authorization)
-
     if session_claims:
-        stamping_staff_id = session_claims.get('staff_id')  # None for the owner
+        stamping_staff_id = session_claims.get('staff_id')
+        stamping_branch_id = session_claims.get('branch_id')
     elif req.as_owner:
-        # Owner is scanning from their own dashboard, where they've already
-        # authenticated with their business email/password - no separate
-        # cashier PIN to check.
         pass
     else:
-        # Legacy fallback for clients that haven't switched to session
-        # tokens yet - re-checks the raw PIN on every single request.
         if not req.staff_pin:
             raise HTTPException(status_code=400, detail="Staff PIN required")
         try:
-            staff_res = supabase.table("staff").select("*").eq("business_id", business.get("id")).eq("pin", req.staff_pin).execute()
+            staff_res = (
+                supabase.table("staff").select("*")
+                .eq("business_id", business.get("id"))
+                .eq("pin", req.staff_pin)
+                .execute()
+            )
             if not staff_res.data:
                 raise HTTPException(status_code=403, detail="Invalid staff PIN")
             stamping_staff_id = staff_res.data[0].get('id')
@@ -8329,65 +8390,107 @@ async def add_stamp(public_id: str, req: StampRequest, authorization: str = Head
     program = safe_get_loyalty_program(business.get('id'))
     if program and program.get('card_type') == 'points':
         raise HTTPException(status_code=400, detail="This business is on a points card - use /points-sale instead")
-    goal = program.get('stamp_goal', 8) if program else 8
-    new_count = customer.get('stamp_count', 0) + 1
-    reward_unlocked = new_count >= goal
 
+    goal = program.get('stamp_goal', 8) if program else 8
+    new_count = int(customer.get('stamp_count') or 0) + 1
+    reward_unlocked = new_count >= goal
+    updated_at = datetime.utcnow().isoformat()
+
+    # Database first. Wallets must only ever reflect a stamp that was actually
+    # persisted; never return a fake success when RLS/schema problems blocked it.
+    update_data = {
+        'stamp_count': new_count,
+        'reward_unlocked': reward_unlocked,
+        'updated_at': updated_at,
+    }
     try:
-        update_data = {
-            'stamp_count': new_count,
-            'updated_at': datetime.utcnow().isoformat(),
-        }
-        try:
-            update_data['reward_unlocked'] = reward_unlocked
-        except:
-            pass
-        supabase.table("customers").update(update_data).eq("id", customer.get("id")).execute()
-        customer['stamp_count'] = new_count
-        customer['reward_unlocked'] = reward_unlocked
-        sync_wallet_object(
-            customer, business, program,
-            notify_header="Reward unlocked! 🎉" if reward_unlocked else "Stamp added ⭐",
-            notify_body=("You've unlocked your reward!" if reward_unlocked
-                         else f"{new_count}/{goal} stamps - keep it up!"),
-            notify_message_id=f"stamp-{customer.get('id')}-{new_count}-{int(datetime.utcnow().timestamp())}",
+        result = (
+            supabase.table("customers")
+            .update(update_data)
+            .eq("id", customer.get("id"))
+            .execute()
         )
-        sync_apple_wallet_pass(customer)
-        log_stamp_event(business.get('id'), customer.get('id'), stamping_staff_id, stamping_branch_id)
     except Exception as e:
         error_msg = str(e)
+
+        # Backward compatibility for an older database that has not yet added
+        # reward_unlocked. The important fix here is that after this retry we
+        # CONTINUE into Google/Apple sync instead of returning early.
         if 'reward_unlocked' in error_msg.lower():
             try:
-                supabase.table("customers").update({
+                fallback_update = {
                     'stamp_count': new_count,
-                    'updated_at': datetime.utcnow().isoformat(),
-                }).eq("id", customer.get("id")).execute()
-                log_stamp_event(business.get('id'), customer.get('id'), stamping_staff_id, stamping_branch_id)
-                return {
-                    "message": "Stamp added!",
-                    "stamp_count": new_count,
-                    "reward_unlocked": reward_unlocked,
-                    "active_coupon": safe_get_active_coupon(customer.get('id')),
+                    'updated_at': updated_at,
                 }
+                result = (
+                    supabase.table("customers")
+                    .update(fallback_update)
+                    .eq("id", customer.get("id"))
+                    .execute()
+                )
+                print("STAMP DB: reward_unlocked column unavailable; stamp persisted with compatibility fallback")
             except Exception as e2:
-                error_msg = str(e2)
-        if "row-level security" in error_msg.lower() or "rls" in error_msg.lower():
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "message": "Stamp added! (RLS blocked DB update, but stamp counted)",
-                    "stamp_count": new_count,
-                    "reward_unlocked": reward_unlocked,
-                    "warning": "Database write blocked. Disable RLS in Supabase or use service_role key."
-                }
-            )
-        raise HTTPException(status_code=500, detail=error_msg)
+                raise HTTPException(status_code=500, detail=friendly_db_error(e2))
+        else:
+            if "row-level security" in error_msg.lower() or "rls" in error_msg.lower():
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        "Stamp was NOT saved because Supabase Row Level Security blocked the update. "
+                        "Use the server-side service_role key or correct the RLS policy."
+                    ),
+                )
+            raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    persisted = (result.data[0] if getattr(result, 'data', None) else None) or {
+        **customer,
+        'stamp_count': new_count,
+        'reward_unlocked': reward_unlocked,
+        'updated_at': updated_at,
+    }
+    # Ensure compatibility-fallback rows still carry the newly calculated
+    # values while building the Google/Apple representations.
+    persisted['stamp_count'] = new_count
+    persisted['reward_unlocked'] = reward_unlocked
+    persisted['updated_at'] = persisted.get('updated_at') or updated_at
+
+    print(f"STAMP DB: customer={persisted.get('public_id')} count={new_count}/{goal} persisted")
+
+    google_sync = sync_wallet_object(
+        persisted, business, program,
+        notify_header="Reward unlocked! 🎉" if reward_unlocked else "Stamp added ⭐",
+        notify_body=("You've unlocked your reward!" if reward_unlocked
+                     else f"{new_count}/{goal} stamps - keep it up!"),
+        notify_message_id=f"stamp-{customer.get('id')}-{new_count}-{int(datetime.utcnow().timestamp())}",
+    )
+    apple_sync = sync_apple_wallet_pass(persisted)
+
+    try:
+        log_stamp_event(
+            business.get('id'),
+            customer.get('id'),
+            stamping_staff_id,
+            stamping_branch_id
+        )
+    except Exception as e:
+        # The loyalty balance itself is already safely saved. Keep the cashier
+        # transaction successful, but make the analytics failure visible in logs.
+        print(f"STAMP EVENT LOG error: {e}")
+
+    print(f"STAMP WALLET RESULT: google={google_sync} apple={apple_sync}")
 
     return {
         "message": "Stamp added!",
         "stamp_count": new_count,
         "reward_unlocked": reward_unlocked,
         "active_coupon": safe_get_active_coupon(customer.get('id')),
+        # Backward-compatible extra diagnostics: current frontends can ignore
+        # this, while Render logs/API testing can immediately show where a pass
+        # update failed instead of making every failure look like success.
+        "wallet_sync": {
+            "google": google_sync,
+            "apple": apple_sync,
+        },
     }
 
 
@@ -14847,7 +14950,7 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
         return Response(
             content=pkpass_bytes,
             media_type="application/vnd.apple.pkpass",
-            headers={"Last-Modified": last_modified or datetime.utcnow().isoformat()},
+            headers={"Last-Modified": _http_date(last_modified)},
         )
 
     customer = safe_get_customer(serial_number)
@@ -14893,7 +14996,7 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
     return Response(
         content=pkpass_bytes,
         media_type="application/vnd.apple.pkpass",
-        headers={"Last-Modified": last_modified},
+        headers={"Last-Modified": _http_date(last_modified)},
     )
 
 @app.post("/api/v1/apple-wallet/v1/log")
