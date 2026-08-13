@@ -2405,7 +2405,7 @@ def sync_wallet_object(customer: dict, business: dict, program: dict,
                 'textModulesData': desired.get('textModulesData'),
                 'linksModuleData': desired.get('linksModuleData'),
                 'state': desired.get('state', 'active'),
-                'notifyPreference': 'NOTIFY',
+                'notifyPreference': 'NOTIFY_ON_UPDATE',
             }
             if desired.get('heroImage'):
                 member_patch['heroImage'] = desired.get('heroImage')
