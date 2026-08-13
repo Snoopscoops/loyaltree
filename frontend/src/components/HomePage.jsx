@@ -123,7 +123,6 @@ const CARD_TYPES = [
   { key: 'membership', icon: '🪪', title: 'Membership', available: true },
   { key: 'giftcard', icon: '🎁', title: 'Gift Card', available: false },
   { key: 'vip', icon: '👑', title: 'VIP Cards', available: true },
-  { key: 'nfc', icon: '📡', title: 'NFC Enabled Cards', available: false },
 ]
 
 // Sample-card visuals + copy shown in the "Choose your card type" modal.
@@ -301,10 +300,9 @@ const PLANS = [
   {
     key: 'specialized',
     name: 'Specialized System',
-    comingSoon: true,
     features: [
       'Specialized system for your business',
-      'NFC integration available for Specialized Businesses only',
+      'NFC & contactless integration — available for Specialized Businesses',
       'Google Wallet & Apple Wallet',
       'Up to 5 active announcements',
       'Full digital system',
@@ -602,6 +600,25 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
                 <span style={styles.comingSoonBadge}>Coming soon</span>
               </button>
             ))}
+          </div>
+        </div>
+      </section>
+
+      <section style={{...styles.section, background:'#ecfdf5'}}>
+        <div style={styles.nfcSpecialWrap}>
+          <div style={styles.nfcSpecialIcon}>📡</div>
+          <div style={styles.nfcSpecialContent}>
+            <span style={styles.nfcSpecialEyebrow}>Available Now · Specialized Businesses Only</span>
+            <h2 style={styles.nfcSpecialTitle}>NFC & Contactless Integration</h2>
+            <p style={styles.nfcSpecialBody}>
+              NFC integration is available now for Specialized Businesses. LoyaltyTree can integrate with compatible NFC membership, attendance, and access-control systems for custom deployments such as gyms, clubs, hotels, and other specialized environments.
+            </p>
+            <div style={styles.nfcSpecialTags}>
+              <span style={styles.nfcSpecialTag}>Membership check-in</span>
+              <span style={styles.nfcSpecialTag}>Attendance tracking</span>
+              <span style={styles.nfcSpecialTag}>Access-control integration</span>
+              <span style={styles.nfcSpecialTag}>Custom implementation & pricing</span>
+            </div>
           </div>
         </div>
       </section>
@@ -1008,6 +1025,28 @@ const styles = {
   vipTier: { fontSize: 29, fontWeight: 900, color: '#a16207', letterSpacing: 1.5 },
   vipPoints: { marginTop: 5, fontSize: 14, fontWeight: 750, color: '#334155' },
   vipProgress: { marginTop: 6, fontSize: 11.5, color: '#64748b' },
+  nfcSpecialWrap: {
+    display: 'flex', alignItems: 'center', gap: 28, maxWidth: 920, margin: '0 auto',
+    background: '#ffffff', border: '1.5px solid #99f6e4', borderRadius: 22, padding: '32px 30px',
+    boxShadow: '0 14px 34px rgba(13,148,136,0.10)', flexWrap: 'wrap',
+  },
+  nfcSpecialIcon: {
+    width: 78, height: 78, borderRadius: 20, display: 'flex', alignItems: 'center', justifyContent: 'center',
+    background: '#ccfbf1', fontSize: 38, flexShrink: 0,
+  },
+  nfcSpecialContent: { flex: '1 1 520px' },
+  nfcSpecialEyebrow: {
+    display: 'inline-block', fontSize: 12, fontWeight: 800, color: '#0d9488',
+    textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 8,
+  },
+  nfcSpecialTitle: { fontSize: 28, fontWeight: 800, color: '#0f172a', margin: '0 0 10px' },
+  nfcSpecialBody: { fontSize: 14.5, lineHeight: 1.7, color: '#475569', margin: '0 0 18px' },
+  nfcSpecialTags: { display: 'flex', gap: 8, flexWrap: 'wrap' },
+  nfcSpecialTag: {
+    fontSize: 12, fontWeight: 700, color: '#0f766e', background: '#f0fdfa',
+    border: '1px solid #99f6e4', borderRadius: 999, padding: '7px 11px',
+  },
+
   partnerHeader: { maxWidth: 680, margin: '0 auto 34px', textAlign: 'center' },
   partnerStatus: {
     maxWidth: 680, margin: '0 auto 24px', padding: '12px 16px',
