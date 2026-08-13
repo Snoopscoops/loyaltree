@@ -6,6 +6,21 @@ import { useLocation, useNavigate } from 'react-router-dom'
 // build, since it prints internal API paths and response codes on-screen.
 const DEBUG = import.meta.env.DEV
 const CASHIER_BUILD = 'VIP-MEMBERSHIP-MULTIPASS-V16-NFC-READY'
+const CASHIER_DEVICE_KEY = 'loyaltree_cashier_device_id'
+
+function getCashierDeviceId() {
+  try {
+    let id = localStorage.getItem(CASHIER_DEVICE_KEY)
+    if (!id) {
+      id = (globalThis.crypto?.randomUUID?.() || `web-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+      localStorage.setItem(CASHIER_DEVICE_KEY, id)
+    }
+    return id
+  } catch (_) {
+    return `web-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  }
+}
+
 const BUSINESS_ICONS={spa:'🌿',salon:'✂️',fitness:'🏋️',restaurant:'🍽️',coffee:'☕',retail:'🛍️',clinic:'🩺',laundry:'🧺',gas_station:'⛽',car_wash:'🚿',pharmacy:'💊',bakery:'🥐',hotel:'🏨',other:'🏪',car_lending:'🚗',cockpit:'🏆'}
 
 function CashierApp({ API_BASE }) {
@@ -656,7 +671,7 @@ function CashierApp({ API_BASE }) {
       const res = await fetch(`${API_BASE}/api/v1/business/${cleanSlug}/staff/verify-pin`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: cleanEmail, pin: cleanPin })
+        body: JSON.stringify({ email: cleanEmail, pin: cleanPin, device_id: getCashierDeviceId() })
       })
       const data = await res.json()
       if (res.ok && data.success) {

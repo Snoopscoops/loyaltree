@@ -80,6 +80,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [savingBranch, setSavingBranch] = useState(false)
   const [message, setMessage] = useState('')
   const [stampCounts, setStampCounts] = useState({}) // staff public_id -> stamps added
+  const [cashierDevices, setCashierDevices] = useState([])
+  const [unlockingDevice, setUnlockingDevice] = useState('')
   const [customerSearch, setCustomerSearch] = useState('')
   const [staffSearch, setStaffSearch] = useState('')
   const [showOnboarding, setShowOnboarding] = useState(false)
@@ -203,7 +205,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   const loadData = async () => {
     try {
-      const [bizRes, custRes, staffRes, statsRes, progRes, stampCountRes, branchRes, subRes, kitRes] = await Promise.all([
+      const [bizRes, custRes, staffRes, statsRes, progRes, stampCountRes, branchRes, subRes, kitRes, deviceRes] = await Promise.all([
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}`),
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers`),
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff`),
@@ -213,6 +215,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}/branches`),
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}/subscription`),
         fetch(`${API_BASE}/api/v1/business/${user.business_slug}/setup-kit`),
+        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/cashier-devices`),
       ])
 
       const bizData = await bizRes.json().catch(() => null)
@@ -224,6 +227,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       const branchData = await branchRes.json().catch(() => [])
       const subData = await subRes.json().catch(() => null)
       const kitData = await kitRes.json().catch(() => null)
+      const deviceData = await deviceRes.json().catch(() => [])
 
       setBusiness(bizData)
       setCustomers(custData)
@@ -241,6 +245,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       }
       setBranches(Array.isArray(branchData) ? branchData : [])
       setSubscription(subData)
+      setCashierDevices(Array.isArray(deviceData) ? deviceData : [])
       setSetupKit(kitData && !kitData.detail ? kitData : null)
       if (kitData && !kitData.detail) setSetupKitForm({
         recipient_name:kitData.recipient_name||'',contact_number:kitData.contact_number||'',
@@ -627,6 +632,22 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       setMessage('Network error')
     }
     setSavingStaff(false)
+  }
+
+  const unlockCashierDevice = async (device) => {
+    if (!device?.public_id) return
+    if (!window.confirm(`Unlock ${device.staff_name || 'this cashier device'} now?`)) return
+    setUnlockingDevice(device.public_id)
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/cashier-devices/${device.public_id}/unlock`, { method: 'POST' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not unlock device')
+      setMessage('Cashier device unlocked.')
+      await loadData()
+    } catch (err) {
+      setMessage(err.message || 'Could not unlock device')
+    }
+    setUnlockingDevice('')
   }
 
   const deleteStaff = async () => {
@@ -1296,6 +1317,31 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                   Copy
                 </button>
               </div>
+            </div>
+
+            <div style={{background:'#fff7ed', border:'1px solid #fed7aa', borderRadius:12, padding:'14px 16px', marginBottom:16}}>
+              <p style={{margin:'0 0 4px', fontSize:13, fontWeight:800, color:'#9a3412'}}>🔐 Cashier Device Security</p>
+              <p style={{margin:'0 0 12px', fontSize:12, lineHeight:1.5, color:'#7c2d12'}}>
+                Three incorrect email/PIN attempts lock that cashier browser device until the next day. You can unlock a legitimate device here.
+              </p>
+              {cashierDevices.length === 0 ? (
+                <p style={{margin:0, fontSize:12, color:'#64748b'}}>No cashier devices have logged in since device security was enabled.</p>
+              ) : cashierDevices.map(d => (
+                <div key={d.public_id} style={{display:'flex', alignItems:'center', justifyContent:'space-between', gap:12, padding:'10px 0', borderTop:'1px solid #ffedd5', flexWrap:'wrap'}}>
+                  <div style={{minWidth:0}}>
+                    <div style={{fontSize:13, fontWeight:700, color:'#1e293b'}}>{d.staff_name || 'Unknown cashier'} · {d.device_label}</div>
+                    <div style={{fontSize:11, color:'#64748b', marginTop:2}}>
+                      {d.locked ? '🔴 Locked for today' : '🟢 Active'} · Failed attempts: {d.failed_attempts || 0}
+                    </div>
+                  </div>
+                  {d.locked && (
+                    <button onClick={() => unlockCashierDevice(d)} disabled={unlockingDevice === d.public_id}
+                      style={{padding:'7px 12px', background:'#0d9488', color:'white', border:'none', borderRadius:8, fontSize:12, fontWeight:700, cursor:'pointer'}}>
+                      {unlockingDevice === d.public_id ? 'Unlocking…' : 'Unlock Device'}
+                    </button>
+                  )}
+                </div>
+              ))}
             </div>
 
             <div style={{...styles.staffGrid,...(isMobile?styles.singleColumnGridMobile:{})}}>

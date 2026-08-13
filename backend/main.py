@@ -8,7 +8,7 @@ import json
 import hashlib
 import hmac
 import html as html_lib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Literal
 
 from fastapi import FastAPI, HTTPException, Request, Depends, Header
@@ -1095,6 +1095,7 @@ class MembershipLeafUpdate(BaseModel):
 class PinVerify(BaseModel):
     email: str
     pin: str
+    device_id: Optional[str] = None
 
 class AnnouncementCreate(BaseModel):
     title: str
@@ -9244,7 +9245,14 @@ async def delete_membership_leaf(public_id: str, leaf_id: int):
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
 @app.post("/api/v1/business/{public_id}/staff/verify-pin")
-async def verify_staff_pin(public_id: str, req: PinVerify):
+async def verify_staff_pin(public_id: str, req: PinVerify, request: Request):
+    """Verify a cashier PIN with a server-side three-strike device lock.
+
+    A browser-generated device_id is preferred. Older clients fall back to a
+    hash of IP + user-agent so the security layer is backward compatible.
+    Three failed attempts for the same business/device lock cashier login until
+    the next midnight in Asia/Manila. A successful login resets the counter.
+    """
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -9253,37 +9261,191 @@ async def verify_staff_pin(public_id: str, req: PinVerify):
     if not email:
         raise HTTPException(status_code=400, detail="Email required")
 
+    raw_device_id = (req.device_id or '').strip()
+    if raw_device_id:
+        device_id = raw_device_id[:160]
+    else:
+        client_ip = request.client.host if request.client else 'unknown'
+        user_agent = request.headers.get('user-agent', '')[:300]
+        device_id = 'legacy-' + hashlib.sha256(f'{client_ip}|{user_agent}'.encode()).hexdigest()[:40]
+
+    # Philippine-local calendar day: lock means "for the rest of today", not
+    # an arbitrary 24 hours from the third mistake. Store timestamps in UTC.
     try:
-        res = supabase.table("staff").select("*").eq("business_id", business.get("id")).ilike("email", email).eq("pin", req.pin).execute()
-        if not res.data:
-            raise HTTPException(status_code=403, detail="Invalid email or PIN")
-        staff = res.data[0]
+        from zoneinfo import ZoneInfo
+        ph_tz = ZoneInfo('Asia/Manila')
+        now_local = datetime.now(ph_tz)
+    except Exception:
+        ph_tz = timezone(timedelta(hours=8))
+        now_local = datetime.now(ph_tz)
+    today_local = now_local.date().isoformat()
+    next_midnight_local = (now_local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    lock_until_utc = next_midnight_local.astimezone(timezone.utc).isoformat()
+    now_utc = datetime.now(timezone.utc).isoformat()
+
+    try:
+        device_res = (supabase.table('cashier_devices')
+            .select('*')
+            .eq('business_id', business.get('id'))
+            .eq('device_id', device_id)
+            .limit(1).execute())
+        device = (device_res.data or [None])[0]
+
+        if device:
+            locked_until = device.get('locked_until')
+            if locked_until:
+                try:
+                    lock_dt = datetime.fromisoformat(str(locked_until).replace('Z', '+00:00'))
+                    if lock_dt.tzinfo is None:
+                        lock_dt = lock_dt.replace(tzinfo=timezone.utc)
+                    if lock_dt > datetime.now(timezone.utc):
+                        raise HTTPException(
+                            status_code=423,
+                            detail='This cashier device is locked after 3 incorrect login attempts. Try again tomorrow or ask the business owner to unlock it.',
+                        )
+                except HTTPException:
+                    raise
+                except Exception:
+                    pass
+
+        # Find the staff account by email first. This lets us count a wrong PIN
+        # without revealing whether the email itself exists.
+        staff_res = (supabase.table('staff').select('*')
+            .eq('business_id', business.get('id')).ilike('email', email).limit(1).execute())
+        staff = (staff_res.data or [None])[0]
+        pin_ok = bool(staff) and hmac.compare_digest(str(staff.get('pin') or ''), str(req.pin or ''))
+
+        if not pin_ok:
+            previous_attempts = 0
+            if device and device.get('attempt_date') == today_local:
+                previous_attempts = int(device.get('failed_attempts') or 0)
+            failed_attempts = previous_attempts + 1
+            payload = {
+                'business_id': business.get('id'),
+                'device_id': device_id,
+                'staff_id': staff.get('id') if staff else None,
+                'attempted_email': email[:320],
+                'failed_attempts': failed_attempts,
+                'attempt_date': today_local,
+                'last_failed_at': now_utc,
+                'updated_at': now_utc,
+                'locked_until': lock_until_utc if failed_attempts >= 3 else None,
+            }
+            if device:
+                supabase.table('cashier_devices').update(payload).eq('id', device.get('id')).execute()
+            else:
+                payload['public_id'] = str(uuid.uuid4())
+                supabase.table('cashier_devices').insert(payload).execute()
+
+            if failed_attempts >= 3:
+                raise HTTPException(
+                    status_code=423,
+                    detail='Too many incorrect attempts. This cashier device is locked until tomorrow. The business owner can unlock it from the Team dashboard.',
+                )
+            remaining = 3 - failed_attempts
+            raise HTTPException(status_code=403, detail=f'Invalid email or PIN. {remaining} attempt{"s" if remaining != 1 else ""} remaining before this device is locked for today.')
+
         if not staff.get('is_active', True):
-            raise HTTPException(status_code=403, detail="This staff account is inactive")
+            raise HTTPException(status_code=403, detail='This staff account is inactive')
+
+        # Correct credentials clear today's failed-attempt counter.
+        success_payload = {
+            'business_id': business.get('id'),
+            'device_id': device_id,
+            'staff_id': staff.get('id'),
+            'attempted_email': email[:320],
+            'failed_attempts': 0,
+            'attempt_date': today_local,
+            'locked_until': None,
+            'last_success_at': now_utc,
+            'updated_at': now_utc,
+        }
+        if device:
+            supabase.table('cashier_devices').update(success_payload).eq('id', device.get('id')).execute()
+        else:
+            success_payload['public_id'] = str(uuid.uuid4())
+            supabase.table('cashier_devices').insert(success_payload).execute()
 
         response = {
-            "success": True,
-            "name": staff.get("name", ""),
-            "role": staff.get("role", "cashier"),
+            'success': True,
+            'name': staff.get('name', ''),
+            'role': staff.get('role', 'cashier'),
+            'device_id': device_id,
         }
-        # Issue a session token so the PIN doesn't need to be re-sent on
-        # every scan for the rest of the shift. Only added if the server
-        # has STAFF_SESSION_SECRET configured - if not, the frontend keeps
-        # working exactly as before (resending the raw PIN each time).
         if STAFF_SESSION_SECRET:
-            response["session_token"] = create_staff_session_token(
-                public_id,
-                staff.get('id'),
-                staff.get('role', 'cashier'),
-                staff.get('name', ''),
-                staff.get('branch_id'),
+            response['session_token'] = create_staff_session_token(
+                public_id, staff.get('id'), staff.get('role', 'cashier'),
+                staff.get('name', ''), staff.get('branch_id'),
             )
-            response["expires_in_hours"] = STAFF_SESSION_TTL_HOURS
+            response['expires_in_hours'] = STAFF_SESSION_TTL_HOURS
         return response
     except HTTPException:
         raise
     except Exception as e:
+        # A missing migration should fail closed with a useful deployment hint
+        # instead of silently bypassing the lockout.
+        if 'cashier_devices' in str(e):
+            raise HTTPException(status_code=503, detail='Cashier security database migration has not been installed yet')
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/business/{public_id}/cashier-devices")
+async def get_cashier_devices(public_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    try:
+        devices = (supabase.table('cashier_devices').select('*')
+            .eq('business_id', business.get('id')).order('updated_at', desc=True).execute()).data or []
+        staff_rows = (supabase.table('staff').select('id,public_id,name,email')
+            .eq('business_id', business.get('id')).execute()).data or []
+        staff_by_id = {s.get('id'): s for s in staff_rows}
+        now = datetime.now(timezone.utc)
+        out = []
+        for d in devices:
+            s = staff_by_id.get(d.get('staff_id')) or {}
+            lock_dt = None
+            if d.get('locked_until'):
+                try:
+                    lock_dt = datetime.fromisoformat(str(d['locked_until']).replace('Z', '+00:00'))
+                    if lock_dt.tzinfo is None: lock_dt = lock_dt.replace(tzinfo=timezone.utc)
+                except Exception:
+                    lock_dt = None
+            out.append({
+                'public_id': d.get('public_id'),
+                'device_id': d.get('device_id'),
+                'device_label': 'Cashier device ' + str(d.get('device_id') or '')[-6:].upper(),
+                'staff_public_id': s.get('public_id'),
+                'staff_name': s.get('name') or d.get('attempted_email') or 'Unknown cashier',
+                'staff_email': s.get('email') or d.get('attempted_email'),
+                'failed_attempts': d.get('failed_attempts') or 0,
+                'locked': bool(lock_dt and lock_dt > now),
+                'locked_until': d.get('locked_until'),
+                'last_failed_at': d.get('last_failed_at'),
+                'last_success_at': d.get('last_success_at'),
+            })
+        return out
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.post("/api/v1/business/{public_id}/cashier-devices/{device_public_id}/unlock")
+async def unlock_cashier_device(public_id: str, device_public_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    try:
+        existing = (supabase.table('cashier_devices').select('id')
+            .eq('business_id', business.get('id')).eq('public_id', device_public_id).limit(1).execute()).data or []
+        if not existing:
+            raise HTTPException(status_code=404, detail='Cashier device not found')
+        supabase.table('cashier_devices').update({
+            'failed_attempts': 0, 'locked_until': None,
+            'updated_at': datetime.now(timezone.utc).isoformat(),
+        }).eq('id', existing[0]['id']).execute()
+        return {'success': True, 'message': 'Cashier device unlocked'}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
 @app.post("/api/v1/business/{public_id}/reward/redeem")
 async def redeem_reward(public_id: str, req: RedeemRequest, authorization: str = Header(default="")):
@@ -13908,6 +14070,8 @@ async def cashier_stamp_page(customer_public_id: str):
         'let cachedPin=null;'
         'const app=document.getElementById("app");'
         'const sessionKey="loyaltree_cashier_"+DATA.business_public_id;'
+        'const deviceKey="loyaltree_cashier_device_id";'
+        'function getDeviceId(){try{let id=localStorage.getItem(deviceKey);if(!id){id=(crypto&&crypto.randomUUID)?crypto.randomUUID():("web-"+Date.now()+"-"+Math.random().toString(36).slice(2));localStorage.setItem(deviceKey,id);}return id;}catch(e){return "web-"+Date.now()+"-"+Math.random().toString(36).slice(2);}}'
 
         'function escapeHtml(t){const d=document.createElement("div");d.textContent=t;return d.innerHTML;}'
 
@@ -13960,7 +14124,7 @@ async def cashier_stamp_page(customer_public_id: str):
         'btn.disabled=true;btn.textContent="Checking...";'
         'try{'
         'const res=await fetch("/api/v1/business/"+DATA.business_public_id+"/staff/verify-pin",{'
-        'method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:email,pin:pin})'
+        'method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:email,pin:pin,device_id:getDeviceId()})'
         '});'
         'const d=await res.json();'
         'if(res.ok&&d.success){'
