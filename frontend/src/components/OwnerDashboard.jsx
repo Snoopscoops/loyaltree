@@ -151,6 +151,13 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     return () => window.removeEventListener('resize', onResize)
   }, [])
 
+  useEffect(() => {
+    if (!showOnboarding || !isMobile) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => { document.body.style.overflow = previousOverflow }
+  }, [showOnboarding, isMobile])
+
 
   const cardSetUp = !!program?.google_wallet_class_id
   const cashierSetUp = staff.length > 0
@@ -3423,6 +3430,84 @@ const styles = {
     cursor: 'pointer',
     marginTop: 16,
   },
+  // Mobile onboarding fixes: full-height safe scroll area, no clipped footer,
+  // and preview/config sections remain in normal document flow.
+  onboardingOverlayMobile: {
+    alignItems: 'flex-end',
+    padding: 0,
+    overflow: 'hidden',
+  },
+  onboardingModalMobile: {
+    width: '100%',
+    maxWidth: '100%',
+    height: 'calc(100dvh - 12px)',
+    maxHeight: 'calc(100dvh - 12px)',
+    margin: 0,
+    borderRadius: '28px 28px 0 0',
+    display: 'flex',
+    flexDirection: 'column',
+    overflow: 'hidden',
+    boxSizing: 'border-box',
+  },
+  onboardingHeaderMobile: {
+    flex: '0 0 auto',
+    padding: '22px 20px 16px',
+    position: 'relative',
+    zIndex: 3,
+    background: '#ffffff',
+  },
+  onboardingBodyMobile: {
+    flex: '1 1 auto',
+    minHeight: 0,
+    overflowY: 'auto',
+    WebkitOverflowScrolling: 'touch',
+    overscrollBehavior: 'contain',
+    padding: '0 18px 120px',
+    boxSizing: 'border-box',
+  },
+  onboardingFooterMobile: {
+    flex: '0 0 auto',
+    position: 'sticky',
+    bottom: 0,
+    zIndex: 5,
+    background: '#ffffff',
+    borderTop: '1px solid #e2e8f0',
+    padding: '12px 18px calc(12px + env(safe-area-inset-bottom))',
+    boxShadow: '0 -10px 24px rgba(15,23,42,0.08)',
+  },
+  onboardingCardGridMobile: {
+    gridTemplateColumns: '1fr',
+    gap: 14,
+    paddingBottom: 8,
+  },
+  onboardingCardOptionMobile: {
+    minHeight: 'auto',
+    height: 'auto',
+    padding: '18px 18px',
+  },
+  onboardingPreviewMobile: {
+    position: 'relative',
+    inset: 'auto',
+    width: '100%',
+    maxWidth: '100%',
+    height: 'auto',
+    minHeight: 0,
+    margin: '0 0 20px',
+    transform: 'none',
+    overflow: 'visible',
+    boxSizing: 'border-box',
+  },
+  onboardingConfigMobile: {
+    position: 'relative',
+    inset: 'auto',
+    clear: 'both',
+    width: '100%',
+    maxWidth: '100%',
+    marginTop: 20,
+    transform: 'none',
+    boxSizing: 'border-box',
+  },
+
   modalOverlay: {
     position: 'fixed',
     top: 0,
