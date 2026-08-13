@@ -2112,7 +2112,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         }
 
         return (
-          <div style={styles.modalOverlay}>
+          <div style={{...styles.modalOverlay, ...(isMobile ? styles.onboardingOverlayMobile : {})}}>
             <div
               style={{
                 ...styles.modal,
@@ -2123,6 +2123,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 overflow: 'hidden',
                 borderRadius: 22,
                 boxShadow: '0 28px 90px rgba(15,23,42,.28)',
+                ...(isMobile ? styles.onboardingModalMobile : {}),
               }}
               onClick={e => e.stopPropagation()}
             >
@@ -2130,6 +2131,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 padding: '20px 24px',
                 borderBottom: '1px solid #e2e8f0',
                 background: 'white',
+                ...(isMobile ? styles.onboardingHeaderMobile : {}),
               }}>
                 <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16}}>
                   <div>
@@ -2175,6 +2177,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 overflowY: 'auto',
                 maxHeight: 'calc(92vh - 84px)',
                 background: '#f8fafc',
+                ...(isMobile ? styles.onboardingBodyMobile : {}),
               }}>
                 {safeStep === 0 && (
                   <div>
@@ -2185,13 +2188,26 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                       background: 'white',
                       border: '1px solid #e2e8f0',
                       borderRadius: 18,
-                      padding: 18,
+                      padding: isMobile ? 0 : 18,
+                      width: '100%',
+                      maxWidth: '100%',
+                      minWidth: 0,
+                      boxSizing: 'border-box',
+                      overflowX: 'hidden',
                     }}>
-                      <LoyaltyCardCustomizer
-                        API_BASE={API_BASE}
-                        user={user}
-                        onSaved={goNextAfterCard}
-                      />
+                      <div style={{
+                        width: '100%',
+                        maxWidth: '100%',
+                        minWidth: 0,
+                        boxSizing: 'border-box',
+                        overflowX: 'hidden',
+                      }}>
+                        <LoyaltyCardCustomizer
+                          API_BASE={API_BASE}
+                          user={user}
+                          onSaved={goNextAfterCard}
+                        />
+                      </div>
                     </div>
                   </div>
                 )}
@@ -3462,7 +3478,10 @@ const styles = {
     overflowY: 'auto',
     WebkitOverflowScrolling: 'touch',
     overscrollBehavior: 'contain',
-    padding: '0 18px 120px',
+    padding: '16px 12px calc(28px + env(safe-area-inset-bottom))',
+    width: '100%',
+    maxWidth: '100%',
+    overflowX: 'hidden',
     boxSizing: 'border-box',
   },
   onboardingFooterMobile: {
