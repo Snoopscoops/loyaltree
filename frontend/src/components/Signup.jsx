@@ -59,10 +59,10 @@ function Signup({ API_BASE }) {
   const [plans, setPlans] = useState(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  // 'form' -> 'choice' (one-day setup access is live) -> 'payment' -> 'activated'
+  // 'form' -> 'payment' -> 'activated'. New businesses must complete
+  // payment before their account becomes active.
   const [step, setStep] = useState('form')
   const [businessSlug, setBusinessSlug] = useState('')
-  const [trialExpiresAt, setTrialExpiresAt] = useState('')
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -103,8 +103,7 @@ function Signup({ API_BASE }) {
       const data = await res.json()
       if (res.ok) {
         setBusinessSlug(data.business_slug)
-        setTrialExpiresAt(data.trial_expires_at || '')
-        setStep('choice')
+        setStep('payment')
       } else {
         setError(data.detail || 'Signup failed')
       }
@@ -129,39 +128,6 @@ function Signup({ API_BASE }) {
     )
   }
 
-  if (step === 'choice') {
-    return (
-      <div style={styles.page}>
-        <div style={styles.card}>
-          <div style={{ fontSize: 56, textAlign: 'center', marginBottom: 16 }}>🎉</div>
-          <h1 style={styles.title}>Your Setup Access Is Ready</h1>
-          <p style={styles.subtitle}>
-            Your account is active for one day so you can set up your card, branding, staff, and QR code.
-            {trialExpiresAt && <> Setup access ends on <strong>{trialExpiresAt}</strong>.</>}
-          </p>
-
-          {form.setup_kit_requested && (
-            <div style={styles.kitConfirmation}>
-              <strong>Physical QR / PR Kit requested — ₱150</strong>
-              <span>Includes a Sintra board QR display. Delivery is expected within 3–5 days after payment confirmation.</span>
-            </div>
-          )}
-
-          <button type="button" onClick={() => navigate('/login')} style={styles.button}>
-            Continue to 1-Day Setup
-          </button>
-          <button type="button" onClick={() => setStep('payment')} style={styles.secondaryButton}>
-            Pay and Activate Plan
-          </button>
-
-          <p style={styles.footer}>
-            Complete payment within the setup period to keep the account active without interruption.
-          </p>
-        </div>
-      </div>
-    )
-  }
-
   if (step === 'payment') {
     return (
       <div style={styles.page}>
@@ -171,7 +137,7 @@ function Signup({ API_BASE }) {
           title="Pay Now"
           subtitle={form.setup_kit_requested
             ? "Your total includes your selected monthly plan plus the ₱150 Sintra board QR / PR Kit. Delivery is expected within 3–5 days after payment confirmation."
-            : "Pay now to activate your selected monthly plan before the one-day setup access ends."}
+            : "Complete payment to activate your selected monthly plan and unlock your business dashboard."}
           successMessage="🎉 Payment received - you're all paid up!"
           onPaid={() => setStep('activated')}
         />

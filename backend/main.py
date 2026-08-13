@@ -107,7 +107,6 @@ CLOUDINARY_API_KEY = os.getenv('CLOUDINARY_API_KEY', '')
 CLOUDINARY_API_SECRET = os.getenv('CLOUDINARY_API_SECRET', '')
 CLOUDINARY_UPLOAD_PRESET = os.getenv('CLOUDINARY_UPLOAD_PRESET', 'LoyaltyTree_Images')
 SUBSCRIPTION_PERIOD_DAYS = 30  # how long a successful payment extends access for
-TRIAL_PERIOD_DAYS = 1  # one-day setup access granted automatically on signup
 
 # Subscription expiry reminder emails, sent via Resend (resend.com). Get
 # RESEND_API_KEY from Resend's dashboard once you've verified a sending
@@ -4267,7 +4266,6 @@ async def register(biz: BusinessCreate):
     else:
         plan = determine_plan_from_branch_count(biz.branch_count)
     price_month = get_price_for_plan(plan, biz.branch_count)
-    trial_expires = (datetime.utcnow() + timedelta(days=TRIAL_PERIOD_DAYS)).date().isoformat()
     business_data = {
         'public_id': public_id,
         'name': biz.name,
@@ -4278,10 +4276,11 @@ async def register(biz: BusinessCreate):
         'business_type': biz.business_type,
         'address': biz.address,
         'plan': plan,
-        # One-day setup access lets the owner configure the card before
-        # payment. A successful subscription payment extends access normally.
-        'status': 'ACTIVE',
-        'subscription_expires_at': trial_expires,
+        # Self-serve businesses remain pending until PayMongo confirms the
+        # first subscription payment. The payment webhook promotes PENDING
+        # accounts to ACTIVE and sets the normal subscription expiry date.
+        'status': 'PENDING',
+        'subscription_expires_at': None,
         'setup_kit_requested': bool(biz.setup_kit_requested),
         'setup_kit_paid': False,
         'setup_kit_status': 'requested' if biz.setup_kit_requested else None,
@@ -4334,7 +4333,7 @@ async def register(biz: BusinessCreate):
                 f"<li><b>Phone:</b> {html_lib.escape(biz.phone or '')}</li>"
                 f"<li><b>Plan:</b> {SUBSCRIPTION_PLANS.get(plan, {}).get('label', plan)}</li>"
                 f"<li><b>Branches:</b> {biz.branch_count}</li>"
-                f"<li><b>Status:</b> ACTIVE (1-day setup access, expires {trial_expires})</li>"
+                f"<li><b>Status:</b> PENDING PAYMENT</li>"
                 f"</ul>"
             ),
         )
@@ -4373,7 +4372,6 @@ async def register(biz: BusinessCreate):
         "plan": plan,
         "branch_count": biz.branch_count,
         "price_month": price_month,
-        "trial_expires_at": trial_expires,
     }
 
 @app.get("/api/v1/me")
