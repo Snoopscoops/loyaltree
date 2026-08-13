@@ -1731,7 +1731,9 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                         ? `+${item.points_earned ?? 0} pts earned`
                         : isVipCard
                         ? `${(item.points_delta ?? 0) >= 0 ? '+' : ''}${item.points_delta ?? 0} VIP pts`
-                        : `Stamp #${item.stamp_number || (memberHistory.length - i)}`
+                        : item.activity_type === 'adjustment'
+                        ? `${Number(item.delta || 0) >= 0 ? '+' : ''}${Number(item.delta || 0)} Stamp${Math.abs(Number(item.delta || 0)) === 1 ? '' : 's'} · ${item.staff_name ? 'Cashier correction' : 'Owner correction'}`
+                        : `Stamp #${item.stamp_number || ''}`
                       // vip_events.action is always 'sale' or 'adjustment' -
                       // never a distinct 'tier_change' value - so a tier
                       // change is detected by comparing old_tier/new_tier on
@@ -1742,7 +1744,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                       const tierChanged = isVipCard && item.old_tier && item.new_tier && item.old_tier !== item.new_tier
 
                       return <div key={item.id || i} style={{display:'grid',gridTemplateColumns:'12px 1fr',gap:10,padding:'12px 0',borderBottom:i===memberHistory.length-1?'none':'1px solid #e2e8f0'}}>
-                        <div style={{width:10,height:10,borderRadius:'50%',background:'#14b8a6',marginTop:5,boxShadow:'0 0 0 4px #ccfbf1'}} />
+                        <div style={{width:10,height:10,borderRadius:'50%',background:(!isMembershipCard && !isMultipassCard && !isPointsCard && !isVipCard && item.activity_type === 'adjustment' && Number(item.delta || 0) < 0) ? '#dc2626' : '#14b8a6',marginTop:5,boxShadow:(!isMembershipCard && !isMultipassCard && !isPointsCard && !isVipCard && item.activity_type === 'adjustment' && Number(item.delta || 0) < 0) ? '0 0 0 4px #fee2e2' : '0 0 0 4px #ccfbf1'}} />
                         <div>
                           <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start'}}>
                             <strong style={{color:'#134e4a'}}>{title}</strong>
@@ -1750,6 +1752,14 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                               {eventDate ? new Date(eventDate).toLocaleString([], {year:'numeric',month:'short',day:'numeric',hour:eventDate.includes?.('T')?'numeric':undefined,minute:eventDate.includes?.('T')?'2-digit':undefined}) : 'Date unavailable'}
                             </span>
                           </div>
+                          {!isMembershipCard && !isMultipassCard && !isPointsCard && !isVipCard && item.activity_type === 'adjustment' && (
+                            <>
+                              <div style={{fontSize:13,color:Number(item.delta || 0) < 0 ? '#b91c1c' : '#166534',fontWeight:700,marginTop:3}}>
+                                {item.old_count ?? 0} stamps → {item.new_count ?? 0} stamps
+                              </div>
+                              {item.reason && <div style={{fontSize:12,color:'#64748b',marginTop:3}}>Reason: {item.reason}</div>}
+                            </>
+                          )}
                           {isMultipassCard && <div style={{fontSize:13,color:'#475569',marginTop:3}}>{item.sessions_remaining ?? 0} sessions remaining after this activity</div>}
                           {isMembershipCard && item.note && <div style={{fontSize:13,color:'#334155',whiteSpace:'pre-wrap',marginTop:6,padding:8,background:'#f8fafc',borderRadius:8}}>{item.note}</div>}
                           {isPointsCard && item.amount_spent_pesos != null && <div style={{fontSize:13,color:'#475569',marginTop:3}}>₱{Number(item.amount_spent_pesos).toLocaleString()} spent</div>}

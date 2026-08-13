@@ -9219,20 +9219,40 @@ async def get_customer_stamp_history(public_id: str, customer_public_id: str):
     if not customer or customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
     try:
-        rows = (
+        stamp_rows = (
             supabase.table('stamp_events')
             .select('*')
             .eq('business_id', business.get('id'))
             .eq('customer_id', customer.get('id'))
-            .order('created_at', desc=True)
             .execute()
         ).data or []
+        adjustment_rows = (
+            supabase.table('stamp_adjustments')
+            .select('*')
+            .eq('business_id', business.get('id'))
+            .eq('customer_id', customer.get('id'))
+            .execute()
+        ).data or []
+
+        # Normalize both sources into one owner-visible Stamp Activity timeline.
+        for row in stamp_rows:
+            row['activity_type'] = 'stamp'
+            row['delta'] = 1
+        for row in adjustment_rows:
+            row['activity_type'] = 'adjustment'
+
+        rows = stamp_rows + adjustment_rows
         rows = attach_activity_location_names(rows)
-        total = len(rows)
-        for index, row in enumerate(rows):
-            # Rows are newest first. This gives each historical punch its
-            # chronological stamp number without needing a new DB column.
-            row['stamp_number'] = total - index
+        rows.sort(key=lambda r: r.get('created_at') or '', reverse=True)
+
+        # Stamp numbers apply only to normal scan/add-stamp events. Corrections
+        # show their explicit old_count -> new_count balance instead.
+        normal_stamps = sorted(
+            [r for r in rows if r.get('activity_type') == 'stamp'],
+            key=lambda r: r.get('created_at') or ''
+        )
+        for number, row in enumerate(normal_stamps, start=1):
+            row['stamp_number'] = number
         return rows
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
