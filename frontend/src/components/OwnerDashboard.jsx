@@ -1498,7 +1498,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               </div>
               <div style={styles.cardBody}>
                 <h3 style={styles.cardName}>{selectedCustomer.name}</h3>
-                <p style={styles.cardId}>ID: {selectedCustomer.public_id?.slice(0, 8)}...</p>
+                <p style={{...styles.cardId, overflowWrap: 'anywhere', wordBreak: 'break-word'}}>ID: {selectedCustomer.public_id}</p>
                 {isPointsCard ? (
                   <div style={styles.cardProgress}>
                     <p style={{fontSize: 32, fontWeight: 800, color: 'white', margin: '8px 0 0'}}>
