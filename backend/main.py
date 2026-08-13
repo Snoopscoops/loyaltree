@@ -948,10 +948,18 @@ class PointsPrize(BaseModel):
     points_cost: int = Field(ge=1)
     description: Optional[str] = Field(default=None, max_length=140)
 
+class StampRewardMilestone(BaseModel):
+    id: Optional[str] = None
+    stamps: int = Field(ge=1, le=500)
+    reward_name: str = Field(min_length=1, max_length=100)
+
 class LoyaltyConfig(BaseModel):
     card_type: Literal['stamp', 'points', 'multipass', 'membership', 'vip'] = 'stamp'  # a business runs ONE active card at a time
-    stamp_goal: int = Field(default=8, ge=3, le=20)
+    stamp_goal: int = Field(default=8, ge=1, le=500)
     reward_name: str = 'Free Service'
+    stamp_rewards: Optional[List[StampRewardMilestone]] = None
+    stamp_once_per_day: bool = False
+    stamp_reset_after_final: bool = True
     primary_color: str = '#3b82f6'
     reward_expiry_days: int = Field(default=30, ge=1)
     program_logo_url: Optional[str] = None
@@ -1015,6 +1023,13 @@ class CustomerUpdate(BaseModel):
 
 class StampRequest(BaseModel):
     customer_public_id: str
+    staff_pin: Optional[str] = None
+    as_owner: Optional[bool] = False
+
+class StampAdjustRequest(BaseModel):
+    customer_public_id: str
+    delta: int = Field(ge=-100, le=100)
+    reason: Optional[str] = Field(default=None, max_length=200)
     staff_pin: Optional[str] = None
     as_owner: Optional[bool] = False
 
@@ -5335,7 +5350,7 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
     # syntax for type timestamp/date: \"\""). Treat a blank date field as
     # "not provided" rather than "clear it", same as the other Optional
     # fields already behave via exclude_unset above.
-    for date_field in ('birthday', 'last_order_date'):
+    for date_field in ('birthday', 'last_order_date', 'membership_start_date', 'membership_expires_at'):
         if update_data.get(date_field) == '':
             del update_data[date_field]
 
@@ -5365,8 +5380,9 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
     if 'stamp_count' in update_data or 'points_balance' in update_data or 'multipass_sessions_remaining' in update_data:
         program = safe_get_loyalty_program(business.get('id'))
     if 'stamp_count' in update_data:
-        goal = program.get('stamp_goal', 8) if program else 8
-        update_data['reward_unlocked'] = update_data['stamp_count'] >= goal
+        update_data['reward_unlocked'] = bool(
+            get_available_stamp_rewards({**customer, 'stamp_count': update_data['stamp_count']}, program)
+        )
 
     update_data['updated_at'] = datetime.utcnow().isoformat()
 
@@ -6165,6 +6181,9 @@ async def get_loyalty_config(public_id: str, response: Response):
             "card_type": "stamp",
             "stamp_goal": 8,
             "reward_name": "Free Service",
+            "stamp_rewards": [{"id": "legacy-final", "stamps": 8, "reward_name": "Free Service"}],
+            "stamp_once_per_day": False,
+            "stamp_reset_after_final": True,
             "primary_color": "#3b82f6",
             "reward_expiry_days": 30,
             "program_logo_url": None,
@@ -6242,6 +6261,8 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
         'card_type': config.card_type,
         'stamp_goal': config.stamp_goal,
         'reward_name': config.reward_name,
+        'stamp_once_per_day': bool(config.stamp_once_per_day),
+        'stamp_reset_after_final': bool(config.stamp_reset_after_final),
         'primary_color': config.primary_color,
         'wallet_style': config.wallet_style,
         'wallet_secondary_color': config.wallet_secondary_color,
@@ -6249,6 +6270,31 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
         'reward_expiry_days': config.reward_expiry_days,
         'updated_at': datetime.utcnow().isoformat(),
     }
+
+    if config.card_type == 'stamp':
+        milestones = []
+        seen = set()
+        for item in (config.stamp_rewards or []):
+            threshold = int(item.stamps)
+            if threshold in seen:
+                raise HTTPException(status_code=400, detail=f"Only one stamp reward can use the {threshold}-stamp milestone")
+            seen.add(threshold)
+            milestones.append({
+                'id': item.id or uuid.uuid4().hex[:12],
+                'stamps': threshold,
+                'reward_name': item.reward_name.strip(),
+            })
+        if not milestones:
+            milestones = [{
+                'id': 'legacy-final',
+                'stamps': int(config.stamp_goal),
+                'reward_name': (config.reward_name or 'Free Service').strip(),
+            }]
+        milestones.sort(key=lambda x: x['stamps'])
+        data['stamp_rewards'] = milestones
+        # Keep legacy fields synchronized with the final milestone for Wallet/old clients.
+        data['stamp_goal'] = milestones[-1]['stamps']
+        data['reward_name'] = milestones[-1]['reward_name']
 
     if config.program_logo_url is not None:
         data['program_logo_url'] = config.program_logo_url
@@ -8342,6 +8388,68 @@ async def resolve_nfc_member(public_id: str, req: NfcResolveRequest, authorizati
     }
 
 
+
+def get_stamp_rewards(program: Optional[dict]) -> List[dict]:
+    """Normalized ascending stamp milestones with legacy single-goal fallback."""
+    raw = (program or {}).get('stamp_rewards')
+    rewards = []
+    if isinstance(raw, list):
+        for i, item in enumerate(raw):
+            try:
+                stamps = int((item or {}).get('stamps') or 0)
+                name = str((item or {}).get('reward_name') or '').strip()
+            except Exception:
+                continue
+            if stamps > 0 and name:
+                rewards.append({
+                    'id': str((item or {}).get('id') or f'milestone-{stamps}-{i}'),
+                    'stamps': stamps,
+                    'reward_name': name[:100],
+                })
+    if not rewards:
+        goal = int((program or {}).get('stamp_goal') or 8)
+        rewards = [{
+            'id': 'legacy-final',
+            'stamps': goal,
+            'reward_name': str((program or {}).get('reward_name') or 'Free Service')[:100],
+        }]
+    # one reward per threshold, ascending
+    dedup = {}
+    for r in rewards:
+        dedup[r['stamps']] = r
+    return [dedup[k] for k in sorted(dedup)]
+
+def get_stamp_claims(customer_id: int) -> List[dict]:
+    try:
+        res = (supabase.table('stamp_reward_claims').select('*')
+               .eq('customer_id', customer_id).execute())
+        return res.data or []
+    except Exception as e:
+        print(f"STAMP CLAIM lookup warning: {e}")
+        return []
+
+def get_available_stamp_rewards(customer: dict, program: Optional[dict]) -> List[dict]:
+    count = int(customer.get('stamp_count') or 0)
+    claimed_ids = {str(x.get('milestone_id')) for x in get_stamp_claims(customer.get('id'))}
+    return [r for r in get_stamp_rewards(program)
+            if count >= int(r['stamps']) and str(r['id']) not in claimed_ids]
+
+def stamped_today(business_id: int, customer_id: int) -> bool:
+    """Uses stamp_events so the once-a-day rule is server enforced across cashiers/devices."""
+    today = datetime.utcnow().date()
+    start = datetime.combine(today, datetime.min.time()).isoformat()
+    end = datetime.combine(today + timedelta(days=1), datetime.min.time()).isoformat()
+    try:
+        res = (supabase.table('stamp_events').select('id')
+               .eq('business_id', business_id).eq('customer_id', customer_id)
+               .gte('created_at', start).lt('created_at', end).limit(1).execute())
+        return bool(res.data)
+    except Exception as e:
+        print(f"STAMP DAILY LIMIT lookup error: {e}")
+        # Fail closed when the business explicitly enabled the rule.
+        raise HTTPException(status_code=503, detail="Could not verify today's stamp limit. Please try again.")
+
+
 @app.post("/api/v1/business/{public_id}/stamp")
 async def add_stamp(public_id: str, req: StampRequest, authorization: str = Header(default="")):
     print(f"STAMP REQUEST: business={public_id}, customer={req.customer_public_id}")
@@ -8389,9 +8497,16 @@ async def add_stamp(public_id: str, req: StampRequest, authorization: str = Head
     if program and program.get('card_type') == 'points':
         raise HTTPException(status_code=400, detail="This business is on a points card - use /points-sale instead")
 
-    goal = program.get('stamp_goal', 8) if program else 8
-    new_count = int(customer.get('stamp_count') or 0) + 1
-    reward_unlocked = new_count >= goal
+    rewards = get_stamp_rewards(program)
+    goal = int(rewards[-1]['stamps'])
+    if bool((program or {}).get('stamp_once_per_day')) and stamped_today(business.get('id'), customer.get('id')):
+        raise HTTPException(status_code=409, detail="This customer already received a stamp today. One stamp per day is enabled.")
+
+    old_count = int(customer.get('stamp_count') or 0)
+    new_count = old_count + 1
+    newly_reached = [r for r in rewards if old_count < int(r['stamps']) <= new_count]
+    available_rewards = get_available_stamp_rewards({**customer, 'stamp_count': new_count}, program)
+    reward_unlocked = bool(available_rewards or newly_reached)
     updated_at = datetime.utcnow().isoformat()
 
     # Database first. Wallets must only ever reflect a stamp that was actually
@@ -8481,6 +8596,9 @@ async def add_stamp(public_id: str, req: StampRequest, authorization: str = Head
         "message": "Stamp added!",
         "stamp_count": new_count,
         "reward_unlocked": reward_unlocked,
+        "newly_reached_rewards": newly_reached,
+        "available_rewards": get_available_stamp_rewards(persisted, program),
+        "stamp_once_per_day": bool((program or {}).get('stamp_once_per_day')),
         "active_coupon": safe_get_active_coupon(customer.get('id')),
         # Backward-compatible extra diagnostics: current frontends can ignore
         # this, while Render logs/API testing can immediately show where a pass
@@ -8489,6 +8607,90 @@ async def add_stamp(public_id: str, req: StampRequest, authorization: str = Head
             "google": google_sync,
             "apple": apple_sync,
         },
+    }
+
+
+
+@app.post("/api/v1/business/{public_id}/stamp/adjust")
+async def adjust_stamp(public_id: str, req: StampAdjustRequest, authorization: str = Header(default="")):
+    """Audited cashier/owner correction. Delta may be + or -, and Wallets are resynced."""
+    if req.delta == 0:
+        raise HTTPException(status_code=400, detail="Adjustment must add or remove at least one stamp")
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    customer = safe_get_customer(req.customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+
+    staff_id = None
+    branch_id = None
+    claims = get_staff_session_claims(public_id, authorization)
+    if claims:
+        staff_id = claims.get('staff_id')
+        branch_id = claims.get('branch_id')
+    elif req.as_owner:
+        pass
+    else:
+        if not req.staff_pin:
+            raise HTTPException(status_code=400, detail="Staff PIN required")
+        staff_res = (supabase.table('staff').select('*').eq('business_id', business.get('id'))
+                     .eq('pin', req.staff_pin).execute())
+        if not staff_res.data:
+            raise HTTPException(status_code=403, detail="Invalid staff PIN")
+        staff_id = staff_res.data[0].get('id')
+        branch_id = staff_res.data[0].get('branch_id')
+
+    program = safe_get_loyalty_program(business.get('id'))
+    if program and program.get('card_type') != 'stamp':
+        raise HTTPException(status_code=400, detail="Stamp adjustments are only available for Stamp Cards")
+
+    old_count = int(customer.get('stamp_count') or 0)
+    new_count = max(0, old_count + int(req.delta))
+    actual_delta = new_count - old_count
+    available = get_available_stamp_rewards({**customer, 'stamp_count': new_count}, program)
+    reward_unlocked = bool(available)
+
+    update_data = {
+        'stamp_count': new_count,
+        'reward_unlocked': reward_unlocked,
+        'updated_at': datetime.utcnow().isoformat(),
+    }
+    try:
+        res = supabase.table('customers').update(update_data).eq('id', customer.get('id')).execute()
+        persisted = res.data[0] if res.data else {**customer, **update_data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    try:
+        supabase.table('stamp_adjustments').insert({
+            'business_id': business.get('id'),
+            'customer_id': customer.get('id'),
+            'staff_id': staff_id,
+            'branch_id': branch_id,
+            'delta': actual_delta,
+            'old_count': old_count,
+            'new_count': new_count,
+            'reason': (req.reason or 'Cashier correction').strip()[:200],
+            'created_at': datetime.utcnow().isoformat(),
+        }).execute()
+    except Exception as e:
+        print(f"STAMP ADJUSTMENT audit warning: {e}")
+
+    google_sync = sync_wallet_object(
+        persisted, business, program,
+        notify_header="Stamp balance corrected",
+        notify_body=f"Your stamp balance is now {new_count}.",
+        notify_message_id=f"stamp-adjust-{customer.get('id')}-{int(datetime.utcnow().timestamp())}",
+    )
+    apple_sync = sync_apple_wallet_pass(persisted)
+    return {
+        'message': 'Stamp balance updated',
+        'stamp_count': new_count,
+        'delta': actual_delta,
+        'reward_unlocked': reward_unlocked,
+        'available_rewards': get_available_stamp_rewards(persisted, program),
+        'wallet_sync': {'google': google_sync, 'apple': apple_sync},
     }
 
 
@@ -9586,29 +9788,57 @@ async def redeem_reward(public_id: str, req: RedeemRequest, authorization: str =
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
 
-    if not customer.get('reward_unlocked'):
+    program = safe_get_loyalty_program(business.get('id'))
+    rewards = get_stamp_rewards(program)
+    available = get_available_stamp_rewards(customer, program)
+    if not available:
         raise HTTPException(status_code=400, detail="No reward available to redeem")
 
-    program = safe_get_loyalty_program(business.get('id'))
-    goal = program.get('stamp_goal', 8) if program else 8
+    # Redeem the earliest earned, unredeemed milestone. Intermediate rewards do
+    # not reduce the running stamp count, so a 10-stamp reward can lead into a
+    # 20-stamp grand prize. The final milestone can optionally reset the cycle.
+    reward = available[0]
+    final_reward = reward['id'] == rewards[-1]['id']
+    reset_after_final = bool((program or {}).get('stamp_reset_after_final', True))
 
     try:
-        new_count = max(customer.get('stamp_count', 0) - goal, 0)
+        supabase.table('stamp_reward_claims').insert({
+            'business_id': business.get('id'),
+            'customer_id': customer.get('id'),
+            'milestone_id': str(reward['id']),
+            'milestone_stamps': int(reward['stamps']),
+            'reward_name': reward['reward_name'],
+            'staff_id': redeeming_staff_id,
+            'branch_id': redeeming_branch_id,
+            'redeemed_at': datetime.utcnow().isoformat(),
+        }).execute()
+
+        new_count = int(customer.get('stamp_count') or 0)
+        if final_reward and reset_after_final:
+            new_count = 0
+            # New cycle: prior claims no longer block milestones.
+            supabase.table('stamp_reward_claims').delete().eq('customer_id', customer.get('id')).execute()
+
+        customer['stamp_count'] = new_count
+        remaining = get_available_stamp_rewards(customer, program)
+        customer['reward_unlocked'] = bool(remaining)
         supabase.table("customers").update({
             'stamp_count': new_count,
-            'reward_unlocked': False,
+            'reward_unlocked': customer['reward_unlocked'],
             'updated_at': datetime.utcnow().isoformat(),
         }).eq("id", customer.get("id")).execute()
-        customer['stamp_count'] = new_count
-        customer['reward_unlocked'] = False
+
         sync_wallet_object(
             customer, business, program,
             notify_header="Reward redeemed ✅",
-            notify_body="Your reward has been redeemed - your card is reset and ready for more stamps.",
-            notify_message_id=f"redeem-{customer.get('id')}-{int(datetime.utcnow().timestamp())}",
+            notify_body=f"{reward['reward_name']} has been redeemed.",
+            notify_message_id=f"redeem-{customer.get('id')}-{reward['id']}-{int(datetime.utcnow().timestamp())}",
         )
         sync_apple_wallet_pass(customer)
-        log_redemption_event(business.get('id'), customer.get('id'), redeeming_staff_id, redeeming_branch_id)
+        log_redemption_event(
+            business.get('id'), customer.get('id'), redeeming_staff_id,
+            redeeming_branch_id, prize_name=reward['reward_name']
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -9617,7 +9847,7 @@ async def redeem_reward(public_id: str, req: RedeemRequest, authorization: str =
     if features.get('google_review_prompt') and program:
         review_url = program.get('google_review_url')
 
-    return {"message": "Reward redeemed!", "success": True, "google_review_url": review_url}
+    return {"message": f"{reward['reward_name']} redeemed!", "success": True, "reward": reward, "stamp_count": customer.get("stamp_count", 0), "google_review_url": review_url}
 
 # ONE-TIME COUPONS
 # Owner-issued, per-customer, free-text coupons - separate from the

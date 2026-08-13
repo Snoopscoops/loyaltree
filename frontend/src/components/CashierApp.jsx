@@ -222,6 +222,10 @@ function CashierApp({ API_BASE }) {
           stamp_count: c.stamp_count || 0,
           reward_unlocked: !!c.reward_unlocked,
           reward_threshold: goal,
+          stamp_rewards: Array.isArray(program.stamp_rewards) && program.stamp_rewards.length
+            ? program.stamp_rewards
+            : [{id:'legacy-final', stamps:goal, reward_name:program.reward_name || 'Reward'}],
+          stamp_once_per_day: program.stamp_once_per_day === true,
           points_balance: c.points_balance || 0,
           points_prizes: Array.isArray(program.points_prizes) ? program.points_prizes : [],
           // Rate used to preview how many points a sale amount will earn,
@@ -293,8 +297,10 @@ function CashierApp({ API_BASE }) {
 
       if (res.ok) {
         let msg = `✅ Stamp added! ${customerData.name} now has ${data.stamp_count} stamps`
-        if (data.reward_unlocked) {
-          msg += ' 🎉 REWARD UNLOCKED!'
+        if (Array.isArray(data.newly_reached_rewards) && data.newly_reached_rewards.length) {
+          msg += ` 🎉 ${data.newly_reached_rewards.map(r => r.reward_name).join(', ')} unlocked!`
+        } else if (data.reward_unlocked) {
+          msg += ' 🎉 REWARD AVAILABLE!'
         }
         if (data.warning) {
           msg += ` (${data.warning})`
@@ -311,6 +317,40 @@ function CashierApp({ API_BASE }) {
       }
     } catch (err) {
       setMessage('❌ Network error - stamp not added')
+    }
+    setLoading(false)
+  }
+
+  const adjustStamp = async (delta) => {
+    if (!customerData || !businessSlug || (!isOwner && !staffPin && !sessionToken)) return
+    const action = delta > 0 ? 'add' : 'remove'
+    if (!window.confirm(`${delta > 0 ? 'Add' : 'Remove'} 1 stamp ${delta > 0 ? 'to' : 'from'} ${customerData.name}? This correction is logged.`)) return
+    setLoading(true)
+    setMessage(`${delta > 0 ? 'Adding' : 'Removing'} correction...`)
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/stamp/adjust`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+        },
+        body: JSON.stringify({
+          customer_public_id: customerData.public_id,
+          delta,
+          reason: 'Cashier correction',
+          ...(sessionToken ? {} : { staff_pin: staffPin }),
+          as_owner: isOwner,
+        })
+      })
+      const data = await res.json()
+      if (res.ok) {
+        setCustomerData(prev => prev ? {...prev, stamp_count:data.stamp_count, reward_unlocked:!!data.reward_unlocked} : prev)
+        setMessage(`✅ Stamp balance corrected to ${data.stamp_count}`)
+      } else {
+        setMessage(`❌ ${data.detail || 'Adjustment failed'}`)
+      }
+    } catch (err) {
+      setMessage('❌ Network error - adjustment not saved')
     }
     setLoading(false)
   }
@@ -1185,13 +1225,26 @@ function CashierApp({ API_BASE }) {
           ) : null}
           <div style={styles.actions}>
             {customerData.card_type === 'stamp' && (
-              <button
-                style={{...styles.actionBtn, background: '#0d9488'}}
-                onClick={addStamp}
-                disabled={loading}
-              >
-                {loading ? '...' : '🎟️ Add Stamp'}
-              </button>
+              <div style={{width:'100%',display:'flex',flexDirection:'column',gap:10}}>
+                <button
+                  style={{...styles.actionBtn, background: '#0d9488'}}
+                  onClick={addStamp}
+                  disabled={loading}
+                >
+                  {loading ? '...' : '🎟️ Add Stamp'}
+                </button>
+                {customerData.stamp_once_per_day && (
+                  <div style={{fontSize:12,color:'#64748b',textAlign:'center'}}>🔒 One regular stamp per customer per day is enabled.</div>
+                )}
+                <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:12}}>
+                  <button type="button" onClick={()=>adjustStamp(-1)} disabled={loading || customerData.stamp_count <= 0}
+                    style={{...styles.actionBtn,background:'#64748b',flex:'0 0 56px',padding:'12px'}}>−</button>
+                  <div style={{minWidth:90,textAlign:'center',fontWeight:800}}>{customerData.stamp_count} stamps</div>
+                  <button type="button" onClick={()=>adjustStamp(1)} disabled={loading}
+                    style={{...styles.actionBtn,background:'#334155',flex:'0 0 56px',padding:'12px'}}>+</button>
+                </div>
+                <div style={{fontSize:11,color:'#94a3b8',textAlign:'center'}}>+/− are audited corrections and do not bypass the normal daily-stamp button.</div>
+              </div>
             )}
             {customerData.card_type === 'membership' && (
               <button

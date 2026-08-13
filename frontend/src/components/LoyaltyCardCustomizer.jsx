@@ -17,6 +17,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
     primary_color: '#0d9488',
     reward_name: '',
     stamp_goal: 8,
+    stamp_rewards: [{ id: 'legacy-final', stamps: 8, reward_name: 'Free Service' }],
+    stamp_once_per_day: false,
+    stamp_reset_after_final: true,
     reward_expiry_days: 30,
     program_logo_url: '',
     hero_image_url: '',
@@ -70,6 +73,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
   // New-prize draft form (points card)
   const [prizeDraft, setPrizeDraft] = useState({ name: '', points_cost: '', description: '' })
   const [prizeError, setPrizeError] = useState('')
+  const [stampRewardDraft, setStampRewardDraft] = useState({ stamps: '', reward_name: '' })
+  const [stampRewardError, setStampRewardError] = useState('')
 
   useEffect(() => {
     fetchConfig()
@@ -93,6 +98,11 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
           primary_color: data.primary_color || '#0d9488',
           reward_name: data.reward_name || '',
           stamp_goal: data.stamp_goal || 8,
+          stamp_rewards: Array.isArray(data.stamp_rewards) && data.stamp_rewards.length
+            ? data.stamp_rewards
+            : [{ id: 'legacy-final', stamps: data.stamp_goal || 8, reward_name: data.reward_name || 'Free Service' }],
+          stamp_once_per_day: data.stamp_once_per_day === true,
+          stamp_reset_after_final: data.stamp_reset_after_final !== false,
           reward_expiry_days: data.reward_expiry_days || 30,
           program_logo_url: data.program_logo_url || '',
           hero_image_url: data.hero_image_url || '',
@@ -186,6 +196,13 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
     primary_color: form.primary_color,
     reward_name: form.reward_name || 'Free Service',
     stamp_goal: Number(form.stamp_goal) || 8,
+    stamp_rewards: (form.stamp_rewards || []).map(r => ({
+      id: r.id || Math.random().toString(16).slice(2, 14),
+      stamps: Number(r.stamps) || 1,
+      reward_name: (r.reward_name || 'Reward').trim(),
+    })).sort((a,b) => a.stamps - b.stamps),
+    stamp_once_per_day: form.stamp_once_per_day === true,
+    stamp_reset_after_final: form.stamp_reset_after_final !== false,
     reward_expiry_days: Number(form.reward_expiry_days) || 30,
     program_logo_url: form.program_logo_url || null,
     hero_image_url: form.hero_image_url || null,
@@ -597,27 +614,59 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
           </div>
 
           {form.card_type === 'stamp' ? (
-            <div style={styles.row}>
-              <div style={{ ...styles.fieldGroup, flex: 1 }}>
-                <label style={styles.label}>Reward name</label>
-                <input
-                  style={styles.input}
-                  placeholder="Free Coffee"
-                  value={form.reward_name}
-                  onChange={e => update('reward_name', e.target.value)}
-                  required
-                />
+            <div style={styles.pointsSection}>
+              <div style={styles.fieldGroup}>
+                <label style={styles.label}>Stamp rewards</label>
+                <p style={styles.hint}>Add milestones such as 10 stamps → Free Drink and 20 stamps → Grand Prize. Customers keep their stamps after intermediate rewards.</p>
+                {(form.stamp_rewards || []).map((r, i) => (
+                  <div key={r.id || i} style={styles.prizeRow}>
+                    <div>
+                      <div style={styles.prizeName}>{r.stamps} stamps → {r.reward_name}</div>
+                      <div style={styles.prizeDesc}>{i === (form.stamp_rewards || []).length - 1 ? 'Final milestone' : 'Intermediate reward · stamp count continues'}</div>
+                    </div>
+                    <button type="button" style={styles.prizeRemoveBtn} onClick={() => {
+                      const next = form.stamp_rewards.filter((_, j) => j !== i)
+                      update('stamp_rewards', next)
+                      if (next.length) {
+                        const final = [...next].sort((a,b)=>Number(a.stamps)-Number(b.stamps)).slice(-1)[0]
+                        update('stamp_goal', final.stamps); update('reward_name', final.reward_name)
+                      }
+                    }}>✕</button>
+                  </div>
+                ))}
+                <div style={styles.prizeForm}>
+                  <div style={styles.row}>
+                    <input style={{...styles.input,width:130}} type="number" min="1" max="500" placeholder="Stamps" value={stampRewardDraft.stamps} onChange={e=>setStampRewardDraft(d=>({...d,stamps:e.target.value}))}/>
+                    <input style={{...styles.input,flex:1}} placeholder="Reward, e.g. Free Drink" value={stampRewardDraft.reward_name} onChange={e=>setStampRewardDraft(d=>({...d,reward_name:e.target.value}))}/>
+                  </div>
+                  {stampRewardError && <div style={styles.error}>{stampRewardError}</div>}
+                  <button type="button" style={styles.addPrizeBtn} onClick={() => {
+                    setStampRewardError('')
+                    const stamps = Number(stampRewardDraft.stamps)
+                    const name = stampRewardDraft.reward_name.trim()
+                    if (!stamps || stamps < 1) return setStampRewardError('Enter a valid stamp milestone')
+                    if (!name) return setStampRewardError('Enter the reward name')
+                    if ((form.stamp_rewards || []).some(r => Number(r.stamps) === stamps)) return setStampRewardError('That stamp milestone already has a reward')
+                    const next = [...(form.stamp_rewards || []), {id:Math.random().toString(16).slice(2,14),stamps,reward_name:name}].sort((a,b)=>Number(a.stamps)-Number(b.stamps))
+                    update('stamp_rewards', next)
+                    const final = next[next.length-1]
+                    update('stamp_goal', final.stamps); update('reward_name', final.reward_name)
+                    setStampRewardDraft({stamps:'',reward_name:''})
+                  }}>+ Add Stamp Reward</button>
+                </div>
               </div>
-              <div style={{ ...styles.fieldGroup, width: 110 }}>
-                <label style={styles.label}>Stamp goal</label>
-                <input
-                  style={styles.input}
-                  type="number"
-                  min={3}
-                  max={20}
-                  value={form.stamp_goal}
-                  onChange={e => update('stamp_goal', e.target.value)}
-                />
+
+              <div style={styles.fieldGroup}>
+                <label style={styles.label}>Stamp rules</label>
+                <label style={{display:'flex',gap:10,alignItems:'center',fontSize:13,fontWeight:700}}>
+                  <input type="checkbox" checked={form.stamp_once_per_day === true} onChange={e=>update('stamp_once_per_day',e.target.checked)}/>
+                  Maximum 1 stamp per customer per day
+                </label>
+                <p style={styles.hint}>When enabled, the backend blocks a second stamp for the same customer until the next day, even from another cashier/device.</p>
+                <label style={{display:'flex',gap:10,alignItems:'center',fontSize:13,fontWeight:700}}>
+                  <input type="checkbox" checked={form.stamp_reset_after_final !== false} onChange={e=>update('stamp_reset_after_final',e.target.checked)}/>
+                  Reset stamps after the final reward is redeemed
+                </label>
               </div>
             </div>
           ) : form.card_type === 'membership' ? (
