@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime, parsedate_to_datetime
 from typing import Optional, List, Literal
 
-from fastapi import FastAPI, HTTPException, Request, Depends, Header
+from fastapi import FastAPI, HTTPException, Request, Depends, Header, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -8476,8 +8476,30 @@ def stamped_today(business_id: int, customer_id: int) -> bool:
         raise HTTPException(status_code=503, detail="Could not verify today's stamp limit. Please try again.")
 
 
+def sync_stamp_wallets_background(customer: dict, business: dict, program: dict,
+                                  reward_unlocked: bool, new_count: int, goal: int):
+    """Refresh Wallet passes after the cashier response, never on its critical path."""
+    try:
+        google_sync = sync_wallet_object(
+            customer, business, program,
+            notify_header="Reward unlocked! 🎉" if reward_unlocked else "Stamp added ⭐",
+            notify_body=("You've unlocked your reward!" if reward_unlocked
+                         else f"{new_count}/{goal} stamps - keep it up!"),
+            notify_message_id=f"stamp-{customer.get('id')}-{new_count}-{int(datetime.utcnow().timestamp())}",
+        )
+    except Exception as e:
+        google_sync = {'status': 'error', 'detail': str(e)}
+        print(f"BACKGROUND GOOGLE WALLET SYNC error: {e}")
+    try:
+        apple_sync = sync_apple_wallet_pass(customer)
+    except Exception as e:
+        apple_sync = {'status': 'error', 'detail': str(e)}
+        print(f"BACKGROUND APPLE WALLET SYNC error: {e}")
+    print(f"STAMP BACKGROUND WALLET RESULT: google={google_sync} apple={apple_sync}")
+
+
 @app.post("/api/v1/business/{public_id}/stamp")
-async def add_stamp(public_id: str, req: StampRequest, authorization: str = Header(default="")):
+async def add_stamp(public_id: str, req: StampRequest, background_tasks: BackgroundTasks, authorization: str = Header(default="")):
     print(f"STAMP REQUEST: business={public_id}, customer={req.customer_public_id}")
 
     business = safe_get_business(public_id)
@@ -8595,14 +8617,6 @@ async def add_stamp(public_id: str, req: StampRequest, authorization: str = Head
 
     print(f"STAMP DB: customer={persisted.get('public_id')} count={new_count}/{goal} persisted")
 
-    google_sync = sync_wallet_object(
-        persisted, business, program,
-        notify_header="Reward unlocked! 🎉" if reward_unlocked else "Stamp added ⭐",
-        notify_body=("You've unlocked your reward!" if reward_unlocked
-                     else f"{new_count}/{goal} stamps - keep it up!"),
-        notify_message_id=f"stamp-{customer.get('id')}-{new_count}-{int(datetime.utcnow().timestamp())}",
-    )
-    apple_sync = sync_apple_wallet_pass(persisted)
 
     try:
         log_stamp_event(
@@ -8616,7 +8630,14 @@ async def add_stamp(public_id: str, req: StampRequest, authorization: str = Head
         # transaction successful, but make the analytics failure visible in logs.
         print(f"STAMP EVENT LOG error: {e}")
 
-    print(f"STAMP WALLET RESULT: google={google_sync} apple={apple_sync}")
+    # The database balance and stamp event are already committed here.
+    # Queue Wallet refresh only now, so Google/APNs latency cannot delay cashier confirmation.
+    background_tasks.add_task(
+        sync_stamp_wallets_background,
+        dict(persisted), dict(business), dict(program or {}),
+        reward_unlocked, new_count, goal,
+    )
+    print(f"STAMP FAST RESPONSE: customer={persisted.get('public_id')} count={new_count}/{goal}; wallet sync queued")
 
     return {
         "message": "Stamp added!",
@@ -8626,13 +8647,7 @@ async def add_stamp(public_id: str, req: StampRequest, authorization: str = Head
         "available_rewards": get_available_stamp_rewards(persisted, program),
         "stamp_once_per_day": bool((program or {}).get('stamp_once_per_day')),
         "active_coupon": safe_get_active_coupon(customer.get('id')),
-        # Backward-compatible extra diagnostics: current frontends can ignore
-        # this, while Render logs/API testing can immediately show where a pass
-        # update failed instead of making every failure look like success.
-        "wallet_sync": {
-            "google": google_sync,
-            "apple": apple_sync,
-        },
+        "wallet_sync": {"status": "queued"},
     }
 
 

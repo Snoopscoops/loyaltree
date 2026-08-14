@@ -273,17 +273,18 @@ function CashierApp({ API_BASE }) {
       setMessage('Missing info - scan again')
       return
     }
+    // Never change the visible stamp count until the backend confirms success.
+    // This avoids a confusing temporary +1 when daily-limit/security validation rejects it.
+    if (loading) return
+
     setLoading(true)
-    setMessage('Adding stamp...')
+    setMessage('Saving stamp...')
 
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/stamp`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          // Preferred: session token from verify-pin, so the PIN itself
-          // never has to be resent. Falls back to sending the raw PIN in
-          // the body only if the backend hasn't issued a token yet.
           ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
         body: JSON.stringify({
@@ -293,32 +294,35 @@ function CashierApp({ API_BASE }) {
         })
       })
 
-      const data = await res.json()
+      const data = await res.json().catch(() => ({}))
 
       if (res.ok) {
-        let msg = `✅ Stamp added! ${customerData.name} now has ${data.stamp_count} stamps`
-        if (Array.isArray(data.newly_reached_rewards) && data.newly_reached_rewards.length) {
-          msg += ` 🎉 ${data.newly_reached_rewards.map(r => r.reward_name).join(', ')} unlocked!`
-        } else if (data.reward_unlocked) {
-          msg += ' 🎉 REWARD AVAILABLE!'
-        }
-        if (data.warning) {
-          msg += ` (${data.warning})`
-        }
-        setMessage(msg)
+        // Only a confirmed database success is allowed to change the displayed count.
         setCustomerData(prev => prev ? {
           ...prev,
           stamp_count: data.stamp_count,
           reward_unlocked: !!data.reward_unlocked,
           active_coupon: data.active_coupon !== undefined ? data.active_coupon : prev.active_coupon,
         } : prev)
+
+        let msg = `✅ Stamp added! ${customerData.name} now has ${data.stamp_count} stamps`
+        if (Array.isArray(data.newly_reached_rewards) && data.newly_reached_rewards.length) {
+          msg += ` 🎉 ${data.newly_reached_rewards.map(r => r.reward_name).join(', ')} unlocked!`
+        } else if (data.reward_unlocked) {
+          msg += ' 🎉 REWARD AVAILABLE!'
+        }
+        if (data.warning) msg += ` (${data.warning})`
+        setMessage(msg)
       } else {
-        setMessage(`❌ Failed: ${data.detail || 'Unknown error'}`)
+        // Count remains unchanged for daily-limit, expired-session, authorization,
+        // or any other backend rejection.
+        setMessage(`⚠️ Stamp not added: ${data.detail || 'Please try again'}`)
       }
     } catch (err) {
-      setMessage('❌ Network error - stamp not added')
+      setMessage('❌ Network error - stamp was not added')
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
   }
 
   const adjustStamp = async (delta) => {
