@@ -235,7 +235,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
 
   const cardSetUp = !!program?.google_wallet_class_id
-  const cashierSetUp = staff.some(s => (s.role || 'cashier').toLowerCase() === 'cashier')
+  const cashierSetUp = staff.some(member => String(member?.role || '').toLowerCase() === 'cashier')
 
   useEffect(() => {
     if (announcementsCheckedKey) setAnnouncementsChecked(localStorage.getItem(announcementsCheckedKey) === '1')
@@ -1077,7 +1077,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 : `⏰ Renews in ${subscription.days_left}d — Pay now`}
             </button>
           )}
-          <button onClick={() => { setOnboardingStep(!cardSetUp ? 0 : !cashierSetUp ? 1 : 2); setShowOnboarding(true); if (isTablet || isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>🎓 Setup Guide</button>
+          <button onClick={() => { setOnboardingStep(0); setShowOnboarding(true); if (isTablet || isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>🎓 Setup Guide</button>
           <button onClick={() => { setShowAnnouncements(true); markAnnouncementsChecked(); if (isTablet || isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>📢 Announcements</button>
           <button onClick={() => { markAnalyticsChecked(); navigate('/analytics'); if (isTablet || isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>📊 Analytics</button>
           {(isTablet || isMobile) && (
@@ -2377,10 +2377,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         const totalSteps = 4
         const safeStep = Math.min(onboardingStep, totalSteps - 1)
 
-        const goNextAfterCard = async () => {
-          await loadData()
-          // If this business already has a cashier, do not force the
-          // Create Cashier tutorial step again.
+        const goNextAfterCard = () => {
+          loadData()
           setOnboardingStep(cashierSetUp ? 2 : 1)
         }
 
@@ -2434,7 +2432,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     </div>
                     <h2 style={{margin: '5px 0 0', fontSize: 24, color: '#0f172a'}}>
                       {safeStep === 0
-                        ? 'Choose and configure your card'
+                        ? `Welcome ${business?.name || user?.business_name || ''}! Let’s build your loyalty card`
                         : safeStep === 1
                         ? 'Create your cashier'
                         : safeStep === 2
@@ -2470,7 +2468,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 {safeStep === 0 && (
                   <div>
                     <p style={{margin: '0 0 16px', color: '#64748b', fontSize: 14, lineHeight: 1.55}}>
-                      Select the card your business will use, complete its settings, then save it. You will stay inside this setup guide.
+                      Welcome to LoyaltyTree! We’ll guide you one question at a time. First choose the kind of loyalty card your business needs, then we’ll help you name, describe, configure and design it.
                     </p>
                     <div style={{
                       background: 'white',
@@ -2494,38 +2492,33 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                           API_BASE={API_BASE}
                           user={user}
                           onSaved={goNextAfterCard}
+                          guided
                         />
                       </div>
                     </div>
                   </div>
                 )}
 
-                {safeStep === 1 && cashierSetUp && (
-                  <div style={{
-                    background: 'white',
-                    border: '1px solid #e2e8f0',
-                    borderRadius: 18,
-                    padding: 24,
-                    textAlign: 'center',
-                  }}>
-                    <div style={{fontSize: 42, marginBottom: 10}}>✅</div>
-                    <h3 style={{margin: '0 0 8px', color: '#0f172a'}}>Cashier already set up</h3>
-                    <p style={{margin: '0 0 18px', color: '#64748b', fontSize: 14, lineHeight: 1.55}}>
-                      This business already has a cashier account, so you do not need to create another one.
-                    </p>
-                    <button type="button" onClick={() => setOnboardingStep(2)} style={{...styles.submitBtn, width: '100%'}}>
-                      Continue to Join QR
-                    </button>
-                  </div>
-                )}
-
-                {safeStep === 1 && !cashierSetUp && (
+                {safeStep === 1 && (
                   <div style={{
                     background: 'white',
                     border: '1px solid #e2e8f0',
                     borderRadius: 18,
                     padding: 22,
                   }}>
+                    {cashierSetUp ? (
+                      <div style={{textAlign:'center', padding:'12px 4px'}}>
+                        <div style={{fontSize:46, marginBottom:8}}>✅</div>
+                        <h3 style={{margin:'0 0 8px', color:'#0f172a'}}>Cashier already set up</h3>
+                        <p style={{margin:'0 auto 18px', maxWidth:420, color:'#64748b', fontSize:14, lineHeight:1.55}}>
+                          We found an existing cashier for {business?.name || user?.business_name || 'your business'}, so you do not need to create another one.
+                        </p>
+                        <button type="button" style={{...styles.submitBtn,width:'100%'}} onClick={() => setOnboardingStep(2)}>
+                          Continue to Join QR →
+                        </button>
+                      </div>
+                    ) : (
+                      <>
                     <p style={{margin: '0 0 18px', color: '#64748b', fontSize: 14, lineHeight: 1.55}}>
                       Create the cashier account that will scan customer cards and record visits, stamps, points, or sessions.
                     </p>
@@ -2591,6 +2584,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                         Create Cashier and Continue
                       </button>
                     </form>
+                      </>
+                    )}
                   </div>
                 )}
 

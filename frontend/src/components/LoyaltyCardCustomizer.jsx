@@ -10,7 +10,7 @@ const DESCRIPTION_LIMIT = 140
 // onSaved is optional - call it (e.g. your existing loadData) to refresh any
 // parent state that depends on the program, such as OwnerDashboard's
 // `program` used for the customer card preview modal.
-function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
+function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
   const [form, setForm] = useState({
     card_type: 'stamp', // 'stamp' | 'points' | 'membership' | 'multipass' | 'vip' - one active card at a time
     card_name: '',
@@ -69,6 +69,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
   // saved program yet) lands on 'picker'. Owners can still get back to
   // the picker any time via the "Change card type" button in the form.
   const [step, setStep] = useState('picker')
+  const [guidedStep, setGuidedStep] = useState(0)
+  const [guidedError, setGuidedError] = useState('')
 
   // New-prize draft form (points card)
   const [prizeDraft, setPrizeDraft] = useState({ name: '', points_cost: '', description: '' })
@@ -127,7 +129,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
         setWalletClassId(data.google_wallet_class_id || null)
         // Already chose a card type (at onboarding or a previous edit) -
         // skip straight to the editor instead of making them re-pick.
-        if (data.is_configured) setStep('form')
+        if (data.is_configured && !guided) setStep('form')
       } else {
         setError(data.detail || 'Failed to load your card settings')
       }
@@ -355,6 +357,289 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
     : walletPreset === 'premium'
     ? `linear-gradient(135deg,#050505 0%,${previewPrimary} 135%)`
     : `linear-gradient(135deg,${previewPrimary} 0%,${previewSecondary} 100%)`
+
+  const guidedCardLabel = form.card_type === 'points'
+    ? 'Points Card'
+    : form.card_type === 'membership'
+    ? 'Membership Card'
+    : form.card_type === 'vip'
+    ? 'VIP Card'
+    : form.card_type === 'multipass'
+    ? 'Multi-Pass'
+    : 'Stamp Card'
+
+  const guidedNext = () => {
+    setGuidedError('')
+    if (guidedStep === 1 && !String(form.card_name || '').trim()) {
+      setGuidedError('Give your card a name before continuing.')
+      return
+    }
+    if (guidedStep === 2 && !String(form.description || '').trim()) {
+      setGuidedError('Add a short card description before continuing.')
+      return
+    }
+    setGuidedStep(s => Math.min(6, s + 1))
+  }
+
+  const guidedBack = () => {
+    setGuidedError('')
+    setGuidedStep(s => Math.max(0, s - 1))
+  }
+
+  const guidedPublish = async () => {
+    setGuidedError('')
+    try {
+      await handlePublish({ preventDefault: () => {} })
+    } catch (err) {
+      setGuidedError(err?.message || 'Could not publish your card.')
+    }
+  }
+
+  if (guided) {
+    const businessName = user?.business_name || 'your business'
+    const guidedTitles = [
+      'Choose your card type',
+      'What’s your card name?',
+      'What should customers know about it?',
+      `Set up your ${guidedCardLabel}`,
+      'Choose your card colors',
+      'Add your branding',
+      'Review and publish',
+    ]
+
+    return (
+      <div style={{...styles.page, maxWidth:920, margin:'0 auto'}}>
+        <div style={{marginBottom:18}}>
+          <div style={{fontSize:12,fontWeight:850,color:'#0d9488',textTransform:'uppercase',letterSpacing:.7}}>
+            Card setup · {guidedStep + 1} of 7
+          </div>
+          <h2 style={{...styles.title,margin:'5px 0 5px'}}>{guidedTitles[guidedStep]}</h2>
+          <div style={{display:'flex',gap:5,marginTop:10}}>
+            {Array.from({length:7}).map((_,i)=><span key={i} style={{
+              height:7,flex:1,borderRadius:99,background:i<=guidedStep?'#0d9488':'#e2e8f0'
+            }}/>)}
+          </div>
+        </div>
+
+        {guidedError && <div style={{...styles.error,marginBottom:14}}>{guidedError}</div>}
+        {error && <div style={{...styles.error,marginBottom:14}}>{error}</div>}
+
+        <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:18,padding:22}}>
+          {guidedStep === 0 && (
+            <>
+              <p style={{margin:'0 0 18px',color:'#64748b',lineHeight:1.6}}>
+                Welcome <b>{businessName}</b> to LoyaltyTree! First, choose how you want customers to earn or use benefits.
+              </p>
+              <div style={{...styles.pickerGrid,marginBottom:0}}>
+                {[
+                  ['stamp','🎟️','Stamp Card','Customers collect stamps and unlock rewards at milestones.'],
+                  ['points','💎','Points Card','Customers earn points from spending and redeem them for prizes.'],
+                  ['membership','🏋️','Membership Card','For active memberships, subscriptions, access and benefits.'],
+                  ['vip','👑','VIP Card','Customers build VIP status and automatically move through tiers.'],
+                  ['multipass','🎫','Multi-Pass','Customers receive a fixed number of sessions or visits that count down.'],
+                ].map(([type,icon,label,desc])=>(
+                  <button key={type} type="button" onClick={()=>update('card_type',type)}
+                    style={{...styles.pickerCard,...(form.card_type===type?{borderColor:'#0d9488',background:'#f0fdfa',boxShadow:'0 0 0 2px rgba(13,148,136,.08)'}:{})}}>
+                    <span style={styles.pickerCardIcon}>{icon}</span>
+                    <span style={styles.pickerCardLabel}>{label}</span>
+                    <span style={styles.pickerCardDesc}>{desc}</span>
+                    {form.card_type===type && <span style={styles.pickerCardBadge}>Selected</span>}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+
+          {guidedStep === 1 && (
+            <>
+              <p style={{margin:'0 0 16px',color:'#64748b',lineHeight:1.6}}>
+                Your business name is <b>{businessName}</b>, but your loyalty card can have its own name.
+                For example, a business called “JUS Beverage Manufacturing” could call its card “JUS Rewards”.
+              </p>
+              <label style={styles.label}>Card name</label>
+              <input autoFocus style={{...styles.input,fontSize:17,padding:'14px 15px'}}
+                value={form.card_name} onChange={e=>update('card_name',e.target.value)}
+                placeholder={`${businessName} Rewards`} maxLength={80}/>
+              <p style={styles.hint}>This will be the main title customers see on their digital card.</p>
+            </>
+          )}
+
+          {guidedStep === 2 && (
+            <>
+              <p style={{margin:'0 0 16px',color:'#64748b',lineHeight:1.6}}>
+                Now add a short description. Tell customers what this card is for or what they can look forward to.
+              </p>
+              <label style={styles.label}>Card description</label>
+              <textarea autoFocus style={{...styles.textarea,fontSize:15}} rows={4}
+                value={form.description} maxLength={DESCRIPTION_LIMIT}
+                onChange={e=>update('description',e.target.value)}
+                placeholder={form.card_type==='membership'
+                  ? 'Monthly membership with access and exclusive member benefits.'
+                  : form.card_type==='multipass'
+                  ? 'Use your sessions whenever you visit.'
+                  : 'Earn rewards every time you visit.'}/>
+              <p style={styles.hint}>{form.description.length}/{DESCRIPTION_LIMIT} characters</p>
+            </>
+          )}
+
+          {guidedStep === 3 && (
+            <>
+              <p style={{margin:'0 0 18px',color:'#64748b',lineHeight:1.6}}>
+                Great. Now let’s set the basic rules for your <b>{guidedCardLabel}</b>.
+              </p>
+
+              {form.card_type==='stamp' && <>
+                <label style={styles.label}>Final stamp goal</label>
+                <input style={styles.input} type="number" min="2" max="500" value={form.stamp_goal}
+                  onChange={e=>{
+                    const goal=Number(e.target.value)||8
+                    update('stamp_goal',goal)
+                    const rewards=[...(form.stamp_rewards||[])]
+                    if (rewards.length) {
+                      const last=[...rewards].sort((a,b)=>Number(a.stamps)-Number(b.stamps)).slice(-1)[0]
+                      last.stamps=goal
+                      update('stamp_rewards',rewards)
+                    }
+                  }}/>
+                <label style={{...styles.label,marginTop:14}}>Final reward</label>
+                <input style={styles.input} value={form.reward_name} onChange={e=>{
+                  update('reward_name',e.target.value)
+                  const rewards=[...(form.stamp_rewards||[])]
+                  if (rewards.length) {
+                    const max=Math.max(...rewards.map(r=>Number(r.stamps)||0))
+                    update('stamp_rewards',rewards.map(r=>Number(r.stamps)===max?{...r,reward_name:e.target.value}:r))
+                  }
+                }} placeholder="e.g. Free Drink"/>
+                <label style={{display:'flex',gap:10,alignItems:'center',marginTop:16,fontSize:13,fontWeight:700}}>
+                  <input type="checkbox" checked={form.stamp_once_per_day===true} onChange={e=>update('stamp_once_per_day',e.target.checked)}/>
+                  Limit each customer to 1 stamp per day
+                </label>
+              </>}
+
+              {form.card_type==='points' && <>
+                <label style={styles.label}>How customers earn points</label>
+                <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                  <span>Earn</span>
+                  <input style={{...styles.input,width:95}} type="number" min="1" value={form.points_per_amount} onChange={e=>update('points_per_amount',e.target.value)}/>
+                  <span>points for every ₱</span>
+                  <input style={{...styles.input,width:110}} type="number" min="1" value={form.points_amount_pesos} onChange={e=>update('points_amount_pesos',e.target.value)}/>
+                  <span>spent</span>
+                </div>
+                <p style={styles.hint}>You can add the full prize catalog later from Edit Card.</p>
+              </>}
+
+              {form.card_type==='membership' && <>
+                <label style={styles.label}>Default membership duration</label>
+                <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                  <input style={{...styles.input,width:130}} type="number" min="1" max="3650" value={form.membership_duration_days} onChange={e=>update('membership_duration_days',e.target.value)}/>
+                  <span>days</span>
+                </div>
+                <label style={{...styles.label,marginTop:14}}>Default membership price</label>
+                <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                  <span>₱</span>
+                  <input style={{...styles.input,width:160}} type="number" min="0" step="any" value={form.membership_price} onChange={e=>update('membership_price',e.target.value)}/>
+                </div>
+              </>}
+
+              {form.card_type==='vip' && <>
+                <label style={styles.label}>VIP earning rule</label>
+                <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                  <span>Earn</span>
+                  <input style={{...styles.input,width:95}} type="number" min="1" value={form.vip_points_per_amount} onChange={e=>update('vip_points_per_amount',e.target.value)}/>
+                  <span>VIP points for every ₱</span>
+                  <input style={{...styles.input,width:110}} type="number" min="1" value={form.vip_amount_pesos} onChange={e=>update('vip_amount_pesos',e.target.value)}/>
+                  <span>spent</span>
+                </div>
+                <p style={styles.hint}>Starter Bronze, Silver and Gold tiers are already prepared. You can customize every tier later.</p>
+              </>}
+
+              {form.card_type==='multipass' && <>
+                <label style={styles.label}>Sessions / visits per pass</label>
+                <input style={{...styles.input,width:150}} type="number" min="2" max="200" value={form.multipass_session_count} onChange={e=>update('multipass_session_count',e.target.value)}/>
+                <label style={{...styles.label,marginTop:14}}>Pass validity</label>
+                <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                  <input style={{...styles.input,width:150}} type="number" min="1" value={form.multipass_validity_days} onChange={e=>update('multipass_validity_days',e.target.value)}/>
+                  <span>days</span>
+                </div>
+              </>}
+            </>
+          )}
+
+          {guidedStep === 4 && (
+            <>
+              <p style={{margin:'0 0 18px',color:'#64748b',lineHeight:1.6}}>
+                Pick the main color customers will associate with your card. You can fine-tune the Wallet style later.
+              </p>
+              <label style={styles.label}>Primary color</label>
+              <div style={{display:'flex',gap:12,alignItems:'center'}}>
+                <input type="color" value={form.primary_color || '#0d9488'} onChange={e=>update('primary_color',e.target.value)}
+                  style={{width:58,height:48,border:'1px solid #cbd5e1',borderRadius:10,padding:4,background:'#fff'}}/>
+                <input style={{...styles.input,maxWidth:180}} value={form.primary_color || '#0d9488'} onChange={e=>update('primary_color',e.target.value)}/>
+              </div>
+              <div style={{marginTop:18,borderRadius:16,padding:20,color:'#fff',background:`linear-gradient(135deg,${form.primary_color || '#0d9488'},${form.wallet_secondary_color || '#14b8a6'})`}}>
+                <div style={{fontSize:12,opacity:.85}}>{businessName}</div>
+                <div style={{fontSize:22,fontWeight:850,marginTop:4}}>{form.card_name || `${businessName} Rewards`}</div>
+                <div style={{fontSize:13,opacity:.9,marginTop:22}}>{guidedCardLabel}</div>
+              </div>
+            </>
+          )}
+
+          {guidedStep === 5 && (
+            <>
+              <p style={{margin:'0 0 18px',color:'#64748b',lineHeight:1.6}}>
+                Add your logo and optional background image. You can skip either one and add it later from Edit Card.
+              </p>
+              <label style={styles.label}>Business / card logo</label>
+              <input type="file" accept="image/*" onChange={e=>uploadImage('program_logo_url',e.target.files?.[0])}/>
+              {imageUpload.program_logo_url.uploading && <p style={styles.hint}>Uploading logo…</p>}
+              {form.program_logo_url && <img src={form.program_logo_url} alt="Logo preview" style={{width:72,height:72,objectFit:'cover',borderRadius:14,marginTop:10,border:'1px solid #e2e8f0'}}/>}
+              <div style={{height:18}}/>
+              <label style={styles.label}>Card background / hero image <span style={{fontWeight:500,color:'#94a3b8'}}>(optional)</span></label>
+              <input type="file" accept="image/*" onChange={e=>uploadImage('hero_image_url',e.target.files?.[0])}/>
+              {imageUpload.hero_image_url.uploading && <p style={styles.hint}>Uploading image…</p>}
+              {form.hero_image_url && <img src={form.hero_image_url} alt="Background preview" style={{width:'100%',maxWidth:360,height:130,objectFit:'cover',borderRadius:14,marginTop:10,border:'1px solid #e2e8f0'}}/>}
+            </>
+          )}
+
+          {guidedStep === 6 && (
+            <>
+              <p style={{margin:'0 0 18px',color:'#64748b',lineHeight:1.6}}>
+                Here’s what we’ll publish. You can change any advanced setting later from <b>Edit Card</b>.
+              </p>
+              <div style={{display:'grid',gap:10}}>
+                <div style={{padding:13,borderRadius:12,background:'#f8fafc'}}><b>Card type:</b> {guidedCardLabel}</div>
+                <div style={{padding:13,borderRadius:12,background:'#f8fafc'}}><b>Card name:</b> {form.card_name || `${businessName} Rewards`}</div>
+                <div style={{padding:13,borderRadius:12,background:'#f8fafc'}}><b>Description:</b> {form.description || '—'}</div>
+                <div style={{padding:13,borderRadius:12,background:'#f8fafc',display:'flex',alignItems:'center',gap:9}}>
+                  <b>Color:</b><span style={{width:22,height:22,borderRadius:6,background:form.primary_color,border:'1px solid #cbd5e1'}}/> {form.primary_color}
+                </div>
+              </div>
+              <div style={{marginTop:18,padding:14,borderRadius:12,background:'#f0fdfa',border:'1px solid #99f6e4',color:'#0f766e',fontSize:13,lineHeight:1.55}}>
+                Publishing saves your card settings and prepares the Wallet card configuration. After this, LoyaltyTree will guide you to cashier and customer QR setup.
+              </div>
+            </>
+          )}
+        </div>
+
+        <div style={{display:'flex',justifyContent:'space-between',gap:10,marginTop:16,flexWrap:'wrap'}}>
+          <button type="button" onClick={guidedBack} disabled={guidedStep===0 || publishing}
+            style={{...styles.typeChangeBtn,padding:'11px 18px',opacity:guidedStep===0?.45:1}}>
+            ← Back
+          </button>
+
+          {guidedStep < 6 ? (
+            <button type="button" onClick={guidedNext} style={{...styles.pickerContinueBtn,margin:0,width:'auto',minWidth:170}}>
+              {guidedStep===0 ? `Choose ${guidedCardLabel} →` : 'Continue →'}
+            </button>
+          ) : (
+            <button type="button" onClick={guidedPublish} disabled={publishing} style={{...styles.publishBtn,flex:'0 1 240px'}}>
+              {publishing ? 'Publishing…' : '✓ Publish Card & Continue'}
+            </button>
+          )}
+        </div>
+      </div>
+    )
+  }
 
   if (step === 'picker') {
     return (
