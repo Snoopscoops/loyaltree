@@ -15180,7 +15180,63 @@ async def apple_list_updated_serials(device_library_identifier: str, pass_type_i
     serials = [r['serial_number'] for r in rows]
     if not serials:
         return Response(status_code=204)
-    return {"serialNumbers": serials, "lastUpdated": datetime.utcnow().isoformat()}
+
+    # Apple expects this endpoint to return ONLY passes that changed after
+    # passesUpdatedSince. Returning every registered serial on every poll makes
+    # Wallet fetch unchanged .pkpass files and produces the device-log warning
+    # "Server requested update ... but the pass was unchanged."
+    since_ts = _parse_ts(passesUpdatedSince)
+    changed_serials = []
+    newest_ts = since_ts
+
+    for serial in serials:
+        try:
+            if serial.startswith('cl-'):
+                customer = safe_get_cl_customer(serial[len('cl-'):])
+                if not customer:
+                    continue
+                business = safe_get_business_by_id(customer.get('business_id'))
+                contract = get_active_contract_for_cl_customer(customer.get('id'))
+                announcement = get_latest_cl_announcement(business.get('id')) if business else None
+                raw_values = [
+                    customer.get('updated_at'),
+                    (contract or {}).get('updated_at'),
+                    (announcement or {}).get('updated_at') or (announcement or {}).get('created_at'),
+                ]
+            else:
+                customer = safe_get_customer(serial)
+                if not customer:
+                    continue
+                business = safe_get_business_by_id(customer.get('business_id'))
+                announcement = get_latest_active_announcement(business.get('id')) if business else None
+                raw_values = [
+                    customer.get('updated_at'),
+                    (announcement or {}).get('updated_at') or (announcement or {}).get('created_at'),
+                ]
+
+            pass_times = [_parse_ts(v) for v in raw_values if v]
+            pass_times = [t for t in pass_times if t]
+            pass_ts = max(pass_times) if pass_times else None
+
+            # No update tag from Wallet means initial sync: return all passes.
+            # Otherwise return only genuinely newer passes. HTTP dates only have
+            # second precision, so compare at second precision too.
+            if since_ts is None or (pass_ts and pass_ts.replace(microsecond=0) > since_ts.replace(microsecond=0)):
+                changed_serials.append(serial)
+            if pass_ts and (newest_ts is None or pass_ts > newest_ts):
+                newest_ts = pass_ts
+        except Exception as e:
+            # A single stale/bad registration must not break updates for every
+            # other pass on the device. Skip it and log for cleanup.
+            print(f"APPLE WALLET update-list skip {serial}: {e}")
+
+    if not changed_serials:
+        return Response(status_code=204)
+
+    # lastUpdated is an opaque update tag to Wallet. ISO UTC is convenient
+    # because this server can parse it on the next passesUpdatedSince request.
+    marker = (newest_ts or datetime.utcnow()).replace(tzinfo=None).isoformat()
+    return {"serialNumbers": changed_serials, "lastUpdated": marker}
 
 @app.get("/api/v1/apple-wallet/v1/passes/{pass_type_identifier}/{serial_number}")
 async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, authorization: Optional[str] = Header(None), if_modified_since: Optional[str] = Header(None, alias="If-Modified-Since")):
@@ -15230,7 +15286,8 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
             last_modified, last_modified_ts = customer.get('updated_at'), customer_ts
 
         since_ts = _parse_ts(if_modified_since)
-        if last_modified_ts and since_ts and last_modified_ts <= since_ts:
+        if (last_modified_ts and since_ts and
+                last_modified_ts.replace(microsecond=0) <= since_ts.replace(microsecond=0)):
             return Response(status_code=304)
 
         pkpass_bytes = build_cl_pkpass_bytes(customer, business, contract, announcement, reminder_text)
@@ -15275,7 +15332,8 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
     # device logs flag it as a web service error when this is skipped and
     # the full (unchanged) pass is sent back every time instead.
     since_ts = _parse_ts(if_modified_since)
-    if last_modified_ts and since_ts and last_modified_ts <= since_ts:
+    if (last_modified_ts and since_ts and
+            last_modified_ts.replace(microsecond=0) <= since_ts.replace(microsecond=0)):
         return Response(status_code=304)
 
     program = safe_get_loyalty_program(business.get('id'))
