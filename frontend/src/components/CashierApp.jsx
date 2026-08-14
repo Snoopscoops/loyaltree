@@ -23,6 +23,17 @@ function getCashierDeviceId() {
 
 const BUSINESS_ICONS={spa:'🌿',salon:'✂️',fitness:'🏋️',restaurant:'🍽️',coffee:'☕',retail:'🛍️',clinic:'🩺',laundry:'🧺',gas_station:'⛽',car_wash:'🚿',pharmacy:'💊',bakery:'🥐',hotel:'🏨',other:'🏪',car_lending:'🚗',cockpit:'🏆'}
 
+
+function transactionKey(action, customerId) {
+  const storageKey = `lt-pending-txn:${action}:${customerId || 'unknown'}`
+  let key = sessionStorage.getItem(storageKey)
+  if (!key) {
+    key = (window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`)
+    sessionStorage.setItem(storageKey, key)
+  }
+  return { key, storageKey }
+}
+
 function CashierApp({ API_BASE }) {
   const location = useLocation()
   const navigate = useNavigate()
@@ -280,11 +291,14 @@ function CashierApp({ API_BASE }) {
     setLoading(true)
     setMessage('Saving stamp...')
 
+    const txn = transactionKey('stamp_add', customerData.public_id)
+
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/stamp`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'X-Idempotency-Key': txn.key,
           ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
         body: JSON.stringify({
@@ -295,6 +309,7 @@ function CashierApp({ API_BASE }) {
       })
 
       const data = await res.json().catch(() => ({}))
+      sessionStorage.removeItem(txn.storageKey)
 
       if (res.ok) {
         // Only a confirmed database success is allowed to change the displayed count.
@@ -372,11 +387,14 @@ function CashierApp({ API_BASE }) {
     setLoading(true)
     setMessage('Adding points...')
 
+    const txn = transactionKey('points_sale', customerData.public_id)
+
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/points-sale`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'X-Idempotency-Key': txn.key,
           ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
         body: JSON.stringify({
@@ -388,6 +406,7 @@ function CashierApp({ API_BASE }) {
       })
 
       const data = await res.json()
+      sessionStorage.removeItem(txn.storageKey)
 
       if (res.ok) {
         setMessage(`✅ +${data.points_earned} points! ${customerData.name} now has ${data.points_balance} points`)
@@ -421,11 +440,14 @@ function CashierApp({ API_BASE }) {
     setLoading(true)
     setMessage('Adding VIP points...')
 
+    const txn = transactionKey('vip_sale', customerData.public_id)
+
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/vip-sale`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'X-Idempotency-Key': txn.key,
           ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
         body: JSON.stringify({
@@ -436,6 +458,7 @@ function CashierApp({ API_BASE }) {
         }),
       })
       const data = await res.json().catch(() => ({}))
+      sessionStorage.removeItem(txn.storageKey)
       if (!res.ok) throw new Error(data.detail || 'VIP sale failed')
 
       setCustomerData(prev => prev ? {
@@ -465,11 +488,14 @@ function CashierApp({ API_BASE }) {
       : window.prompt('Visit or service', customerData.membership_services?.[0] || 'Member check-in')
     if (!customerData.membership_quick_checkin && !serviceName) return
     setLoading(true)
+    const txn = transactionKey('membership_visit', customerData.public_id)
+
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/membership/note`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'X-Idempotency-Key': txn.key,
           ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
         body: JSON.stringify({
@@ -480,6 +506,7 @@ function CashierApp({ API_BASE }) {
         }),
       })
       const data = await res.json().catch(() => ({}))
+      sessionStorage.removeItem(txn.storageKey)
       if (!res.ok) throw new Error(data.detail || 'Could not log visit')
       setMessage(`✅ Visit logged for ${customerData.name}`)
     } catch (err) {
@@ -496,11 +523,14 @@ function CashierApp({ API_BASE }) {
     setLoading(true)
     setMessage('Using session...')
 
+    const txn = transactionKey('multipass_use', customerData.public_id)
+
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/multipass/use`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'X-Idempotency-Key': txn.key,
           ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
         body: JSON.stringify({
@@ -511,6 +541,7 @@ function CashierApp({ API_BASE }) {
       })
 
       const data = await res.json()
+      sessionStorage.removeItem(txn.storageKey)
 
       if (res.ok) {
         let msg = `✅ Session used! ${customerData.name} has ${data.sessions_remaining} sessions left`
@@ -550,11 +581,14 @@ function CashierApp({ API_BASE }) {
     setLoading(true)
     setMessage('Issuing pack...')
 
+    const txn = transactionKey('multipass_issue', customerData.public_id)
+
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/multipass/issue`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'X-Idempotency-Key': txn.key,
           ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
         body: JSON.stringify({
@@ -566,6 +600,7 @@ function CashierApp({ API_BASE }) {
       })
 
       const data = await res.json()
+      sessionStorage.removeItem(txn.storageKey)
 
       if (res.ok) {
         setMessage(`✅ ${data.sessions_remaining}-session pack issued! Valid until ${data.multipass_expires_at}`)
@@ -590,11 +625,14 @@ function CashierApp({ API_BASE }) {
     setLoading(true)
     setMessage('Redeeming...')
 
+    const txn = transactionKey('stamp_reward_redeem', customerData.public_id)
+
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/reward/redeem`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'X-Idempotency-Key': txn.key,
           ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
         body: JSON.stringify({
@@ -630,11 +668,14 @@ function CashierApp({ API_BASE }) {
     setLoading(true)
     setMessage(`Redeeming ${prize.name}...`)
 
+    const txn = transactionKey('points_redeem', customerData.public_id)
+
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/points-redeem`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'X-Idempotency-Key': txn.key,
           ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
         body: JSON.stringify({
@@ -646,6 +687,7 @@ function CashierApp({ API_BASE }) {
       })
 
       const data = await res.json()
+      sessionStorage.removeItem(txn.storageKey)
 
       if (res.ok) {
         setMessage(`🎁 ${data.prize_name} redeemed! ${customerData.name} now has ${data.points_balance} points`)

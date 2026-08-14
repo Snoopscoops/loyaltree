@@ -8476,6 +8476,111 @@ def stamped_today(business_id: int, customer_id: int) -> bool:
         raise HTTPException(status_code=503, detail="Could not verify today's stamp limit. Please try again.")
 
 
+
+def _audit_actor(staff_id=None, as_owner=False):
+    if staff_id:
+        return 'staff'
+    if as_owner:
+        return 'owner'
+    return 'system'
+
+
+def get_completed_idempotent_response(business_id, idempotency_key):
+    """Return a previously completed response for a safe client retry."""
+    key = (idempotency_key or '').strip()
+    if not key:
+        return None
+    try:
+        res = (supabase.table('transaction_audit')
+               .select('status,response_json,transaction_id')
+               .eq('business_id', business_id)
+               .eq('idempotency_key', key)
+               .maybe_single()
+               .execute())
+        row = res.data
+        if not row:
+            return None
+        if row.get('status') == 'success' and row.get('response_json') is not None:
+            payload = dict(row.get('response_json') or {})
+            payload['duplicate_prevented'] = True
+            payload['transaction_id'] = str(row.get('transaction_id') or payload.get('transaction_id') or '')
+            return payload
+        if row.get('status') == 'processing':
+            raise HTTPException(status_code=409, detail="This transaction is already being processed. Please wait.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        # During rollout, do not break loyalty transactions if the migration
+        # has not been run yet; make the missing audit layer obvious in logs.
+        print(f"TRANSACTION AUDIT idempotency lookup warning: {e}")
+    return None
+
+
+def start_transaction_audit(*, business_id, customer_id=None, staff_id=None, branch_id=None,
+                            actor_type='system', action, idempotency_key=None,
+                            delta=None, balance_before=None, reason=None, metadata=None):
+    """Reserve an idempotency key and create the immutable transaction envelope."""
+    key = (idempotency_key or '').strip() or None
+    row = {
+        'business_id': business_id,
+        'customer_id': customer_id,
+        'staff_id': staff_id,
+        'branch_id': branch_id,
+        'actor_type': actor_type,
+        'action': action,
+        'status': 'processing',
+        'idempotency_key': key,
+        'delta': delta,
+        'balance_before': balance_before,
+        'reason': reason,
+        'metadata': metadata or {},
+    }
+    try:
+        res = supabase.table('transaction_audit').insert(row).execute()
+        return (res.data or [None])[0]
+    except Exception as e:
+        # Unique-key collision = retry. Return the completed original if possible.
+        if key:
+            previous = get_completed_idempotent_response(business_id, key)
+            if previous is not None:
+                return {'_duplicate_response': previous}
+        print(f"TRANSACTION AUDIT start warning: {e}")
+        return None
+
+
+def complete_transaction_audit(audit_row, *, balance_after=None, response_json=None, metadata=None):
+    if not audit_row or audit_row.get('_duplicate_response'):
+        return
+    audit_id = audit_row.get('id')
+    if not audit_id:
+        return
+    patch = {
+        'status': 'success',
+        'balance_after': balance_after,
+        'response_json': response_json or {},
+        'completed_at': datetime.utcnow().isoformat(),
+    }
+    if metadata is not None:
+        patch['metadata'] = metadata
+    try:
+        supabase.table('transaction_audit').update(patch).eq('id', audit_id).execute()
+    except Exception as e:
+        print(f"TRANSACTION AUDIT complete warning: {e}")
+
+
+def fail_transaction_audit(audit_row, error):
+    if not audit_row or audit_row.get('_duplicate_response') or not audit_row.get('id'):
+        return
+    try:
+        supabase.table('transaction_audit').update({
+            'status': 'failed',
+            'reason': str(error)[:500],
+            'completed_at': datetime.utcnow().isoformat(),
+        }).eq('id', audit_row.get('id')).execute()
+    except Exception as e:
+        print(f"TRANSACTION AUDIT failure-log warning: {e}")
+
+
 def sync_stamp_wallets_background(customer: dict, business: dict, program: dict,
                                   reward_unlocked: bool, new_count: int, goal: int):
     """Refresh Wallet passes after the cashier response, never on its critical path."""
@@ -8499,7 +8604,7 @@ def sync_stamp_wallets_background(customer: dict, business: dict, program: dict,
 
 
 @app.post("/api/v1/business/{public_id}/stamp")
-async def add_stamp(public_id: str, req: StampRequest, background_tasks: BackgroundTasks, authorization: str = Header(default="")):
+async def add_stamp(public_id: str, req: StampRequest, background_tasks: BackgroundTasks, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
     print(f"STAMP REQUEST: business={public_id}, customer={req.customer_public_id}")
 
     business = safe_get_business(public_id)
@@ -8512,6 +8617,10 @@ async def add_stamp(public_id: str, req: StampRequest, background_tasks: Backgro
 
     if customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
+
+    previous_response = get_completed_idempotent_response(business.get('id'), x_idempotency_key)
+    if previous_response is not None:
+        return previous_response
 
     stamping_staff_id = None
     stamping_branch_id = None
@@ -8551,11 +8660,28 @@ async def add_stamp(public_id: str, req: StampRequest, background_tasks: Backgro
         raise HTTPException(status_code=409, detail="This customer already received a stamp today. One stamp per day is enabled.")
 
     old_count = int(customer.get('stamp_count') or 0)
+    if old_count >= goal:
+        raise HTTPException(status_code=409, detail=f"Maximum stamp milestone reached ({goal}/{goal}). Redeem any available reward; additional normal stamps are disabled.")
     new_count = old_count + 1
     newly_reached = [r for r in rewards if old_count < int(r['stamps']) <= new_count]
     available_rewards = get_available_stamp_rewards({**customer, 'stamp_count': new_count}, program)
     reward_unlocked = bool(available_rewards or newly_reached)
     updated_at = datetime.utcnow().isoformat()
+
+    audit_row = start_transaction_audit(
+        business_id=business.get('id'),
+        customer_id=customer.get('id'),
+        staff_id=stamping_staff_id,
+        branch_id=stamping_branch_id,
+        actor_type=_audit_actor(stamping_staff_id, req.as_owner),
+        action='stamp_add',
+        idempotency_key=x_idempotency_key,
+        delta=1,
+        balance_before=old_count,
+        metadata={'card_type': 'stamp', 'goal': goal},
+    )
+    if audit_row and audit_row.get('_duplicate_response'):
+        return audit_row['_duplicate_response']
 
     # Database first. Wallets must only ever reflect a stamp that was actually
     # persisted; never return a fake success when RLS/schema problems blocked it.
@@ -8639,7 +8765,7 @@ async def add_stamp(public_id: str, req: StampRequest, background_tasks: Backgro
     )
     print(f"STAMP FAST RESPONSE: customer={persisted.get('public_id')} count={new_count}/{goal}; wallet sync queued")
 
-    return {
+    response_payload = {
         "message": "Stamp added!",
         "stamp_count": new_count,
         "reward_unlocked": reward_unlocked,
@@ -8649,6 +8775,10 @@ async def add_stamp(public_id: str, req: StampRequest, background_tasks: Backgro
         "active_coupon": safe_get_active_coupon(customer.get('id')),
         "wallet_sync": {"status": "queued"},
     }
+    if audit_row and audit_row.get('transaction_id'):
+        response_payload["transaction_id"] = str(audit_row.get('transaction_id'))
+    complete_transaction_audit(audit_row, balance_after=new_count, response_json=response_payload)
+    return response_payload
 
 
 
@@ -8718,6 +8848,19 @@ async def adjust_stamp(public_id: str, req: StampAdjustRequest, authorization: s
     except Exception as e:
         print(f"STAMP ADJUSTMENT audit warning: {e}")
 
+    audit_row = start_transaction_audit(
+        business_id=business.get('id'),
+        customer_id=customer.get('id'),
+        staff_id=staff_id,
+        branch_id=branch_id,
+        actor_type=_audit_actor(staff_id, req.as_owner),
+        action='stamp_adjust',
+        delta=actual_delta,
+        balance_before=old_count,
+        reason=(req.reason or 'Cashier correction').strip()[:200],
+        metadata={'card_type': 'stamp'},
+    )
+
     google_sync = sync_wallet_object(
         persisted, business, program,
         notify_header="Stamp balance corrected",
@@ -8725,7 +8868,7 @@ async def adjust_stamp(public_id: str, req: StampAdjustRequest, authorization: s
         notify_message_id=f"stamp-adjust-{customer.get('id')}-{int(datetime.utcnow().timestamp())}",
     )
     apple_sync = sync_apple_wallet_pass(persisted)
-    return {
+    response_payload = {
         'message': 'Stamp balance updated',
         'stamp_count': new_count,
         'delta': actual_delta,
@@ -8733,15 +8876,23 @@ async def adjust_stamp(public_id: str, req: StampAdjustRequest, authorization: s
         'available_rewards': get_available_stamp_rewards(persisted, program),
         'wallet_sync': {'google': google_sync, 'apple': apple_sync},
     }
+    if audit_row and audit_row.get('transaction_id'):
+        response_payload['transaction_id'] = str(audit_row.get('transaction_id'))
+    complete_transaction_audit(audit_row, balance_after=new_count, response_json=response_payload)
+    return response_payload
 
 
 @app.post("/api/v1/business/{public_id}/vip-sale")
-async def add_vip_sale(public_id: str, req: VIPSaleRequest, authorization: str = Header(default="")):
+async def add_vip_sale(public_id: str, req: VIPSaleRequest, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
     business = safe_get_business(public_id)
     if not business: raise HTTPException(status_code=404, detail="Business not found")
     customer = safe_get_customer(req.customer_public_id)
     if not customer or customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
+    
+    previous_response = get_completed_idempotent_response(business.get('id'), x_idempotency_key)
+    if previous_response is not None:
+        return previous_response
     program = safe_get_loyalty_program(business.get('id'))
     if not program or program.get('card_type') != 'vip':
         raise HTTPException(status_code=400, detail="This business is not using a VIP card")
@@ -8759,14 +8910,17 @@ async def add_vip_sale(public_id: str, req: VIPSaleRequest, authorization: str =
     base = float(program.get('vip_amount_pesos') or 100)
     earned = max(0, int((float(req.amount_spent) / base) * rate))
     old_tier=get_vip_tier(customer, program)
-    balance=int(customer.get('vip_points') or 0)+earned
+    old_balance=int(customer.get('vip_points') or 0)
+    balance=old_balance+earned
+    audit_row=start_transaction_audit(business_id=business.get('id'),customer_id=customer.get('id'),staff_id=staff_id,branch_id=branch_id,actor_type=_audit_actor(staff_id,req.as_owner),action='vip_sale',idempotency_key=x_idempotency_key,delta=earned,balance_before=old_balance,metadata={'card_type':'vip','amount_spent':float(req.amount_spent)})
+    if audit_row and audit_row.get('_duplicate_response'): return audit_row['_duplicate_response']
     supabase.table('customers').update({'vip_points':balance,'updated_at':datetime.utcnow().isoformat()}).eq('id',customer.get('id')).execute()
     customer['vip_points']=balance
     new_tier=get_vip_tier(customer, program); next_tier=get_next_vip_tier(customer, program)
     log_vip_event(business.get('id'),customer.get('id'),'sale',earned,balance,req.amount_spent,old_tier.get('name'),new_tier.get('name'),staff_id,branch_id)
     sync_wallet_object(customer,business,program,notify_header='VIP status updated',notify_body=(f"You earned {earned} VIP points. You are now {new_tier.get('name')} VIP."),notify_message_id=f"vip-{customer.get('id')}-{balance}-{int(datetime.utcnow().timestamp())}")
     sync_apple_wallet_pass(customer)
-    return {
+    response_payload = {
         'message': f'{earned} VIP points added',
         'amount_spent': float(req.amount_spent),
         'points_earned': earned,
@@ -8780,6 +8934,10 @@ async def add_vip_sale(public_id: str, req: VIPSaleRequest, authorization: str =
         },
         'active_coupon': safe_get_active_coupon(customer.get('id')),
     }
+    if audit_row and audit_row.get('transaction_id'):
+        response_payload['transaction_id'] = str(audit_row.get('transaction_id'))
+    complete_transaction_audit(audit_row, balance_after=balance, response_json=response_payload)
+    return response_payload
 
 @app.post("/api/v1/business/{public_id}/vip-adjust")
 async def adjust_vip_points(public_id: str, req: VIPAdjustRequest):
@@ -8787,14 +8945,18 @@ async def adjust_vip_points(public_id: str, req: VIPAdjustRequest):
     if not business or not customer or customer.get('business_id') != business.get('id'): raise HTTPException(status_code=404, detail='Customer not found')
     program=safe_get_loyalty_program(business.get('id'))
     if not program or program.get('card_type')!='vip': raise HTTPException(status_code=400, detail='Not a VIP program')
-    old=get_vip_tier(customer,program); balance=max(0,int(customer.get('vip_points') or 0)+req.points_delta)
+    old=get_vip_tier(customer,program); old_balance=int(customer.get('vip_points') or 0); balance=max(0,old_balance+req.points_delta)
+    audit_row=start_transaction_audit(business_id=business.get('id'),customer_id=customer.get('id'),actor_type='owner',action='vip_adjust',delta=balance-old_balance,balance_before=old_balance,reason=req.note,metadata={'card_type':'vip'})
     supabase.table('customers').update({'vip_points':balance,'updated_at':datetime.utcnow().isoformat()}).eq('id',customer.get('id')).execute(); customer['vip_points']=balance
     new=get_vip_tier(customer,program); log_vip_event(business.get('id'),customer.get('id'),'adjustment',req.points_delta,balance,old_tier=old.get('name'),new_tier=new.get('name'),note=req.note)
     sync_wallet_object(customer,business,program); sync_apple_wallet_pass(customer)
-    return {'vip_points':balance,'tier':new,'next_tier':get_next_vip_tier(customer,program)}
+    response_payload={'vip_points':balance,'tier':new,'next_tier':get_next_vip_tier(customer,program)}
+    if audit_row and audit_row.get('transaction_id'): response_payload['transaction_id']=str(audit_row.get('transaction_id'))
+    complete_transaction_audit(audit_row,balance_after=balance,response_json=response_payload)
+    return response_payload
 
 @app.post("/api/v1/business/{public_id}/points-sale")
-async def add_points_sale(public_id: str, req: PointsSaleRequest, authorization: str = Header(default="")):
+async def add_points_sale(public_id: str, req: PointsSaleRequest, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
     """Points-card equivalent of add_stamp: converts a purchase amount into
     points using the program's points_per_amount/points_amount_pesos rate
     and credits the customer's points_balance, then pushes the update to
@@ -8814,6 +8976,10 @@ async def add_points_sale(public_id: str, req: PointsSaleRequest, authorization:
     if customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
 
+    
+    previous_response = get_completed_idempotent_response(business.get('id'), x_idempotency_key)
+    if previous_response is not None:
+        return previous_response
     program = safe_get_loyalty_program(business.get('id'))
     if not program or program.get('card_type') != 'points':
         raise HTTPException(status_code=400, detail="This business is not on a points card - use /stamp instead")
@@ -8827,6 +8993,7 @@ async def add_points_sale(public_id: str, req: PointsSaleRequest, authorization:
 
     if session_claims:
         sale_staff_id = session_claims.get('staff_id')  # None for the owner
+        sale_branch_id = session_claims.get('branch_id')
     elif req.as_owner:
         pass
     else:
@@ -8849,7 +9016,11 @@ async def add_points_sale(public_id: str, req: PointsSaleRequest, authorization:
     if points_earned < 0:
         points_earned = 0
 
-    new_balance = customer.get('points_balance', 0) + points_earned
+    old_balance=int(customer.get('points_balance') or 0)
+    new_balance=old_balance+points_earned
+
+    audit_row=start_transaction_audit(business_id=business.get('id'),customer_id=customer.get('id'),staff_id=sale_staff_id,branch_id=sale_branch_id,actor_type=_audit_actor(sale_staff_id,req.as_owner),action='points_sale',idempotency_key=x_idempotency_key,delta=points_earned,balance_before=old_balance,metadata={'card_type':'points','amount_spent':float(req.amount_spent)})
+    if audit_row and audit_row.get('_duplicate_response'): return audit_row['_duplicate_response']
 
     try:
         update_data = {
@@ -8884,16 +9055,19 @@ async def add_points_sale(public_id: str, req: PointsSaleRequest, authorization:
             )
         raise HTTPException(status_code=500, detail=error_msg)
 
-    return {
+    response_payload = {
         "message": f"{points_earned} points added!",
         "amount_spent": req.amount_spent,
         "points_earned": points_earned,
         "points_balance": new_balance,
         "active_coupon": safe_get_active_coupon(customer.get('id')),
     }
+    if audit_row and audit_row.get('transaction_id'): response_payload['transaction_id']=str(audit_row.get('transaction_id'))
+    complete_transaction_audit(audit_row,balance_after=new_balance,response_json=response_payload)
+    return response_payload
 
 @app.post("/api/v1/business/{public_id}/points-redeem")
-async def redeem_points_prize(public_id: str, req: PointsRedeemRequest, authorization: str = Header(default="")):
+async def redeem_points_prize(public_id: str, req: PointsRedeemRequest, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
     """Points-card equivalent of /reward/redeem: deducts a prize's
     points_cost from the customer's points_balance instead of resetting a
     stamp count. Same staff-session / owner / legacy-PIN auth pattern as
@@ -8909,6 +9083,10 @@ async def redeem_points_prize(public_id: str, req: PointsRedeemRequest, authoriz
     if customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
 
+    
+    previous_response = get_completed_idempotent_response(business.get('id'), x_idempotency_key)
+    if previous_response is not None:
+        return previous_response
     program = safe_get_loyalty_program(business.get('id'))
     if not program or program.get('card_type') != 'points':
         raise HTTPException(status_code=400, detail="This business is not on a points card")
@@ -8929,6 +9107,7 @@ async def redeem_points_prize(public_id: str, req: PointsRedeemRequest, authoriz
 
     if session_claims:
         redeeming_staff_id = session_claims.get('staff_id')
+        redeeming_branch_id = session_claims.get('branch_id')
     elif req.as_owner:
         pass
     else:
@@ -8944,6 +9123,9 @@ async def redeem_points_prize(public_id: str, req: PointsRedeemRequest, authoriz
             raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
+
+    audit_row=start_transaction_audit(business_id=business.get('id'),customer_id=customer.get('id'),staff_id=redeeming_staff_id,branch_id=redeeming_branch_id,actor_type=_audit_actor(redeeming_staff_id,req.as_owner),action='points_redeem',idempotency_key=x_idempotency_key,delta=-int(prize_cost),balance_before=int(current_balance),metadata={'card_type':'points','prize_name':prize.get('name')})
+    if audit_row and audit_row.get('_duplicate_response'): return audit_row['_duplicate_response']
 
     try:
         new_balance = current_balance - prize_cost
@@ -8966,16 +9148,19 @@ async def redeem_points_prize(public_id: str, req: PointsRedeemRequest, authoriz
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    return {
+    response_payload = {
         "message": f"{prize.get('name', 'Prize')} redeemed!",
         "success": True,
         "prize_name": prize.get('name'),
         "points_spent": prize_cost,
         "points_balance": new_balance,
     }
+    if audit_row and audit_row.get('transaction_id'): response_payload['transaction_id']=str(audit_row.get('transaction_id'))
+    complete_transaction_audit(audit_row,balance_after=new_balance,response_json=response_payload)
+    return response_payload
 
 @app.post("/api/v1/business/{public_id}/multipass/issue")
-async def issue_multipass(public_id: str, req: MultipassIssueRequest, authorization: str = Header(default="")):
+async def issue_multipass(public_id: str, req: MultipassIssueRequest, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
     """Multipass-card equivalent of the customer's first stamp: issues a
     fresh session pack, e.g. 12 sessions sold at the price of 10. Called
     whenever a customer buys a pack - their first one, or a renewal once
@@ -8995,6 +9180,10 @@ async def issue_multipass(public_id: str, req: MultipassIssueRequest, authorizat
     if customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
 
+    
+    previous_response = get_completed_idempotent_response(business.get('id'), x_idempotency_key)
+    if previous_response is not None:
+        return previous_response
     program = safe_get_loyalty_program(business.get('id'))
     if not program or program.get('card_type') != 'multipass':
         raise HTTPException(status_code=400, detail="This business is not on a multi-pass card")
@@ -9007,6 +9196,7 @@ async def issue_multipass(public_id: str, req: MultipassIssueRequest, authorizat
 
     if session_claims:
         issuing_staff_id = session_claims.get('staff_id')
+        issuing_branch_id = session_claims.get('branch_id')
     elif req.as_owner:
         pass
     else:
@@ -9024,6 +9214,9 @@ async def issue_multipass(public_id: str, req: MultipassIssueRequest, authorizat
             raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
 
     session_count = req.session_count or program.get('multipass_session_count', 12)
+    old_remaining=int(customer.get('multipass_sessions_remaining') or 0)
+    audit_row=start_transaction_audit(business_id=business.get('id'),customer_id=customer.get('id'),staff_id=issuing_staff_id,branch_id=issuing_branch_id,actor_type=_audit_actor(issuing_staff_id,req.as_owner),action='multipass_issue',idempotency_key=x_idempotency_key,delta=int(session_count)-old_remaining,balance_before=old_remaining,metadata={'card_type':'multipass'})
+    if audit_row and audit_row.get('_duplicate_response'): return audit_row['_duplicate_response']
     validity_days = program.get('multipass_validity_days', 90)
     expires_at = (datetime.utcnow() + timedelta(days=validity_days)).date().isoformat()
 
@@ -9063,15 +9256,18 @@ async def issue_multipass(public_id: str, req: MultipassIssueRequest, authorizat
             )
         raise HTTPException(status_code=500, detail=error_msg)
 
-    return {
+    response_payload = {
         "message": f"{session_count}-session pass issued!",
         "sessions_remaining": session_count,
         "sessions_total": session_count,
         "multipass_expires_at": expires_at,
     }
+    if audit_row and audit_row.get('transaction_id'): response_payload['transaction_id']=str(audit_row.get('transaction_id'))
+    complete_transaction_audit(audit_row,balance_after=session_count,response_json=response_payload)
+    return response_payload
 
 @app.post("/api/v1/business/{public_id}/multipass/use")
-async def use_multipass_session(public_id: str, req: MultipassUseRequest, authorization: str = Header(default="")):
+async def use_multipass_session(public_id: str, req: MultipassUseRequest, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
     """Multipass-card equivalent of /stamp: burns one session off the
     customer's current pack (e.g. checking off one of their 12 tooth-cleaning
     visits). Refuses if the pack is exhausted or has expired - the cashier
@@ -9089,6 +9285,10 @@ async def use_multipass_session(public_id: str, req: MultipassUseRequest, author
     if customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
 
+    
+    previous_response = get_completed_idempotent_response(business.get('id'), x_idempotency_key)
+    if previous_response is not None:
+        return previous_response
     program = safe_get_loyalty_program(business.get('id'))
     if not program or program.get('card_type') != 'multipass':
         raise HTTPException(status_code=400, detail="This business is not on a multi-pass card")
@@ -9126,6 +9326,8 @@ async def use_multipass_session(public_id: str, req: MultipassUseRequest, author
             raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
 
     new_remaining = sessions_remaining - 1
+    audit_row=start_transaction_audit(business_id=business.get('id'),customer_id=customer.get('id'),staff_id=using_staff_id,branch_id=using_branch_id,actor_type=_audit_actor(using_staff_id,req.as_owner),action='multipass_use',idempotency_key=x_idempotency_key,delta=-1,balance_before=int(sessions_remaining),metadata={'card_type':'multipass'})
+    if audit_row and audit_row.get('_duplicate_response'): return audit_row['_duplicate_response']
 
     try:
         supabase.table("customers").update({
@@ -9145,12 +9347,15 @@ async def use_multipass_session(public_id: str, req: MultipassUseRequest, author
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    return {
+    response_payload = {
         "message": "Session used!",
         "sessions_remaining": new_remaining,
         "sessions_total": customer.get('multipass_total_sessions', 0),
         "active_coupon": safe_get_active_coupon(customer.get('id')),
     }
+    if audit_row and audit_row.get('transaction_id'): response_payload['transaction_id']=str(audit_row.get('transaction_id'))
+    complete_transaction_audit(audit_row,balance_after=new_remaining,response_json=response_payload)
+    return response_payload
 
 
 @app.post("/api/v1/business/{public_id}/membership/action")
@@ -9403,7 +9608,7 @@ async def get_membership_history(public_id: str, customer_public_id: str):
 # this is just the record-keeping backbone.
 
 @app.post("/api/v1/business/{public_id}/membership/note")
-async def add_membership_note(public_id: str, req: MembershipNoteRequest, authorization: str = Header(default="")):
+async def add_membership_note(public_id: str, req: MembershipNoteRequest, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
     """Cashier logs one visit: what service the member came in for, and
     (usually) today's date. This is the membership-card equivalent of
     /stamp - the thing a cashier does at every visit."""
@@ -9420,6 +9625,10 @@ async def add_membership_note(public_id: str, req: MembershipNoteRequest, author
     if customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
 
+    
+    previous_response = get_completed_idempotent_response(business.get('id'), x_idempotency_key)
+    if previous_response is not None:
+        return previous_response
     program = safe_get_loyalty_program(business.get('id'))
     if not program or program.get('card_type') != 'membership':
         raise HTTPException(status_code=400, detail="This business is not on a membership card")
@@ -9456,6 +9665,9 @@ async def add_membership_note(public_id: str, req: MembershipNoteRequest, author
             raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
 
     service_name = (req.service_name or '').strip() or 'Visit'
+    old_visits=int((get_membership_summary(business.get('id'),customer.get('id')) or {}).get('total_visits') or 0)
+    audit_row=start_transaction_audit(business_id=business.get('id'),customer_id=customer.get('id'),staff_id=staff_id,branch_id=branch_id,actor_type=_audit_actor(staff_id,req.as_owner),action='membership_visit',idempotency_key=x_idempotency_key,delta=1,balance_before=old_visits,metadata={'card_type':'membership','service_name':service_name})
+    if audit_row and audit_row.get('_duplicate_response'): return audit_row['_duplicate_response']
     service_date = req.service_date or datetime.utcnow().date().isoformat()
 
     try:
@@ -9490,10 +9702,13 @@ async def add_membership_note(public_id: str, req: MembershipNoteRequest, author
             )
         raise HTTPException(status_code=500, detail=error_msg)
 
-    return {
+    response_payload = {
         "message": "Visit noted",
         "leaf": leaf,
     }
+    if audit_row and audit_row.get('transaction_id'): response_payload['transaction_id']=str(audit_row.get('transaction_id'))
+    complete_transaction_audit(audit_row,balance_after=old_visits+1,response_json=response_payload)
+    return response_payload
 
 @app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/leaves")
 async def get_membership_leaves(public_id: str, customer_public_id: str):
@@ -9812,7 +10027,7 @@ async def unlock_cashier_device(public_id: str, device_public_id: str):
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
 @app.post("/api/v1/business/{public_id}/reward/redeem")
-async def redeem_reward(public_id: str, req: RedeemRequest, authorization: str = Header(default="")):
+async def redeem_reward(public_id: str, req: RedeemRequest, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -9823,6 +10038,10 @@ async def redeem_reward(public_id: str, req: RedeemRequest, authorization: str =
 
     if customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
+
+    previous_response = get_completed_idempotent_response(business.get('id'), x_idempotency_key)
+    if previous_response is not None:
+        return previous_response
 
     redeeming_staff_id = None
     redeeming_branch_id = None
@@ -9855,12 +10074,29 @@ async def redeem_reward(public_id: str, req: RedeemRequest, authorization: str =
     if not available:
         raise HTTPException(status_code=400, detail="No reward available to redeem")
 
-    # Redeem the earliest earned, unredeemed milestone. Intermediate rewards do
-    # not reduce the running stamp count, so a 10-stamp reward can lead into a
-    # 20-stamp grand prize. The final milestone can optionally reset the cycle.
+    # Redeem the earliest earned, unredeemed milestone. Redemption NEVER
+    # subtracts or resets stamps; progress remains continuous up to the
+    # highest configured milestone.
     reward = available[0]
-    final_reward = reward['id'] == rewards[-1]['id']
-    reset_after_final = bool((program or {}).get('stamp_reset_after_final', True))
+    audit_row = start_transaction_audit(
+        business_id=business.get('id'),
+        customer_id=customer.get('id'),
+        staff_id=redeeming_staff_id,
+        branch_id=redeeming_branch_id,
+        actor_type=_audit_actor(redeeming_staff_id, req.as_owner),
+        action='stamp_reward_redeem',
+        idempotency_key=x_idempotency_key,
+        delta=0,
+        balance_before=int(customer.get('stamp_count') or 0),
+        metadata={
+            'card_type': 'stamp',
+            'milestone_id': str(reward.get('id')),
+            'milestone_stamps': int(reward.get('stamps') or 0),
+            'reward_name': reward.get('reward_name'),
+        },
+    )
+    if audit_row and audit_row.get('_duplicate_response'):
+        return audit_row['_duplicate_response']
 
     try:
         supabase.table('stamp_reward_claims').insert({
@@ -9875,11 +10111,6 @@ async def redeem_reward(public_id: str, req: RedeemRequest, authorization: str =
         }).execute()
 
         new_count = int(customer.get('stamp_count') or 0)
-        if final_reward and reset_after_final:
-            new_count = 0
-            # New cycle: prior claims no longer block milestones.
-            supabase.table('stamp_reward_claims').delete().eq('customer_id', customer.get('id')).execute()
-
         customer['stamp_count'] = new_count
         remaining = get_available_stamp_rewards(customer, program)
         customer['reward_unlocked'] = bool(remaining)
@@ -9908,7 +10139,15 @@ async def redeem_reward(public_id: str, req: RedeemRequest, authorization: str =
     if features.get('google_review_prompt') and program:
         review_url = program.get('google_review_url')
 
-    return {"message": f"{reward['reward_name']} redeemed!", "success": True, "reward": reward, "stamp_count": customer.get("stamp_count", 0), "google_review_url": review_url}
+    response_payload = {"message": f"{reward['reward_name']} redeemed!", "success": True, "reward": reward, "stamp_count": customer.get("stamp_count", 0), "google_review_url": review_url}
+    if audit_row and audit_row.get('transaction_id'):
+        response_payload["transaction_id"] = str(audit_row.get('transaction_id'))
+    complete_transaction_audit(
+        audit_row,
+        balance_after=int(customer.get('stamp_count') or 0),
+        response_json=response_payload,
+    )
+    return response_payload
 
 # ONE-TIME COUPONS
 # Owner-issued, per-customer, free-text coupons - separate from the
