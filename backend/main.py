@@ -8620,10 +8620,15 @@ def owner_transaction_audit(public_id: str, limit: int = 200, status: Optional[s
                             date_from: Optional[str] = None, date_to: Optional[str] = None):
     """Owner-facing all-card transaction ledger. Read-only; newest first."""
     business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    business_id = business.get('id')
+    if business_id is None:
+        raise HTTPException(status_code=500, detail="Business record is missing its internal ID")
     limit = max(1, min(int(limit or 200), 500))
-    customer_map, staff_map, branch_map = _audit_name_maps(business['id'])
+    customer_map, staff_map, branch_map = _audit_name_maps(business_id)
 
-    q = supabase.table('transaction_audit').select('*').eq('business_id', business['id'])
+    q = supabase.table('transaction_audit').select('*').eq('business_id', business_id)
     if status:
         q = q.eq('status', status)
     if action:
@@ -8656,12 +8661,17 @@ def owner_transaction_audit(public_id: str, limit: int = 200, status: Optional[s
 def owner_fraud_alerts(public_id: str, hours: int = 24):
     """Explainable owner alerts derived from the all-card transaction audit ledger."""
     business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    business_id = business.get('id')
+    if business_id is None:
+        raise HTTPException(status_code=500, detail="Business record is missing its internal ID")
     hours = max(1, min(int(hours or 24), 24 * 30))
     since = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
-    customer_map, staff_map, branch_map = _audit_name_maps(business['id'])
+    customer_map, staff_map, branch_map = _audit_name_maps(business_id)
     try:
         rows = (supabase.table('transaction_audit').select('*')
-                .eq('business_id', business['id']).gte('created_at', since)
+                .eq('business_id', business_id).gte('created_at', since)
                 .order('created_at', desc=True).limit(1000).execute().data or [])
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
