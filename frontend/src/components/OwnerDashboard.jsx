@@ -1080,6 +1080,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           <button onClick={() => { setOnboardingStep(!cardSetUp ? 0 : !cashierSetUp ? 1 : 2); setShowOnboarding(true); if (isTablet || isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>🎓 Setup Guide</button>
           <button onClick={() => { setShowAnnouncements(true); markAnnouncementsChecked(); if (isTablet || isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>📢 Announcements</button>
           <button onClick={() => { markAnalyticsChecked(); navigate('/analytics'); if (isTablet || isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>📊 Analytics</button>
+          {(isTablet || isMobile) && (
           <button
             type="button"
             onClick={() => { handleAddToHomeScreen(); if (isTablet || isMobile) setMobileHeaderOpen(false) }}
@@ -1093,6 +1094,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           >
             {isStandaloneApp ? '✓ App Installed' : '📲 Add to Home Screen'}
           </button>
+          )}
           <button
             onClick={() => { setMobileHeaderOpen(false); contactLoyaltyTreeSupport() }}
             style={{...styles.supportBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}
