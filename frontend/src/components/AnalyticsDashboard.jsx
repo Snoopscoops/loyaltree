@@ -6,6 +6,14 @@ function AnalyticsDashboard({ API_BASE, user }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [branchStats, setBranchStats] = useState([])
+  const [walletQueue, setWalletQueue] = useState({ jobs: [], pending: 0, failed: 0 })
+  const [crmData, setCrmData] = useState({ customers: [], segments: {}, total_customers: 0 })
+  const [retentionData, setRetentionData] = useState({})
+  const [retentionOps, setRetentionOps] = useState([])
+  const [auditTransactions, setAuditTransactions] = useState([])
+  const [fraudAlerts, setFraudAlerts] = useState([])
+  const [extendedLoading, setExtendedLoading] = useState(true)
+  const [extendedError, setExtendedError] = useState('')
 
   useEffect(() => {
     fetchAnalytics()
@@ -14,11 +22,64 @@ function AnalyticsDashboard({ API_BASE, user }) {
   useEffect(() => {
     // All-time, not scoped to timeRange - this is "which branch is driving
     // activity overall", a separate question from the trend charts above.
-    fetch(`${API_BASE}/api/v1/business/${user.business_slug}/branches/stamp-counts`)
+    fetch(`${API_BASE}/api/v1/business/${user.business_slug}/branches/stamp-counts`, {
+      headers: { 'Authorization': `Bearer ${user.token}` }
+    })
       .then(res => res.json())
       .then(data => setBranchStats(Array.isArray(data) ? data : []))
       .catch(() => {})
   }, [user.business_slug])
+
+  useEffect(() => {
+    fetchExtendedAnalytics()
+  }, [user.business_slug, user.token])
+
+  const authFetch = (url, options = {}) => {
+    const headers = { ...(options.headers || {}), 'Authorization': `Bearer ${user.token}` }
+    return fetch(url, { ...options, headers })
+  }
+
+  const fetchExtendedAnalytics = async () => {
+    if (!user?.business_slug || !user?.token) return
+    setExtendedLoading(true)
+    setExtendedError('')
+    const base = `${API_BASE}/api/v1/business/${user.business_slug}`
+    try {
+      const [walletRes, crmRes, retentionRes, opportunityRes, auditRes, fraudRes] = await Promise.all([
+        authFetch(`${base}/wallet-queue?limit=100`),
+        authFetch(`${base}/crm`),
+        authFetch(`${base}/retention-analytics?days=90`),
+        authFetch(`${base}/retention-opportunities`),
+        authFetch(`${base}/transaction-audit?limit=100`),
+        authFetch(`${base}/fraud-alerts?hours=24`),
+      ])
+
+      const [wallet, crm, retention, opportunities, audit, fraud] = await Promise.all([
+        walletRes.json().catch(() => ({})),
+        crmRes.json().catch(() => ({})),
+        retentionRes.json().catch(() => ({})),
+        opportunityRes.json().catch(() => ({})),
+        auditRes.json().catch(() => ({})),
+        fraudRes.json().catch(() => ({})),
+      ])
+
+      if (walletRes.ok) setWalletQueue(wallet)
+      if (crmRes.ok) setCrmData(crm)
+      if (retentionRes.ok) setRetentionData(retention)
+      if (opportunityRes.ok) setRetentionOps(Array.isArray(opportunities.opportunities) ? opportunities.opportunities : [])
+      if (auditRes.ok) setAuditTransactions(Array.isArray(audit.transactions) ? audit.transactions : [])
+      if (fraudRes.ok) setFraudAlerts(Array.isArray(fraud.alerts) ? fraud.alerts : [])
+
+      const failed = [
+        [walletRes, wallet], [crmRes, crm], [retentionRes, retention],
+        [opportunityRes, opportunities], [auditRes, audit], [fraudRes, fraud],
+      ].find(([res]) => !res.ok)
+      if (failed) setExtendedError(failed[1]?.detail || 'Some extended analytics could not be loaded.')
+    } catch (err) {
+      setExtendedError('Could not load CRM, Wallet Queue, Retention, or Transaction Security.')
+    }
+    setExtendedLoading(false)
+  }
 
   const fetchAnalytics = async () => {
     setLoading(true)
@@ -84,6 +145,8 @@ function AnalyticsDashboard({ API_BASE, user }) {
           .an-bignumber { font-size: 26px !important; }
           .an-section-title { font-size: 17px !important; margin-bottom: 12px !important; }
           .an-actionbtn { width: 100% !important; padding: 11px 16px !important; }
+          .an-module-grid { grid-template-columns: 1fr !important; }
+          .an-table-row { grid-template-columns: 1fr !important; gap: 4px !important; }
         }
         @media (max-width: 420px) {
           .an-overview-grid { grid-template-columns: 1fr 1fr !important; }
@@ -427,11 +490,146 @@ function AnalyticsDashboard({ API_BASE, user }) {
           </div>
         </div>
       )}
+      {/* Wallet Queue — operational analytics, not an Owner Dashboard tab */}
+      <div id="wallet-queue-analytics" style={styles.section}>
+        <div style={styles.moduleHeading}>
+          <div>
+            <h2 className="an-section-title" style={{...styles.sectionTitle, marginBottom:4}}>👛 Wallet Queue</h2>
+            <div style={styles.moduleSub}>Google / Apple wallet synchronization health</div>
+          </div>
+          <button className="an-actionbtn" style={styles.actionBtn} onClick={fetchExtendedAnalytics}>↻ Refresh</button>
+        </div>
+        <div className="an-overview-grid" style={styles.overviewGrid}>
+          <MiniMetric label="Pending / Processing" value={walletQueue.pending || 0} />
+          <MiniMetric label="Failed" value={walletQueue.failed || 0} danger={(walletQueue.failed || 0) > 0} />
+          <MiniMetric label="Recent Jobs" value={(walletQueue.jobs || []).length} />
+        </div>
+        <div style={styles.insightCard}>
+          {(walletQueue.jobs || []).length === 0 ? (
+            <div style={styles.noData}>No wallet sync jobs yet.</div>
+          ) : (walletQueue.jobs || []).slice(0, 12).map(job => (
+            <div className="an-table-row" key={job.id} style={styles.analyticsRow}>
+              <span><b>#{job.id}</b> · {job.reason || 'wallet update'}</span>
+              <span style={styles.mutedText}>{job.status} · {job.attempts || 0}/{job.max_attempts || 5} attempts</span>
+              <span style={{...styles.statusPill, ...(job.status === 'failed' ? styles.statusBad : job.status === 'completed' ? styles.statusGood : styles.statusWarn)}}>{job.status}</span>
+              {job.last_error && <span style={styles.errorText}>{job.last_error}</span>}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* CRM */}
+      <div id="crm-analytics" style={styles.section}>
+        <h2 className="an-section-title" style={styles.sectionTitle}>👥 Customer CRM</h2>
+        <div className="an-overview-grid" style={styles.overviewGrid}>
+          <MiniMetric label="Total CRM Customers" value={crmData.total_customers || (crmData.customers || []).length} />
+          {Object.entries(crmData.segments || {}).map(([segment, count]) => (
+            <MiniMetric key={segment} label={segment.replaceAll('_', ' ')} value={count} />
+          ))}
+        </div>
+        <div className="an-module-grid" style={styles.moduleGrid}>
+          {(crmData.customers || []).slice(0, 30).map(c => (
+            <div key={c.public_id} style={styles.insightCard}>
+              <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'flex-start'}}>
+                <div>
+                  <strong style={{color:'#1e293b'}}>{c.name || c.email || 'Customer'}</strong>
+                  <div style={styles.mutedText}>{c.email || c.phone || c.public_id}</div>
+                </div>
+                <span style={styles.statusPill}>{(c.crm?.segment || 'new').replaceAll('_',' ')}</span>
+              </div>
+              <div style={{marginTop:10,fontSize:13,color:'#475569'}}>
+                {c.crm?.total_transactions || 0} transactions · last activity {c.crm?.days_since_last_activity ?? '—'} days ago
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Transaction / Security */}
+      <div id="transaction-security-analytics" style={styles.section}>
+        <h2 className="an-section-title" style={styles.sectionTitle}>🛡️ Transaction & Security Analytics</h2>
+        <div className="an-overview-grid" style={styles.overviewGrid}>
+          <MiniMetric label="Recent Transactions" value={auditTransactions.length} />
+          <MiniMetric label="Security Alerts" value={fraudAlerts.length} danger={fraudAlerts.length > 0} />
+          <MiniMetric label="Failed Transactions" value={auditTransactions.filter(t => t.status === 'failed').length} danger={auditTransactions.some(t => t.status === 'failed')} />
+          <MiniMetric label="Adjustments" value={auditTransactions.filter(t => /adjust|remove|correction|override/i.test(t.action || '')).length} />
+        </div>
+        <div className="an-charts-row" style={styles.chartsRow}>
+          <div style={styles.insightCard}>
+            <h4 style={styles.insightTitle}>Security Alerts — last 24 hours</h4>
+            {fraudAlerts.length === 0 ? <div style={styles.noData}>No suspicious activity detected.</div> :
+              fraudAlerts.slice(0, 12).map((a, i) => (
+                <div key={a.id || i} style={styles.securityAlert}>
+                  <div style={{display:'flex',justifyContent:'space-between',gap:8}}>
+                    <strong>{a.title || a.type || 'Security alert'}</strong>
+                    <span style={{...styles.statusPill,...((a.severity || '').toLowerCase()==='high' ? styles.statusBad : styles.statusWarn)}}>{a.severity || 'review'}</span>
+                  </div>
+                  <div style={styles.mutedText}>{a.description || a.message || a.detail || 'Review the related transactions.'}</div>
+                </div>
+              ))}
+          </div>
+          <div style={styles.insightCard}>
+            <h4 style={styles.insightTitle}>Recent Transaction Audit</h4>
+            {auditTransactions.length === 0 ? <div style={styles.noData}>No audit transactions yet.</div> :
+              auditTransactions.slice(0, 20).map((t, i) => (
+                <div key={t.transaction_id || t.id || i} style={styles.auditRow}>
+                  <div>
+                    <strong>{(t.action || 'transaction').replaceAll('_',' ')}</strong>
+                    <div style={styles.mutedText}>{t.customer_name || t.customer_public_id || 'Customer'} · {t.branch_name || 'Overall'} · {t.staff_name || t.actor_type || 'System'}</div>
+                  </div>
+                  <div style={{textAlign:'right'}}>
+                    <span style={{...styles.statusPill,...(t.status==='failed' ? styles.statusBad : styles.statusGood)}}>{t.status || 'success'}</span>
+                    <div style={styles.mutedText}>{t.balance_before ?? '—'} → {t.balance_after ?? '—'}</div>
+                  </div>
+                </div>
+              ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Retention */}
+      <div id="retention-analytics" style={styles.section}>
+        <h2 className="an-section-title" style={styles.sectionTitle}>🔁 Retention Analytics</h2>
+        <div className="an-overview-grid" style={styles.overviewGrid}>
+          <MiniMetric label="Repeat Customer Rate" value={`${retentionData.repeat_customer_rate || 0}%`} />
+          <MiniMetric label="Active ≤30 Days" value={`${retentionData.retention_30_rate || 0}%`} />
+          <MiniMetric label="Active ≤60 Days" value={`${retentionData.retention_60_rate || 0}%`} />
+          <MiniMetric label="Active ≤90 Days" value={`${retentionData.retention_90_rate || 0}%`} />
+          <MiniMetric label="Avg. Days Between Activity" value={retentionData.average_days_between_activity ?? '—'} />
+          <MiniMetric label="Retention Opportunities" value={retentionOps.length} />
+        </div>
+        <div className="an-module-grid" style={styles.moduleGrid}>
+          {retentionOps.length === 0 ? <div style={styles.insightCard}><div style={styles.noData}>No retention opportunities detected right now.</div></div> :
+            retentionOps.slice(0, 30).map((o, i) => (
+              <div key={`${o.customer_public_id || 'customer'}-${i}`} style={styles.insightCard}>
+                <div style={{display:'flex',justifyContent:'space-between',gap:10}}>
+                  <strong>{o.customer_name || 'Customer'}</strong>
+                  <span style={styles.statusPill}>{(o.type || 'retention').replaceAll('_',' ')}</span>
+                </div>
+                <div style={{...styles.mutedText,marginTop:8}}>{o.suggested_message}</div>
+                {o.days_inactive != null && <div style={{fontSize:12,color:'#b45309',marginTop:7}}>{o.days_inactive} days inactive</div>}
+              </div>
+            ))}
+        </div>
+      </div>
+
+      {extendedLoading && <div style={styles.moduleNotice}>Loading extended analytics…</div>}
+      {extendedError && <div style={{...styles.moduleNotice,color:'#b45309'}}>{extendedError}</div>}
+
     </div>
   )
 }
 
 // Sub-components
+function MiniMetric({ label, value, danger = false }) {
+  return (
+    <div className="an-statcard" style={{...styles.statCard, borderTop:`4px solid ${danger ? '#ef4444' : '#0d9488'}`}}>
+      <div className="an-statvalue" style={{...styles.statValue, color: danger ? '#b91c1c' : '#1e293b'}}>{value}</div>
+      <div style={styles.statTitle}>{label}</div>
+    </div>
+  )
+}
+
 function StatCard({ title, value, change, icon, color }) {
   const isPositive = change >= 0
   return (
@@ -703,6 +901,73 @@ const styles = {
   },
   section: {
     marginBottom: 24,
+  },
+  moduleHeading: {
+    display:'flex',
+    alignItems:'center',
+    justifyContent:'space-between',
+    gap:12,
+    flexWrap:'wrap',
+    marginBottom:16,
+  },
+  moduleSub: {
+    fontSize:13,
+    color:'#64748b',
+  },
+  moduleGrid: {
+    display:'grid',
+    gridTemplateColumns:'repeat(auto-fit, minmax(260px, 1fr))',
+    gap:12,
+  },
+  analyticsRow: {
+    display:'grid',
+    gridTemplateColumns:'minmax(180px,1.4fr) minmax(170px,1fr) auto',
+    gap:12,
+    alignItems:'center',
+    padding:'10px 0',
+    borderBottom:'1px solid #f1f5f9',
+  },
+  auditRow: {
+    display:'flex',
+    justifyContent:'space-between',
+    gap:12,
+    alignItems:'center',
+    padding:'10px 0',
+    borderBottom:'1px solid #f1f5f9',
+  },
+  securityAlert: {
+    padding:'11px 0',
+    borderBottom:'1px solid #f1f5f9',
+  },
+  statusPill: {
+    display:'inline-block',
+    padding:'4px 8px',
+    borderRadius:999,
+    fontSize:11,
+    fontWeight:700,
+    textTransform:'capitalize',
+    background:'#e2e8f0',
+    color:'#475569',
+    whiteSpace:'nowrap',
+  },
+  statusGood: { background:'#dcfce7', color:'#166534' },
+  statusWarn: { background:'#fef3c7', color:'#92400e' },
+  statusBad: { background:'#fee2e2', color:'#991b1b' },
+  mutedText: {
+    fontSize:12,
+    color:'#64748b',
+    marginTop:3,
+  },
+  errorText: {
+    gridColumn:'1 / -1',
+    fontSize:12,
+    color:'#b91c1c',
+  },
+  moduleNotice: {
+    textAlign:'center',
+    padding:12,
+    fontSize:13,
+    color:'#64748b',
   },
   sectionTitle: {
     fontSize: 20,

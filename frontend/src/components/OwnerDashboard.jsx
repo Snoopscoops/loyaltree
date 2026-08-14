@@ -1121,11 +1121,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             { id: 'tree', label: 'Overview', icon: cardExperience.icon },
             { id: 'customers', label: cardExperience.customerLabel, icon: cardExperience.customerIcon },
             { id: 'staff', label: 'Team', icon: '👥' },
-            { id: 'security', label: 'Transactions & Security', icon: '🛡️' },
-            { id: 'walletqueue', label: 'Wallet Queue', icon: '👛' },
-            { id: 'crm', label: 'CRM', icon: '👥' },
-            { id: 'retention', label: 'Retention', icon: '🔁' },
-            { id: 'operations', label: 'Branch / Cashier', icon: '📈' },
             { id: 'program', label: 'Edit Card', icon: '✏️' },
             { id: 'billing', label: needsRenewal ? 'Billing ⚠️' : 'Billing', icon: '💳' },
           ].map(tab => (
