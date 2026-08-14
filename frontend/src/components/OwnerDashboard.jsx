@@ -41,6 +41,14 @@ const INDUSTRY_META = {
 }
 
 function OwnerDashboard({ API_BASE, user, onLogout }) {
+  // Centralized authenticated fetch for owner-dashboard API calls.
+  // The backend now rejects sensitive owner endpoints without this signed token.
+  const authFetch = (url, options = {}) => {
+    const headers = { ...(options.headers || {}) }
+    if (user?.token) headers.Authorization = `Bearer ${user.token}`
+    return fetch(url, { ...options, headers })
+  }
+
   const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState('tree')
   const [business, setBusiness] = useState(null)
@@ -217,16 +225,16 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const loadData = async () => {
     try {
       const [bizRes, custRes, staffRes, statsRes, progRes, stampCountRes, branchRes, subRes, kitRes, deviceRes] = await Promise.all([
-        fetch(`${API_BASE}/api/v1/business/${user.business_slug}`),
-        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers`),
-        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff`),
-        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/stats`),
-        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config`),
-        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff/stamp-counts`),
-        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/branches`),
-        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/subscription`),
-        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/setup-kit`),
-        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/cashier-devices`),
+        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}`),
+        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers`),
+        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff`),
+        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/stats`),
+        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config`),
+        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff/stamp-counts`),
+        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/branches`),
+        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/subscription`),
+        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/setup-kit`),
+        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/cashier-devices`),
       ])
 
       const bizData = await bizRes.json().catch(() => null)
@@ -282,8 +290,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       const params = new URLSearchParams({ limit: '300' })
       Object.entries(filters || {}).forEach(([key, value]) => { if (value) params.set(key, value) })
       const [auditRes, alertRes] = await Promise.all([
-        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/transaction-audit?${params.toString()}`),
-        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/fraud-alerts?hours=24`),
+        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/transaction-audit?${params.toString()}`),
+        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/fraud-alerts?hours=24`),
       ])
       const auditData = await auditRes.json().catch(() => ({}))
       const alertData = await alertRes.json().catch(() => ({}))
@@ -304,7 +312,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const inviteStaff = async (e) => {
     e.preventDefault()
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff/invite`, {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff/invite`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(inviteForm)
@@ -328,7 +336,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     if (!newBranchName.trim()) return
     setSavingBranch(true)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/branches`, {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/branches`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newBranchName.trim() })
@@ -349,7 +357,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const renameBranch = async (branch, name) => {
     if (!name.trim() || name === branch.name) return
     try {
-      await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/branches/${branch.public_id}`, {
+      await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/branches/${branch.public_id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: name.trim() })
@@ -402,7 +410,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         : program?.card_type === 'vip'
         ? 'vip-history'
         : 'stamp-history'
-      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${customerPublicId}/${suffix}`)
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${customerPublicId}/${suffix}`)
       const data = await res.json().catch(() => [])
       setMemberHistory(res.ok && Array.isArray(data) ? data : [])
     } catch (err) {
@@ -416,7 +424,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     if (!customerPublicId) return
     setMembershipActionLoading(true)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/membership/note`, {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/membership/note`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           customer_public_id: customerPublicId,
@@ -444,7 +452,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const fetchCoupons = async (customerPublicId) => {
     setCouponLoading(true)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${customerPublicId}/coupons`)
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${customerPublicId}/coupons`)
       if (res.ok) {
         const coupons = await res.json()
         const today = new Date().toISOString().slice(0, 10)
@@ -465,7 +473,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     }
     setCouponSaving(true)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${editForm.public_id}/coupons`, {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${editForm.public_id}/coupons`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -492,7 +500,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     if (!activeCoupon) return
     if (!window.confirm('Cancel this coupon?')) return
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/coupons/${activeCoupon.public_id}`, {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/coupons/${activeCoupon.public_id}`, {
         method: 'DELETE'
       })
       if (res.ok) {
@@ -511,7 +519,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         .split('\n')
         .map(s => s.trim())
         .filter(Boolean)
-      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config`, {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -554,7 +562,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     }
     setMembershipActionLoading(true)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/membership/action`, {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/membership/action`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -594,7 +602,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         points_balance: fields.points_balance === '' ? null : parseInt(fields.points_balance, 10),
         multipass_sessions_remaining: fields.multipass_sessions_remaining === '' ? null : parseInt(fields.multipass_sessions_remaining, 10),
       }
-      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${public_id}`, {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${public_id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -617,7 +625,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     if (!window.confirm(`Remove ${editForm.name || 'this leaf'} from your tree? This can't be undone.`)) return
     setDeletingCustomer(true)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${editForm.public_id}`, {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${editForm.public_id}`, {
         method: 'DELETE',
       })
       if (res.ok) {
@@ -653,7 +661,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     setSavingStaff(true)
     try {
       const { public_id, ...fields } = staffEditForm
-      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff/${public_id}`, {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff/${public_id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(fields)
@@ -676,7 +684,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     if (!window.confirm(`Unlock ${device.staff_name || 'this cashier device'} now?`)) return
     setUnlockingDevice(device.public_id)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/cashier-devices/${device.public_id}/unlock`, { method: 'POST' })
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/cashier-devices/${device.public_id}/unlock`, { method: 'POST' })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Could not unlock device')
       setMessage('Cashier device unlocked.')
@@ -692,7 +700,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     if (!window.confirm(`Remove ${staffEditForm.name || 'this cashier'} from your team? This can't be undone.`)) return
     setDeletingStaff(true)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff/${staffEditForm.public_id}`, {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff/${staffEditForm.public_id}`, {
         method: 'DELETE',
       })
       if (res.ok) {
@@ -711,7 +719,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const saveSetupKitDetails = async () => {
     setSavingSetupKit(true)
     try {
-      const res=await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/setup-kit`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(setupKitForm)})
+      const res=await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/setup-kit`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(setupKitForm)})
       const data=await res.json().catch(()=>({}))
       if(!res.ok) throw new Error(data.detail||'Could not save QR kit details')
       setSetupKit(data); setMessage('QR kit details saved'); loadData()
@@ -721,7 +729,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   const goLive = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/go-live`, { method: 'POST' })
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/go-live`, { method: 'POST' })
       const data = await res.json()
       if (res.ok) {
         setMessage(data.message)
@@ -749,7 +757,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     try {
       // Fetch the QR image as a blob for sharing
       const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(joinUrl)}`
-      const qrRes = await fetch(qrApiUrl)
+      const qrRes = await authFetch(qrApiUrl)
       const qrBlob = await qrRes.blob()
       const qrFile = new File([qrBlob], 'loyaltree-qr.png', { type: 'image/png' })
 
@@ -811,7 +819,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   const addToGoogleWallet = (customer) => {
     const walletUrl = `${API_BASE}/api/v1/customer/${customer.public_id}/wallet-pass`
-    fetch(walletUrl)
+    authFetch(walletUrl)
       .then(res => res.json())
       .then(data => {
         if (data.add_to_wallet_url) {
@@ -1037,7 +1045,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
           <div style={{...styles.heroQuickActions,...(isTablet?styles.heroQuickActionsTablet:{}),...(isMobile?styles.heroQuickActionsMobile:{})}}>
             <button
-              onClick={() => navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name } })}
+              onClick={() => navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name, ownerToken: user.token } })}
               style={{...styles.primaryActionBtn, background: '#0d9488'}}
             >
               📷 {cardExperience.scanTitle}
@@ -1129,7 +1137,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 <h3>View {cardExperience.customerLabel}</h3>
                 <p>{customers.length} connected</p>
               </div>
-              <div style={{...styles.actionCard,...(isTablet?styles.actionCardTablet:{}), borderColor: cardExperience.border}} onClick={() => navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name } })}>
+              <div style={{...styles.actionCard,...(isTablet?styles.actionCardTablet:{}), borderColor: cardExperience.border}} onClick={() => navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name, ownerToken: user.token } })}>
                 <div style={styles.actionIcon}>📷</div>
                 <h3>{cardExperience.scanTitle}</h3>
                 <p>{cardExperience.scanDescription}</p>

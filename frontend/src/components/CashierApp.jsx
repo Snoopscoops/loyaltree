@@ -6,33 +6,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 // build, since it prints internal API paths and response codes on-screen.
 const DEBUG = import.meta.env.DEV
 const CASHIER_BUILD = 'VIP-MEMBERSHIP-MULTIPASS-V16-NFC-READY'
-const CASHIER_DEVICE_KEY = 'loyaltree_cashier_device_id'
-
-function getCashierDeviceId() {
-  try {
-    let id = localStorage.getItem(CASHIER_DEVICE_KEY)
-    if (!id) {
-      id = (globalThis.crypto?.randomUUID?.() || `web-${Date.now()}-${Math.random().toString(36).slice(2)}`)
-      localStorage.setItem(CASHIER_DEVICE_KEY, id)
-    }
-    return id
-  } catch (_) {
-    return `web-${Date.now()}-${Math.random().toString(36).slice(2)}`
-  }
-}
-
 const BUSINESS_ICONS={spa:'🌿',salon:'✂️',fitness:'🏋️',restaurant:'🍽️',coffee:'☕',retail:'🛍️',clinic:'🩺',laundry:'🧺',gas_station:'⛽',car_wash:'🚿',pharmacy:'💊',bakery:'🥐',hotel:'🏨',other:'🏪',car_lending:'🚗',cockpit:'🏆'}
-
-
-function transactionKey(action, customerId) {
-  const storageKey = `lt-pending-txn:${action}:${customerId || 'unknown'}`
-  let key = sessionStorage.getItem(storageKey)
-  if (!key) {
-    key = (window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`)
-    sessionStorage.setItem(storageKey, key)
-  }
-  return { key, storageKey }
-}
 
 function CashierApp({ API_BASE }) {
   const location = useLocation()
@@ -50,7 +24,7 @@ function CashierApp({ API_BASE }) {
   const [staffEmail, setStaffEmail] = useState('')
   // Session token from /staff/verify-pin - sent instead of the raw PIN on
   // every scan, so the PIN itself only crosses the wire once per shift.
-  const [sessionToken, setSessionToken] = useState('')
+  const [sessionToken, setSessionToken] = useState(ownerState?.ownerToken || '')
   const lastScanRef = useRef({ id: null, time: 0 })
   const lastNfcRef = useRef({ token: null, time: 0 })
   const [customerData, setCustomerData] = useState(null)
@@ -233,10 +207,6 @@ function CashierApp({ API_BASE }) {
           stamp_count: c.stamp_count || 0,
           reward_unlocked: !!c.reward_unlocked,
           reward_threshold: goal,
-          stamp_rewards: Array.isArray(program.stamp_rewards) && program.stamp_rewards.length
-            ? program.stamp_rewards
-            : [{id:'legacy-final', stamps:goal, reward_name:program.reward_name || 'Reward'}],
-          stamp_once_per_day: program.stamp_once_per_day === true,
           points_balance: c.points_balance || 0,
           points_prizes: Array.isArray(program.points_prizes) ? program.points_prizes : [],
           // Rate used to preview how many points a sale amount will earn,
@@ -284,21 +254,17 @@ function CashierApp({ API_BASE }) {
       setMessage('Missing info - scan again')
       return
     }
-    // Never change the visible stamp count until the backend confirms success.
-    // This avoids a confusing temporary +1 when daily-limit/security validation rejects it.
-    if (loading) return
-
     setLoading(true)
-    setMessage('Saving stamp...')
-
-    const txn = transactionKey('stamp_add', customerData.public_id)
+    setMessage('Adding stamp...')
 
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/stamp`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Idempotency-Key': txn.key,
+          // Preferred: session token from verify-pin, so the PIN itself
+          // never has to be resent. Falls back to sending the raw PIN in
+          // the body only if the backend hasn't issued a token yet.
           ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
         body: JSON.stringify({
@@ -308,68 +274,28 @@ function CashierApp({ API_BASE }) {
         })
       })
 
-      const data = await res.json().catch(() => ({}))
-      sessionStorage.removeItem(txn.storageKey)
+      const data = await res.json()
 
       if (res.ok) {
-        // Only a confirmed database success is allowed to change the displayed count.
+        let msg = `✅ Stamp added! ${customerData.name} now has ${data.stamp_count} stamps`
+        if (data.reward_unlocked) {
+          msg += ' 🎉 REWARD UNLOCKED!'
+        }
+        if (data.warning) {
+          msg += ` (${data.warning})`
+        }
+        setMessage(msg)
         setCustomerData(prev => prev ? {
           ...prev,
           stamp_count: data.stamp_count,
           reward_unlocked: !!data.reward_unlocked,
           active_coupon: data.active_coupon !== undefined ? data.active_coupon : prev.active_coupon,
         } : prev)
-
-        let msg = `✅ Stamp added! ${customerData.name} now has ${data.stamp_count} stamps`
-        if (Array.isArray(data.newly_reached_rewards) && data.newly_reached_rewards.length) {
-          msg += ` 🎉 ${data.newly_reached_rewards.map(r => r.reward_name).join(', ')} unlocked!`
-        } else if (data.reward_unlocked) {
-          msg += ' 🎉 REWARD AVAILABLE!'
-        }
-        if (data.warning) msg += ` (${data.warning})`
-        setMessage(msg)
       } else {
-        // Count remains unchanged for daily-limit, expired-session, authorization,
-        // or any other backend rejection.
-        setMessage(`⚠️ Stamp not added: ${data.detail || 'Please try again'}`)
+        setMessage(`❌ Failed: ${data.detail || 'Unknown error'}`)
       }
     } catch (err) {
-      setMessage('❌ Network error - stamp was not added')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const adjustStamp = async (delta) => {
-    if (!customerData || !businessSlug || (!isOwner && !staffPin && !sessionToken)) return
-    const action = delta > 0 ? 'add' : 'remove'
-    if (!window.confirm(`${delta > 0 ? 'Add' : 'Remove'} 1 stamp ${delta > 0 ? 'to' : 'from'} ${customerData.name}? This correction is logged.`)) return
-    setLoading(true)
-    setMessage(`${delta > 0 ? 'Adding' : 'Removing'} correction...`)
-    try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/stamp/adjust`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
-        },
-        body: JSON.stringify({
-          customer_public_id: customerData.public_id,
-          delta,
-          reason: 'Cashier correction',
-          ...(sessionToken ? {} : { staff_pin: staffPin }),
-          as_owner: isOwner,
-        })
-      })
-      const data = await res.json()
-      if (res.ok) {
-        setCustomerData(prev => prev ? {...prev, stamp_count:data.stamp_count, reward_unlocked:!!data.reward_unlocked} : prev)
-        setMessage(`✅ Stamp balance corrected to ${data.stamp_count}`)
-      } else {
-        setMessage(`❌ ${data.detail || 'Adjustment failed'}`)
-      }
-    } catch (err) {
-      setMessage('❌ Network error - adjustment not saved')
+      setMessage('❌ Network error - stamp not added')
     }
     setLoading(false)
   }
@@ -387,14 +313,11 @@ function CashierApp({ API_BASE }) {
     setLoading(true)
     setMessage('Adding points...')
 
-    const txn = transactionKey('points_sale', customerData.public_id)
-
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/points-sale`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Idempotency-Key': txn.key,
           ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
         body: JSON.stringify({
@@ -406,7 +329,6 @@ function CashierApp({ API_BASE }) {
       })
 
       const data = await res.json()
-      sessionStorage.removeItem(txn.storageKey)
 
       if (res.ok) {
         setMessage(`✅ +${data.points_earned} points! ${customerData.name} now has ${data.points_balance} points`)
@@ -440,14 +362,11 @@ function CashierApp({ API_BASE }) {
     setLoading(true)
     setMessage('Adding VIP points...')
 
-    const txn = transactionKey('vip_sale', customerData.public_id)
-
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/vip-sale`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Idempotency-Key': txn.key,
           ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
         body: JSON.stringify({
@@ -458,7 +377,6 @@ function CashierApp({ API_BASE }) {
         }),
       })
       const data = await res.json().catch(() => ({}))
-      sessionStorage.removeItem(txn.storageKey)
       if (!res.ok) throw new Error(data.detail || 'VIP sale failed')
 
       setCustomerData(prev => prev ? {
@@ -488,14 +406,11 @@ function CashierApp({ API_BASE }) {
       : window.prompt('Visit or service', customerData.membership_services?.[0] || 'Member check-in')
     if (!customerData.membership_quick_checkin && !serviceName) return
     setLoading(true)
-    const txn = transactionKey('membership_visit', customerData.public_id)
-
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/membership/note`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Idempotency-Key': txn.key,
           ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
         body: JSON.stringify({
@@ -506,7 +421,6 @@ function CashierApp({ API_BASE }) {
         }),
       })
       const data = await res.json().catch(() => ({}))
-      sessionStorage.removeItem(txn.storageKey)
       if (!res.ok) throw new Error(data.detail || 'Could not log visit')
       setMessage(`✅ Visit logged for ${customerData.name}`)
     } catch (err) {
@@ -523,14 +437,11 @@ function CashierApp({ API_BASE }) {
     setLoading(true)
     setMessage('Using session...')
 
-    const txn = transactionKey('multipass_use', customerData.public_id)
-
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/multipass/use`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Idempotency-Key': txn.key,
           ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
         body: JSON.stringify({
@@ -541,7 +452,6 @@ function CashierApp({ API_BASE }) {
       })
 
       const data = await res.json()
-      sessionStorage.removeItem(txn.storageKey)
 
       if (res.ok) {
         let msg = `✅ Session used! ${customerData.name} has ${data.sessions_remaining} sessions left`
@@ -581,14 +491,11 @@ function CashierApp({ API_BASE }) {
     setLoading(true)
     setMessage('Issuing pack...')
 
-    const txn = transactionKey('multipass_issue', customerData.public_id)
-
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/multipass/issue`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Idempotency-Key': txn.key,
           ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
         body: JSON.stringify({
@@ -600,7 +507,6 @@ function CashierApp({ API_BASE }) {
       })
 
       const data = await res.json()
-      sessionStorage.removeItem(txn.storageKey)
 
       if (res.ok) {
         setMessage(`✅ ${data.sessions_remaining}-session pack issued! Valid until ${data.multipass_expires_at}`)
@@ -625,14 +531,11 @@ function CashierApp({ API_BASE }) {
     setLoading(true)
     setMessage('Redeeming...')
 
-    const txn = transactionKey('stamp_reward_redeem', customerData.public_id)
-
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/reward/redeem`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Idempotency-Key': txn.key,
           ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
         body: JSON.stringify({
@@ -645,14 +548,8 @@ function CashierApp({ API_BASE }) {
       const data = await res.json()
 
       if (res.ok) {
-        setCustomerData(prev => prev ? {
-          ...prev,
-          stamp_count: data.stamp_count ?? prev.stamp_count,
-          // The refetch below resolves whether another milestone is currently available.
-          reward_unlocked: false,
-        } : prev)
-        setMessage(`🎁 ${data.reward?.reward_name || 'Reward'} redeemed! Stamps remain at ${data.stamp_count ?? customerData.stamp_count}.`)
-        await fetchCustomer(customerData.public_id)
+        setMessage('🎁 Reward redeemed!')
+        fetchCustomer(customerData.public_id)
       } else {
         setMessage(`❌ ${data.detail || 'No reward to redeem'}`)
       }
@@ -668,14 +565,11 @@ function CashierApp({ API_BASE }) {
     setLoading(true)
     setMessage(`Redeeming ${prize.name}...`)
 
-    const txn = transactionKey('points_redeem', customerData.public_id)
-
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/points-redeem`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Idempotency-Key': txn.key,
           ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
         body: JSON.stringify({
@@ -687,7 +581,6 @@ function CashierApp({ API_BASE }) {
       })
 
       const data = await res.json()
-      sessionStorage.removeItem(txn.storageKey)
 
       if (res.ok) {
         setMessage(`🎁 ${data.prize_name} redeemed! ${customerData.name} now has ${data.points_balance} points`)
@@ -763,7 +656,7 @@ function CashierApp({ API_BASE }) {
       const res = await fetch(`${API_BASE}/api/v1/business/${cleanSlug}/staff/verify-pin`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: cleanEmail, pin: cleanPin, device_id: getCashierDeviceId() })
+        body: JSON.stringify({ email: cleanEmail, pin: cleanPin })
       })
       const data = await res.json()
       if (res.ok && data.success) {
@@ -1022,11 +915,7 @@ function CashierApp({ API_BASE }) {
                   ? `${customerData.vip_tier?.name || 'VIP'} · ${customerData.vip_points || 0} points`
                   : customerData.card_type === 'membership'
                   ? `${customerData.membership_status.toUpperCase()}${customerData.membership_expires_at ? ` • until ${customerData.membership_expires_at}` : ''}`
-                  : `${customerData.stamp_count} rings • ${
-                      customerData.stamp_count >= customerData.reward_threshold
-                        ? 'maximum reached'
-                        : `${Math.max(0, customerData.reward_threshold - customerData.stamp_count)} to final reward`
-                    }`}
+                  : `${customerData.stamp_count} rings • ${customerData.reward_threshold - (customerData.stamp_count % customerData.reward_threshold)} to fruit`}
               </p>
             </div>
           </div>
@@ -1127,20 +1016,14 @@ function CashierApp({ API_BASE }) {
           ) : (
             /* Stamp Rings */
             <div style={styles.stampVisual}>
-              {Array.from({length: customerData.reward_threshold || 8}).map((_, i) => {
-                const filled = Math.min(
-                  Number(customerData.stamp_count || 0),
-                  Number(customerData.reward_threshold || 8)
-                )
-                return (
-                  <div key={i} style={{
-                    ...styles.stampDot,
-                    background: i < filled ? '#0d9488' : '#e2e8f0',
-                  }}>
-                    {i < filled ? '🍃' : ''}
-                  </div>
-                )
-              })}
+              {Array.from({length: customerData.reward_threshold || 8}).map((_, i) => (
+                <div key={i} style={{
+                  ...styles.stampDot,
+                  background: i < (customerData.stamp_count % (customerData.reward_threshold || 8)) ? '#0d9488' : '#e2e8f0',
+                }}>
+                  {i < (customerData.stamp_count % (customerData.reward_threshold || 8)) ? '🍃' : ''}
+                </div>
+              ))}
             </div>
           )}
 
@@ -1287,26 +1170,13 @@ function CashierApp({ API_BASE }) {
           ) : null}
           <div style={styles.actions}>
             {customerData.card_type === 'stamp' && (
-              <div style={{width:'100%',display:'flex',flexDirection:'column',gap:10}}>
-                <button
-                  style={{...styles.actionBtn, background: '#0d9488'}}
-                  onClick={addStamp}
-                  disabled={loading}
-                >
-                  {loading ? '...' : '🎟️ Add Stamp'}
-                </button>
-                {customerData.stamp_once_per_day && (
-                  <div style={{fontSize:12,color:'#64748b',textAlign:'center'}}>🔒 One regular stamp per customer per day is enabled.</div>
-                )}
-                <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:12}}>
-                  <button type="button" onClick={()=>adjustStamp(-1)} disabled={loading || customerData.stamp_count <= 0}
-                    style={{...styles.actionBtn,background:'#64748b',flex:'0 0 56px',padding:'12px'}}>−</button>
-                  <div style={{minWidth:90,textAlign:'center',fontWeight:800}}>{customerData.stamp_count} stamps</div>
-                  <button type="button" onClick={()=>adjustStamp(1)} disabled={loading}
-                    style={{...styles.actionBtn,background:'#334155',flex:'0 0 56px',padding:'12px'}}>+</button>
-                </div>
-                <div style={{fontSize:11,color:'#94a3b8',textAlign:'center'}}>+/− are audited corrections and do not bypass the normal daily-stamp button.</div>
-              </div>
+              <button
+                style={{...styles.actionBtn, background: '#0d9488'}}
+                onClick={addStamp}
+                disabled={loading}
+              >
+                {loading ? '...' : '🎟️ Add Stamp'}
+              </button>
             )}
             {customerData.card_type === 'membership' && (
               <button

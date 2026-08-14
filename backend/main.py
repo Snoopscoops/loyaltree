@@ -452,6 +452,7 @@ def require_cron(request: Request):
 # one business it was issued for.
 STAFF_SESSION_SECRET = os.getenv('STAFF_SESSION_SECRET', '')
 STAFF_SESSION_TTL_HOURS = 12  # covers a full shift
+OWNER_SESSION_TTL_HOURS = 12  # owner dashboard session; requires re-login after expiry
 
 def create_staff_session_token(
     business_public_id: str,
@@ -489,6 +490,37 @@ def get_staff_session_claims(public_id: str, authorization: str):
         raise HTTPException(status_code=401, detail="Session expired - please log in again")
     if claims.get('business_public_id') != public_id:
         raise HTTPException(status_code=403, detail="Session does not match this business")
+    return claims
+
+
+def create_owner_session_token(business: dict) -> str:
+    """Signed, expiring owner token. Replaces the old predictable owner-token-<slug>."""
+    import jwt as pyjwt
+    if not STAFF_SESSION_SECRET:
+        raise HTTPException(status_code=503, detail="STAFF_SESSION_SECRET is not configured")
+    now = datetime.utcnow()
+    payload = {
+        'business_public_id': business.get('public_id'),
+        'business_id': business.get('id'),
+        'role': 'owner',
+        'name': business.get('name', ''),
+        'iat': now,
+        'exp': now + timedelta(hours=OWNER_SESSION_TTL_HOURS),
+    }
+    return pyjwt.encode(payload, STAFF_SESSION_SECRET, algorithm='HS256')
+
+
+def require_owner_session(public_id: str, authorization: str):
+    """Require a valid signed owner token scoped to the business in the URL."""
+    if not authorization or not authorization.startswith('Bearer '):
+        raise HTTPException(status_code=401, detail='Owner authentication required')
+    claims = verify_staff_session_token(authorization.split(' ', 1)[1])
+    if not claims:
+        raise HTTPException(status_code=401, detail='Owner session expired - please log in again')
+    if claims.get('role') != 'owner':
+        raise HTTPException(status_code=403, detail='Owner access required')
+    if claims.get('business_public_id') != public_id:
+        raise HTTPException(status_code=403, detail='Session does not match this business')
     return claims
 
 ENV_ERROR = None
@@ -4133,9 +4165,10 @@ async def login(req: LoginRequest):
                         status_code=403,
                         detail="Your account is not active. Please contact support for details."
                     )
+                owner_session_token = create_owner_session_token(business)
                 return {
                     "success": True,
-                    "token": "owner-token-" + business.get("public_id", ""),
+                    "token": owner_session_token,
                     "business_slug": business.get("public_id", ""),
                     "business_name": business.get("name", ""),
                     "name": business.get("name", ""),
@@ -4150,6 +4183,7 @@ async def login(req: LoginRequest):
                         "role": "owner",
                         "logo_url": business.get("logo_url"),
                         "business_type": business.get("business_type", "other"),
+                        "token": owner_session_token,
                     }
                 }
     except HTTPException:
@@ -5492,7 +5526,8 @@ async def delete_customer(public_id: str, customer_public_id: str):
     return {"success": True, "deleted": customer_public_id}
 
 @app.get("/api/v1/business/{public_id}/staff")
-async def get_staff(public_id: str):
+async def get_staff(public_id: str, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -5503,7 +5538,8 @@ async def get_staff(public_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/v1/business/{public_id}/staff/stamp-counts")
-async def get_staff_stamp_counts(public_id: str):
+async def get_staff_stamp_counts(public_id: str, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
     """How many stamps each cashier/staff member has personally added -
     counted from stamp_events.staff_id, which is only populated for stamps
     added via a staff PIN (not owner scans, which log staff_id=None)."""
@@ -5538,7 +5574,8 @@ async def get_staff_stamp_counts(public_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/v1/business/{public_id}/branches/stamp-counts")
-async def get_branch_stamp_counts(public_id: str):
+async def get_branch_stamp_counts(public_id: str, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
     """Stamps and redemptions per branch, so an owner with multiple
     locations can see which one is actually driving activity - this is
     the per-location equivalent of the per-cashier counter above."""
@@ -5604,7 +5641,8 @@ async def get_branch_stamp_counts(public_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/v1/business/{public_id}/branches")
-async def list_branches(public_id: str):
+async def list_branches(public_id: str, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -5615,7 +5653,8 @@ async def list_branches(public_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/business/{public_id}/branches")
-async def create_branch(public_id: str, branch: BranchCreate):
+async def create_branch(public_id: str, branch: BranchCreate, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -5634,7 +5673,8 @@ async def create_branch(public_id: str, branch: BranchCreate):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.patch("/api/v1/business/{public_id}/branches/{branch_public_id}")
-async def update_branch(public_id: str, branch_public_id: str, update: BranchUpdate):
+async def update_branch(public_id: str, branch_public_id: str, update: BranchUpdate, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -5653,7 +5693,8 @@ async def update_branch(public_id: str, branch_public_id: str, update: BranchUpd
 
 
 @app.patch("/api/v1/business/{public_id}/staff/{staff_public_id}")
-async def update_staff(public_id: str, staff_public_id: str, update: StaffUpdate):
+async def update_staff(public_id: str, staff_public_id: str, update: StaffUpdate, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -5687,7 +5728,8 @@ async def update_staff(public_id: str, staff_public_id: str, update: StaffUpdate
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/v1/business/{public_id}/staff/{staff_public_id}")
-async def delete_staff(public_id: str, staff_public_id: str):
+async def delete_staff(public_id: str, staff_public_id: str, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -6277,7 +6319,8 @@ async def get_cashier_program(public_id: str, response: Response):
     }
 
 @app.post("/api/v1/business/{public_id}/loyalty-config")
-async def save_loyalty_config(public_id: str, config: LoyaltyConfig):
+async def save_loyalty_config(public_id: str, config: LoyaltyConfig, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -8315,7 +8358,8 @@ async def notify_announcement(public_id: str, announcement_id: str):
     return {"message": "Notification sent to everyone who saved this business's card."}
 
 @app.post("/api/v1/business/{public_id}/staff/invite")
-async def invite_staff(public_id: str, invite: StaffInvite):
+async def invite_staff(public_id: str, invite: StaffInvite, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -8617,7 +8661,8 @@ def _audit_enrich(row: dict, customer_map: dict, staff_map: dict, branch_map: di
 def owner_transaction_audit(public_id: str, limit: int = 200, status: Optional[str] = None,
                             action: Optional[str] = None, branch_public_id: Optional[str] = None,
                             staff_public_id: Optional[str] = None, customer_public_id: Optional[str] = None,
-                            date_from: Optional[str] = None, date_to: Optional[str] = None):
+                            date_from: Optional[str] = None, date_to: Optional[str] = None, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
     """Owner-facing all-card transaction ledger. Read-only; newest first."""
     business = safe_get_business(public_id)
     if not business:
@@ -8658,7 +8703,8 @@ def owner_transaction_audit(public_id: str, limit: int = 200, status: Optional[s
 
 
 @app.get('/api/v1/business/{public_id}/fraud-alerts')
-def owner_fraud_alerts(public_id: str, hours: int = 24):
+def owner_fraud_alerts(public_id: str, hours: int = 24, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
     """Explainable owner alerts derived from the all-card transaction audit ledger."""
     business = safe_get_business(public_id)
     if not business:
@@ -10113,7 +10159,8 @@ async def verify_staff_pin(public_id: str, req: PinVerify, request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/v1/business/{public_id}/cashier-devices")
-async def get_cashier_devices(public_id: str):
+async def get_cashier_devices(public_id: str, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail='Business not found')
@@ -10152,7 +10199,8 @@ async def get_cashier_devices(public_id: str):
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
 @app.post("/api/v1/business/{public_id}/cashier-devices/{device_public_id}/unlock")
-async def unlock_cashier_device(public_id: str, device_public_id: str):
+async def unlock_cashier_device(public_id: str, device_public_id: str, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail='Business not found')
