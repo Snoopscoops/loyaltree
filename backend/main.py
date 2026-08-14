@@ -1,6 +1,8 @@
 import os
 import re
 import asyncio
+from collections import defaultdict, deque
+from threading import Lock
 from urllib.parse import quote
 import uuid
 import base64
@@ -4061,6 +4063,105 @@ def get_recent_activity(business_id: int, customer_id: int, card_type: str, limi
     entries.sort(key=lambda item: str(item[0] or ''), reverse=True)
     return entries[:limit]
 
+# ============================================================
+# API SECURITY V2 — RATE LIMITING / BRUTE FORCE / DDoS GUARDS
+# ============================================================
+# These controls protect the application layer. A volumetric DDoS must still
+# be filtered upstream (Cloudflare/hosting edge) before traffic reaches Render.
+
+_RATE_LOCK = Lock()
+_RATE_BUCKETS = defaultdict(deque)
+_AUTH_FAILURES = defaultdict(deque)
+
+# Tunable via Render environment variables without another code deployment.
+API_MAX_BODY_BYTES = int(os.getenv("API_MAX_BODY_BYTES", str(1024 * 1024)))  # 1 MiB
+API_GLOBAL_PER_MINUTE = int(os.getenv("API_GLOBAL_PER_MINUTE", "300"))
+API_LOGIN_PER_MINUTE = int(os.getenv("API_LOGIN_PER_MINUTE", "12"))
+API_CASHIER_LOGIN_PER_MINUTE = int(os.getenv("API_CASHIER_LOGIN_PER_MINUTE", "12"))
+API_TRANSACTION_PER_MINUTE = int(os.getenv("API_TRANSACTION_PER_MINUTE", "90"))
+API_PUBLIC_PER_MINUTE = int(os.getenv("API_PUBLIC_PER_MINUTE", "180"))
+AUTH_FAILURE_WINDOW_SECONDS = int(os.getenv("AUTH_FAILURE_WINDOW_SECONDS", "900"))
+AUTH_FAILURE_LIMIT = int(os.getenv("AUTH_FAILURE_LIMIT", "8"))
+
+
+def _security_client_ip(request: Request) -> str:
+    # Render terminates the public connection and forwards the original IP.
+    # Take the first forwarded address; fall back to Starlette's client host.
+    forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    return forwarded or (request.client.host if request.client else "unknown")
+
+
+def _rate_hit(key: str, limit: int, window_seconds: int = 60):
+    now = time.time()
+    cutoff = now - window_seconds
+    with _RATE_LOCK:
+        bucket = _RATE_BUCKETS[key]
+        while bucket and bucket[0] <= cutoff:
+            bucket.popleft()
+        if len(bucket) >= limit:
+            retry_after = max(1, int(window_seconds - (now - bucket[0])))
+            return False, retry_after
+        bucket.append(now)
+    return True, 0
+
+
+def _auth_failure_key(kind: str, request: Request, identity: str = "") -> str:
+    ip = _security_client_ip(request)
+    normalized = (identity or "").strip().lower()[:320]
+    return f"{kind}:{ip}:{normalized}"
+
+
+def _check_auth_bruteforce(kind: str, request: Request, identity: str = ""):
+    key = _auth_failure_key(kind, request, identity)
+    now = time.time()
+    cutoff = now - AUTH_FAILURE_WINDOW_SECONDS
+    with _RATE_LOCK:
+        bucket = _AUTH_FAILURES[key]
+        while bucket and bucket[0] <= cutoff:
+            bucket.popleft()
+        if len(bucket) >= AUTH_FAILURE_LIMIT:
+            retry_after = max(1, int(AUTH_FAILURE_WINDOW_SECONDS - (now - bucket[0])))
+            raise HTTPException(
+                status_code=429,
+                detail="Too many failed login attempts. Please wait before trying again.",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+
+def _record_auth_failure(kind: str, request: Request, identity: str = ""):
+    key = _auth_failure_key(kind, request, identity)
+    now = time.time()
+    cutoff = now - AUTH_FAILURE_WINDOW_SECONDS
+    with _RATE_LOCK:
+        bucket = _AUTH_FAILURES[key]
+        while bucket and bucket[0] <= cutoff:
+            bucket.popleft()
+        bucket.append(now)
+
+
+def _clear_auth_failures(kind: str, request: Request, identity: str = ""):
+    key = _auth_failure_key(kind, request, identity)
+    with _RATE_LOCK:
+        _AUTH_FAILURES.pop(key, None)
+
+
+def _api_limit_for_path(path: str, method: str):
+    p = path.lower()
+    if p in ("/api/v1/login", "/api/v1/auth/login"):
+        return "owner-login", API_LOGIN_PER_MINUTE
+    if p.endswith("/staff/verify-pin"):
+        return "cashier-login", API_CASHIER_LOGIN_PER_MINUTE
+    if any(token in p for token in (
+        "/stamp", "/points-sale", "/points-redeem", "/vip-sale",
+        "/vip-adjust", "/multipass/issue", "/multipass/use",
+        "/membership/action", "/membership/note",
+    )):
+        return "transaction", API_TRANSACTION_PER_MINUTE
+    if p.startswith("/api/"):
+        return "api", API_PUBLIC_PER_MINUTE
+    return "global", API_GLOBAL_PER_MINUTE
+
+
 # FastAPI App
 app = FastAPI(title='LoyaltyTree API')
 
@@ -4103,6 +4204,46 @@ async def start_keep_alive():
     asyncio.create_task(_keep_alive_loop())
 
 @app.middleware("http")
+async def api_abuse_guard(request: Request, call_next):
+    """Application-layer protection against request floods and oversized bodies."""
+    path = request.url.path
+    ip = _security_client_ip(request)
+
+    # Do not let large bodies consume application memory/CPU.
+    if request.method in {"POST", "PUT", "PATCH"}:
+        raw_length = request.headers.get("content-length")
+        if raw_length:
+            try:
+                if int(raw_length) > API_MAX_BODY_BYTES:
+                    return JSONResponse(
+                        status_code=413,
+                        content={"detail": "Request body too large"},
+                    )
+            except ValueError:
+                return JSONResponse(status_code=400, content={"detail": "Invalid Content-Length"})
+
+    bucket_name, limit = _api_limit_for_path(path, request.method)
+    allowed, retry_after = _rate_hit(f"{bucket_name}:{ip}", limit, 60)
+    if not allowed:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Too many requests. Please try again shortly."},
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    response = await call_next(request)
+
+    # Basic response hardening.
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Permissions-Policy", "camera=(self), geolocation=(self), microphone=()")
+    if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
+
+
+@app.middleware("http")
 async def check_env(request: Request, call_next):
     if ENV_ERROR:
         return HTMLResponse(f"""
@@ -4118,13 +4259,16 @@ async def check_env(request: Request, call_next):
 
 @app.post("/api/v1/login")
 @app.post("/api/v1/auth/login")
-async def login(req: LoginRequest):
+async def login(req: LoginRequest, request: Request):
+    _check_auth_bruteforce('owner', request, req.email)
+
     # Platform super-admin check happens first, and doesn't touch the
     # database at all - it's an env-configured account, not a row in
     # `businesses`. Checked before the DB call so it still works even if
     # SUPABASE_URL/KEY are misconfigured.
     admin_token = get_admin_token()
     if admin_token and req.email == SUPER_ADMIN_EMAIL and req.password == SUPER_ADMIN_PASSWORD:
+        _clear_auth_failures('owner', request, req.email)
         return {
             "success": True,
             "token": admin_token,
@@ -4165,6 +4309,7 @@ async def login(req: LoginRequest):
                         status_code=403,
                         detail="Your account is not active. Please contact support for details."
                     )
+                _clear_auth_failures('owner', request, req.email)
                 owner_session_token = create_owner_session_token(business)
                 return {
                     "success": True,
@@ -4278,6 +4423,7 @@ async def login(req: LoginRequest):
     except Exception as e:
         print(f"Agent login error: {e}")
 
+    _record_auth_failure('owner', request, req.email)
     raise HTTPException(status_code=401, detail="Invalid email or password")
 
 @app.post("/api/v1/register")
@@ -10023,6 +10169,7 @@ async def verify_staff_pin(public_id: str, req: PinVerify, request: Request):
     Three failed attempts for the same business/device lock cashier login until
     the next midnight in Asia/Manila. A successful login resets the counter.
     """
+    _check_auth_bruteforce('cashier', request, req.email)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -10086,6 +10233,7 @@ async def verify_staff_pin(public_id: str, req: PinVerify, request: Request):
         pin_ok = bool(staff) and hmac.compare_digest(str(staff.get('pin') or ''), str(req.pin or ''))
 
         if not pin_ok:
+            _record_auth_failure('cashier', request, email)
             previous_attempts = 0
             if device and device.get('attempt_date') == today_local:
                 previous_attempts = int(device.get('failed_attempts') or 0)
@@ -10142,6 +10290,7 @@ async def verify_staff_pin(public_id: str, req: PinVerify, request: Request):
             'role': staff.get('role', 'cashier'),
             'device_id': device_id,
         }
+        _clear_auth_failures('cashier', request, email)
         if STAFF_SESSION_SECRET:
             response['session_token'] = create_staff_session_token(
                 public_id, staff.get('id'), staff.get('role', 'cashier'),
