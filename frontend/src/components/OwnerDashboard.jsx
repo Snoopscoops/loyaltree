@@ -106,6 +106,10 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [setupKitForm, setSetupKitForm] = useState({recipient_name:'',contact_number:'',delivery_address:'',delivery_instructions:'',logo_url:''})
   const [savingSetupKit, setSavingSetupKit] = useState(false)
   const [mobileHeaderOpen, setMobileHeaderOpen] = useState(false)
+  const [auditTransactions, setAuditTransactions] = useState([])
+  const [fraudAlerts, setFraudAlerts] = useState([])
+  const [securityLoading, setSecurityLoading] = useState(false)
+  const [auditFilters, setAuditFilters] = useState({ status:'', branch_public_id:'', staff_public_id:'', date_from:'', date_to:'' })
 
   // Frontend URL for customer-facing pages
   const FRONTEND_URL = 'https://loyaltree-btw1.onrender.com'
@@ -270,6 +274,32 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     }
     setLoading(false)
   }
+
+  const loadTransactionsSecurity = async (filters = auditFilters) => {
+    if (!user?.business_slug) return
+    setSecurityLoading(true)
+    try {
+      const params = new URLSearchParams({ limit: '300' })
+      Object.entries(filters || {}).forEach(([key, value]) => { if (value) params.set(key, value) })
+      const [auditRes, alertRes] = await Promise.all([
+        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/transaction-audit?${params.toString()}`),
+        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/fraud-alerts?hours=24`),
+      ])
+      const auditData = await auditRes.json().catch(() => ({}))
+      const alertData = await alertRes.json().catch(() => ({}))
+      setAuditTransactions(auditRes.ok && Array.isArray(auditData.transactions) ? auditData.transactions : [])
+      setFraudAlerts(alertRes.ok && Array.isArray(alertData.alerts) ? alertData.alerts : [])
+      if (!auditRes.ok) setMessage(auditData.detail || 'Could not load transaction audit')
+      else if (!alertRes.ok) setMessage(alertData.detail || 'Could not load security alerts')
+    } catch (err) {
+      setMessage('Could not load transactions & security')
+    }
+    setSecurityLoading(false)
+  }
+
+  useEffect(() => {
+    if (activeTab === 'security') loadTransactionsSecurity()
+  }, [activeTab])
 
   const inviteStaff = async (e) => {
     e.preventDefault()
@@ -1058,6 +1088,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             { id: 'tree', label: 'Overview', icon: cardExperience.icon },
             { id: 'customers', label: cardExperience.customerLabel, icon: cardExperience.customerIcon },
             { id: 'staff', label: 'Team', icon: '👥' },
+            { id: 'security', label: 'Transactions & Security', icon: '🛡️' },
             { id: 'program', label: 'Edit Card', icon: '✏️' },
             { id: 'billing', label: needsRenewal ? 'Billing ⚠️' : 'Billing', icon: '💳' },
           ].map(tab => (
@@ -1380,6 +1411,61 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                   >
                     ✏️ Edit
                   </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'security' && (
+          <div>
+            <div style={styles.sectionHeader}>
+              <div>
+                <h2 style={styles.sectionTitle}>🛡️ Transactions & Security</h2>
+                <p style={{margin:'4px 0 0', color:'#64748b', fontSize:13}}>Review loyalty activity across all card types and investigate unusual patterns. Alerts never block a cashier automatically.</p>
+              </div>
+              <button onClick={() => loadTransactionsSecurity()} disabled={securityLoading} style={styles.addBtn}>{securityLoading ? 'Refreshing…' : '↻ Refresh'}</button>
+            </div>
+
+            <div style={{display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,minmax(0,1fr))', gap:12, marginBottom:18}}>
+              <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:14,padding:16}}><div style={{fontSize:12,color:'#64748b',fontWeight:700}}>TRANSACTIONS SHOWN</div><div style={{fontSize:28,fontWeight:900,color:'#0f172a',marginTop:4}}>{auditTransactions.length}</div></div>
+              <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:14,padding:16}}><div style={{fontSize:12,color:'#64748b',fontWeight:700}}>SECURITY ALERTS · 24H</div><div style={{fontSize:28,fontWeight:900,color:fraudAlerts.length?'#b45309':'#15803d',marginTop:4}}>{fraudAlerts.length}</div></div>
+              <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:14,padding:16}}><div style={{fontSize:12,color:'#64748b',fontWeight:700}}>FAILED SHOWN</div><div style={{fontSize:28,fontWeight:900,color:'#0f172a',marginTop:4}}>{auditTransactions.filter(x=>x.status==='failed').length}</div></div>
+            </div>
+
+            <div style={{background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:14,padding:16,marginBottom:18}}>
+              <div style={{fontWeight:900,color:'#9a3412',marginBottom:8}}>⚠️ Suspicious Activity Review</div>
+              {securityLoading && fraudAlerts.length===0 ? <p style={{margin:0,color:'#64748b'}}>Checking recent activity…</p> : fraudAlerts.length===0 ? (
+                <p style={{margin:0,color:'#166534'}}>✓ No suspicious patterns detected in the last 24 hours.</p>
+              ) : fraudAlerts.map((a,i)=>(
+                <div key={`${a.type}-${i}`} style={{background:'white',border:'1px solid #fed7aa',borderRadius:10,padding:'10px 12px',marginTop:8}}>
+                  <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}><b style={{color:'#1e293b'}}>{a.title}</b><span style={{fontSize:10,fontWeight:900,padding:'3px 7px',borderRadius:999,background:a.severity==='high'?'#fee2e2':'#fef3c7',color:a.severity==='high'?'#991b1b':'#92400e'}}>{String(a.severity||'').toUpperCase()}</span></div>
+                  <div style={{fontSize:12,color:'#64748b',marginTop:4}}>{a.message}</div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:14,padding:14,marginBottom:14}}>
+              <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(5,minmax(0,1fr))',gap:8}}>
+                <select value={auditFilters.status} onChange={e=>setAuditFilters({...auditFilters,status:e.target.value})} style={styles.input}><option value="">All statuses</option><option value="success">Success</option><option value="failed">Failed</option><option value="processing">Processing</option></select>
+                <select value={auditFilters.branch_public_id} onChange={e=>setAuditFilters({...auditFilters,branch_public_id:e.target.value})} style={styles.input}><option value="">Overall · All branches</option>{branches.map(b=><option key={b.public_id} value={b.public_id}>{b.name}</option>)}</select>
+                <select value={auditFilters.staff_public_id} onChange={e=>setAuditFilters({...auditFilters,staff_public_id:e.target.value})} style={styles.input}><option value="">All cashiers</option>{staff.map(x=><option key={x.public_id} value={x.public_id}>{x.name}</option>)}</select>
+                <input type="date" value={auditFilters.date_from} onChange={e=>setAuditFilters({...auditFilters,date_from:e.target.value})} style={styles.input}/>
+                <input type="date" value={auditFilters.date_to} onChange={e=>setAuditFilters({...auditFilters,date_to:e.target.value})} style={styles.input}/>
+              </div>
+              <div style={{display:'flex',gap:8,marginTop:8,flexWrap:'wrap'}}><button onClick={()=>loadTransactionsSecurity(auditFilters)} style={styles.addBtn}>Apply Filters</button><button onClick={()=>{const clean={status:'',branch_public_id:'',staff_public_id:'',date_from:'',date_to:''};setAuditFilters(clean);loadTransactionsSecurity(clean)}} style={{...styles.viewCardBtn,background:'white'}}>Clear</button></div>
+            </div>
+
+            <div style={{display:'grid',gap:9}}>
+              {auditTransactions.length===0 && !securityLoading && <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:12,padding:20,color:'#64748b'}}>No transactions match these filters.</div>}
+              {auditTransactions.map((tx,i)=>(
+                <div key={tx.transaction_id||tx.id||i} style={{background:'white',border:'1px solid #e2e8f0',borderRadius:12,padding:'12px 14px'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start',flexWrap:'wrap'}}>
+                    <div><div style={{fontWeight:850,color:'#0f172a'}}>{String(tx.action||'transaction').replaceAll('_',' ')}</div><div style={{fontSize:12,color:'#64748b',marginTop:3}}>{tx.customer_name||'No customer'} · {tx.staff_name||tx.actor_type||'System'}{tx.branch_name?` · ${tx.branch_name}`:''}</div></div>
+                    <span style={{fontSize:11,fontWeight:800,padding:'4px 8px',borderRadius:999,background:tx.status==='success'?'#dcfce7':tx.status==='failed'?'#fee2e2':'#fef3c7',color:tx.status==='success'?'#166534':tx.status==='failed'?'#991b1b':'#92400e'}}>{tx.status||'unknown'}</span>
+                  </div>
+                  <div style={{display:'flex',gap:14,flexWrap:'wrap',fontSize:11,color:'#64748b',marginTop:8}}><span>{tx.created_at?new Date(tx.created_at).toLocaleString():'—'}</span>{tx.delta!==null&&tx.delta!==undefined&&<span>Change: {Number(tx.delta)>0?'+':''}{tx.delta}</span>}{tx.balance_before!==null&&tx.balance_before!==undefined&&<span>Balance: {tx.balance_before} → {tx.balance_after??'—'}</span>}{tx.reason&&<span>Reason: {tx.reason}</span>}</div>
+                  {tx.transaction_id&&<div style={{fontSize:10,color:'#94a3b8',marginTop:7,wordBreak:'break-all'}}>Transaction ID: {tx.transaction_id}</div>}
                 </div>
               ))}
             </div>

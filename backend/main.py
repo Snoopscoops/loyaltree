@@ -8581,6 +8581,141 @@ def fail_transaction_audit(audit_row, error):
         print(f"TRANSACTION AUDIT failure-log warning: {e}")
 
 
+
+def _audit_name_maps(business_id: int):
+    """Small lookup maps used by the owner audit/security dashboard."""
+    def rows(table, cols):
+        try:
+            return supabase.table(table).select(cols).eq('business_id', business_id).execute().data or []
+        except Exception:
+            return []
+    customers = rows('customers', 'id,public_id,name')
+    staff = rows('staff', 'id,public_id,name')
+    branches = rows('branches', 'id,public_id,name')
+    return (
+        {str(x.get('id')): x for x in customers},
+        {str(x.get('id')): x for x in staff},
+        {str(x.get('id')): x for x in branches},
+    )
+
+
+def _audit_enrich(row: dict, customer_map: dict, staff_map: dict, branch_map: dict) -> dict:
+    item = dict(row or {})
+    customer = customer_map.get(str(item.get('customer_id'))) or {}
+    cashier = staff_map.get(str(item.get('staff_id'))) or {}
+    branch = branch_map.get(str(item.get('branch_id'))) or {}
+    item['customer_name'] = customer.get('name')
+    item['customer_public_id'] = customer.get('public_id')
+    item['staff_name'] = cashier.get('name')
+    item['staff_public_id'] = cashier.get('public_id')
+    item['branch_name'] = branch.get('name')
+    item['branch_public_id'] = branch.get('public_id')
+    return item
+
+
+@app.get('/api/v1/business/{public_id}/transaction-audit')
+def owner_transaction_audit(public_id: str, limit: int = 200, status: Optional[str] = None,
+                            action: Optional[str] = None, branch_public_id: Optional[str] = None,
+                            staff_public_id: Optional[str] = None, customer_public_id: Optional[str] = None,
+                            date_from: Optional[str] = None, date_to: Optional[str] = None):
+    """Owner-facing all-card transaction ledger. Read-only; newest first."""
+    business = safe_get_business(public_id)
+    limit = max(1, min(int(limit or 200), 500))
+    customer_map, staff_map, branch_map = _audit_name_maps(business['id'])
+
+    q = supabase.table('transaction_audit').select('*').eq('business_id', business['id'])
+    if status:
+        q = q.eq('status', status)
+    if action:
+        q = q.eq('action', action)
+    if branch_public_id:
+        match = next((x for x in branch_map.values() if x.get('public_id') == branch_public_id), None)
+        if not match: return {'transactions': [], 'total': 0}
+        q = q.eq('branch_id', match.get('id'))
+    if staff_public_id:
+        match = next((x for x in staff_map.values() if x.get('public_id') == staff_public_id), None)
+        if not match: return {'transactions': [], 'total': 0}
+        q = q.eq('staff_id', match.get('id'))
+    if customer_public_id:
+        match = next((x for x in customer_map.values() if x.get('public_id') == customer_public_id), None)
+        if not match: return {'transactions': [], 'total': 0}
+        q = q.eq('customer_id', match.get('id'))
+    if date_from:
+        q = q.gte('created_at', f'{date_from[:10]}T00:00:00')
+    if date_to:
+        q = q.lt('created_at', f'{date_to[:10]}T23:59:59.999999')
+    try:
+        rows = q.order('created_at', desc=True).limit(limit).execute().data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+    enriched = [_audit_enrich(r, customer_map, staff_map, branch_map) for r in rows]
+    return {'transactions': enriched, 'total': len(enriched)}
+
+
+@app.get('/api/v1/business/{public_id}/fraud-alerts')
+def owner_fraud_alerts(public_id: str, hours: int = 24):
+    """Explainable owner alerts derived from the all-card transaction audit ledger."""
+    business = safe_get_business(public_id)
+    hours = max(1, min(int(hours or 24), 24 * 30))
+    since = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+    customer_map, staff_map, branch_map = _audit_name_maps(business['id'])
+    try:
+        rows = (supabase.table('transaction_audit').select('*')
+                .eq('business_id', business['id']).gte('created_at', since)
+                .order('created_at', desc=True).limit(1000).execute().data or [])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    alerts = []
+    successful = [r for r in rows if r.get('status') == 'success']
+    failed = [r for r in rows if r.get('status') == 'failed']
+
+    # Many successful loyalty mutations by one cashier in a rolling review window.
+    by_staff = {}
+    for r in successful:
+        if r.get('staff_id') is not None:
+            by_staff.setdefault(str(r.get('staff_id')), []).append(r)
+    for sid, items in by_staff.items():
+        if len(items) >= 25:
+            who = (staff_map.get(sid) or {}).get('name') or 'Unknown cashier'
+            alerts.append({'type':'high_velocity','severity':'high','title':'High cashier activity',
+                           'message':f'{who} completed {len(items)} loyalty transactions in the last {hours} hours.',
+                           'staff_public_id':(staff_map.get(sid) or {}).get('public_id'),'count':len(items)})
+
+    # Repeated activity on the same customer can indicate duplicate scans or abuse.
+    by_customer = {}
+    for r in successful:
+        if r.get('customer_id') is not None:
+            by_customer.setdefault(str(r.get('customer_id')), []).append(r)
+    for cid, items in by_customer.items():
+        if len(items) >= 8:
+            who = (customer_map.get(cid) or {}).get('name') or 'Unknown customer'
+            alerts.append({'type':'repeat_customer','severity':'medium','title':'Repeated customer activity',
+                           'message':f'{who} had {len(items)} successful loyalty transactions in the last {hours} hours.',
+                           'customer_public_id':(customer_map.get(cid) or {}).get('public_id'),'count':len(items)})
+
+    # Manual corrections are legitimate, but clusters deserve owner review.
+    adjustment_words = ('adjust','manual','remove','correction','override')
+    adjustments = [r for r in successful if any(w in str(r.get('action') or '').lower() for w in adjustment_words)
+                   or any(w in str(r.get('reason') or '').lower() for w in adjustment_words)]
+    if len(adjustments) >= 5:
+        alerts.append({'type':'manual_adjustments','severity':'medium','title':'Frequent manual adjustments',
+                       'message':f'{len(adjustments)} manual/adjustment transactions were recorded in the last {hours} hours.',
+                       'count':len(adjustments)})
+
+    if len(failed) >= 5:
+        alerts.append({'type':'failed_transactions','severity':'medium','title':'Repeated failed transactions',
+                       'message':f'{len(failed)} loyalty transactions failed in the last {hours} hours.', 'count':len(failed)})
+
+    missing_tx = [r for r in successful if not r.get('transaction_id')]
+    if missing_tx:
+        alerts.append({'type':'missing_transaction_id','severity':'high','title':'Transaction integrity warning',
+                       'message':f'{len(missing_tx)} successful transactions have no transaction ID.', 'count':len(missing_tx)})
+
+    alerts.sort(key=lambda x: {'high':0,'medium':1,'low':2}.get(x.get('severity'), 3))
+    return {'alerts': alerts, 'total': len(alerts), 'reviewed_transactions': len(rows),
+            'window_hours': hours, 'generated_at': datetime.utcnow().isoformat()}
+
 def sync_stamp_wallets_background(customer: dict, business: dict, program: dict,
                                   reward_unlocked: bool, new_count: int, goal: int):
     """Refresh Wallet passes after the cashier response, never on its critical path."""
