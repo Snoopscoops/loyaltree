@@ -15949,6 +15949,7 @@ async def run_birthday_greetings(_: bool = Depends(require_cron)):
         except Exception:
             continue
         program = safe_get_loyalty_program(business.get('id'))
+        retention_settings = _retention_message_settings(business)
         for customer in customers:
             birthday = customer.get('birthday')
             if not birthday:
@@ -15968,7 +15969,12 @@ async def run_birthday_greetings(_: bool = Depends(require_cron)):
             ok = send_wallet_object_message(
                 object_id,
                 header="Happy Birthday! 🎉",
-                body=f"Happy birthday from {business.get('name', 'us')}! Stop by soon to celebrate with {reward_name}.",
+                body=_render_retention_message(
+                    retention_settings['birthday_message'],
+                    business_name=business.get('name','us'),
+                    reward_name=reward_name,
+                    customer_name=customer.get('name') or 'Customer'
+                ),
                 message_id=f"birthday-{customer.get('id')}-{today.year}",
             )
             if ok:
@@ -15985,7 +15991,6 @@ async def run_birthday_greetings(_: bool = Depends(require_cron)):
 @app.post("/api/v1/cron/win-back")
 async def run_win_back(_: bool = Depends(require_cron)):
     now = datetime.utcnow()
-    inactivity_cutoff = now - timedelta(days=30)
     resend_cutoff = now - timedelta(days=30)  # don't re-nudge more than once a month
     sent, skipped, errors = 0, 0, 0
 
@@ -15996,6 +16001,8 @@ async def run_win_back(_: bool = Depends(require_cron)):
 
     for business in businesses:
         biz_id = business.get('id')
+        retention_settings = _retention_message_settings(business)
+        inactivity_cutoff = now - timedelta(days=retention_settings['churn_days'])
         try:
             customers = supabase.table("customers").select("*").eq("business_id", biz_id).execute().data or []
             stamp_events = supabase.table("stamp_events").select("customer_id,created_at").eq("business_id", biz_id).execute().data or []
@@ -16029,7 +16036,12 @@ async def run_win_back(_: bool = Depends(require_cron)):
             ok = send_wallet_object_message(
                 object_id,
                 header="We miss you! 🌱",
-                body=f"It's been a while since your last visit to {business.get('name', 'us')} - come back and pick up where you left off!",
+                body=_render_retention_message(
+                    retention_settings['win_back_message'],
+                    business_name=business.get('name','us'),
+                    customer_name=customer.get('name') or 'Customer',
+                    days_inactive=(now-reference_date).days if reference_date else None
+                ),
                 message_id=f"winback-{customer.get('id')}-{now.strftime('%Y%m%d')}",
             )
             if ok:
@@ -16834,18 +16846,110 @@ async def owner_crm(public_id:str, authorization:str=Header(default='')):
     return {'customers':rows,'segments':counts,'total_customers':len(rows)}
 
 
+
+class RetentionMessageSettings(BaseModel):
+    birthday_message: Optional[str] = None
+    win_back_message: Optional[str] = None
+    churn_days: Optional[int] = None
+
+
+def _get_retention_rule(business_id: int, rule_type: str):
+    try:
+        rows=(supabase.table('retention_rules').select('*')
+              .eq('business_id',business_id).eq('rule_type',rule_type).limit(1).execute().data or [])
+        return rows[0] if rows else None
+    except Exception:
+        return None
+
+
+def _retention_message_settings(business: dict):
+    birthday=_get_retention_rule(business.get('id'),'birthday')
+    winback=_get_retention_rule(business.get('id'),'win_back')
+    return {
+        'birthday_message': (birthday or {}).get('message_template') or
+            "Happy birthday from {business_name}! Stop by soon to celebrate with {reward_name}.",
+        'win_back_message': (winback or {}).get('message_template') or
+            "It's been a while since your last visit to {business_name} - come back and pick up where you left off!",
+        'churn_days': int((winback or {}).get('days_threshold') or 30),
+    }
+
+
+def _render_retention_message(template: str, *, business_name: str='', reward_name: str='', customer_name: str='', days_inactive=None):
+    values={
+        'business_name': business_name or 'us',
+        'reward_name': reward_name or 'a treat',
+        'customer_name': customer_name or 'Customer',
+        'days_inactive': '' if days_inactive is None else str(days_inactive),
+    }
+    try:
+        return str(template or '').format(**values)
+    except Exception:
+        # Bad/missing placeholder should never break a scheduled job.
+        return str(template or '')
+
+
+@app.get('/api/v1/business/{public_id}/retention-settings')
+async def get_retention_settings(public_id:str, authorization:str=Header(default='')):
+    require_owner_session(public_id,authorization)
+    business=safe_get_business(public_id)
+    if not business: raise HTTPException(status_code=404,detail='Business not found')
+    return _retention_message_settings(business)
+
+
+@app.put('/api/v1/business/{public_id}/retention-settings')
+async def save_retention_settings(public_id:str, req:RetentionMessageSettings, authorization:str=Header(default='')):
+    require_owner_session(public_id,authorization)
+    business=safe_get_business(public_id)
+    if not business: raise HTTPException(status_code=404,detail='Business not found')
+
+    current=_retention_message_settings(business)
+    birthday=(req.birthday_message if req.birthday_message is not None else current['birthday_message']).strip()
+    winback=(req.win_back_message if req.win_back_message is not None else current['win_back_message']).strip()
+    churn_days=req.churn_days if req.churn_days is not None else current['churn_days']
+
+    if not birthday or len(birthday)>500:
+        raise HTTPException(status_code=400,detail='Birthday message must be 1-500 characters')
+    if not winback or len(winback)>500:
+        raise HTTPException(status_code=400,detail='Win-back message must be 1-500 characters')
+    if churn_days < 7 or churn_days > 365:
+        raise HTTPException(status_code=400,detail='Churn inactivity threshold must be between 7 and 365 days')
+
+    now=datetime.utcnow().isoformat()
+    for rule_type,message,days in [
+        ('birthday',birthday,None),
+        ('win_back',winback,int(churn_days)),
+    ]:
+        existing=_get_retention_rule(business.get('id'),rule_type)
+        payload={
+            'business_id':business.get('id'),'rule_type':rule_type,'enabled':True,
+            'message_template':message,'days_threshold':days,'updated_at':now,
+        }
+        if existing:
+            supabase.table('retention_rules').update(payload).eq('id',existing.get('id')).execute()
+        else:
+            supabase.table('retention_rules').insert(payload).execute()
+
+    return _retention_message_settings(business)
+
+
 @app.get('/api/v1/business/{public_id}/retention-opportunities')
 async def retention_opportunities(public_id:str, authorization:str=Header(default='')):
     require_owner_session(public_id,authorization)
     business=safe_get_business(public_id)
     if not business: raise HTTPException(status_code=404,detail='Business not found')
     customers,tx=_crm_dataset(business.get('id')); rows=_crm_metrics(customers,tx)
+    settings=_retention_message_settings(business)
     opportunities=[]
     for r in rows:
         seg=r['crm']['segment']; days=r['crm']['days_since_last_activity']
-        if seg in ('at_risk','inactive_60','inactive_90'):
+        if days is not None and days >= settings['churn_days']:
             opportunities.append({'customer_public_id':r.get('public_id'),'customer_name':r.get('name'),'type':'win_back','segment':seg,'days_inactive':days,
-                                  'suggested_message':f"We miss you! Come back and continue your loyalty progress."})
+                                  'suggested_message':_render_retention_message(
+                                      settings['win_back_message'],
+                                      business_name=business.get('name','us'),
+                                      customer_name=r.get('name') or 'Customer',
+                                      days_inactive=days
+                                  )})
         goal=int((safe_get_loyalty_program(business.get('id')) or {}).get('stamp_goal') or 0)
         if goal and int(r.get('stamp_count') or 0)==goal-1:
             opportunities.append({'customer_public_id':r.get('public_id'),'customer_name':r.get('name'),'type':'one_away','segment':seg,

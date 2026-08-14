@@ -14,6 +14,13 @@ function AnalyticsDashboard({ API_BASE, user }) {
   const [fraudAlerts, setFraudAlerts] = useState([])
   const [extendedLoading, setExtendedLoading] = useState(true)
   const [extendedError, setExtendedError] = useState('')
+  const [retentionSettings, setRetentionSettings] = useState({
+    birthday_message: 'Happy birthday from {business_name}! Stop by soon to celebrate with {reward_name}.',
+    win_back_message: "It's been a while since your last visit to {business_name} - come back and pick up where you left off!",
+    churn_days: 30,
+  })
+  const [savingRetentionSettings, setSavingRetentionSettings] = useState(false)
+  const [retentionSettingsMessage, setRetentionSettingsMessage] = useState('')
 
   useEffect(() => {
     fetchAnalytics()
@@ -45,22 +52,24 @@ function AnalyticsDashboard({ API_BASE, user }) {
     setExtendedError('')
     const base = `${API_BASE}/api/v1/business/${user.business_slug}`
     try {
-      const [walletRes, crmRes, retentionRes, opportunityRes, auditRes, fraudRes] = await Promise.all([
+      const [walletRes, crmRes, retentionRes, opportunityRes, auditRes, fraudRes, settingsRes] = await Promise.all([
         authFetch(`${base}/wallet-queue?limit=100`),
         authFetch(`${base}/crm`),
         authFetch(`${base}/retention-analytics?days=90`),
         authFetch(`${base}/retention-opportunities`),
         authFetch(`${base}/transaction-audit?limit=100`),
         authFetch(`${base}/fraud-alerts?hours=24`),
+        authFetch(`${base}/retention-settings`),
       ])
 
-      const [wallet, crm, retention, opportunities, audit, fraud] = await Promise.all([
+      const [wallet, crm, retention, opportunities, audit, fraud, settings] = await Promise.all([
         walletRes.json().catch(() => ({})),
         crmRes.json().catch(() => ({})),
         retentionRes.json().catch(() => ({})),
         opportunityRes.json().catch(() => ({})),
         auditRes.json().catch(() => ({})),
         fraudRes.json().catch(() => ({})),
+        settingsRes.json().catch(() => ({})),
       ])
 
       if (walletRes.ok) setWalletQueue(wallet)
@@ -69,16 +78,37 @@ function AnalyticsDashboard({ API_BASE, user }) {
       if (opportunityRes.ok) setRetentionOps(Array.isArray(opportunities.opportunities) ? opportunities.opportunities : [])
       if (auditRes.ok) setAuditTransactions(Array.isArray(audit.transactions) ? audit.transactions : [])
       if (fraudRes.ok) setFraudAlerts(Array.isArray(fraud.alerts) ? fraud.alerts : [])
+      if (settingsRes.ok) setRetentionSettings(settings)
 
       const failed = [
         [walletRes, wallet], [crmRes, crm], [retentionRes, retention],
-        [opportunityRes, opportunities], [auditRes, audit], [fraudRes, fraud],
+        [opportunityRes, opportunities], [auditRes, audit], [fraudRes, fraud], [settingsRes, settings],
       ].find(([res]) => !res.ok)
       if (failed) setExtendedError(failed[1]?.detail || 'Some extended analytics could not be loaded.')
     } catch (err) {
       setExtendedError('Could not load CRM, Wallet Queue, Retention, or Transaction Security.')
     }
     setExtendedLoading(false)
+  }
+
+  const saveRetentionSettings = async () => {
+    setSavingRetentionSettings(true)
+    setRetentionSettingsMessage('')
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/retention-settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(retentionSettings),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not save retention messages')
+      setRetentionSettings(data)
+      setRetentionSettingsMessage('Saved ✓')
+      await fetchExtendedAnalytics()
+    } catch (err) {
+      setRetentionSettingsMessage(err.message || 'Save failed')
+    }
+    setSavingRetentionSettings(false)
   }
 
   const fetchAnalytics = async () => {
@@ -590,6 +620,56 @@ function AnalyticsDashboard({ API_BASE, user }) {
       {/* Retention */}
       <div id="retention-analytics" style={styles.section}>
         <h2 className="an-section-title" style={styles.sectionTitle}>🔁 Retention Analytics</h2>
+
+        <div style={{...styles.insightCard, marginBottom:16}}>
+          <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start',flexWrap:'wrap',marginBottom:14}}>
+            <div>
+              <h4 style={{...styles.insightTitle,marginBottom:4}}>✍️ Automated Message Settings</h4>
+              <div style={styles.mutedText}>Businesses can personalize the birthday greeting and churn / win-back message.</div>
+            </div>
+            <button className="an-actionbtn" style={styles.actionBtn} disabled={savingRetentionSettings} onClick={saveRetentionSettings}>
+              {savingRetentionSettings ? 'Saving…' : 'Save Messages'}
+            </button>
+          </div>
+
+          <label style={styles.editorLabel}>Birthday Greeting</label>
+          <textarea
+            value={retentionSettings.birthday_message || ''}
+            onChange={e=>setRetentionSettings(s=>({...s,birthday_message:e.target.value}))}
+            maxLength={500}
+            rows={3}
+            style={styles.editorTextarea}
+          />
+          <div style={styles.editorHelp}>Available: {'{business_name}'}, {'{customer_name}'}, {'{reward_name}'}</div>
+
+          <div style={{height:14}} />
+
+          <label style={styles.editorLabel}>Churn / Win-Back Message</label>
+          <textarea
+            value={retentionSettings.win_back_message || ''}
+            onChange={e=>setRetentionSettings(s=>({...s,win_back_message:e.target.value}))}
+            maxLength={500}
+            rows={3}
+            style={styles.editorTextarea}
+          />
+          <div style={styles.editorHelp}>Available: {'{business_name}'}, {'{customer_name}'}, {'{days_inactive}'}</div>
+
+          <div style={{height:14}} />
+          <label style={styles.editorLabel}>Mark Customer as Churn Risk After</label>
+          <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+            <input
+              type="number"
+              min="7"
+              max="365"
+              value={retentionSettings.churn_days || 30}
+              onChange={e=>setRetentionSettings(s=>({...s,churn_days:Number(e.target.value)}))}
+              style={styles.editorNumber}
+            />
+            <span style={styles.mutedText}>days without loyalty activity</span>
+          </div>
+          {retentionSettingsMessage && <div style={{marginTop:10,fontSize:13,fontWeight:700,color:retentionSettingsMessage.includes('Saved')?'#166534':'#b91c1c'}}>{retentionSettingsMessage}</div>}
+        </div>
+
         <div className="an-overview-grid" style={styles.overviewGrid}>
           <MiniMetric label="Repeat Customer Rate" value={`${retentionData.repeat_customer_rate || 0}%`} />
           <MiniMetric label="Active ≤30 Days" value={`${retentionData.retention_30_rate || 0}%`} />
@@ -968,6 +1048,36 @@ const styles = {
     padding:12,
     fontSize:13,
     color:'#64748b',
+  },
+  editorLabel: {
+    display:'block',
+    fontSize:13,
+    fontWeight:700,
+    color:'#334155',
+    marginBottom:6,
+  },
+  editorTextarea: {
+    width:'100%',
+    boxSizing:'border-box',
+    border:'1px solid #cbd5e1',
+    borderRadius:10,
+    padding:'10px 12px',
+    fontSize:13,
+    color:'#1e293b',
+    resize:'vertical',
+    fontFamily:'inherit',
+  },
+  editorNumber: {
+    width:100,
+    border:'1px solid #cbd5e1',
+    borderRadius:9,
+    padding:'9px 10px',
+    fontSize:14,
+  },
+  editorHelp: {
+    marginTop:5,
+    fontSize:11,
+    color:'#94a3b8',
   },
   sectionTitle: {
     fontSize: 20,
