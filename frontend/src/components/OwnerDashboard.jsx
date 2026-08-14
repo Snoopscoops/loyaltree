@@ -41,12 +41,69 @@ const INDUSTRY_META = {
 }
 
 function OwnerDashboard({ API_BASE, user, onLogout }) {
+  const [installPrompt, setInstallPrompt] = useState(null)
+  const [showInstallHelp, setShowInstallHelp] = useState(false)
+  const [installPlatform, setInstallPlatform] = useState('other')
+  const [isStandaloneApp, setIsStandaloneApp] = useState(false)
+
   // Centralized authenticated fetch for owner-dashboard API calls.
   // The backend now rejects sensitive owner endpoints without this signed token.
   const authFetch = (url, options = {}) => {
     const headers = { ...(options.headers || {}) }
     if (user?.token) headers.Authorization = `Bearer ${user.token}`
     return fetch(url, { ...options, headers })
+  }
+
+  useEffect(() => {
+    const ua = window.navigator.userAgent || ''
+    const ios = /iphone|ipad|ipod/i.test(ua)
+    const android = /android/i.test(ua)
+    setInstallPlatform(ios ? 'ios' : android ? 'android' : 'other')
+
+    const standalone =
+      window.matchMedia?.('(display-mode: standalone)')?.matches ||
+      window.navigator.standalone === true
+    setIsStandaloneApp(Boolean(standalone))
+
+    const handleBeforeInstallPrompt = (event) => {
+      event.preventDefault()
+      setInstallPrompt(event)
+    }
+
+    const handleInstalled = () => {
+      setInstallPrompt(null)
+      setIsStandaloneApp(true)
+      setShowInstallHelp(false)
+    }
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt)
+    window.addEventListener('appinstalled', handleInstalled)
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt)
+      window.removeEventListener('appinstalled', handleInstalled)
+    }
+  }, [])
+
+  const handleAddToHomeScreen = async () => {
+    if (isStandaloneApp) return
+
+    if (installPrompt) {
+      try {
+        await installPrompt.prompt()
+        const choice = await installPrompt.userChoice
+        if (choice?.outcome === 'accepted') {
+          setInstallPrompt(null)
+        }
+      } catch (err) {
+        setShowInstallHelp(true)
+      }
+      return
+    }
+
+    // iPhone/iPad Safari does not expose a programmatic install prompt.
+    // Show exact Add to Home Screen instructions instead.
+    setShowInstallHelp(true)
   }
 
   const navigate = useNavigate()
@@ -1024,6 +1081,19 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           <button onClick={() => { setShowAnnouncements(true); markAnnouncementsChecked(); if (isTablet || isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>📢 Announcements</button>
           <button onClick={() => { markAnalyticsChecked(); navigate('/analytics'); if (isTablet || isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>📊 Analytics</button>
           <button
+            type="button"
+            onClick={() => { handleAddToHomeScreen(); if (isTablet || isMobile) setMobileHeaderOpen(false) }}
+            style={{
+              ...styles.installBtn,
+              ...(isTablet || isMobile ? styles.headerActionResponsive : {}),
+              ...(isStandaloneApp ? styles.installBtnInstalled : {}),
+            }}
+            title={isStandaloneApp ? 'LoyaltyTree is already installed' : 'Add LoyaltyTree to your phone home screen'}
+            disabled={isStandaloneApp}
+          >
+            {isStandaloneApp ? '✓ App Installed' : '📲 Add to Home Screen'}
+          </button>
+          <button
             onClick={() => { setMobileHeaderOpen(false); contactLoyaltyTreeSupport() }}
             style={{...styles.supportBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}
             title="Chat with LoyaltyTree Support on Messenger"
@@ -1036,6 +1106,63 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       </header>
 
       <PlatformPromoBanner API_BASE={API_BASE} businessSlug={user?.business_slug} />
+
+      {showInstallHelp && (
+        <div style={styles.installOverlay} onClick={() => setShowInstallHelp(false)}>
+          <div style={styles.installModal} onClick={e => e.stopPropagation()}>
+            <button
+              type="button"
+              onClick={() => setShowInstallHelp(false)}
+              style={styles.installClose}
+              aria-label="Close"
+            >
+              ✕
+            </button>
+
+            <div style={styles.installIcon}>📲</div>
+            <h2 style={styles.installTitle}>Add LoyaltyTree to your Home Screen</h2>
+
+            {installPlatform === 'ios' ? (
+              <>
+                <p style={styles.installText}>
+                  On iPhone or iPad, open this dashboard in <b>Safari</b>, then:
+                </p>
+                <div style={styles.installSteps}>
+                  <div><b>1.</b> Tap the <b>Share</b> button <span style={styles.installSymbol}>□↑</span></div>
+                  <div><b>2.</b> Scroll and tap <b>Add to Home Screen</b></div>
+                  <div><b>3.</b> Tap <b>Add</b></div>
+                </div>
+                <p style={styles.installHint}>
+                  LoyaltyTree will then open from your Home Screen like an app.
+                </p>
+              </>
+            ) : installPlatform === 'android' ? (
+              <>
+                <p style={styles.installText}>
+                  If the automatic install window did not appear, open the browser menu <b>⋮</b> and choose
+                  <b> Install app</b> or <b>Add to Home screen</b>.
+                </p>
+                <div style={styles.installSteps}>
+                  <div><b>1.</b> Tap the browser menu <b>⋮</b></div>
+                  <div><b>2.</b> Tap <b>Install app</b> / <b>Add to Home screen</b></div>
+                  <div><b>3.</b> Confirm <b>Install</b></div>
+                </div>
+              </>
+            ) : (
+              <>
+                <p style={styles.installText}>
+                  Use your browser's <b>Install app</b> or <b>Add to Home Screen</b> option.
+                  On supported Chrome/Edge browsers, an install icon may also appear in the address bar.
+                </p>
+              </>
+            )}
+
+            <button type="button" onClick={() => setShowInstallHelp(false)} style={styles.installDoneBtn}>
+              Got it
+            </button>
+          </div>
+        </div>
+      )}
 
       {message && (
         <div style={styles.toast} onClick={() => setMessage('')}>
@@ -2665,6 +2792,104 @@ const styles = {
     boxSizing: 'border-box',
     maxWidth: '100%',
     flexShrink: 0,
+  },
+
+  installBtn: {
+    padding: '8px 14px',
+    background: '#f0fdfa',
+    color: '#0f766e',
+    border: '1px solid #99f6e4',
+    borderRadius: 8,
+    fontSize: 13,
+    fontWeight: 700,
+    cursor: 'pointer',
+    boxSizing: 'border-box',
+  },
+  installBtnInstalled: {
+    background: '#f8fafc',
+    color: '#64748b',
+    borderColor: '#e2e8f0',
+    cursor: 'default',
+  },
+  installOverlay: {
+    position: 'fixed',
+    inset: 0,
+    zIndex: 9999,
+    background: 'rgba(15, 23, 42, 0.55)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 18,
+  },
+  installModal: {
+    width: '100%',
+    maxWidth: 430,
+    background: 'white',
+    borderRadius: 18,
+    boxShadow: '0 24px 70px rgba(15,23,42,0.28)',
+    padding: '26px 24px 22px',
+    position: 'relative',
+  },
+  installClose: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    width: 34,
+    height: 34,
+    borderRadius: '50%',
+    border: 'none',
+    background: '#f1f5f9',
+    color: '#475569',
+    cursor: 'pointer',
+    fontSize: 16,
+  },
+  installIcon: {
+    fontSize: 40,
+    marginBottom: 10,
+  },
+  installTitle: {
+    margin: '0 38px 8px 0',
+    fontSize: 21,
+    color: '#0f172a',
+  },
+  installText: {
+    margin: '0 0 14px',
+    fontSize: 14,
+    lineHeight: 1.55,
+    color: '#475569',
+  },
+  installSteps: {
+    display: 'grid',
+    gap: 10,
+    padding: 14,
+    borderRadius: 12,
+    background: '#f8fafc',
+    color: '#334155',
+    fontSize: 14,
+    lineHeight: 1.45,
+  },
+  installSymbol: {
+    display: 'inline-block',
+    fontSize: 18,
+    color: '#2563eb',
+    marginLeft: 4,
+  },
+  installHint: {
+    margin: '12px 0 0',
+    fontSize: 12,
+    color: '#64748b',
+  },
+  installDoneBtn: {
+    marginTop: 18,
+    width: '100%',
+    border: 'none',
+    borderRadius: 10,
+    background: '#0d9488',
+    color: 'white',
+    fontWeight: 700,
+    fontSize: 14,
+    padding: '11px 14px',
+    cursor: 'pointer',
   },
   renewalBtnWarning: {
     background: '#fffbeb',
