@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime, parsedate_to_datetime
 from typing import Optional, List, Literal
 
-from fastapi import FastAPI, HTTPException, Request, Depends, Header, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Request, Depends, Header, BackgroundTasks, Query
 from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
