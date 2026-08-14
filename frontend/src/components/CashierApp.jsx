@@ -607,8 +607,14 @@ function CashierApp({ API_BASE }) {
       const data = await res.json()
 
       if (res.ok) {
-        setMessage('🎁 Reward redeemed!')
-        fetchCustomer(customerData.public_id)
+        setCustomerData(prev => prev ? {
+          ...prev,
+          stamp_count: data.stamp_count ?? prev.stamp_count,
+          // The refetch below resolves whether another milestone is currently available.
+          reward_unlocked: false,
+        } : prev)
+        setMessage(`🎁 ${data.reward?.reward_name || 'Reward'} redeemed! Stamps remain at ${data.stamp_count ?? customerData.stamp_count}.`)
+        await fetchCustomer(customerData.public_id)
       } else {
         setMessage(`❌ ${data.detail || 'No reward to redeem'}`)
       }
@@ -974,7 +980,11 @@ function CashierApp({ API_BASE }) {
                   ? `${customerData.vip_tier?.name || 'VIP'} · ${customerData.vip_points || 0} points`
                   : customerData.card_type === 'membership'
                   ? `${customerData.membership_status.toUpperCase()}${customerData.membership_expires_at ? ` • until ${customerData.membership_expires_at}` : ''}`
-                  : `${customerData.stamp_count} rings • ${customerData.reward_threshold - (customerData.stamp_count % customerData.reward_threshold)} to fruit`}
+                  : `${customerData.stamp_count} rings • ${
+                      customerData.stamp_count >= customerData.reward_threshold
+                        ? 'maximum reached'
+                        : `${Math.max(0, customerData.reward_threshold - customerData.stamp_count)} to final reward`
+                    }`}
               </p>
             </div>
           </div>
@@ -1075,14 +1085,20 @@ function CashierApp({ API_BASE }) {
           ) : (
             /* Stamp Rings */
             <div style={styles.stampVisual}>
-              {Array.from({length: customerData.reward_threshold || 8}).map((_, i) => (
-                <div key={i} style={{
-                  ...styles.stampDot,
-                  background: i < (customerData.stamp_count % (customerData.reward_threshold || 8)) ? '#0d9488' : '#e2e8f0',
-                }}>
-                  {i < (customerData.stamp_count % (customerData.reward_threshold || 8)) ? '🍃' : ''}
-                </div>
-              ))}
+              {Array.from({length: customerData.reward_threshold || 8}).map((_, i) => {
+                const filled = Math.min(
+                  Number(customerData.stamp_count || 0),
+                  Number(customerData.reward_threshold || 8)
+                )
+                return (
+                  <div key={i} style={{
+                    ...styles.stampDot,
+                    background: i < filled ? '#0d9488' : '#e2e8f0',
+                  }}>
+                    {i < filled ? '🍃' : ''}
+                  </div>
+                )
+              })}
             </div>
           )}
 
