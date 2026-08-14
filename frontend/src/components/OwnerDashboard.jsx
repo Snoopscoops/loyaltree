@@ -235,7 +235,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
 
   const cardSetUp = !!program?.google_wallet_class_id
-  const cashierSetUp = staff.length > 0
+  const cashierSetUp = staff.some(s => (s.role || 'cashier').toLowerCase() === 'cashier')
 
   useEffect(() => {
     if (announcementsCheckedKey) setAnnouncementsChecked(localStorage.getItem(announcementsCheckedKey) === '1')
@@ -1077,7 +1077,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 : `⏰ Renews in ${subscription.days_left}d — Pay now`}
             </button>
           )}
-          <button onClick={() => { setOnboardingStep(0); setShowOnboarding(true); if (isTablet || isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>🎓 Setup Guide</button>
+          <button onClick={() => { setOnboardingStep(!cardSetUp ? 0 : !cashierSetUp ? 1 : 2); setShowOnboarding(true); if (isTablet || isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>🎓 Setup Guide</button>
           <button onClick={() => { setShowAnnouncements(true); markAnnouncementsChecked(); if (isTablet || isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>📢 Announcements</button>
           <button onClick={() => { markAnalyticsChecked(); navigate('/analytics'); if (isTablet || isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>📊 Analytics</button>
           <button
@@ -2375,9 +2375,11 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         const totalSteps = 4
         const safeStep = Math.min(onboardingStep, totalSteps - 1)
 
-        const goNextAfterCard = () => {
-          loadData()
-          setOnboardingStep(1)
+        const goNextAfterCard = async () => {
+          await loadData()
+          // If this business already has a cashier, do not force the
+          // Create Cashier tutorial step again.
+          setOnboardingStep(cashierSetUp ? 2 : 1)
         }
 
         const submitCashierInsideTutorial = async (e) => {
@@ -2496,7 +2498,26 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                   </div>
                 )}
 
-                {safeStep === 1 && (
+                {safeStep === 1 && cashierSetUp && (
+                  <div style={{
+                    background: 'white',
+                    border: '1px solid #e2e8f0',
+                    borderRadius: 18,
+                    padding: 24,
+                    textAlign: 'center',
+                  }}>
+                    <div style={{fontSize: 42, marginBottom: 10}}>✅</div>
+                    <h3 style={{margin: '0 0 8px', color: '#0f172a'}}>Cashier already set up</h3>
+                    <p style={{margin: '0 0 18px', color: '#64748b', fontSize: 14, lineHeight: 1.55}}>
+                      This business already has a cashier account, so you do not need to create another one.
+                    </p>
+                    <button type="button" onClick={() => setOnboardingStep(2)} style={{...styles.submitBtn, width: '100%'}}>
+                      Continue to Join QR
+                    </button>
+                  </div>
+                )}
+
+                {safeStep === 1 && !cashierSetUp && (
                   <div style={{
                     background: 'white',
                     border: '1px solid #e2e8f0',
