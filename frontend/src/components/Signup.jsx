@@ -57,6 +57,7 @@ function Signup({ API_BASE }) {
     kit_delivery_instructions: '',
   })
   const [plans, setPlans] = useState(null)
+  const [logoUpload, setLogoUpload] = useState({ uploading:false, error:'' })
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   // 'form' -> 'payment' -> 'activated'. New businesses must complete
@@ -76,6 +77,27 @@ function Signup({ API_BASE }) {
     setForm({ ...form, [e.target.name]: e.target.value })
   }
 
+
+  const handleLogoUpload = async (file) => {
+    if (!file) return
+    if (!file.type.startsWith('image/')) return setLogoUpload({uploading:false,error:'Please choose an image file.'})
+    if (file.size > 8 * 1024 * 1024) return setLogoUpload({uploading:false,error:'Logo must be under 8MB.'})
+    setLogoUpload({uploading:true,error:''})
+    try {
+      const sigRes = await fetch(`${API_BASE}/api/v1/signup/cloudinary-signature`, { method:'POST' })
+      const sig = await sigRes.json()
+      if (!sigRes.ok) throw new Error(sig.detail || 'Could not start logo upload')
+      const body = new FormData()
+      body.append('file', file); body.append('api_key', sig.api_key); body.append('timestamp', sig.timestamp)
+      body.append('signature', sig.signature); body.append('upload_preset', sig.upload_preset); body.append('folder', sig.folder)
+      const upRes = await fetch(`https://api.cloudinary.com/v1_1/${sig.cloud_name}/image/upload`, {method:'POST',body})
+      const uploaded = await upRes.json()
+      if (!upRes.ok || !uploaded.secure_url) throw new Error(uploaded?.error?.message || 'Logo upload failed')
+      setForm(f=>({...f,logo_url:uploaded.secure_url}))
+      setLogoUpload({uploading:false,error:''})
+    } catch(err) { setLogoUpload({uploading:false,error:err.message || 'Logo upload failed'}) }
+  }
+
   const branchCount = Number(form.branch_count) || 1
   const selectedPlanData = plans?.[form.plan]
   const selectedExceedsCap = selectedPlanData?.max_branches != null && branchCount > selectedPlanData.max_branches
@@ -84,7 +106,7 @@ function Signup({ API_BASE }) {
     e.preventDefault()
     setError('')
     if (form.setup_kit_requested) {
-      if (!form.logo_url.trim()) return setError('Business logo URL is required for the physical QR kit.')
+      if (!form.logo_url.trim()) return setError('Please upload your business logo for the physical QR kit.')
       if (!form.kit_recipient_name.trim() || !form.kit_contact_number.trim() || !form.kit_delivery_address.trim()) {
         return setError('Complete recipient and delivery details are required for the physical QR kit.')
       }
@@ -174,8 +196,12 @@ function Signup({ API_BASE }) {
             <input name="address" value={form.address} onChange={handleChange} style={styles.input} placeholder="123 Main St, City" />
           </div>
           <div style={styles.inputGroup}>
-            <label style={styles.label}>Logo URL (optional)</label>
-            <input name="logo_url" value={form.logo_url} onChange={handleChange} style={styles.input} placeholder="https://your-cdn.com/logo.png" />
+            <label style={styles.label}>Business Logo (optional)</label>
+            <input type="file" accept="image/png,image/jpeg,image/webp" onChange={e=>handleLogoUpload(e.target.files?.[0])} style={styles.fileInput} />
+            <span style={styles.businessTip}>Upload PNG, JPG or WebP · maximum 8MB. Required if you order the physical QR / PR Kit.</span>
+            {logoUpload.uploading && <span style={styles.businessTip}>Uploading logo…</span>}
+            {logoUpload.error && <div style={{...styles.error,marginTop:4}}>{logoUpload.error}</div>}
+            {form.logo_url && <div style={styles.logoPreviewRow}><img src={form.logo_url} alt="Business logo preview" style={styles.logoPreview}/><span style={{fontSize:12,color:'#0f766e',fontWeight:700}}>✓ Logo uploaded</span></div>}
           </div>
           <div style={styles.row}>
             <div style={{ ...styles.inputGroup, flex: 1 }}>
@@ -331,6 +357,9 @@ const styles = {
     fontWeight: 500,
     color: '#334155',
   },
+  fileInput: { width:'100%', boxSizing:'border-box', padding:'10px', borderRadius:10, border:'1.5px dashed #cbd5e1', background:'#f8fafc', fontFamily:'inherit' },
+  logoPreviewRow: { display:'flex', alignItems:'center', gap:10, marginTop:6 },
+  logoPreview: { width:58, height:58, objectFit:'cover', borderRadius:12, border:'1px solid #e2e8f0', background:'white' },
   input: {
     padding: '12px 16px',
     borderRadius: 10,

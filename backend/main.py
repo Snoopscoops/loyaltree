@@ -6994,6 +6994,42 @@ async def get_showroom_qr_code(public_id: str):
 
 # CAR LENDING / SHOWROOM - VEHICLE INVENTORY
 
+@app.post("/api/v1/signup/cloudinary-signature")
+async def get_signup_cloudinary_signature():
+    """Short-lived signed Cloudinary upload parameters for a business logo
+    before the business account exists.
+
+    The signup page cannot use the normal business-scoped signature endpoint
+    because there is no public_id until /register succeeds. The browser still
+    never receives CLOUDINARY_API_SECRET; it only receives a timestamped
+    signature for this one signed upload preset and a server-selected folder.
+    """
+    if not CLOUDINARY_API_KEY or not CLOUDINARY_API_SECRET:
+        raise HTTPException(status_code=503, detail="Cloudinary is not configured on this server")
+
+    timestamp = int(datetime.utcnow().timestamp())
+    # Use a random, server-generated folder so a pre-registration upload is
+    # isolated and the client cannot choose/overwrite another business folder.
+    upload_token = uuid.uuid4().hex
+    folder = f'signup-logos/{upload_token}'
+    params_to_sign = {
+        'folder': folder,
+        'timestamp': timestamp,
+        'upload_preset': CLOUDINARY_UPLOAD_PRESET,
+    }
+    to_sign = '&'.join(f'{k}={v}' for k, v in sorted(params_to_sign.items()))
+    signature = hashlib.sha1((to_sign + CLOUDINARY_API_SECRET).encode('utf-8')).hexdigest()
+
+    return {
+        "signature": signature,
+        "timestamp": timestamp,
+        "api_key": CLOUDINARY_API_KEY,
+        "cloud_name": CLOUDINARY_CLOUD_NAME,
+        "upload_preset": CLOUDINARY_UPLOAD_PRESET,
+        "folder": folder,
+    }
+
+
 @app.post("/api/v1/business/{public_id}/cloudinary-signature")
 async def get_cloudinary_signature(public_id: str, purpose: Optional[str] = None):
     """Signs a Cloudinary upload. Used by AddVehicleModal (vehicle photos)

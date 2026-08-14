@@ -71,6 +71,13 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
   const [step, setStep] = useState('picker')
   const [guidedStep, setGuidedStep] = useState(0)
   const [guidedError, setGuidedError] = useState('')
+  const [guidedMobile, setGuidedMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth <= 640)
+
+  useEffect(() => {
+    const onResize = () => setGuidedMobile(window.innerWidth <= 640)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
 
   // New-prize draft form (points card)
   const [prizeDraft, setPrizeDraft] = useState({ name: '', points_cost: '', description: '' })
@@ -408,7 +415,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
     ]
 
     return (
-      <div style={{...styles.page, maxWidth:920, margin:'0 auto'}}>
+      <div style={{...styles.page, maxWidth:920, margin:'0 auto', padding: guidedMobile ? '4px 0 10px' : styles.page.padding}}>
         <div style={{marginBottom:18}}>
           <div style={{fontSize:12,fontWeight:850,color:'#0d9488',textTransform:'uppercase',letterSpacing:.7}}>
             Card setup · {guidedStep + 1} of 7
@@ -424,13 +431,13 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
         {guidedError && <div style={{...styles.error,marginBottom:14}}>{guidedError}</div>}
         {error && <div style={{...styles.error,marginBottom:14}}>{error}</div>}
 
-        <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:18,padding:22}}>
+        <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:guidedMobile?14:18,padding:guidedMobile?14:22,minWidth:0,overflow:'hidden'}}>
           {guidedStep === 0 && (
             <>
               <p style={{margin:'0 0 18px',color:'#64748b',lineHeight:1.6}}>
                 Welcome <b>{businessName}</b> to LoyaltyTree! First, choose how you want customers to earn or use benefits.
               </p>
-              <div style={{...styles.pickerGrid,marginBottom:0}}>
+              <div style={{...styles.pickerGrid,gridTemplateColumns:guidedMobile?'1fr':'repeat(auto-fit, minmax(260px, 1fr))',gap:guidedMobile?10:20,marginBottom:0}}>
                 {[
                   ['stamp','🎟️','Stamp Card','Customers collect stamps and unlock rewards at milestones.'],
                   ['points','💎','Points Card','Customers earn points from spending and redeem them for prizes.'],
@@ -439,7 +446,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                   ['multipass','🎫','Multi-Pass','Customers receive a fixed number of sessions or visits that count down.'],
                 ].map(([type,icon,label,desc])=>(
                   <button key={type} type="button" onClick={()=>update('card_type',type)}
-                    style={{...styles.pickerCard,...(form.card_type===type?{borderColor:'#0d9488',background:'#f0fdfa',boxShadow:'0 0 0 2px rgba(13,148,136,.08)'}:{})}}>
+                    style={{...styles.pickerCard,padding:guidedMobile?'16px 15px':'28px 24px',...(form.card_type===type?{borderColor:'#0d9488',background:'#f0fdfa',boxShadow:'0 0 0 2px rgba(13,148,136,.08)'}:{})}}>
                     <span style={styles.pickerCardIcon}>{icon}</span>
                     <span style={styles.pickerCardLabel}>{label}</span>
                     <span style={styles.pickerCardDesc}>{desc}</span>
@@ -489,30 +496,42 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
               </p>
 
               {form.card_type==='stamp' && <>
-                <label style={styles.label}>Final stamp goal</label>
-                <input style={styles.input} type="number" min="2" max="500" value={form.stamp_goal}
-                  onChange={e=>{
-                    const goal=Number(e.target.value)||8
-                    update('stamp_goal',goal)
-                    const rewards=[...(form.stamp_rewards||[])]
-                    if (rewards.length) {
-                      const last=[...rewards].sort((a,b)=>Number(a.stamps)-Number(b.stamps)).slice(-1)[0]
-                      last.stamps=goal
-                      update('stamp_rewards',rewards)
-                    }
-                  }}/>
-                <label style={{...styles.label,marginTop:14}}>Final reward</label>
-                <input style={styles.input} value={form.reward_name} onChange={e=>{
-                  update('reward_name',e.target.value)
-                  const rewards=[...(form.stamp_rewards||[])]
-                  if (rewards.length) {
-                    const max=Math.max(...rewards.map(r=>Number(r.stamps)||0))
-                    update('stamp_rewards',rewards.map(r=>Number(r.stamps)===max?{...r,reward_name:e.target.value}:r))
-                  }
-                }} placeholder="e.g. Free Drink"/>
-                <label style={{display:'flex',gap:10,alignItems:'center',marginTop:16,fontSize:13,fontWeight:700}}>
-                  <input type="checkbox" checked={form.stamp_once_per_day===true} onChange={e=>update('stamp_once_per_day',e.target.checked)}/>
-                  Limit each customer to 1 stamp per day
+                <p style={{...styles.hint,margin:'0 0 14px'}}>Set one or more reward milestones. Customers keep progressing after an intermediate reward until they reach the highest milestone.</p>
+                {(form.stamp_rewards || []).map((r,i) => (
+                  <div key={r.id || i} style={{display:'flex',flexDirection:guidedMobile?'column':'row',gap:8,alignItems:guidedMobile?'stretch':'center',padding:'10px 0',borderBottom:'1px solid #eef2f7'}}>
+                    <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'120px minmax(180px,1fr)',gap:8,flex:1,minWidth:0}}>
+                      <input style={{...styles.input,width:'100%',boxSizing:'border-box'}} type="number" min="1" max="500" value={r.stamps}
+                        onChange={e=>{
+                          const next=(form.stamp_rewards||[]).map((x,j)=>j===i?{...x,stamps:e.target.value}:x)
+                          update('stamp_rewards',next)
+                          const sorted=[...next].sort((a,b)=>Number(a.stamps)-Number(b.stamps)); const final=sorted[sorted.length-1]
+                          if(final){ update('stamp_goal',Number(final.stamps)||8); update('reward_name',final.reward_name||'Reward') }
+                        }}/>
+                      <input style={{...styles.input,width:'100%',boxSizing:'border-box'}} value={r.reward_name}
+                        onChange={e=>{
+                          const next=(form.stamp_rewards||[]).map((x,j)=>j===i?{...x,reward_name:e.target.value}:x)
+                          update('stamp_rewards',next)
+                          const sorted=[...next].sort((a,b)=>Number(a.stamps)-Number(b.stamps)); const final=sorted[sorted.length-1]
+                          if(final){ update('reward_name',final.reward_name||'Reward') }
+                        }} placeholder="Reward, e.g. Free Drink"/>
+                    </div>
+                    <button type="button" onClick={()=>{
+                      const next=(form.stamp_rewards||[]).filter((_,j)=>j!==i)
+                      if(!next.length) return setGuidedError('Keep at least one stamp milestone.')
+                      update('stamp_rewards',next)
+                      const sorted=[...next].sort((a,b)=>Number(a.stamps)-Number(b.stamps)); const final=sorted[sorted.length-1]
+                      update('stamp_goal',Number(final.stamps)||8); update('reward_name',final.reward_name||'Reward')
+                    }} style={{...styles.prizeRemoveBtn,alignSelf:guidedMobile?'flex-end':'center'}}>✕</button>
+                  </div>
+                ))}
+                <button type="button" onClick={()=>{
+                  const current=[...(form.stamp_rewards||[])].sort((a,b)=>Number(a.stamps)-Number(b.stamps))
+                  const max=current.length?Number(current[current.length-1].stamps)||0:0
+                  update('stamp_rewards',[...current,{id:Math.random().toString(16).slice(2,14),stamps:max+5,reward_name:''}])
+                }} style={{...styles.addPrizeBtn,width:guidedMobile?'100%':'auto',marginTop:12}}>+ Add Reward Milestone</button>
+                <label style={{display:'flex',gap:10,alignItems:'flex-start',marginTop:18,fontSize:13,fontWeight:700,lineHeight:1.4}}>
+                  <input type="checkbox" checked={form.stamp_once_per_day===true} onChange={e=>update('stamp_once_per_day',e.target.checked)} style={{marginTop:2}}/>
+                  <span>Limit each customer to 1 stamp per day</span>
                 </label>
               </>}
 
@@ -621,18 +640,18 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
           )}
         </div>
 
-        <div style={{display:'flex',justifyContent:'space-between',gap:10,marginTop:16,flexWrap:'wrap'}}>
+        <div style={{display:'flex',flexDirection:guidedMobile?'column-reverse':'row',justifyContent:'space-between',gap:10,marginTop:16,flexWrap:'wrap'}}>
           <button type="button" onClick={guidedBack} disabled={guidedStep===0 || publishing}
-            style={{...styles.typeChangeBtn,padding:'11px 18px',opacity:guidedStep===0?.45:1}}>
+            style={{...styles.typeChangeBtn,padding:'11px 18px',width:guidedMobile?'100%':'auto',opacity:guidedStep===0?.45:1}}>
             ← Back
           </button>
 
           {guidedStep < 6 ? (
-            <button type="button" onClick={guidedNext} style={{...styles.pickerContinueBtn,margin:0,width:'auto',minWidth:170}}>
+            <button type="button" onClick={guidedNext} style={{...styles.pickerContinueBtn,margin:0,width:guidedMobile?'100%':'auto',minWidth:guidedMobile?0:170}}>
               {guidedStep===0 ? `Choose ${guidedCardLabel} →` : 'Continue →'}
             </button>
           ) : (
-            <button type="button" onClick={guidedPublish} disabled={publishing} style={{...styles.publishBtn,flex:'0 1 240px'}}>
+            <button type="button" onClick={guidedPublish} disabled={publishing} style={{...styles.publishBtn,flex:guidedMobile?'1 1 auto':'0 1 240px',width:guidedMobile?'100%':'auto'}}>
               {publishing ? 'Publishing…' : '✓ Publish Card & Continue'}
             </button>
           )}
