@@ -8920,24 +8920,9 @@ def owner_fraud_alerts(public_id: str, hours: int = 24, authorization: str = Hea
 
 def sync_stamp_wallets_background(customer: dict, business: dict, program: dict,
                                   reward_unlocked: bool, new_count: int, goal: int):
-    """Refresh Wallet passes after the cashier response, never on its critical path."""
-    try:
-        google_sync = sync_wallet_object(
-            customer, business, program,
-            notify_header="Reward unlocked! 🎉" if reward_unlocked else "Stamp added ⭐",
-            notify_body=("You've unlocked your reward!" if reward_unlocked
-                         else f"{new_count}/{goal} stamps - keep it up!"),
-            notify_message_id=f"stamp-{customer.get('id')}-{new_count}-{int(datetime.utcnow().timestamp())}",
-        )
-    except Exception as e:
-        google_sync = {'status': 'error', 'detail': str(e)}
-        print(f"BACKGROUND GOOGLE WALLET SYNC error: {e}")
-    try:
-        apple_sync = sync_apple_wallet_pass(customer)
-    except Exception as e:
-        apple_sync = {'status': 'error', 'detail': str(e)}
-        print(f"BACKGROUND APPLE WALLET SYNC error: {e}")
-    print(f"STAMP BACKGROUND WALLET RESULT: google={google_sync} apple={apple_sync}")
+    """Durably queue Wallet refresh after the cashier transaction."""
+    result = enqueue_wallet_sync(customer, business, 'stamp_reward' if reward_unlocked else 'stamp_add')
+    print(f"STAMP WALLET QUEUE RESULT: {result}")
 
 
 @app.post("/api/v1/business/{public_id}/stamp")
@@ -16728,3 +16713,206 @@ try:
 except Exception as exc:
     print("MOTOLITE router registration failed:", exc)
 
+
+
+# ============================================================
+# ROADMAP #6-#10 — WALLET QUEUE / CRM / RETENTION / ANALYTICS
+# ============================================================
+
+def enqueue_wallet_sync(customer: dict, business: dict, reason: str = 'loyalty_update'):
+    """Persist a Wallet refresh job so cashier success never depends on Google/Apple latency."""
+    try:
+        # Coalesce an already-pending job for the same customer.
+        pending = (supabase.table('wallet_sync_jobs').select('id')
+                   .eq('business_id', business.get('id')).eq('customer_id', customer.get('id'))
+                   .in_('status', ['pending','processing']).limit(1).execute().data or [])
+        if pending:
+            return {'status':'queued','job_id':pending[0].get('id'),'coalesced':True}
+        row=(supabase.table('wallet_sync_jobs').insert({
+            'business_id':business.get('id'),'customer_id':customer.get('id'),
+            'reason':reason,'status':'pending','attempts':0,'next_attempt_at':datetime.utcnow().isoformat()
+        }).execute().data or [])
+        return {'status':'queued','job_id':row[0].get('id') if row else None,'coalesced':False}
+    except Exception as e:
+        print(f'WALLET QUEUE enqueue error: {e}')
+        return {'status':'queue_error','detail':str(e)}
+
+
+def process_wallet_sync_queue_once(limit: int = 10):
+    """Best-effort durable queue worker. Failed jobs retry with bounded exponential backoff."""
+    try:
+        jobs=(supabase.table('wallet_sync_jobs').select('*').in_('status',['pending','failed'])
+              .lte('next_attempt_at',datetime.utcnow().isoformat()).order('created_at').limit(limit).execute().data or [])
+    except Exception as e:
+        print(f'WALLET QUEUE fetch error: {e}'); return
+    for job in jobs:
+        jid=job.get('id'); attempts=int(job.get('attempts') or 0)+1
+        try:
+            supabase.table('wallet_sync_jobs').update({'status':'processing','started_at':datetime.utcnow().isoformat(),'attempts':attempts,'updated_at':datetime.utcnow().isoformat()}).eq('id',jid).execute()
+            customer=safe_get_customer_by_id(job.get('customer_id'))
+            business=safe_get_business_by_id(job.get('business_id'))
+            if not customer or not business: raise RuntimeError('Customer/business no longer exists')
+            program=safe_get_loyalty_program(business.get('id')) or {}
+            g=sync_wallet_object(customer,business,program)
+            a=sync_apple_wallet_pass(customer)
+            failed=(isinstance(g,dict) and g.get('status')=='error') or (isinstance(a,dict) and a.get('status')=='error')
+            if failed: raise RuntimeError(f'Google={g}; Apple={a}')
+            supabase.table('wallet_sync_jobs').update({'status':'completed','completed_at':datetime.utcnow().isoformat(),'last_error':None,'updated_at':datetime.utcnow().isoformat()}).eq('id',jid).execute()
+        except Exception as e:
+            max_attempts=int(job.get('max_attempts') or 5)
+            terminal=attempts>=max_attempts
+            delay=min(300, 5*(2**max(0,attempts-1)))
+            nxt=(datetime.utcnow()+timedelta(seconds=delay)).isoformat()
+            try: supabase.table('wallet_sync_jobs').update({'status':'failed' if terminal else 'pending','last_error':str(e)[:1500],'next_attempt_at':nxt,'updated_at':datetime.utcnow().isoformat()}).eq('id',jid).execute()
+            except Exception: pass
+            print(f'WALLET QUEUE job {jid} attempt {attempts} error: {e}')
+
+
+async def wallet_queue_worker():
+    while True:
+        try: await asyncio.to_thread(process_wallet_sync_queue_once,10)
+        except Exception as e: print(f'WALLET QUEUE worker error: {e}')
+        await asyncio.sleep(5)
+
+
+@app.on_event('startup')
+async def start_wallet_queue_worker():
+    asyncio.create_task(wallet_queue_worker())
+
+
+def _crm_dataset(business_id: int):
+    customers=(supabase.table('customers').select('*').eq('business_id',business_id).execute().data or [])
+    tx=(supabase.table('transaction_audit').select('customer_id,staff_id,branch_id,action,status,delta,created_at,metadata')
+        .eq('business_id',business_id).eq('status','success').order('created_at',desc=True).limit(10000).execute().data or [])
+    return customers,tx
+
+
+def _crm_metrics(customers, tx):
+    now=datetime.utcnow()
+    by={}
+    for t in tx:
+        cid=t.get('customer_id')
+        if cid is None: continue
+        by.setdefault(str(cid),[]).append(t)
+    result=[]
+    for c in customers:
+        items=by.get(str(c.get('id')),[])
+        dates=[_parse_ts(x.get('created_at')) for x in items if _parse_ts(x.get('created_at'))]
+        dates.sort(reverse=True)
+        last=dates[0] if dates else _parse_ts(c.get('created_at'))
+        days=(now-last).days if last else None
+        visits=len(items)
+        if days is None: segment='new'
+        elif days>=90: segment='inactive_90'
+        elif days>=60: segment='inactive_60'
+        elif days>=30: segment='at_risk'
+        elif visits>=10: segment='frequent'
+        elif visits>=3: segment='active'
+        else: segment='new'
+        branches={}
+        staff={}
+        for x in items:
+            if x.get('branch_id') is not None: branches[str(x.get('branch_id'))]=branches.get(str(x.get('branch_id')),0)+1
+            if x.get('staff_id') is not None: staff[str(x.get('staff_id'))]=staff.get(str(x.get('staff_id')),0)+1
+        result.append({**c,'crm':{'segment':segment,'total_transactions':visits,
+            'last_activity_at':last.isoformat() if last else None,'days_since_last_activity':days,
+            'favorite_branch_id':max(branches,key=branches.get) if branches else None,
+            'last_staff_id':str(items[0].get('staff_id')) if items and items[0].get('staff_id') is not None else None}})
+    return result
+
+
+@app.get('/api/v1/business/{public_id}/crm')
+async def owner_crm(public_id:str, authorization:str=Header(default='')):
+    require_owner_session(public_id,authorization)
+    business=safe_get_business(public_id)
+    if not business: raise HTTPException(status_code=404,detail='Business not found')
+    customers,tx=_crm_dataset(business.get('id'))
+    rows=_crm_metrics(customers,tx)
+    counts={}
+    for r in rows:
+        s=r['crm']['segment']; counts[s]=counts.get(s,0)+1
+    return {'customers':rows,'segments':counts,'total_customers':len(rows)}
+
+
+@app.get('/api/v1/business/{public_id}/retention-opportunities')
+async def retention_opportunities(public_id:str, authorization:str=Header(default='')):
+    require_owner_session(public_id,authorization)
+    business=safe_get_business(public_id)
+    if not business: raise HTTPException(status_code=404,detail='Business not found')
+    customers,tx=_crm_dataset(business.get('id')); rows=_crm_metrics(customers,tx)
+    opportunities=[]
+    for r in rows:
+        seg=r['crm']['segment']; days=r['crm']['days_since_last_activity']
+        if seg in ('at_risk','inactive_60','inactive_90'):
+            opportunities.append({'customer_public_id':r.get('public_id'),'customer_name':r.get('name'),'type':'win_back','segment':seg,'days_inactive':days,
+                                  'suggested_message':f"We miss you! Come back and continue your loyalty progress."})
+        goal=int((safe_get_loyalty_program(business.get('id')) or {}).get('stamp_goal') or 0)
+        if goal and int(r.get('stamp_count') or 0)==goal-1:
+            opportunities.append({'customer_public_id':r.get('public_id'),'customer_name':r.get('name'),'type':'one_away','segment':seg,
+                                  'suggested_message':"You're only 1 stamp away from your next reward!"})
+    return {'opportunities':opportunities,'total':len(opportunities)}
+
+
+@app.get('/api/v1/business/{public_id}/operations-analytics')
+async def operations_analytics(public_id:str, authorization:str=Header(default=''), days:int=Query(default=30,ge=1,le=365)):
+    require_owner_session(public_id,authorization)
+    business=safe_get_business(public_id)
+    if not business: raise HTTPException(status_code=404,detail='Business not found')
+    since=(datetime.utcnow()-timedelta(days=days)).isoformat()
+    tx=(supabase.table('transaction_audit').select('*').eq('business_id',business.get('id')).gte('created_at',since).execute().data or [])
+    branches=(supabase.table('branches').select('id,public_id,name').eq('business_id',business.get('id')).execute().data or [])
+    staff=(supabase.table('staff').select('id,public_id,name').eq('business_id',business.get('id')).execute().data or [])
+    def aggregate(key):
+        d={}
+        for t in tx:
+            k=str(t.get(key)) if t.get(key) is not None else 'unassigned'
+            z=d.setdefault(k,{'transactions':0,'failed':0,'adjustments':0,'delta_total':0})
+            z['transactions']+=1
+            if t.get('status')=='failed': z['failed']+=1
+            if any(w in str(t.get('action') or '').lower() for w in ('adjust','remove','correction','override')): z['adjustments']+=1
+            try:z['delta_total']+=float(t.get('delta') or 0)
+            except:pass
+        return d
+    bm=aggregate('branch_id'); sm=aggregate('staff_id')
+    return {'days':days,'overall':{'transactions':len(tx),'failed':sum(1 for x in tx if x.get('status')=='failed')},
+            'branches':[{'id':str(b.get('id')),'public_id':b.get('public_id'),'name':b.get('name'),**bm.get(str(b.get('id')),{'transactions':0,'failed':0,'adjustments':0,'delta_total':0})} for b in branches],
+            'cashiers':[{'id':str(s.get('id')),'public_id':s.get('public_id'),'name':s.get('name'),**sm.get(str(s.get('id')),{'transactions':0,'failed':0,'adjustments':0,'delta_total':0})} for s in staff]}
+
+
+@app.get('/api/v1/business/{public_id}/retention-analytics')
+async def retention_analytics(public_id:str, authorization:str=Header(default=''), days:int=Query(default=90,ge=30,le=365)):
+    require_owner_session(public_id,authorization)
+    business=safe_get_business(public_id)
+    if not business: raise HTTPException(status_code=404,detail='Business not found')
+    customers,tx=_crm_dataset(business.get('id')); rows=_crm_metrics(customers,tx)
+    active30=sum(1 for r in rows if r['crm']['days_since_last_activity'] is not None and r['crm']['days_since_last_activity']<30)
+    active60=sum(1 for r in rows if r['crm']['days_since_last_activity'] is not None and r['crm']['days_since_last_activity']<60)
+    active90=sum(1 for r in rows if r['crm']['days_since_last_activity'] is not None and r['crm']['days_since_last_activity']<90)
+    repeat=sum(1 for r in rows if r['crm']['total_transactions']>=2)
+    total=len(rows)
+    gaps=[]
+    grouped={}
+    for t in tx:
+        if t.get('customer_id') is not None:
+            dt=_parse_ts(t.get('created_at'))
+            if dt: grouped.setdefault(str(t.get('customer_id')),[]).append(dt)
+    for ds in grouped.values():
+        ds=sorted(ds)
+        gaps += [(ds[i]-ds[i-1]).total_seconds()/86400 for i in range(1,len(ds))]
+    return {'total_customers':total,'repeat_customers':repeat,'repeat_customer_rate':round(repeat/total*100,1) if total else 0,
+            'active_30':active30,'active_60':active60,'active_90':active90,
+            'retention_30_rate':round(active30/total*100,1) if total else 0,
+            'retention_60_rate':round(active60/total*100,1) if total else 0,
+            'retention_90_rate':round(active90/total*100,1) if total else 0,
+            'average_days_between_activity':round(sum(gaps)/len(gaps),1) if gaps else None,
+            'segments':{k:sum(1 for r in rows if r['crm']['segment']==k) for k in ('new','active','frequent','at_risk','inactive_60','inactive_90')}}
+
+
+@app.get('/api/v1/business/{public_id}/wallet-queue')
+async def wallet_queue_status(public_id:str, authorization:str=Header(default=''), limit:int=Query(default=100,ge=1,le=500)):
+    require_owner_session(public_id,authorization)
+    business=safe_get_business(public_id)
+    if not business: raise HTTPException(status_code=404,detail='Business not found')
+    rows=(supabase.table('wallet_sync_jobs').select('*').eq('business_id',business.get('id')).order('created_at',desc=True).limit(limit).execute().data or [])
+    return {'jobs':rows,'pending':sum(1 for x in rows if x.get('status') in ('pending','processing')),
+            'failed':sum(1 for x in rows if x.get('status')=='failed')}

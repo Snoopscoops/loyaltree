@@ -115,6 +115,12 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [savingSetupKit, setSavingSetupKit] = useState(false)
   const [mobileHeaderOpen, setMobileHeaderOpen] = useState(false)
   const [auditTransactions, setAuditTransactions] = useState([])
+  const [crmData, setCrmData] = useState({customers:[],segments:{}})
+  const [retentionData, setRetentionData] = useState({})
+  const [retentionOps, setRetentionOps] = useState([])
+  const [opsAnalytics, setOpsAnalytics] = useState({branches:[],cashiers:[],overall:{}})
+  const [walletQueue, setWalletQueue] = useState({jobs:[],pending:0,failed:0})
+  const [growthLoading, setGrowthLoading] = useState(false)
   const [fraudAlerts, setFraudAlerts] = useState([])
   const [securityLoading, setSecurityLoading] = useState(false)
   const [auditFilters, setAuditFilters] = useState({ status:'', branch_public_id:'', staff_public_id:'', date_from:'', date_to:'' })
@@ -283,6 +289,24 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     setLoading(false)
   }
 
+  const loadGrowthSuite = async () => {
+    if (!user?.business_slug) return
+    setGrowthLoading(true)
+    try {
+      const base = `${API_BASE}/api/v1/business/${user.business_slug}`
+      const [crmR, retR, oppR, opsR, walletR] = await Promise.all([
+        authFetch(`${base}/crm`), authFetch(`${base}/retention-analytics?days=90`),
+        authFetch(`${base}/retention-opportunities`), authFetch(`${base}/operations-analytics?days=30`),
+        authFetch(`${base}/wallet-queue?limit=100`)
+      ])
+      if (crmR.ok) setCrmData(await crmR.json())
+      if (retR.ok) setRetentionData(await retR.json())
+      if (oppR.ok) setRetentionOps((await oppR.json()).opportunities || [])
+      if (opsR.ok) setOpsAnalytics(await opsR.json())
+      if (walletR.ok) setWalletQueue(await walletR.json())
+    } finally { setGrowthLoading(false) }
+  }
+
   const loadTransactionsSecurity = async (filters = auditFilters) => {
     if (!user?.business_slug) return
     setSecurityLoading(true)
@@ -307,6 +331,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   useEffect(() => {
     if (activeTab === 'security') loadTransactionsSecurity()
+    if (['crm','retention','operations','walletqueue'].includes(activeTab)) loadGrowthSuite()
   }, [activeTab])
 
   const inviteStaff = async (e) => {
@@ -1097,6 +1122,10 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             { id: 'customers', label: cardExperience.customerLabel, icon: cardExperience.customerIcon },
             { id: 'staff', label: 'Team', icon: '👥' },
             { id: 'security', label: 'Transactions & Security', icon: '🛡️' },
+            { id: 'walletqueue', label: 'Wallet Queue', icon: '👛' },
+            { id: 'crm', label: 'CRM', icon: '👥' },
+            { id: 'retention', label: 'Retention', icon: '🔁' },
+            { id: 'operations', label: 'Branch / Cashier', icon: '📈' },
             { id: 'program', label: 'Edit Card', icon: '✏️' },
             { id: 'billing', label: needsRenewal ? 'Billing ⚠️' : 'Billing', icon: '💳' },
           ].map(tab => (
@@ -1477,6 +1506,31 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 </div>
               ))}
             </div>
+          </div>
+        )}
+
+        {activeTab === 'walletqueue' && (
+          <div style={styles.section}><div style={styles.sectionHeader}><h2 style={styles.sectionTitle}>👛 Wallet Queue</h2><button onClick={loadGrowthSuite} style={styles.addBtn}>↻ Refresh</button></div>
+            <div style={styles.statsGrid}><div style={styles.statCard}><div style={styles.statValue}>{walletQueue.pending||0}</div><div style={styles.statLabel}>Pending / Processing</div></div><div style={styles.statCard}><div style={styles.statValue}>{walletQueue.failed||0}</div><div style={styles.statLabel}>Failed</div></div></div>
+            {(walletQueue.jobs||[]).slice(0,50).map(j=><div key={j.id} style={{background:'white',padding:12,border:'1px solid #e2e8f0',borderRadius:10,marginBottom:8}}><b>Job #{j.id}</b> · {j.reason} · <b>{j.status}</b> · attempts {j.attempts}/{j.max_attempts}{j.last_error&&<div style={{color:'#b91c1c',fontSize:12,marginTop:4}}>{j.last_error}</div>}</div>)}
+          </div>
+        )}
+        {activeTab === 'crm' && (
+          <div style={styles.section}><div style={styles.sectionHeader}><h2 style={styles.sectionTitle}>👥 Customer CRM</h2><button onClick={loadGrowthSuite} style={styles.addBtn}>↻ Refresh</button></div>
+            <div style={styles.statsGrid}>{Object.entries(crmData.segments||{}).map(([k,v])=><div style={styles.statCard} key={k}><div style={styles.statValue}>{v}</div><div style={styles.statLabel}>{k.replaceAll('_',' ')}</div></div>)}</div>
+            {(crmData.customers||[]).map(c=><div key={c.public_id} style={{background:'white',padding:12,border:'1px solid #e2e8f0',borderRadius:10,marginBottom:8}}><b>{c.name||c.email||'Customer'}</b><div style={{fontSize:13,color:'#64748b'}}>Segment: {c.crm?.segment?.replaceAll('_',' ')} · Transactions: {c.crm?.total_transactions||0} · Last activity: {c.crm?.days_since_last_activity ?? '—'} days ago</div></div>)}
+          </div>
+        )}
+        {activeTab === 'retention' && (
+          <div style={styles.section}><div style={styles.sectionHeader}><h2 style={styles.sectionTitle}>🔁 Retention Analytics & Opportunities</h2><button onClick={loadGrowthSuite} style={styles.addBtn}>↻ Refresh</button></div>
+            <div style={styles.statsGrid}><div style={styles.statCard}><div style={styles.statValue}>{retentionData.repeat_customer_rate||0}%</div><div style={styles.statLabel}>Repeat customer rate</div></div><div style={styles.statCard}><div style={styles.statValue}>{retentionData.retention_30_rate||0}%</div><div style={styles.statLabel}>Active within 30 days</div></div><div style={styles.statCard}><div style={styles.statValue}>{retentionData.average_days_between_activity ?? '—'}</div><div style={styles.statLabel}>Avg days between activity</div></div><div style={styles.statCard}><div style={styles.statValue}>{retentionOps.length}</div><div style={styles.statLabel}>Retention opportunities</div></div></div>
+            {retentionOps.map((o,i)=><div key={i} style={{background:'white',padding:12,border:'1px solid #e2e8f0',borderRadius:10,marginBottom:8}}><b>{o.customer_name||'Customer'}</b> · {o.type.replaceAll('_',' ')}<div style={{fontSize:13,color:'#64748b',marginTop:3}}>{o.suggested_message}</div></div>)}
+          </div>
+        )}
+        {activeTab === 'operations' && (
+          <div style={styles.section}><div style={styles.sectionHeader}><h2 style={styles.sectionTitle}>📈 Branch / Cashier Analytics</h2><button onClick={loadGrowthSuite} style={styles.addBtn}>↻ Refresh</button></div>
+            <h3>Branches — last 30 days</h3>{(opsAnalytics.branches||[]).map(x=><div key={x.id} style={{background:'white',padding:12,border:'1px solid #e2e8f0',borderRadius:10,marginBottom:8}}><b>{x.name}</b> · {x.transactions} transactions · {x.adjustments} adjustments · {x.failed} failed</div>)}
+            <h3 style={{marginTop:20}}>Cashiers — last 30 days</h3>{(opsAnalytics.cashiers||[]).map(x=><div key={x.id} style={{background:'white',padding:12,border:'1px solid #e2e8f0',borderRadius:10,marginBottom:8}}><b>{x.name}</b> · {x.transactions} transactions · {x.adjustments} adjustments · {x.failed} failed</div>)}
           </div>
         )}
 
