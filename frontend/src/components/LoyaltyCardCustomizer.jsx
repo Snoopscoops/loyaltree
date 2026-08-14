@@ -539,45 +539,98 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                 <label style={styles.label}>How customers earn points</label>
                 <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
                   <span>Earn</span>
-                  <input style={{...styles.input,width:95}} type="number" min="1" value={form.points_per_amount} onChange={e=>update('points_per_amount',e.target.value)}/>
+                  <input style={{...styles.input,width:guidedMobile?'100%':95}} type="number" min="1" value={form.points_per_amount} onChange={e=>update('points_per_amount',e.target.value)}/>
                   <span>points for every ₱</span>
-                  <input style={{...styles.input,width:110}} type="number" min="1" value={form.points_amount_pesos} onChange={e=>update('points_amount_pesos',e.target.value)}/>
+                  <input style={{...styles.input,width:guidedMobile?'100%':110}} type="number" min="1" value={form.points_amount_pesos} onChange={e=>update('points_amount_pesos',e.target.value)}/>
                   <span>spent</span>
                 </div>
-                <p style={styles.hint}>You can add the full prize catalog later from Edit Card.</p>
+
+                <div style={{marginTop:20}}>
+                  <label style={styles.label}>Points rewards</label>
+                  <p style={{...styles.hint,margin:'0 0 12px'}}>Add the prizes customers can redeem with their points.</p>
+                  {(form.points_prizes || []).map((p,i)=>(
+                    <div key={p.id || i} style={{display:'flex',flexDirection:guidedMobile?'column':'row',gap:8,alignItems:guidedMobile?'stretch':'center',padding:'10px 0',borderBottom:'1px solid #eef2f7'}}>
+                      <input style={{...styles.input,flex:1}} value={p.name || ''} placeholder="Reward, e.g. Free Drink"
+                        onChange={e=>update('points_prizes',(form.points_prizes||[]).map((x,j)=>j===i?{...x,name:e.target.value}:x))}/>
+                      <input style={{...styles.input,width:guidedMobile?'100%':150}} type="number" min="1" value={p.points_cost || ''}
+                        placeholder="Points"
+                        onChange={e=>update('points_prizes',(form.points_prizes||[]).map((x,j)=>j===i?{...x,points_cost:Number(e.target.value)}:x))}/>
+                      <button type="button" style={{...styles.prizeRemoveBtn,alignSelf:guidedMobile?'flex-end':'center'}}
+                        onClick={()=>update('points_prizes',(form.points_prizes||[]).filter((_,j)=>j!==i))}>✕</button>
+                    </div>
+                  ))}
+                  <button type="button" style={{...styles.addPrizeBtn,width:guidedMobile?'100%':'auto',marginTop:12}}
+                    onClick={()=>update('points_prizes',[...(form.points_prizes||[]),{id:Math.random().toString(16).slice(2,14),name:'',points_cost:100}])}>
+                    + Add Points Reward
+                  </button>
+                </div>
               </>}
 
               {form.card_type==='membership' && <>
                 <label style={styles.label}>Default membership duration</label>
-                <div style={{display:'flex',gap:8,alignItems:'center'}}>
-                  <input style={{...styles.input,width:130}} type="number" min="1" max="3650" value={form.membership_duration_days} onChange={e=>update('membership_duration_days',e.target.value)}/>
+                <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                  <input style={{...styles.input,width:guidedMobile?'100%':130}} type="number" min="1" max="3650" value={form.membership_duration_days} onChange={e=>update('membership_duration_days',e.target.value)}/>
                   <span>days</span>
                 </div>
                 <label style={{...styles.label,marginTop:14}}>Default membership price</label>
-                <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
                   <span>₱</span>
-                  <input style={{...styles.input,width:160}} type="number" min="0" step="any" value={form.membership_price} onChange={e=>update('membership_price',e.target.value)}/>
+                  <input style={{...styles.input,width:guidedMobile?'100%':160}} type="number" min="0" step="any" value={form.membership_price} onChange={e=>update('membership_price',e.target.value)}/>
                 </div>
+
+                <label style={{...styles.label,marginTop:18}}>Member rewards / benefits</label>
+                <p style={{...styles.hint,margin:'0 0 10px'}}>Enter one included perk or reward per line.</p>
+                <textarea style={{...styles.textarea,width:'100%',boxSizing:'border-box'}} rows={guidedMobile?5:4}
+                  value={(form.membership_services || []).join('\n')}
+                  onChange={e=>update('membership_services',e.target.value.split('\n').map(v=>v.trim()).filter(Boolean))}
+                  placeholder={'Free monthly service\n10% member discount\nPriority booking'}/>
               </>}
 
               {form.card_type==='vip' && <>
                 <label style={styles.label}>VIP earning rule</label>
                 <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
                   <span>Earn</span>
-                  <input style={{...styles.input,width:95}} type="number" min="1" value={form.vip_points_per_amount} onChange={e=>update('vip_points_per_amount',e.target.value)}/>
+                  <input style={{...styles.input,width:guidedMobile?'100%':95}} type="number" min="1" value={form.vip_points_per_amount} onChange={e=>update('vip_points_per_amount',e.target.value)}/>
                   <span>VIP points for every ₱</span>
-                  <input style={{...styles.input,width:110}} type="number" min="1" value={form.vip_amount_pesos} onChange={e=>update('vip_amount_pesos',e.target.value)}/>
+                  <input style={{...styles.input,width:guidedMobile?'100%':110}} type="number" min="1" value={form.vip_amount_pesos} onChange={e=>update('vip_amount_pesos',e.target.value)}/>
                   <span>spent</span>
                 </div>
-                <p style={styles.hint}>Starter Bronze, Silver and Gold tiers are already prepared. You can customize every tier later.</p>
+
+                <div style={{marginTop:20}}>
+                  <label style={styles.label}>VIP tier rewards</label>
+                  <p style={{...styles.hint,margin:'0 0 12px'}}>Set what customers unlock when they reach each VIP tier.</p>
+                  {(form.vip_tiers || []).map((tier,i)=>(
+                    <div key={tier.id || i} style={{padding:'12px',marginBottom:10,border:'1px solid #e2e8f0',borderRadius:12,background:'#f8fafc'}}>
+                      <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'1fr 130px 120px',gap:8}}>
+                        <input style={styles.input} value={tier.name || ''} placeholder="Tier name"
+                          onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,name:e.target.value}:t))}/>
+                        <input style={styles.input} type="number" min="0" value={tier.threshold || 0} placeholder="Points"
+                          onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,threshold:Number(e.target.value)}:t))}/>
+                        <input style={styles.input} type="number" min="0" max="100" value={tier.discount_percent || 0} placeholder="Discount %"
+                          onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,discount_percent:Number(e.target.value)}:t))}/>
+                      </div>
+                      <textarea style={{...styles.textarea,width:'100%',boxSizing:'border-box',marginTop:8}} rows={3}
+                        value={(tier.benefits || []).join('\n')}
+                        onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,benefits:e.target.value.split('\n').map(v=>v.trim()).filter(Boolean)}:t))}
+                        placeholder={'One reward per line\nFree upgrade\nPriority service'}/>
+                      <button type="button" style={{...styles.prizeRemoveBtn,marginTop:8}}
+                        onClick={()=>update('vip_tiers',form.vip_tiers.filter((_,j)=>j!==i))}>Remove tier</button>
+                    </div>
+                  ))}
+                  <button type="button" style={{...styles.addPrizeBtn,width:guidedMobile?'100%':'auto'}}
+                    onClick={()=>update('vip_tiers',[...(form.vip_tiers||[]),{id:Math.random().toString(16).slice(2,14),name:'New Tier',threshold:0,color:'#64748b',discount_percent:0,benefits:[],active:true}])}>
+                    + Add VIP Tier
+                  </button>
+                </div>
               </>}
 
               {form.card_type==='multipass' && <>
-                <label style={styles.label}>Sessions / visits per pass</label>
-                <input style={{...styles.input,width:150}} type="number" min="2" max="200" value={form.multipass_session_count} onChange={e=>update('multipass_session_count',e.target.value)}/>
+                <label style={styles.label}>Sessions / visits included</label>
+                <input style={{...styles.input,width:guidedMobile?'100%':150}} type="number" min="2" max="200" value={form.multipass_session_count} onChange={e=>update('multipass_session_count',e.target.value)}/>
+                <p style={styles.hint}>For Multi-Pass, the included sessions are the customer's redeemable benefit. Each use reduces the remaining session count.</p>
                 <label style={{...styles.label,marginTop:14}}>Pass validity</label>
-                <div style={{display:'flex',gap:8,alignItems:'center'}}>
-                  <input style={{...styles.input,width:150}} type="number" min="1" value={form.multipass_validity_days} onChange={e=>update('multipass_validity_days',e.target.value)}/>
+                <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                  <input style={{...styles.input,width:guidedMobile?'100%':150}} type="number" min="1" value={form.multipass_validity_days} onChange={e=>update('multipass_validity_days',e.target.value)}/>
                   <span>days</span>
                 </div>
               </>}
