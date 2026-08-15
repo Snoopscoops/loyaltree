@@ -4349,7 +4349,26 @@ async def login(req: LoginRequest, request: Request):
         if matched and partner.get('is_active', True):
             _clear_auth_failures('owner', request, req.email)
             token = issue_partner_session(partner)
-            return {"success":True,"token":token,"business_slug":"","business_name":"LoyaltyTree Partner","name":partner.get('name'),"role":"partner","partner_type":partner.get('partner_type'),"partner_public_id":partner.get('public_id'),"user":{"name":partner.get('name'),"email":partner.get('email'),"role":"partner","partner_type":partner.get('partner_type'),"partner_public_id":partner.get('public_id')}}
+            return {
+                "success": True,
+                "token": token,
+                "business_slug": "",
+                "business_name": "LoyaltyTree Partner",
+                "name": partner.get('name'),
+                "role": "partner",
+                "partner_type": partner.get('partner_type'),
+                "partner_public_id": partner.get('public_id'),
+                "user": {
+                    "name": partner.get('name'),
+                    "email": partner.get('email'),
+                    "role": "partner",
+                    "partner_type": partner.get('partner_type'),
+                    "partner_public_id": partner.get('public_id'),
+                    "token": token,
+                    "business_slug": "",
+                    "business_name": "LoyaltyTree Partner",
+                }
+            }
         if matched and not partner.get('is_active', True):
             raise HTTPException(status_code=403, detail='Partner account is inactive')
 

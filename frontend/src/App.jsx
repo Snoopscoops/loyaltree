@@ -82,7 +82,16 @@ function App() {
             <Navigate to="/login" />
           ) : <HomePage />
         } />
-        <Route path="/login" element={<Login API_BASE={API_BASE} onLogin={setUser} />} />
+        <Route path="/login" element={
+          user ? (
+            user.role === 'owner' ? <Navigate to="/dashboard" replace /> :
+            user.role === 'super_admin' ? <Navigate to="/admin" replace /> :
+            user.role === 'partner' ? <Navigate to="/partner" replace /> :
+            user.role === 'agent' ? <RedirectToBackend base={API_BASE} sub="agent" id={user.business_slug} /> :
+            ['manager', 'cashier'].includes(user.role) ? <Navigate to="/scanner" replace /> :
+            <Login API_BASE={API_BASE} onLogin={setUser} />
+          ) : <Login API_BASE={API_BASE} onLogin={setUser} />
+        } />
         <Route path="/signup" element={<Signup API_BASE={API_BASE} />} />
         <Route path="/dashboard" element={
           user?.role === 'owner' ? (
