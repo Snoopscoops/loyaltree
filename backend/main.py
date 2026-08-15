@@ -5375,6 +5375,23 @@ async def partner_demo_access(claims:dict=Depends(require_partner)):
     return payload
 
 
+@app.get("/api/v1/partner/demo/customers")
+async def partner_demo_customers(claims:dict=Depends(require_partner)):
+    """List only customers belonging to this partner's isolated Agyaman demo."""
+    p=supabase.table('network_partners').select('*').eq('id',claims.get('partner_id')).maybe_single().execute().data
+    if not p or not p.get('is_active',True):
+        raise HTTPException(status_code=403,detail='Partner account inactive')
+    business=_ensure_partner_demo_business(p)
+    rows=(
+        supabase.table('customers')
+        .select('public_id,name,stamp_count,points_balance,vip_points,multipass_sessions_remaining,membership_status,created_at,updated_at')
+        .eq('business_id',business.get('id'))
+        .order('created_at',desc=True)
+        .limit(100).execute().data or []
+    )
+    return {'business_slug':business.get('public_id'),'customers':rows}
+
+
 @app.post("/api/v1/partner/demo/notify-latest")
 async def partner_demo_notify_latest(claims:dict=Depends(require_partner)):
     """Send a real Wallet demo notification to the latest Agyaman demo customer."""

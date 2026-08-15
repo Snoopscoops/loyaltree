@@ -14,6 +14,8 @@ function PartnerDashboard({API_BASE,user,onLogout}){
   const [showEditor,setShowEditor]=useState(false)
   const [demoAccess,setDemoAccess]=useState(null)
   const [working,setWorking]=useState(false)
+  const [demoCustomers,setDemoCustomers]=useState([])
+  const [customersLoading,setCustomersLoading]=useState(false)
 
   const authHeaders={Authorization:`Bearer ${user?.token}`}
 
@@ -28,7 +30,17 @@ function PartnerDashboard({API_BASE,user,onLogout}){
     }catch(e){setError(e.message)}
   }
 
-  useEffect(()=>{load()},[user?.token])
+  const loadDemoCustomers=async()=>{
+    setCustomersLoading(true)
+    try{
+      const r=await fetch(`${API_BASE}/api/v1/partner/demo/customers`,{headers:authHeaders,cache:'no-store'})
+      const d=await r.json().catch(()=>({}))
+      if(r.ok)setDemoCustomers(d.customers||[])
+    }catch(e){}
+    setCustomersLoading(false)
+  }
+
+  useEffect(()=>{load();loadDemoCustomers()},[user?.token])
 
   const getDemoAccess=async()=>{
     if(demoAccess?.owner_token)return demoAccess
@@ -47,10 +59,11 @@ function PartnerDashboard({API_BASE,user,onLogout}){
     setWorking(false)
   }
 
-  const openCashier=async()=>{
-    setWorking(true);setMessage('')
+  const setupCashier=async()=>{
+    setWorking(true);setMessage('Preparing Agyaman Express demo cashier…')
     try{
       const d=await getDemoAccess()
+      setMessage('✅ Demo cashier is ready. It is isolated to Agyaman Express customers.')
       navigate('/scanner',{state:{
         ownerMode:true,
         businessSlug:d.business_slug,
@@ -72,7 +85,7 @@ function PartnerDashboard({API_BASE,user,onLogout}){
       const d=await r.json().catch(()=>({}))
       if(!r.ok)throw new Error(d.detail||'Could not send sample notification')
       setMessage(`✅ Sample notification sent to ${d.customer?.name||'the latest demo customer'}.`)
-      load()
+      load();loadDemoCustomers()
     }catch(e){setMessage(`❌ ${e.message}`)}
     setWorking(false)
   }
@@ -117,13 +130,32 @@ function PartnerDashboard({API_BASE,user,onLogout}){
         <div style={s.demoActions}>
           <button style={s.actionPrimary} onClick={()=>setShowQr(true)}>📱 Share Demo Join QR</button>
           <button style={s.action} onClick={openEditor} disabled={working}>🎨 Edit Agyaman Card</button>
-          <button style={s.action} onClick={openCashier} disabled={working}>📷 Open Demo Cashier</button>
+          <button style={s.action} onClick={setupCashier} disabled={working}>🧾 Set Up / Open Cashier</button>
           <button style={s.action} onClick={sendSampleNotification} disabled={working}>🔔 Send Sample Notification</button>
         </div>
 
         <div style={s.demoHint}>
-          <b>Suggested presentation:</b> Scan QR → join Agyaman Express → add card to Wallet → open Demo Cashier → scan the customer card → add a stamp → send the sample notification.
+          <b>Suggested presentation:</b> Scan QR → join Agyaman Express → add card to Wallet → see the customer appear below → set up/open Demo Cashier → scan the Wallet card → add a stamp → return here and refresh the activity → send the sample notification.
           {demo?.latest_customer?.name&&<span> Latest demo signup: <b>{demo.latest_customer.name}</b>.</span>}
+        </div>
+      </section>
+
+      <section style={s.card}>
+        <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}>
+          <div>
+            <h2 style={s.h2}>Demo Customers & Stamp Activity</h2>
+            <p style={s.note}>These are Agyaman Express demo customers only. Use Set Up / Open Cashier to scan one of their Wallet cards and add stamps live.</p>
+          </div>
+          <button style={s.action} onClick={loadDemoCustomers} disabled={customersLoading}>{customersLoading?'Refreshing…':'↻ Refresh Activity'}</button>
+        </div>
+        <div style={s.grid}>
+          {demoCustomers.map(c=><div style={s.customer} key={c.public_id}>
+            <div style={s.customerTop}><b>{c.name||'Demo Customer'}</b><span style={s.stampPill}>⭐ {Number(c.stamp_count||0)} stamps</span></div>
+            <span style={s.customerId}>Card ID: {c.public_id}</span>
+            <span>Joined: {c.created_at?new Date(c.created_at).toLocaleString():'—'}</span>
+            <span>Last activity: {c.updated_at?new Date(c.updated_at).toLocaleString():'—'}</span>
+          </div>)}
+          {!demoCustomers.length&&<div style={s.empty}>No demo customers yet. Share the Demo Join QR, let the prospect join Agyaman Express and add the card to Wallet. They will appear here.</div>}
         </div>
       </section>
 
@@ -190,7 +222,7 @@ const s={
   stat:{background:'white',border:'1px solid #e2e8f0',borderRadius:14,padding:16},statLabel:{fontSize:12,color:'#64748b',fontWeight:700},statVal:{fontSize:24,fontWeight:850,marginTop:6},
   card:{background:'white',border:'1px solid #e2e8f0',borderRadius:16,padding:18,marginBottom:18},h2:{margin:'0 0 6px',fontSize:18},note:{margin:'0 0 15px',fontSize:12,color:'#64748b',lineHeight:1.55},
   grid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:10},biz:{display:'flex',flexDirection:'column',gap:5,padding:13,border:'1px solid #e2e8f0',borderRadius:11,fontSize:12,color:'#64748b'},
-  empty:{padding:18,color:'#94a3b8',textAlign:'center'},table:{width:'100%',borderCollapse:'collapse',fontSize:13},
+  empty:{padding:18,color:'#94a3b8',textAlign:'center'},customer:{display:'flex',flexDirection:'column',gap:6,padding:14,border:'1px solid #e2e8f0',borderRadius:12,fontSize:12,color:'#64748b'},customerTop:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,color:'#0f172a'},stampPill:{background:'#ecfdf5',color:'#047857',padding:'4px 8px',borderRadius:999,fontSize:11,fontWeight:800},customerId:{fontFamily:'monospace',fontSize:10,color:'#94a3b8',wordBreak:'break-all'},table:{width:'100%',borderCollapse:'collapse',fontSize:13},
   demoCard:{background:'linear-gradient(135deg,#ecfdf5,#f0fdfa)',border:'1px solid #99f6e4',borderRadius:18,padding:'clamp(16px,3vw,24px)',marginBottom:18},
   demoTop:{display:'flex',justifyContent:'space-between',gap:18,alignItems:'flex-start',flexWrap:'wrap'},demoBadge:{fontSize:10,fontWeight:900,letterSpacing:1.4,color:'#0f766e'},
   demoStats:{background:'white',border:'1px solid #ccfbf1',borderRadius:14,padding:'12px 16px',minWidth:120,textAlign:'center',display:'flex',flexDirection:'column',gap:2},
