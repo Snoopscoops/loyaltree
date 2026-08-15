@@ -5074,6 +5074,160 @@ async def admin_delete_business(public_id: str, _: bool = Depends(require_admin)
 # owner's own announcements to their customers.
 
 
+
+# ---- Partner Sales Demo / Agyaman Express -----------------------------------
+def _partner_demo_slug(partner: dict) -> str:
+    code = re.sub(r'[^a-z0-9]+', '-', str(partner.get('partner_code') or partner.get('public_id') or 'partner').lower()).strip('-')
+    return f"agyaman-express-{code}"[:120]
+
+
+def _ensure_partner_demo_business(partner: dict) -> dict:
+    """Return this partner's isolated Agyaman Express demo business.
+
+    The demo is a real LoyaltyTree business technically, so Join QR, customer
+    Wallet cards, card editing and cashier transactions exercise the production
+    stack. It is NOT attached through businesses.partner_id and is marked
+    is_demo=true, so normal referral commission attribution is not triggered.
+    """
+    if not partner:
+        raise HTTPException(status_code=404, detail='Partner not found')
+
+    business = None
+    demo_business_id = partner.get('demo_business_id')
+    if demo_business_id:
+        try:
+            business = safe_get_business_by_id(demo_business_id)
+        except Exception:
+            business = None
+
+    slug = _partner_demo_slug(partner)
+    if not business:
+        try:
+            business = supabase.table('businesses').select('*').eq('public_id', slug).maybe_single().execute().data
+        except Exception:
+            business = None
+
+    now = datetime.utcnow().isoformat()
+    if not business:
+        demo_email = f"demo+{str(partner.get('public_id') or uuid.uuid4().hex).replace('@','_')}@loyaltytree.demo"
+        payload = {
+            'public_id': slug,
+            'name': 'Agyaman Express',
+            'email': demo_email,
+            'phone': None,
+            'password_hash': hash_password(uuid.uuid4().hex + uuid.uuid4().hex),
+            'status': 'ACTIVE',
+            'logo_url': None,
+            'business_type': 'coffee',
+            'address': ', '.join(x for x in [partner.get('city'), partner.get('region')] if x) or 'Partner Demo',
+            'plan': 'pro',
+            'created_at': now,
+            'updated_at': now,
+            'subscription_expires_at': '2099-12-31',
+            'is_demo': True,
+        }
+        rows = supabase.table('businesses').insert(payload).execute().data or []
+        if not rows:
+            raise HTTPException(status_code=500, detail='Could not create Agyaman Express demo business')
+        business = rows[0]
+    elif business.get('is_demo') is not True:
+        # Only ever mark the deterministic Agyaman demo slug. Never convert an
+        # arbitrary linked real business into demo mode.
+        if business.get('public_id') != slug:
+            raise HTTPException(status_code=409, detail='Partner demo link points to a non-demo business')
+        rows = supabase.table('businesses').update({'is_demo': True, 'updated_at': now}).eq('id', business.get('id')).execute().data or []
+        if rows:
+            business = rows[0]
+
+    # Keep the linkage on the partner row.
+    if partner.get('demo_business_id') != business.get('id'):
+        try:
+            supabase.table('network_partners').update({
+                'demo_business_id': business.get('id'),
+                'updated_at': now,
+            }).eq('id', partner.get('id')).execute()
+            partner['demo_business_id'] = business.get('id')
+        except Exception as exc:
+            print(f"PARTNER DEMO link update failed: {exc}")
+
+    # Seed a polished stamp-card demo once. After that, the partner edits this
+    # exact loyalty_programs row through the normal LoyaltyCardCustomizer.
+    program = safe_get_loyalty_program(business.get('id'))
+    if not program:
+        demo_program = {
+            'business_id': business.get('id'),
+            'card_type': 'stamp',
+            'card_name': 'Agyaman Express Rewards',
+            'description': 'Collect stamps, unlock rewards, and experience LoyaltyTree in real time.',
+            'stamp_goal': 10,
+            'reward_name': 'Agyaman Grand Reward',
+            'stamp_rewards': [
+                {'id': 'agyaman-5', 'stamps': 5, 'reward_name': 'Free Agyaman Drink'},
+                {'id': 'agyaman-10', 'stamps': 10, 'reward_name': 'Agyaman Grand Reward'},
+            ],
+            'stamp_once_per_day': False,
+            'stamp_reset_after_final': False,
+            'primary_color': '#0d9488',
+            'wallet_style': 'gradient',
+            'wallet_secondary_color': '#14b8a6',
+            'wallet_show_background': True,
+            'reward_expiry_days': 30,
+            'updated_at': now,
+        }
+        try:
+            supabase.table('loyalty_programs').insert(demo_program).execute()
+        except Exception as exc:
+            # Keep the demo usable even if an older schema is missing one of the
+            # newer optional fields; save_loyalty_config can populate them later.
+            print(f"PARTNER DEMO loyalty seed warning: {exc}")
+            fallback = {
+                'business_id': business.get('id'),
+                'card_type': 'stamp',
+                'stamp_goal': 10,
+                'reward_name': 'Agyaman Grand Reward',
+                'primary_color': '#0d9488',
+                'reward_expiry_days': 30,
+                'updated_at': now,
+            }
+            try:
+                supabase.table('loyalty_programs').insert(fallback).execute()
+            except Exception as fallback_exc:
+                print(f"PARTNER DEMO fallback loyalty seed warning: {fallback_exc}")
+
+    return business
+
+
+def _partner_demo_payload(partner: dict, business: dict) -> dict:
+    frontend = (FRONTEND_URL or BASE_URL).rstrip('/')
+    customer_count = 0
+    latest_customer = None
+    try:
+        customer_count = (
+            supabase.table('customers').select('id', count='exact')
+            .eq('business_id', business.get('id')).execute().count or 0
+        )
+        rows = (
+            supabase.table('customers')
+            .select('public_id,name,created_at')
+            .eq('business_id', business.get('id'))
+            .order('created_at', desc=True)
+            .limit(1).execute().data or []
+        )
+        if rows:
+            latest_customer = rows[0]
+    except Exception:
+        pass
+    return {
+        'name': business.get('name') or 'Agyaman Express',
+        'business_slug': business.get('public_id'),
+        'join_url': f"{frontend}/join/{business.get('public_id')}",
+        'customer_count': customer_count,
+        'latest_customer': latest_customer,
+        'is_demo': True,
+    }
+
+
+
 # ---- Region / City Partner Network -----------------------------------------
 @app.get("/api/v1/public/network-partner/{partner_code}")
 async def public_network_partner(partner_code: str):
@@ -5106,8 +5260,17 @@ async def admin_create_network_partner(req: NetworkPartnerCreate, _: bool = Depe
     if req.partner_type=='city' and not (req.city or '').strip(): raise HTTPException(status_code=400,detail='City is required for a city partner')
     payload=req.model_dump(exclude={'password','partner_code'})
     payload.update({'public_id':'np_'+uuid.uuid4().hex[:20],'partner_code':code,'email':req.email.strip().lower(),'password_hash':hash_password(req.password),'created_at':datetime.utcnow().isoformat(),'updated_at':datetime.utcnow().isoformat()})
-    try: return _network_partner_public((supabase.table('network_partners').insert(payload).execute().data or [payload])[0])
-    except Exception as e: raise HTTPException(status_code=400,detail=friendly_db_error(e))
+    try:
+        row = (supabase.table('network_partners').insert(payload).execute().data or [payload])[0]
+        try:
+            _ensure_partner_demo_business(row)
+        except Exception as demo_exc:
+            # Partner creation itself succeeds even if demo provisioning has a
+            # temporary schema/config issue; the dashboard retries lazily.
+            print(f"PARTNER DEMO provision warning: {demo_exc}")
+        return _network_partner_public(row)
+    except Exception as e:
+        raise HTTPException(status_code=400,detail=friendly_db_error(e))
 
 @app.patch("/api/v1/admin/network-partners/{public_id}")
 async def admin_update_network_partner(public_id:str, req:NetworkPartnerUpdate, _:bool=Depends(require_admin)):
@@ -5148,19 +5311,130 @@ async def partner_me(claims:dict=Depends(require_partner)):
 async def partner_dashboard(claims:dict=Depends(require_partner)):
     pid=claims.get('partner_id')
     p=supabase.table('network_partners').select('*').eq('id',pid).maybe_single().execute().data
-    if not p or not p.get('is_active',True): raise HTTPException(status_code=403,detail='Partner account inactive')
-    # Deliberately limited: no customer rows, customer PII, staff PII, balances,
-    # fraud detail, or transaction payloads are exposed to partners.
-    businesses=supabase.table('businesses').select('public_id,name,business_type,address,plan,status,created_at,subscription_expires_at,setup_kit_status').eq('partner_id',pid).order('created_at',desc=True).execute().data or []
-    commissions=supabase.table('partner_commissions').select('public_id,business_id,gross_amount,commission_amount,status,earned_at,paid_at').eq('partner_id',pid).order('earned_at',desc=True).limit(200).execute().data or []
+    if not p or not p.get('is_active',True):
+        raise HTTPException(status_code=403,detail='Partner account inactive')
+
+    demo_business = _ensure_partner_demo_business(p)
+
+    # Deliberately limited: no real client customer rows, customer PII, staff PII,
+    # balances, fraud detail, or transaction payloads are exposed to partners.
+    businesses=(
+        supabase.table('businesses')
+        .select('public_id,name,business_type,address,plan,status,created_at,subscription_expires_at,setup_kit_status')
+        .eq('partner_id',pid)
+        .order('created_at',desc=True).execute().data or []
+    )
+    commissions=(
+        supabase.table('partner_commissions')
+        .select('public_id,business_id,gross_amount,commission_amount,status,earned_at,paid_at')
+        .eq('partner_id',pid).order('earned_at',desc=True).limit(200).execute().data or []
+    )
     name_by_id={}
     try:
-        for b in supabase.table('businesses').select('id,name').eq('partner_id',pid).execute().data or []: name_by_id[b['id']]=b['name']
-    except Exception: pass
-    for c in commissions: c['business_name']=name_by_id.get(c.get('business_id'),'Business'); c.pop('business_id',None)
+        for b in supabase.table('businesses').select('id,name').eq('partner_id',pid).execute().data or []:
+            name_by_id[b['id']]=b['name']
+    except Exception:
+        pass
+    for c in commissions:
+        c['business_name']=name_by_id.get(c.get('business_id'),'Business')
+        c.pop('business_id',None)
+
     earned=sum(float(c.get('commission_amount') or 0) for c in commissions)
     unpaid=sum(float(c.get('commission_amount') or 0) for c in commissions if c.get('status') in ('earned','approved'))
-    return {'partner':_network_partner_public(p),'businesses':businesses,'commissions':commissions,'stats':{'businesses':len(businesses),'active_businesses':sum(1 for b in businesses if str(b.get('status','')).upper()=='ACTIVE'),'pending_businesses':sum(1 for b in businesses if str(b.get('status','')).upper()=='PENDING'),'commission_earned':round(earned,2),'commission_unpaid':round(unpaid,2)}}
+
+    return {
+        'partner':_network_partner_public(p),
+        'demo': _partner_demo_payload(p, demo_business),
+        'businesses':businesses,
+        'commissions':commissions,
+        'stats':{
+            'businesses':len(businesses),
+            'active_businesses':sum(1 for b in businesses if str(b.get('status','')).upper()=='ACTIVE'),
+            'pending_businesses':sum(1 for b in businesses if str(b.get('status','')).upper()=='PENDING'),
+            'commission_earned':round(earned,2),
+            'commission_unpaid':round(unpaid,2),
+        }
+    }
+
+
+@app.get("/api/v1/partner/demo-access")
+async def partner_demo_access(claims:dict=Depends(require_partner)):
+    """Issue a short-lived owner-scoped token for THIS partner's demo only.
+
+    This reuses the existing owner-secured card editor and owner-mode cashier
+    instead of creating a second, weaker set of demo transaction endpoints.
+    """
+    p=supabase.table('network_partners').select('*').eq('id',claims.get('partner_id')).maybe_single().execute().data
+    if not p or not p.get('is_active',True):
+        raise HTTPException(status_code=403,detail='Partner account inactive')
+    business=_ensure_partner_demo_business(p)
+    token=create_owner_session_token(business)
+    payload=_partner_demo_payload(p,business)
+    payload['owner_token']=token
+    payload['owner_name']='Agyaman Demo Cashier'
+    return payload
+
+
+@app.post("/api/v1/partner/demo/notify-latest")
+async def partner_demo_notify_latest(claims:dict=Depends(require_partner)):
+    """Send a real Wallet demo notification to the latest Agyaman demo customer."""
+    p=supabase.table('network_partners').select('*').eq('id',claims.get('partner_id')).maybe_single().execute().data
+    if not p or not p.get('is_active',True):
+        raise HTTPException(status_code=403,detail='Partner account inactive')
+    business=_ensure_partner_demo_business(p)
+    rows=(
+        supabase.table('customers').select('*')
+        .eq('business_id',business.get('id'))
+        .order('created_at',desc=True).limit(1).execute().data or []
+    )
+    if not rows:
+        raise HTTPException(status_code=404,detail='No demo customer yet. Scan the Demo Join QR and add the card to Wallet first.')
+    customer=rows[0]
+    program=safe_get_loyalty_program(business.get('id')) or {}
+
+    stamp = int(customer.get('stamp_count') or 0)
+    next_target = int(program.get('stamp_goal') or 10)
+    body = (
+        f"Thanks for trying LoyaltyTree! Your Agyaman Express card is live. "
+        f"You currently have {stamp} stamp{'s' if stamp != 1 else ''}. "
+        f"Keep collecting toward {next_target}."
+    )
+    now=datetime.utcnow()
+    msg_id=f"partner-demo-{customer.get('id')}-{int(now.timestamp())}"
+
+    # Change the latest announcement value as well as pushing Google. PassKit
+    # uses the announcement field's changed value when the device refetches,
+    # which makes the Apple demo visible instead of sending an empty refresh.
+    try:
+        supabase.table('announcements').update({'is_active':False,'updated_at':now.isoformat()}).eq('business_id',business.get('id')).eq('is_active',True).execute()
+        supabase.table('announcements').insert({
+            'business_id': business.get('id'),
+            'title': 'Agyaman Express Demo 🌱',
+            'message': body,
+            'type': 'info',
+            'is_active': True,
+            'created_at': now.isoformat(),
+            'updated_at': now.isoformat(),
+        }).execute()
+    except Exception as exc:
+        print(f"PARTNER DEMO announcement warning: {exc}")
+
+    google_result = sync_wallet_object(
+        customer, business, program,
+        notify_header='Agyaman Express Demo 🌱',
+        notify_body=body,
+        notify_message_id=msg_id,
+    )
+    apple_result = sync_apple_wallet_pass(customer)
+
+    return {
+        'success': True,
+        'customer': {'public_id':customer.get('public_id'),'name':customer.get('name')},
+        'message': body,
+        'google': google_result,
+        'apple': apple_result,
+    }
+
 
 @app.get("/api/v1/public/partners")
 async def public_list_partners(response: Response):
@@ -5570,7 +5844,7 @@ async def paymongo_webhook(request: Request):
             # Partner commission ledger: idempotent per PayMongo payment intent.
             # Partners never receive customer data; this ledger only references
             # the business and subscription payment.
-            if business.get('partner_id') and payment_intent_id:
+            if business.get('partner_id') and payment_intent_id and not business.get('is_demo'):
                 try:
                     partner = supabase.table('network_partners').select('*').eq('id', business.get('partner_id')).maybe_single().execute().data
                     if partner and partner.get('is_active', True):

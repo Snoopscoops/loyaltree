@@ -103,7 +103,7 @@ function App() {
           ) : <Navigate to="/login" />
         } />
         <Route path="/scanner" element={
-          ['owner', 'manager', 'cashier'].includes(user?.role)
+          ['owner', 'manager', 'cashier', 'partner'].includes(user?.role)
             ? <CashierApp key="cashier-api-security-v1" API_BASE={API_BASE} />
             : <Navigate to="/login" />
         } />
