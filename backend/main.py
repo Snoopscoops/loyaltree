@@ -581,6 +581,7 @@ class BusinessCreate(BaseModel):
     kit_contact_number: Optional[str] = None
     kit_delivery_address: Optional[str] = None
     kit_delivery_instructions: Optional[str] = None
+    partner_code: Optional[str] = Field(default=None, max_length=64)
 
 class SetupKitOwnerUpdate(BaseModel):
     recipient_name: Optional[str] = None
@@ -1197,6 +1198,30 @@ class PartnerUpdate(BaseModel):
     is_active: Optional[bool] = None
     sort_order: Optional[int] = Field(default=None, ge=0, le=9999)
 
+class NetworkPartnerCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=160)
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=8, max_length=200)
+    partner_type: Literal['region','city'] = 'city'
+    region: str = Field(min_length=2, max_length=120)
+    city: Optional[str] = Field(default=None, max_length=120)
+    partner_code: str = Field(min_length=3, max_length=40)
+    commission_type: Literal['percent','fixed'] = 'percent'
+    commission_value: float = Field(default=10, ge=0, le=100000)
+    is_active: bool = True
+
+class NetworkPartnerUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=2, max_length=160)
+    email: Optional[str] = Field(default=None, min_length=3, max_length=320)
+    password: Optional[str] = Field(default=None, min_length=8, max_length=200)
+    partner_type: Optional[Literal['region','city']] = None
+    region: Optional[str] = Field(default=None, min_length=2, max_length=120)
+    city: Optional[str] = Field(default=None, max_length=120)
+    partner_code: Optional[str] = Field(default=None, min_length=3, max_length=40)
+    commission_type: Optional[Literal['percent','fixed']] = None
+    commission_value: Optional[float] = Field(default=None, ge=0, le=100000)
+    is_active: Optional[bool] = None
+
 class AdminLoginRequest(BaseModel):
     email: str
     password: str
@@ -1534,6 +1559,29 @@ def require_admin(request: Request):
     if not token or token != valid_token:
         raise HTTPException(status_code=401, detail="Admin authentication required")
     return True
+
+def issue_partner_session(partner: dict) -> str:
+    import jwt as pyjwt
+    if not STAFF_SESSION_SECRET:
+        raise HTTPException(status_code=503, detail="STAFF_SESSION_SECRET is not configured")
+    now = datetime.utcnow()
+    return pyjwt.encode({
+        'role': 'partner', 'partner_id': partner.get('id'),
+        'partner_public_id': partner.get('public_id'),
+        'partner_type': partner.get('partner_type'), 'name': partner.get('name',''),
+        'iat': now, 'exp': now + timedelta(hours=OWNER_SESSION_TTL_HOURS),
+    }, STAFF_SESSION_SECRET, algorithm='HS256')
+
+def require_partner(authorization: str = Header(default='')) -> dict:
+    if not authorization or not authorization.startswith('Bearer '):
+        raise HTTPException(status_code=401, detail='Partner authentication required')
+    claims = verify_staff_session_token(authorization.split(' ',1)[1])
+    if not claims or claims.get('role') != 'partner':
+        raise HTTPException(status_code=401, detail='Partner session expired - please log in again')
+    return claims
+
+def _network_partner_public(row: dict) -> dict:
+    return {k: row.get(k) for k in ('public_id','name','email','partner_type','region','city','partner_code','commission_type','commission_value','is_active','created_at')}
 
 def business_summary(biz: dict) -> dict:
     """Lightweight per-business row for the admin businesses list - counts
@@ -4290,6 +4338,21 @@ async def login(req: LoginRequest, request: Request):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database not connected")
 
+    # Region/city partner accounts are platform-scoped and intentionally
+    # separate from businesses and homepage-logo partners.
+    try:
+        partner = supabase.table("network_partners").select("*").ilike("email", req.email.strip()).maybe_single().execute().data
+    except Exception:
+        partner = None
+    if partner:
+        matched = partner.get('password_hash') in (req.password, hash_password(req.password))
+        if matched and partner.get('is_active', True):
+            _clear_auth_failures('owner', request, req.email)
+            token = issue_partner_session(partner)
+            return {"success":True,"token":token,"business_slug":"","business_name":"LoyaltyTree Partner","name":partner.get('name'),"role":"partner","partner_type":partner.get('partner_type'),"partner_public_id":partner.get('public_id'),"user":{"name":partner.get('name'),"email":partner.get('email'),"role":"partner","partner_type":partner.get('partner_type'),"partner_public_id":partner.get('public_id')}}
+        if matched and not partner.get('is_active', True):
+            raise HTTPException(status_code=403, detail='Partner account is inactive')
+
     try:
         res = supabase.table("businesses").select("*").eq("email", req.email).maybe_single().execute()
         business = res.data
@@ -4461,6 +4524,15 @@ async def register(biz: BusinessCreate):
     else:
         plan = determine_plan_from_branch_count(biz.branch_count)
     price_month = get_price_for_plan(plan, biz.branch_count)
+    assigned_partner = None
+    if (biz.partner_code or '').strip():
+        code = biz.partner_code.strip().upper()
+        try:
+            assigned_partner = supabase.table('network_partners').select('*').eq('partner_code', code).eq('is_active', True).maybe_single().execute().data
+        except Exception:
+            assigned_partner = None
+        if not assigned_partner:
+            raise HTTPException(status_code=400, detail='Partner/referral code is not valid or is inactive')
     business_data = {
         'public_id': public_id,
         'name': biz.name,
@@ -4480,6 +4552,8 @@ async def register(biz: BusinessCreate):
         'setup_kit_paid': False,
         'setup_kit_status': 'requested' if biz.setup_kit_requested else None,
         'created_at': datetime.utcnow().isoformat(),
+        'partner_id': assigned_partner.get('id') if assigned_partner else None,
+        'partner_code_at_signup': assigned_partner.get('partner_code') if assigned_partner else None,
     }
 
     if biz.setup_kit_requested:
@@ -4981,6 +5055,94 @@ async def admin_delete_business(public_id: str, _: bool = Depends(require_admin)
 # owner's own announcements to their customers.
 
 
+# ---- Region / City Partner Network -----------------------------------------
+@app.get("/api/v1/public/network-partner/{partner_code}")
+async def public_network_partner(partner_code: str):
+    try:
+        row = supabase.table('network_partners').select('name,partner_type,region,city,partner_code,is_active').eq('partner_code', partner_code.strip().upper()).eq('is_active', True).maybe_single().execute().data
+    except Exception:
+        row = None
+    if not row: raise HTTPException(status_code=404, detail='Partner code not found')
+    return {k:row.get(k) for k in ('name','partner_type','region','city','partner_code')}
+
+@app.get("/api/v1/admin/network-partners")
+async def admin_network_partners(_: bool = Depends(require_admin)):
+    rows = supabase.table('network_partners').select('*').order('created_at', desc=True).execute().data or []
+    out=[]
+    for row in rows:
+        item=_network_partner_public(row)
+        try:
+            item['business_count']=supabase.table('businesses').select('id',count='exact').eq('partner_id',row.get('id')).execute().count or 0
+            cr=supabase.table('partner_commissions').select('commission_amount,status').eq('partner_id',row.get('id')).execute().data or []
+            item['commission_earned']=round(sum(float(x.get('commission_amount') or 0) for x in cr),2)
+            item['commission_unpaid']=round(sum(float(x.get('commission_amount') or 0) for x in cr if x.get('status') in ('earned','approved')),2)
+        except Exception: pass
+        out.append(item)
+    return out
+
+@app.post("/api/v1/admin/network-partners")
+async def admin_create_network_partner(req: NetworkPartnerCreate, _: bool = Depends(require_admin)):
+    code=re.sub(r'[^A-Z0-9_-]','',req.partner_code.strip().upper())
+    if len(code)<3: raise HTTPException(status_code=400,detail='Partner code must contain at least 3 letters/numbers')
+    if req.partner_type=='city' and not (req.city or '').strip(): raise HTTPException(status_code=400,detail='City is required for a city partner')
+    payload=req.model_dump(exclude={'password','partner_code'})
+    payload.update({'public_id':'np_'+uuid.uuid4().hex[:20],'partner_code':code,'email':req.email.strip().lower(),'password_hash':hash_password(req.password),'created_at':datetime.utcnow().isoformat(),'updated_at':datetime.utcnow().isoformat()})
+    try: return _network_partner_public((supabase.table('network_partners').insert(payload).execute().data or [payload])[0])
+    except Exception as e: raise HTTPException(status_code=400,detail=friendly_db_error(e))
+
+@app.patch("/api/v1/admin/network-partners/{public_id}")
+async def admin_update_network_partner(public_id:str, req:NetworkPartnerUpdate, _:bool=Depends(require_admin)):
+    data={k:v for k,v in req.model_dump(exclude={'password'}).items() if v is not None}
+    if req.password: data['password_hash']=hash_password(req.password)
+    if 'partner_code' in data: data['partner_code']=re.sub(r'[^A-Z0-9_-]','',data['partner_code'].strip().upper())
+    if 'email' in data: data['email']=data['email'].strip().lower()
+    data['updated_at']=datetime.utcnow().isoformat()
+    try:
+        row=(supabase.table('network_partners').update(data).eq('public_id',public_id).execute().data or [None])[0]
+        if not row: raise HTTPException(status_code=404,detail='Partner not found')
+        return _network_partner_public(row)
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(status_code=400,detail=friendly_db_error(e))
+
+@app.get("/api/v1/admin/network-partners/{public_id}/businesses")
+async def admin_network_partner_businesses(public_id:str, _:bool=Depends(require_admin)):
+    p=supabase.table('network_partners').select('id').eq('public_id',public_id).maybe_single().execute().data
+    if not p: raise HTTPException(status_code=404,detail='Partner not found')
+    rows=supabase.table('businesses').select('public_id,name,business_type,address,plan,status,created_at,subscription_expires_at').eq('partner_id',p['id']).order('created_at',desc=True).execute().data or []
+    return rows
+
+@app.patch("/api/v1/admin/businesses/{business_public_id}/network-partner/{partner_public_id}")
+async def admin_assign_network_partner(business_public_id:str, partner_public_id:str, _:bool=Depends(require_admin)):
+    p=supabase.table('network_partners').select('id,partner_code').eq('public_id',partner_public_id).maybe_single().execute().data
+    b=safe_get_business(business_public_id)
+    if not p or not b: raise HTTPException(status_code=404,detail='Partner or business not found')
+    supabase.table('businesses').update({'partner_id':p['id'],'partner_code_at_signup':p['partner_code']}).eq('id',b['id']).execute()
+    return {'success':True}
+
+@app.get("/api/v1/partner/me")
+async def partner_me(claims:dict=Depends(require_partner)):
+    p=supabase.table('network_partners').select('*').eq('id',claims.get('partner_id')).maybe_single().execute().data
+    if not p or not p.get('is_active',True): raise HTTPException(status_code=403,detail='Partner account inactive')
+    return _network_partner_public(p)
+
+@app.get("/api/v1/partner/dashboard")
+async def partner_dashboard(claims:dict=Depends(require_partner)):
+    pid=claims.get('partner_id')
+    p=supabase.table('network_partners').select('*').eq('id',pid).maybe_single().execute().data
+    if not p or not p.get('is_active',True): raise HTTPException(status_code=403,detail='Partner account inactive')
+    # Deliberately limited: no customer rows, customer PII, staff PII, balances,
+    # fraud detail, or transaction payloads are exposed to partners.
+    businesses=supabase.table('businesses').select('public_id,name,business_type,address,plan,status,created_at,subscription_expires_at,setup_kit_status').eq('partner_id',pid).order('created_at',desc=True).execute().data or []
+    commissions=supabase.table('partner_commissions').select('public_id,business_id,gross_amount,commission_amount,status,earned_at,paid_at').eq('partner_id',pid).order('earned_at',desc=True).limit(200).execute().data or []
+    name_by_id={}
+    try:
+        for b in supabase.table('businesses').select('id,name').eq('partner_id',pid).execute().data or []: name_by_id[b['id']]=b['name']
+    except Exception: pass
+    for c in commissions: c['business_name']=name_by_id.get(c.get('business_id'),'Business'); c.pop('business_id',None)
+    earned=sum(float(c.get('commission_amount') or 0) for c in commissions)
+    unpaid=sum(float(c.get('commission_amount') or 0) for c in commissions if c.get('status') in ('earned','approved'))
+    return {'partner':_network_partner_public(p),'businesses':businesses,'commissions':commissions,'stats':{'businesses':len(businesses),'active_businesses':sum(1 for b in businesses if str(b.get('status','')).upper()=='ACTIVE'),'pending_businesses':sum(1 for b in businesses if str(b.get('status','')).upper()=='PENDING'),'commission_earned':round(earned,2),'commission_unpaid':round(unpaid,2)}}
+
 @app.get("/api/v1/public/partners")
 async def public_list_partners(response: Response):
     # Partner logos are public homepage content. Prevent browser/CDN caching so
@@ -5385,6 +5547,29 @@ async def paymongo_webhook(request: Request):
                 }).eq("paymongo_payment_intent_id", payment_intent_id).execute()
             except Exception as e:
                 print(f"WEBHOOK payment log update error: {e}")
+
+            # Partner commission ledger: idempotent per PayMongo payment intent.
+            # Partners never receive customer data; this ledger only references
+            # the business and subscription payment.
+            if business.get('partner_id') and payment_intent_id:
+                try:
+                    partner = supabase.table('network_partners').select('*').eq('id', business.get('partner_id')).maybe_single().execute().data
+                    if partner and partner.get('is_active', True):
+                        amount_centavos = resource_attrs.get('amount') or 0
+                        gross_php = float(amount_centavos) / 100.0
+                        if partner.get('commission_type') == 'fixed':
+                            commission_php = float(partner.get('commission_value') or 0)
+                        else:
+                            commission_php = gross_php * float(partner.get('commission_value') or 0) / 100.0
+                        supabase.table('partner_commissions').upsert({
+                            'public_id': 'pc_' + hashlib.sha256(str(payment_intent_id).encode()).hexdigest()[:24],
+                            'partner_id': partner.get('id'), 'business_id': business.get('id'),
+                            'paymongo_payment_intent_id': payment_intent_id,
+                            'gross_amount': round(gross_php,2), 'commission_amount': round(commission_php,2),
+                            'status': 'earned', 'earned_at': now.isoformat(),
+                        }, on_conflict='paymongo_payment_intent_id').execute()
+                except Exception as e:
+                    print(f"PARTNER COMMISSION ledger error: {e}")
 
             # Best-effort heads-up to the platform admin - never blocks the
             # webhook if it fails. amount_php comes off PayMongo's own

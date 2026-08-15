@@ -9,6 +9,7 @@ import CockpitDashboard from './components/CockpitDashboard'
 import CashierApp from './components/CashierApp'
 import AnalyticsDashboard from './components/AnalyticsDashboard'
 import AdminDashboard from './components/AdminDashboard'
+import PartnerDashboard from './components/PartnerDashboard'
 import MotoliteApp from './components/MotoliteApp'
 import CustomerJoin from './components/CustomerJoin'
 
@@ -75,6 +76,7 @@ function App() {
           user ? (
             user.role === 'owner' ? <Navigate to="/dashboard" /> :
             user.role === 'super_admin' ? <Navigate to="/admin" /> :
+            user.role === 'partner' ? <Navigate to="/partner" /> :
             user.role === 'agent' ? <RedirectToBackend base={API_BASE} sub="agent" id={user.business_slug} /> :
             ['manager', 'cashier'].includes(user.role) ? <Navigate to="/scanner" /> :
             <Navigate to="/login" />
@@ -103,6 +105,9 @@ function App() {
         <Route path="/join/:businessSlug" element={<CustomerJoin API_BASE={API_BASE} />} />
         <Route path="/admin" element={
           user?.role === 'super_admin' ? <AdminDashboard API_BASE={API_BASE} user={user} onLogout={() => setUser(null)} /> : <Navigate to="/login" />
+        } />
+        <Route path="/partner" element={
+          user?.role === 'partner' ? <PartnerDashboard API_BASE={API_BASE} user={user} onLogout={() => setUser(null)} /> : <Navigate to="/login" />
         } />
       </Routes>
     </BrowserRouter>

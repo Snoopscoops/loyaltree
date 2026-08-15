@@ -55,6 +55,7 @@ function Signup({ API_BASE }) {
     kit_contact_number: '',
     kit_delivery_address: '',
     kit_delivery_instructions: '',
+    partner_code: '',
   })
   const [plans, setPlans] = useState(null)
   const [logoUpload, setLogoUpload] = useState({ uploading:false, error:'' })
@@ -194,6 +195,11 @@ function Signup({ API_BASE }) {
           <div style={styles.inputGroup}>
             <label style={styles.label}>Business Address</label>
             <input name="address" value={form.address} onChange={handleChange} style={styles.input} placeholder="123 Main St, City" />
+          </div>
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>LoyaltyTree Partner Code <span style={{fontWeight:400,color:'#94a3b8'}}>(optional)</span></label>
+            <input name="partner_code" value={form.partner_code} onChange={e=>setForm({...form,partner_code:e.target.value.toUpperCase()})} style={styles.input} placeholder="e.g. LT-CAUAYAN" />
+            <span style={styles.businessTip}>Use this if a LoyaltyTree city or region partner referred or is assisting your business.</span>
           </div>
           <div style={styles.inputGroup}>
             <label style={styles.label}>Business Logo (optional)</label>

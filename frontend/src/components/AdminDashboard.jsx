@@ -44,6 +44,9 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const [partnerRowUploading, setPartnerRowUploading] = useState(null)
   const [setupKitOrders,setSetupKitOrders]=useState([])
   const [kitSearch,setKitSearch]=useState('')
+  const [networkPartners,setNetworkPartners]=useState([])
+  const [networkPartnerSaving,setNetworkPartnerSaving]=useState(false)
+  const [networkPartnerForm,setNetworkPartnerForm]=useState({name:'',email:'',password:'',partner_type:'city',region:'',city:'',partner_code:'',commission_type:'percent',commission_value:10,is_active:true})
 
   const authedFetch = (path, opts = {}) => fetch(`${API_BASE}${path}`, {
     ...opts,
@@ -61,13 +64,14 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
       if (statusFilter) params.set('status', statusFilter)
       if (planFilter) params.set('plan', planFilter)
 
-      const [ovRes, plansRes, bizRes, pendingRes, partnersRes, kitRes] = await Promise.all([
+      const [ovRes, plansRes, bizRes, pendingRes, partnersRes, kitRes, networkPartnersRes] = await Promise.all([
         authedFetch('/api/v1/admin/overview'),
         authedFetch('/api/v1/admin/plans'),
         authedFetch(`/api/v1/admin/businesses?${params.toString()}`),
         authedFetch('/api/v1/admin/businesses?status=PENDING'),
         authedFetch('/api/v1/admin/partners'),
         authedFetch('/api/v1/admin/setup-kit-orders'),
+        authedFetch('/api/v1/admin/network-partners'),
       ])
       if (ovRes.status === 401 || bizRes.status === 401) { onLogout(); return }
       setOverview(await ovRes.json().catch(() => null))
@@ -76,6 +80,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
       setPendingApps(await pendingRes.json().catch(() => []))
       setPartners(await partnersRes.json().catch(() => []))
       setSetupKitOrders(await kitRes.json().catch(() => []))
+      setNetworkPartners(await networkPartnersRes.json().catch(() => []))
     } catch (err) {
       console.error('Admin load error:', err)
     }
@@ -298,6 +303,9 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
     return <div style={styles.loadingScreen}>Loading platform data…</div>
   }
 
+  const createNetworkPartner=async(e)=>{e.preventDefault();setNetworkPartnerSaving(true);try{const res=await authedFetch('/api/v1/admin/network-partners',{method:'POST',body:JSON.stringify({...networkPartnerForm,commission_value:Number(networkPartnerForm.commission_value)||0,partner_code:networkPartnerForm.partner_code.toUpperCase()})});const d=await res.json().catch(()=>({}));if(!res.ok)throw new Error(d.detail||'Could not create partner');setNetworkPartnerForm({name:'',email:'',password:'',partner_type:'city',region:'',city:'',partner_code:'',commission_type:'percent',commission_value:10,is_active:true});setMessage('City/region partner created');loadData()}catch(err){setMessage(err.message)}setNetworkPartnerSaving(false)}
+  const patchNetworkPartner=async(p,patch)=>{try{const res=await authedFetch(`/api/v1/admin/network-partners/${p.public_id}`,{method:'PATCH',body:JSON.stringify(patch)});const d=await res.json().catch(()=>({}));if(!res.ok)throw new Error(d.detail||'Partner update failed');setMessage('Partner updated');loadData()}catch(err){setMessage(err.message)}}
+
   const filteredCount = businesses.length
   const latestKitByBusiness=setupKitOrders.reduce((m,o)=>{if(o.business_public_id&&!m[o.business_public_id])m[o.business_public_id]=o;return m},{})
   const businessKitStatus=b=>latestKitByBusiness[b.public_id]?.fulfillment_status||b.setup_kit_status||(b.setup_kit_requested?(b.setup_kit_paid?'paid':'requested'):'')
@@ -326,6 +334,24 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
           <button onClick={() => setShowCreateModal(true)} style={styles.approveBtn}>+ Create business</button>
         </div>
 
+
+        <section style={styles.partnerAdminSection}>
+          <h2 style={styles.partnerAdminTitle}>🌎 Region / City Partner Network</h2>
+          <p style={styles.partnerAdminSubtitle}>Create local LoyaltyTree operators with controlled access to assigned businesses, onboarding/setup status and commission activity. They cannot access customer personal data.</p>
+          <form onSubmit={createNetworkPartner} style={styles.partnerForm}>
+            <div style={styles.partnerFormGrid}>
+              <div><label style={styles.partnerLabel}>Partner name</label><input style={styles.input} value={networkPartnerForm.name} onChange={e=>setNetworkPartnerForm({...networkPartnerForm,name:e.target.value})} required/></div>
+              <div><label style={styles.partnerLabel}>Login email</label><input style={styles.input} type="email" value={networkPartnerForm.email} onChange={e=>setNetworkPartnerForm({...networkPartnerForm,email:e.target.value})} required/></div>
+              <div><label style={styles.partnerLabel}>Temporary password</label><input style={styles.input} type="password" minLength="8" value={networkPartnerForm.password} onChange={e=>setNetworkPartnerForm({...networkPartnerForm,password:e.target.value})} required/></div>
+              <div><label style={styles.partnerLabel}>Partner type</label><select style={styles.select} value={networkPartnerForm.partner_type} onChange={e=>setNetworkPartnerForm({...networkPartnerForm,partner_type:e.target.value,city:e.target.value==='region'?'':networkPartnerForm.city})}><option value="city">City Partner</option><option value="region">Region Partner</option></select></div>
+              <div><label style={styles.partnerLabel}>Region</label><input style={styles.input} value={networkPartnerForm.region} onChange={e=>setNetworkPartnerForm({...networkPartnerForm,region:e.target.value})} placeholder="Region II" required/></div>
+              {networkPartnerForm.partner_type==='city'&&<div><label style={styles.partnerLabel}>City</label><input style={styles.input} value={networkPartnerForm.city} onChange={e=>setNetworkPartnerForm({...networkPartnerForm,city:e.target.value})} placeholder="Cauayan City" required/></div>}
+              <div><label style={styles.partnerLabel}>Partner code</label><input style={styles.input} value={networkPartnerForm.partner_code} onChange={e=>setNetworkPartnerForm({...networkPartnerForm,partner_code:e.target.value.toUpperCase()})} placeholder="LT-CAUAYAN" required/></div>
+              <div><label style={styles.partnerLabel}>Commission</label><div style={{display:'flex',gap:6}}><select style={{...styles.select,width:110}} value={networkPartnerForm.commission_type} onChange={e=>setNetworkPartnerForm({...networkPartnerForm,commission_type:e.target.value})}><option value="percent">Percent</option><option value="fixed">Fixed ₱</option></select><input style={styles.input} type="number" min="0" step="0.01" value={networkPartnerForm.commission_value} onChange={e=>setNetworkPartnerForm({...networkPartnerForm,commission_value:e.target.value})}/></div></div>
+            </div><button style={styles.approveBtn} disabled={networkPartnerSaving}>{networkPartnerSaving?'Creating…':'+ Create local partner'}</button>
+          </form>
+          <div style={{...styles.partnerList,marginTop:16}}>{networkPartners.map(p=><div key={p.public_id} style={styles.partnerRow}><div style={{flex:1,minWidth:220}}><b>{p.name}</b><div style={{fontSize:12,color:'#64748b',marginTop:4}}>{p.partner_type==='region'?'Region':'City'} · {p.city?`${p.city}, `:''}{p.region}</div><div style={{fontSize:12,color:'#0f766e',fontWeight:700,marginTop:4}}>{p.partner_code} · {p.business_count||0} businesses</div></div><div style={{fontSize:12,minWidth:150}}>Earned <b>₱{Number(p.commission_earned||0).toLocaleString()}</b><br/>Unpaid <b>₱{Number(p.commission_unpaid||0).toLocaleString()}</b></div><button style={p.is_active?styles.rejectBtn:styles.approveBtn} onClick={()=>patchNetworkPartner(p,{is_active:!p.is_active})}>{p.is_active?'Deactivate':'Activate'}</button></div>)}{!networkPartners.length&&<div style={styles.partnerEmpty}>No city or region partners yet.</div>}</div>
+        </section>
 
         <section style={styles.kitAdminSection}>
           <div style={styles.kitAdminHeader}><div><h2 style={styles.partnerAdminTitle}>📦 QR / PR Kit Orders</h2><p style={styles.partnerAdminSubtitle}>Logo, generated QR, delivery address, and fulfillment tracking.</p></div><input style={{...styles.input,maxWidth:300}} value={kitSearch} onChange={e=>setKitSearch(e.target.value)} placeholder="Search kit orders..."/></div>
