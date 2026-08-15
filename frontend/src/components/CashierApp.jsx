@@ -17,11 +17,13 @@ function CashierApp({ API_BASE }) {
   // fill out a separate cashier PIN login screen too.
   const ownerState = location.state?.ownerMode ? location.state : null
   const isOwner = !!ownerState
+  const prefillBusinessSlug = location.state?.prefillBusinessSlug || ''
+  const prefillEmail = location.state?.prefillEmail || ''
 
   const [scanResult, setScanResult] = useState(null)
-  const [businessSlug, setBusinessSlug] = useState(ownerState?.businessSlug || '')
+  const [businessSlug, setBusinessSlug] = useState(ownerState?.businessSlug || prefillBusinessSlug || '')
   const [staffPin, setStaffPin] = useState('')
-  const [staffEmail, setStaffEmail] = useState('')
+  const [staffEmail, setStaffEmail] = useState(prefillEmail || '')
   // Session token from /staff/verify-pin - sent instead of the raw PIN on
   // every scan, so the PIN itself only crosses the wire once per shift.
   const [sessionToken, setSessionToken] = useState(ownerState?.ownerToken || '')

@@ -16,6 +16,9 @@ function PartnerDashboard({API_BASE,user,onLogout}){
   const [working,setWorking]=useState(false)
   const [demoCustomers,setDemoCustomers]=useState([])
   const [customersLoading,setCustomersLoading]=useState(false)
+  const [demoCashiers,setDemoCashiers]=useState([])
+  const [cashiersLoading,setCashiersLoading]=useState(false)
+  const [cashierForm,setCashierForm]=useState({name:'',email:'',pin:''})
 
   const authHeaders={Authorization:`Bearer ${user?.token}`}
 
@@ -30,6 +33,47 @@ function PartnerDashboard({API_BASE,user,onLogout}){
     }catch(e){setError(e.message)}
   }
 
+  const loadDemoCashiers=async()=>{
+    setCashiersLoading(true)
+    try{
+      const r=await fetch(`${API_BASE}/api/v1/partner/demo/cashiers`,{headers:authHeaders,cache:'no-store'})
+      const d=await r.json().catch(()=>({}))
+      if(r.ok)setDemoCashiers(d.cashiers||[])
+    }catch(e){}
+    setCashiersLoading(false)
+  }
+
+  const createDemoCashier=async(e)=>{
+    e?.preventDefault?.()
+    setWorking(true);setMessage('')
+    try{
+      const r=await fetch(`${API_BASE}/api/v1/partner/demo/cashiers`,{
+        method:'POST',
+        headers:{...authHeaders,'Content-Type':'application/json'},
+        body:JSON.stringify(cashierForm),
+      })
+      const d=await r.json().catch(()=>({}))
+      if(!r.ok)throw new Error(d.detail||'Could not create demo cashier')
+      setMessage(`✅ Cashier ${d.cashier?.name||''} created. Use the Business ID, email and PIN below in the normal cashier login.`)
+      setCashierForm({name:'',email:'',pin:''})
+      loadDemoCashiers()
+    }catch(e){setMessage(`❌ ${e.message}`)}
+    setWorking(false)
+  }
+
+  const deleteDemoCashier=async(publicId)=>{
+    if(!window.confirm('Remove this Agyaman Express demo cashier?'))return
+    setWorking(true)
+    try{
+      const r=await fetch(`${API_BASE}/api/v1/partner/demo/cashiers/${publicId}`,{method:'DELETE',headers:authHeaders})
+      const d=await r.json().catch(()=>({}))
+      if(!r.ok)throw new Error(d.detail||'Could not remove cashier')
+      setMessage('✅ Demo cashier removed.')
+      loadDemoCashiers()
+    }catch(e){setMessage(`❌ ${e.message}`)}
+    setWorking(false)
+  }
+
   const loadDemoCustomers=async()=>{
     setCustomersLoading(true)
     try{
@@ -40,7 +84,7 @@ function PartnerDashboard({API_BASE,user,onLogout}){
     setCustomersLoading(false)
   }
 
-  useEffect(()=>{load();loadDemoCustomers()},[user?.token])
+  useEffect(()=>{load();loadDemoCustomers();loadDemoCashiers()},[user?.token])
 
   const getDemoAccess=async()=>{
     if(demoAccess?.owner_token)return demoAccess
@@ -59,21 +103,14 @@ function PartnerDashboard({API_BASE,user,onLogout}){
     setWorking(false)
   }
 
-  const setupCashier=async()=>{
-    setWorking(true);setMessage('Preparing Agyaman Express demo cashier…')
-    try{
-      const d=await getDemoAccess()
-      setMessage('✅ Demo cashier is ready. It is isolated to Agyaman Express customers.')
-      navigate('/scanner',{state:{
-        ownerMode:true,
-        businessSlug:d.business_slug,
-        ownerName:d.owner_name||'Agyaman Demo Cashier',
-        ownerToken:d.owner_token,
-        demoMode:true,
-        partnerReturn:'/partner',
-      }})
-    }catch(e){setMessage(`❌ ${e.message}`)}
-    setWorking(false)
+  const openNormalCashier=(cashier=null)=>{
+    if(!demo?.business_slug)return
+    navigate('/scanner',{state:{
+      prefillBusinessSlug:demo.business_slug,
+      prefillEmail:cashier?.email||'',
+      demoMode:true,
+      partnerReturn:'/partner',
+    }})
   }
 
   const sendSampleNotification=async()=>{
@@ -130,13 +167,45 @@ function PartnerDashboard({API_BASE,user,onLogout}){
         <div style={s.demoActions}>
           <button style={s.actionPrimary} onClick={()=>setShowQr(true)}>📱 Share Demo Join QR</button>
           <button style={s.action} onClick={openEditor} disabled={working}>🎨 Edit Agyaman Card</button>
-          <button style={s.action} onClick={setupCashier} disabled={working}>🧾 Set Up / Open Cashier</button>
+          <button style={s.action} onClick={()=>openNormalCashier(demoCashiers[0]||null)} disabled={working}>📷 Open Normal Cashier</button>
           <button style={s.action} onClick={sendSampleNotification} disabled={working}>🔔 Send Sample Notification</button>
         </div>
 
         <div style={s.demoHint}>
-          <b>Suggested presentation:</b> Scan QR → join Agyaman Express → add card to Wallet → see the customer appear below → set up/open Demo Cashier → scan the Wallet card → add a stamp → return here and refresh the activity → send the sample notification.
+          <b>Suggested presentation:</b> Scan QR → join Agyaman Express → add card to Wallet → see the customer appear below → create a cashier → open the normal camera cashier → log in with Business ID + email + PIN → scan the Wallet card → add a stamp → return here and refresh the activity → send the sample notification.
           {demo?.latest_customer?.name&&<span> Latest demo signup: <b>{demo.latest_customer.name}</b>.</span>}
+        </div>
+      </section>
+
+      <section style={s.card}>
+        <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}>
+          <div>
+            <h2 style={s.h2}>Agyaman Express Cashiers</h2>
+            <p style={s.note}>Create a cashier exactly like a normal LoyaltyTree business. The cashier logs in with Business ID + email + PIN, then uses the normal phone camera scanner.</p>
+          </div>
+          <button style={s.action} onClick={loadDemoCashiers} disabled={cashiersLoading}>{cashiersLoading?'Refreshing…':'↻ Refresh Cashiers'}</button>
+        </div>
+
+        <div style={s.businessIdBox}><span>Business ID</span><b>{demo?.business_slug}</b></div>
+
+        <form onSubmit={createDemoCashier} style={s.cashierForm}>
+          <input style={s.input} placeholder="Cashier name" value={cashierForm.name} onChange={e=>setCashierForm({...cashierForm,name:e.target.value})} />
+          <input style={s.input} placeholder="Cashier email" type="email" value={cashierForm.email} onChange={e=>setCashierForm({...cashierForm,email:e.target.value})} />
+          <input style={s.input} placeholder="4–8 digit PIN" inputMode="numeric" maxLength={8} value={cashierForm.pin} onChange={e=>setCashierForm({...cashierForm,pin:e.target.value.replace(/\D/g,'')})} />
+          <button style={s.actionPrimary} disabled={working||!cashierForm.name||!cashierForm.email||cashierForm.pin.length<4}>＋ Create Cashier</button>
+        </form>
+
+        <div style={s.grid}>
+          {demoCashiers.map(c=><div style={s.customer} key={c.public_id}>
+            <div style={s.customerTop}><b>{c.name}</b><span style={c.is_active!==false?s.activePill:s.inactivePill}>{c.is_active!==false?'ACTIVE':'INACTIVE'}</span></div>
+            <span>📧 {c.email}</span>
+            <span>Business ID: <b>{demo?.business_slug}</b></span>
+            <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:4}}>
+              <button style={s.smallBtn} onClick={()=>openNormalCashier(c)}>📷 Open Camera Cashier</button>
+              <button style={s.smallDanger} onClick={()=>deleteDemoCashier(c.public_id)}>Remove</button>
+            </div>
+          </div>)}
+          {!demoCashiers.length&&<div style={s.empty}>No demo cashier yet. Create one above, then open it and log in just like a real business cashier.</div>}
         </div>
       </section>
 
@@ -242,6 +311,13 @@ const s={
   editorHead:{position:'sticky',top:0,zIndex:5,background:'white',borderBottom:'1px solid #e2e8f0',padding:'14px 18px',display:'flex',alignItems:'center',justifyContent:'space-between',gap:12},
   closeStatic:{border:'1px solid #cbd5e1',background:'white',borderRadius:9,padding:'9px 12px',fontWeight:800,cursor:'pointer'},
   editorBody:{padding:'14px'},
+  businessIdBox:{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:10,padding:'10px 12px',fontSize:12,marginBottom:12},
+  cashierForm:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:9,marginBottom:14},
+  input:{width:'100%',boxSizing:'border-box',border:'1px solid #cbd5e1',borderRadius:10,padding:'11px 12px',fontSize:13,outline:'none'},
+  activePill:{background:'#ecfdf5',color:'#047857',borderRadius:999,padding:'3px 7px',fontSize:10,fontWeight:900},
+  inactivePill:{background:'#f1f5f9',color:'#64748b',borderRadius:999,padding:'3px 7px',fontSize:10,fontWeight:900},
+  smallBtn:{border:'1px solid #99f6e4',background:'#f0fdfa',color:'#0f766e',borderRadius:8,padding:'7px 9px',fontSize:11,fontWeight:800,cursor:'pointer'},
+  smallDanger:{border:'1px solid #fecaca',background:'#fff1f2',color:'#be123c',borderRadius:8,padding:'7px 9px',fontSize:11,fontWeight:800,cursor:'pointer'},
 }
 
 export default PartnerDashboard

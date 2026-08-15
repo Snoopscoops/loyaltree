@@ -617,6 +617,17 @@ class StaffUpdate(BaseModel):
     is_active: Optional[bool] = None
     branch_public_id: Optional[str] = None  # reassign to a different location
 
+class PartnerDemoCashierCreate(BaseModel):
+    name: str
+    email: str
+    pin: str
+
+class PartnerDemoCashierUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    pin: Optional[str] = None
+    is_active: Optional[bool] = None
+
 class BranchCreate(BaseModel):
     name: str
     address: Optional[str] = None
@@ -5373,6 +5384,123 @@ async def partner_demo_access(claims:dict=Depends(require_partner)):
     payload['owner_token']=token
     payload['owner_name']='Agyaman Demo Cashier'
     return payload
+
+
+@app.get("/api/v1/partner/demo/cashiers")
+async def partner_demo_cashiers(claims:dict=Depends(require_partner)):
+    """List cashier accounts belonging only to this partner's Agyaman demo."""
+    p=supabase.table('network_partners').select('*').eq('id',claims.get('partner_id')).maybe_single().execute().data
+    if not p or not p.get('is_active',True):
+        raise HTTPException(status_code=403,detail='Partner account inactive')
+    business=_ensure_partner_demo_business(p)
+    rows=(
+        supabase.table('staff')
+        .select('public_id,name,email,role,is_active,created_at')
+        .eq('business_id',business.get('id'))
+        .eq('role','cashier')
+        .order('created_at',desc=True)
+        .execute().data or []
+    )
+    return {'business_slug':business.get('public_id'),'business_name':business.get('name'),'cashiers':rows}
+
+
+@app.post("/api/v1/partner/demo/cashiers")
+async def partner_demo_create_cashier(req:PartnerDemoCashierCreate, claims:dict=Depends(require_partner)):
+    """Create a normal cashier credential for the partner's Agyaman demo.
+
+    This cashier logs into the SAME /staff/verify-pin flow as a real business,
+    so camera scanning, session security, transaction audit and stamp activity
+    are demonstrated exactly as they are in production.
+    """
+    p=supabase.table('network_partners').select('*').eq('id',claims.get('partner_id')).maybe_single().execute().data
+    if not p or not p.get('is_active',True):
+        raise HTTPException(status_code=403,detail='Partner account inactive')
+    business=_ensure_partner_demo_business(p)
+
+    name=(req.name or '').strip()
+    email=(req.email or '').strip().lower()
+    pin=str(req.pin or '').strip()
+    if not name:
+        raise HTTPException(status_code=400,detail='Cashier name is required')
+    if '@' not in email:
+        raise HTTPException(status_code=400,detail='Enter a valid cashier email')
+    if not re.fullmatch(r'\d{4,8}', pin):
+        raise HTTPException(status_code=400,detail='Cashier PIN must be 4 to 8 digits')
+
+    existing=(
+        supabase.table('staff').select('id,public_id')
+        .eq('business_id',business.get('id')).ilike('email',email)
+        .limit(1).execute().data or []
+    )
+    if existing:
+        raise HTTPException(status_code=409,detail='That cashier email already exists for Agyaman Express')
+
+    payload={
+        'business_id':business.get('id'),
+        'public_id':generate_public_id(),
+        'name':name,
+        'email':email,
+        'phone':None,
+        'role':'cashier',
+        'branch_id':None,
+        'pin':pin,
+        'is_active':True,
+        'created_at':datetime.utcnow().isoformat(),
+    }
+    rows=supabase.table('staff').insert(payload).execute().data or []
+    row=(rows or [payload])[0]
+    return {
+        'success':True,
+        'business_slug':business.get('public_id'),
+        'cashier':{k:row.get(k) for k in ('public_id','name','email','role','is_active','created_at')},
+    }
+
+
+@app.patch("/api/v1/partner/demo/cashiers/{staff_public_id}")
+async def partner_demo_update_cashier(staff_public_id:str, req:PartnerDemoCashierUpdate, claims:dict=Depends(require_partner)):
+    p=supabase.table('network_partners').select('*').eq('id',claims.get('partner_id')).maybe_single().execute().data
+    if not p or not p.get('is_active',True):
+        raise HTTPException(status_code=403,detail='Partner account inactive')
+    business=_ensure_partner_demo_business(p)
+    rows=(
+        supabase.table('staff').select('*')
+        .eq('business_id',business.get('id')).eq('public_id',staff_public_id)
+        .limit(1).execute().data or []
+    )
+    if not rows:
+        raise HTTPException(status_code=404,detail='Demo cashier not found')
+    data={k:v for k,v in req.model_dump(exclude_unset=True).items() if v is not None}
+    if 'email' in data:
+        data['email']=str(data['email']).strip().lower()
+        if '@' not in data['email']:
+            raise HTTPException(status_code=400,detail='Enter a valid cashier email')
+    if 'pin' in data:
+        data['pin']=str(data['pin']).strip()
+        if not re.fullmatch(r'\d{4,8}', data['pin']):
+            raise HTTPException(status_code=400,detail='Cashier PIN must be 4 to 8 digits')
+    if 'name' in data:
+        data['name']=str(data['name']).strip()
+    data['role']='cashier'
+    updated=supabase.table('staff').update(data).eq('id',rows[0]['id']).execute().data or []
+    row=(updated or [{**rows[0],**data}])[0]
+    return {'success':True,'cashier':{k:row.get(k) for k in ('public_id','name','email','role','is_active','created_at')}}
+
+
+@app.delete("/api/v1/partner/demo/cashiers/{staff_public_id}")
+async def partner_demo_delete_cashier(staff_public_id:str, claims:dict=Depends(require_partner)):
+    p=supabase.table('network_partners').select('*').eq('id',claims.get('partner_id')).maybe_single().execute().data
+    if not p or not p.get('is_active',True):
+        raise HTTPException(status_code=403,detail='Partner account inactive')
+    business=_ensure_partner_demo_business(p)
+    rows=(
+        supabase.table('staff').select('id')
+        .eq('business_id',business.get('id')).eq('public_id',staff_public_id)
+        .limit(1).execute().data or []
+    )
+    if not rows:
+        raise HTTPException(status_code=404,detail='Demo cashier not found')
+    supabase.table('staff').delete().eq('id',rows[0]['id']).execute()
+    return {'success':True}
 
 
 @app.get("/api/v1/partner/demo/customers")
