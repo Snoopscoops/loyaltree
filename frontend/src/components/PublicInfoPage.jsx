@@ -140,7 +140,32 @@ function PublicInfoPage({ type='overview' }) {
       .public-how summary::-webkit-details-marker { display:none; }
       .public-menu { position:absolute; left:0; top:calc(100% + 8px); width:260px; background:#fff; border:1px solid #e2e8f0; border-radius:13px; padding:7px; box-shadow:0 16px 40px rgba(15,23,42,.14); z-index:20; }
       .public-menu button { width:100%; border:0; background:transparent; text-align:left; padding:10px; border-radius:9px; cursor:pointer; font-weight:700; color:#334155; }
-      .customer-desktop-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:16px; align-items:stretch; }
+      .customer-desktop-grid {
+        display:grid;
+        grid-template-columns:repeat(4,minmax(0,1fr));
+        gap:18px;
+        align-items:stretch;
+        position:relative;
+      }
+      .customer-desktop-card { position:relative; }
+      .customer-desktop-card:not(:last-child)::after {
+        content:'→';
+        position:absolute;
+        right:-15px;
+        top:50%;
+        transform:translateY(-50%);
+        width:28px;
+        height:28px;
+        border-radius:999px;
+        display:grid;
+        place-items:center;
+        background:#ecfdf5;
+        color:#0f766e;
+        border:1px solid #99f6e4;
+        font-weight:900;
+        z-index:2;
+        box-shadow:0 6px 16px rgba(15,118,110,.10);
+      }
       .customer-mobile-slider { display:none; }
       @media(max-width:1050px){
         .customer-desktop-grid { display:none; }
@@ -192,15 +217,21 @@ function PublicInfoPage({ type='overview' }) {
       </section>
 
       {type==='customers' && <section style={s.customerJourneySection}>
+        <div style={s.customerJourneyIntro}>
+          <div>
+            <span style={s.customerJourneyEyebrow}>4 SIMPLE STEPS</span>
+            <h2 style={s.customerJourneyTitle}>From QR scan to rewards in your Wallet</h2>
+          </div>
+          <p style={s.customerJourneyIntroText}>A simple customer journey designed to feel familiar on both Android and iPhone.</p>
+        </div>
+
         <div className="customer-desktop-grid">
           {customerSteps.map(step => (
-            <article style={s.customerJourneyCard} key={step.number}>
+            <article className="customer-desktop-card" style={s.customerJourneyCard} key={step.number}>
               <div style={s.customerJourneyHead}>
-                <div style={s.number}>{step.number}</div>
-                <div>
-                  <h2 style={s.stepTitle}>{step.title}</h2>
-                  <p style={s.body}>{step.body}</p>
-                </div>
+                <div style={s.customerStepBadge}>STEP {step.number}</div>
+                <h2 style={s.customerDesktopTitle}>{step.title}</h2>
+                <p style={s.customerDesktopBody}>{step.body}</p>
               </div>
 
               <div
@@ -214,7 +245,7 @@ function PublicInfoPage({ type='overview' }) {
                     <img
                       src={image.src}
                       alt={image.alt}
-                      style={step.number === 4 ? s.customerNotificationImage : s.customerEqualImage}
+                      style={step.number === 4 ? s.customerNotificationDesktopImage : s.customerEqualImage}
                     />
                   </div>
                 ))}
@@ -358,13 +389,33 @@ const s={
   secondary:{border:'1px solid #0d9488',background:'#fff',color:'#0f766e',padding:'11px 16px',borderRadius:11,fontWeight:850,cursor:'pointer'},
   section:{maxWidth:1100,margin:'0 auto',padding:'58px 22px'},
   customerJourneySection:{maxWidth:1320,margin:'0 auto',padding:'52px 22px 24px'},
-  customerJourneyGrid:{display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:16,alignItems:'stretch'},
-  customerJourneyCard:{minWidth:0,display:'flex',flexDirection:'column'},
-  customerJourneyHead:{display:'flex',gap:12,alignItems:'flex-start',minHeight:132},
+  customerJourneyIntro:{
+    display:'flex',justifyContent:'space-between',gap:24,alignItems:'flex-end',
+    marginBottom:22,padding:'0 4px',flexWrap:'wrap',
+  },
+  customerJourneyEyebrow:{fontSize:10,fontWeight:900,letterSpacing:1.2,color:'#0f766e'},
+  customerJourneyTitle:{fontSize:'clamp(24px,3vw,34px)',lineHeight:1.15,fontWeight:900,margin:'6px 0 0',color:'#0f172a'},
+  customerJourneyIntroText:{maxWidth:430,fontSize:13.5,lineHeight:1.6,color:'#64748b',margin:0},
+  customerJourneyGrid:{display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:18,alignItems:'stretch'},
+  customerJourneyCard:{
+    minWidth:0,display:'flex',flexDirection:'column',background:'#fff',
+    border:'1px solid #e2e8f0',borderRadius:22,padding:16,
+    boxShadow:'0 14px 36px rgba(15,23,42,.07)',
+  },
+  customerJourneyHead:{
+    display:'flex',flexDirection:'column',alignItems:'flex-start',minHeight:148,padding:'2px 2px 14px',
+  },
+  customerStepBadge:{
+    display:'inline-flex',alignItems:'center',justifyContent:'center',background:'#ecfdf5',
+    color:'#0f766e',border:'1px solid #a7f3d0',borderRadius:999,padding:'6px 9px',
+    fontSize:10,fontWeight:900,letterSpacing:.8,marginBottom:10,
+  },
+  customerDesktopTitle:{fontSize:19,fontWeight:900,lineHeight:1.2,margin:'0 0 8px',color:'#0f172a'},
+  customerDesktopBody:{fontSize:13,lineHeight:1.6,color:'#64748b',margin:0},
   customerImageGrid:{display:'grid',gap:8,flex:1},
   customerEqualImageFrame:{
-    height:430,border:'1px solid #e2e8f0',borderRadius:18,overflow:'hidden',background:'#f8fafc',
-    boxShadow:'0 10px 30px rgba(15,23,42,.06)',display:'flex',alignItems:'center',justifyContent:'center',
+    height:390,border:'1px solid #e2e8f0',borderRadius:16,overflow:'hidden',background:'#f8fafc',
+    display:'flex',alignItems:'center',justifyContent:'center',
   },
   customerEqualImage:{
     width:'100%',height:'100%',objectFit:'cover',objectPosition:'center',display:'block',
@@ -383,6 +434,9 @@ const s={
     background:'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center',
   },
   customerSliderImage:{width:'100%',height:'100%',objectFit:'cover',objectPosition:'center',display:'block'},
+  customerNotificationDesktopImage:{
+    width:'100%',height:'100%',objectFit:'cover',objectPosition:'center 70%',display:'block',
+  },
   customerNotificationImage:{width:'100%',height:'100%',objectFit:'contain',objectPosition:'center',display:'block',background:'#f8fafc'},
   customerDots:{display:'flex',justifyContent:'center',gap:8,marginTop:18},
   customerDot:{width:8,height:8,borderRadius:'50%',border:0,background:'#cbd5e1',padding:0,cursor:'pointer'},
