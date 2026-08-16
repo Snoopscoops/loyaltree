@@ -77,13 +77,20 @@ const PAGE_CONTENT = {
   },
   about: {
     eyebrow: 'ABOUT US',
-    title: 'Loyalty technology built for stronger customer relationships.',
-    intro: 'LoyaltyTree is designed to help businesses replace fragmented paper-card loyalty with a connected digital experience for customers, cashiers and owners.',
+    title: 'Helping service businesses build better connections with their customers.',
+    intro: 'LoyaltyTree started with a simple idea in Isabela: help service industry businesses establish stronger, more meaningful connections with their customers—especially in markets where spending and local economic activity can change quickly.',
     paragraphs: [
-      'The platform brings together digital loyalty cards, QR enrollment, cashier tools, Wallet integration, customer activity, retention features and analytics.',
-      'Our focus is making loyalty practical for real businesses: easy for customers to join, simple for staff to operate, and useful for owners who want to understand and grow repeat business.',
-      'LoyaltyTree is also being structured for local support through business and partner networks, helping businesses receive more hands-on onboarding and assistance as the platform expands.',
+      'Living in the province of Isabela, we saw how closely local businesses are connected to agriculture. Market movement and money circulation can be volatile, seasonal, and strongly influenced by farming activity.',
+      'That reality led to one important question: when customer spending slows or shifts, how can a business keep the customers it already worked hard to earn—and build a better relationship with them over time?',
+      'That is where the focus on customer retention and sustainable growth began. LoyaltyTree was built to help service industry businesses turn everyday transactions into lasting customer relationships through loyalty, rewards, communication, customer insights, and meaningful engagement.',
+      'Whether it is a café, restaurant, salon, automotive service, retail service, wellness business, local shop, or another customer-focused service business, the goal is the same: give businesses practical tools to recognize their customers, understand their activity, reward their loyalty, and stay connected beyond a single transaction.',
+      'What started as a local idea in Isabela is growing into a platform with a broader purpose: helping service businesses of different sizes establish better customer connections, encourage repeat visits, and build long-term customer value.',
     ],
+    founder: {
+      role: 'Developer / Founder',
+      name: 'Alfred',
+      handle: 'Snoopscoops',
+    },
   },
   contact: {
     eyebrow: 'CONTACT',
@@ -541,6 +548,14 @@ function PublicInfoPage({ type='overview' }) {
       {page.paragraphs && <section style={s.section}>
         <div style={s.storyCard}>
           {page.paragraphs.map((p,i)=><p key={i} style={s.storyText}>{p}</p>)}
+          {page.founder && <div style={s.founderCard}>
+            <div style={s.founderAvatar}>A</div>
+            <div>
+              <div style={s.founderRole}>{page.founder.role}</div>
+              <div style={s.founderName}>{page.founder.name}</div>
+              <div style={s.founderHandle}>{page.founder.handle}</div>
+            </div>
+          </div>}
           <button style={s.primary} onClick={()=>navigate('/contact')}>Contact LoyaltyTree</button>
         </div>
       </section>}
@@ -691,6 +706,17 @@ const s={
   featureTitle:{fontSize:15,fontWeight:850,margin:'2px 0 5px'},
   storyCard:{maxWidth:820,margin:'0 auto',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:18,padding:'clamp(22px,4vw,38px)'},
   storyText:{fontSize:16,lineHeight:1.8,color:'#475569',margin:'0 0 18px'},
+  founderCard:{
+    display:'flex',alignItems:'center',gap:14,margin:'26px 0',padding:18,
+    border:'1px solid #d1fae5',borderRadius:16,background:'linear-gradient(135deg,#f0fdf4,#ecfdf5)',
+  },
+  founderAvatar:{
+    width:52,height:52,borderRadius:'50%',display:'grid',placeItems:'center',
+    background:'#0d9488',color:'#fff',fontSize:20,fontWeight:900,flexShrink:0,
+  },
+  founderRole:{fontSize:11,fontWeight:900,letterSpacing:.7,color:'#0f766e',textTransform:'uppercase'},
+  founderName:{fontSize:18,fontWeight:900,color:'#0f172a',marginTop:2},
+  founderHandle:{fontSize:12,color:'#64748b',marginTop:2},
   contactGrid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(280px,1fr))',gap:16},
   contactCard:{border:'1px solid #e2e8f0',borderRadius:18,padding:26,background:'#fff'},
   footer:{borderTop:'1px solid #e2e8f0',padding:'24px clamp(18px,4vw,54px)',display:'flex',justifyContent:'space-between',gap:12,flexWrap:'wrap',fontSize:12,color:'#64748b'},
