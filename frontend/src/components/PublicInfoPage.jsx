@@ -1,6 +1,11 @@
 import React from 'react'
 import { useNavigate } from 'react-router-dom'
 import logo192 from './logo-192.png'
+import customerStep1Scan from './assets/customer-step-1-scan.png'
+import customerStep2Form from './assets/customer-step-2-form.png'
+import customerStep2WalletButtons from './assets/customer-step-2-wallet-buttons.png'
+import customerStep3WalletCard from './assets/customer-step-3-wallet-card.png'
+import customerStep4Notification from './assets/customer-step-4-notification.png'
 
 const PAGE_CONTENT = {
   overview: {
@@ -47,23 +52,19 @@ const PAGE_CONTENT = {
   },
   customers: {
     eyebrow: 'HOW IT WORKS · FOR CUSTOMERS',
-    title: 'Join once. Keep the card on your phone. Earn every visit.',
-    intro: 'The customer experience is intentionally simple: scan, join, save the card, and show it when visiting the business.',
+    title: 'For Customers',
+    intro: 'Join in seconds, keep your loyalty card in your phone, earn rewards, and stay connected with the businesses you love.',
     steps: [
-      ['1', 'Scan the join QR', 'The customer uses the camera app on their phone to open the business loyalty page.'],
-      ['2', 'Join the program', 'They enter the required customer details and receive their personal loyalty card.'],
-      ['3', 'Add to Wallet', 'The card can be added to Apple Wallet or Google Wallet where supported.'],
-      ['4', 'Show the card at checkout', 'The cashier scans the customer card QR and records a stamp, points, visit, membership action or other program activity.'],
-      ['5', 'See rewards and updates', 'The customer can see their latest loyalty status and receive relevant Wallet updates from the business.'],
+      ['1', 'Scan the Business QR', 'Use your phone camera to scan the LoyaltyTree QR at the store or on the business\' materials.'],
+      ['2', 'Join & Add to Wallet', 'Fill up the quick form, then add your card to Google Wallet on Android or Apple Wallet on iPhone.'],
+      ['3', 'Your Card is Ready', 'Your loyalty card is now available in your Wallet and ready to show whenever you visit.'],
+      ['4', 'Get Notified & Stay Updated', 'Receive relevant updates, offers, reminders, and reward notifications from the business.'],
     ],
-    featureTitle: 'Designed around the customer',
+    featureTitle: 'Simple for every visit',
     features: [
-      ['⚡', 'Quick joining', 'A QR code opens the customer experience directly.'],
-      ['📱', 'No separate loyalty app', 'The card can live in the phone Wallet the customer already uses.'],
-      ['⭐', 'Clear progress', 'Customers can see their current loyalty progress and rewards.'],
-      ['🎁', 'Reward moments', 'Unlock rewards based on the program created by the business.'],
-      ['🔔', 'Useful updates', 'Receive relevant card updates and business messages.'],
-      ['🔁', 'Easy repeat visits', 'The same personal card continues working on future visits.'],
+      ['🛡️', 'Safe & Private', 'Your customer information is protected and used only for the loyalty experience you joined.'],
+      ['👛', 'Always in Your Wallet', 'Keep your digital loyalty card with you without carrying another plastic or paper card.'],
+      ['🎁', 'Earn & Redeem Rewards', 'Collect stamps, points, perks, or other rewards based on the business\' loyalty program.'],
     ],
   },
   about: {
@@ -99,11 +100,17 @@ function PublicInfoPage({ type='overview' }) {
       .public-how summary::-webkit-details-marker { display:none; }
       .public-menu { position:absolute; left:0; top:calc(100% + 8px); width:260px; background:#fff; border:1px solid #e2e8f0; border-radius:13px; padding:7px; box-shadow:0 16px 40px rgba(15,23,42,.14); z-index:20; }
       .public-menu button { width:100%; border:0; background:transparent; text-align:left; padding:10px; border-radius:9px; cursor:pointer; font-weight:700; color:#334155; }
+      .customer-journey-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:16px; align-items:start; }
+      .customer-step-two-images { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+      @media(max-width:1050px){
+        .customer-journey-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      }
       @media(max-width:760px){
         .public-nav { flex-wrap:wrap; }
         .public-links { order:3; width:100%; overflow-x:auto; flex-wrap:nowrap; scrollbar-width:none; }
         .public-links::-webkit-scrollbar { display:none; }
         .public-menu { position:fixed; left:14px; right:14px; width:auto; }
+        .customer-journey-grid { grid-template-columns:1fr; gap:20px; }
       }
     `}</style>
 
@@ -144,7 +151,56 @@ function PublicInfoPage({ type='overview' }) {
         </div>
       </section>
 
-      {page.steps && <section style={s.section}>
+      {type==='customers' && <section style={s.customerJourneySection}>
+        <div className="customer-journey-grid" style={s.customerJourneyGrid}>
+          <article style={s.customerJourneyCard}>
+            <div style={s.customerJourneyHead}>
+              <div style={s.number}>1</div>
+              <div><h2 style={s.stepTitle}>Scan the Business QR</h2><p style={s.body}>Use your phone camera to scan the LoyaltyTree QR at the store or on the business' materials.</p></div>
+            </div>
+            <div style={s.customerImageFrame}>
+              <img src={customerStep1Scan} alt="Customer scanning a LoyaltyTree business QR code with a phone camera" style={s.customerImage}/>
+            </div>
+          </article>
+
+          <article style={s.customerJourneyCard}>
+            <div style={s.customerJourneyHead}>
+              <div style={s.number}>2</div>
+              <div><h2 style={s.stepTitle}>Join & Add to Wallet</h2><p style={s.body}>Fill up the quick form, then add your card to Google Wallet on Android or Apple Wallet on iPhone.</p></div>
+            </div>
+            <div className="customer-step-two-images" style={s.customerStepTwoImages}>
+              <div style={s.customerPhoneFrame}>
+                <img src={customerStep2Form} alt="LoyaltyTree customer sign-up form" style={s.customerImage}/>
+              </div>
+              <div style={s.customerPhoneFrame}>
+                <img src={customerStep2WalletButtons} alt="LoyaltyTree customer card ready with Apple Wallet and Google Wallet buttons" style={s.customerImage}/>
+              </div>
+            </div>
+          </article>
+
+          <article style={s.customerJourneyCard}>
+            <div style={s.customerJourneyHead}>
+              <div style={s.number}>3</div>
+              <div><h2 style={s.stepTitle}>Your Card is Ready</h2><p style={s.body}>Your loyalty card is now available in your Wallet and ready to show whenever you visit.</p></div>
+            </div>
+            <div style={s.customerImageFrame}>
+              <img src={customerStep3WalletCard} alt="LoyaltyTree loyalty card saved in the customer's digital wallet" style={s.customerImage}/>
+            </div>
+          </article>
+
+          <article style={s.customerJourneyCard}>
+            <div style={s.customerJourneyHead}>
+              <div style={s.number}>4</div>
+              <div><h2 style={s.stepTitle}>Get Notified & Stay Updated</h2><p style={s.body}>Receive relevant updates, offers, reminders, and reward notifications from the business.</p></div>
+            </div>
+            <div style={s.customerImageFrame}>
+              <img src={customerStep4Notification} alt="LoyaltyTree business notification shown on a customer's phone" style={s.customerImage}/>
+            </div>
+          </article>
+        </div>
+      </section>}
+
+      {page.steps && type!=='customers' && <section style={s.section}>
         <div style={s.stepGrid}>
           {page.steps.map(([n,title,body])=><article key={n} style={s.stepCard}>
             <div style={s.number}>{n}</div>
@@ -211,6 +267,14 @@ const s={
   primary:{border:0,background:'#0d9488',color:'#fff',padding:'12px 17px',borderRadius:11,fontWeight:850,cursor:'pointer'},
   secondary:{border:'1px solid #0d9488',background:'#fff',color:'#0f766e',padding:'11px 16px',borderRadius:11,fontWeight:850,cursor:'pointer'},
   section:{maxWidth:1100,margin:'0 auto',padding:'58px 22px'},
+  customerJourneySection:{maxWidth:1280,margin:'0 auto',padding:'52px 22px 24px'},
+  customerJourneyGrid:{display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:16,alignItems:'start'},
+  customerJourneyCard:{minWidth:0},
+  customerJourneyHead:{display:'flex',gap:12,alignItems:'flex-start',minHeight:118},
+  customerImageFrame:{border:'1px solid #e2e8f0',borderRadius:18,overflow:'hidden',background:'#f8fafc',boxShadow:'0 10px 30px rgba(15,23,42,.06)'},
+  customerStepTwoImages:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8},
+  customerPhoneFrame:{border:'1px solid #e2e8f0',borderRadius:18,overflow:'hidden',background:'#f8fafc',boxShadow:'0 10px 30px rgba(15,23,42,.06)'},
+  customerImage:{width:'100%',height:'auto',display:'block'},
   stepGrid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',gap:13},
   stepCard:{border:'1px solid #e2e8f0',borderRadius:16,padding:20,background:'#fff',boxShadow:'0 8px 25px rgba(15,23,42,.035)'},
   number:{width:34,height:34,borderRadius:'50%',display:'grid',placeItems:'center',background:'#d1fae5',color:'#047857',fontWeight:900,marginBottom:13},
