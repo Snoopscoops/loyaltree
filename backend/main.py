@@ -2225,11 +2225,6 @@ def build_loyalty_class(
             {'header': 'BENEFIT / REWARD', 'body': reward_module_body},
             {'header': 'ABOUT', 'body': description if description else f"{biz_name} digital loyalty card powered by LoyaltyTree"}
         ],
-        'linksModuleData': {
-            'uris': [
-                {'uri': f"{BASE_URL}/join/{biz_public_id}", 'description': 'Join / Share Card'}
-            ]
-        }
     }
 
     logo_url = business.get('logo_url')
@@ -2347,8 +2342,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         'linksModuleData': {
             'uris': [
                 {'uri': f'{BASE_URL}/feedback/{cust_public_id}', 'description': '⭐ Rate Your Experience'},
-                {'uri': f'{BASE_URL}/wallet/{cust_public_id}', 'description': 'Open full LoyaltyTree card'},
-                {'uri': f'{BASE_URL}/stamp/{cust_public_id}', 'description': 'Present QR / Check in'}
+                {'uri': f'{BASE_URL}/wallet/{cust_public_id}', 'description': 'Open full LoyaltyTree card'}
             ]
         }
     }
@@ -2955,8 +2949,18 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         *[{'key': key, 'label': label, 'value': str(value)} for key, label, value in apple_details],
         *activity_fields,
         {'key': 'about', 'label': 'ABOUT', 'value': description or f'{biz_name} digital loyalty card powered by LoyaltyTree.'},
-        {'key': 'feedback', 'label': '⭐ RATE YOUR EXPERIENCE', 'value': 'Rate Your Experience', 'attributedValue': f'<a href="{BASE_URL}/feedback/{cust_public_id}">Rate Your Experience</a>'},
-        {'key': 'online', 'label': 'FULL CARD & HISTORY', 'value': f'{BASE_URL}/wallet/{cust_public_id}'},
+        {
+            'key': 'feedback',
+            'label': '⭐ RATE YOUR EXPERIENCE',
+            'value': 'Share Feedback',
+            'attributedValue': f'<a href="{BASE_URL}/feedback/{cust_public_id}">Share Feedback</a>',
+        },
+        {
+            'key': 'online',
+            'label': 'FULL CARD & HISTORY',
+            'value': 'Open LoyaltyTree Card',
+            'attributedValue': f'<a href="{BASE_URL}/wallet/{cust_public_id}">Open LoyaltyTree Card</a>',
+        },
         {
             'key': 'announcement',
             'label': '📢 ANNOUNCEMENT',
