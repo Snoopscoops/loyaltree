@@ -6,6 +6,12 @@ import customerStep2Form from '../assets/customer-step-2-form.png'
 import customerStep2WalletButtons from '../assets/customer-step-2-wallet-buttons.png'
 import customerStep3WalletCard from '../assets/customer-step-3-wallet-card.png'
 import customerStep4Notification from '../assets/customer-step-4-notification.png'
+import businessStep1Customize from '../assets/business-step-1-customize.png'
+import businessStep2Team from '../assets/business-step-2-team.png'
+import businessStep3JoinQr from '../assets/business-step-3-join-qr.png'
+import businessStep4Analytics from '../assets/business-step-4-analytics.png'
+import businessStep5Engagement from '../assets/business-step-5-engagement.png'
+import businessStep6StampActivity from '../assets/business-step-6-stamp-activity.png'
 
 const PAGE_CONTENT = {
   overview: {
@@ -31,23 +37,25 @@ const PAGE_CONTENT = {
   },
   businesses: {
     eyebrow: 'HOW IT WORKS · FOR BUSINESSES',
-    title: 'Set up loyalty once. Operate it from one business dashboard.',
-    intro: 'LoyaltyTree gives a business the tools to design its program, enroll customers, control cashier access, track activity and keep customers coming back.',
+    title: 'Set up loyalty once. Run it from one business dashboard.',
+    intro: 'Design the card, organize your team, share the join QR, watch performance, and keep customers engaged with announcements and automated birthday greetings.',
     steps: [
-      ['1', 'Choose a card type', 'Set up a Stamp, Points, Membership, Multi-Pass or VIP program based on how the business rewards customers.'],
-      ['2', 'Design the card', 'Set the card name, description, branding, reward rules, milestones and Wallet appearance.'],
-      ['3', 'Create branches and cashiers', 'Give authorized staff their own cashier credentials instead of sharing one business login.'],
-      ['4', 'Share the join QR', 'Place the QR at checkout, on social media, menus, receipts or printed materials so customers can join quickly.'],
-      ['5', 'Run and measure loyalty', 'Use cashier transactions, customer records, retention activity and analytics to understand what is working.'],
+      ['1', 'Customize Your Card', 'Choose the card type, set the name and description, configure rewards and milestones, and preview what customers will see.'],
+      ['2', 'Set Up Branches & Cashiers', 'Create branches, add team members, assign cashier access, and keep staff activity tied to individual accounts.'],
+      ['3', 'Share Your Join QR', 'Show, share, or download the business QR so customers can join your loyalty program in seconds.'],
+      ['4', 'Track Customers & Analytics', 'Monitor customers, stamps, rewards, growth, retention signals, and activity trends from the Analytics Dashboard.'],
+      ['5', 'Engage Customers', 'Post announcements and use automated birthday greetings to keep your loyalty program active beyond checkout.'],
+      ['6', 'Monitor Staff Stamp Activity', 'See which team member added stamps, when each stamp was added, which branch handled it, and how many stamps each staff member issued.'],
     ],
     featureTitle: 'What the business controls',
     features: [
-      ['🎨', 'Card design', 'Brand colors, logo, reward structure and program configuration.'],
-      ['🏪', 'Branches', 'Organize loyalty activity across multiple locations.'],
-      ['🧾', 'Cashiers', 'Individual cashier access with transaction accountability.'],
-      ['👥', 'Customer activity', 'See loyalty customers and their program progress.'],
-      ['📣', 'Engagement', 'Announcements and automated retention features.'],
-      ['📈', 'Analytics', 'Understand loyalty activity, retention and operational performance.'],
+      ['🎨', 'Card design', 'Branding, card type, rewards, milestones and Wallet appearance.'],
+      ['🏪', 'Branches & cashiers', 'Organize locations and give staff their own controlled cashier access.'],
+      ['🔗', 'Customer acquisition', 'Share a join QR online or at the physical business.'],
+      ['📈', 'Analytics', 'Measure customer growth, loyalty activity, rewards and retention performance.'],
+      ['📣', 'Announcements', 'Send business updates and promotions to loyalty customers.'],
+      ['🎂', 'Birthday greetings', 'Use automated birthday messaging to create timely customer touchpoints.'],
+      ['🧾', 'Staff stamp activity', 'Track who stamped, when they stamped, the branch, and total stamps added by each staff member.'],
     ],
   },
   customers: {
@@ -89,9 +97,11 @@ function PublicInfoPage({ type='overview' }) {
   const navigate = useNavigate()
   const page = PAGE_CONTENT[type] || PAGE_CONTENT.overview
   const [customerStep, setCustomerStep] = useState(0)
+  const [businessStep, setBusinessStep] = useState(0)
 
   useEffect(() => {
     setCustomerStep(0)
+    setBusinessStep(0)
   }, [type])
 
   const openMessenger = () => window.open('https://m.me/theloyaltytree', '_blank', 'noopener,noreferrer')
@@ -125,6 +135,62 @@ function PublicInfoPage({ type='overview' }) {
       images: [{ src: customerStep4Notification, alt: "LoyaltyTree business notification shown on a customer's phone" }],
     },
   ]
+
+  const businessSteps = [
+    {
+      number: 1,
+      title: 'Customize Your Card',
+      body: 'Choose the card type, set the card name and description, configure rewards and milestones, and preview what customers will see.',
+      image: businessStep1Customize,
+      alt: 'LoyaltyTree card customizer with live preview, stamp card settings, and milestone rewards',
+      tag: 'CARD DESIGN',
+    },
+    {
+      number: 2,
+      title: 'Set Up Branches & Cashiers',
+      body: 'Create branches, add team members, assign cashier access, and keep staff activity tied to individual accounts.',
+      image: businessStep2Team,
+      alt: 'LoyaltyTree team setup showing branches and the Grow Your Team cashier invitation form',
+      tag: 'TEAM & ACCESS',
+    },
+    {
+      number: 3,
+      title: 'Share Your Join QR',
+      body: 'Show, share, or download the business QR so customers can join the loyalty program in seconds.',
+      image: businessStep3JoinQr,
+      alt: 'LoyaltyTree Share Your Tree join QR screen',
+      tag: 'CUSTOMER JOINING',
+    },
+    {
+      number: 4,
+      title: 'Track Customers & Analytics',
+      body: 'Monitor customer growth, stamps issued, rewards, activity patterns, and retention signals from the Analytics Dashboard.',
+      image: businessStep4Analytics,
+      alt: 'LoyaltyTree Analytics Dashboard showing customers, stamps, rewards and activity charts',
+      tag: 'ANALYTICS',
+    },
+    {
+      number: 5,
+      title: 'Engage Customers',
+      body: 'Post announcements and use automated birthday greetings to keep your loyalty program active beyond checkout.',
+      image: businessStep5Engagement,
+      alt: 'LoyaltyTree announcements interface used to publish customer messages',
+      tag: 'ANNOUNCEMENTS + BIRTHDAYS',
+    },
+    {
+      number: 6,
+      title: 'Monitor Staff Stamp Activity',
+      body: 'See which staff member added stamps, when each activity happened, the branch involved, and how many stamps each person issued.',
+      image: businessStep6StampActivity,
+      alt: 'LoyaltyTree stamp activity showing staff member names, branch, timestamps, and stamps added',
+      tag: 'STAFF ACCOUNTABILITY',
+    },
+  ]
+
+  const goBusinessStep = (index) => {
+    const safeIndex = Math.max(0, Math.min(businessSteps.length - 1, index))
+    setBusinessStep(safeIndex)
+  }
 
   const goCustomerStep = (index) => {
     const safeIndex = Math.max(0, Math.min(customerSteps.length - 1, index))
@@ -167,9 +233,13 @@ function PublicInfoPage({ type='overview' }) {
         box-shadow:0 6px 16px rgba(15,118,110,.10);
       }
       .customer-mobile-slider { display:none; }
+      .business-visual-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; align-items:stretch; }
+      .business-mobile-slider { display:none; }
       @media(max-width:1050px){
         .customer-desktop-grid { display:none; }
         .customer-mobile-slider { display:block; }
+        .business-visual-grid { display:none; }
+        .business-mobile-slider { display:block; }
       }
       @media(max-width:760px){
         .public-nav { flex-wrap:wrap; }
@@ -321,7 +391,75 @@ function PublicInfoPage({ type='overview' }) {
         </div>
       </section>}
 
-      {page.steps && type!=='customers' && <section style={s.section}>
+      {type==='businesses' && <section style={s.businessJourneySection}>
+        <div style={s.businessJourneyIntro}>
+          <div>
+            <span style={s.customerJourneyEyebrow}>REAL LOYALTYTREE WORKFLOW</span>
+            <h2 style={s.customerJourneyTitle}>Everything the business needs, in one operating flow</h2>
+          </div>
+          <p style={s.customerJourneyIntroText}>
+            These are actual LoyaltyTree screens—from card setup to team access, joining and analytics, through announcements, birthday engagement and staff stamp accountability.
+          </p>
+        </div>
+
+        <div className="business-visual-grid">
+          {businessSteps.map(step => (
+            <article className="business-visual-card" style={s.businessVisualCard} key={step.number}>
+              <div style={s.businessVisualTop}>
+                <span style={s.businessTag}>{step.tag}</span>
+                <span style={s.businessStepNumber}>{String(step.number).padStart(2,'0')}</span>
+              </div>
+              <h2 style={s.businessVisualTitle}>{step.title}</h2>
+              <p style={s.businessVisualBody}>{step.body}</p>
+              <div style={s.businessImageFrame}>
+                <img src={step.image} alt={step.alt} style={s.businessImage}/>
+              </div>
+            </article>
+          ))}
+        </div>
+
+        <div className="business-mobile-slider">
+          <article style={s.businessSliderCard}>
+            <div style={s.businessVisualTop}>
+              <span style={s.businessTag}>{businessSteps[businessStep].tag}</span>
+              <span style={s.customerSliderCounter}>Step {businessStep + 1} of {businessSteps.length}</span>
+            </div>
+            <h2 style={s.customerSliderTitle}>{businessSteps[businessStep].title}</h2>
+            <p style={s.customerSliderBody}>{businessSteps[businessStep].body}</p>
+            <div style={s.businessSliderImageFrame}>
+              <img src={businessSteps[businessStep].image} alt={businessSteps[businessStep].alt} style={s.businessSliderImage}/>
+            </div>
+            <div style={s.customerDots}>
+              {businessSteps.map((step,index)=>(
+                <button
+                  key={step.number}
+                  onClick={()=>goBusinessStep(index)}
+                  aria-label={`Go to business step ${step.number}`}
+                  style={{...s.customerDot,...(businessStep===index?s.customerDotActive:{})}}
+                />
+              ))}
+            </div>
+            <div style={s.customerSliderControls}>
+              <button
+                onClick={()=>goBusinessStep(businessStep-1)}
+                disabled={businessStep===0}
+                style={{...s.customerArrowBtn,...(businessStep===0?s.customerArrowDisabled:{})}}
+              >
+                ← Previous
+              </button>
+              <button
+                onClick={()=>goBusinessStep(businessStep+1)}
+                disabled={businessStep===businessSteps.length-1}
+                style={{...s.customerArrowBtnPrimary,...(businessStep===businessSteps.length-1?s.customerArrowDisabled:{})}}
+              >
+                Next Step →
+              </button>
+            </div>
+          </article>
+        </div>
+      </section>}
+
+      {page.steps && type!=='customers' && type!=='businesses' && <section style={s.section}>
         <div style={s.stepGrid}>
           {page.steps.map(([n,title,body])=><article key={n} style={s.stepCard}>
             <div style={s.number}>{n}</div>
@@ -451,6 +589,37 @@ const s={
     borderRadius:11,fontWeight:850,cursor:'pointer',
   },
   customerArrowDisabled:{opacity:.4,cursor:'not-allowed'},
+  businessJourneySection:{maxWidth:1320,margin:'0 auto',padding:'52px 22px 20px'},
+  businessJourneyIntro:{
+    display:'flex',justifyContent:'space-between',gap:24,alignItems:'flex-end',
+    marginBottom:22,padding:'0 4px',flexWrap:'wrap',
+  },
+  businessVisualCard:{
+    minWidth:0,background:'#fff',border:'1px solid #e2e8f0',borderRadius:22,padding:16,
+    boxShadow:'0 14px 36px rgba(15,23,42,.065)',display:'flex',flexDirection:'column',
+  },
+  businessVisualTop:{display:'flex',justifyContent:'space-between',gap:10,alignItems:'center',marginBottom:10},
+  businessTag:{
+    background:'#ecfdf5',color:'#0f766e',border:'1px solid #a7f3d0',borderRadius:999,
+    padding:'6px 9px',fontSize:9.5,fontWeight:900,letterSpacing:.7,
+  },
+  businessStepNumber:{fontSize:20,fontWeight:900,color:'#cbd5e1'},
+  businessVisualTitle:{fontSize:20,fontWeight:900,lineHeight:1.2,margin:'0 0 8px',color:'#0f172a'},
+  businessVisualBody:{fontSize:13,lineHeight:1.6,color:'#64748b',margin:'0 0 14px',minHeight:62},
+  businessImageFrame:{
+    height:300,border:'1px solid #e2e8f0',borderRadius:16,overflow:'hidden',background:'#f8fafc',
+    marginTop:'auto',
+  },
+  businessImage:{width:'100%',height:'100%',objectFit:'cover',objectPosition:'center',display:'block'},
+  businessSliderCard:{
+    maxWidth:820,margin:'0 auto',background:'#fff',border:'1px solid #e2e8f0',borderRadius:20,
+    padding:'clamp(16px,4vw,24px)',boxShadow:'0 16px 42px rgba(15,23,42,.08)',
+  },
+  businessSliderImageFrame:{
+    height:'clamp(300px,55vh,560px)',border:'1px solid #e2e8f0',borderRadius:18,overflow:'hidden',
+    background:'#f8fafc',
+  },
+  businessSliderImage:{width:'100%',height:'100%',objectFit:'contain',objectPosition:'center',display:'block'},
   stepGrid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',gap:13},
   stepCard:{border:'1px solid #e2e8f0',borderRadius:16,padding:20,background:'#fff',boxShadow:'0 8px 25px rgba(15,23,42,.035)'},
   number:{width:34,height:34,borderRadius:'50%',display:'grid',placeItems:'center',background:'#d1fae5',color:'#047857',fontWeight:900,marginBottom:13},
