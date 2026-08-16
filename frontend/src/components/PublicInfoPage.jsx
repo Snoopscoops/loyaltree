@@ -98,6 +98,7 @@ function PublicInfoPage({ type='overview' }) {
   const page = PAGE_CONTENT[type] || PAGE_CONTENT.overview
   const [customerStep, setCustomerStep] = useState(0)
   const [businessStep, setBusinessStep] = useState(0)
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
 
   useEffect(() => {
     setCustomerStep(0)
@@ -241,11 +242,60 @@ function PublicInfoPage({ type='overview' }) {
         .business-visual-grid { display:none; }
         .business-mobile-slider { display:block; }
       }
+      .public-mobile-toggle { display:none; }
       @media(max-width:760px){
-        .public-nav { flex-wrap:wrap; }
-        .public-links { order:3; width:100%; overflow-x:auto; flex-wrap:nowrap; scrollbar-width:none; }
-        .public-links::-webkit-scrollbar { display:none; }
-        .public-menu { position:fixed; left:14px; right:14px; width:auto; }
+        .public-nav { position:relative; gap:10px; }
+        .public-mobile-toggle {
+          display:flex;
+          width:42px;
+          height:42px;
+          align-items:center;
+          justify-content:center;
+          border:1px solid #dbe4ea;
+          border-radius:11px;
+          background:#fff;
+          color:#0f172a;
+          font-size:22px;
+          font-weight:900;
+          cursor:pointer;
+          flex:0 0 auto;
+        }
+        .public-links {
+          display:none;
+          position:absolute;
+          top:calc(100% + 10px);
+          left:0;
+          right:0;
+          width:auto;
+          padding:10px;
+          background:#fff;
+          border:1px solid #e2e8f0;
+          border-radius:15px;
+          box-shadow:0 18px 45px rgba(15,23,42,.16);
+          z-index:100;
+        }
+        .public-links.mobile-open { display:flex; flex-direction:column; align-items:stretch; gap:4px; }
+        .public-links > button,
+        .public-links .public-how > summary {
+          width:100%;
+          box-sizing:border-box;
+          text-align:left;
+          justify-content:flex-start;
+        }
+        .public-how { width:100%; }
+        .public-menu {
+          position:static;
+          width:auto;
+          margin-top:6px;
+          box-shadow:none;
+          border-radius:10px;
+          background:#f8fafc;
+        }
+        .public-login-desktop { display:none !important; }
+        .public-login-mobile { display:block !important; }
+      }
+      @media(min-width:761px){
+        .public-login-mobile { display:none !important; }
       }
     `}</style>
 
@@ -256,20 +306,29 @@ function PublicInfoPage({ type='overview' }) {
           <span style={s.brandName}>LoyaltyTree</span>
         </button>
 
-        <nav className="public-links">
+        <nav className={`public-links ${mobileMenuOpen ? 'mobile-open' : ''}`}>
           <details className="public-how">
             <summary style={s.navLink}>How It Works ▾</summary>
             <div className="public-menu">
-              <button onClick={()=>navigate('/how-it-works')}>📊 Overview</button>
-              <button onClick={()=>navigate('/how-it-works/businesses')}>🏪 For Businesses</button>
-              <button onClick={()=>navigate('/how-it-works/customers')}>👥 For Customers</button>
+              <button onClick={()=>{navigate('/how-it-works');setMobileMenuOpen(false)}}>📊 Overview</button>
+              <button onClick={()=>{navigate('/how-it-works/businesses');setMobileMenuOpen(false)}}>🏪 For Businesses</button>
+              <button onClick={()=>{navigate('/how-it-works/customers');setMobileMenuOpen(false)}}>👥 For Customers</button>
             </div>
           </details>
-          <button onClick={()=>navigate('/about')} style={s.navLink}>About Us</button>
-          <button onClick={()=>navigate('/contact')} style={s.navLink}>Contact</button>
+          <button onClick={()=>{navigate('/about');setMobileMenuOpen(false)}} style={s.navLink}>About Us</button>
+          <button onClick={()=>{navigate('/contact');setMobileMenuOpen(false)}} style={s.navLink}>Contact</button>
+          <button className="public-login-mobile" onClick={()=>{navigate('/login');setMobileMenuOpen(false)}} style={s.mobileLoginBtn}>Business Login</button>
         </nav>
 
-        <button onClick={()=>navigate('/login')} style={s.loginBtn}>Business Login</button>
+        <button className="public-login-desktop" onClick={()=>navigate('/login')} style={s.loginBtn}>Business Login</button>
+        <button
+          className="public-mobile-toggle"
+          onClick={()=>setMobileMenuOpen(v=>!v)}
+          aria-label={mobileMenuOpen ? 'Close menu' : 'Open menu'}
+          aria-expanded={mobileMenuOpen}
+        >
+          {mobileMenuOpen ? '×' : '☰'}
+        </button>
       </div>
     </header>
 
@@ -518,6 +577,7 @@ const s={
   logo:{width:34,height:34,borderRadius:'50%'},brandName:{fontSize:20,fontWeight:850,color:'#0f766e'},
   navLink:{border:0,background:'transparent',padding:'9px 10px',borderRadius:9,color:'#334155',fontSize:13,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap'},
   loginBtn:{border:0,background:'#0d9488',color:'#fff',padding:'10px 15px',borderRadius:10,fontWeight:800,cursor:'pointer',whiteSpace:'nowrap'},
+  mobileLoginBtn:{width:'100%',border:0,background:'#0d9488',color:'#fff',padding:'12px 14px',borderRadius:10,fontWeight:800,cursor:'pointer',textAlign:'center',marginTop:4},
   hero:{background:'linear-gradient(135deg,#f0fdf4 0%,#ecfdf5 55%,#f8fafc 100%)',padding:'clamp(64px,9vw,110px) 22px'},
   heroInner:{maxWidth:900,margin:'0 auto',textAlign:'center'},eyebrow:{fontSize:11,fontWeight:900,letterSpacing:1.5,color:'#0f766e'},
   h1:{fontSize:'clamp(36px,6vw,66px)',lineHeight:1.04,letterSpacing:'-.035em',margin:'14px 0 20px',fontWeight:900},
