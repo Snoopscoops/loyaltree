@@ -9620,6 +9620,56 @@ def sync_stamp_wallets_background(customer: dict, business: dict, program: dict,
     print(f"STAMP WALLET QUEUE RESULT: {result}")
 
 
+def sync_loyalty_wallets_background(
+    customer: dict,
+    business: dict,
+    program: dict,
+    reason: str = 'loyalty_update',
+    notify_header: Optional[str] = None,
+    notify_body: Optional[str] = None,
+    notify_message_id: Optional[str] = None,
+):
+    """Refresh Google + Apple Wallet after the cashier response is sent.
+
+    The database transaction is already complete before this runs, so Google
+    or Apple latency can never hold up checkout. If either provider fails,
+    enqueue the customer's pass in the existing durable retry queue.
+    """
+    customer_snapshot = dict(customer or {})
+    business_snapshot = dict(business or {})
+    program_snapshot = dict(program or {})
+
+    try:
+        google_result = sync_wallet_object(
+            customer_snapshot,
+            business_snapshot,
+            program_snapshot,
+            notify_header=notify_header,
+            notify_body=notify_body,
+            notify_message_id=notify_message_id,
+        )
+        apple_result = sync_apple_wallet_pass(customer_snapshot)
+
+        failed = (
+            (isinstance(google_result, dict) and google_result.get('status') == 'error')
+            or (isinstance(apple_result, dict) and apple_result.get('status') == 'error')
+        )
+        if failed:
+            queued = enqueue_wallet_sync(customer_snapshot, business_snapshot, reason)
+            print(
+                f"BACKGROUND WALLET SYNC provider failure; queued retry: "
+                f"google={google_result}, apple={apple_result}, queue={queued}"
+            )
+        else:
+            print(
+                f"BACKGROUND WALLET SYNC complete: reason={reason}, "
+                f"customer={customer_snapshot.get('public_id')}"
+            )
+    except Exception as exc:
+        queued = enqueue_wallet_sync(customer_snapshot, business_snapshot, reason)
+        print(f"BACKGROUND WALLET SYNC error: {exc}; queued retry={queued}")
+
+
 @app.post("/api/v1/business/{public_id}/stamp")
 async def add_stamp(public_id: str, req: StampRequest, background_tasks: BackgroundTasks, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
     print(f"STAMP REQUEST: business={public_id}, customer={req.customer_public_id}")
@@ -9800,7 +9850,7 @@ async def add_stamp(public_id: str, req: StampRequest, background_tasks: Backgro
 
 
 @app.post("/api/v1/business/{public_id}/stamp/adjust")
-async def adjust_stamp(public_id: str, req: StampAdjustRequest, authorization: str = Header(default="")):
+async def adjust_stamp(public_id: str, req: StampAdjustRequest, background_tasks: BackgroundTasks, authorization: str = Header(default="")):
     """Audited cashier/owner correction. Delta may be + or -, and Wallets are resynced."""
     if req.delta == 0:
         raise HTTPException(status_code=400, detail="Adjustment must add or remove at least one stamp")
@@ -9878,20 +9928,21 @@ async def adjust_stamp(public_id: str, req: StampAdjustRequest, authorization: s
         metadata={'card_type': 'stamp'},
     )
 
-    google_sync = sync_wallet_object(
-        persisted, business, program,
-        notify_header="Stamp balance corrected",
-        notify_body=f"Your stamp balance is now {new_count}.",
-        notify_message_id=f"stamp-adjust-{customer.get('id')}-{int(datetime.utcnow().timestamp())}",
+    background_tasks.add_task(
+        sync_loyalty_wallets_background,
+        dict(persisted), dict(business), dict(program or {}),
+        'stamp_adjust',
+        "Stamp balance corrected",
+        f"Your stamp balance is now {new_count}.",
+        f"stamp-adjust-{customer.get('id')}-{int(datetime.utcnow().timestamp())}",
     )
-    apple_sync = sync_apple_wallet_pass(persisted)
     response_payload = {
         'message': 'Stamp balance updated',
         'stamp_count': new_count,
         'delta': actual_delta,
         'reward_unlocked': reward_unlocked,
         'available_rewards': get_available_stamp_rewards(persisted, program),
-        'wallet_sync': {'google': google_sync, 'apple': apple_sync},
+        'wallet_sync': {'status': 'queued'},
     }
     if audit_row and audit_row.get('transaction_id'):
         response_payload['transaction_id'] = str(audit_row.get('transaction_id'))
@@ -9900,7 +9951,7 @@ async def adjust_stamp(public_id: str, req: StampAdjustRequest, authorization: s
 
 
 @app.post("/api/v1/business/{public_id}/vip-sale")
-async def add_vip_sale(public_id: str, req: VIPSaleRequest, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
+async def add_vip_sale(public_id: str, req: VIPSaleRequest, background_tasks: BackgroundTasks, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
     business = safe_get_business(public_id)
     if not business: raise HTTPException(status_code=404, detail="Business not found")
     customer = safe_get_customer(req.customer_public_id)
@@ -9935,8 +9986,14 @@ async def add_vip_sale(public_id: str, req: VIPSaleRequest, authorization: str =
     customer['vip_points']=balance
     new_tier=get_vip_tier(customer, program); next_tier=get_next_vip_tier(customer, program)
     log_vip_event(business.get('id'),customer.get('id'),'sale',earned,balance,req.amount_spent,old_tier.get('name'),new_tier.get('name'),staff_id,branch_id)
-    sync_wallet_object(customer,business,program,notify_header='VIP status updated',notify_body=(f"You earned {earned} VIP points. You are now {new_tier.get('name')} VIP."),notify_message_id=f"vip-{customer.get('id')}-{balance}-{int(datetime.utcnow().timestamp())}")
-    sync_apple_wallet_pass(customer)
+    background_tasks.add_task(
+        sync_loyalty_wallets_background,
+        dict(customer), dict(business), dict(program),
+        'vip_sale',
+        'VIP status updated',
+        f"You earned {earned} VIP points. You are now {new_tier.get('name')} VIP.",
+        f"vip-{customer.get('id')}-{balance}-{int(datetime.utcnow().timestamp())}",
+    )
     response_payload = {
         'message': f'{earned} VIP points added',
         'amount_spent': float(req.amount_spent),
@@ -9957,7 +10014,7 @@ async def add_vip_sale(public_id: str, req: VIPSaleRequest, authorization: str =
     return response_payload
 
 @app.post("/api/v1/business/{public_id}/vip-adjust")
-async def adjust_vip_points(public_id: str, req: VIPAdjustRequest):
+async def adjust_vip_points(public_id: str, req: VIPAdjustRequest, background_tasks: BackgroundTasks):
     business=safe_get_business(public_id); customer=safe_get_customer(req.customer_public_id)
     if not business or not customer or customer.get('business_id') != business.get('id'): raise HTTPException(status_code=404, detail='Customer not found')
     program=safe_get_loyalty_program(business.get('id'))
@@ -9966,14 +10023,18 @@ async def adjust_vip_points(public_id: str, req: VIPAdjustRequest):
     audit_row=start_transaction_audit(business_id=business.get('id'),customer_id=customer.get('id'),actor_type='owner',action='vip_adjust',delta=balance-old_balance,balance_before=old_balance,reason=req.note,metadata={'card_type':'vip'})
     supabase.table('customers').update({'vip_points':balance,'updated_at':datetime.utcnow().isoformat()}).eq('id',customer.get('id')).execute(); customer['vip_points']=balance
     new=get_vip_tier(customer,program); log_vip_event(business.get('id'),customer.get('id'),'adjustment',req.points_delta,balance,old_tier=old.get('name'),new_tier=new.get('name'),note=req.note)
-    sync_wallet_object(customer,business,program); sync_apple_wallet_pass(customer)
+    background_tasks.add_task(
+        sync_loyalty_wallets_background,
+        dict(customer), dict(business), dict(program),
+        'vip_adjust',
+    )
     response_payload={'vip_points':balance,'tier':new,'next_tier':get_next_vip_tier(customer,program)}
     if audit_row and audit_row.get('transaction_id'): response_payload['transaction_id']=str(audit_row.get('transaction_id'))
     complete_transaction_audit(audit_row,balance_after=balance,response_json=response_payload)
     return response_payload
 
 @app.post("/api/v1/business/{public_id}/points-sale")
-async def add_points_sale(public_id: str, req: PointsSaleRequest, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
+async def add_points_sale(public_id: str, req: PointsSaleRequest, background_tasks: BackgroundTasks, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
     """Points-card equivalent of add_stamp: converts a purchase amount into
     points using the program's points_per_amount/points_amount_pesos rate
     and credits the customer's points_balance, then pushes the update to
@@ -10046,13 +10107,14 @@ async def add_points_sale(public_id: str, req: PointsSaleRequest, authorization:
         }
         supabase.table("customers").update(update_data).eq("id", customer.get("id")).execute()
         customer['points_balance'] = new_balance
-        sync_wallet_object(
-            customer, business, program,
-            notify_header="Points added ⭐",
-            notify_body=f"You now have {new_balance} points!",
-            notify_message_id=f"points-{customer.get('id')}-{new_balance}-{int(datetime.utcnow().timestamp())}",
+        background_tasks.add_task(
+            sync_loyalty_wallets_background,
+            dict(customer), dict(business), dict(program),
+            'points_sale',
+            "Points added ⭐",
+            f"You now have {new_balance} points!",
+            f"points-{customer.get('id')}-{new_balance}-{int(datetime.utcnow().timestamp())}",
         )
-        sync_apple_wallet_pass(customer)
         log_points_event(business.get('id'), customer.get('id'), req.amount_spent, points_earned, sale_staff_id, sale_branch_id)
     except Exception as e:
         error_msg = str(e)
@@ -10084,7 +10146,7 @@ async def add_points_sale(public_id: str, req: PointsSaleRequest, authorization:
     return response_payload
 
 @app.post("/api/v1/business/{public_id}/points-redeem")
-async def redeem_points_prize(public_id: str, req: PointsRedeemRequest, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
+async def redeem_points_prize(public_id: str, req: PointsRedeemRequest, background_tasks: BackgroundTasks, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
     """Points-card equivalent of /reward/redeem: deducts a prize's
     points_cost from the customer's points_balance instead of resetting a
     stamp count. Same staff-session / owner / legacy-PIN auth pattern as
@@ -10151,13 +10213,14 @@ async def redeem_points_prize(public_id: str, req: PointsRedeemRequest, authoriz
             'updated_at': datetime.utcnow().isoformat(),
         }).eq("id", customer.get("id")).execute()
         customer['points_balance'] = new_balance
-        sync_wallet_object(
-            customer, business, program,
-            notify_header="Prize redeemed 🎁",
-            notify_body=f"{prize.get('name', 'Prize')} redeemed - you now have {new_balance} points.",
-            notify_message_id=f"points-redeem-{customer.get('id')}-{int(datetime.utcnow().timestamp())}",
+        background_tasks.add_task(
+            sync_loyalty_wallets_background,
+            dict(customer), dict(business), dict(program),
+            'points_redeem',
+            "Prize redeemed 🎁",
+            f"{prize.get('name', 'Prize')} redeemed - you now have {new_balance} points.",
+            f"points-redeem-{customer.get('id')}-{int(datetime.utcnow().timestamp())}",
         )
-        sync_apple_wallet_pass(customer)
         log_redemption_event(
             business.get('id'), customer.get('id'), redeeming_staff_id, redeeming_branch_id,
             prize_name=prize.get('name'), points_spent=prize_cost,
@@ -10177,7 +10240,7 @@ async def redeem_points_prize(public_id: str, req: PointsRedeemRequest, authoriz
     return response_payload
 
 @app.post("/api/v1/business/{public_id}/multipass/issue")
-async def issue_multipass(public_id: str, req: MultipassIssueRequest, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
+async def issue_multipass(public_id: str, req: MultipassIssueRequest, background_tasks: BackgroundTasks, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
     """Multipass-card equivalent of the customer's first stamp: issues a
     fresh session pack, e.g. 12 sessions sold at the price of 10. Called
     whenever a customer buys a pack - their first one, or a renewal once
@@ -10246,13 +10309,14 @@ async def issue_multipass(public_id: str, req: MultipassIssueRequest, authorizat
         }
         supabase.table("customers").update(update_data).eq("id", customer.get("id")).execute()
         customer.update(update_data)
-        sync_wallet_object(
-            customer, business, program,
-            notify_header="New pass activated 🎟️",
-            notify_body=f"You have {session_count} sessions - valid until {expires_at}.",
-            notify_message_id=f"multipass-issue-{customer.get('id')}-{int(datetime.utcnow().timestamp())}",
+        background_tasks.add_task(
+            sync_loyalty_wallets_background,
+            dict(customer), dict(business), dict(program),
+            'multipass_issue',
+            "New pass activated 🎟️",
+            f"You have {session_count} sessions - valid until {expires_at}.",
+            f"multipass-issue-{customer.get('id')}-{int(datetime.utcnow().timestamp())}",
         )
-        sync_apple_wallet_pass(customer)
         log_multipass_event(business.get('id'), customer.get('id'), 'issued', session_count, issuing_staff_id, issuing_branch_id)
     except Exception as e:
         error_msg = str(e)
@@ -10284,7 +10348,7 @@ async def issue_multipass(public_id: str, req: MultipassIssueRequest, authorizat
     return response_payload
 
 @app.post("/api/v1/business/{public_id}/multipass/use")
-async def use_multipass_session(public_id: str, req: MultipassUseRequest, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
+async def use_multipass_session(public_id: str, req: MultipassUseRequest, background_tasks: BackgroundTasks, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
     """Multipass-card equivalent of /stamp: burns one session off the
     customer's current pack (e.g. checking off one of their 12 tooth-cleaning
     visits). Refuses if the pack is exhausted or has expired - the cashier
@@ -10352,14 +10416,15 @@ async def use_multipass_session(public_id: str, req: MultipassUseRequest, author
             'updated_at': datetime.utcnow().isoformat(),
         }).eq("id", customer.get("id")).execute()
         customer['multipass_sessions_remaining'] = new_remaining
-        sync_wallet_object(
-            customer, business, program,
-            notify_header="Session used ✅" if new_remaining > 0 else "Pass complete 🎉",
-            notify_body=(f"{new_remaining} sessions left." if new_remaining > 0
-                         else "You've used all your sessions - come back to buy a new pass!"),
-            notify_message_id=f"multipass-use-{customer.get('id')}-{new_remaining}-{int(datetime.utcnow().timestamp())}",
+        background_tasks.add_task(
+            sync_loyalty_wallets_background,
+            dict(customer), dict(business), dict(program),
+            'multipass_use',
+            "Session used ✅" if new_remaining > 0 else "Pass complete 🎉",
+            (f"{new_remaining} sessions left." if new_remaining > 0
+             else "You've used all your sessions - come back to buy a new pass!"),
+            f"multipass-use-{customer.get('id')}-{new_remaining}-{int(datetime.utcnow().timestamp())}",
         )
-        sync_apple_wallet_pass(customer)
         log_multipass_event(business.get('id'), customer.get('id'), 'used', new_remaining, using_staff_id, using_branch_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -10376,7 +10441,7 @@ async def use_multipass_session(public_id: str, req: MultipassUseRequest, author
 
 
 @app.post("/api/v1/business/{public_id}/membership/action")
-async def membership_action(public_id: str, req: MembershipActionRequest):
+async def membership_action(public_id: str, req: MembershipActionRequest, background_tasks: BackgroundTasks):
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -10431,16 +10496,17 @@ async def membership_action(public_id: str, req: MembershipActionRequest):
             (req.payment_method or '').strip() or None,
             (req.note or '').strip() or None,
         )
-        sync_wallet_object(
-            updated, business, program,
-            notify_header="Membership updated",
-            notify_body=(
+        background_tasks.add_task(
+            sync_loyalty_wallets_background,
+            dict(updated), dict(business), dict(program),
+            'membership_action',
+            "Membership updated",
+            (
                 f"Your membership is now {new_status.upper()}."
                 + (f" Valid until {updated.get('membership_expires_at')}." if updated.get('membership_expires_at') else "")
             ),
-            notify_message_id=f"membership-action-{customer.get('id')}-{int(datetime.utcnow().timestamp())}",
+            f"membership-action-{customer.get('id')}-{int(datetime.utcnow().timestamp())}",
         )
-        sync_apple_wallet_pass(updated)
         return {
             'message': 'Membership updated',
             'customer': updated,
@@ -10753,13 +10819,14 @@ async def add_membership_note(public_id: str, req: MembershipNoteRequest, author
         )
         if leaf is None:
             raise Exception("insert failed")
-        sync_wallet_object(
-            customer, business, program,
-            notify_header="Visit logged ✅",
-            notify_body=f"Thanks for visiting! Service: {service_name}",
-            notify_message_id=f"membership-{customer.get('id')}-{leaf.get('id')}-{int(datetime.utcnow().timestamp())}",
+        background_tasks.add_task(
+            sync_loyalty_wallets_background,
+            dict(customer), dict(business), dict(program),
+            'membership_visit',
+            "Membership visit recorded",
+            "Your latest visit has been added to your LoyaltyTree card.",
+            f"membership-visit-{customer.get('id')}-{int(datetime.utcnow().timestamp())}",
         )
-        sync_apple_wallet_pass(customer)
     except Exception as e:
         error_msg = str(e)
         is_schema_mismatch = (
@@ -11201,13 +11268,14 @@ async def redeem_reward(public_id: str, req: RedeemRequest, authorization: str =
             'updated_at': datetime.utcnow().isoformat(),
         }).eq("id", customer.get("id")).execute()
 
-        sync_wallet_object(
-            customer, business, program,
-            notify_header="Reward redeemed ✅",
-            notify_body=f"{reward['reward_name']} has been redeemed.",
-            notify_message_id=f"redeem-{customer.get('id')}-{reward['id']}-{int(datetime.utcnow().timestamp())}",
+        background_tasks.add_task(
+            sync_loyalty_wallets_background,
+            dict(customer), dict(business), dict(program),
+            'stamp_reward_redeem',
+            "Reward redeemed 🎁",
+            "Your loyalty reward was redeemed successfully.",
+            f"reward-redeem-{customer.get('id')}-{int(datetime.utcnow().timestamp())}",
         )
-        sync_apple_wallet_pass(customer)
         log_redemption_event(
             business.get('id'), customer.get('id'), redeeming_staff_id,
             redeeming_branch_id, prize_name=reward['reward_name']
