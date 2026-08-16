@@ -6252,6 +6252,36 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
                 # Render logs without rolling back the owner's successful edit.
                 print(f"STAMP ADJUSTMENT audit warning (owner customer edit): {e}")
 
+    if 'points_balance' in update_data:
+        old_points = int(customer.get('points_balance') or 0)
+        new_points = int(updated_customer.get('points_balance') or 0)
+        points_delta = new_points - old_points
+        if points_delta != 0:
+            audit_row = start_transaction_audit(
+                business_id=business.get('id'),
+                customer_id=customer.get('id'),
+                staff_id=None,
+                branch_id=None,
+                actor_type='owner',
+                action='points_adjust',
+                delta=points_delta,
+                balance_before=old_points,
+                reason='Owner manual points correction',
+                metadata={
+                    'card_type': 'points',
+                    'source': 'owner_customer_edit',
+                },
+            )
+            complete_transaction_audit(
+                audit_row,
+                balance_after=new_points,
+                response_json={
+                    'points_balance': new_points,
+                    'points_delta': points_delta,
+                    'source': 'owner_customer_edit',
+                },
+            )
+
     if 'stamp_count' in update_data or 'points_balance' in update_data or 'multipass_sessions_remaining' in update_data:
         try:
             sync_wallet_object(updated_customer, business, program)
@@ -10516,17 +10546,27 @@ async def get_multipass_history(public_id: str, customer_public_id: str):
 
 @app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/points-history")
 async def get_points_history(public_id: str, customer_public_id: str):
-    """Every recorded points-earning sale for one customer, including date,
-    cashier and branch - same shape/pattern as stamp-history, just against
-    points_events (see log_points_event)."""
+    """Complete points activity for one customer, newest first.
+
+    Includes:
+      - points earned from purchases (points_events)
+      - owner/manual point corrections (transaction_audit: points_adjust)
+      - prize redemptions/deductions (transaction_audit: points_redeem)
+
+    Older purchase history remains visible because points_events is preserved,
+    while newer balance movements use transaction_audit for reliable before /
+    after balances and actor information.
+    """
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
     customer = safe_get_customer(customer_public_id)
     if not customer or customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
+
     try:
-        rows = (
+        # Existing sale/earning events.
+        sale_rows = (
             supabase.table('points_events')
             .select('*')
             .eq('business_id', business.get('id'))
@@ -10534,7 +10574,56 @@ async def get_points_history(public_id: str, customer_public_id: str):
             .order('created_at', desc=True)
             .execute()
         ).data or []
-        return attach_activity_location_names(rows)
+
+        activities = []
+        for row in sale_rows:
+            activities.append({
+                **row,
+                'activity_type': 'sale',
+                'points_delta': int(row.get('points_earned') or 0),
+            })
+
+        # Manual owner corrections and prize redemptions.
+        audit_rows = (
+            supabase.table('transaction_audit')
+            .select('*')
+            .eq('business_id', business.get('id'))
+            .eq('customer_id', customer.get('id'))
+            .eq('status', 'success')
+            .in_('action', ['points_adjust', 'points_redeem'])
+            .order('created_at', desc=True)
+            .execute()
+        ).data or []
+
+        for row in audit_rows:
+            metadata = row.get('metadata') if isinstance(row.get('metadata'), dict) else {}
+            action = row.get('action')
+            delta = int(row.get('delta') or 0)
+            activities.append({
+                'id': f"audit-{row.get('id')}",
+                'activity_type': 'adjustment' if action == 'points_adjust' else 'redemption',
+                'action': action,
+                'created_at': row.get('completed_at') or row.get('created_at'),
+                'staff_id': row.get('staff_id'),
+                'branch_id': row.get('branch_id'),
+                'actor_type': row.get('actor_type') or 'system',
+                'points_delta': delta,
+                'points_earned': delta if delta > 0 else 0,
+                'points_spent': abs(delta) if delta < 0 else 0,
+                'balance_before': row.get('balance_before'),
+                'points_balance': row.get('balance_after'),
+                'balance_after': row.get('balance_after'),
+                'reason': row.get('reason'),
+                'prize_name': metadata.get('prize_name'),
+                'metadata': metadata,
+            })
+
+        activities = attach_activity_location_names(activities)
+        activities.sort(
+            key=lambda r: str(r.get('created_at') or ''),
+            reverse=True,
+        )
+        return activities
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
