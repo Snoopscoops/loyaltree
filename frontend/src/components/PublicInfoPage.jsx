@@ -211,7 +211,11 @@ function PublicInfoPage({ type='overview' }) {
               >
                 {step.images.map((image, index) => (
                   <div style={s.customerEqualImageFrame} key={`${step.number}-${index}`}>
-                    <img src={image.src} alt={image.alt} style={s.customerEqualImage}/>
+                    <img
+                      src={image.src}
+                      alt={image.alt}
+                      style={step.number === 4 ? s.customerNotificationImage : s.customerEqualImage}
+                    />
                   </div>
                 ))}
               </div>
@@ -237,7 +241,11 @@ function PublicInfoPage({ type='overview' }) {
             >
               {customerSteps[customerStep].images.map((image, index) => (
                 <div style={s.customerSliderImageFrame} key={`mobile-${customerStep}-${index}`}>
-                  <img src={image.src} alt={image.alt} style={s.customerSliderImage}/>
+                  <img
+                    src={image.src}
+                    alt={image.alt}
+                    style={customerSteps[customerStep].number === 4 ? s.customerNotificationImage : s.customerSliderImage}
+                  />
                 </div>
               ))}
             </div>
@@ -375,6 +383,7 @@ const s={
     background:'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center',
   },
   customerSliderImage:{width:'100%',height:'100%',objectFit:'cover',objectPosition:'center',display:'block'},
+  customerNotificationImage:{width:'100%',height:'100%',objectFit:'contain',objectPosition:'center',display:'block',background:'#f8fafc'},
   customerDots:{display:'flex',justifyContent:'center',gap:8,marginTop:18},
   customerDot:{width:8,height:8,borderRadius:'50%',border:0,background:'#cbd5e1',padding:0,cursor:'pointer'},
   customerDotActive:{width:24,borderRadius:999,background:'#0d9488'},
