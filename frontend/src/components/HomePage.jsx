@@ -509,6 +509,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
               </button>
             </div>
           </details>
+          <button className="lt-home-navlink" onClick={() => goPublicPage('/how-it-works#pricing')} style={styles.navLink}>Pricing</button>
           <button className="lt-home-navlink" onClick={() => goPublicPage('/about')} style={styles.navLink}>About Us</button>
           <button className="lt-home-navlink" onClick={() => goPublicPage('/contact')} style={styles.navLink}>Contact Us</button>
         </nav>
@@ -816,6 +817,33 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
             </div>
           </div>
         </div>
+      </section>
+
+      <section id="pricing" style={styles.homePricingSection}>
+        <div style={styles.homePricingHeader}>
+          <span style={styles.partnerEyebrow}>Simple pricing</span>
+          <h2 style={styles.h2}>Start small. Grow when you need to.</h2>
+          <p style={styles.cardTypesIntro}>Plans start at ₱350/month for one branch, with Google Wallet and Apple Wallet support included.</p>
+        </div>
+        <div style={styles.homePricingCards}>
+          <div style={styles.homePriceCard}>
+            <span style={styles.homePriceLabel}>Starter</span>
+            <div style={styles.homePrice}>₱350<span style={styles.homePriceUnit}>/mo</span></div>
+            <p style={styles.homePriceText}>Core digital loyalty, customization, analytics, announcements, birthday greetings, and support.</p>
+          </div>
+          <div style={{...styles.homePriceCard,...styles.homePriceCardFeatured}}>
+            <span style={styles.homePricePopular}>MOST POPULAR</span>
+            <span style={styles.homePriceLabel}>Growth</span>
+            <div style={styles.homePrice}>₱550<span style={styles.homePriceUnit}>/mo</span></div>
+            <p style={styles.homePriceText}>Adds review prompts, more announcements, and automated win-back tools for customer retention.</p>
+          </div>
+          <div style={styles.homePriceCard}>
+            <span style={styles.homePriceLabel}>Specialized</span>
+            <div style={styles.homePriceCustom}>Custom</div>
+            <p style={styles.homePriceText}>For NFC, contactless, membership, access, and specialized business integrations.</p>
+          </div>
+        </div>
+        <button onClick={() => goPublicPage('/how-it-works#pricing')} style={styles.homePricingButton}>View full pricing & branch options →</button>
       </section>
 
       {(partnersLoading || partnersError || partners.length > 0) && (
@@ -1163,6 +1191,19 @@ const styles = {
   industryCard:{background:'#fff',border:'1px solid #e2e8f0',borderRadius:16,padding:18,boxShadow:'0 8px 20px rgba(15,23,42,.04)'},
   industryIcon:{fontSize:28,marginBottom:10},industryTitle:{fontSize:15,fontWeight:800,color:'#0f172a'},
   industryBody:{fontSize:12.5,lineHeight:1.5,color:'#64748b',minHeight:56},industryCards:{fontSize:11,fontWeight:800,color:'#0d9488'},
+
+  homePricingSection:{padding:'72px 32px',maxWidth:1100,margin:'0 auto',textAlign:'center'},
+  homePricingHeader:{maxWidth:680,margin:'0 auto 28px'},
+  homePricingCards:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(230px,1fr))',gap:16,alignItems:'stretch'},
+  homePriceCard:{position:'relative',background:'#fff',border:'1px solid #e2e8f0',borderRadius:18,padding:'26px 22px',textAlign:'left',boxShadow:'0 8px 24px rgba(15,23,42,.05)'},
+  homePriceCardFeatured:{border:'2px solid #0d9488',boxShadow:'0 16px 36px rgba(13,148,136,.12)'},
+  homePricePopular:{position:'absolute',top:14,right:14,fontSize:9,fontWeight:900,letterSpacing:'.08em',color:'#047857',background:'#d1fae5',padding:'5px 8px',borderRadius:999},
+  homePriceLabel:{display:'block',fontSize:15,fontWeight:850,color:'#0f172a',marginBottom:12},
+  homePrice:{fontSize:34,fontWeight:900,color:'#0f172a',letterSpacing:'-.03em'},
+  homePriceUnit:{fontSize:13,fontWeight:700,color:'#64748b',marginLeft:3},
+  homePriceCustom:{fontSize:30,fontWeight:900,color:'#0f766e'},
+  homePriceText:{fontSize:12.5,lineHeight:1.6,color:'#64748b',margin:'12px 0 0'},
+  homePricingButton:{marginTop:24,padding:'13px 18px',border:'none',borderRadius:11,background:'#0d9488',color:'#fff',fontSize:13,fontWeight:800,cursor:'pointer'},
 
   // Marketing / Retention / Zero Waste pillars
   pillarSection: {

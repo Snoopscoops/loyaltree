@@ -121,14 +121,26 @@ function PublicInfoPage({ type='overview' }) {
   }, [type])
 
   useEffect(() => {
-    if (type === 'overview' && window.location.hash === '#pricing') {
-      window.setTimeout(() => {
-        document.getElementById('pricing')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      }, 50)
-    }
+    if (type !== 'overview' || window.location.hash !== '#pricing') return
+    const scrollToPricing = () => document.getElementById('pricing')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    scrollToPricing()
+    const timer = window.setTimeout(scrollToPricing, 180)
+    return () => window.clearTimeout(timer)
   }, [type])
 
   const openMessenger = () => window.open('https://m.me/theloyaltytree', '_blank', 'noopener,noreferrer')
+
+  const goToPricing = () => {
+    setMobileMenuOpen(false)
+    if (type === 'overview') {
+      window.history.replaceState(null, '', '/how-it-works#pricing')
+      window.requestAnimationFrame(() => {
+        document.getElementById('pricing')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      })
+      return
+    }
+    window.location.assign('/how-it-works#pricing')
+  }
 
   const customerSteps = [
     {
@@ -469,10 +481,10 @@ function PublicInfoPage({ type='overview' }) {
               <button onClick={()=>{navigate('/how-it-works');setMobileMenuOpen(false)}}>📊 Overview</button>
               <button onClick={()=>{navigate('/how-it-works/businesses');setMobileMenuOpen(false)}}>🏪 For Businesses</button>
               <button onClick={()=>{navigate('/how-it-works/customers');setMobileMenuOpen(false)}}>👥 For Customers</button>
-              <button onClick={()=>{navigate('/how-it-works#pricing');setMobileMenuOpen(false)}}>💳 Pricing</button>
+              <button onClick={goToPricing}>💳 Pricing</button>
             </div>
           </details>
-          <button onClick={()=>{navigate('/how-it-works#pricing');setMobileMenuOpen(false)}} style={s.navLink}>Pricing</button>
+          <button onClick={goToPricing} style={s.navLink}>Pricing</button>
           <button onClick={()=>{navigate('/about');setMobileMenuOpen(false)}} style={s.navLink}>About Us</button>
           <button onClick={()=>{navigate('/contact');setMobileMenuOpen(false)}} style={s.navLink}>Contact Us</button>
           <button className="public-login-mobile" onClick={()=>{navigate('/login');setMobileMenuOpen(false)}} style={s.mobileLoginBtn}>Business Login</button>
@@ -726,9 +738,9 @@ function PublicInfoPage({ type='overview' }) {
         <div id="pricing" style={s.pricingSection}>
           <div style={s.pricingHeader}>
             <span style={s.customerJourneyEyebrow}>PRICING</span>
-            <h2 style={s.pricingTitle}>Choose the plan that fits your business.</h2>
+            <h2 style={s.pricingTitle}>Simple pricing that grows with your business.</h2>
             <p style={s.pricingIntro}>
-              Start with the number of branches you operate today. You can move to a larger plan as your loyalty program grows.
+              Choose your branch count, then compare plans. No paper cards, no separate customer app, and no complicated setup.
             </p>
           </div>
 
@@ -754,6 +766,7 @@ function PublicInfoPage({ type='overview' }) {
                 style={{
                   ...s.pricingCard,
                   ...(plan.highlight ? s.pricingCardHighlight : {}),
+                  ...(plan.key === 'specialized' ? s.pricingCardSpecialized : {}),
                 }}
               >
                 {plan.highlight && <div style={s.pricingPopular}>MOST POPULAR</div>}
@@ -942,6 +955,7 @@ const s={
   pricingGrid:{display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:14,alignItems:'stretch'},
   pricingCard:{position:'relative',display:'flex',flexDirection:'column',background:'#fff',border:'1px solid #e2e8f0',borderRadius:20,padding:20,boxShadow:'0 12px 30px rgba(15,23,42,.05)'},
   pricingCardHighlight:{border:'2px solid #0d9488',boxShadow:'0 18px 40px rgba(13,148,136,.14)'},
+  pricingCardSpecialized:{gridColumn:'1 / -1',maxWidth:760,width:'100%',margin:'0 auto'},
   pricingPopular:{position:'absolute',top:-12,left:'50%',transform:'translateX(-50%)',background:'#0d9488',color:'#fff',fontSize:9,fontWeight:900,letterSpacing:1,padding:'6px 10px',borderRadius:999,whiteSpace:'nowrap'},
   pricingComingSoon:{display:'inline-flex',alignSelf:'flex-start',background:'#f1f5f9',color:'#64748b',fontSize:9,fontWeight:900,letterSpacing:.8,padding:'5px 8px',borderRadius:999,marginBottom:8},
   pricingPlanName:{fontSize:21,fontWeight:900,color:'#0f172a',margin:'5px 0 7px'},
