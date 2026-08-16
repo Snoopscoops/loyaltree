@@ -102,6 +102,27 @@ const STEPS = [
   { n: '3', title: 'Stamp at checkout', body: 'Your staff adds a stamp with their PIN. The reward unlocks itself.' },
 ]
 
+const PLATFORM_OVERVIEW = [
+  {
+    key: 'overview',
+    icon: '📊',
+    title: 'Overview',
+    body: 'See activity, visits, rewards, retention, wallet updates, and loyalty performance in one place.',
+  },
+  {
+    key: 'businesses',
+    icon: '🏪',
+    title: 'For Businesses',
+    body: 'Create your card, manage branches and cashiers, run promotions, and keep every loyalty action organized.',
+  },
+  {
+    key: 'customers',
+    icon: '👥',
+    title: 'For Customers',
+    body: 'Join with a QR code, save the card to Apple Wallet or Google Wallet, earn rewards, and receive updates.',
+  },
+]
+
 const INDUSTRIES=[
   {icon:'☕',title:'Coffee & Food',body:'Cafés, bakeries, restaurants and food businesses.',cards:'Stamps · Points · VIP'},
   {icon:'🏋️',title:'Fitness & Wellness',body:'Gyms, fitness studios, spas and wellness businesses.',cards:'Membership · Multipass · VIP'},
@@ -420,17 +441,52 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
     setModalView('sample')
   }
 
+  const scrollToSection = (id) => {
+    const target = document.getElementById(id)
+    if (!target) return
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
+  const openContact = () => {
+    window.open('https://m.me/theloyaltytree', '_blank', 'noopener,noreferrer')
+  }
+
   return (
     <div style={styles.page}>
-      <header style={styles.nav}>
-        <div style={styles.brand}>
+      <style>{`
+        html { scroll-behavior: smooth; }
+        .lt-home-navlinks { display:flex; align-items:center; justify-content:center; gap:6px; flex-wrap:wrap; }
+        .lt-home-overview-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; }
+        @media (max-width: 900px) {
+          .lt-home-header { align-items:flex-start !important; flex-wrap:wrap !important; padding:14px 18px !important; }
+          .lt-home-navlinks { order:3; width:100%; justify-content:flex-start; flex-wrap:nowrap; overflow-x:auto; padding:4px 0 2px; scrollbar-width:none; }
+          .lt-home-navlinks::-webkit-scrollbar { display:none; }
+          .lt-home-navlink { white-space:nowrap; }
+          .lt-home-overview-grid { grid-template-columns:1fr !important; }
+        }
+        @media (max-width: 560px) {
+          .lt-home-login { padding:9px 12px !important; font-size:12px !important; }
+        }
+      `}</style>
+      <header className="lt-home-header" style={styles.nav}>
+        <button onClick={() => scrollToSection('top')} style={styles.brandButton} aria-label="Go to top">
           <img src={logo192} alt="LoyaltyTree" style={styles.logo} />
           <span style={styles.brandName}>LoyaltyTree</span>
-        </div>
-        <button onClick={goToLogin} style={styles.navBtn}>Business Login</button>
+        </button>
+
+        <nav className="lt-home-navlinks" aria-label="Homepage navigation">
+          <button className="lt-home-navlink" onClick={() => scrollToSection('how-it-works')} style={styles.navLink}>How It Works</button>
+          <button className="lt-home-navlink" onClick={() => scrollToSection('overview')} style={styles.navLink}>Overview</button>
+          <button className="lt-home-navlink" onClick={() => scrollToSection('businesses')} style={styles.navLink}>Businesses</button>
+          <button className="lt-home-navlink" onClick={() => scrollToSection('customers')} style={styles.navLink}>Customers</button>
+          <button className="lt-home-navlink" onClick={() => scrollToSection('about')} style={styles.navLink}>About Us</button>
+          <button className="lt-home-navlink" onClick={() => scrollToSection('contact')} style={styles.navLink}>Contact</button>
+        </nav>
+
+        <button className="lt-home-login" onClick={goToLogin} style={styles.navBtn}>Business Login</button>
       </header>
 
-      <section style={styles.hero}>
+      <section id="top" style={styles.hero}>
         <div style={styles.heroInner}>
           <h1 style={styles.h1}>Marketing Just Got Smarter. Loyalty Just Got Automated.</h1>
           <p style={styles.heroSub}>
@@ -452,6 +508,47 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
             </div>
             <div style={styles.heroCardFoot}>5 of 8 stamps &middot; 3 to go</div>
           </div>
+        </div>
+      </section>
+
+      <section id="how-it-works" style={styles.topHowSection}>
+        <span style={styles.navSectionEyebrow}>Simple from day one</span>
+        <h2 style={styles.h2Compact}>How LoyaltyTree works</h2>
+        <p style={styles.topSectionIntro}>
+          Your customer joins once, keeps the card in their phone, and your team handles the rest from the LoyaltyTree dashboard.
+        </p>
+        <div style={styles.topStepsGrid}>
+          {STEPS.map(s => (
+            <div key={s.n} style={styles.topStepCard}>
+              <div style={styles.topStepNumber}>{s.n}</div>
+              <h3 style={styles.featureTitle}>{s.title}</h3>
+              <p style={styles.featureBody}>{s.body}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section style={styles.platformSection}>
+        <div className="lt-home-overview-grid">
+          {PLATFORM_OVERVIEW.map(item => (
+            <article id={item.key} key={item.key} style={styles.platformCard}>
+              <div style={styles.platformIcon}>{item.icon}</div>
+              <div>
+                <h2 style={styles.platformTitle}>{item.title}</h2>
+                <p style={styles.platformBody}>{item.body}</p>
+                <button
+                  onClick={() => scrollToSection(
+                    item.key === 'overview' ? 'why-digital' :
+                    item.key === 'businesses' ? 'business-tools' :
+                    'customer-tools'
+                  )}
+                  style={styles.platformLearnBtn}
+                >
+                  Learn more →
+                </button>
+              </div>
+            </article>
+          ))}
         </div>
       </section>
 
@@ -493,7 +590,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         </div>
       </section>
 
-      <section style={{ ...styles.section, paddingTop: 0 }}>
+      <section id="why-digital" style={{ ...styles.section, paddingTop: 0 }}>
         <h2 style={styles.h2}>Why a digital loyalty card wins</h2>
         <p style={styles.comparisonIntro}>
           A loyalty program only works if customers actually keep coming back to use it.
@@ -533,7 +630,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         </div>
       </section>
 
-      <section style={styles.section}>
+      <section id="customer-tools" style={styles.section}>
         <h2 style={styles.h2}>What your customers get</h2>
         <div style={styles.featureGrid}>
           {FEATURES.map(f => (
@@ -546,65 +643,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         </div>
       </section>
 
-
-
-      <section style={styles.dashboardSection}>
-        <div style={styles.dashboardHeader}>
-          <span style={styles.partnerEyebrow}>Everything in one place</span>
-          <h2 style={{...styles.h2, marginBottom: 12}}>Run your loyalty program from one dashboard.</h2>
-          <p style={styles.dashboardIntro}>Manage customers, staff, rewards, branches, wallet cards and marketing without juggling multiple systems.</p>
-        </div>
-
-        <div className="lt-dashboard-showcase" style={styles.dashboardShowcase}>
-          <div style={styles.dashboardMock}>
-            <div style={styles.dashboardMockTop}>
-              <div>
-                <div style={styles.dashboardMockLabel}>LoyaltyTree Dashboard</div>
-                <div style={styles.dashboardMockTitle}>Business Overview</div>
-              </div>
-              <span style={styles.dashboardLiveBadge}>● Live</span>
-            </div>
-            <div style={styles.dashboardStats}>
-              {[['Customers','1,248'],['Visits','3,906'],['Rewards','286']].map(([label,value]) => (
-                <div key={label} style={styles.dashboardStat}>
-                  <div style={styles.dashboardStatLabel}>{label}</div>
-                  <div style={styles.dashboardStatValue}>{value}</div>
-                </div>
-              ))}
-            </div>
-            <div style={styles.dashboardChart}>
-              <div style={styles.dashboardChartHead}><strong>Customer activity</strong><span>Last 30 days</span></div>
-              <div style={styles.dashboardBars}>
-                {[42,58,46,72,63,86,78,94,69,88,96,82].map((h,i) => <span key={i} style={{...styles.dashboardBar,height:`${h}%`}} />)}
-              </div>
-            </div>
-            <div style={styles.dashboardMockBottom}>
-              <span>Recent activity</span><span style={{color:'#0d9488',fontWeight:700}}>View all →</span>
-            </div>
-          </div>
-
-          <div style={styles.dashboardFeatureList}>
-            {[
-              ['👥','Customer management','View customers, cards, activity, rewards and loyalty progress.'],
-              ['📊','Analytics','Track visits, redemptions, repeat customers and program performance.'],
-              ['🔑','Team & cashiers','Manage staff access and individual cashier PINs from one place.'],
-              ['🏪','Branch management','Keep multiple locations organized under the same business account.'],
-              ['📣','Marketing tools','Send announcements, greetings, review prompts and win-back messages.'],
-              ['💳','Wallet & rewards','Manage digital cards, rewards and customer wallet experiences.'],
-            ].map(([icon,title,body]) => (
-              <div key={title} style={styles.dashboardFeature}>
-                <div style={styles.dashboardFeatureIcon}>{icon}</div>
-                <div><div style={styles.dashboardFeatureTitle}>{title}</div><div style={styles.dashboardFeatureBody}>{body}</div></div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
       <style>{`
-        @media (max-width: 760px) {
-          .lt-dashboard-showcase { grid-template-columns: 1fr !important; }
-        }
         @media (max-width: 980px) {
           .lt-card-available { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
           .lt-card-coming { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
@@ -613,7 +652,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
           .lt-card-available, .lt-card-coming { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
         }
       `}</style>
-      <section style={{...styles.section,background:'#f8fafc'}}>
+      <section id="business-tools" style={{...styles.section,background:'#f8fafc'}}>
         <div style={styles.industryHeader}>
           <span style={styles.partnerEyebrow}>Built for everyday businesses</span>
           <h2 style={styles.h2}>Choose your industry. LoyaltyTree adapts.</h2>
@@ -739,20 +778,30 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
       )}
 
 
-      <section style={{ ...styles.section, background: '#f0fdf4' }}>
-        <h2 style={styles.h2}>How it works</h2>
-        <div style={styles.stepsRow}>
-          {STEPS.map(s => (
-            <div key={s.n} style={styles.step}>
-              <div style={styles.stepNumber}>{s.n}</div>
-              <h3 style={styles.featureTitle}>{s.title}</h3>
-              <p style={styles.featureBody}>{s.body}</p>
+      <section id="about" style={styles.aboutSection}>
+        <div style={styles.aboutGrid}>
+          <div style={styles.aboutCard}>
+            <span style={styles.navSectionEyebrow}>About LoyaltyTree</span>
+            <h2 style={styles.aboutTitle}>Built to make loyalty easier for local businesses.</h2>
+            <p style={styles.aboutBody}>
+              LoyaltyTree brings digital loyalty cards, customer retention, wallet updates, cashier tools, and business insights into one system.
+              Our goal is to help businesses build stronger repeat-customer relationships without relying on disposable paper or plastic cards.
+            </p>
+          </div>
+
+          <div id="contact" style={styles.contactCard}>
+            <span style={styles.navSectionEyebrow}>Contact Us</span>
+            <h2 style={styles.aboutTitle}>Questions, support, or partnership inquiries?</h2>
+            <p style={styles.aboutBody}>
+              Reach out to the LoyaltyTree team and we’ll help you understand the platform, business setup, partner opportunities, or your account.
+            </p>
+            <div style={styles.contactActions}>
+              <button onClick={openContact} style={styles.contactPrimary}>💬 Message LoyaltyTree</button>
+              <button onClick={goToLogin} style={styles.contactSecondary}>Business Login</button>
             </div>
-          ))}
+          </div>
         </div>
       </section>
-
-
 
       <section style={styles.ctaSection}>
         <h2 style={{ ...styles.h2, color: 'white' }}>Ready to grow your regulars?</h2>
@@ -859,11 +908,57 @@ const styles = {
     position: 'sticky', top: 0, zIndex: 10, borderBottom: '1px solid rgba(13,148,136,0.1)',
   },
   brand: { display: 'flex', alignItems: 'center', gap: 10 },
+  brandButton: {
+    display: 'flex', alignItems: 'center', gap: 10, border: 'none', background: 'transparent',
+    padding: 0, cursor: 'pointer', flexShrink: 0,
+  },
   logo: { width: 32, height: 32, borderRadius: '50%', display: 'block' },
   brandName: { fontWeight: 700, fontSize: 18, color: '#0f766e' },
   navBtn: {
     padding: '10px 20px', background: '#0d9488', color: 'white', border: 'none',
     borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: 'pointer',
+  },
+  navLink: {
+    border: 'none', background: 'transparent', color: '#334155', borderRadius: 9,
+    padding: '9px 10px', fontSize: 13, fontWeight: 650, cursor: 'pointer',
+  },
+  topHowSection: {
+    padding: '58px 32px 34px', maxWidth: 1100, margin: '0 auto', textAlign: 'center',
+  },
+  navSectionEyebrow: {
+    display: 'inline-block', fontSize: 11, fontWeight: 800, letterSpacing: '0.08em',
+    textTransform: 'uppercase', color: '#0f766e', marginBottom: 9,
+  },
+  h2Compact: { fontSize: 30, lineHeight: 1.2, fontWeight: 800, margin: '0 0 12px', color: '#0f172a' },
+  topSectionIntro: {
+    maxWidth: 690, margin: '0 auto 28px', color: '#64748b', fontSize: 14.5, lineHeight: 1.65,
+  },
+  topStepsGrid: {
+    display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: 14,
+  },
+  topStepCard: {
+    textAlign: 'left', background: '#fff', border: '1px solid #e2e8f0', borderRadius: 16,
+    padding: 20, boxShadow: '0 8px 24px rgba(15,23,42,0.04)',
+  },
+  topStepNumber: {
+    width: 34, height: 34, borderRadius: '50%', display: 'flex', alignItems: 'center',
+    justifyContent: 'center', background: '#d1fae5', color: '#047857', fontWeight: 850,
+    marginBottom: 12,
+  },
+  platformSection: { padding: '18px 32px 58px', maxWidth: 1100, margin: '0 auto' },
+  platformCard: {
+    display: 'flex', gap: 15, alignItems: 'flex-start', background: '#fff',
+    border: '1px solid #e2e8f0', borderRadius: 16, padding: 20,
+  },
+  platformIcon: {
+    width: 48, height: 48, borderRadius: 14, background: '#ecfdf5',
+    display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, flexShrink: 0,
+  },
+  platformTitle: { fontSize: 17, fontWeight: 800, margin: '0 0 6px', color: '#0f172a' },
+  platformBody: { fontSize: 13.5, lineHeight: 1.55, color: '#64748b', margin: '0 0 10px' },
+  platformLearnBtn: {
+    border: 'none', background: 'transparent', color: '#0f766e', padding: 0,
+    fontSize: 12.5, fontWeight: 800, cursor: 'pointer',
   },
   hero: {
     display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 40,
@@ -913,33 +1008,7 @@ const styles = {
   industryIcon:{fontSize:28,marginBottom:10},industryTitle:{fontSize:15,fontWeight:800,color:'#0f172a'},
   industryBody:{fontSize:12.5,lineHeight:1.5,color:'#64748b',minHeight:56},industryCards:{fontSize:11,fontWeight:800,color:'#0d9488'},
 
-
-  // Business dashboard showcase
-  dashboardSection: { padding: '72px 32px', maxWidth: 1100, margin: '0 auto', background: '#f0fdfa' },
-  dashboardHeader: { maxWidth: 720, margin: '0 auto 38px', textAlign: 'center' },
-  dashboardIntro: { fontSize: 15, lineHeight: 1.7, color: '#64748b', maxWidth: 650, margin: '0 auto' },
-  dashboardShowcase: { display: 'grid', gridTemplateColumns: 'minmax(0,1.2fr) minmax(300px,.8fr)', gap: 24, alignItems: 'stretch' },
-  dashboardMock: { background: '#fff', border: '1px solid #dbe5e4', borderRadius: 20, padding: 22, boxShadow: '0 16px 40px rgba(15,23,42,.08)', minHeight: 430 },
-  dashboardMockTop: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingBottom: 18, borderBottom: '1px solid #f1f5f9' },
-  dashboardMockLabel: { fontSize: 11, fontWeight: 800, color: '#0d9488', textTransform: 'uppercase', letterSpacing: '.08em' },
-  dashboardMockTitle: { fontSize: 21, fontWeight: 850, color: '#0f172a', marginTop: 4 },
-  dashboardLiveBadge: { fontSize: 11, fontWeight: 800, color: '#0f766e', background: '#ccfbf1', borderRadius: 999, padding: '6px 10px' },
-  dashboardStats: { display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, margin: '18px 0' },
-  dashboardStat: { background: '#f8fafc', border: '1px solid #eef2f7', borderRadius: 13, padding: '14px 12px' },
-  dashboardStatLabel: { fontSize: 11, color: '#64748b', fontWeight: 650 },
-  dashboardStatValue: { fontSize: 23, color: '#0f172a', fontWeight: 850, marginTop: 4 },
-  dashboardChart: { height: 210, background: '#f8fafc', border: '1px solid #eef2f7', borderRadius: 14, padding: '16px 16px 12px' },
-  dashboardChartHead: { display: 'flex', justifyContent: 'space-between', color: '#475569', fontSize: 11.5 },
-  dashboardBars: { height: 145, display: 'flex', alignItems: 'flex-end', gap: 7, marginTop: 16 },
-  dashboardBar: { flex: 1, minWidth: 5, background: '#0d9488', borderRadius: '5px 5px 2px 2px', opacity: .82 },
-  dashboardMockBottom: { display: 'flex', justifyContent: 'space-between', paddingTop: 16, fontSize: 12, color: '#64748b' },
-  dashboardFeatureList: { display: 'grid', gap: 10 },
-  dashboardFeature: { display: 'flex', gap: 13, alignItems: 'flex-start', background: '#fff', border: '1px solid #dbe5e4', borderRadius: 15, padding: '15px 16px', boxShadow: '0 5px 15px rgba(15,23,42,.035)' },
-  dashboardFeatureIcon: { width: 38, height: 38, flexShrink: 0, borderRadius: 11, background: '#ccfbf1', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 19 },
-  dashboardFeatureTitle: { fontSize: 13.5, fontWeight: 800, color: '#0f172a', marginBottom: 3 },
-  dashboardFeatureBody: { fontSize: 11.5, lineHeight: 1.5, color: '#64748b' },
-
-    // Marketing / Retention / Zero Waste pillars
+  // Marketing / Retention / Zero Waste pillars
   pillarSection: {
     padding: '0 32px 64px', maxWidth: 1100, margin: '0 auto',
   },
@@ -1007,6 +1076,31 @@ const styles = {
     width: 40, height: 40, borderRadius: '50%', background: '#0d9488', color: 'white',
     display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700,
     margin: '0 auto 16px', fontSize: 16,
+  },
+  aboutSection: {
+    padding: '68px 32px', maxWidth: 1100, margin: '0 auto',
+  },
+  aboutGrid: {
+    display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(290px,1fr))', gap: 18,
+  },
+  aboutCard: {
+    borderRadius: 18, padding: 28, background: 'linear-gradient(135deg,#f0fdf4,#ecfdf5)',
+    border: '1px solid #bbf7d0',
+  },
+  contactCard: {
+    borderRadius: 18, padding: 28, background: 'linear-gradient(135deg,#fffbeb,#fff7ed)',
+    border: '1px solid #fde68a',
+  },
+  aboutTitle: { fontSize: 23, lineHeight: 1.25, fontWeight: 800, color: '#0f172a', margin: '0 0 12px' },
+  aboutBody: { fontSize: 14, lineHeight: 1.7, color: '#475569', margin: 0 },
+  contactActions: { display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 20 },
+  contactPrimary: {
+    border: 'none', borderRadius: 11, background: '#0d9488', color: 'white',
+    padding: '11px 16px', fontWeight: 800, cursor: 'pointer',
+  },
+  contactSecondary: {
+    border: '1px solid #0d9488', borderRadius: 11, background: 'white', color: '#0f766e',
+    padding: '11px 16px', fontWeight: 800, cursor: 'pointer',
   },
   ctaSection: {
     textAlign: 'center', padding: '72px 32px',
