@@ -192,7 +192,7 @@ function PublicInfoPage({ type='overview' }) {
       </section>
 
       {type==='customers' && <section style={s.customerJourneySection}>
-        <div className="customer-desktop-grid" style={s.customerJourneyGrid}>
+        <div className="customer-desktop-grid">
           {customerSteps.map(step => (
             <article style={s.customerJourneyCard} key={step.number}>
               <div style={s.customerJourneyHead}>
@@ -359,7 +359,7 @@ const s={
     boxShadow:'0 10px 30px rgba(15,23,42,.06)',display:'flex',alignItems:'center',justifyContent:'center',
   },
   customerEqualImage:{
-    width:'100%',height:'100%',objectFit:'contain',objectPosition:'center',display:'block',background:'#f8fafc',
+    width:'100%',height:'100%',objectFit:'cover',objectPosition:'center',display:'block',
   },
   customerSliderCard:{
     maxWidth:720,margin:'0 auto',background:'#fff',border:'1px solid #e2e8f0',borderRadius:20,
@@ -374,7 +374,7 @@ const s={
     height:'clamp(360px,62vh,560px)',border:'1px solid #e2e8f0',borderRadius:18,overflow:'hidden',
     background:'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center',
   },
-  customerSliderImage:{width:'100%',height:'100%',objectFit:'contain',objectPosition:'center',display:'block'},
+  customerSliderImage:{width:'100%',height:'100%',objectFit:'cover',objectPosition:'center',display:'block'},
   customerDots:{display:'flex',justifyContent:'center',gap:8,marginTop:18},
   customerDot:{width:8,height:8,borderRadius:'50%',border:0,background:'#cbd5e1',padding:0,cursor:'pointer'},
   customerDotActive:{width:24,borderRadius:999,background:'#0d9488'},
