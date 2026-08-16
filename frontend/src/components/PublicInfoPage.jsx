@@ -114,6 +114,7 @@ function PublicInfoPage({ type='overview' }) {
   const [businessStep, setBusinessStep] = useState(0)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [pricingBranchTier, setPricingBranchTier] = useState('1')
+  const [pricingStep, setPricingStep] = useState(0)
 
   useEffect(() => {
     setCustomerStep(0)
@@ -365,6 +366,7 @@ function PublicInfoPage({ type='overview' }) {
       .customer-mobile-slider { display:none; }
       .business-visual-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; align-items:stretch; }
       .business-mobile-slider { display:none; }
+      .pricing-mobile-slider { display:none; }
       .overview-flow-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; }
       @media(min-width:1101px){
         .pricing-core-grid {
@@ -478,7 +480,9 @@ function PublicInfoPage({ type='overview' }) {
           max-width:340px;
           scroll-snap-align:center;
         }
-        .pricing-grid { grid-template-columns:1fr !important; }
+        .pricing-core-grid,
+        .pricing-specialized-wrap { display:none !important; }
+        .pricing-mobile-slider { display:block !important; }
         .pricing-specialized-content { grid-template-columns:1fr !important; gap:18px !important; }
       }
       @media(min-width:761px){
@@ -863,6 +867,58 @@ function PublicInfoPage({ type='overview' }) {
             ))}
           </div>
 
+          <div className="pricing-mobile-slider">
+            {(() => {
+              const plan = pricingPlans[pricingStep]
+              const specialized = plan.key === 'specialized'
+              return <article style={specialized ? s.pricingMobileSpecializedCard : {...s.pricingMobileCard,...(plan.highlight?s.pricingCardHighlight:{})}}>
+                <div style={s.pricingMobileTop}>
+                  <div style={specialized ? s.pricingSpecializedEyebrow : s.pricingMobileStepLabel}>
+                    {specialized ? 'CUSTOM SOLUTION' : `PLAN ${pricingStep + 1} OF ${pricingPlans.length}`}
+                  </div>
+                  {plan.highlight && <div style={s.pricingPopular}>MOST POPULAR</div>}
+                  {plan.comingSoon && <div style={s.pricingComingSoon}>COMING SOON</div>}
+                  <h3 style={specialized?s.pricingSpecializedTitle:s.pricingPlanName}>{plan.name}</h3>
+                  <p style={specialized?s.pricingSpecializedTagline:s.pricingTagline}>{plan.tagline}</p>
+                  {!specialized && plan.prices && <div style={s.pricingPriceWrap}>
+                    <span style={s.pricingCurrency}>₱</span>
+                    <span style={s.pricingPrice}>{plan.prices[pricingBranchTier].toLocaleString()}</span>
+                    <span style={s.pricingUnit}>/mo</span>
+                  </div>}
+                  {specialized && <>
+                    <div style={s.pricingSpecializedBenefits}>{plan.benefits?.map(x=><span key={x} style={s.pricingSpecializedBenefit}>{x}</span>)}</div>
+                    <div style={{...s.pricingDiscuss,color:'#99f6e4'}}>Pricing upon discussion</div>
+                  </>}
+                </div>
+
+                <div style={specialized?s.pricingMobileSpecializedFeatures:s.pricingFeatureList}>
+                  {(specialized?plan.features.slice(0,8):plan.features).map(feature=>
+                    <div key={feature} style={specialized?s.pricingSpecializedFeature:s.pricingFeatureItem}>
+                      <span style={s.pricingCheck}>✓</span><span>{feature}</span>
+                    </div>
+                  )}
+                </div>
+
+                <button onClick={()=>navigate('/contact')} style={specialized||plan.highlight?s.pricingPrimaryBtn:s.pricingSecondaryBtn}>
+                  {specialized?'Discuss Your System':(plan.comingSoon?'Ask About Pro':'Get Started')}
+                </button>
+
+                <div style={s.pricingMobileDots}>
+                  {pricingPlans.map((item,index)=><button key={item.key} onClick={()=>setPricingStep(index)}
+                    aria-label={`Go to ${item.name}`}
+                    style={{...s.customerDot,...(pricingStep===index?s.customerDotActive:{})}} />)}
+                </div>
+                <div style={s.pricingMobileControls}>
+                  <button onClick={()=>setPricingStep(Math.max(0,pricingStep-1))} disabled={pricingStep===0}
+                    style={{...s.customerArrowBtn,...(pricingStep===0?s.customerArrowDisabled:{})}}>← Previous</button>
+                  <button onClick={()=>setPricingStep(Math.min(pricingPlans.length-1,pricingStep+1))}
+                    disabled={pricingStep===pricingPlans.length-1}
+                    style={{...s.customerArrowBtnPrimary,...(pricingStep===pricingPlans.length-1?s.customerArrowDisabled:{})}}>Next →</button>
+                </div>
+              </article>
+            })()}
+          </div>
+
           <p style={s.pricingNote}>
             Need more than 5 branches or a custom deployment? Contact LoyaltyTree and we can discuss a specialized setup for your business.
           </p>
@@ -1046,6 +1102,13 @@ const s={
   pricingPrimaryBtn:{width:'100%',border:0,background:'#0d9488',color:'#fff',padding:'11px 12px',borderRadius:10,fontWeight:850,cursor:'pointer'},
   pricingSecondaryBtn:{width:'100%',border:'1px solid #0d9488',background:'#fff',color:'#0f766e',padding:'10px 12px',borderRadius:10,fontWeight:850,cursor:'pointer'},
   pricingNote:{textAlign:'center',maxWidth:720,margin:'20px auto 0',fontSize:12.5,lineHeight:1.6,color:'#64748b'},
+  pricingMobileCard:{background:'#fff',border:'1px solid #e2e8f0',borderRadius:20,padding:20,boxShadow:'0 12px 30px rgba(15,23,42,.06)'},
+  pricingMobileSpecializedCard:{background:'linear-gradient(135deg,#0f172a,#134e4a)',color:'#fff',borderRadius:20,padding:20,boxShadow:'0 16px 34px rgba(15,23,42,.14)'},
+  pricingMobileTop:{marginBottom:16},
+  pricingMobileStepLabel:{fontSize:9.5,fontWeight:900,letterSpacing:1,color:'#0f766e',marginBottom:8},
+  pricingMobileSpecializedFeatures:{display:'grid',gap:9,margin:'16px 0 18px'},
+  pricingMobileDots:{display:'flex',justifyContent:'center',gap:7,margin:'20px 0 14px'},
+  pricingMobileControls:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10},
   customerJourneySection:{maxWidth:1320,margin:'0 auto',padding:'52px 22px 24px'},
   customerJourneyIntro:{
     display:'flex',justifyContent:'space-between',gap:24,alignItems:'flex-end',
