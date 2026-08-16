@@ -451,6 +451,10 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
     window.open('https://m.me/theloyaltytree', '_blank', 'noopener,noreferrer')
   }
 
+  const goPublicPage = (path) => {
+    window.location.assign(path)
+  }
+
   return (
     <div style={styles.page}>
       <style>{`
@@ -491,22 +495,22 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
           <details className="lt-how-menu">
             <summary className="lt-home-navlink lt-how-summary" style={styles.navLink}>How It Works <span style={{fontSize:10}}>▾</span></summary>
             <div className="lt-how-dropdown">
-              <button onClick={() => navigate('/how-it-works')} style={styles.dropdownItem}>
+              <button onClick={() => goPublicPage('/how-it-works')} style={styles.dropdownItem}>
                 <span style={styles.dropdownIcon}>📊</span>
                 <span><b>Overview</b><small style={styles.dropdownSmall}>See the complete LoyaltyTree flow</small></span>
               </button>
-              <button onClick={() => navigate('/how-it-works/businesses')} style={styles.dropdownItem}>
+              <button onClick={() => goPublicPage('/how-it-works/businesses')} style={styles.dropdownItem}>
                 <span style={styles.dropdownIcon}>🏪</span>
                 <span><b>For Businesses</b><small style={styles.dropdownSmall}>Card setup, cashier, analytics and retention</small></span>
               </button>
-              <button onClick={() => navigate('/how-it-works/customers')} style={styles.dropdownItem}>
+              <button onClick={() => goPublicPage('/how-it-works/customers')} style={styles.dropdownItem}>
                 <span style={styles.dropdownIcon}>👥</span>
                 <span><b>For Customers</b><small style={styles.dropdownSmall}>Join, Wallet card, rewards and updates</small></span>
               </button>
             </div>
           </details>
-          <button className="lt-home-navlink" onClick={() => navigate('/about')} style={styles.navLink}>About Us</button>
-          <button className="lt-home-navlink" onClick={() => navigate('/contact')} style={styles.navLink}>Contact Us</button>
+          <button className="lt-home-navlink" onClick={() => goPublicPage('/about')} style={styles.navLink}>About Us</button>
+          <button className="lt-home-navlink" onClick={() => goPublicPage('/contact')} style={styles.navLink}>Contact Us</button>
         </nav>
 
         <button className="lt-home-login" onClick={goToLogin} style={styles.navBtn}>Business Login</button>
@@ -523,7 +527,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
           </p>
           <div className="lt-home-hero-actions" style={styles.heroActions}>
             <button onClick={goToLogin} style={styles.heroBtn}>Get Started for Your Business</button>
-            <button onClick={() => navigate('/how-it-works')} style={styles.heroSecondaryBtn}>See How It Works →</button>
+            <button onClick={() => goPublicPage('/how-it-works')} style={styles.heroSecondaryBtn}>See How It Works →</button>
           </div>
           <div style={styles.heroTrustRow}>
             <span>✓ No customer app</span>
@@ -602,17 +606,40 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
       <section style={styles.platformSection}>
         <div className="lt-home-overview-grid">
           {PLATFORM_OVERVIEW.map(item => (
-            <article id={item.key} key={item.key} style={styles.platformCard}>
+            <article
+              id={item.key}
+              key={item.key}
+              style={{...styles.platformCard, cursor:'pointer'}}
+              onClick={() => goPublicPage(
+                item.key === 'overview' ? '/how-it-works' :
+                item.key === 'businesses' ? '/how-it-works/businesses' :
+                '/how-it-works/customers'
+              )}
+              role="link"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  goPublicPage(
+                    item.key === 'overview' ? '/how-it-works' :
+                    item.key === 'businesses' ? '/how-it-works/businesses' :
+                    '/how-it-works/customers'
+                  )
+                }
+              }}
+            >
               <div style={styles.platformIcon}>{item.icon}</div>
               <div>
                 <h2 style={styles.platformTitle}>{item.title}</h2>
                 <p style={styles.platformBody}>{item.body}</p>
                 <button
-                  onClick={() => scrollToSection(
-                    item.key === 'overview' ? 'why-digital' :
-                    item.key === 'businesses' ? 'business-tools' :
-                    'customer-tools'
-                  )}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    goPublicPage(
+                      item.key === 'overview' ? '/how-it-works' :
+                      item.key === 'businesses' ? '/how-it-works/businesses' :
+                      '/how-it-works/customers'
+                    )
+                  }}
                   style={styles.platformLearnBtn}
                 >
                   Learn more →
@@ -875,7 +902,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
             </div>
             <div style={styles.contactActions}>
               <button onClick={openContact} style={styles.contactPrimary}>💬 Message LoyaltyTree</button>
-              <button onClick={() => navigate('/contact')} style={styles.contactSecondary}>Contact Us</button>
+              <button onClick={() => goPublicPage('/contact')} style={styles.contactSecondary}>Contact Us</button>
             </div>
           </div>
         </div>
