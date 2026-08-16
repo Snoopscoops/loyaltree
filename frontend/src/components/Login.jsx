@@ -31,6 +31,7 @@ function LoginPage({ API_BASE, onLogin }) {
         onLogin(data)
         if (data.role === 'owner') navigate('/dashboard')
         else if (data.role === 'super_admin') navigate('/admin')
+        else if (data.role === 'partner') navigate('/partner')
         else if (data.role === 'agent') {
           window.location.assign(data.redirect_url || `${API_BASE}/agent/${data.business_slug}`)
         } else navigate('/scanner')
