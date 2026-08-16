@@ -1,11 +1,11 @@
 import React from 'react'
 import { useNavigate } from 'react-router-dom'
 import logo192 from './logo-192.png'
-import customerStep1Scan from './assets/customer-step-1-scan.png'
-import customerStep2Form from './assets/customer-step-2-form.png'
-import customerStep2WalletButtons from './assets/customer-step-2-wallet-buttons.png'
-import customerStep3WalletCard from './assets/customer-step-3-wallet-card.png'
-import customerStep4Notification from './assets/customer-step-4-notification.png'
+import customerStep1Scan from '../assets/customer-step-1-scan.png'
+import customerStep2Form from '../assets/customer-step-2-form.png'
+import customerStep2WalletButtons from '../assets/customer-step-2-wallet-buttons.png'
+import customerStep3WalletCard from '../assets/customer-step-3-wallet-card.png'
+import customerStep4Notification from '../assets/customer-step-4-notification.png'
 
 const PAGE_CONTENT = {
   overview: {
