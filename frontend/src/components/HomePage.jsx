@@ -470,6 +470,8 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         }
         .lt-how-menu:not([open]) .lt-how-dropdown { display:none; }
         .lt-home-overview-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; }
+        .lt-brand-pillars { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:0 0 22px; max-width:560px; }
+        .lt-brand-pillar { min-width:0; }
         @media (max-width: 900px) {
           .lt-home-header { align-items:center !important; flex-wrap:wrap !important; padding:12px 16px !important; }
           .lt-home-navlinks { order:3; width:100%; margin-left:0 !important; justify-content:flex-start; flex-wrap:nowrap; overflow-x:auto; padding:8px 0 0; scrollbar-width:none; border-top:1px solid #f1f5f9; }
@@ -480,6 +482,10 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         }
         @media (max-width: 700px) {
           .lt-home-hero-actions { width:100%; }
+          .lt-brand-pillars { gap:7px; margin-bottom:18px; }
+          .lt-brand-pillar { padding:12px 8px !important; }
+          .lt-brand-pillar-word { font-size:13px !important; }
+          .lt-brand-pillar-copy { font-size:10px !important; }
         }
         @media (max-width: 560px) {
           .lt-home-login { padding:9px 12px !important; font-size:12px !important; }
@@ -520,11 +526,29 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
       <section id="top" style={styles.hero}>
         <div style={styles.heroInner}>
           <div style={styles.heroEyebrow}>🌱 DIGITAL LOYALTY FOR SERVICE BUSINESSES</div>
-          <h1 style={styles.h1}>Turn every customer visit into a stronger relationship.</h1>
+
+          <div className="lt-brand-pillars" aria-label="Digitalize, Secure, Connect">
+            <div className="lt-brand-pillar" style={styles.brandPillar}>
+              <span style={styles.brandPillarIcon}>01</span>
+              <strong className="lt-brand-pillar-word" style={styles.brandPillarWord}>DIGITALIZE</strong>
+              <span className="lt-brand-pillar-copy" style={styles.brandPillarCopy}>Modernize loyalty</span>
+            </div>
+            <div className="lt-brand-pillar" style={styles.brandPillar}>
+              <span style={styles.brandPillarIcon}>02</span>
+              <strong className="lt-brand-pillar-word" style={styles.brandPillarWord}>SECURE</strong>
+              <span className="lt-brand-pillar-copy" style={styles.brandPillarCopy}>Protect every interaction</span>
+            </div>
+            <div className="lt-brand-pillar" style={styles.brandPillar}>
+              <span style={styles.brandPillarIcon}>03</span>
+              <strong className="lt-brand-pillar-word" style={styles.brandPillarWord}>CONNECT</strong>
+              <span className="lt-brand-pillar-copy" style={styles.brandPillarCopy}>Build lasting relationships</span>
+            </div>
+          </div>
+
+          <h1 style={styles.h1}>Modernize the way you build customer relationships.</h1>
           <p style={styles.heroSub}>
-            LoyaltyTree helps service-industry businesses connect with customers beyond the checkout —
-            with digital loyalty cards, automated rewards, wallet notifications, birthday greetings,
-            announcements, and customer insights in one simple system.
+            LoyaltyTree helps service businesses digitalize customer loyalty, keep every interaction
+            organized and secure, and stay connected with customers beyond every visit.
           </p>
           <div className="lt-home-hero-actions" style={styles.heroActions}>
             <button onClick={goToLogin} style={styles.heroBtn}>Get Started for Your Business</button>
@@ -600,53 +624,6 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
               <h3 style={styles.featureTitle}>{s.title}</h3>
               <p style={styles.featureBody}>{s.body}</p>
             </div>
-          ))}
-        </div>
-      </section>
-
-      <section style={styles.platformSection}>
-        <div className="lt-home-overview-grid">
-          {PLATFORM_OVERVIEW.map(item => (
-            <article
-              id={item.key}
-              key={item.key}
-              style={{...styles.platformCard, cursor:'pointer'}}
-              onClick={() => goPublicPage(
-                item.key === 'overview' ? '/how-it-works' :
-                item.key === 'businesses' ? '/how-it-works/businesses' :
-                '/how-it-works/customers'
-              )}
-              role="link"
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  goPublicPage(
-                    item.key === 'overview' ? '/how-it-works' :
-                    item.key === 'businesses' ? '/how-it-works/businesses' :
-                    '/how-it-works/customers'
-                  )
-                }
-              }}
-            >
-              <div style={styles.platformIcon}>{item.icon}</div>
-              <div>
-                <h2 style={styles.platformTitle}>{item.title}</h2>
-                <p style={styles.platformBody}>{item.body}</p>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    goPublicPage(
-                      item.key === 'overview' ? '/how-it-works' :
-                      item.key === 'businesses' ? '/how-it-works/businesses' :
-                      '/how-it-works/customers'
-                    )
-                  }}
-                  style={styles.platformLearnBtn}
-                >
-                  Learn more →
-                </button>
-              </div>
-            </article>
           ))}
         </div>
       </section>
@@ -1113,6 +1090,20 @@ const styles = {
     display:'inline-flex', alignItems:'center', padding:'7px 12px', borderRadius:999,
     background:'#ecfdf5', color:'#0f766e', fontSize:11, fontWeight:850,
     letterSpacing:'.07em', marginBottom:18, border:'1px solid #ccfbf1',
+  },
+  brandPillar: {
+    display:'flex', flexDirection:'column', alignItems:'flex-start', justifyContent:'center',
+    padding:'14px 13px', background:'rgba(255,255,255,.78)', border:'1px solid #ccfbf1',
+    borderRadius:14, boxShadow:'0 8px 24px rgba(15,23,42,.035)',
+  },
+  brandPillarIcon: {
+    fontSize:9, fontWeight:900, letterSpacing:'.08em', color:'#0d9488', marginBottom:5,
+  },
+  brandPillarWord: {
+    fontSize:15, lineHeight:1.1, fontWeight:900, letterSpacing:'.035em', color:'#0f172a',
+  },
+  brandPillarCopy: {
+    display:'block', marginTop:5, fontSize:10.5, lineHeight:1.3, color:'#64748b', fontWeight:650,
   },
   h1: { fontSize: 'clamp(40px,5.2vw,64px)', lineHeight: 1.03, letterSpacing:'-0.035em', margin: '0 0 20px', fontWeight: 900, color: '#0f172a' },
   heroSub: { fontSize: 17, lineHeight: 1.72, color: '#475569', margin: '0 0 28px', maxWidth:580 },
