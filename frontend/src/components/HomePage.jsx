@@ -456,12 +456,22 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
       <style>{`
         html { scroll-behavior: smooth; }
         .lt-home-navlinks { display:flex; align-items:center; justify-content:center; gap:6px; flex-wrap:wrap; }
+        .lt-how-menu { position:relative; }
+        .lt-how-summary { list-style:none; cursor:pointer; display:flex; align-items:center; gap:5px; }
+        .lt-how-summary::-webkit-details-marker { display:none; }
+        .lt-how-dropdown {
+          position:absolute; top:calc(100% + 8px); left:0; width:310px; background:white;
+          border:1px solid #e2e8f0; border-radius:14px; padding:8px; box-shadow:0 18px 45px rgba(15,23,42,.14);
+          z-index:100;
+        }
+        .lt-how-menu:not([open]) .lt-how-dropdown { display:none; }
         .lt-home-overview-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; }
         @media (max-width: 900px) {
           .lt-home-header { align-items:flex-start !important; flex-wrap:wrap !important; padding:14px 18px !important; }
           .lt-home-navlinks { order:3; width:100%; justify-content:flex-start; flex-wrap:nowrap; overflow-x:auto; padding:4px 0 2px; scrollbar-width:none; }
           .lt-home-navlinks::-webkit-scrollbar { display:none; }
           .lt-home-navlink { white-space:nowrap; }
+          .lt-how-dropdown { position:fixed !important; left:14px !important; right:14px !important; top:auto !important; width:auto !important; }
           .lt-home-overview-grid { grid-template-columns:1fr !important; }
         }
         @media (max-width: 560px) {
@@ -475,12 +485,25 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         </button>
 
         <nav className="lt-home-navlinks" aria-label="Homepage navigation">
-          <button className="lt-home-navlink" onClick={() => scrollToSection('how-it-works')} style={styles.navLink}>How It Works</button>
-          <button className="lt-home-navlink" onClick={() => scrollToSection('overview')} style={styles.navLink}>Overview</button>
-          <button className="lt-home-navlink" onClick={() => scrollToSection('businesses')} style={styles.navLink}>Businesses</button>
-          <button className="lt-home-navlink" onClick={() => scrollToSection('customers')} style={styles.navLink}>Customers</button>
-          <button className="lt-home-navlink" onClick={() => scrollToSection('about')} style={styles.navLink}>About Us</button>
-          <button className="lt-home-navlink" onClick={() => scrollToSection('contact')} style={styles.navLink}>Contact</button>
+          <details className="lt-how-menu">
+            <summary className="lt-home-navlink lt-how-summary" style={styles.navLink}>How It Works <span style={{fontSize:10}}>▾</span></summary>
+            <div className="lt-how-dropdown">
+              <button onClick={() => navigate('/how-it-works')} style={styles.dropdownItem}>
+                <span style={styles.dropdownIcon}>📊</span>
+                <span><b>Overview</b><small style={styles.dropdownSmall}>See the complete LoyaltyTree flow</small></span>
+              </button>
+              <button onClick={() => navigate('/how-it-works/businesses')} style={styles.dropdownItem}>
+                <span style={styles.dropdownIcon}>🏪</span>
+                <span><b>For Businesses</b><small style={styles.dropdownSmall}>Card setup, cashier, analytics and retention</small></span>
+              </button>
+              <button onClick={() => navigate('/how-it-works/customers')} style={styles.dropdownItem}>
+                <span style={styles.dropdownIcon}>👥</span>
+                <span><b>For Customers</b><small style={styles.dropdownSmall}>Join, Wallet card, rewards and updates</small></span>
+              </button>
+            </div>
+          </details>
+          <button className="lt-home-navlink" onClick={() => navigate('/about')} style={styles.navLink}>About Us</button>
+          <button className="lt-home-navlink" onClick={() => navigate('/contact')} style={styles.navLink}>Contact</button>
         </nav>
 
         <button className="lt-home-login" onClick={goToLogin} style={styles.navBtn}>Business Login</button>
@@ -922,6 +945,16 @@ const styles = {
     border: 'none', background: 'transparent', color: '#334155', borderRadius: 9,
     padding: '9px 10px', fontSize: 13, fontWeight: 650, cursor: 'pointer',
   },
+  dropdownItem: {
+    width: '100%', display: 'flex', gap: 11, alignItems: 'flex-start', textAlign: 'left',
+    border: 'none', background: 'transparent', padding: '11px 10px', borderRadius: 10,
+    color: '#0f172a', cursor: 'pointer', fontSize: 13,
+  },
+  dropdownIcon: {
+    width: 34, height: 34, borderRadius: 10, background: '#ecfdf5', display: 'flex',
+    alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 17,
+  },
+  dropdownSmall: { display: 'block', color: '#64748b', fontSize: 11, fontWeight: 500, marginTop: 3, lineHeight: 1.35 },
   topHowSection: {
     padding: '58px 32px 34px', maxWidth: 1100, margin: '0 auto', textAlign: 'center',
   },

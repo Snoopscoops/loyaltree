@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-
 import Login from './components/Login'
 import Signup from './components/Signup'
 import HomePage from './components/HomePage'
+import PublicInfoPage from './components/PublicInfoPage'
 import OwnerDashboard from './components/OwnerDashboard'
 import CarLendingDashboard from './components/CarLendingDashboard'
 import CockpitDashboard from './components/CockpitDashboard'
@@ -82,6 +83,11 @@ function App() {
             <Navigate to="/login" />
           ) : <HomePage />
         } />
+        <Route path="/how-it-works" element={<PublicInfoPage type="overview" />} />
+        <Route path="/how-it-works/businesses" element={<PublicInfoPage type="businesses" />} />
+        <Route path="/how-it-works/customers" element={<PublicInfoPage type="customers" />} />
+        <Route path="/about" element={<PublicInfoPage type="about" />} />
+        <Route path="/contact" element={<PublicInfoPage type="contact" />} />
         <Route path="/login" element={
           user ? (
             user.role === 'owner' ? <Navigate to="/dashboard" replace /> :
