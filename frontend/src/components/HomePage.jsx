@@ -571,6 +571,8 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
 
         @media (max-width: 560px) {
           .lt-home-brand-name { font-size:17px !important; }
+          .lt-home-cta-actions { display:grid !important; grid-template-columns:1fr !important; width:100%; max-width:360px; margin:0 auto; }
+          .lt-home-cta-actions button { width:100%; min-width:0 !important; }
           .lt-home-login { padding:9px 10px !important; font-size:11.5px !important; border-radius:9px !important; }
           .lt-home-mobile-toggle { width:40px; height:40px; font-size:20px; }
         }
@@ -1015,7 +1017,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
       <section style={styles.ctaSection}>
         <h2 style={{ ...styles.h2, color: 'white' }}>Ready to grow your regulars?</h2>
         <p style={styles.ctaSub}>Apply your business to start using LoyaltyTree, or log in if your business already has an account.</p>
-        <div style={styles.ctaActions}>
+        <div className="lt-home-cta-actions" style={styles.ctaActions}>
           <button onClick={() => navigate('/signup')} style={styles.ctaBtn}>Apply My Business</button>
           <button onClick={goToLogin} style={styles.ctaSecondaryBtn}>Business Login</button>
         </div>
@@ -1406,9 +1408,18 @@ const styles = {
     background: 'linear-gradient(135deg, #0f766e 0%, #0d9488 100%)', color: 'white',
   },
   ctaSub: { fontSize: 15, color: 'rgba(255,255,255,0.85)', margin: '0 0 28px' },
+  ctaActions: {
+    display:'flex', justifyContent:'center', alignItems:'center', gap:12, flexWrap:'wrap',
+  },
   ctaBtn: {
-    padding: '16px 32px', background: 'white', color: '#0f766e', border: 'none',
-    borderRadius: 14, fontSize: 16, fontWeight: 700, cursor: 'pointer',
+    padding: '14px 24px', background: 'white', color: '#0f766e', border: 'none',
+    borderRadius: 12, fontSize: 14, fontWeight: 800, cursor: 'pointer',
+    minWidth: 190,
+  },
+  ctaSecondaryBtn: {
+    padding:'13px 24px', background:'transparent', color:'#fff',
+    border:'1px solid rgba(255,255,255,.72)', borderRadius:12,
+    fontSize:14, fontWeight:800, cursor:'pointer', minWidth:190,
   },
   footer: {
     display: 'flex', justifyContent: 'space-between', alignItems: 'center',
