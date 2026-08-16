@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import logo192 from './logo-192.png'
 import customerStep1Scan from '../assets/customer-step-1-scan.png'
@@ -88,8 +88,48 @@ const PAGE_CONTENT = {
 function PublicInfoPage({ type='overview' }) {
   const navigate = useNavigate()
   const page = PAGE_CONTENT[type] || PAGE_CONTENT.overview
+  const [customerStep, setCustomerStep] = useState(0)
+
+  useEffect(() => {
+    setCustomerStep(0)
+  }, [type])
 
   const openMessenger = () => window.open('https://m.me/theloyaltytree', '_blank', 'noopener,noreferrer')
+
+  const customerSteps = [
+    {
+      number: 1,
+      title: 'Scan the Business QR',
+      body: "Use your phone camera to scan the LoyaltyTree QR at the store or on the business' materials.",
+      images: [{ src: customerStep1Scan, alt: 'Customer scanning a LoyaltyTree business QR code with a phone camera' }],
+    },
+    {
+      number: 2,
+      title: 'Join & Add to Wallet',
+      body: 'Fill up the quick form, then add your card to Google Wallet on Android or Apple Wallet on iPhone.',
+      images: [
+        { src: customerStep2Form, alt: 'LoyaltyTree customer sign-up form' },
+        { src: customerStep2WalletButtons, alt: 'LoyaltyTree customer card ready with Apple Wallet and Google Wallet buttons' },
+      ],
+    },
+    {
+      number: 3,
+      title: 'Your Card is Ready',
+      body: 'Your loyalty card is now available in your Wallet and ready to show whenever you visit.',
+      images: [{ src: customerStep3WalletCard, alt: "LoyaltyTree loyalty card saved in the customer's digital wallet" }],
+    },
+    {
+      number: 4,
+      title: 'Get Notified & Stay Updated',
+      body: 'Receive relevant updates, offers, reminders, and reward notifications from the business.',
+      images: [{ src: customerStep4Notification, alt: "LoyaltyTree business notification shown on a customer's phone" }],
+    },
+  ]
+
+  const goCustomerStep = (index) => {
+    const safeIndex = Math.max(0, Math.min(customerSteps.length - 1, index))
+    setCustomerStep(safeIndex)
+  }
 
   return <div style={s.page}>
     <style>{`
@@ -100,17 +140,17 @@ function PublicInfoPage({ type='overview' }) {
       .public-how summary::-webkit-details-marker { display:none; }
       .public-menu { position:absolute; left:0; top:calc(100% + 8px); width:260px; background:#fff; border:1px solid #e2e8f0; border-radius:13px; padding:7px; box-shadow:0 16px 40px rgba(15,23,42,.14); z-index:20; }
       .public-menu button { width:100%; border:0; background:transparent; text-align:left; padding:10px; border-radius:9px; cursor:pointer; font-weight:700; color:#334155; }
-      .customer-journey-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:16px; align-items:start; }
-      .customer-step-two-images { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+      .customer-desktop-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:16px; align-items:stretch; }
+      .customer-mobile-slider { display:none; }
       @media(max-width:1050px){
-        .customer-journey-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+        .customer-desktop-grid { display:none; }
+        .customer-mobile-slider { display:block; }
       }
       @media(max-width:760px){
         .public-nav { flex-wrap:wrap; }
         .public-links { order:3; width:100%; overflow-x:auto; flex-wrap:nowrap; scrollbar-width:none; }
         .public-links::-webkit-scrollbar { display:none; }
         .public-menu { position:fixed; left:14px; right:14px; width:auto; }
-        .customer-journey-grid { grid-template-columns:1fr; gap:20px; }
       }
     `}</style>
 
@@ -152,49 +192,91 @@ function PublicInfoPage({ type='overview' }) {
       </section>
 
       {type==='customers' && <section style={s.customerJourneySection}>
-        <div className="customer-journey-grid" style={s.customerJourneyGrid}>
-          <article style={s.customerJourneyCard}>
-            <div style={s.customerJourneyHead}>
-              <div style={s.number}>1</div>
-              <div><h2 style={s.stepTitle}>Scan the Business QR</h2><p style={s.body}>Use your phone camera to scan the LoyaltyTree QR at the store or on the business' materials.</p></div>
-            </div>
-            <div style={s.customerImageFrame}>
-              <img src={customerStep1Scan} alt="Customer scanning a LoyaltyTree business QR code with a phone camera" style={s.customerImage}/>
-            </div>
-          </article>
-
-          <article style={s.customerJourneyCard}>
-            <div style={s.customerJourneyHead}>
-              <div style={s.number}>2</div>
-              <div><h2 style={s.stepTitle}>Join & Add to Wallet</h2><p style={s.body}>Fill up the quick form, then add your card to Google Wallet on Android or Apple Wallet on iPhone.</p></div>
-            </div>
-            <div className="customer-step-two-images" style={s.customerStepTwoImages}>
-              <div style={s.customerPhoneFrame}>
-                <img src={customerStep2Form} alt="LoyaltyTree customer sign-up form" style={s.customerImage}/>
+        <div className="customer-desktop-grid" style={s.customerJourneyGrid}>
+          {customerSteps.map(step => (
+            <article style={s.customerJourneyCard} key={step.number}>
+              <div style={s.customerJourneyHead}>
+                <div style={s.number}>{step.number}</div>
+                <div>
+                  <h2 style={s.stepTitle}>{step.title}</h2>
+                  <p style={s.body}>{step.body}</p>
+                </div>
               </div>
-              <div style={s.customerPhoneFrame}>
-                <img src={customerStep2WalletButtons} alt="LoyaltyTree customer card ready with Apple Wallet and Google Wallet buttons" style={s.customerImage}/>
+
+              <div
+                style={{
+                  ...s.customerImageGrid,
+                  gridTemplateColumns: step.images.length === 1 ? '1fr' : 'repeat(2,minmax(0,1fr))',
+                }}
+              >
+                {step.images.map((image, index) => (
+                  <div style={s.customerEqualImageFrame} key={`${step.number}-${index}`}>
+                    <img src={image.src} alt={image.alt} style={s.customerEqualImage}/>
+                  </div>
+                ))}
               </div>
-            </div>
-          </article>
+            </article>
+          ))}
+        </div>
 
-          <article style={s.customerJourneyCard}>
-            <div style={s.customerJourneyHead}>
-              <div style={s.number}>3</div>
-              <div><h2 style={s.stepTitle}>Your Card is Ready</h2><p style={s.body}>Your loyalty card is now available in your Wallet and ready to show whenever you visit.</p></div>
+        <div className="customer-mobile-slider">
+          <article style={s.customerSliderCard}>
+            <div style={s.customerSliderTop}>
+              <div style={s.number}>{customerSteps[customerStep].number}</div>
+              <div style={s.customerSliderCounter}>Step {customerStep + 1} of {customerSteps.length}</div>
             </div>
-            <div style={s.customerImageFrame}>
-              <img src={customerStep3WalletCard} alt="LoyaltyTree loyalty card saved in the customer's digital wallet" style={s.customerImage}/>
-            </div>
-          </article>
 
-          <article style={s.customerJourneyCard}>
-            <div style={s.customerJourneyHead}>
-              <div style={s.number}>4</div>
-              <div><h2 style={s.stepTitle}>Get Notified & Stay Updated</h2><p style={s.body}>Receive relevant updates, offers, reminders, and reward notifications from the business.</p></div>
+            <h2 style={s.customerSliderTitle}>{customerSteps[customerStep].title}</h2>
+            <p style={s.customerSliderBody}>{customerSteps[customerStep].body}</p>
+
+            <div
+              style={{
+                ...s.customerSliderImages,
+                gridTemplateColumns: customerSteps[customerStep].images.length === 1 ? '1fr' : 'repeat(2,minmax(0,1fr))',
+              }}
+            >
+              {customerSteps[customerStep].images.map((image, index) => (
+                <div style={s.customerSliderImageFrame} key={`mobile-${customerStep}-${index}`}>
+                  <img src={image.src} alt={image.alt} style={s.customerSliderImage}/>
+                </div>
+              ))}
             </div>
-            <div style={s.customerImageFrame}>
-              <img src={customerStep4Notification} alt="LoyaltyTree business notification shown on a customer's phone" style={s.customerImage}/>
+
+            <div style={s.customerDots}>
+              {customerSteps.map((step, index) => (
+                <button
+                  key={step.number}
+                  onClick={() => goCustomerStep(index)}
+                  aria-label={`Go to step ${step.number}`}
+                  style={{
+                    ...s.customerDot,
+                    ...(customerStep === index ? s.customerDotActive : {}),
+                  }}
+                />
+              ))}
+            </div>
+
+            <div style={s.customerSliderControls}>
+              <button
+                onClick={() => goCustomerStep(customerStep - 1)}
+                disabled={customerStep === 0}
+                style={{
+                  ...s.customerArrowBtn,
+                  ...(customerStep === 0 ? s.customerArrowDisabled : {}),
+                }}
+              >
+                ← Previous
+              </button>
+              <button
+                onClick={() => goCustomerStep(customerStep + 1)}
+                disabled={customerStep === customerSteps.length - 1}
+                style={{
+                  ...s.customerArrowBtnPrimary,
+                  ...(customerStep === customerSteps.length - 1 ? s.customerArrowDisabled : {}),
+                }}
+              >
+                Next Step →
+              </button>
             </div>
           </article>
         </div>
@@ -267,14 +349,45 @@ const s={
   primary:{border:0,background:'#0d9488',color:'#fff',padding:'12px 17px',borderRadius:11,fontWeight:850,cursor:'pointer'},
   secondary:{border:'1px solid #0d9488',background:'#fff',color:'#0f766e',padding:'11px 16px',borderRadius:11,fontWeight:850,cursor:'pointer'},
   section:{maxWidth:1100,margin:'0 auto',padding:'58px 22px'},
-  customerJourneySection:{maxWidth:1280,margin:'0 auto',padding:'52px 22px 24px'},
-  customerJourneyGrid:{display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:16,alignItems:'start'},
-  customerJourneyCard:{minWidth:0},
-  customerJourneyHead:{display:'flex',gap:12,alignItems:'flex-start',minHeight:118},
-  customerImageFrame:{border:'1px solid #e2e8f0',borderRadius:18,overflow:'hidden',background:'#f8fafc',boxShadow:'0 10px 30px rgba(15,23,42,.06)'},
-  customerStepTwoImages:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8},
-  customerPhoneFrame:{border:'1px solid #e2e8f0',borderRadius:18,overflow:'hidden',background:'#f8fafc',boxShadow:'0 10px 30px rgba(15,23,42,.06)'},
-  customerImage:{width:'100%',height:'auto',display:'block'},
+  customerJourneySection:{maxWidth:1320,margin:'0 auto',padding:'52px 22px 24px'},
+  customerJourneyGrid:{display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:16,alignItems:'stretch'},
+  customerJourneyCard:{minWidth:0,display:'flex',flexDirection:'column'},
+  customerJourneyHead:{display:'flex',gap:12,alignItems:'flex-start',minHeight:132},
+  customerImageGrid:{display:'grid',gap:8,flex:1},
+  customerEqualImageFrame:{
+    height:430,border:'1px solid #e2e8f0',borderRadius:18,overflow:'hidden',background:'#f8fafc',
+    boxShadow:'0 10px 30px rgba(15,23,42,.06)',display:'flex',alignItems:'center',justifyContent:'center',
+  },
+  customerEqualImage:{
+    width:'100%',height:'100%',objectFit:'contain',objectPosition:'center',display:'block',background:'#f8fafc',
+  },
+  customerSliderCard:{
+    maxWidth:720,margin:'0 auto',background:'#fff',border:'1px solid #e2e8f0',borderRadius:20,
+    padding:'clamp(16px,4vw,24px)',boxShadow:'0 16px 42px rgba(15,23,42,.08)',
+  },
+  customerSliderTop:{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12},
+  customerSliderCounter:{fontSize:12,fontWeight:800,color:'#0f766e'},
+  customerSliderTitle:{fontSize:'clamp(22px,5vw,30px)',fontWeight:900,margin:'12px 0 8px'},
+  customerSliderBody:{fontSize:14,lineHeight:1.65,color:'#64748b',margin:'0 0 18px'},
+  customerSliderImages:{display:'grid',gap:8},
+  customerSliderImageFrame:{
+    height:'clamp(360px,62vh,560px)',border:'1px solid #e2e8f0',borderRadius:18,overflow:'hidden',
+    background:'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center',
+  },
+  customerSliderImage:{width:'100%',height:'100%',objectFit:'contain',objectPosition:'center',display:'block'},
+  customerDots:{display:'flex',justifyContent:'center',gap:8,marginTop:18},
+  customerDot:{width:8,height:8,borderRadius:'50%',border:0,background:'#cbd5e1',padding:0,cursor:'pointer'},
+  customerDotActive:{width:24,borderRadius:999,background:'#0d9488'},
+  customerSliderControls:{display:'flex',justifyContent:'space-between',gap:10,marginTop:18},
+  customerArrowBtn:{
+    flex:1,border:'1px solid #cbd5e1',background:'#fff',color:'#334155',padding:'11px 14px',
+    borderRadius:11,fontWeight:850,cursor:'pointer',
+  },
+  customerArrowBtnPrimary:{
+    flex:1,border:'1px solid #0d9488',background:'#0d9488',color:'#fff',padding:'11px 14px',
+    borderRadius:11,fontWeight:850,cursor:'pointer',
+  },
+  customerArrowDisabled:{opacity:.4,cursor:'not-allowed'},
   stepGrid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',gap:13},
   stepCard:{border:'1px solid #e2e8f0',borderRadius:16,padding:20,background:'#fff',boxShadow:'0 8px 25px rgba(15,23,42,.035)'},
   number:{width:34,height:34,borderRadius:'50%',display:'grid',placeItems:'center',background:'#d1fae5',color:'#047857',fontWeight:900,marginBottom:13},
