@@ -95,7 +95,7 @@ const PAGE_CONTENT = {
   contact: {
     eyebrow: 'CONTACT',
     title: 'Talk to LoyaltyTree.',
-    intro: 'Have a question about the platform, business setup, support, or partnership opportunities? Reach out and we’ll point you in the right direction.',
+    intro: 'Have a question about LoyaltyTree, business setup, support, or partnership opportunities? Reach us directly by mobile or email.',
     contact: true,
   },
 }
@@ -208,7 +208,7 @@ function PublicInfoPage({ type='overview' }) {
   return <div style={s.page}>
     <style>{`
       .public-nav { display:flex; align-items:center; justify-content:space-between; gap:18px; }
-      .public-links { display:flex; align-items:center; gap:5px; flex-wrap:wrap; }
+      .public-links { display:flex; align-items:center; gap:5px; flex-wrap:wrap; margin-left:auto; }
       .public-how { position:relative; }
       .public-how summary { list-style:none; cursor:pointer; }
       .public-how summary::-webkit-details-marker { display:none; }
@@ -323,7 +323,7 @@ function PublicInfoPage({ type='overview' }) {
             </div>
           </details>
           <button onClick={()=>{navigate('/about');setMobileMenuOpen(false)}} style={s.navLink}>About Us</button>
-          <button onClick={()=>{navigate('/contact');setMobileMenuOpen(false)}} style={s.navLink}>Contact</button>
+          <button onClick={()=>{navigate('/contact');setMobileMenuOpen(false)}} style={s.navLink}>Contact Us</button>
           <button className="public-login-mobile" onClick={()=>{navigate('/login');setMobileMenuOpen(false)}} style={s.mobileLoginBtn}>Business Login</button>
         </nav>
 
@@ -561,18 +561,38 @@ function PublicInfoPage({ type='overview' }) {
       </section>}
 
       {page.contact && <section style={s.section}>
+        <div style={s.contactIntroCard}>
+          <span style={s.contactKicker}>LET'S CONNECT</span>
+          <h2 style={s.contactHeading}>Talk directly with LoyaltyTree.</h2>
+          <p style={s.contactLead}>For business onboarding, product questions, support, partnerships, or general inquiries, use any of the contact channels below.</p>
+        </div>
+
         <div style={s.contactGrid}>
           <div style={s.contactCard}>
-            <div style={s.icon}>💬</div>
-            <h2 style={s.stepTitle}>Support & inquiries</h2>
-            <p style={s.body}>Message the LoyaltyTree team for account support, product questions, onboarding or general inquiries.</p>
-            <button style={s.primary} onClick={openMessenger}>Open Messenger</button>
+            <div style={s.contactIconBox}>📱</div>
+            <div>
+              <div style={s.contactLabel}>MOBILE NUMBER</div>
+              <a href="tel:+639397992144" style={s.contactValue}>0939 799 2144</a>
+              <div style={s.contactMeta}>Smart</div>
+            </div>
           </div>
+
           <div style={s.contactCard}>
-            <div style={s.icon}>🤝</div>
-            <h2 style={s.stepTitle}>Partnerships</h2>
-            <p style={s.body}>Interested in bringing LoyaltyTree to businesses in your city or region? Contact us about partnership opportunities.</p>
-            <button style={s.secondary} onClick={openMessenger}>Ask about partnerships</button>
+            <div style={s.contactIconBox}>✉️</div>
+            <div>
+              <div style={s.contactLabel}>EMAIL</div>
+              <a href="mailto:fredsomeros.stocks@gmail.com" style={s.contactValue}>fredsomeros.stocks@gmail.com</a>
+              <a href="mailto:theloyaltytree@gmail.com" style={s.contactValue}>theloyaltytree@gmail.com</a>
+            </div>
+          </div>
+
+          <div style={s.contactCard}>
+            <div style={s.contactIconBox}>🤝</div>
+            <div>
+              <div style={s.contactLabel}>BUSINESS & PARTNERSHIPS</div>
+              <div style={s.contactText}>Interested in LoyaltyTree for your business or in becoming a city or regional partner?</div>
+              <button style={{...s.secondary,marginTop:14}} onClick={openMessenger}>Message LoyaltyTree</button>
+            </div>
           </div>
         </div>
       </section>}
@@ -717,8 +737,17 @@ const s={
   founderRole:{fontSize:11,fontWeight:900,letterSpacing:.7,color:'#0f766e',textTransform:'uppercase'},
   founderName:{fontSize:18,fontWeight:900,color:'#0f172a',marginTop:2},
   founderHandle:{fontSize:12,color:'#64748b',marginTop:2},
-  contactGrid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(280px,1fr))',gap:16},
-  contactCard:{border:'1px solid #e2e8f0',borderRadius:18,padding:26,background:'#fff'},
+  contactIntroCard:{maxWidth:760,margin:'0 auto 28px',textAlign:'center'},
+  contactKicker:{fontSize:10,fontWeight:900,letterSpacing:1.5,color:'#0f766e'},
+  contactHeading:{fontSize:'clamp(26px,4vw,40px)',lineHeight:1.12,fontWeight:900,margin:'8px 0 12px',color:'#0f172a'},
+  contactLead:{fontSize:15,lineHeight:1.7,color:'#64748b',margin:0},
+  contactGrid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(280px,1fr))',gap:16,alignItems:'stretch'},
+  contactCard:{border:'1px solid #e2e8f0',borderRadius:20,padding:24,background:'#fff',display:'flex',gap:16,alignItems:'flex-start',boxShadow:'0 12px 30px rgba(15,23,42,.05)'},
+  contactIconBox:{width:46,height:46,borderRadius:14,background:'#ecfdf5',display:'grid',placeItems:'center',fontSize:21,flexShrink:0},
+  contactLabel:{fontSize:10,fontWeight:900,letterSpacing:1,color:'#0f766e',marginBottom:7},
+  contactValue:{display:'block',fontSize:15,fontWeight:800,color:'#0f172a',textDecoration:'none',lineHeight:1.7,wordBreak:'break-word'},
+  contactMeta:{fontSize:12,color:'#64748b',marginTop:2},
+  contactText:{fontSize:13.5,lineHeight:1.6,color:'#64748b'},
   footer:{borderTop:'1px solid #e2e8f0',padding:'24px clamp(18px,4vw,54px)',display:'flex',justifyContent:'space-between',gap:12,flexWrap:'wrap',fontSize:12,color:'#64748b'},
   footerLink:{border:0,background:'transparent',color:'#0f766e',fontWeight:800,cursor:'pointer'},
 }
