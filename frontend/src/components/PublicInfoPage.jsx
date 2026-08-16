@@ -362,6 +362,19 @@ function PublicInfoPage({ type='overview' }) {
       .business-visual-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; align-items:stretch; }
       .business-mobile-slider { display:none; }
       .overview-flow-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; }
+      @media(min-width:1101px){
+        .pricing-core-grid {
+          display:grid !important;
+          grid-template-columns:repeat(3,minmax(0,1fr)) !important;
+          gap:18px !important;
+          max-width:1080px;
+          margin:0 auto;
+        }
+        .pricing-specialized-wrap {
+          max-width:1080px;
+          margin:20px auto 0;
+        }
+      }
       @media(max-width:1100px){
         main > section:first-child { padding:48px 16px !important; }
         .overview-flow-grid {
@@ -379,6 +392,7 @@ function PublicInfoPage({ type='overview' }) {
         }
         .overview-flow-arrow { display:none !important; }
         .pricing-grid { grid-template-columns:repeat(2,minmax(0,1fr)) !important; }
+        .pricing-specialized-content { grid-template-columns:1fr !important; }
       }
       @media(max-width:1050px){
         .customer-desktop-grid { display:none; }
@@ -461,6 +475,7 @@ function PublicInfoPage({ type='overview' }) {
           scroll-snap-align:center;
         }
         .pricing-grid { grid-template-columns:1fr !important; }
+        .pricing-specialized-content { grid-template-columns:1fr !important; gap:18px !important; }
       }
       @media(min-width:761px){
         .public-login-mobile { display:none !important; }
@@ -759,31 +774,33 @@ function PublicInfoPage({ type='overview' }) {
             ))}
           </div>
 
-          <div className="pricing-grid" style={s.pricingGrid}>
-            {pricingPlans.map(plan => (
+          <div className="pricing-core-grid" style={s.pricingGrid}>
+            {pricingPlans.filter(plan => plan.key !== 'specialized').map(plan => (
               <article
                 key={plan.key}
                 style={{
                   ...s.pricingCard,
                   ...(plan.highlight ? s.pricingCardHighlight : {}),
-                  ...(plan.key === 'specialized' ? s.pricingCardSpecialized : {}),
                 }}
               >
-                {plan.highlight && <div style={s.pricingPopular}>MOST POPULAR</div>}
-                {plan.comingSoon && <div style={s.pricingComingSoon}>COMING SOON</div>}
-
-                <h3 style={s.pricingPlanName}>{plan.name}</h3>
-                <p style={s.pricingTagline}>{plan.tagline}</p>
-
-                {plan.prices ? (
-                  <div style={s.pricingPriceWrap}>
-                    <span style={s.pricingCurrency}>₱</span>
-                    <span style={s.pricingPrice}>{plan.prices[pricingBranchTier].toLocaleString()}</span>
-                    <span style={s.pricingUnit}>/mo</span>
+                <div style={s.pricingCardTop}>
+                  <div>
+                    {plan.highlight && <div style={s.pricingPopular}>MOST POPULAR</div>}
+                    {plan.comingSoon && <div style={s.pricingComingSoon}>COMING SOON</div>}
+                    <h3 style={s.pricingPlanName}>{plan.name}</h3>
+                    <p style={s.pricingTagline}>{plan.tagline}</p>
                   </div>
-                ) : (
-                  <div style={s.pricingDiscuss}>Upon discussion</div>
-                )}
+
+                  {plan.prices && (
+                    <div style={s.pricingPriceWrap}>
+                      <span style={s.pricingCurrency}>₱</span>
+                      <span style={s.pricingPrice}>{plan.prices[pricingBranchTier].toLocaleString()}</span>
+                      <span style={s.pricingUnit}>/mo</span>
+                    </div>
+                  )}
+                </div>
+
+                <div style={s.pricingDivider}/>
 
                 <ul style={s.pricingFeatureList}>
                   {plan.features.map(feature => (
@@ -798,8 +815,36 @@ function PublicInfoPage({ type='overview' }) {
                   onClick={()=>navigate('/contact')}
                   style={plan.highlight ? s.pricingPrimaryBtn : s.pricingSecondaryBtn}
                 >
-                  {plan.key==='specialized' ? 'Discuss Your System' : plan.comingSoon ? 'Ask About Pro' : 'Get Started'}
+                  {plan.comingSoon ? 'Ask About Pro' : 'Get Started'}
                 </button>
+              </article>
+            ))}
+          </div>
+
+          <div className="pricing-specialized-wrap">
+            {pricingPlans.filter(plan => plan.key === 'specialized').map(plan => (
+              <article key={plan.key} style={s.pricingSpecializedCard}>
+                <div className="pricing-specialized-content" style={s.pricingSpecializedContent}>
+                  <div>
+                    <div style={s.pricingSpecializedEyebrow}>CUSTOM SOLUTION</div>
+                    <h3 style={s.pricingSpecializedTitle}>{plan.name}</h3>
+                    <p style={s.pricingSpecializedTagline}>{plan.tagline}</p>
+                    <div style={s.pricingDiscuss}>Upon discussion</div>
+                  </div>
+
+                  <div style={s.pricingSpecializedFeatures}>
+                    {plan.features.slice(0,6).map(feature => (
+                      <div key={feature} style={s.pricingSpecializedFeature}>
+                        <span style={s.pricingCheck}>✓</span>
+                        <span>{feature}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  <button onClick={()=>navigate('/contact')} style={s.pricingPrimaryBtn}>
+                    Discuss Your System
+                  </button>
+                </div>
               </article>
             ))}
           </div>
@@ -952,21 +997,30 @@ const s={
   pricingBranchRow:{display:'flex',justifyContent:'center',gap:8,flexWrap:'wrap',marginBottom:24},
   pricingBranchBtn:{border:'1px solid #cbd5e1',background:'#fff',color:'#475569',padding:'9px 14px',borderRadius:999,fontWeight:800,fontSize:12,cursor:'pointer'},
   pricingBranchBtnActive:{background:'#0d9488',borderColor:'#0d9488',color:'#fff',boxShadow:'0 7px 18px rgba(13,148,136,.18)'},
-  pricingGrid:{display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:14,alignItems:'stretch'},
-  pricingCard:{position:'relative',display:'flex',flexDirection:'column',background:'#fff',border:'1px solid #e2e8f0',borderRadius:20,padding:20,boxShadow:'0 12px 30px rgba(15,23,42,.05)'},
-  pricingCardHighlight:{border:'2px solid #0d9488',boxShadow:'0 18px 40px rgba(13,148,136,.14)'},
+  pricingGrid:{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:18,alignItems:'stretch'},
+  pricingCard:{position:'relative',display:'flex',flexDirection:'column',background:'#fff',border:'1px solid #e2e8f0',borderRadius:18,padding:22,boxShadow:'0 10px 26px rgba(15,23,42,.045)'},
+  pricingCardHighlight:{border:'2px solid #0d9488',boxShadow:'0 16px 34px rgba(13,148,136,.12)'},
   pricingCardSpecialized:{gridColumn:'1 / -1',maxWidth:760,width:'100%',margin:'0 auto'},
-  pricingPopular:{position:'absolute',top:-12,left:'50%',transform:'translateX(-50%)',background:'#0d9488',color:'#fff',fontSize:9,fontWeight:900,letterSpacing:1,padding:'6px 10px',borderRadius:999,whiteSpace:'nowrap'},
+  pricingPopular:{display:'inline-flex',background:'#0d9488',color:'#fff',fontSize:9,fontWeight:900,letterSpacing:1,padding:'6px 10px',borderRadius:999,whiteSpace:'nowrap',marginBottom:10},
   pricingComingSoon:{display:'inline-flex',alignSelf:'flex-start',background:'#f1f5f9',color:'#64748b',fontSize:9,fontWeight:900,letterSpacing:.8,padding:'5px 8px',borderRadius:999,marginBottom:8},
-  pricingPlanName:{fontSize:21,fontWeight:900,color:'#0f172a',margin:'5px 0 7px'},
-  pricingTagline:{fontSize:12.5,lineHeight:1.55,color:'#64748b',margin:'0 0 15px',minHeight:58},
+  pricingPlanName:{fontSize:22,fontWeight:900,color:'#0f172a',margin:'2px 0 6px'},
+  pricingTagline:{fontSize:12.5,lineHeight:1.5,color:'#64748b',margin:'0 0 14px',minHeight:52},
   pricingPriceWrap:{display:'flex',alignItems:'baseline',gap:2,marginBottom:17},
   pricingCurrency:{fontSize:16,fontWeight:850,color:'#0f766e'},
-  pricingPrice:{fontSize:34,fontWeight:950,color:'#0f172a',letterSpacing:'-.04em'},
+  pricingPrice:{fontSize:38,fontWeight:950,color:'#0f172a',letterSpacing:'-.045em'},
   pricingUnit:{fontSize:11,color:'#64748b',fontWeight:700},
-  pricingDiscuss:{fontSize:21,fontWeight:900,color:'#0f766e',margin:'5px 0 21px'},
-  pricingFeatureList:{listStyle:'none',padding:0,margin:'0 0 20px',display:'grid',gap:9,flex:1},
-  pricingFeatureItem:{display:'flex',gap:8,alignItems:'flex-start',fontSize:11.5,lineHeight:1.45,color:'#475569'},
+  pricingCardTop:{display:'flex',flexDirection:'column'},
+  pricingDivider:{height:1,background:'#eef2f7',margin:'4px 0 16px'},
+  pricingDiscuss:{fontSize:21,fontWeight:900,color:'#0f766e',margin:'5px 0 10px'},
+  pricingSpecializedCard:{background:'linear-gradient(135deg,#0f172a,#134e4a)',color:'#fff',borderRadius:20,padding:24,boxShadow:'0 18px 38px rgba(15,23,42,.14)'},
+  pricingSpecializedContent:{display:'grid',gridTemplateColumns:'1.2fr 1.5fr auto',gap:24,alignItems:'center'},
+  pricingSpecializedEyebrow:{fontSize:9.5,fontWeight:900,letterSpacing:1.1,color:'#99f6e4',marginBottom:6},
+  pricingSpecializedTitle:{fontSize:24,fontWeight:900,margin:'0 0 8px',color:'#fff'},
+  pricingSpecializedTagline:{fontSize:12.5,lineHeight:1.5,color:'rgba(255,255,255,.72)',margin:0,maxWidth:460},
+  pricingSpecializedFeatures:{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:'8px 14px'},
+  pricingSpecializedFeature:{display:'flex',gap:8,fontSize:11.5,lineHeight:1.35,color:'rgba(255,255,255,.86)'},
+  pricingFeatureList:{listStyle:'none',padding:0,margin:'0 0 18px',display:'grid',gap:8,flex:1},
+  pricingFeatureItem:{display:'flex',gap:8,alignItems:'flex-start',fontSize:11.5,lineHeight:1.4,color:'#475569'},
   pricingCheck:{color:'#0d9488',fontWeight:900,marginTop:1},
   pricingPrimaryBtn:{width:'100%',border:0,background:'#0d9488',color:'#fff',padding:'11px 12px',borderRadius:10,fontWeight:850,cursor:'pointer'},
   pricingSecondaryBtn:{width:'100%',border:'1px solid #0d9488',background:'#fff',color:'#0f766e',padding:'10px 12px',borderRadius:10,fontWeight:850,cursor:'pointer'},
