@@ -90,6 +90,13 @@ const PAGE_CONTENT = {
       role: 'Developer / Founder',
       name: 'Alfred',
       handle: 'Snoopscoops',
+      bioTitle: 'About Alfred',
+      bio: [
+        'Alfred has been developing systems as a hobby for around 15 years, building experience across different technologies and programming environments.',
+        'He has also completed different language certifications and studied at the University of the Philippines Diliman.',
+        'His technical background also includes blockchain and smart contract development, with particular experience using the Solidity programming language.',
+        'That combination of long-term hands-on development, continued learning, and interest in emerging technologies helped shape the technical foundation behind LoyaltyTree.',
+      ],
     },
   },
   contact: {
@@ -548,14 +555,24 @@ function PublicInfoPage({ type='overview' }) {
       {page.paragraphs && <section style={s.section}>
         <div style={s.storyCard}>
           {page.paragraphs.map((p,i)=><p key={i} style={s.storyText}>{p}</p>)}
-          {page.founder && <div style={s.founderCard}>
-            <div style={s.founderAvatar}>A</div>
-            <div>
-              <div style={s.founderRole}>{page.founder.role}</div>
-              <div style={s.founderName}>{page.founder.name}</div>
-              <div style={s.founderHandle}>{page.founder.handle}</div>
+          {page.founder && <>
+            <div style={s.founderCard}>
+              <div style={s.founderAvatar}>A</div>
+              <div>
+                <div style={s.founderRole}>{page.founder.role}</div>
+                <div style={s.founderName}>{page.founder.name}</div>
+                <div style={s.founderHandle}>{page.founder.handle}</div>
+              </div>
             </div>
-          </div>}
+
+            <div style={s.founderBioCard}>
+              <div style={s.founderBioEyebrow}>THE PERSON BEHIND LOYALTYTREE</div>
+              <h3 style={s.founderBioTitle}>{page.founder.bioTitle}</h3>
+              {page.founder.bio?.map((paragraph,index)=>(
+                <p key={index} style={s.founderBioText}>{paragraph}</p>
+              ))}
+            </div>
+          </>}
           <button style={s.primary} onClick={()=>navigate('/contact')}>Contact LoyaltyTree</button>
         </div>
       </section>}
@@ -737,6 +754,13 @@ const s={
   founderRole:{fontSize:11,fontWeight:900,letterSpacing:.7,color:'#0f766e',textTransform:'uppercase'},
   founderName:{fontSize:18,fontWeight:900,color:'#0f172a',marginTop:2},
   founderHandle:{fontSize:12,color:'#64748b',marginTop:2},
+  founderBioCard:{
+    margin:'0 0 26px',padding:'clamp(20px,4vw,30px)',borderRadius:18,
+    background:'#fff',border:'1px solid #e2e8f0',boxShadow:'0 12px 30px rgba(15,23,42,.05)',
+  },
+  founderBioEyebrow:{fontSize:10,fontWeight:900,letterSpacing:1.2,color:'#0f766e',marginBottom:7},
+  founderBioTitle:{fontSize:24,fontWeight:900,color:'#0f172a',margin:'0 0 14px'},
+  founderBioText:{fontSize:14.5,lineHeight:1.75,color:'#475569',margin:'0 0 13px'},
   contactIntroCard:{maxWidth:760,margin:'0 auto 28px',textAlign:'center'},
   contactKicker:{fontSize:10,fontWeight:900,letterSpacing:1.5,color:'#0f766e'},
   contactHeading:{fontSize:'clamp(26px,4vw,40px)',lineHeight:1.12,fontWeight:900,margin:'8px 0 12px',color:'#0f172a'},

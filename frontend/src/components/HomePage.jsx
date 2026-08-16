@@ -455,7 +455,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
     <div style={styles.page}>
       <style>{`
         html { scroll-behavior: smooth; }
-        .lt-home-navlinks { display:flex; align-items:center; justify-content:center; gap:6px; flex-wrap:wrap; }
+        .lt-home-navlinks { display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; margin-left:auto; }
         .lt-how-menu { position:relative; }
         .lt-how-summary { list-style:none; cursor:pointer; display:flex; align-items:center; gap:5px; }
         .lt-how-summary::-webkit-details-marker { display:none; }
@@ -467,12 +467,15 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         .lt-how-menu:not([open]) .lt-how-dropdown { display:none; }
         .lt-home-overview-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; }
         @media (max-width: 900px) {
-          .lt-home-header { align-items:flex-start !important; flex-wrap:wrap !important; padding:14px 18px !important; }
-          .lt-home-navlinks { order:3; width:100%; justify-content:flex-start; flex-wrap:nowrap; overflow-x:auto; padding:4px 0 2px; scrollbar-width:none; }
+          .lt-home-header { align-items:center !important; flex-wrap:wrap !important; padding:12px 16px !important; }
+          .lt-home-navlinks { order:3; width:100%; margin-left:0 !important; justify-content:flex-start; flex-wrap:nowrap; overflow-x:auto; padding:8px 0 0; scrollbar-width:none; border-top:1px solid #f1f5f9; }
           .lt-home-navlinks::-webkit-scrollbar { display:none; }
           .lt-home-navlink { white-space:nowrap; }
           .lt-how-dropdown { position:fixed !important; left:14px !important; right:14px !important; top:auto !important; width:auto !important; }
           .lt-home-overview-grid { grid-template-columns:1fr !important; }
+        }
+        @media (max-width: 700px) {
+          .lt-home-hero-actions { width:100%; }
         }
         @media (max-width: 560px) {
           .lt-home-login { padding:9px 12px !important; font-size:12px !important; }
@@ -503,7 +506,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
             </div>
           </details>
           <button className="lt-home-navlink" onClick={() => navigate('/about')} style={styles.navLink}>About Us</button>
-          <button className="lt-home-navlink" onClick={() => navigate('/contact')} style={styles.navLink}>Contact</button>
+          <button className="lt-home-navlink" onClick={() => navigate('/contact')} style={styles.navLink}>Contact Us</button>
         </nav>
 
         <button className="lt-home-login" onClick={goToLogin} style={styles.navBtn}>Business Login</button>
@@ -511,34 +514,79 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
 
       <section id="top" style={styles.hero}>
         <div style={styles.heroInner}>
-          <h1 style={styles.h1}>Marketing Just Got Smarter. Loyalty Just Got Automated.</h1>
+          <div style={styles.heroEyebrow}>🌱 DIGITAL LOYALTY FOR SERVICE BUSINESSES</div>
+          <h1 style={styles.h1}>Turn every customer visit into a stronger relationship.</h1>
           <p style={styles.heroSub}>
-            One digital loyalty card that markets to your customers, keeps them coming back, and
-            replaces paper punch cards entirely &mdash; no app to download, no printing, no waste.
+            LoyaltyTree helps service-industry businesses connect with customers beyond the checkout —
+            with digital loyalty cards, automated rewards, wallet notifications, birthday greetings,
+            announcements, and customer insights in one simple system.
           </p>
-          <button onClick={goToLogin} style={styles.heroBtn}>🌱 Business Login</button>
+          <div className="lt-home-hero-actions" style={styles.heroActions}>
+            <button onClick={goToLogin} style={styles.heroBtn}>Get Started for Your Business</button>
+            <button onClick={() => navigate('/how-it-works')} style={styles.heroSecondaryBtn}>See How It Works →</button>
+          </div>
+          <div style={styles.heroTrustRow}>
+            <span>✓ No customer app</span>
+            <span>✓ Apple & Google Wallet</span>
+            <span>✓ Built for repeat business</span>
+          </div>
         </div>
-        <div style={styles.heroVisual} aria-hidden="true">
-          <div style={styles.heroCard}>
-            <div style={styles.heroCardHeader}>
-              <span>Free Coffee</span>
-              <span style={{ fontSize: 12, opacity: 0.85 }}>Corner Cafe</span>
+
+        <div style={styles.heroVisual} aria-label="LoyaltyTree digital loyalty preview">
+          <div style={styles.heroVisualGlow}></div>
+          <div style={styles.heroDashboardCard}>
+            <div style={styles.heroDashboardTop}>
+              <div>
+                <div style={styles.heroMiniLabel}>LOYALTYTREE</div>
+                <div style={styles.heroDashboardTitle}>Your customer relationship, in one place.</div>
+              </div>
+              <div style={styles.heroLiveBadge}>● LIVE</div>
             </div>
-            <div style={styles.heroStampRow}>
-              {Array.from({ length: 8 }).map((_, i) => (
-                <div key={i} style={{ ...styles.heroStamp, background: i < 5 ? '#0d9488' : '#e2e8f0' }} />
-              ))}
+
+            <div style={styles.heroMetricGrid}>
+              <div style={styles.heroMetric}>
+                <strong style={styles.heroMetricValue}>128</strong>
+                <span style={styles.heroMetricLabel}>Customers</span>
+              </div>
+              <div style={styles.heroMetric}>
+                <strong style={styles.heroMetricValue}>342</strong>
+                <span style={styles.heroMetricLabel}>Stamps</span>
+              </div>
+              <div style={styles.heroMetric}>
+                <strong style={styles.heroMetricValue}>24</strong>
+                <span style={styles.heroMetricLabel}>Rewards</span>
+              </div>
             </div>
-            <div style={styles.heroCardFoot}>5 of 8 stamps &middot; 3 to go</div>
+
+            <div style={styles.heroWalletCard}>
+              <div style={styles.heroCardHeader}>
+                <span>Free Coffee</span>
+                <span style={{ fontSize: 12, opacity: 0.85 }}>Your Business</span>
+              </div>
+              <div style={styles.heroStampRow}>
+                {Array.from({ length: 8 }).map((_, i) => (
+                  <div key={i} style={{ ...styles.heroStamp, background: i < 5 ? '#0d9488' : '#e2e8f0' }} />
+                ))}
+              </div>
+              <div style={styles.heroCardFoot}>5 of 8 stamps &middot; 3 to your reward</div>
+            </div>
+
+            <div style={styles.heroNotification}>
+              <span style={styles.heroNotificationIcon}>🎉</span>
+              <div>
+                <strong style={styles.heroNotificationTitle}>Stay connected after every visit</strong>
+                <span style={styles.heroNotificationText}>Announcements, birthday greetings & wallet updates</span>
+              </div>
+            </div>
           </div>
         </div>
       </section>
 
       <section id="how-it-works" style={styles.topHowSection}>
         <span style={styles.navSectionEyebrow}>Simple from day one</span>
-        <h2 style={styles.h2Compact}>How LoyaltyTree works</h2>
+        <h2 style={styles.h2Compact}>A better connection with every visit.</h2>
         <p style={styles.topSectionIntro}>
-          Your customer joins once, keeps the card in their phone, and your team handles the rest from the LoyaltyTree dashboard.
+          Customers join once, keep your branded card in their phone, and your team manages loyalty, rewards, communication, and retention from one dashboard.
         </p>
         <div style={styles.topStepsGrid}>
           {STEPS.map(s => (
@@ -805,22 +853,29 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         <div style={styles.aboutGrid}>
           <div style={styles.aboutCard}>
             <span style={styles.navSectionEyebrow}>About LoyaltyTree</span>
-            <h2 style={styles.aboutTitle}>Built to make loyalty easier for local businesses.</h2>
+            <h2 style={styles.aboutTitle}>Built in Isabela for businesses that depend on real customer relationships.</h2>
             <p style={styles.aboutBody}>
-              LoyaltyTree brings digital loyalty cards, customer retention, wallet updates, cashier tools, and business insights into one system.
-              Our goal is to help businesses build stronger repeat-customer relationships without relying on disposable paper or plastic cards.
+              LoyaltyTree started from a simple observation: in a province where market movement and money circulation can shift with farming industries,
+              keeping existing customers matters. That idea became a platform focused on helping service-industry businesses build stronger,
+              longer-lasting connections with the people they serve — through digital loyalty, retention tools, and direct customer engagement.
             </p>
+            <div style={styles.founderLine}>Developer / Founder — Alfred / Snoopscoops</div>
           </div>
 
           <div id="contact" style={styles.contactCard}>
             <span style={styles.navSectionEyebrow}>Contact Us</span>
             <h2 style={styles.aboutTitle}>Questions, support, or partnership inquiries?</h2>
             <p style={styles.aboutBody}>
-              Reach out to the LoyaltyTree team and we’ll help you understand the platform, business setup, partner opportunities, or your account.
+              Reach out for platform questions, business setup, support, or partnership opportunities.
             </p>
+            <div style={styles.homeContactDetails}>
+              <a href="tel:+639397992144" style={styles.homeContactLink}>📱 0939 799 2144 <span style={styles.homeContactMeta}>Smart</span></a>
+              <a href="mailto:fredsomeros.stocks@gmail.com" style={styles.homeContactLink}>✉️ fredsomeros.stocks@gmail.com</a>
+              <a href="mailto:theloyaltytree@gmail.com" style={styles.homeContactLink}>✉️ theloyaltytree@gmail.com</a>
+            </div>
             <div style={styles.contactActions}>
               <button onClick={openContact} style={styles.contactPrimary}>💬 Message LoyaltyTree</button>
-              <button onClick={goToLogin} style={styles.contactSecondary}>Business Login</button>
+              <button onClick={() => navigate('/contact')} style={styles.contactSecondary}>Contact Us</button>
             </div>
           </div>
         </div>
@@ -994,18 +1049,59 @@ const styles = {
     fontSize: 12.5, fontWeight: 800, cursor: 'pointer',
   },
   hero: {
-    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 40,
-    padding: '72px 32px', maxWidth: 1100, margin: '0 auto', flexWrap: 'wrap',
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 54,
+    padding: '88px 32px 82px', maxWidth: 1180, margin: '0 auto', flexWrap: 'wrap',
+    position: 'relative',
   },
-  heroInner: { flex: '1 1 420px', maxWidth: 540 },
-  h1: { fontSize: 40, lineHeight: 1.15, margin: '0 0 16px', fontWeight: 800, color: '#0f172a' },
-  heroSub: { fontSize: 17, lineHeight: 1.6, color: '#475569', margin: '0 0 28px' },
+  heroInner: { flex: '1 1 440px', maxWidth: 600 },
+  heroEyebrow: {
+    display:'inline-flex', alignItems:'center', padding:'7px 12px', borderRadius:999,
+    background:'#ecfdf5', color:'#0f766e', fontSize:11, fontWeight:850,
+    letterSpacing:'.07em', marginBottom:18, border:'1px solid #ccfbf1',
+  },
+  h1: { fontSize: 'clamp(40px,5.2vw,64px)', lineHeight: 1.03, letterSpacing:'-0.035em', margin: '0 0 20px', fontWeight: 900, color: '#0f172a' },
+  heroSub: { fontSize: 17, lineHeight: 1.72, color: '#475569', margin: '0 0 28px', maxWidth:580 },
+  heroActions:{display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'},
   heroBtn: {
-    padding: '16px 28px', background: '#0d9488', color: 'white', border: 'none',
-    borderRadius: 14, fontSize: 16, fontWeight: 700, cursor: 'pointer',
-    boxShadow: '0 8px 24px rgba(13,148,136,0.3)',
+    padding: '15px 22px', background: '#0d9488', color: 'white', border: 'none',
+    borderRadius: 12, fontSize: 14, fontWeight: 800, cursor: 'pointer',
+    boxShadow: '0 10px 24px rgba(13,148,136,0.22)',
   },
-  heroVisual: { flex: '1 1 260px', display: 'flex', justifyContent: 'center' },
+  heroSecondaryBtn:{
+    padding:'14px 20px',background:'#fff',color:'#0f766e',border:'1px solid #cbd5e1',
+    borderRadius:12,fontSize:14,fontWeight:800,cursor:'pointer',
+  },
+  heroTrustRow:{
+    display:'flex',gap:16,flexWrap:'wrap',marginTop:22,color:'#64748b',fontSize:12,fontWeight:700,
+  },
+  heroVisual: { flex: '1 1 380px', minWidth:280, display: 'flex', justifyContent: 'center', position:'relative' },
+  heroVisualGlow:{
+    position:'absolute',width:'82%',height:'82%',borderRadius:'50%',background:'#ccfbf1',
+    filter:'blur(46px)',opacity:.7,top:'8%',left:'9%',
+  },
+  heroDashboardCard:{
+    position:'relative',zIndex:1,width:'100%',maxWidth:430,background:'#fff',border:'1px solid #dbeafe',
+    borderRadius:24,padding:20,boxShadow:'0 28px 70px rgba(15,23,42,.14)',
+  },
+  heroDashboardTop:{display:'flex',justifyContent:'space-between',gap:14,alignItems:'flex-start',marginBottom:16},
+  heroMiniLabel:{fontSize:9,fontWeight:900,letterSpacing:1.3,color:'#0d9488',marginBottom:4},
+  heroDashboardTitle:{fontSize:16,fontWeight:850,color:'#0f172a',lineHeight:1.3,maxWidth:250},
+  heroLiveBadge:{fontSize:9,fontWeight:900,color:'#047857',background:'#d1fae5',padding:'5px 8px',borderRadius:999,whiteSpace:'nowrap'},
+  heroMetricGrid:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8,marginBottom:14},
+  heroMetric:{background:'#f8fafc',border:'1px solid #eef2f7',borderRadius:12,padding:'10px 9px'},
+  heroMetricValue:{display:'block',fontSize:19,color:'#0f172a',lineHeight:1.1},
+  heroMetricLabel:{display:'block',fontSize:9.5,color:'#64748b',marginTop:4},
+  heroWalletCard:{
+    borderRadius:16,background:'#fff',border:'1px solid #e2e8f0',padding:14,
+    boxShadow:'0 8px 24px rgba(15,23,42,.06)',marginBottom:12,
+  },
+  heroNotification:{
+    display:'flex',gap:10,alignItems:'center',padding:'11px 12px',borderRadius:14,
+    background:'#f0fdfa',border:'1px solid #ccfbf1',
+  },
+  heroNotificationIcon:{fontSize:20},
+  heroNotificationTitle:{display:'block',fontSize:11.5,color:'#0f172a',marginBottom:2},
+  heroNotificationText:{display:'block',fontSize:9.5,color:'#64748b',lineHeight:1.35},
   heroCard: {
     width: 260, borderRadius: 20, background: 'white', boxShadow: '0 20px 50px rgba(0,0,0,0.12)',
     padding: 20, transform: 'rotate(-3deg)',
@@ -1126,6 +1222,10 @@ const styles = {
   },
   aboutTitle: { fontSize: 23, lineHeight: 1.25, fontWeight: 800, color: '#0f172a', margin: '0 0 12px' },
   aboutBody: { fontSize: 14, lineHeight: 1.7, color: '#475569', margin: 0 },
+  founderLine:{marginTop:18,fontSize:12,fontWeight:850,color:'#0f766e'},
+  homeContactDetails:{display:'grid',gap:8,marginTop:16},
+  homeContactLink:{color:'#0f172a',fontSize:12.5,fontWeight:750,textDecoration:'none',wordBreak:'break-word'},
+  homeContactMeta:{color:'#64748b',fontWeight:600},
   contactActions: { display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 20 },
   contactPrimary: {
     border: 'none', borderRadius: 11, background: '#0d9488', color: 'white',
