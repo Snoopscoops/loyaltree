@@ -2346,6 +2346,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         ],
         'linksModuleData': {
             'uris': [
+                {'uri': f'{BASE_URL}/feedback/{cust_public_id}', 'description': '⭐ Rate Your Experience'},
                 {'uri': f'{BASE_URL}/wallet/{cust_public_id}', 'description': 'Open full LoyaltyTree card'},
                 {'uri': f'{BASE_URL}/stamp/{cust_public_id}', 'description': 'Present QR / Check in'}
             ]
@@ -2954,6 +2955,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         *[{'key': key, 'label': label, 'value': str(value)} for key, label, value in apple_details],
         *activity_fields,
         {'key': 'about', 'label': 'ABOUT', 'value': description or f'{biz_name} digital loyalty card powered by LoyaltyTree.'},
+        {'key': 'feedback', 'label': '⭐ RATE YOUR EXPERIENCE', 'value': 'Rate Your Experience', 'attributedValue': f'<a href="{BASE_URL}/feedback/{cust_public_id}">Rate Your Experience</a>'},
         {'key': 'online', 'label': 'FULL CARD & HISTORY', 'value': f'{BASE_URL}/wallet/{cust_public_id}'},
         {
             'key': 'announcement',
@@ -16318,6 +16320,55 @@ async def get_apple_wallet_pass(customer_public_id: str):
         media_type="application/vnd.apple.pkpass",
         headers={"Content-Disposition": f'attachment; filename="{customer_public_id}.pkpass"'},
     )
+
+# CUSTOMER SATISFACTION
+class SatisfactionFeedbackSubmit(BaseModel):
+    rating: int = Field(..., ge=1, le=5)
+    service_rating: Optional[int] = Field(default=None, ge=1, le=5)
+    quality_rating: Optional[int] = Field(default=None, ge=1, le=5)
+    value_rating: Optional[int] = Field(default=None, ge=1, le=5)
+    comment: Optional[str] = Field(default=None, max_length=1200)
+
+def _feedback_summary(rows: list) -> dict:
+    ratings=[int(r.get("rating") or 0) for r in rows if int(r.get("rating") or 0) in (1,2,3,4,5)]
+    def avg(key):
+        vals=[int(r.get(key) or 0) for r in rows if int(r.get(key) or 0) in (1,2,3,4,5)]
+        return round(sum(vals)/len(vals),2) if vals else None
+    return {"response_count":len(ratings),"average_rating":round(sum(ratings)/len(ratings),2) if ratings else None,"positive_percent":round(sum(1 for x in ratings if x>=4)*100/len(ratings),1) if ratings else 0,"service_average":avg("service_rating"),"quality_average":avg("quality_rating"),"value_average":avg("value_rating")}
+
+@app.get("/feedback/{customer_public_id}", response_class=HTMLResponse)
+async def customer_satisfaction_page(customer_public_id: str):
+    customer=safe_get_customer(customer_public_id)
+    if not customer: raise HTTPException(status_code=404, detail="Customer not found")
+    business=safe_get_business_by_id(customer.get("business_id"))
+    if not business: raise HTTPException(status_code=404, detail="Business not found")
+    biz=html_lib.escape(str(business.get("name") or business.get("business_name") or "Business")); name=html_lib.escape(str(customer.get("name") or "Customer"))
+    page=f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Rate your experience</title><style>*{{box-sizing:border-box}}body{{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f8fafc;color:#0f172a}}main{{max-width:620px;margin:0 auto;min-height:100vh;background:white;padding:28px 20px}}header{{text-align:center;padding:20px 0 28px}}h1{{margin:6px 0}}p{{color:#64748b}}.stars{{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin:10px 0 24px}}button.star{{font-size:25px;padding:14px 4px;background:white;border:1px solid #dbe4ea;border-radius:12px}}button.star.on{{background:#ecfdf5;border-color:#14b8a6}}.cats{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}}.cat{{border:1px solid #e2e8f0;border-radius:12px;padding:10px}}.mini{{display:flex;gap:4px;margin-top:7px}}.mini button{{flex:1;border:0;border-radius:7px;padding:7px 2px}}.mini button.on{{background:#ccfbf1;color:#0f766e;font-weight:800}}textarea{{width:100%;min-height:110px;margin-top:18px;padding:12px;border:1px solid #cbd5e1;border-radius:12px}}#send{{width:100%;margin-top:12px;padding:14px;border:0;border-radius:12px;background:#0d9488;color:white;font-weight:800}}#thanks{{display:none;text-align:center;padding:40px 10px}}@media(max-width:520px){{.cats{{grid-template-columns:1fr}}}}</style></head><body><main><header><b>{biz}</b><h1>How was your experience?</h1><p>Hi {name}. Your feedback helps us serve you better.</p></header><form id='f'><b>Overall experience</b><div class='stars' id='stars'>{''.join(f"<button type='button' class='star' data-v='{i}'>⭐</button>" for i in range(1,6))}</div><div class='cats'>{''.join(f"<div class='cat'><b>{label}</b><div class='mini' data-k='{key}'>"+''.join(f"<button type='button' data-v='{i}'>{i}</button>" for i in range(1,6))+"</div></div>" for label,key in [('Service','service_rating'),('Quality','quality_rating'),('Value','value_rating')])}</div><textarea id='comment' maxlength='1200' placeholder='Tell us more (optional)'></textarea><button id='send' disabled>Submit Feedback</button><p id='msg'></p></form><div id='thanks'><h2>🌱 Thank you!</h2><p>Your feedback has been shared with {biz}.</p></div></main><script>const s={{rating:null,service_rating:null,quality_rating:null,value_rating:null}};document.querySelectorAll('.star').forEach(b=>b.onclick=()=>{{s.rating=+b.dataset.v;document.querySelectorAll('.star').forEach(x=>x.classList.toggle('on',+x.dataset.v<=s.rating));send.disabled=false}});document.querySelectorAll('.mini').forEach(g=>g.querySelectorAll('button').forEach(b=>b.onclick=()=>{{s[g.dataset.k]=+b.dataset.v;g.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b))}}));f.onsubmit=async e=>{{e.preventDefault();send.disabled=true;send.textContent='Sending…';try{{let r=await fetch('/api/v1/customer/{customer_public_id}/feedback',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{...s,comment:comment.value.trim()||null}})}});let d=await r.json().catch(()=>({{}}));if(!r.ok)throw Error(d.detail||'Could not submit feedback');f.style.display='none';thanks.style.display='block'}}catch(e){{msg.textContent=e.message;send.disabled=false;send.textContent='Submit Feedback'}}}};</script></body></html>"""
+    return HTMLResponse(page)
+
+@app.post("/api/v1/customer/{customer_public_id}/feedback")
+async def submit_customer_satisfaction(customer_public_id: str, item: SatisfactionFeedbackSubmit):
+    if not supabase: raise HTTPException(status_code=503, detail="Database not connected")
+    customer=safe_get_customer(customer_public_id)
+    if not customer: raise HTTPException(status_code=404, detail="Customer not found")
+    business=safe_get_business_by_id(customer.get("business_id"))
+    if not business: raise HTTPException(status_code=404, detail="Business not found")
+    row={"public_id":str(uuid.uuid4()),"business_id":business.get("id"),"customer_id":customer.get("id"),"rating":item.rating,"service_rating":item.service_rating,"quality_rating":item.quality_rating,"value_rating":item.value_rating,"comment":(item.comment or "").strip() or None,"source":"wallet","created_at":datetime.now(timezone.utc).isoformat()}
+    try:
+        result=supabase.table("customer_feedback").insert(row).execute(); return {"ok":True,"feedback_public_id":(result.data or [row])[0].get("public_id")}
+    except Exception as e: raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+@app.get("/api/v1/business/{public_id}/feedback")
+async def get_business_satisfaction(public_id: str, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
+    if not supabase: raise HTTPException(status_code=503, detail="Database not connected")
+    business=safe_get_business(public_id)
+    if not business: raise HTTPException(status_code=404, detail="Business not found")
+    try:
+        rows=supabase.table("customer_feedback").select("*").eq("business_id",business.get("id")).order("created_at",desc=True).limit(250).execute().data or []
+        ids=list({r.get("customer_id") for r in rows if r.get("customer_id")}); customers=supabase.table("customers").select("id,public_id,name").in_("id",ids).execute().data or [] if ids else []; by={c.get("id"):c for c in customers}
+        return {"summary":_feedback_summary(rows),"feedback":[{**r,"customer_name":(by.get(r.get("customer_id")) or {}).get("name") or "Customer"} for r in rows]}
+    except Exception as e: raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
 # APPLE WALLET PASSKIT WEB SERVICE
 # Implements the routes Apple's Wallet app calls on its own, per Apple's

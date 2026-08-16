@@ -153,6 +153,9 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [onboardingStep, setOnboardingStep] = useState(0)
   const [announcementsChecked, setAnnouncementsChecked] = useState(false)
   const [analyticsChecked, setAnalyticsChecked] = useState(false)
+  const [satisfaction, setSatisfaction] = useState({summary:null, feedback:[]})
+  const [satisfactionLoading, setSatisfactionLoading] = useState(false)
+  const [satisfactionError, setSatisfactionError] = useState('')
   const [membershipSettings, setMembershipSettings] = useState({
     membership_duration_days: 30,
     membership_price: 0,
@@ -346,6 +349,12 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     setLoading(false)
   }
 
+  const loadSatisfaction = async () => {
+    if (!user?.business_slug) return
+    setSatisfactionLoading(true); setSatisfactionError('')
+    try { const res=await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/feedback`,{cache:'no-store'}); const data=await res.json().catch(()=>({})); if(!res.ok) throw new Error(data.detail||'Could not load customer satisfaction'); setSatisfaction({summary:data.summary||null,feedback:Array.isArray(data.feedback)?data.feedback:[]}) } catch(err) { setSatisfactionError(err.message||'Could not load customer satisfaction') } finally { setSatisfactionLoading(false) }
+  }
+
   const loadGrowthSuite = async () => {
     if (!user?.business_slug) return
     setGrowthLoading(true)
@@ -388,6 +397,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   useEffect(() => {
     if (activeTab === 'security') loadTransactionsSecurity()
+    if (activeTab === 'satisfaction') loadSatisfaction()
     if (['crm','retention','operations','walletqueue'].includes(activeTab)) loadGrowthSuite()
   }, [activeTab])
 
@@ -1250,6 +1260,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             { id: 'tree', label: 'Overview', icon: cardExperience.icon },
             { id: 'customers', label: cardExperience.customerLabel, icon: cardExperience.customerIcon },
             { id: 'staff', label: 'Team', icon: '👥' },
+            { id: 'satisfaction', label: 'Satisfaction', icon: '⭐' },
             { id: 'program', label: 'Edit Card', icon: '✏️' },
             { id: 'billing', label: needsRenewal ? 'Billing ⚠️' : 'Billing', icon: '💳' },
           ].map(tab => (
@@ -1342,6 +1353,10 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               ))}
             </div>
           </div>
+        )}
+
+        {activeTab === 'satisfaction' && (
+          <div><div style={styles.sectionHeader}><div><h2 style={styles.sectionTitle}>⭐ Customer Satisfaction</h2><p style={styles.satisfactionIntro}>Feedback submitted from customers through their LoyaltyTree Wallet card.</p></div><button onClick={loadSatisfaction} style={styles.viewAnalyticsBtn} disabled={satisfactionLoading}>{satisfactionLoading?'Refreshing…':'↻ Refresh'}</button></div>{satisfactionError&&<div style={styles.satisfactionError}>{satisfactionError}</div>}<div style={{...styles.satisfactionMetrics,...(isMobile?styles.satisfactionMetricsMobile:{})}}>{[['Overall',satisfaction.summary?.average_rating??'—',`${satisfaction.summary?.response_count||0} responses`],['Positive',`${satisfaction.summary?.positive_percent??0}%`,'4–5 star ratings'],['Service',satisfaction.summary?.service_average??'—','Average rating'],['Quality',satisfaction.summary?.quality_average??'—','Average rating'],['Value',satisfaction.summary?.value_average??'—','Average rating']].map(([l,v,h])=><div style={styles.satisfactionMetricCard} key={l}><span style={styles.satisfactionMetricLabel}>{l}</span><strong style={styles.satisfactionMetricValue}>{v}</strong><span style={styles.satisfactionMetricHint}>{h}</span></div>)}</div><div style={styles.satisfactionList}>{satisfactionLoading&&!satisfaction.feedback.length&&<div style={styles.satisfactionEmpty}>Loading feedback…</div>}{!satisfactionLoading&&!satisfaction.feedback.length&&!satisfactionError&&<div style={styles.satisfactionEmpty}>No feedback yet. Customers can tap “Rate Your Experience” from their Wallet card details.</div>}{satisfaction.feedback.map(item=><article key={item.public_id||item.id} style={styles.satisfactionRow}><div style={styles.satisfactionRowTop}><div><strong style={styles.satisfactionName}>{item.customer_name||'Customer'}</strong><span style={styles.satisfactionDate}>{item.created_at?new Date(item.created_at).toLocaleString():''}</span></div><div style={styles.satisfactionStars}>{'★'.repeat(Number(item.rating||0))}<span style={{color:'#e2e8f0'}}>{'★'.repeat(Math.max(0,5-Number(item.rating||0)))}</span></div></div>{(item.service_rating||item.quality_rating||item.value_rating)&&<div style={styles.satisfactionSubratings}>{item.service_rating&&<span>Service <b>{item.service_rating}/5</b></span>}{item.quality_rating&&<span>Quality <b>{item.quality_rating}/5</b></span>}{item.value_rating&&<span>Value <b>{item.value_rating}/5</b></span>}</div>}{item.comment&&<p style={styles.satisfactionComment}>“{item.comment}”</p>}</article>)}</div></div>
         )}
 
         {activeTab === 'customers' && (
@@ -4098,6 +4113,8 @@ const styles = {
   industryInsightLabel:{fontSize:10.5,fontWeight:900,textTransform:'uppercase',letterSpacing:.8,color:'#0d9488'},
   industryInsightTitle:{display:'block',fontSize:14,color:'#134e4a',marginTop:2},
   industryInsightText:{fontSize:12,color:'#64748b',marginTop:3,lineHeight:1.4},
+  satisfactionIntro:{margin:'5px 0 0',fontSize:13,color:'#64748b'}, satisfactionError:{padding:12,borderRadius:10,background:'#fef2f2',color:'#b91c1c',marginBottom:14}, satisfactionMetrics:{display:'grid',gridTemplateColumns:'repeat(5,minmax(0,1fr))',gap:10,marginBottom:18}, satisfactionMetricsMobile:{gridTemplateColumns:'repeat(2,minmax(0,1fr))'}, satisfactionMetricCard:{background:'#fff',border:'1px solid #e2e8f0',borderRadius:14,padding:15,display:'flex',flexDirection:'column',gap:4}, satisfactionMetricLabel:{fontSize:10,fontWeight:850,color:'#64748b',textTransform:'uppercase'}, satisfactionMetricValue:{fontSize:25,color:'#0f172a'}, satisfactionMetricHint:{fontSize:10.5,color:'#94a3b8'}, satisfactionList:{display:'grid',gap:10}, satisfactionRow:{background:'#fff',border:'1px solid #e2e8f0',borderRadius:14,padding:16}, satisfactionRowTop:{display:'flex',justifyContent:'space-between',gap:12}, satisfactionName:{display:'block',fontSize:14}, satisfactionDate:{display:'block',fontSize:10.5,color:'#94a3b8',marginTop:3}, satisfactionStars:{fontSize:16,color:'#f59e0b'}, satisfactionSubratings:{display:'flex',gap:8,flexWrap:'wrap',marginTop:11,fontSize:11,color:'#64748b'}, satisfactionComment:{margin:'12px 0 0',fontSize:13.5,color:'#475569',background:'#f8fafc',padding:'10px 12px',borderRadius:10}, satisfactionEmpty:{padding:24,textAlign:'center',color:'#94a3b8',background:'#fff',border:'1px dashed #cbd5e1',borderRadius:14},
+
 }
 
 export default OwnerDashboard
