@@ -287,17 +287,21 @@ function PublicInfoPage({ type='overview' }) {
     {
       key: 'specialized',
       name: 'Specialized System',
-      tagline: 'Custom deployments for businesses that need specialized loyalty, NFC, access, membership, or operational integrations.',
+      tagline: 'Maximize your business with a specialized digital loyalty system built around your operational needs — designed to boost efficiency, customer retention, and long-term growth.',
+      benefits: ['Efficiency', 'Retention', 'Growth'],
       features: [
-        'Specialized system for your business',
+        'Specialized digital loyalty system for your business',
+        'Website integration',
+        'Location services & geo tagging',
         'NFC & contactless integration',
+        'Booking & reservation system integration',
+        'Payment system integration',
         'Google Wallet & Apple Wallet',
         'Custom loyalty card configuration',
-        'Analytics',
+        'Analytics & customer insights',
         'Announcements & birthday greetings',
         'Google review prompt',
         'Win-back system',
-        'Geo tagging',
         'Advance ordering',
         'Customer service',
       ],
@@ -829,16 +833,26 @@ function PublicInfoPage({ type='overview' }) {
                     <div style={s.pricingSpecializedEyebrow}>CUSTOM SOLUTION</div>
                     <h3 style={s.pricingSpecializedTitle}>{plan.name}</h3>
                     <p style={s.pricingSpecializedTagline}>{plan.tagline}</p>
-                    <div style={s.pricingDiscuss}>Upon discussion</div>
+
+                    <div style={s.pricingSpecializedBenefits}>
+                      {plan.benefits?.map(benefit => (
+                        <span key={benefit} style={s.pricingSpecializedBenefit}>{benefit}</span>
+                      ))}
+                    </div>
+
+                    <div style={s.pricingDiscuss}>Pricing upon discussion</div>
                   </div>
 
-                  <div style={s.pricingSpecializedFeatures}>
-                    {plan.features.slice(0,6).map(feature => (
-                      <div key={feature} style={s.pricingSpecializedFeature}>
-                        <span style={s.pricingCheck}>✓</span>
-                        <span>{feature}</span>
-                      </div>
-                    ))}
+                  <div>
+                    <div style={s.pricingSpecializedFeatureTitle}>Connect LoyaltyTree with your business systems</div>
+                    <div style={s.pricingSpecializedFeatures}>
+                      {plan.features.slice(0,8).map(feature => (
+                        <div key={feature} style={s.pricingSpecializedFeature}>
+                          <span style={s.pricingCheck}>✓</span>
+                          <span>{feature}</span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
 
                   <button onClick={()=>navigate('/contact')} style={s.pricingPrimaryBtn}>
@@ -1016,9 +1030,16 @@ const s={
   pricingSpecializedContent:{display:'grid',gridTemplateColumns:'1.2fr 1.5fr auto',gap:24,alignItems:'center'},
   pricingSpecializedEyebrow:{fontSize:9.5,fontWeight:900,letterSpacing:1.1,color:'#99f6e4',marginBottom:6},
   pricingSpecializedTitle:{fontSize:24,fontWeight:900,margin:'0 0 8px',color:'#fff'},
-  pricingSpecializedTagline:{fontSize:12.5,lineHeight:1.5,color:'rgba(255,255,255,.72)',margin:0,maxWidth:460},
+  pricingSpecializedTagline:{fontSize:13.5,lineHeight:1.6,color:'rgba(255,255,255,.78)',margin:0,maxWidth:500},
+  pricingSpecializedBenefits:{display:'flex',gap:8,flexWrap:'wrap',margin:'14px 0 4px'},
+  pricingSpecializedBenefit:{
+    display:'inline-flex',alignItems:'center',justifyContent:'center',padding:'6px 9px',
+    borderRadius:999,background:'rgba(153,246,228,.12)',border:'1px solid rgba(153,246,228,.22)',
+    color:'#ccfbf1',fontSize:10,fontWeight:900,letterSpacing:.6,
+  },
+  pricingSpecializedFeatureTitle:{fontSize:11,fontWeight:900,letterSpacing:.7,color:'#99f6e4',marginBottom:10,textTransform:'uppercase'},
   pricingSpecializedFeatures:{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:'8px 14px'},
-  pricingSpecializedFeature:{display:'flex',gap:8,fontSize:11.5,lineHeight:1.35,color:'rgba(255,255,255,.86)'},
+  pricingSpecializedFeature:{display:'flex',gap:8,fontSize:11.5,lineHeight:1.4,color:'rgba(255,255,255,.88)'},
   pricingFeatureList:{listStyle:'none',padding:0,margin:'0 0 18px',display:'grid',gap:8,flex:1},
   pricingFeatureItem:{display:'flex',gap:8,alignItems:'flex-start',fontSize:11.5,lineHeight:1.4,color:'#475569'},
   pricingCheck:{color:'#0d9488',fontWeight:900,marginTop:1},
