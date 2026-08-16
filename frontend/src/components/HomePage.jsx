@@ -350,6 +350,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
   const [partners, setPartners] = useState([])
   const [partnersLoading, setPartnersLoading] = useState(true)
   const [partnersError, setPartnersError] = useState('')
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -472,55 +473,153 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         .lt-home-overview-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; }
         .lt-brand-pillars { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:0 0 22px; max-width:560px; }
         .lt-brand-pillar { min-width:0; }
+        .lt-home-mobile-toggle { display:none; }
+
         @media (max-width: 900px) {
-          .lt-home-header { align-items:center !important; flex-wrap:wrap !important; padding:12px 16px !important; }
-          .lt-home-navlinks { order:3; width:100%; margin-left:0 !important; justify-content:flex-start; flex-wrap:nowrap; overflow-x:auto; padding:8px 0 0; scrollbar-width:none; border-top:1px solid #f1f5f9; }
-          .lt-home-navlinks::-webkit-scrollbar { display:none; }
-          .lt-home-navlink { white-space:nowrap; }
-          .lt-how-dropdown { position:fixed !important; left:14px !important; right:14px !important; top:auto !important; width:auto !important; }
+          .lt-home-header {
+            position:sticky !important;
+            top:0;
+            align-items:center !important;
+            flex-wrap:nowrap !important;
+            padding:10px 12px !important;
+            gap:9px !important;
+          }
+
+          .lt-home-navlinks {
+            display:none;
+            position:absolute;
+            top:calc(100% + 8px);
+            left:12px;
+            right:12px;
+            width:auto;
+            margin:0 !important;
+            padding:10px;
+            background:#fff;
+            border:1px solid #e2e8f0;
+            border-radius:14px;
+            box-shadow:0 18px 45px rgba(15,23,42,.16);
+            z-index:300;
+          }
+
+          .lt-home-navlinks.mobile-open {
+            display:flex;
+            flex-direction:column;
+            align-items:stretch;
+            gap:4px;
+          }
+
+          .lt-home-navlinks > button,
+          .lt-home-navlinks .lt-how-summary {
+            width:100%;
+            box-sizing:border-box;
+            text-align:left;
+            justify-content:flex-start;
+            padding:12px !important;
+          }
+
+          .lt-how-menu { width:100%; }
+
+          .lt-how-dropdown {
+            position:static !important;
+            width:auto !important;
+            margin-top:5px;
+            padding:6px !important;
+            box-shadow:none !important;
+            border-radius:10px !important;
+            background:#f8fafc !important;
+          }
+
+          .lt-home-login {
+            margin-left:auto;
+            flex:0 0 auto;
+          }
+
+          .lt-home-mobile-toggle {
+            display:flex;
+            width:42px;
+            height:42px;
+            align-items:center;
+            justify-content:center;
+            border:1px solid #dbe4ea;
+            border-radius:11px;
+            background:#fff;
+            color:#0f172a;
+            font-size:21px;
+            font-weight:900;
+            cursor:pointer;
+            flex:0 0 auto;
+          }
+
           .lt-home-overview-grid { grid-template-columns:1fr !important; }
         }
+
         @media (max-width: 700px) {
-          .lt-home-hero-actions { width:100%; }
+          .lt-home-hero-actions {
+            width:100%;
+            display:grid !important;
+            grid-template-columns:1fr !important;
+            gap:10px !important;
+          }
+
+          .lt-home-hero-actions button { width:100%; }
+
           .lt-brand-pillars { gap:7px; margin-bottom:18px; }
           .lt-brand-pillar { padding:12px 8px !important; }
           .lt-brand-pillar-word { font-size:13px !important; }
           .lt-brand-pillar-copy { font-size:10px !important; }
         }
+
         @media (max-width: 560px) {
-          .lt-home-login { padding:9px 12px !important; font-size:12px !important; }
+          .lt-home-brand-name { font-size:17px !important; }
+          .lt-home-login { padding:9px 10px !important; font-size:11.5px !important; border-radius:9px !important; }
+          .lt-home-mobile-toggle { width:40px; height:40px; font-size:20px; }
         }
       `}</style>
       <header className="lt-home-header" style={styles.nav}>
         <button onClick={() => scrollToSection('top')} style={styles.brandButton} aria-label="Go to top">
           <img src={logo192} alt="LoyaltyTree" style={styles.logo} />
-          <span style={styles.brandName}>LoyaltyTree</span>
+          <span className="lt-home-brand-name" style={styles.brandName}>LoyaltyTree</span>
         </button>
 
-        <nav className="lt-home-navlinks" aria-label="Homepage navigation">
+        <nav className={`lt-home-navlinks ${mobileMenuOpen ? "mobile-open" : ""}`} aria-label="Homepage navigation">
           <details className="lt-how-menu">
             <summary className="lt-home-navlink lt-how-summary" style={styles.navLink}>How It Works <span style={{fontSize:10}}>▾</span></summary>
             <div className="lt-how-dropdown">
-              <button onClick={() => goPublicPage('/how-it-works')} style={styles.dropdownItem}>
+              <button onClick={() => { setMobileMenuOpen(false); goPublicPage('/how-it-works') }} style={styles.dropdownItem}>
                 <span style={styles.dropdownIcon}>📊</span>
                 <span><b>Overview</b><small style={styles.dropdownSmall}>See the complete LoyaltyTree flow</small></span>
               </button>
-              <button onClick={() => goPublicPage('/how-it-works/businesses')} style={styles.dropdownItem}>
+              <button onClick={() => { setMobileMenuOpen(false); goPublicPage('/how-it-works/businesses') }} style={styles.dropdownItem}>
                 <span style={styles.dropdownIcon}>🏪</span>
                 <span><b>For Businesses</b><small style={styles.dropdownSmall}>Card setup, cashier, analytics and retention</small></span>
               </button>
-              <button onClick={() => goPublicPage('/how-it-works/customers')} style={styles.dropdownItem}>
+              <button onClick={() => { setMobileMenuOpen(false); goPublicPage('/how-it-works/customers') }} style={styles.dropdownItem}>
                 <span style={styles.dropdownIcon}>👥</span>
                 <span><b>For Customers</b><small style={styles.dropdownSmall}>Join, Wallet card, rewards and updates</small></span>
               </button>
             </div>
           </details>
-          <button className="lt-home-navlink" onClick={() => goPublicPage('/how-it-works#pricing')} style={styles.navLink}>Pricing</button>
-          <button className="lt-home-navlink" onClick={() => goPublicPage('/about')} style={styles.navLink}>About Us</button>
-          <button className="lt-home-navlink" onClick={() => goPublicPage('/contact')} style={styles.navLink}>Contact Us</button>
+          <button className="lt-home-navlink" onClick={() => { setMobileMenuOpen(false); goPublicPage('/how-it-works#pricing') }} style={styles.navLink}>Pricing</button>
+          <button className="lt-home-navlink" onClick={() => { setMobileMenuOpen(false); goPublicPage('/about') }} style={styles.navLink}>About Us</button>
+          <button className="lt-home-navlink" onClick={() => { setMobileMenuOpen(false); goPublicPage('/contact') }} style={styles.navLink}>Contact Us</button>
+          <button
+            className="lt-home-navlink"
+            onClick={() => { setMobileMenuOpen(false); navigate('/signup') }}
+            style={{...styles.navLink, ...styles.applyNavLink}}
+          >
+            Apply My Business
+          </button>
         </nav>
 
         <button className="lt-home-login" onClick={goToLogin} style={styles.navBtn}>Business Login</button>
+        <button
+          className="lt-home-mobile-toggle"
+          onClick={() => setMobileMenuOpen(v => !v)}
+          aria-label={mobileMenuOpen ? 'Close menu' : 'Open menu'}
+          aria-expanded={mobileMenuOpen}
+        >
+          {mobileMenuOpen ? '×' : '☰'}
+        </button>
       </header>
 
       <section id="top" style={styles.hero}>
@@ -552,7 +651,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
           </p>
           <div className="lt-home-hero-actions" style={styles.heroActions}>
             <button onClick={goToLogin} style={styles.heroBtn}>Get Started for Your Business</button>
-            <button onClick={() => goPublicPage('/how-it-works')} style={styles.heroSecondaryBtn}>See How It Works →</button>
+            <button onClick={() => { setMobileMenuOpen(false); goPublicPage('/how-it-works') }} style={styles.heroSecondaryBtn}>See How It Works →</button>
           </div>
           <div style={styles.heroTrustRow}>
             <span>✓ No customer app</span>
@@ -820,7 +919,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
             <p style={styles.homePriceText}>For NFC, contactless, membership, access, and specialized business integrations.</p>
           </div>
         </div>
-        <button onClick={() => goPublicPage('/how-it-works#pricing')} style={styles.homePricingButton}>View full pricing & branch options →</button>
+        <button onClick={() => { setMobileMenuOpen(false); goPublicPage('/how-it-works#pricing') }} style={styles.homePricingButton}>View full pricing & branch options →</button>
       </section>
 
       {(partnersLoading || partnersError || partners.length > 0) && (
@@ -907,7 +1006,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
             </div>
             <div style={styles.contactActions}>
               <button onClick={openContact} style={styles.contactPrimary}>💬 Message LoyaltyTree</button>
-              <button onClick={() => goPublicPage('/contact')} style={styles.contactSecondary}>Contact Us</button>
+              <button onClick={() => { setMobileMenuOpen(false); goPublicPage('/contact') }} style={styles.contactSecondary}>Contact Us</button>
             </div>
           </div>
         </div>
@@ -915,8 +1014,11 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
 
       <section style={styles.ctaSection}>
         <h2 style={{ ...styles.h2, color: 'white' }}>Ready to grow your regulars?</h2>
-        <p style={styles.ctaSub}>Log in to your business account to set up or manage your loyalty card.</p>
-        <button onClick={goToLogin} style={styles.ctaBtn}>Business Login</button>
+        <p style={styles.ctaSub}>Apply your business to start using LoyaltyTree, or log in if your business already has an account.</p>
+        <div style={styles.ctaActions}>
+          <button onClick={() => navigate('/signup')} style={styles.ctaBtn}>Apply My Business</button>
+          <button onClick={goToLogin} style={styles.ctaSecondaryBtn}>Business Login</button>
+        </div>
       </section>
 
       <footer style={styles.footer}>
@@ -1031,6 +1133,9 @@ const styles = {
   navLink: {
     border: 'none', background: 'transparent', color: '#334155', borderRadius: 9,
     padding: '9px 10px', fontSize: 13, fontWeight: 650, cursor: 'pointer',
+  },
+  applyNavLink: {
+    background:'#ecfdf5', color:'#0f766e', fontWeight:850,
   },
   dropdownItem: {
     width: '100%', display: 'flex', gap: 11, alignItems: 'flex-start', textAlign: 'left',
@@ -1194,6 +1299,8 @@ const styles = {
   homePriceUnit:{fontSize:13,fontWeight:700,color:'#64748b',marginLeft:3},
   homePriceCustom:{fontSize:30,fontWeight:900,color:'#0f766e'},
   homePriceText:{fontSize:12.5,lineHeight:1.6,color:'#64748b',margin:'12px 0 0'},
+  homePricingActions:{display:'flex',justifyContent:'center',gap:10,flexWrap:'wrap',marginTop:20},
+  homePricingApplyButton:{border:0,background:'#0d9488',color:'#fff',padding:'12px 18px',borderRadius:11,fontWeight:850,cursor:'pointer'},
   homePricingButton:{marginTop:24,padding:'13px 18px',border:'none',borderRadius:11,background:'#0d9488',color:'#fff',fontSize:13,fontWeight:800,cursor:'pointer'},
 
   // Marketing / Retention / Zero Waste pillars
