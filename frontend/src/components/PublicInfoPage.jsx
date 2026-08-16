@@ -15,24 +15,24 @@ import businessStep6StampActivity from '../assets/business-step-6-stamp-activity
 
 const PAGE_CONTENT = {
   overview: {
-    eyebrow: 'HOW IT WORKS',
-    title: 'One loyalty system. From first scan to repeat customer.',
-    intro: 'LoyaltyTree connects customer joining, digital Wallet cards, cashier activity, rewards, retention and business analytics in one flow.',
+    eyebrow: 'HOW IT WORKS · OVERVIEW',
+    title: 'One connected loyalty journey — for the customer and the business.',
+    intro: 'LoyaltyTree connects the entire relationship: customers join and keep the card in their phone, staff record activity at checkout, and the business uses rewards, communication and analytics to strengthen repeat visits.',
     steps: [
-      ['1', 'Customer joins', 'A customer scans the business QR code and joins the loyalty program from their phone.'],
-      ['2', 'Card goes to Wallet', 'Their LoyaltyTree card can be saved to Apple Wallet or Google Wallet, so there is no separate loyalty app to remember.'],
-      ['3', 'Cashier scans the customer', 'At checkout, an authorized cashier uses the normal LoyaltyTree camera scanner to identify the customer and record the correct activity.'],
-      ['4', 'Rewards update', 'Stamps, points, membership status, VIP progress or pass sessions update in the same customer record and sync back to the Wallet card.'],
-      ['5', 'Loyalty keeps working', 'Announcements, birthday greetings, win-back activity, analytics and retention tools help the business keep customers engaged.'],
+      ['1', 'Customer discovers the program', 'The business shares one QR code in-store, online, on receipts, menus or marketing materials.'],
+      ['2', 'Customer joins & saves the card', 'The customer enrolls and saves the branded loyalty card to Apple Wallet or Google Wallet.'],
+      ['3', 'Staff records real activity', 'Authorized cashiers scan the customer card and record stamps, points, visits, membership activity or other loyalty actions.'],
+      ['4', 'The customer sees progress', 'The same Wallet card reflects rewards, loyalty progress, membership status, VIP tiers or remaining sessions.'],
+      ['5', 'The business keeps the relationship active', 'Analytics, announcements, birthday greetings, retention tools and customer activity help the business stay connected after checkout.'],
     ],
-    featureTitle: 'The LoyaltyTree loop',
+    featureTitle: 'Everything stays connected',
     features: [
-      ['📲', 'QR-first joining', 'Fast onboarding for customers using a link or printed QR code.'],
-      ['👛', 'Digital Wallet card', 'A loyalty card customers can keep with the cards they already use on their phone.'],
-      ['📷', 'Cashier scanning', 'Authorized staff scan the customer and perform the correct loyalty transaction.'],
-      ['📊', 'Business visibility', 'Owners can see customer activity, loyalty performance and operational trends.'],
-      ['🔔', 'Customer engagement', 'Wallet updates and retention features help bring customers back.'],
-      ['🔒', 'Controlled transactions', 'Cashier sessions, audit records and transaction protections keep loyalty activity accountable.'],
+      ['📲', 'Customer joining', 'One QR-led experience that moves the customer from discovery to enrollment quickly.'],
+      ['👛', 'Apple & Google Wallet', 'The loyalty card stays in a familiar place on the customer’s phone instead of another separate loyalty app.'],
+      ['🧾', 'Cashier accountability', 'Staff activity can be tied to individual cashier accounts, timestamps and branches.'],
+      ['🎁', 'Flexible loyalty programs', 'Run stamps, points, memberships, multipass programs, VIP tiers and other supported loyalty experiences.'],
+      ['📣', 'Direct engagement', 'Use announcements, birthday greetings and retention messaging to stay connected beyond a single purchase.'],
+      ['📊', 'Business intelligence', 'Use customer, loyalty, activity and retention analytics to understand how the program is performing.'],
     ],
   },
   businesses: {
@@ -202,6 +202,14 @@ function PublicInfoPage({ type='overview' }) {
     },
   ]
 
+  const overviewSteps = [
+    {number:'01', icon:'📲', title:'Discover & Join', body:'A customer scans the business QR and joins the loyalty program.'},
+    {number:'02', icon:'👛', title:'Save to Wallet', body:'The branded card goes to Apple Wallet or Google Wallet.'},
+    {number:'03', icon:'📷', title:'Scan at Checkout', body:'Authorized staff scan the customer and record the loyalty activity.'},
+    {number:'04', icon:'🎁', title:'Reward Progress Updates', body:'Stamps, points, tiers, memberships or sessions update in the customer record.'},
+    {number:'05', icon:'🔁', title:'Keep the Relationship Going', body:'Announcements, birthday greetings, retention tools and analytics help bring customers back.'},
+  ]
+
   const goBusinessStep = (index) => {
     const safeIndex = Math.max(0, Math.min(businessSteps.length - 1, index))
     setBusinessStep(safeIndex)
@@ -214,8 +222,9 @@ function PublicInfoPage({ type='overview' }) {
 
   return <div style={s.page}>
     <style>{`
-      .public-nav { display:flex; align-items:center; justify-content:space-between; gap:18px; }
-      .public-links { display:flex; align-items:center; gap:5px; flex-wrap:wrap; margin-left:auto; }
+      .public-nav { display:flex; align-items:center; width:100%; max-width:none; gap:18px; }
+      .public-links { display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; margin-left:auto; }
+      .public-login-desktop { margin-left:8px; flex:0 0 auto; }
       .public-how { position:relative; }
       .public-how summary { list-style:none; cursor:pointer; }
       .public-how summary::-webkit-details-marker { display:none; }
@@ -250,6 +259,11 @@ function PublicInfoPage({ type='overview' }) {
       .customer-mobile-slider { display:none; }
       .business-visual-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; align-items:stretch; }
       .business-mobile-slider { display:none; }
+      .overview-flow-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; }
+      @media(max-width:1100px){
+        .overview-flow-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }
+        .overview-flow-arrow { display:none !important; }
+      }
       @media(max-width:1050px){
         .customer-desktop-grid { display:none; }
         .customer-mobile-slider { display:block; }
@@ -258,7 +272,7 @@ function PublicInfoPage({ type='overview' }) {
       }
       .public-mobile-toggle { display:none; }
       @media(max-width:760px){
-        .public-nav { position:relative; gap:10px; }
+        .public-nav { position:relative; width:100%; gap:10px; }
         .public-mobile-toggle {
           display:flex;
           width:42px;
@@ -307,6 +321,7 @@ function PublicInfoPage({ type='overview' }) {
         }
         .public-login-desktop { display:none !important; }
         .public-login-mobile { display:block !important; }
+        .overview-flow-grid { grid-template-columns:1fr; }
       }
       @media(min-width:761px){
         .public-login-mobile { display:none !important; }
@@ -532,7 +547,55 @@ function PublicInfoPage({ type='overview' }) {
         </div>
       </section>}
 
-      {page.steps && type!=='customers' && type!=='businesses' && <section style={s.section}>
+      {type==='overview' && <section style={s.overviewSection}>
+        <div style={s.overviewIntroRow}>
+          <div>
+            <span style={s.customerJourneyEyebrow}>ONE CONNECTED SYSTEM</span>
+            <h2 style={s.overviewSectionTitle}>From first scan to the next visit.</h2>
+          </div>
+          <p style={s.overviewSectionIntro}>
+            LoyaltyTree connects what the customer experiences with what the business operates — without breaking the journey into separate tools.
+          </p>
+        </div>
+
+        <div className="overview-flow-grid" style={s.overviewFlowGrid}>
+          {overviewSteps.map((step,index)=>(
+            <article key={step.number} style={s.overviewFlowCard}>
+              <div style={s.overviewFlowTop}>
+                <span style={s.overviewFlowNumber}>{step.number}</span>
+                <span style={s.overviewFlowIcon}>{step.icon}</span>
+              </div>
+              <h3 style={s.overviewFlowTitle}>{step.title}</h3>
+              <p style={s.overviewFlowBody}>{step.body}</p>
+              {index < overviewSteps.length-1 && <div className="overview-flow-arrow" style={s.overviewFlowArrow}>→</div>}
+            </article>
+          ))}
+        </div>
+
+        <div style={s.overviewTwoSides}>
+          <article style={{...s.overviewSideCard,...s.overviewCustomerCard}}>
+            <div style={s.overviewSideIcon}>👥</div>
+            <div>
+              <span style={s.overviewSideEyebrow}>CUSTOMER SIDE</span>
+              <h3 style={s.overviewSideTitle}>Simple enough to use every visit.</h3>
+              <p style={s.overviewSideBody}>Scan, join, save the card, show it at checkout, earn progress and receive relevant updates.</p>
+              <button style={s.overviewLinkBtn} onClick={()=>navigate('/how-it-works/customers')}>See For Customers →</button>
+            </div>
+          </article>
+
+          <article style={{...s.overviewSideCard,...s.overviewBusinessCard}}>
+            <div style={s.overviewSideIcon}>🏪</div>
+            <div>
+              <span style={s.overviewSideEyebrow}>BUSINESS SIDE</span>
+              <h3 style={s.overviewSideTitle}>One dashboard to operate the relationship.</h3>
+              <p style={s.overviewSideBody}>Design the program, create team access, share the join QR, monitor activity, engage customers and analyze performance.</p>
+              <button style={s.overviewLinkBtn} onClick={()=>navigate('/how-it-works/businesses')}>See For Businesses →</button>
+            </div>
+          </article>
+        </div>
+      </section>}
+
+      {page.steps && type!=='customers' && type!=='businesses' && type!=='overview' && <section style={s.section}>
         <div style={s.stepGrid}>
           {page.steps.map(([n,title,body])=><article key={n} style={s.stepCard}>
             <div style={s.number}>{n}</div>
@@ -638,6 +701,35 @@ const s={
   primary:{border:0,background:'#0d9488',color:'#fff',padding:'12px 17px',borderRadius:11,fontWeight:850,cursor:'pointer'},
   secondary:{border:'1px solid #0d9488',background:'#fff',color:'#0f766e',padding:'11px 16px',borderRadius:11,fontWeight:850,cursor:'pointer'},
   section:{maxWidth:1100,margin:'0 auto',padding:'58px 22px'},
+  overviewSection:{maxWidth:1260,margin:'0 auto',padding:'58px 22px 26px'},
+  overviewIntroRow:{
+    display:'flex',justifyContent:'space-between',alignItems:'flex-end',gap:28,flexWrap:'wrap',marginBottom:24,
+  },
+  overviewSectionTitle:{fontSize:'clamp(27px,4vw,40px)',lineHeight:1.12,fontWeight:900,margin:'6px 0 0',color:'#0f172a'},
+  overviewSectionIntro:{maxWidth:500,fontSize:14,lineHeight:1.7,color:'#64748b',margin:0},
+  overviewFlowGrid:{display:'grid',gridTemplateColumns:'repeat(5,minmax(0,1fr))',gap:12},
+  overviewFlowCard:{
+    position:'relative',minWidth:0,background:'#fff',border:'1px solid #e2e8f0',borderRadius:18,
+    padding:17,boxShadow:'0 10px 28px rgba(15,23,42,.05)',
+  },
+  overviewFlowTop:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,marginBottom:18},
+  overviewFlowNumber:{fontSize:10,fontWeight:900,letterSpacing:1,color:'#0f766e',background:'#ecfdf5',padding:'5px 7px',borderRadius:999},
+  overviewFlowIcon:{fontSize:22},
+  overviewFlowTitle:{fontSize:15.5,fontWeight:900,lineHeight:1.25,color:'#0f172a',margin:'0 0 7px'},
+  overviewFlowBody:{fontSize:12.5,lineHeight:1.6,color:'#64748b',margin:0},
+  overviewFlowArrow:{
+    position:'absolute',right:-13,top:'50%',transform:'translateY(-50%)',width:25,height:25,borderRadius:'50%',
+    display:'grid',placeItems:'center',background:'#0d9488',color:'#fff',fontWeight:900,zIndex:3,boxShadow:'0 5px 14px rgba(13,148,136,.2)',
+  },
+  overviewTwoSides:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(300px,1fr))',gap:16,marginTop:24},
+  overviewSideCard:{display:'flex',gap:16,alignItems:'flex-start',padding:24,borderRadius:20,border:'1px solid #e2e8f0'},
+  overviewCustomerCard:{background:'linear-gradient(135deg,#f8fafc,#eff6ff)'},
+  overviewBusinessCard:{background:'linear-gradient(135deg,#f0fdf4,#ecfdf5)'},
+  overviewSideIcon:{width:48,height:48,borderRadius:14,display:'grid',placeItems:'center',fontSize:23,background:'#fff',flexShrink:0,boxShadow:'0 6px 18px rgba(15,23,42,.06)'},
+  overviewSideEyebrow:{fontSize:9.5,fontWeight:900,letterSpacing:1,color:'#0f766e'},
+  overviewSideTitle:{fontSize:20,fontWeight:900,lineHeight:1.25,color:'#0f172a',margin:'5px 0 8px'},
+  overviewSideBody:{fontSize:13.5,lineHeight:1.65,color:'#64748b',margin:'0 0 13px'},
+  overviewLinkBtn:{border:0,background:'transparent',padding:0,color:'#0f766e',fontWeight:850,fontSize:12.5,cursor:'pointer'},
   customerJourneySection:{maxWidth:1320,margin:'0 auto',padding:'52px 22px 24px'},
   customerJourneyIntro:{
     display:'flex',justifyContent:'space-between',gap:24,alignItems:'flex-end',
