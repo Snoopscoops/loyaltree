@@ -113,10 +113,19 @@ function PublicInfoPage({ type='overview' }) {
   const [customerStep, setCustomerStep] = useState(0)
   const [businessStep, setBusinessStep] = useState(0)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [pricingBranchTier, setPricingBranchTier] = useState('1')
 
   useEffect(() => {
     setCustomerStep(0)
     setBusinessStep(0)
+  }, [type])
+
+  useEffect(() => {
+    if (type === 'overview' && window.location.hash === '#pricing') {
+      window.setTimeout(() => {
+        document.getElementById('pricing')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }, 50)
+    }
   }, [type])
 
   const openMessenger = () => window.open('https://m.me/theloyaltytree', '_blank', 'noopener,noreferrer')
@@ -202,6 +211,87 @@ function PublicInfoPage({ type='overview' }) {
     },
   ]
 
+  const pricingBranches = [
+    { key: '1', label: '1 branch' },
+    { key: '2-3', label: '2–3 branches' },
+    { key: '5', label: 'Up to 5 branches' },
+  ]
+
+  const pricingPlans = [
+    {
+      key: 'starter',
+      name: 'Starter',
+      prices: { '1': 350, '2-3': 650, '5': 1300 },
+      tagline: 'A complete digital loyalty system for smaller businesses getting started.',
+      features: [
+        'Google Wallet & Apple Wallet',
+        '2 active announcements',
+        'Full digital loyalty system',
+        'Full loyalty card customization',
+        'Analytics',
+        'Birthday automated greetings',
+        'Customer service',
+      ],
+    },
+    {
+      key: 'growth',
+      name: 'Growth',
+      highlight: true,
+      prices: { '1': 550, '2-3': 1050, '5': 2100 },
+      tagline: 'More customer engagement and retention tools for growing businesses.',
+      features: [
+        'Google Wallet & Apple Wallet',
+        'Up to 5 active announcements',
+        'Full digital loyalty system',
+        'Full loyalty card customization',
+        'Analytics',
+        'Google review prompt',
+        'Birthday automated greetings',
+        'Win-back system after 30 days without a stamp',
+        'Customer service',
+      ],
+    },
+    {
+      key: 'pro',
+      name: 'Pro',
+      comingSoon: true,
+      prices: { '1': 750, '2-3': 1450, '5': 2900 },
+      tagline: 'Advanced loyalty tools for businesses ready to run more complex programs.',
+      features: [
+        'Google Wallet & Apple Wallet',
+        'Up to 7 active announcements',
+        'Full digital loyalty system',
+        'Full loyalty card customization',
+        'Analytics',
+        'Google review prompt',
+        'Birthday automated greetings',
+        'Up to 3 loyalty cards in circulation',
+        'Win-back system after 30 days without a stamp',
+        'Geo tagging',
+        'Advance ordering',
+        'Customer service',
+      ],
+    },
+    {
+      key: 'specialized',
+      name: 'Specialized System',
+      tagline: 'Custom deployments for businesses that need specialized loyalty, NFC, access, membership, or operational integrations.',
+      features: [
+        'Specialized system for your business',
+        'NFC & contactless integration',
+        'Google Wallet & Apple Wallet',
+        'Custom loyalty card configuration',
+        'Analytics',
+        'Announcements & birthday greetings',
+        'Google review prompt',
+        'Win-back system',
+        'Geo tagging',
+        'Advance ordering',
+        'Customer service',
+      ],
+    },
+  ]
+
   const overviewSteps = [
     {number:'01', icon:'📲', title:'Discover & Join', body:'A customer scans the business QR and joins the loyalty program.'},
     {number:'02', icon:'👛', title:'Save to Wallet', body:'The branded card goes to Apple Wallet or Google Wallet.'},
@@ -261,8 +351,22 @@ function PublicInfoPage({ type='overview' }) {
       .business-mobile-slider { display:none; }
       .overview-flow-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; }
       @media(max-width:1100px){
-        .overview-flow-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }
+        main > section:first-child { padding:48px 16px !important; }
+        .overview-flow-grid {
+          display:flex !important;
+          overflow-x:auto;
+          gap:14px;
+          scroll-snap-type:x mandatory;
+          padding:2px 2px 12px;
+          scrollbar-width:none;
+        }
+        .overview-flow-grid::-webkit-scrollbar { display:none; }
+        .overview-flow-grid > article {
+          flex:0 0 min(78vw,320px);
+          scroll-snap-align:start;
+        }
         .overview-flow-arrow { display:none !important; }
+        .pricing-grid { grid-template-columns:repeat(2,minmax(0,1fr)) !important; }
       }
       @media(max-width:1050px){
         .customer-desktop-grid { display:none; }
@@ -321,7 +425,30 @@ function PublicInfoPage({ type='overview' }) {
         }
         .public-login-desktop { display:none !important; }
         .public-login-mobile { display:block !important; }
-        .overview-flow-grid { grid-template-columns:1fr; }
+        .overview-two-sides { grid-template-columns:1fr !important; }
+        .overview-side-card { padding:18px !important; }
+        .overview-pricing-branches {
+          justify-content:flex-start !important;
+          overflow-x:auto;
+          flex-wrap:nowrap !important;
+          padding-bottom:4px;
+          scrollbar-width:none;
+        }
+        .overview-pricing-branches::-webkit-scrollbar { display:none; }
+        .overview-pricing-branches button { white-space:nowrap; }
+        .overview-flow-grid {
+          display:flex !important;
+          overflow-x:auto;
+          gap:12px;
+          scroll-snap-type:x mandatory;
+          padding:2px 2px 10px;
+        }
+        .overview-flow-grid > article {
+          flex:0 0 calc(100vw - 52px);
+          max-width:340px;
+          scroll-snap-align:center;
+        }
+        .pricing-grid { grid-template-columns:1fr !important; }
       }
       @media(min-width:761px){
         .public-login-mobile { display:none !important; }
@@ -342,8 +469,10 @@ function PublicInfoPage({ type='overview' }) {
               <button onClick={()=>{navigate('/how-it-works');setMobileMenuOpen(false)}}>📊 Overview</button>
               <button onClick={()=>{navigate('/how-it-works/businesses');setMobileMenuOpen(false)}}>🏪 For Businesses</button>
               <button onClick={()=>{navigate('/how-it-works/customers');setMobileMenuOpen(false)}}>👥 For Customers</button>
+              <button onClick={()=>{navigate('/how-it-works#pricing');setMobileMenuOpen(false)}}>💳 Pricing</button>
             </div>
           </details>
+          <button onClick={()=>{navigate('/how-it-works#pricing');setMobileMenuOpen(false)}} style={s.navLink}>Pricing</button>
           <button onClick={()=>{navigate('/about');setMobileMenuOpen(false)}} style={s.navLink}>About Us</button>
           <button onClick={()=>{navigate('/contact');setMobileMenuOpen(false)}} style={s.navLink}>Contact Us</button>
           <button className="public-login-mobile" onClick={()=>{navigate('/login');setMobileMenuOpen(false)}} style={s.mobileLoginBtn}>Business Login</button>
@@ -572,8 +701,8 @@ function PublicInfoPage({ type='overview' }) {
           ))}
         </div>
 
-        <div style={s.overviewTwoSides}>
-          <article style={{...s.overviewSideCard,...s.overviewCustomerCard}}>
+        <div className="overview-two-sides" style={s.overviewTwoSides}>
+          <article className="overview-side-card" style={{...s.overviewSideCard,...s.overviewCustomerCard}}>
             <div style={s.overviewSideIcon}>👥</div>
             <div>
               <span style={s.overviewSideEyebrow}>CUSTOMER SIDE</span>
@@ -583,7 +712,7 @@ function PublicInfoPage({ type='overview' }) {
             </div>
           </article>
 
-          <article style={{...s.overviewSideCard,...s.overviewBusinessCard}}>
+          <article className="overview-side-card" style={{...s.overviewSideCard,...s.overviewBusinessCard}}>
             <div style={s.overviewSideIcon}>🏪</div>
             <div>
               <span style={s.overviewSideEyebrow}>BUSINESS SIDE</span>
@@ -592,6 +721,79 @@ function PublicInfoPage({ type='overview' }) {
               <button style={s.overviewLinkBtn} onClick={()=>navigate('/how-it-works/businesses')}>See For Businesses →</button>
             </div>
           </article>
+        </div>
+
+        <div id="pricing" style={s.pricingSection}>
+          <div style={s.pricingHeader}>
+            <span style={s.customerJourneyEyebrow}>PRICING</span>
+            <h2 style={s.pricingTitle}>Choose the plan that fits your business.</h2>
+            <p style={s.pricingIntro}>
+              Start with the number of branches you operate today. You can move to a larger plan as your loyalty program grows.
+            </p>
+          </div>
+
+          <div className="overview-pricing-branches" style={s.pricingBranchRow}>
+            {pricingBranches.map(branch => (
+              <button
+                key={branch.key}
+                onClick={()=>setPricingBranchTier(branch.key)}
+                style={{
+                  ...s.pricingBranchBtn,
+                  ...(pricingBranchTier===branch.key ? s.pricingBranchBtnActive : {}),
+                }}
+              >
+                {branch.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="pricing-grid" style={s.pricingGrid}>
+            {pricingPlans.map(plan => (
+              <article
+                key={plan.key}
+                style={{
+                  ...s.pricingCard,
+                  ...(plan.highlight ? s.pricingCardHighlight : {}),
+                }}
+              >
+                {plan.highlight && <div style={s.pricingPopular}>MOST POPULAR</div>}
+                {plan.comingSoon && <div style={s.pricingComingSoon}>COMING SOON</div>}
+
+                <h3 style={s.pricingPlanName}>{plan.name}</h3>
+                <p style={s.pricingTagline}>{plan.tagline}</p>
+
+                {plan.prices ? (
+                  <div style={s.pricingPriceWrap}>
+                    <span style={s.pricingCurrency}>₱</span>
+                    <span style={s.pricingPrice}>{plan.prices[pricingBranchTier].toLocaleString()}</span>
+                    <span style={s.pricingUnit}>/mo</span>
+                  </div>
+                ) : (
+                  <div style={s.pricingDiscuss}>Upon discussion</div>
+                )}
+
+                <ul style={s.pricingFeatureList}>
+                  {plan.features.map(feature => (
+                    <li key={feature} style={s.pricingFeatureItem}>
+                      <span style={s.pricingCheck}>✓</span>
+                      <span>{feature}</span>
+                    </li>
+                  ))}
+                </ul>
+
+                <button
+                  onClick={()=>navigate('/contact')}
+                  style={plan.highlight ? s.pricingPrimaryBtn : s.pricingSecondaryBtn}
+                >
+                  {plan.key==='specialized' ? 'Discuss Your System' : plan.comingSoon ? 'Ask About Pro' : 'Get Started'}
+                </button>
+              </article>
+            ))}
+          </div>
+
+          <p style={s.pricingNote}>
+            Need more than 5 branches or a custom deployment? Contact LoyaltyTree and we can discuss a specialized setup for your business.
+          </p>
         </div>
       </section>}
 
@@ -701,16 +903,16 @@ const s={
   primary:{border:0,background:'#0d9488',color:'#fff',padding:'12px 17px',borderRadius:11,fontWeight:850,cursor:'pointer'},
   secondary:{border:'1px solid #0d9488',background:'#fff',color:'#0f766e',padding:'11px 16px',borderRadius:11,fontWeight:850,cursor:'pointer'},
   section:{maxWidth:1100,margin:'0 auto',padding:'58px 22px'},
-  overviewSection:{maxWidth:1260,margin:'0 auto',padding:'58px 22px 26px'},
+  overviewSection:{maxWidth:1260,margin:'0 auto',padding:'clamp(34px,7vw,58px) clamp(14px,4vw,22px) 24px'},
   overviewIntroRow:{
-    display:'flex',justifyContent:'space-between',alignItems:'flex-end',gap:28,flexWrap:'wrap',marginBottom:24,
+    display:'flex',justifyContent:'space-between',alignItems:'flex-end',gap:18,flexWrap:'wrap',marginBottom:20,
   },
   overviewSectionTitle:{fontSize:'clamp(27px,4vw,40px)',lineHeight:1.12,fontWeight:900,margin:'6px 0 0',color:'#0f172a'},
-  overviewSectionIntro:{maxWidth:500,fontSize:14,lineHeight:1.7,color:'#64748b',margin:0},
+  overviewSectionIntro:{maxWidth:500,fontSize:'clamp(13px,2.8vw,14px)',lineHeight:1.65,color:'#64748b',margin:0},
   overviewFlowGrid:{display:'grid',gridTemplateColumns:'repeat(5,minmax(0,1fr))',gap:12},
   overviewFlowCard:{
     position:'relative',minWidth:0,background:'#fff',border:'1px solid #e2e8f0',borderRadius:18,
-    padding:17,boxShadow:'0 10px 28px rgba(15,23,42,.05)',
+    padding:18,boxShadow:'0 10px 28px rgba(15,23,42,.05)',
   },
   overviewFlowTop:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,marginBottom:18},
   overviewFlowNumber:{fontSize:10,fontWeight:900,letterSpacing:1,color:'#0f766e',background:'#ecfdf5',padding:'5px 7px',borderRadius:999},
@@ -722,7 +924,7 @@ const s={
     display:'grid',placeItems:'center',background:'#0d9488',color:'#fff',fontWeight:900,zIndex:3,boxShadow:'0 5px 14px rgba(13,148,136,.2)',
   },
   overviewTwoSides:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(300px,1fr))',gap:16,marginTop:24},
-  overviewSideCard:{display:'flex',gap:16,alignItems:'flex-start',padding:24,borderRadius:20,border:'1px solid #e2e8f0'},
+  overviewSideCard:{display:'flex',gap:14,alignItems:'flex-start',padding:'clamp(18px,4vw,24px)',borderRadius:20,border:'1px solid #e2e8f0'},
   overviewCustomerCard:{background:'linear-gradient(135deg,#f8fafc,#eff6ff)'},
   overviewBusinessCard:{background:'linear-gradient(135deg,#f0fdf4,#ecfdf5)'},
   overviewSideIcon:{width:48,height:48,borderRadius:14,display:'grid',placeItems:'center',fontSize:23,background:'#fff',flexShrink:0,boxShadow:'0 6px 18px rgba(15,23,42,.06)'},
@@ -730,6 +932,31 @@ const s={
   overviewSideTitle:{fontSize:20,fontWeight:900,lineHeight:1.25,color:'#0f172a',margin:'5px 0 8px'},
   overviewSideBody:{fontSize:13.5,lineHeight:1.65,color:'#64748b',margin:'0 0 13px'},
   overviewLinkBtn:{border:0,background:'transparent',padding:0,color:'#0f766e',fontWeight:850,fontSize:12.5,cursor:'pointer'},
+  pricingSection:{marginTop:'clamp(42px,8vw,72px)',paddingTop:'clamp(40px,7vw,62px)',borderTop:'1px solid #e2e8f0',scrollMarginTop:90},
+  pricingHeader:{maxWidth:720,margin:'0 auto 24px',textAlign:'center'},
+  pricingTitle:{fontSize:'clamp(28px,4vw,42px)',lineHeight:1.12,fontWeight:900,color:'#0f172a',margin:'7px 0 12px'},
+  pricingIntro:{fontSize:14.5,lineHeight:1.7,color:'#64748b',margin:0},
+  pricingBranchRow:{display:'flex',justifyContent:'center',gap:8,flexWrap:'wrap',marginBottom:24},
+  pricingBranchBtn:{border:'1px solid #cbd5e1',background:'#fff',color:'#475569',padding:'9px 14px',borderRadius:999,fontWeight:800,fontSize:12,cursor:'pointer'},
+  pricingBranchBtnActive:{background:'#0d9488',borderColor:'#0d9488',color:'#fff',boxShadow:'0 7px 18px rgba(13,148,136,.18)'},
+  pricingGrid:{display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:14,alignItems:'stretch'},
+  pricingCard:{position:'relative',display:'flex',flexDirection:'column',background:'#fff',border:'1px solid #e2e8f0',borderRadius:20,padding:20,boxShadow:'0 12px 30px rgba(15,23,42,.05)'},
+  pricingCardHighlight:{border:'2px solid #0d9488',boxShadow:'0 18px 40px rgba(13,148,136,.14)'},
+  pricingPopular:{position:'absolute',top:-12,left:'50%',transform:'translateX(-50%)',background:'#0d9488',color:'#fff',fontSize:9,fontWeight:900,letterSpacing:1,padding:'6px 10px',borderRadius:999,whiteSpace:'nowrap'},
+  pricingComingSoon:{display:'inline-flex',alignSelf:'flex-start',background:'#f1f5f9',color:'#64748b',fontSize:9,fontWeight:900,letterSpacing:.8,padding:'5px 8px',borderRadius:999,marginBottom:8},
+  pricingPlanName:{fontSize:21,fontWeight:900,color:'#0f172a',margin:'5px 0 7px'},
+  pricingTagline:{fontSize:12.5,lineHeight:1.55,color:'#64748b',margin:'0 0 15px',minHeight:58},
+  pricingPriceWrap:{display:'flex',alignItems:'baseline',gap:2,marginBottom:17},
+  pricingCurrency:{fontSize:16,fontWeight:850,color:'#0f766e'},
+  pricingPrice:{fontSize:34,fontWeight:950,color:'#0f172a',letterSpacing:'-.04em'},
+  pricingUnit:{fontSize:11,color:'#64748b',fontWeight:700},
+  pricingDiscuss:{fontSize:21,fontWeight:900,color:'#0f766e',margin:'5px 0 21px'},
+  pricingFeatureList:{listStyle:'none',padding:0,margin:'0 0 20px',display:'grid',gap:9,flex:1},
+  pricingFeatureItem:{display:'flex',gap:8,alignItems:'flex-start',fontSize:11.5,lineHeight:1.45,color:'#475569'},
+  pricingCheck:{color:'#0d9488',fontWeight:900,marginTop:1},
+  pricingPrimaryBtn:{width:'100%',border:0,background:'#0d9488',color:'#fff',padding:'11px 12px',borderRadius:10,fontWeight:850,cursor:'pointer'},
+  pricingSecondaryBtn:{width:'100%',border:'1px solid #0d9488',background:'#fff',color:'#0f766e',padding:'10px 12px',borderRadius:10,fontWeight:850,cursor:'pointer'},
+  pricingNote:{textAlign:'center',maxWidth:720,margin:'20px auto 0',fontSize:12.5,lineHeight:1.6,color:'#64748b'},
   customerJourneySection:{maxWidth:1320,margin:'0 auto',padding:'52px 22px 24px'},
   customerJourneyIntro:{
     display:'flex',justifyContent:'space-between',gap:24,alignItems:'flex-end',
