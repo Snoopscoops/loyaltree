@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import logo192 from './logo-192.png'
+import { trackEvent } from '../analytics'
 import customerStep1Scan from '../assets/customer-step-1-scan.png'
 import customerStep2Form from '../assets/customer-step-2-form.png'
 import customerStep2WalletButtons from '../assets/customer-step-2-wallet-buttons.png'
@@ -107,7 +108,7 @@ const PAGE_CONTENT = {
   },
 }
 
-function PublicInfoPage({ type='overview' }) {
+function PublicInfoPage({ type='overview', API_BASE='' }) {
   const navigate = useNavigate()
   const page = PAGE_CONTENT[type] || PAGE_CONTENT.overview
   const [customerStep, setCustomerStep] = useState(0)
@@ -129,9 +130,19 @@ function PublicInfoPage({ type='overview' }) {
     return () => window.clearTimeout(timer)
   }, [type])
 
-  const openMessenger = () => window.open('https://m.me/theloyaltytree', '_blank', 'noopener,noreferrer')
+  const openMessenger = () => {
+    trackEvent(API_BASE, 'contact_click', {
+      page_name: `Public Info - ${type}`,
+      metadata: { placement: 'messenger', section: type },
+    })
+    window.open('https://m.me/theloyaltytree', '_blank', 'noopener,noreferrer')
+  }
 
   const goToPricing = () => {
+    trackEvent(API_BASE, 'pricing_view', {
+      page_name: `Public Info - ${type}`,
+      metadata: { placement: 'public_info_navigation' },
+    })
     setMobileMenuOpen(false)
     if (type === 'overview') {
       window.history.replaceState(null, '', '/how-it-works#pricing')
@@ -141,6 +152,22 @@ function PublicInfoPage({ type='overview' }) {
       return
     }
     window.location.assign('/how-it-works#pricing')
+  }
+
+  const applyBusiness = (placement='public_info') => {
+    trackEvent(API_BASE, 'apply_business_click', {
+      page_name: `Public Info - ${type}`,
+      metadata: { placement, section: type },
+    })
+    navigate('/signup')
+  }
+
+  const contactLoyaltyTree = (placement='public_info') => {
+    trackEvent(API_BASE, 'contact_click', {
+      page_name: `Public Info - ${type}`,
+      metadata: { placement, section: type },
+    })
+    navigate('/contact')
   }
 
   const customerSteps = [
@@ -509,7 +536,7 @@ function PublicInfoPage({ type='overview' }) {
           </details>
           <button onClick={goToPricing} style={s.navLink}>Pricing</button>
           <button onClick={()=>{navigate('/about');setMobileMenuOpen(false)}} style={s.navLink}>About Us</button>
-          <button onClick={()=>{navigate('/contact');setMobileMenuOpen(false)}} style={s.navLink}>Contact Us</button>
+          <button onClick={()=>{trackEvent(API_BASE,'contact_click',{page_name:`Public Info - ${type}`,metadata:{placement:'header'}});navigate('/contact');setMobileMenuOpen(false)}} style={s.navLink}>Contact Us</button>
           <button className="public-login-mobile" onClick={()=>{navigate('/login');setMobileMenuOpen(false)}} style={s.mobileLoginBtn}>Business Login</button>
         </nav>
 
@@ -532,7 +559,7 @@ function PublicInfoPage({ type='overview' }) {
           <h1 style={s.h1}>{page.title}</h1>
           <p style={s.intro}>{page.intro}</p>
           {type==='overview' && <div style={s.heroActions}>
-            <button style={s.primary} onClick={()=>navigate('/signup')}>Get Started</button>
+            <button style={s.primary} onClick={()=>applyBusiness('overview_hero')}>Get Started</button>
             <button style={s.secondary} onClick={()=>navigate('/how-it-works/businesses')}>See it for businesses</button>
           </div>}
         </div>
@@ -820,7 +847,7 @@ function PublicInfoPage({ type='overview' }) {
                 </ul>
 
                 <button
-                  onClick={()=>navigate('/contact')}
+                  onClick={()=>contactLoyaltyTree('pricing_or_cta')}
                   style={plan.highlight ? s.pricingPrimaryBtn : s.pricingSecondaryBtn}
                 >
                   {plan.comingSoon ? 'Ask About Pro' : 'Get Started'}
@@ -859,7 +886,7 @@ function PublicInfoPage({ type='overview' }) {
                     </div>
                   </div>
 
-                  <button onClick={()=>navigate('/contact')} style={s.pricingPrimaryBtn}>
+                  <button onClick={()=>contactLoyaltyTree('pricing_or_cta')} style={s.pricingPrimaryBtn}>
                     Discuss Your System
                   </button>
                 </div>
@@ -899,7 +926,7 @@ function PublicInfoPage({ type='overview' }) {
                   )}
                 </div>
 
-                <button onClick={()=>navigate('/contact')} style={specialized||plan.highlight?s.pricingPrimaryBtn:s.pricingSecondaryBtn}>
+                <button onClick={()=>contactLoyaltyTree('pricing_or_cta')} style={specialized||plan.highlight?s.pricingPrimaryBtn:s.pricingSecondaryBtn}>
                   {specialized?'Discuss Your System':(plan.comingSoon?'Ask About Pro':'Get Started')}
                 </button>
 
@@ -966,7 +993,7 @@ function PublicInfoPage({ type='overview' }) {
               ))}
             </div>
           </>}
-          <button style={s.primary} onClick={()=>navigate('/contact')}>Contact LoyaltyTree</button>
+          <button style={s.primary} onClick={()=>contactLoyaltyTree('pricing_or_cta')}>Contact LoyaltyTree</button>
         </div>
       </section>}
 

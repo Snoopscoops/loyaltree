@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import logo192 from './logo-192.png'
 import logo64 from './logo-64.png'
+import { trackEvent } from '../analytics'
 
 const FEATURES = [
   {
@@ -342,7 +343,11 @@ const PLANS = [
 
 function HomePage({ onNavigateLogin, API_BASE = '' }) {
   const navigate = useNavigate()
-  const goToLogin = onNavigateLogin || (() => navigate('/login'))
+  const baseGoToLogin = onNavigateLogin || (() => navigate('/login'))
+  const goToLogin = () => {
+    trackEvent(API_BASE, 'login_click', { page_name: 'Homepage' })
+    baseGoToLogin()
+  }
 
   const [activeCard, setActiveCard] = useState(null) // e.g. 'stamps'
   const [modalView, setModalView] = useState('sample') // 'sample' | 'pricing'
@@ -449,10 +454,19 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
   }
 
   const openContact = () => {
+    trackEvent(API_BASE, 'contact_click', { page_name: 'Homepage', metadata: { placement: 'homepage_contact' } })
     window.open('https://m.me/theloyaltytree', '_blank', 'noopener,noreferrer')
   }
 
+  const applyBusiness = (placement = 'homepage') => {
+    trackEvent(API_BASE, 'apply_business_click', { page_name: 'Homepage', metadata: { placement } })
+    navigate('/signup')
+  }
+
   const goPublicPage = (path) => {
+    if (String(path).includes('#pricing')) {
+      trackEvent(API_BASE, 'pricing_view', { page_name: 'Homepage', metadata: { placement: 'homepage_navigation' } })
+    }
     window.location.assign(path)
   }
 
@@ -606,7 +620,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
           <button className="lt-home-navlink" onClick={() => { setMobileMenuOpen(false); goPublicPage('/contact') }} style={styles.navLink}>Contact Us</button>
           <button
             className="lt-home-navlink"
-            onClick={() => { setMobileMenuOpen(false); navigate('/signup') }}
+            onClick={() => { setMobileMenuOpen(false); applyBusiness('header') }}
             style={{...styles.navLink, ...styles.applyNavLink}}
           >
             Apply My Business
@@ -1018,7 +1032,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         <h2 style={{ ...styles.h2, color: 'white' }}>Ready to grow your regulars?</h2>
         <p style={styles.ctaSub}>Apply your business to start using LoyaltyTree, or log in if your business already has an account.</p>
         <div className="lt-home-cta-actions" style={styles.ctaActions}>
-          <button onClick={() => navigate('/signup')} style={styles.ctaBtn}>Apply My Business</button>
+          <button onClick={() => applyBusiness('footer_cta')} style={styles.ctaBtn}>Apply My Business</button>
           <button onClick={goToLogin} style={styles.ctaSecondaryBtn}>Business Login</button>
         </div>
       </section>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useParams, useLocation } from 'react-router-dom'
 import Login from './components/Login'
 import Signup from './components/Signup'
 import HomePage from './components/HomePage'
@@ -13,6 +13,7 @@ import AdminDashboard from './components/AdminDashboard'
 import PartnerDashboard from './components/PartnerDashboard'
 import MotoliteApp from './components/MotoliteApp'
 import CustomerJoin from './components/CustomerJoin'
+import { trackEvent } from './analytics'
 
 const API_BASE = 'https://loyaltree-btw1.onrender.com'
 
@@ -26,6 +27,48 @@ function RedirectToBackend({ base, sub, id: explicitId }) {
   useEffect(() => {
     window.location.replace(`${base}/${sub}/${id}`)
   }, [base, sub, id])
+  return null
+}
+
+
+function PublicRouteAnalytics({ API_BASE }) {
+  const location = useLocation()
+
+  useEffect(() => {
+    const path = location.pathname
+    const isPublic =
+      path === '/' ||
+      path === '/login' ||
+      path === '/signup' ||
+      path === '/about' ||
+      path === '/contact' ||
+      path.startsWith('/how-it-works') ||
+      path.startsWith('/join/')
+
+    if (!isPublic) return
+
+    const pageNames = {
+      '/': 'Homepage',
+      '/login': 'Business Login',
+      '/signup': 'Business Application',
+      '/about': 'About Us',
+      '/contact': 'Contact Us',
+      '/how-it-works': 'How It Works',
+      '/how-it-works/businesses': 'How It Works - Businesses',
+      '/how-it-works/customers': 'How It Works - Customers',
+    }
+
+    const businessPublicId = path.startsWith('/join/')
+      ? decodeURIComponent(path.split('/')[2] || '')
+      : null
+
+    trackEvent(API_BASE, 'page_view', {
+      path: `${path}${location.hash || ''}`,
+      page_name: businessPublicId ? 'Business Join Page' : (pageNames[path] || 'LoyaltyTree'),
+      business_public_id: businessPublicId,
+    })
+  }, [API_BASE, location.pathname, location.search, location.hash])
+
   return null
 }
 
@@ -61,6 +104,7 @@ function App() {
 
   return (
     <BrowserRouter>
+      <PublicRouteAnalytics API_BASE={API_BASE} />
       <style>{`
         @keyframes sway {
           0%, 100% { transform: rotate(-2deg); }
@@ -94,13 +138,13 @@ function App() {
             user.role === 'agent' ? <RedirectToBackend base={API_BASE} sub="agent" id={user.business_slug} /> :
             ['manager', 'cashier'].includes(user.role) ? <Navigate to="/scanner" /> :
             <Navigate to="/login" />
-          ) : <HomePage />
+          ) : <HomePage API_BASE={API_BASE} />
         } />
-        <Route path="/how-it-works" element={<PublicInfoPage type="overview" />} />
-        <Route path="/how-it-works/businesses" element={<PublicInfoPage type="businesses" />} />
-        <Route path="/how-it-works/customers" element={<PublicInfoPage type="customers" />} />
-        <Route path="/about" element={<PublicInfoPage type="about" />} />
-        <Route path="/contact" element={<PublicInfoPage type="contact" />} />
+        <Route path="/how-it-works" element={<PublicInfoPage type="overview" API_BASE={API_BASE} />} />
+        <Route path="/how-it-works/businesses" element={<PublicInfoPage type="businesses" API_BASE={API_BASE} />} />
+        <Route path="/how-it-works/customers" element={<PublicInfoPage type="customers" API_BASE={API_BASE} />} />
+        <Route path="/about" element={<PublicInfoPage type="about" API_BASE={API_BASE} />} />
+        <Route path="/contact" element={<PublicInfoPage type="contact" API_BASE={API_BASE} />} />
         <Route path="/login" element={
           user ? (
             user.role === 'owner' ? <Navigate to="/dashboard" replace /> :

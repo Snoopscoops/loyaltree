@@ -1048,6 +1048,20 @@ class CustomerSignup(BaseModel):
     privacy_consent: bool = False
     privacy_consent_version: Optional[str] = Field(default=None, max_length=40)
 
+class PlatformAnalyticsEventCreate(BaseModel):
+    event_name: str = Field(min_length=1, max_length=80)
+    session_id: Optional[str] = Field(default=None, max_length=160)
+    visitor_id: Optional[str] = Field(default=None, max_length=160)
+    path: Optional[str] = Field(default=None, max_length=500)
+    page_name: Optional[str] = Field(default=None, max_length=160)
+    referrer: Optional[str] = Field(default=None, max_length=1000)
+    source: Optional[str] = Field(default=None, max_length=160)
+    medium: Optional[str] = Field(default=None, max_length=160)
+    campaign: Optional[str] = Field(default=None, max_length=200)
+    business_public_id: Optional[str] = Field(default=None, max_length=160)
+    metadata: Optional[dict] = None
+
+
 class CustomerUpdate(BaseModel):
     name: Optional[str] = None
     address: Optional[str] = None
@@ -4823,6 +4837,310 @@ async def admin_update_setup_kit_order(order_public_id: str, item: SetupKitAdmin
     supabase.table('businesses').update({'setup_kit_status':updated.get('fulfillment_status'),'updated_at':now}).eq('id',updated['business_id']).execute()
     business = safe_get_business_by_id(updated['business_id']) or {}
     return setup_kit_payload(updated,business)
+
+
+# ============================================================
+# PLATFORM SITE / CONVERSION ANALYTICS
+# First-party, privacy-conscious analytics for LoyaltyTree public pages.
+# No raw IP address is stored. Frontend-generated random visitor/session IDs
+# are used only for aggregate visit counts and conversion reporting.
+# ============================================================
+
+_PLATFORM_ANALYTICS_ALLOWED_EVENTS = {
+    'page_view',
+    'pricing_view',
+    'apply_business_click',
+    'contact_click',
+    'login_click',
+    'customer_join_view',
+    'customer_join_complete',
+    'wallet_google_click',
+    'wallet_apple_click',
+    'wallet_card_view',
+}
+
+def _analytics_device_type(user_agent: str) -> str:
+    ua = (user_agent or '').lower()
+    if any(x in ua for x in ('ipad', 'tablet', 'kindle', 'silk/')):
+        return 'tablet'
+    if any(x in ua for x in ('iphone', 'ipod', 'android', 'mobile')):
+        return 'mobile'
+    return 'desktop'
+
+def _analytics_browser(user_agent: str) -> str:
+    ua = (user_agent or '').lower()
+    if 'edg/' in ua:
+        return 'Edge'
+    if 'opr/' in ua or 'opera' in ua:
+        return 'Opera'
+    if 'chrome/' in ua and 'chromium' not in ua:
+        return 'Chrome'
+    if 'firefox/' in ua:
+        return 'Firefox'
+    if 'safari/' in ua and 'chrome/' not in ua:
+        return 'Safari'
+    return 'Other'
+
+def _record_platform_analytics_event(payload: dict, user_agent: str = ''):
+    """Best-effort analytics insert. Never raises into a customer-facing flow."""
+    if not supabase:
+        return
+    try:
+        event_name = str(payload.get('event_name') or '').strip().lower()
+        if event_name not in _PLATFORM_ANALYTICS_ALLOWED_EVENTS:
+            return
+
+        path = str(payload.get('path') or '/')[:500]
+        # Public analytics only. This keeps accidental dashboard events out of
+        # the traffic numbers even if a future frontend calls the endpoint.
+        blocked_prefixes = ('/admin', '/dashboard', '/scanner', '/partner', '/analytics')
+        if any(path.startswith(prefix) for prefix in blocked_prefixes):
+            return
+
+        business_id = None
+        business_public_id = (payload.get('business_public_id') or '').strip() or None
+        if business_public_id:
+            business = safe_get_business(business_public_id)
+            if business:
+                business_id = business.get('id')
+
+        metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
+        # Never allow profile/contact data to be copied into analytics metadata.
+        for sensitive_key in (
+            'name', 'email', 'phone', 'address', 'birthday', 'age',
+            'password', 'pin', 'token', 'authorization'
+        ):
+            metadata.pop(sensitive_key, None)
+
+        row = {
+            'public_id': generate_public_id(),
+            'event_name': event_name,
+            'session_id': (payload.get('session_id') or None),
+            'visitor_id': (payload.get('visitor_id') or None),
+            'path': path,
+            'page_name': (payload.get('page_name') or None),
+            'referrer': (payload.get('referrer') or None),
+            'source': (payload.get('source') or 'direct'),
+            'medium': (payload.get('medium') or None),
+            'campaign': (payload.get('campaign') or None),
+            'device_type': _analytics_device_type(user_agent),
+            'browser': _analytics_browser(user_agent),
+            'business_id': business_id,
+            'metadata': metadata,
+            'created_at': datetime.utcnow().isoformat(),
+        }
+        supabase.table('platform_analytics_events').insert(row).execute()
+    except Exception as exc:
+        print(f"PLATFORM ANALYTICS insert warning: {exc}")
+
+@app.post("/api/v1/public/analytics/event", status_code=202)
+async def public_platform_analytics_event(
+    event: PlatformAnalyticsEventCreate,
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    payload = event.model_dump()
+    user_agent = request.headers.get('user-agent', '')
+    background_tasks.add_task(_record_platform_analytics_event, payload, user_agent)
+    return {'ok': True}
+
+def _load_platform_analytics_rows(since_iso: str, max_rows: int = 50000) -> list:
+    """Load analytics rows in pages so Supabase's default row cap does not
+    silently truncate a normal admin report."""
+    rows = []
+    page_size = 1000
+    start = 0
+    while start < max_rows:
+        batch = (
+            supabase.table('platform_analytics_events')
+            .select('*')
+            .gte('created_at', since_iso)
+            .order('created_at', desc=True)
+            .range(start, min(start + page_size - 1, max_rows - 1))
+            .execute()
+            .data or []
+        )
+        rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        start += page_size
+    return rows
+
+@app.get("/api/v1/admin/platform-analytics")
+async def admin_platform_analytics(
+    days: int = Query(default=30, ge=1, le=365),
+    _: bool = Depends(require_admin),
+):
+    if not supabase:
+        raise HTTPException(status_code=503, detail='Database not connected')
+
+    now = datetime.utcnow()
+    since_dt = now - timedelta(days=days)
+    since_iso = since_dt.isoformat()
+    today_iso = now.date().isoformat()
+
+    try:
+        rows = _load_platform_analytics_rows(since_iso)
+    except Exception as exc:
+        # Clear, actionable error when the master SQL has not been run yet.
+        raise HTTPException(
+            status_code=500,
+            detail=f"Platform analytics table is not ready. Run the updated LoyaltyTree master SQL first. {friendly_db_error(exc)}",
+        )
+
+    page_rows = [r for r in rows if r.get('event_name') == 'page_view']
+    unique_sessions = {r.get('session_id') for r in page_rows if r.get('session_id')}
+    unique_visitors = {r.get('visitor_id') for r in page_rows if r.get('visitor_id')}
+
+    def count_event(name):
+        return sum(1 for r in rows if r.get('event_name') == name)
+
+    page_counts = {}
+    source_counts = {}
+    device_counts = {}
+    browser_counts = {}
+    event_counts = {}
+    business_join_counts = {}
+    daily_map = {}
+
+    for offset in range(days - 1, -1, -1):
+        day = (now - timedelta(days=offset)).date().isoformat()
+        daily_map[day] = {'date': day, 'views': 0, 'unique_sessions': set(), 'conversions': 0}
+
+    for row in rows:
+        event_name = row.get('event_name') or 'unknown'
+        event_counts[event_name] = event_counts.get(event_name, 0) + 1
+
+        created_day = str(row.get('created_at') or '')[:10]
+        if created_day in daily_map:
+            if event_name == 'page_view':
+                daily_map[created_day]['views'] += 1
+                if row.get('session_id'):
+                    daily_map[created_day]['unique_sessions'].add(row.get('session_id'))
+            if event_name in ('apply_business_click', 'customer_join_complete'):
+                daily_map[created_day]['conversions'] += 1
+
+        if event_name == 'page_view':
+            path = row.get('path') or '/'
+            page_counts[path] = page_counts.get(path, 0) + 1
+            source = row.get('source') or 'direct'
+            source_counts[source] = source_counts.get(source, 0) + 1
+            device = row.get('device_type') or 'unknown'
+            device_counts[device] = device_counts.get(device, 0) + 1
+            browser = row.get('browser') or 'Other'
+            browser_counts[browser] = browser_counts.get(browser, 0) + 1
+            if row.get('business_id') and str(path).startswith('/join/'):
+                key = str(row.get('business_id'))
+                business_join_counts[key] = business_join_counts.get(key, 0) + 1
+
+    # Resolve business names only for join pages that actually received traffic.
+    business_names = {}
+    if business_join_counts:
+        try:
+            ids = [int(k) for k in business_join_counts.keys()]
+            biz_rows = supabase.table('businesses').select('id,public_id,name').in_('id', ids).execute().data or []
+            business_names = {str(b.get('id')): b for b in biz_rows}
+        except Exception:
+            business_names = {}
+
+    # Reliable conversion totals from core tables. These remain correct even if
+    # an analytics POST was blocked by an ad blocker or the visitor closed the tab.
+    try:
+        business_signups_rows = (
+            supabase.table('businesses')
+            .select('id,is_demo,created_at')
+            .gte('created_at', since_iso)
+            .execute()
+            .data or []
+        )
+        business_signups = sum(1 for b in business_signups_rows if not b.get('is_demo'))
+    except Exception:
+        business_signups = 0
+
+    try:
+        customers_created_res = (
+            supabase.table('customers')
+            .select('id', count='exact')
+            .gte('created_at', since_iso)
+            .execute()
+        )
+        customers_created = customers_created_res.count or 0
+    except Exception:
+        customers_created = count_event('customer_join_complete')
+
+    apply_clicks = count_event('apply_business_click')
+    join_page_views = sum(
+        1 for r in page_rows if str(r.get('path') or '').startswith('/join/')
+    )
+    customer_join_completions = count_event('customer_join_complete')
+
+    daily = [
+        {
+            'date': day,
+            'views': data['views'],
+            'unique_visitors': len(data['unique_sessions']),
+            'conversions': data['conversions'],
+        }
+        for day, data in daily_map.items()
+    ]
+
+    def ranked(mapping, limit=10):
+        return [
+            {'label': label, 'count': count}
+            for label, count in sorted(mapping.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+        ]
+
+    top_business_join_pages = []
+    for key, count in sorted(business_join_counts.items(), key=lambda kv: kv[1], reverse=True)[:10]:
+        biz = business_names.get(key) or {}
+        top_business_join_pages.append({
+            'business_id': int(key),
+            'business_public_id': biz.get('public_id'),
+            'business_name': biz.get('name') or f'Business #{key}',
+            'views': count,
+        })
+
+    recent = []
+    for row in rows[:25]:
+        recent.append({
+            'event_name': row.get('event_name'),
+            'path': row.get('path'),
+            'page_name': row.get('page_name'),
+            'source': row.get('source'),
+            'device_type': row.get('device_type'),
+            'browser': row.get('browser'),
+            'created_at': row.get('created_at'),
+        })
+
+    return {
+        'days': days,
+        'total_page_views': len(page_rows),
+        'unique_sessions': len(unique_sessions),
+        'unique_visitors': len(unique_visitors),
+        'views_today': sum(1 for r in page_rows if str(r.get('created_at') or '')[:10] == today_iso),
+        'apply_clicks': apply_clicks,
+        'business_signups': business_signups,
+        'business_apply_conversion_rate': round((business_signups / apply_clicks) * 100, 1) if apply_clicks else 0,
+        'join_page_views': join_page_views,
+        'customer_join_completions': customer_join_completions,
+        'customers_created': customers_created,
+        'customer_join_conversion_rate': round((customer_join_completions / join_page_views) * 100, 1) if join_page_views else 0,
+        'pricing_views': count_event('pricing_view'),
+        'contact_clicks': count_event('contact_click'),
+        'wallet_google_clicks': count_event('wallet_google_click'),
+        'wallet_apple_clicks': count_event('wallet_apple_click'),
+        'wallet_card_views': count_event('wallet_card_view'),
+        'daily': daily,
+        'top_pages': ranked(page_counts),
+        'sources': ranked(source_counts, 8),
+        'devices': ranked(device_counts, 5),
+        'browsers': ranked(browser_counts, 8),
+        'events': ranked(event_counts, 20),
+        'top_business_join_pages': top_business_join_pages,
+        'recent': recent,
+        'sample_truncated': len(rows) >= 50000,
+    }
+
 
 @app.get("/api/v1/admin/overview")
 async def admin_overview(_: bool = Depends(require_admin)):

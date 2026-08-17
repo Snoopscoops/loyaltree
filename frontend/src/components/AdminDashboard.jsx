@@ -47,15 +47,42 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const [networkPartners,setNetworkPartners]=useState([])
   const [networkPartnerSaving,setNetworkPartnerSaving]=useState(false)
   const [networkPartnerForm,setNetworkPartnerForm]=useState({name:'',email:'',password:'',partner_type:'city',region:'',city:'',partner_code:'',commission_type:'percent',commission_value:10,is_active:true})
+  const [platformAnalytics,setPlatformAnalytics]=useState(null)
+  const [analyticsDays,setAnalyticsDays]=useState(30)
+  const [analyticsLoading,setAnalyticsLoading]=useState(false)
+  const [analyticsError,setAnalyticsError]=useState('')
 
-  const authedFetch = (path, opts = {}) => fetch(`${API_BASE}${path}`, {
-    ...opts,
-    headers: {
-      ...(opts.headers || {}),
-      'Authorization': `Bearer ${token}`,
-      ...(opts.body ? { 'Content-Type': 'application/json' } : {}),
-    },
-  })
+  const authedFetch = async (path, opts = {}) => {
+    const res = await fetch(`${API_BASE}${path}`, {
+      ...opts,
+      headers: {
+        ...(opts.headers || {}),
+        'Authorization': `Bearer ${token}`,
+        ...(opts.body ? { 'Content-Type': 'application/json' } : {}),
+      },
+    })
+    if (res.status === 401) {
+      onLogout?.()
+      window.location.replace('/login?expired=1')
+    }
+    return res
+  }
+
+  const loadPlatformAnalytics = async () => {
+    if (!token) return
+    setAnalyticsLoading(true)
+    setAnalyticsError('')
+    try {
+      const res = await authedFetch(`/api/v1/admin/platform-analytics?days=${analyticsDays}`, { cache:'no-store' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not load platform analytics')
+      setPlatformAnalytics(data)
+    } catch (err) {
+      setAnalyticsError(err.message || 'Could not load platform analytics')
+    } finally {
+      setAnalyticsLoading(false)
+    }
+  }
 
   const loadData = async () => {
     try {
@@ -99,6 +126,11 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
     const t = setTimeout(loadData, 350)
     return () => clearTimeout(t)
   }, [search])
+
+  useEffect(() => {
+    if (!token) return
+    loadPlatformAnalytics()
+  }, [token, analyticsDays])
 
   const openDetail = async (biz) => {
     setSelected(biz)
@@ -333,6 +365,107 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
           <button onClick={() => setShowCreateModal(true)} style={styles.approveBtn}>+ Create business</button>
         </div>
+
+
+        <section style={styles.analyticsSection}>
+          <div style={styles.analyticsHeader}>
+            <div>
+              <div style={styles.analyticsEyebrow}>PLATFORM ANALYTICS</div>
+              <h2 style={styles.analyticsTitle}>Site visits & conversions</h2>
+              <p style={styles.analyticsSubtitle}>First-party LoyaltyTree traffic, applications, customer joins and Wallet actions. No raw IP addresses are stored.</p>
+            </div>
+            <div style={styles.analyticsControls}>
+              <select value={analyticsDays} onChange={e=>setAnalyticsDays(Number(e.target.value))} style={styles.select}>
+                <option value={7}>Last 7 days</option>
+                <option value={30}>Last 30 days</option>
+                <option value={90}>Last 90 days</option>
+                <option value={365}>Last 12 months</option>
+              </select>
+              <button onClick={loadPlatformAnalytics} disabled={analyticsLoading} style={styles.viewBtn}>{analyticsLoading?'Refreshing…':'↻ Refresh'}</button>
+            </div>
+          </div>
+
+          {analyticsError && <div style={styles.analyticsError}>{analyticsError}</div>}
+
+          <div style={styles.analyticsMetricGrid}>
+            <AnalyticsMetric label="Page views" value={(platformAnalytics?.total_page_views ?? 0).toLocaleString()} hint={`${platformAnalytics?.views_today ?? 0} today`} />
+            <AnalyticsMetric label="Unique visitors" value={(platformAnalytics?.unique_visitors ?? 0).toLocaleString()} hint={`${platformAnalytics?.unique_sessions ?? 0} sessions`} />
+            <AnalyticsMetric label="Apply clicks" value={(platformAnalytics?.apply_clicks ?? 0).toLocaleString()} hint={`${platformAnalytics?.business_apply_conversion_rate ?? 0}% → signup`} />
+            <AnalyticsMetric label="Business signups" value={(platformAnalytics?.business_signups ?? 0).toLocaleString()} hint={`Last ${analyticsDays} days`} />
+            <AnalyticsMetric label="Join-page visits" value={(platformAnalytics?.join_page_views ?? 0).toLocaleString()} hint={`${platformAnalytics?.customer_join_conversion_rate ?? 0}% → joined`} />
+            <AnalyticsMetric label="Customer joins" value={(platformAnalytics?.customer_join_completions ?? 0).toLocaleString()} hint={`${platformAnalytics?.customers_created ?? 0} customer records created`} />
+          </div>
+
+          <div style={styles.analyticsFunnelGrid}>
+            <div style={styles.analyticsFunnelCard}>
+              <div style={styles.analyticsCardTitle}>Business acquisition</div>
+              <div style={styles.analyticsFunnelRow}><span>Apply My Business clicks</span><b>{platformAnalytics?.apply_clicks ?? 0}</b></div>
+              <div style={styles.analyticsFunnelArrow}>↓</div>
+              <div style={styles.analyticsFunnelRow}><span>Business registrations</span><b>{platformAnalytics?.business_signups ?? 0}</b></div>
+              <div style={styles.analyticsConversion}>{platformAnalytics?.business_apply_conversion_rate ?? 0}% conversion</div>
+            </div>
+            <div style={styles.analyticsFunnelCard}>
+              <div style={styles.analyticsCardTitle}>Customer acquisition</div>
+              <div style={styles.analyticsFunnelRow}><span>Business join-page visits</span><b>{platformAnalytics?.join_page_views ?? 0}</b></div>
+              <div style={styles.analyticsFunnelArrow}>↓</div>
+              <div style={styles.analyticsFunnelRow}><span>Completed customer joins</span><b>{platformAnalytics?.customer_join_completions ?? 0}</b></div>
+              <div style={styles.analyticsConversion}>{platformAnalytics?.customer_join_conversion_rate ?? 0}% conversion</div>
+            </div>
+            <div style={styles.analyticsFunnelCard}>
+              <div style={styles.analyticsCardTitle}>High-intent actions</div>
+              <div style={styles.analyticsFunnelRow}><span>Pricing opens</span><b>{platformAnalytics?.pricing_views ?? 0}</b></div>
+              <div style={styles.analyticsFunnelRow}><span>Contact clicks</span><b>{platformAnalytics?.contact_clicks ?? 0}</b></div>
+              <div style={styles.analyticsFunnelRow}><span>Google Wallet</span><b>{platformAnalytics?.wallet_google_clicks ?? 0}</b></div>
+              <div style={styles.analyticsFunnelRow}><span>Apple Wallet</span><b>{platformAnalytics?.wallet_apple_clicks ?? 0}</b></div>
+            </div>
+          </div>
+
+          <div style={styles.analyticsTrendCard}>
+            <div style={styles.analyticsCardTitle}>Traffic trend</div>
+            <div style={styles.analyticsTrend}>
+              {(platformAnalytics?.daily || []).map(day => {
+                const maxViews=Math.max(1,...(platformAnalytics?.daily||[]).map(d=>Number(d.views||0)))
+                const height=Math.max(4,Math.round((Number(day.views||0)/maxViews)*100))
+                return <div key={day.date} style={styles.analyticsBarSlot} title={`${day.date}: ${day.views} views · ${day.unique_visitors} unique`}>
+                  <div style={{...styles.analyticsBar,height:`${height}%`}} />
+                  <span style={styles.analyticsBarLabel}>{String(day.date).slice(5)}</span>
+                </div>
+              })}
+              {!platformAnalytics?.daily?.length && <div style={styles.analyticsEmpty}>Traffic will appear here after the updated tracking is deployed.</div>}
+            </div>
+          </div>
+
+          <div style={styles.analyticsBreakdownGrid}>
+            <AnalyticsBreakdown title="Top pages" rows={platformAnalytics?.top_pages} />
+            <AnalyticsBreakdown title="Traffic sources" rows={platformAnalytics?.sources} />
+            <AnalyticsBreakdown title="Devices" rows={platformAnalytics?.devices} />
+            <AnalyticsBreakdown title="Browsers" rows={platformAnalytics?.browsers} />
+          </div>
+
+          {!!platformAnalytics?.top_business_join_pages?.length && (
+            <div style={styles.analyticsListCard}>
+              <div style={styles.analyticsCardTitle}>Top business join pages</div>
+              {platformAnalytics.top_business_join_pages.map(row=>
+                <div key={row.business_id} style={styles.analyticsRankRow}>
+                  <span><b>{row.business_name}</b><small style={styles.analyticsRankSub}> /join/{row.business_public_id}</small></span>
+                  <b>{row.views.toLocaleString()} visits</b>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div style={styles.analyticsListCard}>
+            <div style={styles.analyticsCardTitle}>Recent public activity</div>
+            {(platformAnalytics?.recent || []).slice(0,12).map((row,i)=>
+              <div key={`${row.created_at}-${i}`} style={styles.analyticsRecentRow}>
+                <span style={styles.analyticsEventBadge}>{String(row.event_name||'event').replaceAll('_',' ')}</span>
+                <span style={styles.analyticsRecentPath}>{row.path || row.page_name || '—'}</span>
+                <span style={styles.analyticsRecentMeta}>{row.source || 'direct'} · {row.device_type || 'unknown'} · {row.created_at ? new Date(row.created_at).toLocaleString() : ''}</span>
+              </div>
+            )}
+            {!platformAnalytics?.recent?.length && <div style={styles.analyticsEmpty}>No tracked public activity yet.</div>}
+          </div>
+        </section>
 
 
         <section style={styles.partnerAdminSection}>
@@ -965,6 +1098,27 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   )
 }
 
+
+function AnalyticsMetric({label,value,hint}) {
+  return <div style={styles.analyticsMetricCard}>
+    <div style={styles.analyticsMetricLabel}>{label}</div>
+    <div style={styles.analyticsMetricValue}>{value}</div>
+    <div style={styles.analyticsMetricHint}>{hint}</div>
+  </div>
+}
+
+function AnalyticsBreakdown({title,rows=[]}) {
+  const max=Math.max(1,...(rows||[]).map(r=>Number(r.count||0)))
+  return <div style={styles.analyticsBreakdownCard}>
+    <div style={styles.analyticsCardTitle}>{title}</div>
+    {(rows||[]).slice(0,8).map(row=><div key={row.label} style={styles.analyticsBreakdownRow}>
+      <div style={styles.analyticsBreakdownLabel}><span>{row.label || 'Unknown'}</span><b>{Number(row.count||0).toLocaleString()}</b></div>
+      <div style={styles.analyticsBreakdownTrack}><div style={{...styles.analyticsBreakdownFill,width:`${Math.max(3,(Number(row.count||0)/max)*100)}%`}} /></div>
+    </div>)}
+    {!rows?.length&&<div style={styles.analyticsEmpty}>No data yet.</div>}
+  </div>
+}
+
 function StatCard({ label, value, accent }) {
   return (
     <div style={styles.statCard}>
@@ -1238,6 +1392,44 @@ const styles = {
   kitAddress:{display:'flex',flexDirection:'column',gap:3,background:'#f0fdfa',borderRadius:10,padding:11,fontSize:12,lineHeight:1.45},
   categoryBadge:{display:'inline-flex',padding:'5px 8px',borderRadius:999,background:'#f8fafc',border:'1px solid #e2e8f0',fontSize:10.5,fontWeight:800,color:'#475569',whiteSpace:'nowrap'},
   kitTableBadge:{display:'inline-flex',padding:'5px 8px',borderRadius:999,fontSize:10.5,fontWeight:800,whiteSpace:'nowrap'},
+  analyticsSection:{background:'#fff',border:'1px solid #e2e8f0',borderRadius:18,padding:20,marginBottom:22,boxShadow:'0 12px 34px rgba(15,23,42,.05)'},
+  analyticsHeader:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:16,flexWrap:'wrap',marginBottom:18},
+  analyticsEyebrow:{fontSize:10,fontWeight:850,letterSpacing:1.3,color:'#0f766e',marginBottom:5},
+  analyticsTitle:{margin:0,fontSize:22,color:'#0f172a',letterSpacing:'-.3px'},
+  analyticsSubtitle:{margin:'6px 0 0',fontSize:12.5,color:'#64748b',lineHeight:1.55,maxWidth:760},
+  analyticsControls:{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'},
+  analyticsError:{padding:'11px 13px',background:'#fef2f2',border:'1px solid #fecaca',color:'#b91c1c',borderRadius:10,fontSize:12.5,marginBottom:14},
+  analyticsMetricGrid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:10,marginBottom:14},
+  analyticsMetricCard:{border:'1px solid #e2e8f0',borderRadius:13,padding:'14px 15px',background:'#f8fafc'},
+  analyticsMetricLabel:{fontSize:10.5,fontWeight:800,color:'#64748b',textTransform:'uppercase',letterSpacing:.55},
+  analyticsMetricValue:{fontSize:28,fontWeight:850,color:'#0f172a',marginTop:4,lineHeight:1.1},
+  analyticsMetricHint:{fontSize:10.5,color:'#94a3b8',marginTop:5},
+  analyticsFunnelGrid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(230px,1fr))',gap:10,marginBottom:14},
+  analyticsFunnelCard:{border:'1px solid #e2e8f0',borderRadius:13,padding:15,background:'#fff'},
+  analyticsCardTitle:{fontSize:12.5,fontWeight:800,color:'#0f172a',marginBottom:11},
+  analyticsFunnelRow:{display:'flex',justifyContent:'space-between',gap:12,fontSize:12.5,color:'#475569',padding:'5px 0'},
+  analyticsFunnelArrow:{textAlign:'center',color:'#94a3b8',fontSize:12},
+  analyticsConversion:{marginTop:8,padding:'7px 9px',borderRadius:8,background:'#ecfdf5',color:'#0f766e',fontSize:11,fontWeight:800,textAlign:'center'},
+  analyticsTrendCard:{border:'1px solid #e2e8f0',borderRadius:13,padding:15,marginBottom:14,overflow:'hidden'},
+  analyticsTrend:{height:170,display:'flex',alignItems:'flex-end',gap:4,overflowX:'auto',paddingTop:12},
+  analyticsBarSlot:{height:'100%',minWidth:18,flex:'1 0 18px',maxWidth:34,display:'flex',flexDirection:'column',justifyContent:'flex-end',alignItems:'stretch',gap:5},
+  analyticsBar:{minHeight:4,borderRadius:'6px 6px 2px 2px',background:'linear-gradient(180deg,#14b8a6,#0f766e)'},
+  analyticsBarLabel:{fontSize:8.5,color:'#94a3b8',textAlign:'center',whiteSpace:'nowrap'},
+  analyticsBreakdownGrid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:10,marginBottom:14},
+  analyticsBreakdownCard:{border:'1px solid #e2e8f0',borderRadius:13,padding:15,minWidth:0},
+  analyticsBreakdownRow:{marginBottom:9},
+  analyticsBreakdownLabel:{display:'flex',justifyContent:'space-between',gap:10,fontSize:11.5,color:'#475569',marginBottom:4,overflow:'hidden'},
+  analyticsBreakdownTrack:{height:5,borderRadius:99,background:'#f1f5f9',overflow:'hidden'},
+  analyticsBreakdownFill:{height:'100%',borderRadius:99,background:'#14b8a6'},
+  analyticsListCard:{border:'1px solid #e2e8f0',borderRadius:13,padding:15,marginTop:10},
+  analyticsRankRow:{display:'flex',justifyContent:'space-between',gap:12,padding:'9px 0',borderBottom:'1px solid #f1f5f9',fontSize:12.5,color:'#334155'},
+  analyticsRankSub:{display:'block',fontWeight:400,color:'#94a3b8',marginTop:2},
+  analyticsRecentRow:{display:'grid',gridTemplateColumns:'150px minmax(160px,1fr) minmax(220px,1.4fr)',gap:10,alignItems:'center',padding:'8px 0',borderBottom:'1px solid #f1f5f9',fontSize:11.5},
+  analyticsEventBadge:{display:'inline-block',background:'#ecfdf5',color:'#0f766e',borderRadius:999,padding:'4px 8px',fontWeight:750,textTransform:'capitalize',width:'fit-content'},
+  analyticsRecentPath:{color:'#334155',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'},
+  analyticsRecentMeta:{color:'#94a3b8',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'},
+  analyticsEmpty:{fontSize:12,color:'#94a3b8',padding:'12px 0'},
+
 }
 
 export default AdminDashboard
