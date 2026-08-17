@@ -48,10 +48,19 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   // Centralized authenticated fetch for owner-dashboard API calls.
   // The backend now rejects sensitive owner endpoints without this signed token.
-  const authFetch = (url, options = {}) => {
+  const authFetch = async (url, options = {}) => {
     const headers = { ...(options.headers || {}) }
     if (user?.token) headers.Authorization = `Bearer ${user.token}`
-    return fetch(url, { ...options, headers })
+
+    const res = await fetch(url, { ...options, headers })
+
+    if (res.status === 401) {
+      localStorage.removeItem('loyaltree_user')
+      onLogout?.()
+      window.location.replace('/login?expired=1')
+    }
+
+    return res
   }
 
   useEffect(() => {

@@ -32,11 +32,24 @@ function RedirectToBackend({ base, sub, id: explicitId }) {
 function App() {
   const [user, setUser] = useState(() => {
     try {
-      return JSON.parse(localStorage.getItem('loyaltree_user'))
+      const saved = localStorage.getItem('loyaltree_user')
+      if (!saved) return null
+      const parsed = JSON.parse(saved)
+      if (!parsed || !parsed.role || !parsed.token) {
+        localStorage.removeItem('loyaltree_user')
+        return null
+      }
+      return parsed
     } catch {
+      localStorage.removeItem('loyaltree_user')
       return null
     }
   })
+
+  const handleLogout = () => {
+    localStorage.removeItem('loyaltree_user')
+    setUser(null)
+  }
 
   useEffect(() => {
     if (user) {
@@ -102,10 +115,10 @@ function App() {
         <Route path="/dashboard" element={
           user?.role === 'owner' ? (
             user.business_type === 'car_lending'
-              ? <CarLendingDashboard API_BASE={API_BASE} user={user} onLogout={() => setUser(null)} />
+              ? <CarLendingDashboard API_BASE={API_BASE} user={user} onLogout={handleLogout} />
               : user.business_type === 'cockpit'
-                ? <CockpitDashboard API_BASE={API_BASE} user={user} onLogout={() => setUser(null)} />
-                : <OwnerDashboard API_BASE={API_BASE} user={user} onLogout={() => setUser(null)} />
+                ? <CockpitDashboard API_BASE={API_BASE} user={user} onLogout={handleLogout} />
+                : <OwnerDashboard API_BASE={API_BASE} user={user} onLogout={handleLogout} />
           ) : <Navigate to="/login" />
         } />
         <Route path="/scanner" element={
@@ -119,10 +132,10 @@ function App() {
         } />
         <Route path="/join/:businessSlug" element={<CustomerJoin API_BASE={API_BASE} />} />
         <Route path="/admin" element={
-          user?.role === 'super_admin' ? <AdminDashboard API_BASE={API_BASE} user={user} onLogout={() => setUser(null)} /> : <Navigate to="/login" />
+          user?.role === 'super_admin' ? <AdminDashboard API_BASE={API_BASE} user={user} onLogout={handleLogout} /> : <Navigate to="/login" />
         } />
         <Route path="/partner" element={
-          user?.role === 'partner' ? <PartnerDashboard API_BASE={API_BASE} user={user} onLogout={() => setUser(null)} /> : <Navigate to="/login" />
+          user?.role === 'partner' ? <PartnerDashboard API_BASE={API_BASE} user={user} onLogout={handleLogout} /> : <Navigate to="/login" />
         } />
       </Routes>
     </BrowserRouter>

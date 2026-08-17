@@ -1,9 +1,11 @@
 import React, { useState } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
+import { useNavigate, Link, useSearchParams } from 'react-router-dom'
 import logo256 from './logo-256.png'
 
 function LoginPage({ API_BASE, onLogin }) {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const sessionExpired = searchParams.get('expired') === '1'
   const [form, setForm] = useState({
     email: '',
     password: '',
@@ -29,12 +31,12 @@ function LoginPage({ API_BASE, onLogin }) {
       const data = await res.json()
       if (res.ok) {
         onLogin(data)
-        if (data.role === 'owner') navigate('/dashboard')
-        else if (data.role === 'super_admin') navigate('/admin')
-        else if (data.role === 'partner') navigate('/partner')
+        if (data.role === 'owner') navigate('/dashboard', { replace: true })
+        else if (data.role === 'super_admin') navigate('/admin', { replace: true })
+        else if (data.role === 'partner') navigate('/partner', { replace: true })
         else if (data.role === 'agent') {
           window.location.assign(data.redirect_url || `${API_BASE}/agent/${data.business_slug}`)
-        } else navigate('/scanner')
+        } else navigate('/scanner', { replace: true })
       } else if (res.status === 403) {
         // Account exists and password matched, but the business isn't
         // approved/active yet - show a softer notice instead of a hard error.
@@ -57,6 +59,9 @@ function LoginPage({ API_BASE, onLogin }) {
           <p style={styles.tagline}>Where businesses grow with customers</p>
         </div>
 
+        {sessionExpired && !error && !pendingNotice && (
+          <div style={styles.sessionNotice}>Your session expired. Please sign in again.</div>
+        )}
         {error && <div style={styles.error}>{error}</div>}
         {pendingNotice && <div style={styles.pendingNotice}>⏳ {pendingNotice}</div>}
 
@@ -138,6 +143,17 @@ const styles = {
     fontSize: 13,
     marginBottom: 16,
     textAlign: 'center',
+  },
+  sessionNotice: {
+    background: '#ecfeff',
+    color: '#115e59',
+    padding: 12,
+    borderRadius: 10,
+    fontSize: 13,
+    marginBottom: 16,
+    textAlign: 'center',
+    lineHeight: 1.5,
+    border: '1px solid #99f6e4',
   },
   pendingNotice: {
     background: '#fef3c7',
