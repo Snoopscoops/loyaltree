@@ -2429,7 +2429,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       )}
 
       {showOnboarding && (() => {
-        const totalSteps = 4
+        const totalSteps = 5
         const safeStep = Math.min(onboardingStep, totalSteps - 1)
 
         const goNextAfterCard = () => {
@@ -2491,6 +2491,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                         : safeStep === 1
                         ? 'Create your cashier'
                         : safeStep === 2
+                        ? 'Welcome to your dashboard'
+                        : safeStep === 3
                         ? 'Share your join QR'
                         : 'Your business is ready'}
                     </h2>
@@ -2645,6 +2647,17 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 )}
 
                 {safeStep === 2 && (
+                  <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:18,padding:'30px 24px',textAlign:'center'}}>
+                    <div style={{fontSize:50,marginBottom:10}}>🌳</div>
+                    <h3 style={{fontSize:24,margin:'0 0 8px',color:'#0f172a'}}>Welcome to your business dashboard</h3>
+                    <p style={{margin:'0 auto 20px',maxWidth:450,color:'#64748b',fontSize:14,lineHeight:1.6}}>
+                      This is your LoyaltyTree command center. Manage customers, staff, rewards, announcements, analytics, billing and your loyalty program here.
+                    </p>
+                    <button type="button" onClick={() => setOnboardingStep(3)} style={{...styles.submitBtn,background:cardExperience.accent}}>Continue to Join QR →</button>
+                  </div>
+                )}
+
+                {safeStep === 3 && (
                   <div style={{
                     background: 'white',
                     border: '1px solid #e2e8f0',
@@ -2701,7 +2714,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                       </button>
                       <button
                         type="button"
-                        onClick={() => setOnboardingStep(3)}
+                        onClick={() => setOnboardingStep(4)}
                         style={{...styles.submitBtn, background: cardExperience.accent}}
                       >
                         Continue
@@ -2710,7 +2723,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                   </div>
                 )}
 
-                {safeStep === 3 && (
+                {safeStep === 4 && (
                   <div style={{
                     background: 'white',
                     border: '1px solid #e2e8f0',
