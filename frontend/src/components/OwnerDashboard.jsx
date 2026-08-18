@@ -41,80 +41,6 @@ const INDUSTRY_META = {
 }
 
 function OwnerDashboard({ API_BASE, user, onLogout }) {
-  const [installPrompt, setInstallPrompt] = useState(null)
-  const [showInstallHelp, setShowInstallHelp] = useState(false)
-  const [installPlatform, setInstallPlatform] = useState('other')
-  const [isStandaloneApp, setIsStandaloneApp] = useState(false)
-
-  // Centralized authenticated fetch for owner-dashboard API calls.
-  // The backend now rejects sensitive owner endpoints without this signed token.
-  const authFetch = async (url, options = {}) => {
-    const headers = { ...(options.headers || {}) }
-    if (user?.token) headers.Authorization = `Bearer ${user.token}`
-
-    const res = await fetch(url, { ...options, headers })
-
-    if (res.status === 401) {
-      localStorage.removeItem('loyaltree_user')
-      onLogout?.()
-      window.location.replace('/login?expired=1')
-    }
-
-    return res
-  }
-
-  useEffect(() => {
-    const ua = window.navigator.userAgent || ''
-    const ios = /iphone|ipad|ipod/i.test(ua)
-    const android = /android/i.test(ua)
-    setInstallPlatform(ios ? 'ios' : android ? 'android' : 'other')
-
-    const standalone =
-      window.matchMedia?.('(display-mode: standalone)')?.matches ||
-      window.navigator.standalone === true
-    setIsStandaloneApp(Boolean(standalone))
-
-    const handleBeforeInstallPrompt = (event) => {
-      event.preventDefault()
-      setInstallPrompt(event)
-    }
-
-    const handleInstalled = () => {
-      setInstallPrompt(null)
-      setIsStandaloneApp(true)
-      setShowInstallHelp(false)
-    }
-
-    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt)
-    window.addEventListener('appinstalled', handleInstalled)
-
-    return () => {
-      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt)
-      window.removeEventListener('appinstalled', handleInstalled)
-    }
-  }, [])
-
-  const handleAddToHomeScreen = async () => {
-    if (isStandaloneApp) return
-
-    if (installPrompt) {
-      try {
-        await installPrompt.prompt()
-        const choice = await installPrompt.userChoice
-        if (choice?.outcome === 'accepted') {
-          setInstallPrompt(null)
-        }
-      } catch (err) {
-        setShowInstallHelp(true)
-      }
-      return
-    }
-
-    // iPhone/iPad Safari does not expose a programmatic install prompt.
-    // Show exact Add to Home Screen instructions instead.
-    setShowInstallHelp(true)
-  }
-
   const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState('tree')
   const [business, setBusiness] = useState(null)
@@ -162,9 +88,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [onboardingStep, setOnboardingStep] = useState(0)
   const [announcementsChecked, setAnnouncementsChecked] = useState(false)
   const [analyticsChecked, setAnalyticsChecked] = useState(false)
-  const [satisfaction, setSatisfaction] = useState({summary:null, feedback:[]})
-  const [satisfactionLoading, setSatisfactionLoading] = useState(false)
-  const [satisfactionError, setSatisfactionError] = useState('')
   const [membershipSettings, setMembershipSettings] = useState({
     membership_duration_days: 30,
     membership_price: 0,
@@ -183,16 +106,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [setupKitForm, setSetupKitForm] = useState({recipient_name:'',contact_number:'',delivery_address:'',delivery_instructions:'',logo_url:''})
   const [savingSetupKit, setSavingSetupKit] = useState(false)
   const [mobileHeaderOpen, setMobileHeaderOpen] = useState(false)
-  const [auditTransactions, setAuditTransactions] = useState([])
-  const [crmData, setCrmData] = useState({customers:[],segments:{}})
-  const [retentionData, setRetentionData] = useState({})
-  const [retentionOps, setRetentionOps] = useState([])
-  const [opsAnalytics, setOpsAnalytics] = useState({branches:[],cashiers:[],overall:{}})
-  const [walletQueue, setWalletQueue] = useState({jobs:[],pending:0,failed:0})
-  const [growthLoading, setGrowthLoading] = useState(false)
-  const [fraudAlerts, setFraudAlerts] = useState([])
-  const [securityLoading, setSecurityLoading] = useState(false)
-  const [auditFilters, setAuditFilters] = useState({ status:'', branch_public_id:'', staff_public_id:'', date_from:'', date_to:'' })
 
   // Frontend URL for customer-facing pages
   const FRONTEND_URL = 'https://loyaltree-btw1.onrender.com'
@@ -247,13 +160,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
 
   const cardSetUp = !!program?.google_wallet_class_id
-  const cashierSetUp = staff.some(member => String(member?.role || '').toLowerCase() === 'cashier')
-
-  useEffect(()=>{
-    if (!isActive || !user?.business_slug) return
-    const step = !cardSetUp ? 5 : !cashierSetUp ? 6 : 7
-    if ((business?.onboarding_step||0) < step) saveOnboardingProgress(step, false)
-  }, [isActive, cardSetUp, cashierSetUp, user?.business_slug])
+  const cashierSetUp = staff.length > 0
 
   useEffect(() => {
     if (announcementsCheckedKey) setAnnouncementsChecked(localStorage.getItem(announcementsCheckedKey) === '1')
@@ -287,7 +194,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     if (loading || !isActive || !onboardingKey) return
     if (activeTab !== 'tree') return
 
-    const seen = business?.onboarding_completed === true || localStorage.getItem(onboardingKey) === '1'
+    const seen = localStorage.getItem(onboardingKey) === '1'
     const firstIncompleteStep = !cardSetUp ? 0 : !cashierSetUp ? 1 : 2
 
     if (!seen || !cardSetUp || !cashierSetUp) {
@@ -296,15 +203,9 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     }
   }, [loading, isActive, onboardingKey, activeTab, cardSetUp, cashierSetUp])
 
-  const saveOnboardingProgress = async (step, completed=false) => {
-    if (!user?.business_slug) return
-    try { await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/onboarding-progress`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({onboarding_step:step,onboarding_completed:completed}) }) } catch (_) {}
-  }
-
   const closeOnboarding = () => {
     if (onboardingKey && cardSetUp && cashierSetUp) {
       localStorage.setItem(onboardingKey, '1')
-      saveOnboardingProgress(9, true)
     }
     setShowOnboarding(false)
   }
@@ -312,16 +213,16 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const loadData = async () => {
     try {
       const [bizRes, custRes, staffRes, statsRes, progRes, stampCountRes, branchRes, subRes, kitRes, deviceRes] = await Promise.all([
-        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}`),
-        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers`),
-        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff`),
-        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/stats`),
-        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config`),
-        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff/stamp-counts`),
-        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/branches`),
-        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/subscription`),
-        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/setup-kit`),
-        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/cashier-devices`),
+        fetch(`${API_BASE}/api/v1/business/${user.business_slug}`),
+        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers`),
+        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff`),
+        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/stats`),
+        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config`),
+        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff/stamp-counts`),
+        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/branches`),
+        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/subscription`),
+        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/setup-kit`),
+        fetch(`${API_BASE}/api/v1/business/${user.business_slug}/cashier-devices`),
       ])
 
       const bizData = await bizRes.json().catch(() => null)
@@ -370,62 +271,10 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     setLoading(false)
   }
 
-  const loadSatisfaction = async () => {
-    if (!user?.business_slug) return
-    setSatisfactionLoading(true); setSatisfactionError('')
-    try { const res=await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/feedback`,{cache:'no-store'}); const data=await res.json().catch(()=>({})); if(!res.ok) throw new Error(data.detail||'Could not load customer satisfaction'); setSatisfaction({summary:data.summary||null,feedback:Array.isArray(data.feedback)?data.feedback:[]}) } catch(err) { setSatisfactionError(err.message||'Could not load customer satisfaction') } finally { setSatisfactionLoading(false) }
-  }
-
-  const loadGrowthSuite = async () => {
-    if (!user?.business_slug) return
-    setGrowthLoading(true)
-    try {
-      const base = `${API_BASE}/api/v1/business/${user.business_slug}`
-      const [crmR, retR, oppR, opsR, walletR] = await Promise.all([
-        authFetch(`${base}/crm`), authFetch(`${base}/retention-analytics?days=90`),
-        authFetch(`${base}/retention-opportunities`), authFetch(`${base}/operations-analytics?days=30`),
-        authFetch(`${base}/wallet-queue?limit=100`)
-      ])
-      if (crmR.ok) setCrmData(await crmR.json())
-      if (retR.ok) setRetentionData(await retR.json())
-      if (oppR.ok) setRetentionOps((await oppR.json()).opportunities || [])
-      if (opsR.ok) setOpsAnalytics(await opsR.json())
-      if (walletR.ok) setWalletQueue(await walletR.json())
-    } finally { setGrowthLoading(false) }
-  }
-
-  const loadTransactionsSecurity = async (filters = auditFilters) => {
-    if (!user?.business_slug) return
-    setSecurityLoading(true)
-    try {
-      const params = new URLSearchParams({ limit: '300' })
-      Object.entries(filters || {}).forEach(([key, value]) => { if (value) params.set(key, value) })
-      const [auditRes, alertRes] = await Promise.all([
-        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/transaction-audit?${params.toString()}`),
-        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/fraud-alerts?hours=24`),
-      ])
-      const auditData = await auditRes.json().catch(() => ({}))
-      const alertData = await alertRes.json().catch(() => ({}))
-      setAuditTransactions(auditRes.ok && Array.isArray(auditData.transactions) ? auditData.transactions : [])
-      setFraudAlerts(alertRes.ok && Array.isArray(alertData.alerts) ? alertData.alerts : [])
-      if (!auditRes.ok) setMessage(auditData.detail || 'Could not load transaction audit')
-      else if (!alertRes.ok) setMessage(alertData.detail || 'Could not load security alerts')
-    } catch (err) {
-      setMessage('Could not load transactions & security')
-    }
-    setSecurityLoading(false)
-  }
-
-  useEffect(() => {
-    if (activeTab === 'security') loadTransactionsSecurity()
-    if (activeTab === 'satisfaction') loadSatisfaction()
-    if (['crm','retention','operations','walletqueue'].includes(activeTab)) loadGrowthSuite()
-  }, [activeTab])
-
   const inviteStaff = async (e) => {
     e.preventDefault()
     try {
-      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff/invite`, {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff/invite`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(inviteForm)
@@ -449,7 +298,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     if (!newBranchName.trim()) return
     setSavingBranch(true)
     try {
-      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/branches`, {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/branches`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newBranchName.trim() })
@@ -470,7 +319,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const renameBranch = async (branch, name) => {
     if (!name.trim() || name === branch.name) return
     try {
-      await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/branches/${branch.public_id}`, {
+      await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/branches/${branch.public_id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: name.trim() })
@@ -523,7 +372,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         : program?.card_type === 'vip'
         ? 'vip-history'
         : 'stamp-history'
-      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${customerPublicId}/${suffix}`)
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${customerPublicId}/${suffix}`)
       const data = await res.json().catch(() => [])
       setMemberHistory(res.ok && Array.isArray(data) ? data : [])
     } catch (err) {
@@ -537,7 +386,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     if (!customerPublicId) return
     setMembershipActionLoading(true)
     try {
-      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/membership/note`, {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/membership/note`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           customer_public_id: customerPublicId,
@@ -565,7 +414,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const fetchCoupons = async (customerPublicId) => {
     setCouponLoading(true)
     try {
-      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${customerPublicId}/coupons`)
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${customerPublicId}/coupons`)
       if (res.ok) {
         const coupons = await res.json()
         const today = new Date().toISOString().slice(0, 10)
@@ -586,7 +435,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     }
     setCouponSaving(true)
     try {
-      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${editForm.public_id}/coupons`, {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${editForm.public_id}/coupons`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -613,7 +462,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     if (!activeCoupon) return
     if (!window.confirm('Cancel this coupon?')) return
     try {
-      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/coupons/${activeCoupon.public_id}`, {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/coupons/${activeCoupon.public_id}`, {
         method: 'DELETE'
       })
       if (res.ok) {
@@ -632,7 +481,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         .split('\n')
         .map(s => s.trim())
         .filter(Boolean)
-      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config`, {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -675,7 +524,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     }
     setMembershipActionLoading(true)
     try {
-      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/membership/action`, {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/membership/action`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -715,7 +564,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         points_balance: fields.points_balance === '' ? null : parseInt(fields.points_balance, 10),
         multipass_sessions_remaining: fields.multipass_sessions_remaining === '' ? null : parseInt(fields.multipass_sessions_remaining, 10),
       }
-      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${public_id}`, {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${public_id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -738,7 +587,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     if (!window.confirm(`Remove ${editForm.name || 'this leaf'} from your tree? This can't be undone.`)) return
     setDeletingCustomer(true)
     try {
-      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${editForm.public_id}`, {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${editForm.public_id}`, {
         method: 'DELETE',
       })
       if (res.ok) {
@@ -774,7 +623,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     setSavingStaff(true)
     try {
       const { public_id, ...fields } = staffEditForm
-      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff/${public_id}`, {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff/${public_id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(fields)
@@ -797,7 +646,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     if (!window.confirm(`Unlock ${device.staff_name || 'this cashier device'} now?`)) return
     setUnlockingDevice(device.public_id)
     try {
-      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/cashier-devices/${device.public_id}/unlock`, { method: 'POST' })
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/cashier-devices/${device.public_id}/unlock`, { method: 'POST' })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Could not unlock device')
       setMessage('Cashier device unlocked.')
@@ -813,7 +662,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     if (!window.confirm(`Remove ${staffEditForm.name || 'this cashier'} from your team? This can't be undone.`)) return
     setDeletingStaff(true)
     try {
-      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff/${staffEditForm.public_id}`, {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff/${staffEditForm.public_id}`, {
         method: 'DELETE',
       })
       if (res.ok) {
@@ -832,7 +681,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const saveSetupKitDetails = async () => {
     setSavingSetupKit(true)
     try {
-      const res=await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/setup-kit`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(setupKitForm)})
+      const res=await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/setup-kit`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(setupKitForm)})
       const data=await res.json().catch(()=>({}))
       if(!res.ok) throw new Error(data.detail||'Could not save QR kit details')
       setSetupKit(data); setMessage('QR kit details saved'); loadData()
@@ -842,7 +691,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   const goLive = async () => {
     try {
-      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/go-live`, { method: 'POST' })
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/go-live`, { method: 'POST' })
       const data = await res.json()
       if (res.ok) {
         setMessage(data.message)
@@ -870,7 +719,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     try {
       // Fetch the QR image as a blob for sharing
       const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(joinUrl)}`
-      const qrRes = await authFetch(qrApiUrl)
+      const qrRes = await fetch(qrApiUrl)
       const qrBlob = await qrRes.blob()
       const qrFile = new File([qrBlob], 'loyaltree-qr.png', { type: 'image/png' })
 
@@ -932,7 +781,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   const addToGoogleWallet = (customer) => {
     const walletUrl = `${API_BASE}/api/v1/customer/${customer.public_id}/wallet-pass`
-    authFetch(walletUrl)
+    fetch(walletUrl)
       .then(res => res.json())
       .then(data => {
         if (data.add_to_wallet_url) {
@@ -1111,21 +960,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           <button onClick={() => { setOnboardingStep(0); setShowOnboarding(true); if (isTablet || isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>🎓 Setup Guide</button>
           <button onClick={() => { setShowAnnouncements(true); markAnnouncementsChecked(); if (isTablet || isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>📢 Announcements</button>
           <button onClick={() => { markAnalyticsChecked(); navigate('/analytics'); if (isTablet || isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>📊 Analytics</button>
-          {(isTablet || isMobile) && (
-          <button
-            type="button"
-            onClick={() => { handleAddToHomeScreen(); if (isTablet || isMobile) setMobileHeaderOpen(false) }}
-            style={{
-              ...styles.installBtn,
-              ...(isTablet || isMobile ? styles.headerActionResponsive : {}),
-              ...(isStandaloneApp ? styles.installBtnInstalled : {}),
-            }}
-            title={isStandaloneApp ? 'LoyaltyTree is already installed' : 'Add LoyaltyTree to your phone home screen'}
-            disabled={isStandaloneApp}
-          >
-            {isStandaloneApp ? '✓ App Installed' : '📲 Add to Home Screen'}
-          </button>
-          )}
           <button
             onClick={() => { setMobileHeaderOpen(false); contactLoyaltyTreeSupport() }}
             style={{...styles.supportBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}
@@ -1139,63 +973,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       </header>
 
       <PlatformPromoBanner API_BASE={API_BASE} businessSlug={user?.business_slug} />
-
-      {showInstallHelp && (
-        <div style={styles.installOverlay} onClick={() => setShowInstallHelp(false)}>
-          <div style={styles.installModal} onClick={e => e.stopPropagation()}>
-            <button
-              type="button"
-              onClick={() => setShowInstallHelp(false)}
-              style={styles.installClose}
-              aria-label="Close"
-            >
-              ✕
-            </button>
-
-            <div style={styles.installIcon}>📲</div>
-            <h2 style={styles.installTitle}>Add LoyaltyTree to your Home Screen</h2>
-
-            {installPlatform === 'ios' ? (
-              <>
-                <p style={styles.installText}>
-                  On iPhone or iPad, open this dashboard in <b>Safari</b>, then:
-                </p>
-                <div style={styles.installSteps}>
-                  <div><b>1.</b> Tap the <b>Share</b> button <span style={styles.installSymbol}>□↑</span></div>
-                  <div><b>2.</b> Scroll and tap <b>Add to Home Screen</b></div>
-                  <div><b>3.</b> Tap <b>Add</b></div>
-                </div>
-                <p style={styles.installHint}>
-                  LoyaltyTree will then open from your Home Screen like an app.
-                </p>
-              </>
-            ) : installPlatform === 'android' ? (
-              <>
-                <p style={styles.installText}>
-                  If the automatic install window did not appear, open the browser menu <b>⋮</b> and choose
-                  <b> Install app</b> or <b>Add to Home screen</b>.
-                </p>
-                <div style={styles.installSteps}>
-                  <div><b>1.</b> Tap the browser menu <b>⋮</b></div>
-                  <div><b>2.</b> Tap <b>Install app</b> / <b>Add to Home screen</b></div>
-                  <div><b>3.</b> Confirm <b>Install</b></div>
-                </div>
-              </>
-            ) : (
-              <>
-                <p style={styles.installText}>
-                  Use your browser's <b>Install app</b> or <b>Add to Home Screen</b> option.
-                  On supported Chrome/Edge browsers, an install icon may also appear in the address bar.
-                </p>
-              </>
-            )}
-
-            <button type="button" onClick={() => setShowInstallHelp(false)} style={styles.installDoneBtn}>
-              Got it
-            </button>
-          </div>
-        </div>
-      )}
 
       {message && (
         <div style={styles.toast} onClick={() => setMessage('')}>
@@ -1230,7 +1007,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
           <div style={{...styles.heroQuickActions,...(isTablet?styles.heroQuickActionsTablet:{}),...(isMobile?styles.heroQuickActionsMobile:{})}}>
             <button
-              onClick={() => navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name, ownerToken: user.token } })}
+              onClick={() => navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name } })}
               style={{...styles.primaryActionBtn, background: '#0d9488'}}
             >
               📷 {cardExperience.scanTitle}
@@ -1281,7 +1058,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             { id: 'tree', label: 'Overview', icon: cardExperience.icon },
             { id: 'customers', label: cardExperience.customerLabel, icon: cardExperience.customerIcon },
             { id: 'staff', label: 'Team', icon: '👥' },
-            { id: 'satisfaction', label: 'Satisfaction', icon: '⭐' },
             { id: 'program', label: 'Edit Card', icon: '✏️' },
             { id: 'billing', label: needsRenewal ? 'Billing ⚠️' : 'Billing', icon: '💳' },
           ].map(tab => (
@@ -1322,7 +1098,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 <h3>View {cardExperience.customerLabel}</h3>
                 <p>{customers.length} connected</p>
               </div>
-              <div style={{...styles.actionCard,...(isTablet?styles.actionCardTablet:{}), borderColor: cardExperience.border}} onClick={() => navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name, ownerToken: user.token } })}>
+              <div style={{...styles.actionCard,...(isTablet?styles.actionCardTablet:{}), borderColor: cardExperience.border}} onClick={() => navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name } })}>
                 <div style={styles.actionIcon}>📷</div>
                 <h3>{cardExperience.scanTitle}</h3>
                 <p>{cardExperience.scanDescription}</p>
@@ -1374,10 +1150,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               ))}
             </div>
           </div>
-        )}
-
-        {activeTab === 'satisfaction' && (
-          <div><div style={styles.sectionHeader}><div><h2 style={styles.sectionTitle}>⭐ Customer Satisfaction</h2><p style={styles.satisfactionIntro}>Feedback submitted from customers through their LoyaltyTree Wallet card.</p></div><button onClick={loadSatisfaction} style={styles.viewAnalyticsBtn} disabled={satisfactionLoading}>{satisfactionLoading?'Refreshing…':'↻ Refresh'}</button></div>{satisfactionError&&<div style={styles.satisfactionError}>{satisfactionError}</div>}<div style={{...styles.satisfactionMetrics,...(isMobile?styles.satisfactionMetricsMobile:{})}}>{[['Overall',satisfaction.summary?.average_rating??'—',`${satisfaction.summary?.response_count||0} responses`],['Positive',`${satisfaction.summary?.positive_percent??0}%`,'4–5 star ratings'],['Service',satisfaction.summary?.service_average??'—','Average rating'],['Quality',satisfaction.summary?.quality_average??'—','Average rating'],['Value',satisfaction.summary?.value_average??'—','Average rating']].map(([l,v,h])=><div style={styles.satisfactionMetricCard} key={l}><span style={styles.satisfactionMetricLabel}>{l}</span><strong style={styles.satisfactionMetricValue}>{v}</strong><span style={styles.satisfactionMetricHint}>{h}</span></div>)}</div><div style={styles.satisfactionList}>{satisfactionLoading&&!satisfaction.feedback.length&&<div style={styles.satisfactionEmpty}>Loading feedback…</div>}{!satisfactionLoading&&!satisfaction.feedback.length&&!satisfactionError&&<div style={styles.satisfactionEmpty}>No feedback yet. Customers can tap “Rate Your Experience” from their Wallet card details.</div>}{satisfaction.feedback.map(item=><article key={item.public_id||item.id} style={styles.satisfactionRow}><div style={styles.satisfactionRowTop}><div><strong style={styles.satisfactionName}>{item.customer_name||'Customer'}</strong><span style={styles.satisfactionDate}>{item.created_at?new Date(item.created_at).toLocaleString():''}</span></div><div style={styles.satisfactionStars}>{'★'.repeat(Number(item.rating||0))}<span style={{color:'#e2e8f0'}}>{'★'.repeat(Math.max(0,5-Number(item.rating||0)))}</span></div></div>{(item.service_rating||item.quality_rating||item.value_rating)&&<div style={styles.satisfactionSubratings}>{item.service_rating&&<span>Service <b>{item.service_rating}/5</b></span>}{item.quality_rating&&<span>Quality <b>{item.quality_rating}/5</b></span>}{item.value_rating&&<span>Value <b>{item.value_rating}/5</b></span>}</div>}{item.comment&&<p style={styles.satisfactionComment}>“{item.comment}”</p>}</article>)}</div></div>
         )}
 
         {activeTab === 'customers' && (
@@ -1611,86 +1383,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 </div>
               ))}
             </div>
-          </div>
-        )}
-
-        {activeTab === 'security' && (
-          <div>
-            <div style={styles.sectionHeader}>
-              <div>
-                <h2 style={styles.sectionTitle}>🛡️ Transactions & Security</h2>
-                <p style={{margin:'4px 0 0', color:'#64748b', fontSize:13}}>Review loyalty activity across all card types and investigate unusual patterns. Alerts never block a cashier automatically.</p>
-              </div>
-              <button onClick={() => loadTransactionsSecurity()} disabled={securityLoading} style={styles.addBtn}>{securityLoading ? 'Refreshing…' : '↻ Refresh'}</button>
-            </div>
-
-            <div style={{display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,minmax(0,1fr))', gap:12, marginBottom:18}}>
-              <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:14,padding:16}}><div style={{fontSize:12,color:'#64748b',fontWeight:700}}>TRANSACTIONS SHOWN</div><div style={{fontSize:28,fontWeight:900,color:'#0f172a',marginTop:4}}>{auditTransactions.length}</div></div>
-              <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:14,padding:16}}><div style={{fontSize:12,color:'#64748b',fontWeight:700}}>SECURITY ALERTS · 24H</div><div style={{fontSize:28,fontWeight:900,color:fraudAlerts.length?'#b45309':'#15803d',marginTop:4}}>{fraudAlerts.length}</div></div>
-              <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:14,padding:16}}><div style={{fontSize:12,color:'#64748b',fontWeight:700}}>FAILED SHOWN</div><div style={{fontSize:28,fontWeight:900,color:'#0f172a',marginTop:4}}>{auditTransactions.filter(x=>x.status==='failed').length}</div></div>
-            </div>
-
-            <div style={{background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:14,padding:16,marginBottom:18}}>
-              <div style={{fontWeight:900,color:'#9a3412',marginBottom:8}}>⚠️ Suspicious Activity Review</div>
-              {securityLoading && fraudAlerts.length===0 ? <p style={{margin:0,color:'#64748b'}}>Checking recent activity…</p> : fraudAlerts.length===0 ? (
-                <p style={{margin:0,color:'#166534'}}>✓ No suspicious patterns detected in the last 24 hours.</p>
-              ) : fraudAlerts.map((a,i)=>(
-                <div key={`${a.type}-${i}`} style={{background:'white',border:'1px solid #fed7aa',borderRadius:10,padding:'10px 12px',marginTop:8}}>
-                  <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}><b style={{color:'#1e293b'}}>{a.title}</b><span style={{fontSize:10,fontWeight:900,padding:'3px 7px',borderRadius:999,background:a.severity==='high'?'#fee2e2':'#fef3c7',color:a.severity==='high'?'#991b1b':'#92400e'}}>{String(a.severity||'').toUpperCase()}</span></div>
-                  <div style={{fontSize:12,color:'#64748b',marginTop:4}}>{a.message}</div>
-                </div>
-              ))}
-            </div>
-
-            <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:14,padding:14,marginBottom:14}}>
-              <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(5,minmax(0,1fr))',gap:8}}>
-                <select value={auditFilters.status} onChange={e=>setAuditFilters({...auditFilters,status:e.target.value})} style={styles.input}><option value="">All statuses</option><option value="success">Success</option><option value="failed">Failed</option><option value="processing">Processing</option></select>
-                <select value={auditFilters.branch_public_id} onChange={e=>setAuditFilters({...auditFilters,branch_public_id:e.target.value})} style={styles.input}><option value="">Overall · All branches</option>{branches.map(b=><option key={b.public_id} value={b.public_id}>{b.name}</option>)}</select>
-                <select value={auditFilters.staff_public_id} onChange={e=>setAuditFilters({...auditFilters,staff_public_id:e.target.value})} style={styles.input}><option value="">All cashiers</option>{staff.map(x=><option key={x.public_id} value={x.public_id}>{x.name}</option>)}</select>
-                <input type="date" value={auditFilters.date_from} onChange={e=>setAuditFilters({...auditFilters,date_from:e.target.value})} style={styles.input}/>
-                <input type="date" value={auditFilters.date_to} onChange={e=>setAuditFilters({...auditFilters,date_to:e.target.value})} style={styles.input}/>
-              </div>
-              <div style={{display:'flex',gap:8,marginTop:8,flexWrap:'wrap'}}><button onClick={()=>loadTransactionsSecurity(auditFilters)} style={styles.addBtn}>Apply Filters</button><button onClick={()=>{const clean={status:'',branch_public_id:'',staff_public_id:'',date_from:'',date_to:''};setAuditFilters(clean);loadTransactionsSecurity(clean)}} style={{...styles.viewCardBtn,background:'white'}}>Clear</button></div>
-            </div>
-
-            <div style={{display:'grid',gap:9}}>
-              {auditTransactions.length===0 && !securityLoading && <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:12,padding:20,color:'#64748b'}}>No transactions match these filters.</div>}
-              {auditTransactions.map((tx,i)=>(
-                <div key={tx.transaction_id||tx.id||i} style={{background:'white',border:'1px solid #e2e8f0',borderRadius:12,padding:'12px 14px'}}>
-                  <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start',flexWrap:'wrap'}}>
-                    <div><div style={{fontWeight:850,color:'#0f172a'}}>{String(tx.action||'transaction').replaceAll('_',' ')}</div><div style={{fontSize:12,color:'#64748b',marginTop:3}}>{tx.customer_name||'No customer'} · {tx.staff_name||tx.actor_type||'System'}{tx.branch_name?` · ${tx.branch_name}`:''}</div></div>
-                    <span style={{fontSize:11,fontWeight:800,padding:'4px 8px',borderRadius:999,background:tx.status==='success'?'#dcfce7':tx.status==='failed'?'#fee2e2':'#fef3c7',color:tx.status==='success'?'#166534':tx.status==='failed'?'#991b1b':'#92400e'}}>{tx.status||'unknown'}</span>
-                  </div>
-                  <div style={{display:'flex',gap:14,flexWrap:'wrap',fontSize:11,color:'#64748b',marginTop:8}}><span>{tx.created_at?new Date(tx.created_at).toLocaleString():'—'}</span>{tx.delta!==null&&tx.delta!==undefined&&<span>Change: {Number(tx.delta)>0?'+':''}{tx.delta}</span>}{tx.balance_before!==null&&tx.balance_before!==undefined&&<span>Balance: {tx.balance_before} → {tx.balance_after??'—'}</span>}{tx.reason&&<span>Reason: {tx.reason}</span>}</div>
-                  {tx.transaction_id&&<div style={{fontSize:10,color:'#94a3b8',marginTop:7,wordBreak:'break-all'}}>Transaction ID: {tx.transaction_id}</div>}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {activeTab === 'walletqueue' && (
-          <div style={styles.section}><div style={styles.sectionHeader}><h2 style={styles.sectionTitle}>👛 Wallet Queue</h2><button onClick={loadGrowthSuite} style={styles.addBtn}>↻ Refresh</button></div>
-            <div style={styles.statsGrid}><div style={styles.statCard}><div style={styles.statValue}>{walletQueue.pending||0}</div><div style={styles.statLabel}>Pending / Processing</div></div><div style={styles.statCard}><div style={styles.statValue}>{walletQueue.failed||0}</div><div style={styles.statLabel}>Failed</div></div></div>
-            {(walletQueue.jobs||[]).slice(0,50).map(j=><div key={j.id} style={{background:'white',padding:12,border:'1px solid #e2e8f0',borderRadius:10,marginBottom:8}}><b>Job #{j.id}</b> · {j.reason} · <b>{j.status}</b> · attempts {j.attempts}/{j.max_attempts}{j.last_error&&<div style={{color:'#b91c1c',fontSize:12,marginTop:4}}>{j.last_error}</div>}</div>)}
-          </div>
-        )}
-        {activeTab === 'crm' && (
-          <div style={styles.section}><div style={styles.sectionHeader}><h2 style={styles.sectionTitle}>👥 Customer CRM</h2><button onClick={loadGrowthSuite} style={styles.addBtn}>↻ Refresh</button></div>
-            <div style={styles.statsGrid}>{Object.entries(crmData.segments||{}).map(([k,v])=><div style={styles.statCard} key={k}><div style={styles.statValue}>{v}</div><div style={styles.statLabel}>{k.replaceAll('_',' ')}</div></div>)}</div>
-            {(crmData.customers||[]).map(c=><div key={c.public_id} style={{background:'white',padding:12,border:'1px solid #e2e8f0',borderRadius:10,marginBottom:8}}><b>{c.name||c.email||'Customer'}</b><div style={{fontSize:13,color:'#64748b'}}>Segment: {c.crm?.segment?.replaceAll('_',' ')} · Transactions: {c.crm?.total_transactions||0} · Last activity: {c.crm?.days_since_last_activity ?? '—'} days ago</div></div>)}
-          </div>
-        )}
-        {activeTab === 'retention' && (
-          <div style={styles.section}><div style={styles.sectionHeader}><h2 style={styles.sectionTitle}>🔁 Retention Analytics & Opportunities</h2><button onClick={loadGrowthSuite} style={styles.addBtn}>↻ Refresh</button></div>
-            <div style={styles.statsGrid}><div style={styles.statCard}><div style={styles.statValue}>{retentionData.repeat_customer_rate||0}%</div><div style={styles.statLabel}>Repeat customer rate</div></div><div style={styles.statCard}><div style={styles.statValue}>{retentionData.retention_30_rate||0}%</div><div style={styles.statLabel}>Active within 30 days</div></div><div style={styles.statCard}><div style={styles.statValue}>{retentionData.average_days_between_activity ?? '—'}</div><div style={styles.statLabel}>Avg days between activity</div></div><div style={styles.statCard}><div style={styles.statValue}>{retentionOps.length}</div><div style={styles.statLabel}>Retention opportunities</div></div></div>
-            {retentionOps.map((o,i)=><div key={i} style={{background:'white',padding:12,border:'1px solid #e2e8f0',borderRadius:10,marginBottom:8}}><b>{o.customer_name||'Customer'}</b> · {o.type.replaceAll('_',' ')}<div style={{fontSize:13,color:'#64748b',marginTop:3}}>{o.suggested_message}</div></div>)}
-          </div>
-        )}
-        {activeTab === 'operations' && (
-          <div style={styles.section}><div style={styles.sectionHeader}><h2 style={styles.sectionTitle}>📈 Branch / Cashier Analytics</h2><button onClick={loadGrowthSuite} style={styles.addBtn}>↻ Refresh</button></div>
-            <h3>Branches — last 30 days</h3>{(opsAnalytics.branches||[]).map(x=><div key={x.id} style={{background:'white',padding:12,border:'1px solid #e2e8f0',borderRadius:10,marginBottom:8}}><b>{x.name}</b> · {x.transactions} transactions · {x.adjustments} adjustments · {x.failed} failed</div>)}
-            <h3 style={{marginTop:20}}>Cashiers — last 30 days</h3>{(opsAnalytics.cashiers||[]).map(x=><div key={x.id} style={{background:'white',padding:12,border:'1px solid #e2e8f0',borderRadius:10,marginBottom:8}}><b>{x.name}</b> · {x.transactions} transactions · {x.adjustments} adjustments · {x.failed} failed</div>)}
           </div>
         )}
 
@@ -2004,7 +1696,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                         : isMultipassCard
                         ? 'Every issued pass and stamped session'
                         : isPointsCard
-                        ? 'Every points movement — purchases, redemptions, and owner adjustments'
+                        ? 'Every points-earning sale, cashier, and branch'
                         : isVipCard
                         ? 'Every VIP points award and tier change'
                         : 'The date, cashier, and branch for every recorded stamp'}
@@ -2014,37 +1706,29 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     <strong style={{display:'block',fontSize:20,color:'#0f766e'}}>
                       {isMembershipCard
                         ? (selectedCustomer.membership_visit_count || memberHistory.length || 0)
-                        : isMultipassCard
-                        ? memberHistory.filter(item => item.action === 'used').length
-                        : isPointsCard || isVipCard
-                        ? memberHistory.length
-                        : (selectedCustomer.stamp_count ?? 0)}
+                        : memberHistory.filter(item => !isMultipassCard || item.action === 'used').length}
                     </strong>
                     <span style={{fontSize:11,color:'#64748b'}}>
-                      {isMembershipCard ? 'Visits' : isMultipassCard ? 'Used' : isPointsCard ? 'Activities' : isVipCard ? 'Updates' : 'Stamps'}
+                      {isMembershipCard ? 'Visits' : isMultipassCard ? 'Used' : isPointsCard ? 'Sales' : isVipCard ? 'Updates' : 'Stamps'}
                     </span>
                   </div>
                 </div>
 
                 {memberHistoryLoading ? <p style={{color:'#64748b'}}>Loading activity...</p> : memberHistory.length === 0 ? (
                   <p style={{color:'#64748b',background:'white',padding:12,borderRadius:10,margin:0}}>
-                    No dated activity has been recorded yet. Points earned, redeemed, or manually adjusted will appear here.
+                    No dated activity has been recorded yet. Activity history starts when scans are logged through the system.
                   </p>
                 ) : (
                   <div style={{maxHeight:320, overflowY:'auto', background:'white', borderRadius:12, padding:'0 12px'}}>
                     {memberHistory.map((item, i) => {
-                      const eventDate = item.service_date || item.created_at
+                      const eventDate = item.created_at || item.service_date
                       const location = [item.staff_name ? `By ${item.staff_name}` : null, item.branch_name ? `at ${item.branch_name}` : null].filter(Boolean).join(' ')
                       const title = isMembershipCard
                         ? (item.service_name || 'Visit')
                         : isMultipassCard
                         ? (item.action === 'issued' ? 'Pass issued' : 'Session stamped')
                         : isPointsCard
-                        ? item.activity_type === 'adjustment'
-                          ? `${Number(item.points_delta || 0) >= 0 ? '+' : ''}${Number(item.points_delta || 0)} pts · Owner adjustment`
-                          : item.activity_type === 'redemption'
-                          ? `-${Math.abs(Number(item.points_delta || item.points_spent || 0))} pts · ${item.prize_name || 'Reward redeemed'}`
-                          : `+${item.points_earned ?? item.points_delta ?? 0} pts earned`
+                        ? `+${item.points_earned ?? 0} pts earned`
                         : isVipCard
                         ? `${(item.points_delta ?? 0) >= 0 ? '+' : ''}${item.points_delta ?? 0} VIP pts`
                         : item.activity_type === 'adjustment'
@@ -2060,18 +1744,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                       const tierChanged = isVipCard && item.old_tier && item.new_tier && item.old_tier !== item.new_tier
 
                       return <div key={item.id || i} style={{display:'grid',gridTemplateColumns:'12px 1fr',gap:10,padding:'12px 0',borderBottom:i===memberHistory.length-1?'none':'1px solid #e2e8f0'}}>
-                        <div style={{
-                          width:10,height:10,borderRadius:'50%',
-                          background:(
-                            (isPointsCard && Number(item.points_delta || 0) < 0) ||
-                            (!isMembershipCard && !isMultipassCard && !isPointsCard && !isVipCard && item.activity_type === 'adjustment' && Number(item.delta || 0) < 0)
-                          ) ? '#dc2626' : '#14b8a6',
-                          marginTop:5,
-                          boxShadow:(
-                            (isPointsCard && Number(item.points_delta || 0) < 0) ||
-                            (!isMembershipCard && !isMultipassCard && !isPointsCard && !isVipCard && item.activity_type === 'adjustment' && Number(item.delta || 0) < 0)
-                          ) ? '0 0 0 4px #fee2e2' : '0 0 0 4px #ccfbf1'
-                        }} />
+                        <div style={{width:10,height:10,borderRadius:'50%',background:(!isMembershipCard && !isMultipassCard && !isPointsCard && !isVipCard && item.activity_type === 'adjustment' && Number(item.delta || 0) < 0) ? '#dc2626' : '#14b8a6',marginTop:5,boxShadow:(!isMembershipCard && !isMultipassCard && !isPointsCard && !isVipCard && item.activity_type === 'adjustment' && Number(item.delta || 0) < 0) ? '0 0 0 4px #fee2e2' : '0 0 0 4px #ccfbf1'}} />
                         <div>
                           <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start'}}>
                             <strong style={{color:'#134e4a'}}>{title}</strong>
@@ -2090,22 +1763,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                           {isMultipassCard && <div style={{fontSize:13,color:'#475569',marginTop:3}}>{item.sessions_remaining ?? 0} sessions remaining after this activity</div>}
                           {isMembershipCard && item.note && <div style={{fontSize:13,color:'#334155',whiteSpace:'pre-wrap',marginTop:6,padding:8,background:'#f8fafc',borderRadius:8}}>{item.note}</div>}
                           {isPointsCard && item.amount_spent_pesos != null && <div style={{fontSize:13,color:'#475569',marginTop:3}}>₱{Number(item.amount_spent_pesos).toLocaleString()} spent</div>}
-                          {isPointsCard && item.activity_type === 'adjustment' && (
-                            <>
-                              <div style={{fontSize:13,color:Number(item.points_delta || 0) < 0 ? '#b91c1c' : '#166534',fontWeight:700,marginTop:3}}>
-                                {item.balance_before ?? 0} points → {item.balance_after ?? item.points_balance ?? 0} points
-                              </div>
-                              <div style={{fontSize:12,color:'#64748b',marginTop:3}}>
-                                Changed manually by the business owner
-                              </div>
-                              {item.reason && <div style={{fontSize:12,color:'#64748b',marginTop:3}}>Reason: {item.reason}</div>}
-                            </>
-                          )}
-                          {isPointsCard && item.activity_type === 'redemption' && (
-                            <div style={{fontSize:13,color:'#475569',marginTop:3}}>
-                              {item.points_balance != null ? `${item.points_balance} points remaining` : 'Points deducted for reward'}
-                            </div>
-                          )}
                           {isVipCard && tierChanged && <div style={{fontSize:13,fontWeight:700,color:'#b45309',marginTop:3}}>🏆 Tier: {item.old_tier} → {item.new_tier}</div>}
                           {isVipCard && (item.amount_spent != null || item.points_balance != null) && (
                             <div style={{fontSize:13,color:'#475569',marginTop:3}}>
@@ -2441,12 +2098,12 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       )}
 
       {showOnboarding && (() => {
-        const totalSteps = 5
+        const totalSteps = 4
         const safeStep = Math.min(onboardingStep, totalSteps - 1)
 
         const goNextAfterCard = () => {
           loadData()
-          setOnboardingStep(cashierSetUp ? 2 : 1)
+          setOnboardingStep(1)
         }
 
         const submitCashierInsideTutorial = async (e) => {
@@ -2499,12 +2156,10 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     </div>
                     <h2 style={{margin: '5px 0 0', fontSize: 24, color: '#0f172a'}}>
                       {safeStep === 0
-                        ? `Welcome ${business?.name || user?.business_name || ''}! Let’s build your loyalty card`
+                        ? 'Choose and configure your card'
                         : safeStep === 1
                         ? 'Create your cashier'
                         : safeStep === 2
-                        ? 'Welcome to your dashboard'
-                        : safeStep === 3
                         ? 'Share your join QR'
                         : 'Your business is ready'}
                     </h2>
@@ -2537,7 +2192,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 {safeStep === 0 && (
                   <div>
                     <p style={{margin: '0 0 16px', color: '#64748b', fontSize: 14, lineHeight: 1.55}}>
-                      Welcome to LoyaltyTree! We’ll guide you one question at a time. First choose the kind of loyalty card your business needs, then we’ll help you name, describe, configure and design it.
+                      Select the card your business will use, complete its settings, then save it. You will stay inside this setup guide.
                     </p>
                     <div style={{
                       background: 'white',
@@ -2561,7 +2216,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                           API_BASE={API_BASE}
                           user={user}
                           onSaved={goNextAfterCard}
-                          guided
                         />
                       </div>
                     </div>
@@ -2575,19 +2229,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     borderRadius: 18,
                     padding: 22,
                   }}>
-                    {cashierSetUp ? (
-                      <div style={{textAlign:'center', padding:'12px 4px'}}>
-                        <div style={{fontSize:46, marginBottom:8}}>✅</div>
-                        <h3 style={{margin:'0 0 8px', color:'#0f172a'}}>Cashier already set up</h3>
-                        <p style={{margin:'0 auto 18px', maxWidth:420, color:'#64748b', fontSize:14, lineHeight:1.55}}>
-                          We found an existing cashier for {business?.name || user?.business_name || 'your business'}, so you do not need to create another one.
-                        </p>
-                        <button type="button" style={{...styles.submitBtn,width:'100%'}} onClick={() => setOnboardingStep(2)}>
-                          Continue to Join QR →
-                        </button>
-                      </div>
-                    ) : (
-                      <>
                     <p style={{margin: '0 0 18px', color: '#64748b', fontSize: 14, lineHeight: 1.55}}>
                       Create the cashier account that will scan customer cards and record visits, stamps, points, or sessions.
                     </p>
@@ -2653,23 +2294,10 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                         Create Cashier and Continue
                       </button>
                     </form>
-                      </>
-                    )}
                   </div>
                 )}
 
                 {safeStep === 2 && (
-                  <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:18,padding:'30px 24px',textAlign:'center'}}>
-                    <div style={{fontSize:50,marginBottom:10}}>🌳</div>
-                    <h3 style={{fontSize:24,margin:'0 0 8px',color:'#0f172a'}}>Welcome to your business dashboard</h3>
-                    <p style={{margin:'0 auto 20px',maxWidth:450,color:'#64748b',fontSize:14,lineHeight:1.6}}>
-                      This is your LoyaltyTree command center. Manage customers, staff, rewards, announcements, analytics, billing and your loyalty program here.
-                    </p>
-                    <button type="button" onClick={() => setOnboardingStep(3)} style={{...styles.submitBtn,background:cardExperience.accent}}>Continue to Join QR →</button>
-                  </div>
-                )}
-
-                {safeStep === 3 && (
                   <div style={{
                     background: 'white',
                     border: '1px solid #e2e8f0',
@@ -2726,7 +2354,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                       </button>
                       <button
                         type="button"
-                        onClick={() => setOnboardingStep(4)}
+                        onClick={() => setOnboardingStep(3)}
                         style={{...styles.submitBtn, background: cardExperience.accent}}
                       >
                         Continue
@@ -2735,7 +2363,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                   </div>
                 )}
 
-                {safeStep === 4 && (
+                {safeStep === 3 && (
                   <div style={{
                     background: 'white',
                     border: '1px solid #e2e8f0',
@@ -2890,104 +2518,6 @@ const styles = {
     boxSizing: 'border-box',
     maxWidth: '100%',
     flexShrink: 0,
-  },
-
-  installBtn: {
-    padding: '8px 14px',
-    background: '#f0fdfa',
-    color: '#0f766e',
-    border: '1px solid #99f6e4',
-    borderRadius: 8,
-    fontSize: 13,
-    fontWeight: 700,
-    cursor: 'pointer',
-    boxSizing: 'border-box',
-  },
-  installBtnInstalled: {
-    background: '#f8fafc',
-    color: '#64748b',
-    borderColor: '#e2e8f0',
-    cursor: 'default',
-  },
-  installOverlay: {
-    position: 'fixed',
-    inset: 0,
-    zIndex: 9999,
-    background: 'rgba(15, 23, 42, 0.55)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 18,
-  },
-  installModal: {
-    width: '100%',
-    maxWidth: 430,
-    background: 'white',
-    borderRadius: 18,
-    boxShadow: '0 24px 70px rgba(15,23,42,0.28)',
-    padding: '26px 24px 22px',
-    position: 'relative',
-  },
-  installClose: {
-    position: 'absolute',
-    top: 12,
-    right: 12,
-    width: 34,
-    height: 34,
-    borderRadius: '50%',
-    border: 'none',
-    background: '#f1f5f9',
-    color: '#475569',
-    cursor: 'pointer',
-    fontSize: 16,
-  },
-  installIcon: {
-    fontSize: 40,
-    marginBottom: 10,
-  },
-  installTitle: {
-    margin: '0 38px 8px 0',
-    fontSize: 21,
-    color: '#0f172a',
-  },
-  installText: {
-    margin: '0 0 14px',
-    fontSize: 14,
-    lineHeight: 1.55,
-    color: '#475569',
-  },
-  installSteps: {
-    display: 'grid',
-    gap: 10,
-    padding: 14,
-    borderRadius: 12,
-    background: '#f8fafc',
-    color: '#334155',
-    fontSize: 14,
-    lineHeight: 1.45,
-  },
-  installSymbol: {
-    display: 'inline-block',
-    fontSize: 18,
-    color: '#2563eb',
-    marginLeft: 4,
-  },
-  installHint: {
-    margin: '12px 0 0',
-    fontSize: 12,
-    color: '#64748b',
-  },
-  installDoneBtn: {
-    marginTop: 18,
-    width: '100%',
-    border: 'none',
-    borderRadius: 10,
-    background: '#0d9488',
-    color: 'white',
-    fontWeight: 700,
-    fontSize: 14,
-    padding: '11px 14px',
-    cursor: 'pointer',
   },
   renewalBtnWarning: {
     background: '#fffbeb',
@@ -4178,8 +3708,6 @@ const styles = {
   industryInsightLabel:{fontSize:10.5,fontWeight:900,textTransform:'uppercase',letterSpacing:.8,color:'#0d9488'},
   industryInsightTitle:{display:'block',fontSize:14,color:'#134e4a',marginTop:2},
   industryInsightText:{fontSize:12,color:'#64748b',marginTop:3,lineHeight:1.4},
-  satisfactionIntro:{margin:'5px 0 0',fontSize:13,color:'#64748b'}, satisfactionError:{padding:12,borderRadius:10,background:'#fef2f2',color:'#b91c1c',marginBottom:14}, satisfactionMetrics:{display:'grid',gridTemplateColumns:'repeat(5,minmax(0,1fr))',gap:10,marginBottom:18}, satisfactionMetricsMobile:{gridTemplateColumns:'repeat(2,minmax(0,1fr))'}, satisfactionMetricCard:{background:'#fff',border:'1px solid #e2e8f0',borderRadius:14,padding:15,display:'flex',flexDirection:'column',gap:4}, satisfactionMetricLabel:{fontSize:10,fontWeight:850,color:'#64748b',textTransform:'uppercase'}, satisfactionMetricValue:{fontSize:25,color:'#0f172a'}, satisfactionMetricHint:{fontSize:10.5,color:'#94a3b8'}, satisfactionList:{display:'grid',gap:10}, satisfactionRow:{background:'#fff',border:'1px solid #e2e8f0',borderRadius:14,padding:16}, satisfactionRowTop:{display:'flex',justifyContent:'space-between',gap:12}, satisfactionName:{display:'block',fontSize:14}, satisfactionDate:{display:'block',fontSize:10.5,color:'#94a3b8',marginTop:3}, satisfactionStars:{fontSize:16,color:'#f59e0b'}, satisfactionSubratings:{display:'flex',gap:8,flexWrap:'wrap',marginTop:11,fontSize:11,color:'#64748b'}, satisfactionComment:{margin:'12px 0 0',fontSize:13.5,color:'#475569',background:'#f8fafc',padding:'10px 12px',borderRadius:10}, satisfactionEmpty:{padding:24,textAlign:'center',color:'#94a3b8',background:'#fff',border:'1px dashed #cbd5e1',borderRadius:14},
-
 }
 
 export default OwnerDashboard
