@@ -4,6 +4,7 @@ import Login from './components/Login'
 import Signup from './components/Signup'
 import HomePage from './components/HomePage'
 import PublicInfoPage from './components/PublicInfoPage'
+import LegalPage from './components/LegalPages'
 import OwnerDashboard from './components/OwnerDashboard'
 import CarLendingDashboard from './components/CarLendingDashboard'
 import CockpitDashboard from './components/CockpitDashboard'
@@ -42,6 +43,9 @@ function PublicRouteAnalytics({ API_BASE }) {
       path === '/signup' ||
       path === '/about' ||
       path === '/contact' ||
+      path === '/privacy' ||
+      path === '/terms' ||
+      path === '/business-agreement' ||
       path.startsWith('/how-it-works') ||
       path.startsWith('/join/')
 
@@ -53,6 +57,9 @@ function PublicRouteAnalytics({ API_BASE }) {
       '/signup': 'Business Application',
       '/about': 'About Us',
       '/contact': 'Contact Us',
+      '/privacy': 'Privacy Policy',
+      '/terms': 'Terms of Service',
+      '/business-agreement': 'Business Agreement',
       '/how-it-works': 'How It Works',
       '/how-it-works/businesses': 'How It Works - Businesses',
       '/how-it-works/customers': 'How It Works - Customers',
@@ -145,6 +152,9 @@ function App() {
         <Route path="/how-it-works/customers" element={<PublicInfoPage type="customers" API_BASE={API_BASE} />} />
         <Route path="/about" element={<PublicInfoPage type="about" API_BASE={API_BASE} />} />
         <Route path="/contact" element={<PublicInfoPage type="contact" API_BASE={API_BASE} />} />
+        <Route path="/privacy" element={<LegalPage type="privacy" />} />
+        <Route path="/terms" element={<LegalPage type="terms" />} />
+        <Route path="/business-agreement" element={<LegalPage type="business" />} />
         <Route path="/login" element={
           user ? (
             user.role === 'owner' ? <Navigate to="/dashboard" replace /> :

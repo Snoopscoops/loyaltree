@@ -1038,11 +1038,20 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
       </section>
 
       <footer style={styles.footer}>
-        <span style={styles.footerBrand}>
-          <img src={logo64} alt="LoyaltyTree" style={styles.footerLogo} />
-          LoyaltyTree
-        </span>
-        <span style={styles.footerNote}>Marketing, retention, and zero-waste loyalty &mdash; automated</span>
+        <div style={styles.footerMain}>
+          <div style={styles.footerBrandBlock}>
+            <span style={styles.footerBrand}><img src={logo64} alt="LoyaltyTree" style={styles.footerLogo} />LoyaltyTree</span>
+            <span style={styles.footerNote}>Digitalize. Secure. Connect.</span>
+            <span style={styles.footerSmall}>Marketing, retention, and zero-waste loyalty &mdash; automated</span>
+          </div>
+          <div style={styles.footerLegal}>
+            <span style={styles.footerLegalTitle}>LEGAL</span>
+            <button onClick={() => navigate('/privacy')} style={styles.footerLegalLink}>Privacy Policy</button>
+            <button onClick={() => navigate('/terms')} style={styles.footerLegalLink}>Terms of Service</button>
+            <button onClick={() => navigate('/business-agreement')} style={styles.footerLegalLink}>Business Agreement</button>
+          </div>
+        </div>
+        <div style={styles.footerBottom}>© 2026 LoyaltyTree. All rights reserved.</div>
       </footer>
 
       {activeCard && CARD_SAMPLES[activeCard] && (
@@ -1435,13 +1444,17 @@ const styles = {
     border:'1px solid rgba(255,255,255,.72)', borderRadius:12,
     fontSize:14, fontWeight:800, cursor:'pointer', minWidth:190,
   },
-  footer: {
-    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-    padding: '24px 32px', fontSize: 13, color: '#94a3b8', flexWrap: 'wrap', gap: 8,
-  },
-  footerNote: { fontSize: 12, color: '#cbd5e1' },
-  footerBrand: { display: 'flex', alignItems: 'center', gap: 6 },
-  footerLogo: { width: 18, height: 18, borderRadius: '50%', display: 'block' },
+  footer: { padding:'38px 6% 20px', background:'#073f36', color:'white' },
+  footerMain: { maxWidth:1180, margin:'0 auto', display:'flex', justifyContent:'space-between', gap:36, flexWrap:'wrap' },
+  footerBrandBlock: { display:'flex', flexDirection:'column', gap:10, minWidth:240 },
+  footerLegal: { display:'flex', flexDirection:'column', alignItems:'flex-start', gap:10, minWidth:210 },
+  footerLegalTitle: { fontSize:12, fontWeight:900, letterSpacing:'0.18em', color:'#8de0c4', marginBottom:4 },
+  footerLegalLink: { border:0, background:'transparent', color:'#d7f5ea', padding:0, fontSize:15, cursor:'pointer', textAlign:'left' },
+  footerSmall: { color:'#9ed5c4', fontSize:12, lineHeight:1.5 },
+  footerBottom: { maxWidth:1180, margin:'28px auto 0', paddingTop:18, borderTop:'1px solid rgba(255,255,255,.14)', color:'#8fcbbb', fontSize:12 },
+  footerNote: { fontSize:14, fontWeight:800, color:'#d7f5ea' },
+  footerBrand: { display:'flex', alignItems:'center', gap:8, fontWeight:900, fontSize:18 },
+  footerLogo: { width:24, height:24, borderRadius:'50%', display:'block' },
 
   // Comparison section
   comparisonIntro: {
