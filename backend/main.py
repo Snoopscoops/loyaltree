@@ -11099,7 +11099,7 @@ async def get_membership_history(public_id: str, customer_public_id: str):
 # this is just the record-keeping backbone.
 
 @app.post("/api/v1/business/{public_id}/membership/note")
-async def add_membership_note(public_id: str, req: MembershipNoteRequest, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
+async def add_membership_note(public_id: str, req: MembershipNoteRequest, background_tasks: BackgroundTasks, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
     """Cashier logs one visit: what service the member came in for, and
     (usually) today's date. This is the membership-card equivalent of
     /stamp - the thing a cashier does at every visit."""
