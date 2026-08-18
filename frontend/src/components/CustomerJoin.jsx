@@ -48,18 +48,34 @@ function CustomerJoin({ API_BASE }) {
       })
   }, [submitted, customerId, API_BASE])
 
-  const addToGoogleWallet = () => {
+  const appleWalletUrl = `${API_BASE}/api/v1/customer/${customerId}/apple-wallet-pass`
+  const [walletChoiceOpen, setWalletChoiceOpen] = useState(false)
+
+  const openGoogleWallet = () => {
     if (walletData?.save_url && walletData.save_url.includes('pay.google.com')) {
-      window.open(walletData.save_url, '_blank')
+      window.location.href = walletData.save_url
+    } else if (walletLoading) {
+      alert('Your Google Wallet card is still being prepared. Please try again in a moment.')
     } else {
-      alert('Save this page to your home screen for quick access!')
+      alert('Google Wallet is not available for this card right now.')
     }
   }
 
-  // Same reasoning as WalletPass.jsx: Apple Wallet has no JS API to
-  // trigger from, so this is a plain <a href> to the signed .pkpass file -
-  // Safari on iOS/macOS shows the native "Add to Apple Wallet" sheet.
-  const appleWalletUrl = `${API_BASE}/api/v1/customer/${customerId}/apple-wallet-pass`
+  const openAppleWallet = () => {
+    window.location.href = appleWalletUrl
+  }
+
+  const addToWallet = () => {
+    const ua = navigator.userAgent || ''
+    const platform = navigator.platform || ''
+    const touchPoints = navigator.maxTouchPoints || 0
+    const isAppleMobile = /iPhone|iPad|iPod/i.test(ua) || (platform === 'MacIntel' && touchPoints > 1)
+    const isAndroid = /Android/i.test(ua)
+
+    if (isAppleMobile) return openAppleWallet()
+    if (isAndroid) return openGoogleWallet()
+    setWalletChoiceOpen(true)
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -124,16 +140,18 @@ function CustomerJoin({ API_BASE }) {
             <div style={styles.walletPreviewMember}>Your Wallet 2.0 card is ready</div>
           </div>
 
-          <a href={appleWalletUrl} style={{ ...styles.walletBtn, ...styles.appleBtn }}>
-            Add to Apple Wallet
-          </a>
-          <button
-            onClick={addToGoogleWallet}
-            disabled={walletLoading}
-            style={{ ...styles.walletBtn, background: '#4285f4', marginTop: 10 }}
-          >
-            {walletLoading ? 'Preparing card...' : 'Add to Google Wallet'}
+          <button type="button" onClick={addToWallet} style={{ ...styles.walletBtn, ...styles.unifiedWalletBtn }}>
+            Add to Wallet
           </button>
+          {walletChoiceOpen && (
+            <div style={styles.walletChooser}>
+              <div style={styles.walletChooserTitle}>Choose your wallet</div>
+              <button type="button" onClick={openAppleWallet} style={{ ...styles.walletChoiceBtn, ...styles.appleBtn }}>Apple Wallet</button>
+              <button type="button" onClick={openGoogleWallet} disabled={walletLoading} style={{ ...styles.walletChoiceBtn, ...styles.googleBtn, ...(walletLoading ? styles.walletChoiceDisabled : {}) }}>
+                {walletLoading ? 'Preparing Google Wallet…' : 'Google Wallet'}
+              </button>
+            </div>
+          )}
           <button
             onClick={() => { window.location.href = `${API_BASE}/wallet/${customerId}` }}
             style={{ ...styles.walletBtn, ...styles.secondaryBtn, marginTop: 10 }}
@@ -141,7 +159,7 @@ function CustomerJoin({ API_BASE }) {
             📱 View My Digital Card
           </button>
           <p style={styles.hint}>
-            Save this to your phone or add to Google Wallet
+            We&apos;ll automatically open the wallet made for your phone.
           </p>
         </div>
       </div>
@@ -470,9 +488,13 @@ const styles = {
     textAlign: 'center',
     textDecoration: 'none',
   },
-  appleBtn: {
-    background: '#000000',
-  },
+  unifiedWalletBtn: { background: '#111827' },
+  walletChooser: { marginTop:10,padding:12,border:'1.5px solid #e2e8f0',borderRadius:12,background:'#f8fafc' },
+  walletChooserTitle: { fontSize:12,fontWeight:800,color:'#64748b',marginBottom:8 },
+  walletChoiceBtn: { display:'block',width:'100%',boxSizing:'border-box',border:'none',borderRadius:10,padding:'12px 14px',color:'#fff',fontSize:14,fontWeight:800,cursor:'pointer',marginTop:7 },
+  appleBtn: { background:'#000000' },
+  googleBtn: { background:'#4285f4' },
+  walletChoiceDisabled: { opacity:.55,cursor:'not-allowed' },
   secondaryBtn: {
     background: 'white',
     color: '#0f766e',
