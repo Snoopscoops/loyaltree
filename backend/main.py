@@ -570,6 +570,7 @@ class BusinessCreate(BaseModel):
     name: str
     email: str
     phone: Optional[str] = None
+    contact_person: Optional[str] = None
     password: str
     logo_url: Optional[str] = None
     business_type: Optional[str] = 'other'
@@ -582,6 +583,10 @@ class BusinessCreate(BaseModel):
     kit_delivery_address: Optional[str] = None
     kit_delivery_instructions: Optional[str] = None
     partner_code: Optional[str] = Field(default=None, max_length=64)
+
+class BusinessOnboardingUpdate(BaseModel):
+    onboarding_step: Optional[int] = Field(default=None, ge=0, le=9)
+    onboarding_completed: Optional[bool] = None
 
 class SetupKitOwnerUpdate(BaseModel):
     recipient_name: Optional[str] = None
@@ -1260,6 +1265,7 @@ class AdminBusinessUpdate(BaseModel):
     name: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
+    contact_person: Optional[str] = None
     business_type: Optional[str] = None
     logo_url: Optional[str] = None
     announcement_limit_adjustment: Optional[int] = None  # +/- adjustment to the plan's announcements_per_month for this business only
@@ -1697,6 +1703,7 @@ def business_summary(biz: dict) -> dict:
         "name": biz.get("name", ""),
         "email": biz.get("email", ""),
         "phone": biz.get("phone", ""),
+        "contact_person": biz.get("contact_person", ""),
         "status": biz.get("status", "PENDING"),
         "plan": plan,
         "plan_label": SUBSCRIPTION_PLANS.get(plan, {}).get("label", plan),
@@ -1708,6 +1715,12 @@ def business_summary(biz: dict) -> dict:
         "business_type": biz.get("business_type", "other"),
         "address": biz.get("address"),
         "logo_url": biz.get("logo_url"),
+        "setup_kit_requested": bool(biz.get("setup_kit_requested")),
+        "setup_kit_paid": bool(biz.get("setup_kit_paid")),
+        "setup_kit_status": biz.get("setup_kit_status"),
+        "onboarding_step": int(biz.get("onboarding_step") or 0),
+        "onboarding_completed": bool(biz.get("onboarding_completed")),
+        "join_url": f"{(FRONTEND_URL or BASE_URL).rstrip('/')}/join/{biz.get('public_id','')}",
         "created_at": biz.get("created_at"),
         "last_paid_at": biz.get("last_paid_at"),
         "subscription_expires_at": subscription_expires_at,
@@ -4588,6 +4601,7 @@ async def register(biz: BusinessCreate):
         'name': biz.name,
         'email': biz.email,
         'phone': biz.phone,
+        'contact_person': (biz.contact_person or '').strip() or None,
         'password_hash': hash_password(biz.password),
         'logo_url': biz.logo_url,
         'business_type': biz.business_type,
@@ -4601,6 +4615,8 @@ async def register(biz: BusinessCreate):
         'setup_kit_requested': bool(biz.setup_kit_requested),
         'setup_kit_paid': False,
         'setup_kit_status': 'requested' if biz.setup_kit_requested else None,
+        'onboarding_step': 5,
+        'onboarding_completed': False,
         'created_at': datetime.utcnow().isoformat(),
         'partner_id': assigned_partner.get('id') if assigned_partner else None,
         'partner_code_at_signup': assigned_partner.get('partner_code') if assigned_partner else None,
@@ -4790,6 +4806,19 @@ def setup_kit_payload(order: dict, business: dict) -> dict:
         'qr_join_url': join_url,
         'qr_image_url': f"https://api.qrserver.com/v1/create-qr-code/?size=700x700&data={quote(join_url, safe='')}",
     }
+
+@app.patch("/api/v1/business/{public_id}/onboarding-progress")
+async def update_business_onboarding_progress(public_id: str, item: BusinessOnboardingUpdate, authorization: str = Header(default='')):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    require_owner_session(public_id, authorization)
+    patch = {k:v for k,v in item.model_dump().items() if v is not None}
+    if not patch:
+        return {'success': True}
+    patch['updated_at'] = datetime.utcnow().isoformat()
+    supabase.table('businesses').update(patch).eq('id', business['id']).execute()
+    return {'success': True, **patch}
 
 @app.get("/api/v1/business/{public_id}/setup-kit")
 async def get_setup_kit(public_id: str):
@@ -5368,6 +5397,8 @@ async def admin_update_business(public_id: str, update: AdminBusinessUpdate, _: 
         data['email'] = new_email
     if update.phone is not None:
         data['phone'] = update.phone
+    if update.contact_person is not None:
+        data['contact_person'] = update.contact_person.strip() or None
     if update.business_type is not None:
         data['business_type'] = normalize_business_type(update.business_type)
     if update.logo_url is not None:

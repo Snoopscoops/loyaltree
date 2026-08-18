@@ -249,6 +249,12 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const cardSetUp = !!program?.google_wallet_class_id
   const cashierSetUp = staff.some(member => String(member?.role || '').toLowerCase() === 'cashier')
 
+  useEffect(()=>{
+    if (!isActive || !user?.business_slug) return
+    const step = !cardSetUp ? 5 : !cashierSetUp ? 6 : 7
+    if ((business?.onboarding_step||0) < step) saveOnboardingProgress(step, false)
+  }, [isActive, cardSetUp, cashierSetUp, user?.business_slug])
+
   useEffect(() => {
     if (announcementsCheckedKey) setAnnouncementsChecked(localStorage.getItem(announcementsCheckedKey) === '1')
     if (analyticsCheckedKey) setAnalyticsChecked(localStorage.getItem(analyticsCheckedKey) === '1')
@@ -281,7 +287,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     if (loading || !isActive || !onboardingKey) return
     if (activeTab !== 'tree') return
 
-    const seen = localStorage.getItem(onboardingKey) === '1'
+    const seen = business?.onboarding_completed === true || localStorage.getItem(onboardingKey) === '1'
     const firstIncompleteStep = !cardSetUp ? 0 : !cashierSetUp ? 1 : 2
 
     if (!seen || !cardSetUp || !cashierSetUp) {
@@ -290,9 +296,15 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     }
   }, [loading, isActive, onboardingKey, activeTab, cardSetUp, cashierSetUp])
 
+  const saveOnboardingProgress = async (step, completed=false) => {
+    if (!user?.business_slug) return
+    try { await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/onboarding-progress`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({onboarding_step:step,onboarding_completed:completed}) }) } catch (_) {}
+  }
+
   const closeOnboarding = () => {
     if (onboardingKey && cardSetUp && cashierSetUp) {
       localStorage.setItem(onboardingKey, '1')
+      saveOnboardingProgress(9, true)
     }
     setShowOnboarding(false)
   }

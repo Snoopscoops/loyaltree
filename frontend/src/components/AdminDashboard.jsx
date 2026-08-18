@@ -341,6 +341,8 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const filteredCount = businesses.length
   const latestKitByBusiness=setupKitOrders.reduce((m,o)=>{if(o.business_public_id&&!m[o.business_public_id])m[o.business_public_id]=o;return m},{})
   const businessKitStatus=b=>latestKitByBusiness[b.public_id]?.fulfillment_status||b.setup_kit_status||(b.setup_kit_requested?(b.setup_kit_paid?'paid':'requested'):'')
+  const onboardingLabel=b=>b.onboarding_completed?'Live':(String(b.status||'').toUpperCase()!=='ACTIVE'?'Awaiting payment':b.onboarding_step>=8?'Ready to launch':b.onboarding_step>=7?'Dashboard intro':b.onboarding_step>=6?'Adding team':'Configuring card')
+  const joinUrl=b=>b.join_url||`${window.location.origin}/join/${b.public_id}`
   const categoryBusinesses=businessTypeFilter?businesses.filter(b=>b.business_type===businessTypeFilter):businesses
   const displayBusinesses = sortByAddress
     ? [...categoryBusinesses].sort((a, b) => (a.address || '\uffff').localeCompare(b.address || '\uffff'))
@@ -751,6 +753,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 <th style={styles.th}>Staff</th>
                 <th style={styles.th}>Card</th>
                 <th style={styles.th}>PR Kit</th>
+                <th style={styles.th}>Onboarding</th>
                 <th style={styles.th}>Activity (30d)</th>
                 <th style={styles.th}></th>
               </tr>
@@ -809,6 +812,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                     </span>
                   </td>
                   <td style={styles.td}><span style={{...styles.kitTableBadge,...kitStatusStyle(businessKitStatus(b))}}>{businessKitStatus(b)==='delivered'?'✓ ':''}{kitStatusLabel(businessKitStatus(b))}</span></td>
+                  <td style={styles.td}><span style={styles.onboardingBadge}>{onboardingLabel(b)}</span><div style={styles.rowPriceHint}>Step {b.onboarding_step||0}/9</div></td>
                   <td style={styles.td}>
                     {b.stamps_30d}
                     <div style={styles.rowPriceHint}>
@@ -828,7 +832,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 </tr>
               ))}
               {displayBusinesses.length === 0 && (
-                <tr><td style={styles.td} colSpan={13}>No businesses match these filters.</td></tr>
+                <tr><td style={styles.td} colSpan={14}>No businesses match these filters.</td></tr>
               )}
             </tbody>
           </table>
@@ -839,7 +843,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
       {selected && (
         <div style={styles.modalOverlay} onClick={() => { setSelected(null); setDetail(null) }}>
           <div style={styles.modal} onClick={e => e.stopPropagation()}>
-            <h2 style={styles.modalTitle}>{detail?.name || selected.name}</h2>
+            <div style={styles.businessDetailHero}>{detail?.logo_url?<img src={detail.logo_url} alt="Business logo" style={styles.businessDetailLogo}/>:<div style={styles.businessDetailLogoFallback}>🏪</div>}<div><h2 style={styles.modalTitle}>{detail?.name || selected.name}</h2><div style={styles.bizEmail}>{detail?.contact_person||'No contact person'} · {detail?.business_type?businessTypeLabel(detail.business_type):''}</div></div></div>
             {!detail ? (
               <p>Loading…</p>
             ) : (
@@ -886,6 +890,10 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                   />
                 </div>
                 <div style={styles.detailRow}>
+                  <span style={styles.detailLabel}>Contact person</span>
+                  <input type="text" defaultValue={detail.contact_person || ''} onBlur={e=>{if(e.target.value!==(detail.contact_person||''))updateBusiness(selected.public_id,{contact_person:e.target.value})}} placeholder="Owner / manager" style={styles.addressInput}/>
+                </div>
+                <div style={styles.detailRow}>
                   <span style={styles.detailLabel}>Business type</span>
                   <select
                     value={detail.business_type || 'other'}
@@ -926,6 +934,8 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 <DetailRow label="Status" value={detail.status} />
                 <DetailRow label="Plan" value={detail.plan_label} />
                 <DetailRow label="Branches" value={detail.branch_count} />
+                <DetailRow label="Onboarding" value={`${onboardingLabel(detail)} · Step ${detail.onboarding_step||0}/9`} />
+                <div style={styles.detailRow}><span style={styles.detailLabel}>Customer Join QR</span><div style={styles.joinQrAdmin}><img src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(joinUrl(detail))}`} alt="Business join QR" style={styles.joinQrImage}/><div><button style={styles.viewBtn} onClick={()=>navigator.clipboard?.writeText(joinUrl(detail))}>Copy join link</button><div style={styles.joinUrlText}>{joinUrl(detail)}</div></div></div></div>
                 <DetailRow label="Price" value={detail.price_month != null ? `₱${detail.price_month.toLocaleString()}/mo` : '—'} />
                 <div style={styles.detailRow}>
                   <span style={styles.detailLabel}>
@@ -1429,6 +1439,14 @@ const styles = {
   analyticsRecentPath:{color:'#334155',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'},
   analyticsRecentMeta:{color:'#94a3b8',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'},
   analyticsEmpty:{fontSize:12,color:'#94a3b8',padding:'12px 0'},
+
+  onboardingBadge:{display:'inline-block',padding:'5px 8px',borderRadius:999,background:'#ecfdf5',color:'#0f766e',fontSize:10.5,fontWeight:800,whiteSpace:'nowrap'},
+  businessDetailHero:{display:'flex',alignItems:'center',gap:14,marginBottom:18},
+  businessDetailLogo:{width:64,height:64,borderRadius:14,objectFit:'contain',border:'1px solid #e2e8f0',background:'#fff'},
+  businessDetailLogoFallback:{width:64,height:64,borderRadius:14,display:'grid',placeItems:'center',fontSize:28,background:'#f1f5f9'},
+  joinQrAdmin:{display:'flex',gap:12,alignItems:'center',justifyContent:'flex-end',flexWrap:'wrap'},
+  joinQrImage:{width:112,height:112,borderRadius:10,border:'1px solid #e2e8f0'},
+  joinUrlText:{maxWidth:250,fontSize:10,color:'#94a3b8',wordBreak:'break-all',marginTop:6},
 
 }
 
