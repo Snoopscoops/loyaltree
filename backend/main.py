@@ -2747,23 +2747,38 @@ def sign_pkpass_manifest(manifest_bytes: bytes) -> Optional[bytes]:
         print(f"APPLE WALLET: manifest signing error: {e}")
         return None
 
-def _fetch_image_bytes(url: Optional[str], timeout: float = 5.0) -> Optional[bytes]:
-    """Best-effort download of a business-uploaded image (logo or hero
-    photo) for baking into the Apple Wallet pass. Returns None on any
-    failure (missing url, network error, non-200, unreadable image) so
-    callers can fall back to the generated placeholder instead of ever
-    failing pass generation over a bad/slow image URL."""
+# Apple Wallet image cache.  Business branding changes rarely, while Wallet can
+# request the same pass several times during add/registration/update.  Keeping
+# fetched bytes in-process removes repeated network waits from the hot path.
+_APPLE_IMAGE_CACHE = {}
+_APPLE_IMAGE_CACHE_TTL_SECONDS = 900
+
+def _fetch_image_bytes(url: Optional[str], timeout: float = 1.5) -> Optional[bytes]:
+    """Fast best-effort download for Apple Wallet artwork.
+
+    A slow or broken image URL must never make the Add to Apple Wallet sheet
+    wait several seconds.  Successful and failed fetches are cached briefly;
+    on failure the pass immediately falls back to generated artwork.
+    """
     if not url:
         return None
+    now = time.monotonic()
+    cached = _APPLE_IMAGE_CACHE.get(url)
+    if cached and now - cached[0] < _APPLE_IMAGE_CACHE_TTL_SECONDS:
+        return cached[1]
     try:
         import httpx
-        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
+        timeout_cfg = httpx.Timeout(timeout, connect=min(timeout, 1.0))
+        with httpx.Client(timeout=timeout_cfg, follow_redirects=True, limits=limits) as client:
             resp = client.get(url)
-            if resp.status_code == 200 and resp.content:
-                return resp.content
+            content = resp.content if resp.status_code == 200 and resp.content else None
+            _APPLE_IMAGE_CACHE[url] = (now, content)
+            return content
     except Exception as e:
-        print(f"IMAGE FETCH error ({url}): {e}")
-    return None
+        print(f"IMAGE FETCH fast-fallback ({url}): {e}")
+        _APPLE_IMAGE_CACHE[url] = (now, None)
+        return None
 
 def apple_icon_from_logo_bytes(logo_bytes: bytes, size: int) -> Optional[bytes]:
     """Center-crops the business's real logo to a square and composites it
@@ -4086,11 +4101,10 @@ def get_recent_activity(business_id: int, customer_id: int, card_type: str, limi
                     .eq('business_id', business_id).eq('customer_id', customer_id)
                     .order('created_at', desc=True).limit(limit).execute().data or [])
             entries += [(r.get('created_at'), 'Stamp added') for r in rows]
-            redemptions = (supabase.table('redemption_events').select('created_at,prize_name')
+            redemptions = (supabase.table('redemption_events').select('created_at')
                     .eq('business_id', business_id).eq('customer_id', customer_id)
                     .order('created_at', desc=True).limit(limit).execute().data or [])
-            entries += [(r.get('created_at'), f"Redeemed {r['prize_name']}" if r.get('prize_name') else 'Reward redeemed')
-                        for r in redemptions]
+            entries += [(r.get('created_at'), 'Reward redeemed') for r in redemptions]
 
         elif card_type == 'points':
             rows = (supabase.table('points_events').select('created_at,amount_spent_pesos,points_earned')
@@ -4102,12 +4116,12 @@ def get_recent_activity(business_id: int, customer_id: int, card_type: str, limi
                 if amt:
                     desc += f" (₱{float(amt):,.0f} spent)"
                 entries.append((r.get('created_at'), desc))
-            redemptions = (supabase.table('redemption_events').select('created_at,prize_name,points_spent')
+            redemptions = (supabase.table('redemption_events').select('created_at,points_spent')
                     .eq('business_id', business_id).eq('customer_id', customer_id)
                     .order('created_at', desc=True).limit(limit).execute().data or [])
             for r in redemptions:
-                pts, prize = r.get('points_spent'), (r.get('prize_name') or 'reward')
-                entries.append((r.get('created_at'), f"-{pts} pts • {prize}" if pts is not None else f"Redeemed {prize}"))
+                pts = r.get('points_spent')
+                entries.append((r.get('created_at'), f"-{pts} pts • Reward redeemed" if pts is not None else 'Reward redeemed'))
 
         elif card_type == 'multipass':
             rows = (supabase.table('multipass_events').select('created_at,action,sessions_remaining')
@@ -16801,9 +16815,13 @@ async def get_wallet_pass(customer_public_id: str):
 
 @app.get("/api/v1/customer/{customer_public_id}/apple-wallet-pass")
 async def get_apple_wallet_pass(customer_public_id: str):
-    """Direct .pkpass download - Safari on iOS/macOS recognizes the
-    application/vnd.apple.pkpass content type and opens the native
-    'Add to Apple Wallet' sheet; any other browser just downloads the file."""
+    """Direct .pkpass download - optimized for the first Add to Wallet tap.
+
+    The route logs phase timings so a slow client/network interaction is not
+    mistaken for slow pass generation.
+    """
+    t0 = time.perf_counter()
+    print(f"APPLE PASS START: {customer_public_id}")
     customer = safe_get_customer(customer_public_id)
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
@@ -16812,8 +16830,15 @@ async def get_apple_wallet_pass(customer_public_id: str):
         raise HTTPException(status_code=404, detail="Business not found")
     program = safe_get_loyalty_program(business.get('id'))
     announcement = get_latest_active_announcement(business.get('id'))
+    t_data = time.perf_counter()
 
     pkpass_bytes = build_pkpass_bytes(customer, business, program, announcement)
+    t_build = time.perf_counter()
+    print(
+        f"APPLE PASS READY: {customer_public_id} "
+        f"data_ms={(t_data-t0)*1000:.0f} build_ms={(t_build-t_data)*1000:.0f} "
+        f"total_ms={(t_build-t0)*1000:.0f} bytes={len(pkpass_bytes) if pkpass_bytes else 0}"
+    )
     if pkpass_bytes is None:
         raise HTTPException(
             status_code=500,
