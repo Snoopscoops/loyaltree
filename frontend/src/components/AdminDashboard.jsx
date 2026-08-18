@@ -444,6 +444,23 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
             <AnalyticsBreakdown title="Browsers" rows={platformAnalytics?.browsers} />
           </div>
 
+          <div style={styles.analyticsLocationCard}>
+            <div style={styles.analyticsLocationHeader}>
+              <div>
+                <div style={styles.analyticsCardTitle}>📍 Visitor locations</div>
+                <div style={styles.analyticsLocationNote}>
+                  Approximate city / province-region from IP analytics only. No GPS permission and no raw IP addresses are stored.
+                </div>
+              </div>
+              <span style={styles.analyticsCoverageBadge}>{platformAnalytics?.geo_coverage_percent ?? 0}% located</span>
+            </div>
+            <div style={styles.analyticsBreakdownGrid}>
+              <AnalyticsBreakdown title="Top provinces / regions" rows={platformAnalytics?.top_regions} />
+              <AnalyticsBreakdown title="Top cities" rows={platformAnalytics?.top_cities} />
+              <AnalyticsBreakdown title="Top countries" rows={platformAnalytics?.top_countries} />
+            </div>
+          </div>
+
           {!!platformAnalytics?.top_business_join_pages?.length && (
             <div style={styles.analyticsListCard}>
               <div style={styles.analyticsCardTitle}>Top business join pages</div>
@@ -462,7 +479,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
               <div key={`${row.created_at}-${i}`} style={styles.analyticsRecentRow}>
                 <span style={styles.analyticsEventBadge}>{String(row.event_name||'event').replaceAll('_',' ')}</span>
                 <span style={styles.analyticsRecentPath}>{row.path || row.page_name || '—'}</span>
-                <span style={styles.analyticsRecentMeta}>{row.source || 'direct'} · {row.device_type || 'unknown'} · {row.created_at ? new Date(row.created_at).toLocaleString() : ''}</span>
+                <span style={styles.analyticsRecentMeta}>{row.source || 'direct'} · {row.device_type || 'unknown'}{row.location ? ` · ${row.location}` : ''} · {row.created_at ? new Date(row.created_at).toLocaleString() : ''}</span>
               </div>
             )}
             {!platformAnalytics?.recent?.length && <div style={styles.analyticsEmpty}>No tracked public activity yet.</div>}
@@ -1410,6 +1427,11 @@ const styles = {
   analyticsControls:{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'},
   analyticsError:{padding:'11px 13px',background:'#fef2f2',border:'1px solid #fecaca',color:'#b91c1c',borderRadius:10,fontSize:12.5,marginBottom:14},
   analyticsMetricGrid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:10,marginBottom:14},
+  analyticsLocationCard:{background:'#f8fafc',border:'1px solid #dbe4ea',borderRadius:15,padding:14,margin:'14px 0'},
+  analyticsLocationHeader:{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start',marginBottom:12,flexWrap:'wrap'},
+  analyticsLocationNote:{fontSize:12,color:'#64748b',lineHeight:1.5,marginTop:4,maxWidth:720},
+  analyticsCoverageBadge:{display:'inline-flex',alignItems:'center',padding:'6px 9px',borderRadius:999,background:'#ecfdf5',color:'#047857',fontSize:11,fontWeight:800,whiteSpace:'nowrap'},
+
   analyticsMetricCard:{border:'1px solid #e2e8f0',borderRadius:13,padding:'14px 15px',background:'#f8fafc'},
   analyticsMetricLabel:{fontSize:10.5,fontWeight:800,color:'#64748b',textTransform:'uppercase',letterSpacing:.55},
   analyticsMetricValue:{fontSize:28,fontWeight:850,color:'#0f172a',marginTop:4,lineHeight:1.1},

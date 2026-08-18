@@ -1028,7 +1028,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         <div className="lt-impact-grid" style={styles.impactGrid}>
           <div style={styles.impactCard}>
             <div style={styles.impactIcon}>🏪</div>
-            <strong style={styles.impactValue}>{formatCommunityMetric(communityStats.businesses, partners.length || null)}</strong>
+            <strong style={styles.impactValue}>{formatCommunityMetric(communityStats.businesses)}</strong>
             <span style={styles.impactLabel}>Total Businesses</span>
             <span style={styles.impactCaption}>and growing</span>
           </div>

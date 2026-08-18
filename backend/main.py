@@ -3,7 +3,7 @@ import re
 import asyncio
 from collections import defaultdict, deque
 from threading import Lock
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 import uuid
 import base64
 import json
@@ -4882,6 +4882,84 @@ async def admin_update_setup_kit_order(order_public_id: str, item: SetupKitAdmin
     return setup_kit_payload(updated,business)
 
 
+
+# ============================================================
+# PUBLIC COMMUNITY IMPACT STATS
+# Homepage-safe aggregate totals only. No customer/business records are exposed.
+# Cached briefly so a busy homepage does not repeatedly scan aggregate tables.
+# ============================================================
+
+_COMMUNITY_STATS_CACHE = {"value": None, "expires_at": 0.0}
+_COMMUNITY_STATS_LOCK = Lock()
+
+def _sum_numeric_column_all(table_name: str, column_name: str, max_rows: int = 250000) -> int:
+    """Sum one numeric column in pages so Supabase's default row cap cannot
+    truncate lifetime public impact totals."""
+    total = 0
+    page_size = 1000
+    start = 0
+    while start < max_rows:
+        batch = (
+            supabase.table(table_name)
+            .select(column_name)
+            .range(start, min(start + page_size - 1, max_rows - 1))
+            .execute()
+            .data or []
+        )
+        for row in batch:
+            try:
+                total += int(row.get(column_name) or 0)
+            except (TypeError, ValueError):
+                pass
+        if len(batch) < page_size:
+            break
+        start += page_size
+    return total
+
+@app.get("/api/v1/public/community-stats")
+async def public_community_stats():
+    """Live lifetime platform totals for the public homepage.
+
+    This intentionally returns aggregate counts only:
+    - businesses: same all-business count used by the super-admin overview
+    - members: all customer/member records
+    - stamps: lifetime stamp-event count
+    - points: lifetime points issued (sum of positive points_earned)
+    """
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Database not connected")
+
+    now_ts = time.time()
+    cached = _COMMUNITY_STATS_CACHE.get("value")
+    if cached is not None and now_ts < float(_COMMUNITY_STATS_CACHE.get("expires_at") or 0):
+        return cached
+
+    try:
+        businesses_res = supabase.table("businesses").select("id", count="exact").execute()
+        members_res = supabase.table("customers").select("id", count="exact").execute()
+        stamps_res = supabase.table("stamp_events").select("id", count="exact").execute()
+
+        points_total = _sum_numeric_column_all("points_events", "points_earned")
+        # "Points issued" should never be reduced by redemption/adjustment rows.
+        # If a historical row is negative, exclude that negative effect.
+        # Re-read in pages only when negatives are possible would add more load,
+        # so the event writer is expected to store issued points as non-negative.
+        result = {
+            "businesses": int(businesses_res.count or 0),
+            "stamps": int(stamps_res.count or 0),
+            "points": max(0, int(points_total or 0)),
+            "members": int(members_res.count or 0),
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+        with _COMMUNITY_STATS_LOCK:
+            _COMMUNITY_STATS_CACHE["value"] = result
+            _COMMUNITY_STATS_CACHE["expires_at"] = time.time() + 30
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Could not load community stats: {friendly_db_error(exc)}")
+
+
 # ============================================================
 # PLATFORM SITE / CONVERSION ANALYTICS
 # First-party, privacy-conscious analytics for LoyaltyTree public pages.
@@ -4924,7 +5002,92 @@ def _analytics_browser(user_agent: str) -> str:
         return 'Safari'
     return 'Other'
 
-def _record_platform_analytics_event(payload: dict, user_agent: str = ''):
+
+_ANALYTICS_GEO_CACHE = {}
+_ANALYTICS_GEO_LOCK = Lock()
+ANALYTICS_GEO_LOOKUP_ENABLED = _env_bool("ANALYTICS_GEO_LOOKUP_ENABLED", True)
+ANALYTICS_GEO_CACHE_SECONDS = int(os.getenv("ANALYTICS_GEO_CACHE_SECONDS", "21600"))
+
+def _analytics_clean_geo(value, max_length=120):
+    value = unquote(str(value or "")).strip()
+    if not value or value.lower() in ("unknown", "null", "none"):
+        return None
+    return value[:max_length]
+
+def _analytics_header_geo(headers: dict) -> dict:
+    """Use trusted edge geolocation headers when they are present.
+    Vercel supplies these when a request is routed through Vercel; Cloudflare
+    may supply country. Missing fields are filled by the server-side fallback."""
+    return {
+        "country_code": _analytics_clean_geo(headers.get("x-vercel-ip-country") or headers.get("cf-ipcountry"), 8),
+        "region": _analytics_clean_geo(headers.get("x-vercel-ip-country-region")),
+        "city": _analytics_clean_geo(headers.get("x-vercel-ip-city")),
+    }
+
+def _analytics_geo_for_ip(ip: str, header_geo: Optional[dict] = None) -> dict:
+    """Best-effort approximate IP geolocation.
+
+    Raw IP addresses are used only transiently for the lookup/cache key and are
+    never written to Supabase. The stored analytics event receives only coarse
+    country/region/city fields inside metadata.geo.
+    """
+    geo = dict(header_geo or {})
+    if geo.get("city") and geo.get("region") and geo.get("country_code"):
+        return geo
+
+    ip = str(ip or "").strip()
+    if not ANALYTICS_GEO_LOOKUP_ENABLED or not ip or ip == "unknown":
+        return geo
+
+    try:
+        import ipaddress
+        parsed = ipaddress.ip_address(ip)
+        if parsed.is_private or parsed.is_loopback or parsed.is_link_local:
+            return geo
+    except Exception:
+        return geo
+
+    now_ts = time.time()
+    with _ANALYTICS_GEO_LOCK:
+        cached = _ANALYTICS_GEO_CACHE.get(ip)
+        if cached and now_ts < cached.get("expires_at", 0):
+            merged = dict(cached.get("geo") or {})
+            merged.update({k: v for k, v in geo.items() if v})
+            return merged
+
+    looked_up = {}
+    try:
+        import httpx
+        # ipapi.co is only a fallback when hosting-edge geo headers are absent.
+        # A short timeout ensures analytics can never slow the public request.
+        with httpx.Client(timeout=2.5, follow_redirects=True) as client:
+            res = client.get(f"https://ipapi.co/{quote(ip, safe='')}/json/")
+        if res.status_code < 400:
+            data = res.json() if res.content else {}
+            if not data.get("error"):
+                looked_up = {
+                    "country": _analytics_clean_geo(data.get("country_name")),
+                    "country_code": _analytics_clean_geo(data.get("country_code"), 8),
+                    "region": _analytics_clean_geo(data.get("region")),
+                    "city": _analytics_clean_geo(data.get("city")),
+                }
+    except Exception as exc:
+        print(f"PLATFORM ANALYTICS geo lookup warning: {exc}")
+
+    with _ANALYTICS_GEO_LOCK:
+        # Keep the cache bounded on long-running instances.
+        if len(_ANALYTICS_GEO_CACHE) > 5000:
+            _ANALYTICS_GEO_CACHE.clear()
+        _ANALYTICS_GEO_CACHE[ip] = {
+            "geo": looked_up,
+            "expires_at": time.time() + ANALYTICS_GEO_CACHE_SECONDS,
+        }
+
+    merged = dict(looked_up)
+    merged.update({k: v for k, v in geo.items() if v})
+    return {k: v for k, v in merged.items() if v}
+
+def _record_platform_analytics_event(payload: dict, user_agent: str = '', client_ip: str = '', header_geo: Optional[dict] = None):
     """Best-effort analytics insert. Never raises into a customer-facing flow."""
     if not supabase:
         return
@@ -4947,7 +5110,14 @@ def _record_platform_analytics_event(payload: dict, user_agent: str = ''):
             if business:
                 business_id = business.get('id')
 
-        metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
+        metadata = dict(payload.get('metadata')) if isinstance(payload.get('metadata'), dict) else {}
+        # Approximate visitor location is added server-side only. The browser is
+        # never asked for GPS permission, and the raw IP is never stored.
+        if event_name == 'page_view':
+            geo = _analytics_geo_for_ip(client_ip, header_geo)
+            if geo:
+                metadata['geo'] = geo
+
         # Never allow profile/contact data to be copied into analytics metadata.
         for sensitive_key in (
             'name', 'email', 'phone', 'address', 'birthday', 'age',
@@ -4984,7 +5154,15 @@ async def public_platform_analytics_event(
 ):
     payload = event.model_dump()
     user_agent = request.headers.get('user-agent', '')
-    background_tasks.add_task(_record_platform_analytics_event, payload, user_agent)
+    client_ip = _security_client_ip(request)
+    header_geo = _analytics_header_geo(dict(request.headers))
+    background_tasks.add_task(
+        _record_platform_analytics_event,
+        payload,
+        user_agent,
+        client_ip,
+        header_geo,
+    )
     return {'ok': True}
 
 def _load_platform_analytics_rows(since_iso: str, max_rows: int = 50000) -> list:
@@ -5044,6 +5222,10 @@ async def admin_platform_analytics(
     browser_counts = {}
     event_counts = {}
     business_join_counts = {}
+    country_visitors = defaultdict(set)
+    region_visitors = defaultdict(set)
+    city_visitors = defaultdict(set)
+    geo_page_views = 0
     daily_map = {}
 
     for offset in range(days - 1, -1, -1):
@@ -5072,6 +5254,30 @@ async def admin_platform_analytics(
             device_counts[device] = device_counts.get(device, 0) + 1
             browser = row.get('browser') or 'Other'
             browser_counts[browser] = browser_counts.get(browser, 0) + 1
+
+            metadata = row.get('metadata') or {}
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except Exception:
+                    metadata = {}
+            geo = metadata.get('geo') if isinstance(metadata, dict) else {}
+            geo = geo if isinstance(geo, dict) else {}
+            visitor_key = row.get('visitor_id') or row.get('session_id') or row.get('public_id')
+            if visitor_key and any(geo.get(k) for k in ('country', 'country_code', 'region', 'city')):
+                geo_page_views += 1
+                country_label = geo.get('country') or geo.get('country_code')
+                region_label = geo.get('region')
+                city_label = geo.get('city')
+                if country_label:
+                    country_visitors[str(country_label)].add(str(visitor_key))
+                if region_label:
+                    region_visitors[str(region_label)].add(str(visitor_key))
+                if city_label:
+                    # Add the region where available to disambiguate duplicate city names.
+                    label = f"{city_label}, {region_label}" if region_label else str(city_label)
+                    city_visitors[label].add(str(visitor_key))
+
             if row.get('business_id') and str(path).startswith('/join/'):
                 key = str(row.get('business_id'))
                 business_join_counts[key] = business_join_counts.get(key, 0) + 1
@@ -5133,6 +5339,12 @@ async def admin_platform_analytics(
             for label, count in sorted(mapping.items(), key=lambda kv: kv[1], reverse=True)[:limit]
         ]
 
+    def ranked_sets(mapping, limit=10):
+        return [
+            {'label': label, 'count': len(values)}
+            for label, values in sorted(mapping.items(), key=lambda kv: len(kv[1]), reverse=True)[:limit]
+        ]
+
     top_business_join_pages = []
     for key, count in sorted(business_join_counts.items(), key=lambda kv: kv[1], reverse=True)[:10]:
         biz = business_names.get(key) or {}
@@ -5145,6 +5357,16 @@ async def admin_platform_analytics(
 
     recent = []
     for row in rows[:25]:
+        metadata = row.get('metadata') or {}
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except Exception:
+                metadata = {}
+        geo = metadata.get('geo') if isinstance(metadata, dict) else {}
+        geo = geo if isinstance(geo, dict) else {}
+        location_parts = [geo.get('city'), geo.get('region'), geo.get('country_code') or geo.get('country')]
+        location = ', '.join(str(x) for x in location_parts if x)
         recent.append({
             'event_name': row.get('event_name'),
             'path': row.get('path'),
@@ -5152,6 +5374,7 @@ async def admin_platform_analytics(
             'source': row.get('source'),
             'device_type': row.get('device_type'),
             'browser': row.get('browser'),
+            'location': location or None,
             'created_at': row.get('created_at'),
         })
 
@@ -5178,6 +5401,11 @@ async def admin_platform_analytics(
         'sources': ranked(source_counts, 8),
         'devices': ranked(device_counts, 5),
         'browsers': ranked(browser_counts, 8),
+        'top_countries': ranked_sets(country_visitors, 10),
+        'top_regions': ranked_sets(region_visitors, 10),
+        'top_cities': ranked_sets(city_visitors, 12),
+        'geo_page_views': geo_page_views,
+        'geo_coverage_percent': round((geo_page_views / len(page_rows)) * 100, 1) if page_rows else 0,
         'events': ranked(event_counts, 20),
         'top_business_join_pages': top_business_join_pages,
         'recent': recent,
