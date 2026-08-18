@@ -11157,7 +11157,7 @@ async def add_membership_note(public_id: str, req: MembershipNoteRequest, author
 
     service_name = (req.service_name or '').strip() or 'Visit'
     old_visits=int((get_membership_summary(business.get('id'),customer.get('id')) or {}).get('total_visits') or 0)
-    audit_row=start_transaction_audit(business_id=business.get('id'),customer_id=customer.get('id'),staff_id=staff_id,branch_id=branch_id,actor_type=_audit_actor(staff_id,req.as_owner),action='membership_visit',idempotency_key=x_idempotency_key,delta=1,balance_before=old_visits,metadata={'card_type':'membership','service_name':service_name})
+    audit_row=start_transaction_audit(business_id=business.get('id'),customer_id=customer.get('id'),staff_id=noting_staff_id,branch_id=noting_branch_id,actor_type=_audit_actor(noting_staff_id,req.as_owner),action='membership_visit',idempotency_key=x_idempotency_key,delta=1,balance_before=old_visits,metadata={'card_type':'membership','service_name':service_name})
     if audit_row and audit_row.get('_duplicate_response'): return audit_row['_duplicate_response']
     service_date = req.service_date or datetime.utcnow().date().isoformat()
 
