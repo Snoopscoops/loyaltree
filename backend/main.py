@@ -16280,12 +16280,12 @@ async def customer_wallet_page(customer_public_id: str):
 
     obj = build_loyalty_object(customer, business, program)
     jwt_token = create_google_wallet_jwt(obj)
-    google_btn = (
-        '<a class="btn google" href="https://pay.google.com/gp/v/save/' + jwt_token + '">Add to Google Wallet</a>'
-        if jwt_token else ''
+    google_wallet_url = (
+        "https://pay.google.com/gp/v/save/" + jwt_token
+        if jwt_token else ""
     )
-    apple_btn = (
-        '<a class="btn apple" href="' + BASE_URL + '/api/v1/customer/' + customer_public_id + '/apple-wallet-pass">Add to Apple Wallet</a>'
+    apple_wallet_url = (
+        BASE_URL + "/api/v1/customer/" + customer_public_id + "/apple-wallet-pass"
     )
 
     active_class = ' active' if metric_value in ('ACTIVE', 'LIFETIME') else ''
@@ -16309,8 +16309,18 @@ async def customer_wallet_page(customer_public_id: str):
 .metric{{font-size:clamp(30px,5vw,54px);font-weight:850;line-height:.95;margin-top:6px}}.metric.active{{color:#4ade80}}.sub{{font-size:11px;color:rgba(255,255,255,.72);margin-top:7px}}
 .right{{display:flex;flex-direction:column;justify-content:center;align-items:flex-end}}.qrbox{{width:min(100%,260px);padding:11px;background:#fff;border-radius:19px;box-shadow:0 14px 35px rgba(0,0,0,.28)}}.qrbox img{{display:block;width:100%;aspect-ratio:1/1}}.scan{{font-size:9px;letter-spacing:1.2px;font-weight:800;color:rgba(255,255,255,.62);margin:10px auto 0}}
 .details{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:14px}}.detail{{background:#111827;border:1px solid #202a3b;border-radius:13px;padding:12px 13px;min-width:0}}.detail span{{display:block;color:#75839a;font-size:9px;text-transform:uppercase;letter-spacing:.7px;margin-bottom:5px}}.detail strong{{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}}
-.actions{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:13px}}.btn,.share{{border:0;border-radius:12px;padding:14px;text-align:center;text-decoration:none;font-weight:750;font-size:13px;cursor:pointer}}.google{{background:#1a73e8;color:#fff}}.apple{{background:#fff;color:#050505}}.share{{grid-column:1/-1;background:#151b28;color:#dbe4f1;border:1px solid #273247}}
-@media(max-width:680px){{.wrap{{padding:12px 9px 30px}}.card{{min-height:245px;aspect-ratio:1.58/1;padding:16px;border-radius:20px}}.grid{{grid-template-columns:minmax(0,1fr) 34%;gap:11px}}.logo{{width:39px;height:39px;border-radius:10px}}.biz{{font-size:17px}}.type{{font-size:7px}}.name{{font-size:21px;margin:5px 0 11px}}.metric{{font-size:25px}}.sub{{font-size:8px}}.qrbox{{padding:7px;border-radius:11px}}.scan{{font-size:6px;margin-top:6px}}.details{{grid-template-columns:1fr 1fr}}.actions{{grid-template-columns:1fr}}.share{{grid-column:auto}}}}
+.actions{{display:grid;grid-template-columns:1fr;gap:10px;margin-top:13px}}
+.btn,.share{{border:0;border-radius:12px;padding:14px;text-align:center;text-decoration:none;font-weight:750;font-size:13px;cursor:pointer}}
+.wallet{{background:#fff;color:#050505;width:100%}}
+.share{{background:#151b28;color:#dbe4f1;border:1px solid #273247}}
+.wallet-chooser{{display:none;background:#111827;border:1px solid #273247;border-radius:13px;padding:10px;margin-top:-2px}}
+.wallet-chooser.open{{display:grid;gap:8px}}
+.wallet-choice{{display:block;width:100%;border:0;border-radius:10px;padding:12px;text-align:center;text-decoration:none;font-weight:750;font-size:13px;cursor:pointer}}
+.wallet-choice.apple{{background:#fff;color:#050505}}
+.wallet-choice.google{{background:#1a73e8;color:#fff}}
+.wallet-choice.disabled{{opacity:.5;cursor:not-allowed}}
+.wallet-note{{font-size:10px;color:#8390a5;text-align:center;margin:1px 0 0}}
+@media(max-width:680px){{.wrap{{padding:12px 9px 30px}}.card{{min-height:245px;aspect-ratio:1.58/1;padding:16px;border-radius:20px}}.grid{{grid-template-columns:minmax(0,1fr) 34%;gap:11px}}.logo{{width:39px;height:39px;border-radius:10px}}.biz{{font-size:17px}}.type{{font-size:7px}}.name{{font-size:21px;margin:5px 0 11px}}.metric{{font-size:25px}}.sub{{font-size:8px}}.qrbox{{padding:7px;border-radius:11px}}.scan{{font-size:6px;margin-top:6px}}.details{{grid-template-columns:1fr 1fr}}}}
 </style></head>
 <body><main class="wrap">
 <div class="top"><b>🌳 LoyaltyTree</b><span>{html_lib.escape(card_label)}</span></div>
@@ -16320,8 +16330,50 @@ async def customer_wallet_page(customer_public_id: str):
 <div class="right"><div class="qrbox"><img src="{qr_image}" alt="Member QR"></div><div class="scan">PRESENT TO CHECK IN</div></div>
 </div></section>
 <section class="details">{details_html}</section>
-<section class="actions">{google_btn}{apple_btn}<button class="share" id="share">Share Card</button></section>
+<section class="actions">
+<button class="btn wallet" id="add-wallet" type="button">Add to Wallet</button>
+<div class="wallet-chooser" id="wallet-chooser">
+  <a class="wallet-choice apple" id="apple-wallet-choice" href="{html_lib.escape(apple_wallet_url)}">Apple Wallet</a>
+  <a class="wallet-choice google{' disabled' if not google_wallet_url else ''}" id="google-wallet-choice" href="{html_lib.escape(google_wallet_url) if google_wallet_url else '#'}">Google Wallet</a>
+  <div class="wallet-note">Choose the wallet for this device.</div>
+</div>
+<button class="share" id="share">Share Card</button>
+</section>
 </main><script>
+const appleWalletUrl={json.dumps(apple_wallet_url)};
+const googleWalletUrl={json.dumps(google_wallet_url)};
+const walletChooser=document.getElementById("wallet-chooser");
+
+document.getElementById("add-wallet").onclick=()=>{{
+  const ua=navigator.userAgent||"";
+  const platform=navigator.platform||"";
+  const touchPoints=navigator.maxTouchPoints||0;
+  const isAppleMobile=/iPhone|iPad|iPod/i.test(ua)||(platform==="MacIntel"&&touchPoints>1);
+  const isAndroid=/Android/i.test(ua);
+
+  if(isAppleMobile){{
+    window.location.href=appleWalletUrl;
+    return;
+  }}
+  if(isAndroid){{
+    if(googleWalletUrl){{
+      window.location.href=googleWalletUrl;
+    }}else{{
+      alert("Google Wallet is not available for this card right now.");
+    }}
+    return;
+  }}
+
+  walletChooser.classList.toggle("open");
+}};
+
+document.getElementById("google-wallet-choice").onclick=(e)=>{{
+  if(!googleWalletUrl){{
+    e.preventDefault();
+    alert("Google Wallet is not available for this card right now.");
+  }}
+}};
+
 document.getElementById("share").onclick=async()=>{{const p={{title:{json.dumps(business_name)},text:"My LoyaltyTree card",url:location.href}};if(navigator.share){{try{{await navigator.share(p)}}catch(e){{}}}}else{{await navigator.clipboard.writeText(location.href);alert("Card link copied")}}}};
 </script></body></html>'''
     return HTMLResponse(html)
