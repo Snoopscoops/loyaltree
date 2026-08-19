@@ -2536,8 +2536,17 @@ def sync_wallet_object(customer: dict, business: dict, program: dict,
                 'state': desired.get('state', 'active'),
                 'notifyPreference': 'NOTIFY_ON_UPDATE',
             }
+            # Keep object-level hero artwork in sync with the desired object.
+            # Important: Google Wallet PATCH leaves omitted fields unchanged.
+            # When a business uploads a custom hero image, build_loyalty_object()
+            # intentionally omits object.heroImage so the object inherits the
+            # class-level custom banner. Older objects may still have a generated
+            # per-customer heroImage, though, and that stale object image overrides
+            # the new class banner until we explicitly delete it with null.
             if desired.get('heroImage'):
                 member_patch['heroImage'] = desired.get('heroImage')
+            elif current.get('heroImage'):
+                member_patch['heroImage'] = None
 
             if current_class_id == desired_class_id:
                 resp = client.patch(
