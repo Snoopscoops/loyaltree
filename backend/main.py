@@ -2412,17 +2412,14 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
 
 
 async def refresh_existing_member_wallets(business: dict, program: dict):
-    """Push a business's current design/status to every member's already-issued
-    Google Wallet object and Apple pass. Customer balances/history are
-    untouched - only the Wallet-side representation is patched (Google) or
-    flagged for re-fetch via APNs (Apple).
+    """Refresh already-issued Wallet cards after an explicit publish.
 
-    This is the single source of truth for 'my saved changes aren't showing
-    up on the actual phone' - a business's card design lives in our DB the
-    moment they hit Save, but Google/Apple only see it once we push. Call
-    this after ANY change that should be visible on already-issued passes
-    (color/style, card copy, reward text, membership status, etc), not just
-    from the explicit 'Publish' button."""
+    Google still requires an object-level check/patch per member, but Apple
+    registrations are fetched in bulk first.  The old implementation queried
+    Supabase once per member for Apple registrations while also doing Google
+    API work at concurrency 8; on larger refreshes that produced unnecessary
+    PostgREST/Cloudflare pressure and duplicate Wallet traffic.
+    """
     try:
         members = (
             supabase.table('customers')
@@ -2431,16 +2428,82 @@ async def refresh_existing_member_wallets(business: dict, program: dict):
             .execute()
             .data or []
         )
+        members = [m for m in members if m.get('public_id')]
+        if not members:
+            print(f"WALLET SYNC: no members to refresh for {business.get('name')}")
+            return
+
         current_program = safe_get_loyalty_program(business.get('id')) or program or {}
-        semaphore = asyncio.Semaphore(8)
+        serials = [m.get('public_id') for m in members]
 
-        async def refresh_one(member):
+        # Apple: find every saved registration in a few bounded queries instead
+        # of one registration lookup per member.  One APNs wake-up per device is
+        # enough; Wallet then asks our list-updated endpoint which serial(s)
+        # changed for that device.
+        apple_rows = []
+        if supabase and APPLE_PASS_TYPE_IDENTIFIER:
+            chunk_size = 100
+            for i in range(0, len(serials), chunk_size):
+                chunk = serials[i:i + chunk_size]
+                try:
+                    rows = (
+                        supabase.table('apple_wallet_registrations')
+                        .select('serial_number,push_token')
+                        .in_('serial_number', chunk)
+                        .eq('pass_type_identifier', APPLE_PASS_TYPE_IDENTIFIER)
+                        .execute()
+                    ).data or []
+                    apple_rows.extend(rows)
+                except Exception as apple_lookup_error:
+                    print(f"APPLE WALLET bulk registration lookup error: {apple_lookup_error}")
+
+        # Google: keep concurrency deliberately modest.  This is publish-time
+        # work, not a latency-critical checkout transaction, so stability wins
+        # over firing many simultaneous external requests.
+        semaphore = asyncio.Semaphore(4)
+
+        async def refresh_google(member):
             async with semaphore:
-                await asyncio.to_thread(sync_wallet_object, member, business, current_program)
-                await asyncio.to_thread(push_apple_wallet_update, member.get('public_id'))
+                try:
+                    return await asyncio.to_thread(
+                        sync_wallet_object, member, business, current_program
+                    )
+                except Exception as exc:
+                    print(f"WALLET SYNC Google member error {member.get('public_id')}: {exc}")
+                    return {"status": "error", "detail": str(exc)}
 
-        await asyncio.gather(*(refresh_one(member) for member in members if member.get('public_id')))
-        print(f"WALLET SYNC: refreshed {len(members)} member wallet representations for {business.get('name')}")
+        google_results = await asyncio.gather(*(refresh_google(member) for member in members))
+
+        # Mark only serials that actually have an Apple registration as dirty,
+        # then de-duplicate push tokens so a device with multiple passes is not
+        # woken repeatedly for the same publish.
+        registered_serials = list({
+            row.get('serial_number') for row in apple_rows if row.get('serial_number')
+        })
+        if registered_serials:
+            _mark_apple_pass_dirty(registered_serials)
+
+        apple_tokens = list(dict.fromkeys(
+            row.get('push_token') for row in apple_rows if row.get('push_token')
+        ))
+        apple_sent = 0
+        if apple_tokens:
+            apple_sent = await asyncio.to_thread(_send_apple_wallet_pushes, apple_tokens)
+
+        google_updated = sum(
+            1 for result in google_results
+            if isinstance(result, dict) and result.get('status') == 'updated'
+        )
+        google_not_saved = sum(
+            1 for result in google_results
+            if isinstance(result, dict) and result.get('status') == 'not_saved'
+        )
+        print(
+            f"WALLET SYNC: publish refresh complete for {business.get('name')} "
+            f"members={len(members)} google_updated={google_updated} "
+            f"google_not_saved={google_not_saved} "
+            f"apple_registered={len(registered_serials)} apple_devices_woken={apple_sent}"
+        )
     except Exception as refresh_error:
         print(f"WALLET SYNC bulk refresh error: {refresh_error}")
 
@@ -2647,6 +2710,38 @@ def sync_wallet_object(customer: dict, business: dict, program: dict,
 
 _apple_pass_credentials_cache = None
 _apple_push_cert_paths = None
+
+# A push tells Wallet to ask which pass changed.  Some pass-visible changes
+# (for example membership-event edits) do not necessarily touch the customer's
+# updated_at column, so source timestamps alone can make the subsequent
+# passesUpdatedSince request incorrectly return 204 ("spurious push").
+# Keep a small, short-lived in-process dirty marker as a delivery hint.  The
+# real pass data remains in Supabase; this is not durable state and is pruned.
+_APPLE_PASS_DIRTY_AT = {}
+_APPLE_PASS_DIRTY_TTL_SECONDS = 6 * 60 * 60
+
+def _mark_apple_pass_dirty(serial_numbers):
+    now = datetime.utcnow()
+    if isinstance(serial_numbers, str):
+        serial_numbers = [serial_numbers]
+    for serial in serial_numbers or []:
+        if serial:
+            _APPLE_PASS_DIRTY_AT[str(serial)] = now
+
+    # Opportunistic pruning keeps this bounded on a long-running process.
+    cutoff = now - timedelta(seconds=_APPLE_PASS_DIRTY_TTL_SECONDS)
+    stale = [key for key, value in _APPLE_PASS_DIRTY_AT.items() if value < cutoff]
+    for key in stale:
+        _APPLE_PASS_DIRTY_AT.pop(key, None)
+
+def _apple_pass_dirty_at(serial_number: str):
+    value = _APPLE_PASS_DIRTY_AT.get(str(serial_number or ''))
+    if not value:
+        return None
+    if (datetime.utcnow() - value).total_seconds() > _APPLE_PASS_DIRTY_TTL_SECONDS:
+        _APPLE_PASS_DIRTY_AT.pop(str(serial_number or ''), None)
+        return None
+    return value
 
 def get_apple_pass_credentials():
     """Loads (private_key, certificate, wwdr_certificate) from the env vars
@@ -3322,6 +3417,11 @@ def push_apple_wallet_update(serial_number: str):
         print(f"APPLE WALLET SYNC: no saved Apple pass registration for {serial_number}")
         return {"status": "not_saved", "registrations": 0, "pushes_sent": 0}
 
+    # Record the change before waking Wallet.  This guarantees the immediate
+    # passesUpdatedSince callback can identify the serial even when the visible
+    # change came from a related table rather than customers.updated_at.
+    _mark_apple_pass_dirty(serial_number)
+    tokens = list(dict.fromkeys(tokens))
     sent = _send_apple_wallet_pushes(tokens)
     status = "push_sent" if sent > 0 else "push_failed"
     print(f"APPLE WALLET SYNC: {serial_number} registrations={len(tokens)} pushes_sent={sent}")
@@ -7864,12 +7964,11 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, authorizati
                 ),
             )
 
-        # Keep already-issued Google/Apple passes in sync with what was just
-        # saved - without this, a business's card design/status only lives
-        # in our DB (and the web preview) until they separately hit
-        # "Publish", so a member's actual phone wallet can silently go stale
-        # (old color, old status) even though the dashboard looks current.
-        asyncio.create_task(republish_wallet_class_and_refresh(business, persisted))
+        # Saving/configuring is intentionally persistence-only.  The customizer's
+        # explicit Publish action calls /wallet-class, which performs exactly one
+        # class publish + member refresh.  Auto-refreshing here caused two full
+        # Wallet fan-outs back-to-back (Save, then Publish) and overloaded the
+        # Apple registration/Supabase path during normal editing.
 
         return {
             "message": "Configuration saved",
@@ -17311,16 +17410,20 @@ async def apple_list_updated_serials(device_library_identifier: str, pass_type_i
                     customer.get('updated_at'),
                     (contract or {}).get('updated_at'),
                     (announcement or {}).get('updated_at') or (announcement or {}).get('created_at'),
+                    _apple_pass_dirty_at(serial),
                 ]
             else:
                 customer = safe_get_customer(serial)
                 if not customer:
                     continue
                 business = safe_get_business_by_id(customer.get('business_id'))
+                program = safe_get_loyalty_program(business.get('id')) if business else None
                 announcement = get_latest_active_announcement(business.get('id')) if business else None
                 raw_values = [
                     customer.get('updated_at'),
+                    (program or {}).get('updated_at') or (program or {}).get('created_at'),
                     (announcement or {}).get('updated_at') or (announcement or {}).get('created_at'),
+                    _apple_pass_dirty_at(serial),
                 ]
 
             pass_times = [_parse_ts(v) for v in raw_values if v]
