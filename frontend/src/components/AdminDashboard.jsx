@@ -160,6 +160,23 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
     setTimeout(() => setMessage(''), 3000)
   }
 
+  const updateNfcTrial = async (public_id, enabled) => {
+    try {
+      const res = await authedFetch(`/api/v1/admin/businesses/${public_id}/nfc-trial`, {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'NFC trial update failed')
+      setMessage(data.message || (enabled ? 'NFC membership trial enabled' : 'NFC membership trial disabled'))
+      loadData()
+      if (selected?.public_id === public_id) openDetail(selected)
+    } catch (err) {
+      setMessage(err.message)
+    }
+    setTimeout(() => setMessage(''), 3500)
+  }
+
   const approveApplication = (public_id) => updateBusiness(public_id, { status: 'ACTIVE' })
   const rejectApplication = (public_id) => updateBusiness(public_id, { status: 'REJECTED' })
 
@@ -1017,7 +1034,29 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 )}
                 <DetailRow label="Customers" value={detail.customer_count} />
                 <DetailRow label="Staff" value={detail.staff_count} />
-                <DetailRow label="Card type" value={detail.card_type === 'points' ? '⭐ Points' : detail.card_type === 'multipass' ? '🎫 Multipass' : '🎟️ Stamp'} />
+                <DetailRow label="Card type" value={detail.card_type === 'points' ? '⭐ Points' : detail.card_type === 'multipass' ? '🎫 Multipass' : detail.card_type === 'membership' ? '🪪 Membership' : detail.card_type === 'vip' ? '👑 VIP' : '🎟️ Stamp'} />
+                {detail.card_type === 'membership' && (
+                  <div style={{...styles.detailRow, alignItems:'flex-start'}}>
+                    <span style={styles.detailLabel}>NFC membership trial</span>
+                    <div style={{textAlign:'right', maxWidth:320}}>
+                      <button
+                        type="button"
+                        onClick={() => updateNfcTrial(selected.public_id, !detail.nfc_trial?.enabled)}
+                        style={detail.nfc_trial?.enabled ? styles.rejectBtn : styles.approveBtn}
+                      >
+                        {detail.nfc_trial?.enabled ? 'Disable NFC Trial' : 'Enable NFC Trial'}
+                      </button>
+                      <div style={{fontSize:12, color:'#64748b', marginTop:7, lineHeight:1.45}}>
+                        Super-admin only · membership cards only · QR stays enabled.
+                      </div>
+                      {detail.nfc_trial?.enabled && (
+                        <div style={{fontSize:12, color:'#0f766e', marginTop:5, lineHeight:1.45, fontWeight:700}}>
+                          Trial ON · Token {detail.nfc_trial?.token_secret_configured ? '✓' : '✕'} · Google {detail.nfc_trial?.google_smart_tap_configured ? '✓' : 'pending'} · Apple {detail.nfc_trial?.apple_nfc_configured ? '✓' : 'pending'}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
                 {detail.card_type === 'points' ? (
                   <>
                     <DetailRow label="Points sales (30d)" value={detail.stamps_30d} />

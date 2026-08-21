@@ -17,13 +17,15 @@ function CashierApp({ API_BASE }) {
   // fill out a separate cashier PIN login screen too.
   const ownerState = location.state?.ownerMode ? location.state : null
   const isOwner = !!ownerState
-  const prefillBusinessSlug = location.state?.prefillBusinessSlug || ''
-  const prefillEmail = location.state?.prefillEmail || ''
+  const initialQuery = new URLSearchParams(location.search)
+  const pendingNfcToken = initialQuery.get('nfc') || ''
+  const nfcBusinessSlug = initialQuery.get('business') || ''
+  const hasPendingNfcTap = !!pendingNfcToken
 
   const [scanResult, setScanResult] = useState(null)
-  const [businessSlug, setBusinessSlug] = useState(ownerState?.businessSlug || prefillBusinessSlug || '')
+  const [businessSlug, setBusinessSlug] = useState(ownerState?.businessSlug || nfcBusinessSlug || '')
   const [staffPin, setStaffPin] = useState('')
-  const [staffEmail, setStaffEmail] = useState(prefillEmail || '')
+  const [staffEmail, setStaffEmail] = useState('')
   // Session token from /staff/verify-pin - sent instead of the raw PIN on
   // every scan, so the PIN itself only crosses the wire once per shift.
   const [sessionToken, setSessionToken] = useState(ownerState?.ownerToken || '')
@@ -40,6 +42,7 @@ function CashierApp({ API_BASE }) {
   const [saleAmount, setSaleAmount] = useState('')
   const [vipSaleAmount, setVipSaleAmount] = useState('')
   const [customSessionCount, setCustomSessionCount] = useState('')
+  const [entrySource, setEntrySource] = useState(hasPendingNfcTap ? 'nfc' : 'qr')
 
   useEffect(() => {
     if (!businessSlug || !staffName || (!isOwner && !staffPin && !sessionToken)) return
@@ -117,7 +120,7 @@ function CashierApp({ API_BASE }) {
   }, [location.search, businessSlug, staffName, sessionToken, customerData])
 
   // NFC itself is read by a Smart Tap/VAS terminal or native reader.
-  // That reader can open /scanner?nfc=<token>&nfc_source=google_wallet|apple_wallet.
+  // That reader can open /scanner?business=<business-slug>&nfc=<token>&nfc_source=google_wallet|apple_wallet.
   // Once the cashier has logged in, we resolve that signed token to the same
   // customer public_id the existing QR flow already understands.
   const resolveNfcToken = async (token, source = 'terminal') => {
@@ -143,6 +146,7 @@ function CashierApp({ API_BASE }) {
         throw new Error(data.detail || 'Could not identify NFC member')
       }
 
+      setEntrySource('nfc')
       setScanResult(data.customer_public_id)
       // Remove the one-time NFC payload from the address bar before loading
       // the customer, so Reset/refresh cannot accidentally resolve it again.
@@ -418,13 +422,14 @@ function CashierApp({ API_BASE }) {
         body: JSON.stringify({
           customer_public_id: customerData.public_id,
           service_name: serviceName || null,
+          entry_source: entrySource === 'nfc' ? 'nfc' : 'qr',
           ...(sessionToken ? {} : { staff_pin: staffPin }),
           as_owner: isOwner,
         }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Could not log visit')
-      setMessage(`✅ Visit logged for ${customerData.name}`)
+      setMessage(entrySource === 'nfc' ? `✅ NFC activity logged for ${customerData.name}` : `✅ Visit logged for ${customerData.name}`)
     } catch (err) {
       setMessage(`❌ ${err.message}`)
     }
@@ -642,6 +647,7 @@ function CashierApp({ API_BASE }) {
     setSaleAmount('')
     setVipSaleAmount('')
     setCustomSessionCount('')
+    setEntrySource('qr')
   }
 
   const verifyPinAndStart = async () => {
@@ -697,6 +703,8 @@ function CashierApp({ API_BASE }) {
             placeholder="Business ID (from URL)"
             value={businessSlug}
             onChange={e => setBusinessSlug(e.target.value)}
+            readOnly={hasPendingNfcTap}
+            title={hasPendingNfcTap ? 'Business is locked to the NFC terminal that initiated this tap' : undefined}
           />
           <input
             style={styles.input}
@@ -722,10 +730,10 @@ function CashierApp({ API_BASE }) {
             onClick={verifyPinAndStart}
             disabled={!businessSlug || !staffEmail || !staffPin || verifying}
           >
-            {verifying ? 'Checking...' : 'Start Scanning 🍃'}
+            {verifying ? 'Checking...' : hasPendingNfcTap ? 'Authenticate NFC Tap 📡' : 'Start Scanning 🍃'}
           </button>
 
-          <p style={styles.hint}>Ask the business owner for the Business ID, your email, and your PIN — shown on their "Your Team" tab</p>
+          <p style={styles.hint}>{hasPendingNfcTap ? 'NFC tap pending. Enter your cashier email and PIN to identify the member. No visit is recorded until you confirm Log NFC Activity.' : 'Ask the business owner for the Business ID, your email, and your PIN — shown on their "Your Team" tab'}</p>
         </div>
       </div>
     )
@@ -1186,7 +1194,7 @@ function CashierApp({ API_BASE }) {
                 onClick={logMembershipVisit}
                 disabled={loading || !['active','lifetime'].includes(customerData.membership_status)}
               >
-                {loading ? '...' : '🏋️ Check In Member'}
+                {loading ? '...' : entrySource === 'nfc' ? '📡 Log NFC Activity' : '🏋️ Check In Member'}
               </button>
             )}
             {customerData.card_type === 'membership' && !['active','lifetime'].includes(customerData.membership_status) && (

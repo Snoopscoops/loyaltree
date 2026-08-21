@@ -1163,6 +1163,7 @@ class MembershipNoteRequest(BaseModel):
     service_name: Optional[str] = Field(default=None, max_length=120)  # optional in quick check-in mode; blank becomes 'Visit'
     note: Optional[str] = Field(default=None, max_length=500)  # optional longer note - observations, follow-up needed, etc.
     service_date: Optional[str] = None  # 'YYYY-MM-DD' - defaults to today if omitted; lets a cashier log a visit entered late
+    entry_source: Optional[Literal['qr', 'nfc', 'manual']] = 'manual'
     staff_pin: Optional[str] = None
     as_owner: Optional[bool] = False
 
@@ -1269,6 +1270,11 @@ class AdminBusinessUpdate(BaseModel):
     business_type: Optional[str] = None
     logo_url: Optional[str] = None
     announcement_limit_adjustment: Optional[int] = None  # +/- adjustment to the plan's announcements_per_month for this business only
+
+class AdminNfcTrialUpdate(BaseModel):
+    # Experimental NFC is deliberately controlled only by the LoyaltyTree
+    # platform super admin. Business-owner loyalty config cannot set this.
+    enabled: bool
 
 class AdminBusinessCreate(BaseModel):
     """Admin-provisioned business account - used for invite-only business
@@ -2277,9 +2283,11 @@ def build_loyalty_class(
     if hero_url:
         loyalty_class['heroImage'] = {'sourceUri': {'uri': hero_url}}
 
-    # Smart Tap is added only after Google has enabled the merchant/issuer.
-    # Until then this class remains a normal QR loyalty pass.
-    if GOOGLE_SMART_TAP_ENABLED and GOOGLE_SMART_TAP_REDEMPTION_ISSUER_ID:
+    # NFC trial safety gate: Smart Tap is exposed only on MEMBERSHIP cards
+    # explicitly enabled by the LoyaltyTree super admin. A business owner cannot
+    # turn this on through normal loyalty-config updates.
+    nfc_trial_active = bool(card_type == 'membership' and program and program.get('nfc_trial_enabled'))
+    if nfc_trial_active and GOOGLE_SMART_TAP_ENABLED and GOOGLE_SMART_TAP_REDEMPTION_ISSUER_ID:
         loyalty_class['enableSmartTap'] = True
         loyalty_class['redemptionIssuers'] = [str(GOOGLE_SMART_TAP_REDEMPTION_ISSUER_ID)]
 
@@ -2405,7 +2413,8 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
 
 
     contactless_token = contactless_member_token(cust_public_id)
-    if GOOGLE_SMART_TAP_ENABLED and GOOGLE_SMART_TAP_REDEMPTION_ISSUER_ID and contactless_token:
+    nfc_trial_active = bool(card_type == 'membership' and program and program.get('nfc_trial_enabled'))
+    if nfc_trial_active and GOOGLE_SMART_TAP_ENABLED and GOOGLE_SMART_TAP_REDEMPTION_ISSUER_ID and contactless_token:
         loyalty_object['smartTapRedemptionValue'] = contactless_token
 
     return loyalty_object
@@ -3172,10 +3181,11 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         ]
     }
 
-    # Keep the QR fallback exactly as it is, and layer Apple VAS NFC on top
-    # only when the Apple-issued NFC entitlement/certificate is configured.
+    # Keep the QR fallback exactly as it is. Apple VAS NFC is additionally
+    # gated to a super-admin-enabled MEMBERSHIP trial.
     contactless_token = contactless_member_token(cust_public_id)
-    if APPLE_NFC_ENABLED and APPLE_NFC_ENCRYPTION_PUBLIC_KEY and contactless_token:
+    nfc_trial_active = bool(card_type == 'membership' and program and program.get('nfc_trial_enabled'))
+    if nfc_trial_active and APPLE_NFC_ENABLED and APPLE_NFC_ENCRYPTION_PUBLIC_KEY and contactless_token:
         pass_dict['nfc'] = {
             'message': contactless_token,
             'encryptionPublicKey': APPLE_NFC_ENCRYPTION_PUBLIC_KEY,
@@ -5716,7 +5726,55 @@ async def admin_get_business(public_id: str, _: bool = Depends(require_admin)):
             summary["sessions_issued_30d"] = 0
             summary["sessions_used_30d"] = 0
     summary["loyalty_program"] = program
+    summary["nfc_trial"] = {
+        'enabled': bool(program and program.get('card_type') == 'membership' and program.get('nfc_trial_enabled')),
+        'eligible': bool(program and program.get('card_type') == 'membership'),
+        'token_secret_configured': bool(NFC_TOKEN_SECRET),
+        'google_smart_tap_configured': bool(GOOGLE_SMART_TAP_ENABLED and GOOGLE_SMART_TAP_REDEMPTION_ISSUER_ID),
+        'apple_nfc_configured': bool(APPLE_NFC_ENABLED and APPLE_NFC_ENCRYPTION_PUBLIC_KEY),
+    }
     return summary
+
+@app.patch("/api/v1/admin/businesses/{public_id}/nfc-trial")
+async def admin_set_nfc_trial(public_id: str, update: AdminNfcTrialUpdate, background_tasks: BackgroundTasks, _: bool = Depends(require_admin)):
+    """Super-admin-only switch for the first NFC membership pilot.
+
+    The flag lives on loyalty_programs, not businesses, so NFC is attached to
+    the active card program. It cannot be enabled for stamp/points/VIP/etc.
+    """
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    program = safe_get_loyalty_program(business.get('id'))
+    if not program:
+        raise HTTPException(status_code=400, detail="Create a loyalty program before enabling NFC")
+    if update.enabled and program.get('card_type') != 'membership':
+        raise HTTPException(status_code=400, detail="NFC trial can only be enabled for a membership card")
+
+    try:
+        supabase.table('loyalty_programs').update({
+            'nfc_trial_enabled': bool(update.enabled),
+            'updated_at': datetime.utcnow().isoformat(),
+        }).eq('business_id', business.get('id')).execute()
+    except Exception as e:
+        if 'nfc_trial_enabled' in str(e):
+            raise HTTPException(status_code=503, detail="NFC trial database migration has not been installed yet")
+        raise HTTPException(status_code=500, detail=f"Could not update NFC trial: {friendly_db_error(e)}")
+
+    current_program = safe_get_loyalty_program(business.get('id')) or {**program, 'nfc_trial_enabled': bool(update.enabled)}
+    # Rebuild Google class/object state and wake registered Apple passes in the
+    # background. QR remains intact regardless of NFC platform readiness.
+    background_tasks.add_task(republish_wallet_class_and_refresh, dict(business), dict(current_program))
+
+    return {
+        'success': True,
+        'enabled': bool(update.enabled),
+        'membership_only': True,
+        'token_secret_configured': bool(NFC_TOKEN_SECRET),
+        'google_smart_tap_configured': bool(GOOGLE_SMART_TAP_ENABLED and GOOGLE_SMART_TAP_REDEMPTION_ISSUER_ID),
+        'apple_nfc_configured': bool(APPLE_NFC_ENABLED and APPLE_NFC_ENCRYPTION_PUBLIC_KEY),
+        'message': 'NFC membership trial enabled' if update.enabled else 'NFC membership trial disabled',
+    }
 
 @app.patch("/api/v1/admin/businesses/{public_id}")
 async def admin_update_business(public_id: str, update: AdminBusinessUpdate, _: bool = Depends(require_admin)):
@@ -9967,20 +10025,29 @@ async def get_qr_code(public_id: str):
 
 @app.post("/api/v1/business/{public_id}/nfc/resolve")
 async def resolve_nfc_member(public_id: str, req: NfcResolveRequest, authorization: str = Header(default="")):
-    """Resolve an Apple/Google contactless value to the existing customer.
+    """Resolve a trial NFC membership tap after cashier authentication.
 
-    This endpoint intentionally does not mutate stamps/points/membership. It
-    only performs the same identification job the QR scanner already does.
-    A cashier session is required so a random NFC reader cannot enumerate
-    customer accounts.
+    Safety rules for the first rollout:
+      * membership cards only
+      * the LoyaltyTree super admin must explicitly enable the trial
+      * a real cashier session must exist before the member is revealed
+      * resolving a tap NEVER records a visit by itself
+
+    The cashier must still press the membership activity/check-in action.
     """
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
+    program = safe_get_loyalty_program(business.get('id'))
+    if not program or program.get('card_type') != 'membership':
+        raise HTTPException(status_code=403, detail="NFC trial is available only for membership cards")
+    if not bool(program.get('nfc_trial_enabled')):
+        raise HTTPException(status_code=403, detail="NFC trial is not enabled for this membership card")
+
     session_claims = get_staff_session_claims(public_id, authorization)
-    if not session_claims:
-        raise HTTPException(status_code=401, detail="Cashier session required before NFC tap")
+    if not session_claims or not session_claims.get('staff_id'):
+        raise HTTPException(status_code=401, detail="Cashier login required before NFC tap")
 
     customer_public_id = verify_contactless_member_token(req.token)
     if not customer_public_id:
@@ -9990,12 +10057,33 @@ async def resolve_nfc_member(public_id: str, req: NfcResolveRequest, authorizati
     if not customer or customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
 
-    return {
+    source = req.source or 'terminal'
+    response_payload = {
         "success": True,
         "customer_public_id": customer.get('public_id'),
         "customer_name": customer.get('name') or 'Member',
-        "source": req.source,
+        "source": source,
+        "nfc_trial": True,
+        "next_action": "confirm_membership_activity",
     }
+
+    # Audit identification separately from the eventual membership_visit. This
+    # lets us investigate trial taps without counting a tap as a real visit.
+    audit_row = start_transaction_audit(
+        business_id=business.get('id'),
+        customer_id=customer.get('id'),
+        staff_id=session_claims.get('staff_id'),
+        branch_id=session_claims.get('branch_id'),
+        actor_type='staff',
+        action='nfc_member_identified',
+        metadata={'card_type': 'membership', 'source': source, 'trial': True},
+    )
+    complete_transaction_audit(
+        audit_row,
+        response_json={'customer_public_id': customer.get('public_id'), 'source': source},
+        metadata={'card_type': 'membership', 'source': source, 'trial': True},
+    )
+    return response_payload
 
 
 
@@ -11507,7 +11595,8 @@ async def add_membership_note(public_id: str, req: MembershipNoteRequest, backgr
 
     service_name = (req.service_name or '').strip() or 'Visit'
     old_visits=int((get_membership_summary(business.get('id'),customer.get('id')) or {}).get('total_visits') or 0)
-    audit_row=start_transaction_audit(business_id=business.get('id'),customer_id=customer.get('id'),staff_id=noting_staff_id,branch_id=noting_branch_id,actor_type=_audit_actor(noting_staff_id,req.as_owner),action='membership_visit',idempotency_key=x_idempotency_key,delta=1,balance_before=old_visits,metadata={'card_type':'membership','service_name':service_name})
+    entry_source = req.entry_source or 'manual'
+    audit_row=start_transaction_audit(business_id=business.get('id'),customer_id=customer.get('id'),staff_id=noting_staff_id,branch_id=noting_branch_id,actor_type=_audit_actor(noting_staff_id,req.as_owner),action='membership_visit',idempotency_key=x_idempotency_key,delta=1,balance_before=old_visits,metadata={'card_type':'membership','service_name':service_name,'entry_source':entry_source})
     if audit_row and audit_row.get('_duplicate_response'): return audit_row['_duplicate_response']
     service_date = req.service_date or datetime.utcnow().date().isoformat()
 
@@ -17151,10 +17240,13 @@ async def get_wallet_pass(customer_public_id: str):
     print(f"WALLET-PASS: Prepared pass data for customer {customer_public_id}")
 
     contactless_ready = bool(contactless_member_token(customer_public_id))
+    nfc_trial_active = bool(card_type == 'membership' and program and program.get('nfc_trial_enabled'))
     nfc_status = {
+        'trial_enabled': nfc_trial_active,
+        'membership_only': True,
         'token_ready': contactless_ready,
-        'google_smart_tap_configured': bool(contactless_ready and GOOGLE_SMART_TAP_ENABLED and GOOGLE_SMART_TAP_REDEMPTION_ISSUER_ID),
-        'apple_nfc_configured': bool(contactless_ready and APPLE_NFC_ENABLED and APPLE_NFC_ENCRYPTION_PUBLIC_KEY),
+        'google_smart_tap_configured': bool(nfc_trial_active and contactless_ready and GOOGLE_SMART_TAP_ENABLED and GOOGLE_SMART_TAP_REDEMPTION_ISSUER_ID),
+        'apple_nfc_configured': bool(nfc_trial_active and contactless_ready and APPLE_NFC_ENABLED and APPLE_NFC_ENCRYPTION_PUBLIC_KEY),
         'qr_fallback_enabled': True,
     }
 
