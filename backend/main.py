@@ -12928,6 +12928,7 @@ async def customer_join_page(business_public_id: str):
         # program instead of always falling back to the legacy 8-stamp reward.
         reward_preview_html = ''
         earning_rule_html = ''
+        earning_rule_text = ''
 
         if card_type == 'points':
             prizes = [
@@ -12961,9 +12962,12 @@ async def customer_join_page(business_public_id: str):
                     else f'{points_amount_pesos:g}'
                 )
                 point_word = 'point' if points_per_amount == 1 else 'points'
+                earning_rule_text = (
+                    points_text + ' ' + point_word +
+                    ' for every ' + pesos_text + ' pesos'
+                )
                 earning_rule_html = (
-                    '<p class="earning-rule">' + points_text + ' ' + point_word +
-                    ' for every ' + pesos_text + ' pesos</p>'
+                    '<p class="earning-rule">' + earning_rule_text + '</p>'
                 )
 
         elif card_type == 'stamp':
@@ -12984,6 +12988,16 @@ async def customer_join_page(business_public_id: str):
                 '<p>Collect ' + str(stamp_goal) + ' stamps to unlock your reward</p>'
                 '</div>'
             )
+        # Older Points cards sometimes stored the earn rule in `description`
+        # as well. Since we now render the earn rule from the real points
+        # settings above, suppress the description only when it is the same
+        # sentence, preventing duplicated text on the Join page.
+        display_description = description
+        if card_type == 'points' and description and earning_rule_text:
+            normalize = lambda s: ' '.join(str(s or '').strip().lower().split()).rstrip('.')
+            if normalize(description) == normalize(earning_rule_text):
+                display_description = None
+
         display_name = card_name if card_name else (biz_name + ' Rewards')
         logo_url = business.get('logo_url')
         
@@ -13046,7 +13060,7 @@ async def customer_join_page(business_public_id: str):
             '<p class="subtitle">' + biz_name + '</p>'
             + reward_preview_html
             + earning_rule_html
-            + ('<p class="program-description">' + html_lib.escape(description) + '</p>' if description else '') +
+            + ('<p class="program-description">' + html_lib.escape(display_description) + '</p>' if display_description else '') +
             '<form id="signupForm">'
             '<input type="text" id="name" placeholder="Full name" required>'
             '<input type="text" id="address" placeholder="Address">'
