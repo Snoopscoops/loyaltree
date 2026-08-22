@@ -3246,6 +3246,21 @@ def generate_apple_strip_bytes(customer: dict, business: dict, program: dict, wi
     img.save(buf, format='PNG')
     return buf.getvalue()
 
+def _resize_png_bytes(png_bytes: bytes, width: int, height: int) -> Optional[bytes]:
+    """Resize an already-rendered PNG without regenerating the underlying artwork."""
+    if not png_bytes:
+        return None
+    try:
+        img = Image.open(BytesIO(png_bytes)).convert("RGBA")
+        img = img.resize((width, height), Image.LANCZOS)
+        buf = BytesIO()
+        img.save(buf, format="PNG", optimize=False)
+        return buf.getvalue()
+    except Exception as e:
+        print(f"APPLE PNG resize error: {e}")
+        return None
+
+
 def build_pkpass_bytes(customer: dict, business: dict, program: dict, announcement: Optional[dict] = None) -> Optional[bytes]:
     """Assembles and signs the full .pkpass zip. Returns None if Apple
     Wallet credentials aren't configured or signing fails - callers treat
@@ -3271,21 +3286,29 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
     logo_bytes = _fetch_image_bytes(logo_url)
     pass_json = build_apple_pass_json(customer, business, program, announcement)
 
-    icon_29 = apple_icon_from_logo_bytes(logo_bytes, 29) if logo_bytes else None
-    icon_58 = apple_icon_from_logo_bytes(logo_bytes, 58) if logo_bytes else None
+    # Render each branding asset only once at the largest required size, then
+    # downscale it. Re-opening/resampling the same Cloudinary image six times
+    # was unnecessary CPU work on every Add-to-Wallet request.
     icon_87 = apple_icon_from_logo_bytes(logo_bytes, 87) if logo_bytes else None
-    logo_160 = apple_logo_from_image_bytes(logo_bytes, 160, 50) if logo_bytes else None
-    logo_320 = apple_logo_from_image_bytes(logo_bytes, 320, 100) if logo_bytes else None
+    if not icon_87:
+        icon_87 = generate_apple_icon_bytes(primary_color, biz_name, 87)
+    icon_58 = _resize_png_bytes(icon_87, 58, 58)
+    icon_29 = _resize_png_bytes(icon_87, 29, 29)
+
     logo_480 = apple_logo_from_image_bytes(logo_bytes, 480, 150) if logo_bytes else None
+    if not logo_480:
+        logo_480 = generate_apple_logo_bytes(biz_name, 480, 150)
+    logo_320 = _resize_png_bytes(logo_480, 320, 100)
+    logo_160 = _resize_png_bytes(logo_480, 160, 50)
 
     files = {
         'pass.json': json.dumps(pass_json).encode('utf-8'),
-        'icon.png': icon_29 or generate_apple_icon_bytes(primary_color, biz_name, 29),
-        'icon@2x.png': icon_58 or generate_apple_icon_bytes(primary_color, biz_name, 58),
-        'icon@3x.png': icon_87 or generate_apple_icon_bytes(primary_color, biz_name, 87),
-        'logo.png': logo_160 or generate_apple_logo_bytes(biz_name, 160, 50),
-        'logo@2x.png': logo_320 or generate_apple_logo_bytes(biz_name, 320, 100),
-        'logo@3x.png': logo_480 or generate_apple_logo_bytes(biz_name, 480, 150),
+        'icon.png': icon_29,
+        'icon@2x.png': icon_58,
+        'icon@3x.png': icon_87,
+        'logo.png': logo_160,
+        'logo@2x.png': logo_320,
+        'logo@3x.png': logo_480,
     }
     if design['show_background']:
         # Thumbnail, not a full-width strip: a strip image sits behind
@@ -3298,13 +3321,20 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
         # card / GoTyme-style bank card reads at a glance.
         hero_url = (program or {}).get('hero_image_url')
         hero_bytes = _fetch_image_bytes(hero_url)
-        thumb_90 = apple_strip_from_image_bytes(hero_bytes, 90, 90) if hero_bytes else None
-        thumb_180 = apple_strip_from_image_bytes(hero_bytes, 180, 180) if hero_bytes else None
+
+        # Same optimization for the thumbnail: make @3x once, then resize.
+        # If there is no uploaded hero, generate the personalized fallback only
+        # once instead of running the expensive renderer three separate times.
         thumb_270 = apple_strip_from_image_bytes(hero_bytes, 270, 270) if hero_bytes else None
+        if not thumb_270:
+            thumb_270 = generate_apple_strip_bytes(customer, business, program, 270, 270)
+        thumb_180 = _resize_png_bytes(thumb_270, 180, 180)
+        thumb_90 = _resize_png_bytes(thumb_270, 90, 90)
+
         files.update({
-            'thumbnail.png': thumb_90 or generate_apple_strip_bytes(customer, business, program, 90, 90),
-            'thumbnail@2x.png': thumb_180 or generate_apple_strip_bytes(customer, business, program, 180, 180),
-            'thumbnail@3x.png': thumb_270 or generate_apple_strip_bytes(customer, business, program, 270, 270),
+            'thumbnail.png': thumb_90,
+            'thumbnail@2x.png': thumb_180,
+            'thumbnail@3x.png': thumb_270,
         })
 
     manifest = {name: hashlib.sha1(content).hexdigest() for name, content in files.items()}
@@ -3314,12 +3344,104 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
         return None
 
     buffer = BytesIO()
-    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+    # PNG files are already compressed. ZIP_STORED avoids spending CPU trying to
+    # deflate them again and materially shortens pass assembly on Render.
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_STORED) as zf:
         for name, content in files.items():
             zf.writestr(name, content)
         zf.writestr('manifest.json', manifest_bytes)
         zf.writestr('signature', signature)
     return buffer.getvalue()
+
+
+# Short-lived cache for the *initial* Apple Wallet add flow.
+# CustomerJoin requests /wallet-pass immediately after signup, and customer_signup
+# prewarms this cache in the background. By the time the person taps "Add to Wallet"
+# the already-signed .pkpass can usually be returned without image rendering/signing.
+_APPLE_PKPASS_CACHE = {}
+_APPLE_PKPASS_CACHE_TTL_SECONDS = 90
+
+
+def _apple_pkpass_fingerprint(customer: dict, business: dict, program: dict, announcement: Optional[dict]) -> str:
+    payload = {
+        "customer": {
+            "id": customer.get("public_id"),
+            "updated_at": customer.get("updated_at"),
+            "stamp_count": customer.get("stamp_count"),
+            "points_balance": customer.get("points_balance"),
+            "vip_points": customer.get("vip_points"),
+            "multipass_sessions_remaining": customer.get("multipass_sessions_remaining"),
+            "membership_status": customer.get("membership_status"),
+            "membership_expires_at": customer.get("membership_expires_at"),
+        },
+        "business": {
+            "updated_at": business.get("updated_at"),
+            "logo_url": business.get("logo_url"),
+            "name": business.get("name"),
+        },
+        "program": {
+            "updated_at": (program or {}).get("updated_at"),
+            "card_type": (program or {}).get("card_type"),
+            "hero_image_url": (program or {}).get("hero_image_url"),
+            "program_logo_url": (program or {}).get("program_logo_url"),
+            "wallet_style": (program or {}).get("wallet_style"),
+            "primary_color": (program or {}).get("primary_color"),
+        },
+        "announcement": {
+            "id": (announcement or {}).get("id"),
+            "updated_at": (announcement or {}).get("updated_at") or (announcement or {}).get("created_at"),
+        },
+    }
+    return hashlib.sha1(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _get_cached_apple_pkpass(customer: dict, business: dict, program: dict, announcement: Optional[dict]) -> Optional[bytes]:
+    serial = str(customer.get("public_id") or "")
+    if not serial:
+        return None
+    cached = _APPLE_PKPASS_CACHE.get(serial)
+    if not cached:
+        return None
+    created_at, fingerprint, pkpass_bytes = cached
+    if time.monotonic() - created_at > _APPLE_PKPASS_CACHE_TTL_SECONDS:
+        _APPLE_PKPASS_CACHE.pop(serial, None)
+        return None
+    if fingerprint != _apple_pkpass_fingerprint(customer, business, program or {}, announcement):
+        _APPLE_PKPASS_CACHE.pop(serial, None)
+        return None
+    return pkpass_bytes
+
+
+def _cache_apple_pkpass(customer: dict, business: dict, program: dict, announcement: Optional[dict], pkpass_bytes: bytes):
+    serial = str(customer.get("public_id") or "")
+    if serial and pkpass_bytes:
+        _APPLE_PKPASS_CACHE[serial] = (
+            time.monotonic(),
+            _apple_pkpass_fingerprint(customer, business, program or {}, announcement),
+            pkpass_bytes,
+        )
+
+        # Keep the cache bounded on long-running instances.
+        if len(_APPLE_PKPASS_CACHE) > 500:
+            cutoff = time.monotonic() - _APPLE_PKPASS_CACHE_TTL_SECONDS
+            for key, value in list(_APPLE_PKPASS_CACHE.items()):
+                if value[0] < cutoff:
+                    _APPLE_PKPASS_CACHE.pop(key, None)
+
+
+def _prewarm_apple_pkpass(customer: dict, business: dict, program: dict):
+    """Best-effort preparation after signup; never delays the signup response."""
+    try:
+        if not customer or not APPLE_PASS_TYPE_IDENTIFIER or not APPLE_TEAM_IDENTIFIER:
+            return
+        announcement = get_latest_active_announcement(business.get("id"))
+        pkpass_bytes = build_pkpass_bytes(customer, business, program or {}, announcement)
+        if pkpass_bytes:
+            _cache_apple_pkpass(customer, business, program or {}, announcement, pkpass_bytes)
+            print(f"APPLE PASS PREWARMED: {customer.get('public_id')} bytes={len(pkpass_bytes)}")
+    except Exception as e:
+        print(f"APPLE PASS PREWARM error: {e}")
+
 
 def get_apple_push_cert_files():
     """Writes the signing cert + private key to temp PEM files once per
@@ -12993,7 +13115,7 @@ async def customer_join_page(business_public_id: str):
         return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Error</h1><p>Could not load join page: " + str(e) + "</p></div>")
 
 @app.post("/api/v1/join/{business_public_id}")
-async def customer_signup(business_public_id: str, signup: CustomerSignup):
+async def customer_signup(business_public_id: str, signup: CustomerSignup, background_tasks: BackgroundTasks):
     if not signup.privacy_consent:
         raise HTTPException(
             status_code=400,
@@ -13080,6 +13202,17 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup):
                 ),
             )
         raise HTTPException(status_code=500, detail=error_msg)
+
+    # Prepare the signed Apple pass after the HTTP response is sent. The
+    # success page normally gives this task enough time to finish before the
+    # customer taps Add to Wallet, turning that tap into a cache hit.
+    if inserted_customer:
+        background_tasks.add_task(
+            _prewarm_apple_pkpass,
+            inserted_customer,
+            business,
+            program or {},
+        )
 
     return {
         "public_id": customer_public_id,
@@ -17185,15 +17318,6 @@ async def public_business_join_config(public_id: str):
         'card_type': program.get('card_type', 'stamp'),
         'primary_color': program.get('primary_color') or category['color'],
         'card_name': program.get('card_name'),
-        # Public reward summary used by the customer Join page. Keep this tied
-        # to the same saved loyalty_programs row used by Wallet/cashier so the
-        # Join page never shows a hard-coded sample reward.
-        'reward_name': program.get('reward_name'),
-        'stamp_goal': program.get('stamp_goal'),
-        'stamp_rewards': program.get('stamp_rewards') or [],
-        'points_per_amount': program.get('points_per_amount'),
-        'points_amount_pesos': program.get('points_amount_pesos'),
-        'points_prizes': program.get('points_prizes') or [],
     }
 
 @app.get("/api/v1/customer/{customer_public_id}/wallet-pass")
@@ -17330,10 +17454,17 @@ async def get_apple_wallet_pass(customer_public_id: str):
     announcement = get_latest_active_announcement(business.get('id'))
     t_data = time.perf_counter()
 
-    pkpass_bytes = build_pkpass_bytes(customer, business, program, announcement)
+    pkpass_bytes = _get_cached_apple_pkpass(customer, business, program or {}, announcement)
+    cache_hit = pkpass_bytes is not None
+    if not cache_hit:
+        pkpass_bytes = build_pkpass_bytes(customer, business, program or {}, announcement)
+        if pkpass_bytes:
+            _cache_apple_pkpass(customer, business, program or {}, announcement, pkpass_bytes)
+
     t_build = time.perf_counter()
     print(
         f"APPLE PASS READY: {customer_public_id} "
+        f"cache={'HIT' if cache_hit else 'MISS'} "
         f"data_ms={(t_data-t0)*1000:.0f} build_ms={(t_build-t_data)*1000:.0f} "
         f"total_ms={(t_build-t0)*1000:.0f} bytes={len(pkpass_bytes) if pkpass_bytes else 0}"
     )
@@ -17351,7 +17482,11 @@ async def get_apple_wallet_pass(customer_public_id: str):
     return Response(
         content=pkpass_bytes,
         media_type="application/vnd.apple.pkpass",
-        headers={"Content-Disposition": f'attachment; filename="{customer_public_id}.pkpass"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{customer_public_id}.pkpass"',
+            "Cache-Control": "no-store",
+            "Content-Length": str(len(pkpass_bytes)),
+        },
     )
 
 # CUSTOMER SATISFACTION
