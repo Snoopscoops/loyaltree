@@ -17185,6 +17185,15 @@ async def public_business_join_config(public_id: str):
         'card_type': program.get('card_type', 'stamp'),
         'primary_color': program.get('primary_color') or category['color'],
         'card_name': program.get('card_name'),
+        # Public reward summary used by the customer Join page. Keep this tied
+        # to the same saved loyalty_programs row used by Wallet/cashier so the
+        # Join page never shows a hard-coded sample reward.
+        'reward_name': program.get('reward_name'),
+        'stamp_goal': program.get('stamp_goal'),
+        'stamp_rewards': program.get('stamp_rewards') or [],
+        'points_per_amount': program.get('points_per_amount'),
+        'points_amount_pesos': program.get('points_amount_pesos'),
+        'points_prizes': program.get('points_prizes') or [],
     }
 
 @app.get("/api/v1/customer/{customer_public_id}/wallet-pass")

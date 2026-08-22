@@ -26,6 +26,49 @@ function CustomerJoin({ API_BASE }) {
   const [businessInfo,setBusinessInfo]=useState(null)
   const [privacyConsent,setPrivacyConsent]=useState(false)
 
+  const rewardSummary = (() => {
+    if (!businessInfo) return null
+    const type = businessInfo.card_type || 'stamp'
+
+    if (type === 'points') {
+      const prizes = [...(businessInfo.points_prizes || [])]
+        .filter(p => p && p.name && Number(p.points_cost) > 0)
+        .sort((a,b) => Number(a.points_cost) - Number(b.points_cost))
+      const prize = prizes[0]
+      if (!prize) return null
+      return {
+        title: prize.name,
+        requirement: `Collect ${Number(prize.points_cost).toLocaleString()} points to unlock your reward`,
+      }
+    }
+
+    if (type === 'stamp') {
+      const milestones = [...(businessInfo.stamp_rewards || [])]
+        .filter(r => r && r.reward_name && Number(r.stamps) > 0)
+        .sort((a,b) => Number(a.stamps) - Number(b.stamps))
+      const reward = milestones[0]
+      const goal = reward ? Number(reward.stamps) : Number(businessInfo.stamp_goal || 0)
+      const name = reward?.reward_name || businessInfo.reward_name
+      if (!name || !goal) return null
+      return { title: name, requirement: `Collect ${goal} stamps to unlock your reward` }
+    }
+
+    return null
+  })()
+
+  const earningRule = (() => {
+    if (!businessInfo) return null
+    if (businessInfo.card_type === 'points') {
+      const points = Number(businessInfo.points_per_amount || 0)
+      const pesos = Number(businessInfo.points_amount_pesos || 0)
+      if (points > 0 && pesos > 0) {
+        if (points === 1) return `1 point for every ${pesos.toLocaleString()} pesos`
+        return `${points.toLocaleString()} points for every ${pesos.toLocaleString()} pesos`
+      }
+    }
+    return null
+  })()
+
   useEffect(()=>{
     fetch(`${API_BASE}/api/v1/public/business/${businessSlug}/join-config`)
       .then(r=>r.ok?r.json():null).then(setBusinessInfo).catch(()=>setBusinessInfo(null))
@@ -174,6 +217,12 @@ function CustomerJoin({ API_BASE }) {
         </div>
         <h1 style={styles.title}>{businessInfo?.name?`Join ${businessInfo.name}`:'Join Rewards'}</h1>
         <p style={styles.subtitle}>{businessInfo?.category?.label?`${businessInfo.category.label} · `:''}Add your loyalty card to your phone and use it every visit.</p>
+
+        {rewardSummary && <div style={styles.rewardBox}>
+          <div style={styles.rewardTitle}>🎁 {rewardSummary.title}</div>
+          <div style={styles.rewardRequirement}>{rewardSummary.requirement}</div>
+        </div>}
+        {earningRule && <p style={styles.earningRule}>{earningRule}</p>}
 
         <form onSubmit={handleSubmit} style={styles.form}>
           <div style={styles.inputGroup}>
@@ -348,6 +397,30 @@ const styles = {
     color: '#64748b',
     fontSize: 15,
     margin: '0 0 32px',
+  },
+  rewardBox: {
+    background: '#f8fafc',
+    borderRadius: 14,
+    padding: '18px 16px',
+    margin: '0 0 14px',
+    textAlign: 'center',
+  },
+  rewardTitle: {
+    color: '#0f172a',
+    fontSize: 15,
+    fontWeight: 800,
+    marginBottom: 7,
+  },
+  rewardRequirement: {
+    color: '#64748b',
+    fontSize: 13,
+    lineHeight: 1.5,
+  },
+  earningRule: {
+    color: '#475569',
+    fontSize: 13,
+    textAlign: 'center',
+    margin: '0 0 24px',
   },
   form: {
     display: 'flex',
