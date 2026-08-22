@@ -12917,11 +12917,73 @@ async def customer_join_page(business_public_id: str):
         program = safe_get_loyalty_program(business.get('id'))
         
         primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
+        card_type = (program.get('card_type') if program else None) or 'stamp'
         reward_name = program.get('reward_name', 'Free Service') if program else 'Free Service'
-        stamp_goal = program.get('stamp_goal', 8) if program else 8
+        stamp_goal = int(program.get('stamp_goal', 8) or 8) if program else 8
         card_name = program.get('card_name') if program else None
         description = program.get('description') if program else None
         biz_name = business.get('name', '')
+
+        # Build the Join-page reward directly from the business's active loyalty
+        # program instead of always falling back to the legacy 8-stamp reward.
+        reward_preview_html = ''
+        earning_rule_html = ''
+
+        if card_type == 'points':
+            prizes = [
+                p for p in ((program or {}).get('points_prizes') or [])
+                if isinstance(p, dict) and str(p.get('name') or '').strip()
+                and float(p.get('points_cost') or 0) > 0
+            ]
+            prizes.sort(key=lambda p: float(p.get('points_cost') or 0))
+            if prizes:
+                first_prize = prizes[0]
+                points_cost = int(float(first_prize.get('points_cost') or 0))
+                prize_name = html_lib.escape(str(first_prize.get('name') or 'Reward'))
+                reward_preview_html = (
+                    '<div class="reward-preview">'
+                    '<h3>&#127873; ' + prize_name + '</h3>'
+                    '<p>Collect ' + f'{points_cost:,}' + ' points to unlock your reward</p>'
+                    '</div>'
+                )
+
+            points_per_amount = float((program or {}).get('points_per_amount') or 0)
+            points_amount_pesos = float((program or {}).get('points_amount_pesos') or 0)
+            if points_per_amount > 0 and points_amount_pesos > 0:
+                points_text = (
+                    str(int(points_per_amount))
+                    if points_per_amount.is_integer()
+                    else f'{points_per_amount:g}'
+                )
+                pesos_text = (
+                    str(int(points_amount_pesos))
+                    if points_amount_pesos.is_integer()
+                    else f'{points_amount_pesos:g}'
+                )
+                point_word = 'point' if points_per_amount == 1 else 'points'
+                earning_rule_html = (
+                    '<p class="earning-rule">' + points_text + ' ' + point_word +
+                    ' for every ' + pesos_text + ' pesos</p>'
+                )
+
+        elif card_type == 'stamp':
+            milestones = [
+                r for r in ((program or {}).get('stamp_rewards') or [])
+                if isinstance(r, dict) and str(r.get('reward_name') or '').strip()
+                and int(r.get('stamps') or 0) > 0
+            ]
+            milestones.sort(key=lambda r: int(r.get('stamps') or 0))
+            if milestones:
+                first_reward = milestones[0]
+                stamp_goal = int(first_reward.get('stamps') or stamp_goal)
+                reward_name = str(first_reward.get('reward_name') or reward_name)
+
+            reward_preview_html = (
+                '<div class="reward-preview">'
+                '<h3>&#127873; ' + html_lib.escape(str(reward_name)) + '</h3>'
+                '<p>Collect ' + str(stamp_goal) + ' stamps to unlock your reward</p>'
+                '</div>'
+            )
         display_name = card_name if card_name else (biz_name + ' Rewards')
         logo_url = business.get('logo_url')
         
@@ -12948,7 +13010,7 @@ async def customer_join_page(business_public_id: str):
             '.subtitle{color:#64748b;margin-bottom:24px;font-size:14px}'
             '.reward-preview{background:#f8fafc;border-radius:12px;padding:16px;margin-bottom:24px}'
             '.reward-preview h3{color:' + primary_color + ';font-size:16px;margin-bottom:4px}'
-            '.reward-preview p{color:#64748b;font-size:13px}'
+            '.reward-preview p{color:#64748b;font-size:13px}''.earning-rule{color:#64748b;font-size:13px;margin:-8px 0 24px;text-align:center}'
             '.program-description{color:#64748b;font-size:13px;line-height:1.6;margin-bottom:24px;text-align:center}'
             'input{width:100%;padding:14px 16px;border:2px solid #e2e8f0;border-radius:12px;'
             'font-size:16px;margin-bottom:12px;outline:none}'
@@ -12982,10 +13044,8 @@ async def customer_join_page(business_public_id: str):
             + logo_html +
             '<h1>' + display_name + '</h1>'
             '<p class="subtitle">' + biz_name + '</p>'
-            '<div class="reward-preview">'
-            '<h3>&#127873; ' + reward_name + '</h3>'
-            '<p>Collect ' + str(stamp_goal) + ' stamps to unlock your reward</p>'
-            '</div>'
+            + reward_preview_html
+            + earning_rule_html
             + ('<p class="program-description">' + html_lib.escape(description) + '</p>' if description else '') +
             '<form id="signupForm">'
             '<input type="text" id="name" placeholder="Full name" required>'
