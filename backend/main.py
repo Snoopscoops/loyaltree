@@ -3742,6 +3742,175 @@ def push_apple_wallet_update(serial_number: str):
     print(f"APPLE WALLET SYNC: {serial_number} registrations={len(tokens)} pushes_sent={sent}")
     return {"status": status, "registrations": len(tokens), "pushes_sent": sent}
 
+
+APPLE_PASS_LAYOUT_RELEASE = "wallet-layout-2026-08-23-v2"
+
+
+def refresh_business_apple_wallet_passes(business_id: int, reason: str = "card_config_change"):
+    """Wake every installed Apple Wallet pass for one business.
+
+    This is Apple-only. It deliberately does not republish or PATCH Google
+    Wallet classes/objects, so normal card edits can immediately reach
+    existing iPhones without making the owner press Publish Card.
+    """
+    if not supabase or not APPLE_PASS_TYPE_IDENTIFIER:
+        return {"status": "not_configured", "registered": 0, "devices_woken": 0}
+
+    try:
+        customer_rows = (
+            supabase.table("customers")
+            .select("public_id")
+            .eq("business_id", business_id)
+            .execute()
+        ).data or []
+    except Exception as e:
+        print(f"APPLE AUTO REFRESH customer lookup error: {e}")
+        return {"status": "error", "detail": str(e), "registered": 0, "devices_woken": 0}
+
+    serials = [str(row.get("public_id")) for row in customer_rows if row.get("public_id")]
+    if not serials:
+        return {"status": "no_members", "registered": 0, "devices_woken": 0}
+
+    registrations = []
+    try:
+        for i in range(0, len(serials), 100):
+            chunk = serials[i:i + 100]
+            rows = (
+                supabase.table("apple_wallet_registrations")
+                .select("serial_number,push_token")
+                .in_("serial_number", chunk)
+                .eq("pass_type_identifier", APPLE_PASS_TYPE_IDENTIFIER)
+                .execute()
+            ).data or []
+            registrations.extend(rows)
+    except Exception as e:
+        print(f"APPLE AUTO REFRESH registration lookup error: {e}")
+        return {"status": "error", "detail": str(e), "registered": 0, "devices_woken": 0}
+
+    registered_serials = list(dict.fromkeys(
+        str(row.get("serial_number"))
+        for row in registrations
+        if row.get("serial_number")
+    ))
+    if registered_serials:
+        _mark_apple_pass_dirty(registered_serials)
+
+    # A program/config change changes the pass fingerprint, so old cached
+    # signed passes should never be served after we wake the phones.
+    for serial in registered_serials:
+        try:
+            _APPLE_PKPASS_CACHE.pop(serial, None)
+        except Exception:
+            pass
+
+    tokens = list(dict.fromkeys(
+        row.get("push_token") for row in registrations if row.get("push_token")
+    ))
+    sent = _send_apple_wallet_pushes(tokens) if tokens else 0
+
+    print(
+        f"APPLE AUTO REFRESH: business={business_id} reason={reason} "
+        f"registered={len(registered_serials)} devices_woken={sent}"
+    )
+    return {
+        "status": "push_sent" if sent else ("not_saved" if not tokens else "push_failed"),
+        "registered": len(registered_serials),
+        "devices_woken": sent,
+        "reason": reason,
+    }
+
+
+def refresh_all_apple_wallet_passes_for_release(layout_release: str):
+    """One-time, durable migration wake-up for a newly deployed pass layout.
+
+    The marker is stored in Supabase so Render restarts do not repeatedly wake
+    every installed pass. A future pass redesign only needs a new
+    APPLE_PASS_LAYOUT_RELEASE value to roll itself out automatically.
+    """
+    if not supabase or not APPLE_PASS_TYPE_IDENTIFIER:
+        return
+
+    try:
+        marker_rows = (
+            supabase.table("wallet_release_state")
+            .select("value")
+            .eq("key", "apple_pass_layout_release")
+            .limit(1)
+            .execute()
+        ).data or []
+    except Exception as e:
+        print(
+            "APPLE LAYOUT MIGRATION skipped: wallet_release_state unavailable. "
+            f"Run the updated master SQL. Detail: {e}"
+        )
+        return
+
+    if marker_rows and str(marker_rows[0].get("value") or "") == str(layout_release):
+        print(f"APPLE LAYOUT MIGRATION already applied: {layout_release}")
+        return
+
+    try:
+        rows = (
+            supabase.table("apple_wallet_registrations")
+            .select("serial_number,push_token")
+            .eq("pass_type_identifier", APPLE_PASS_TYPE_IDENTIFIER)
+            .execute()
+        ).data or []
+    except Exception as e:
+        print(f"APPLE LAYOUT MIGRATION registration lookup error: {e}")
+        return
+
+    serials = list(dict.fromkeys(
+        str(row.get("serial_number"))
+        for row in rows
+        if row.get("serial_number") and not str(row.get("serial_number")).startswith("cl-")
+    ))
+    tokens = list(dict.fromkeys(
+        row.get("push_token")
+        for row in rows
+        if row.get("push_token") and not str(row.get("serial_number") or "").startswith("cl-")
+    ))
+
+    if serials:
+        _mark_apple_pass_dirty(serials)
+    for serial in serials:
+        try:
+            _APPLE_PKPASS_CACHE.pop(serial, None)
+        except Exception:
+            pass
+
+    sent = _send_apple_wallet_pushes(tokens) if tokens else 0
+
+    # Mark complete only after the fan-out attempt. If the process crashes
+    # before this point, the next Render boot safely retries the migration.
+    try:
+        supabase.table("wallet_release_state").upsert(
+            {
+                "key": "apple_pass_layout_release",
+                "value": str(layout_release),
+                "updated_at": datetime.utcnow().isoformat(),
+            },
+            on_conflict="key",
+        ).execute()
+    except Exception as e:
+        print(f"APPLE LAYOUT MIGRATION marker write error: {e}")
+        return
+
+    print(
+        f"APPLE LAYOUT MIGRATION complete: release={layout_release} "
+        f"passes={len(serials)} devices_woken={sent}"
+    )
+
+
+async def _apple_layout_release_startup():
+    # Give Uvicorn/Supabase a moment to finish startup before doing a fan-out.
+    await asyncio.sleep(8)
+    await asyncio.to_thread(
+        refresh_all_apple_wallet_passes_for_release,
+        APPLE_PASS_LAYOUT_RELEASE,
+    )
+
+
 def push_apple_wallet_announcement(business_id: int) -> int:
     """Companion to send_wallet_class_message() for announcements, but for
     Apple Wallet: send_wallet_class_message() pushes to every Google
@@ -8187,7 +8356,7 @@ async def get_cashier_program(public_id: str, response: Response):
     }
 
 @app.post("/api/v1/business/{public_id}/loyalty-config")
-async def save_loyalty_config(public_id: str, config: LoyaltyConfig, authorization: str = Header(default='')):
+async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_tasks: BackgroundTasks, authorization: str = Header(default='')):
     require_owner_session(public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
@@ -8327,16 +8496,21 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, authorizati
                 ),
             )
 
-        # Saving/configuring is intentionally persistence-only.  The customizer's
-        # explicit Publish action calls /wallet-class, which performs exactly one
-        # class publish + member refresh.  Auto-refreshing here caused two full
-        # Wallet fan-outs back-to-back (Save, then Publish) and overloaded the
-        # Apple registration/Supabase path during normal editing.
+        # Apple Wallet does NOT require the owner to republish a class. Once the
+        # saved configuration is durable, wake only this business's installed
+        # Apple passes in the background. Google keeps its explicit Publish flow,
+        # avoiding the old duplicate Google/Apple fan-out problem.
+        background_tasks.add_task(
+            refresh_business_apple_wallet_passes,
+            business.get("id"),
+            "loyalty_config_saved",
+        )
 
         return {
             "message": "Configuration saved",
             "card_type": persisted_type,
             "program": persisted,
+            "apple_wallet_refresh": "queued",
         }
     except Exception as e:
         error_msg = str(e)
@@ -18929,6 +19103,10 @@ async def wallet_queue_worker():
 @app.on_event('startup')
 async def start_wallet_queue_worker():
     asyncio.create_task(wallet_queue_worker())
+    # A pass-layout release is rolled out to already-installed Apple Wallet
+    # cards automatically. Supabase keeps a release marker, so this happens
+    # once per layout version, not on every Render restart.
+    asyncio.create_task(_apple_layout_release_startup())
 
 
 def _crm_dataset(business_id: int):
