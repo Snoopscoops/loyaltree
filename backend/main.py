@@ -2357,6 +2357,13 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
             stamp_rewards[-1],
         )
 
+    # The visible stamp progress always uses the FULL/final goal.
+    # Example: milestones at 4 / 8 / 10 show 0/10, while NEXT REWARD can
+    # still point to the 4-stamp milestone.
+    configured_stamp_goals = [int(stamp_goal or 0)]
+    configured_stamp_goals += [int(r.get('stamps') or 0) for r in stamp_rewards]
+    full_stamp_goal = max([g for g in configured_stamp_goals if g > 0] or [8])
+
     sessions_remaining = customer.get('multipass_sessions_remaining', 0) or 0
     sessions_total = customer.get('multipass_total_sessions', 0) or (program.get('multipass_session_count', 12) if program else 12)
     cust_name = customer.get('name', 'Member')
@@ -2397,7 +2404,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     else:
         loyalty_points_label = 'Stamps'
         loyalty_points_balance = f'{stamps}/{stamp_goal}'
-        left = max(stamp_goal - stamps, 0)
+        left = max(full_stamp_goal - stamps, 0)
         details.append(('REWARD', reward_name if left == 0 else f'{left} more to {reward_name}'))
     description = program.get('description') if program else None
     if len(details) < 4 and description:
@@ -3143,6 +3150,11 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     multipass_expires_at = customer.get('multipass_expires_at')
     reward_unlocked = bool(customer.get('reward_unlocked'))
     design = wallet_20_design(business, program)
+    card_title = str(
+        (program or {}).get('card_name')
+        or design['card_label']
+        or f'{biz_name} Rewards'
+    ).strip()
 
     # VIP is fully dynamic on Apple Wallet: tier name, next tier, points and
     # the pass color all come from the customer's current VIP points.
@@ -3274,10 +3286,23 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         'authenticationToken': apple_pass_auth_token(cust_public_id),
         'storeCard': (
             {
-                # POINTS: next configured prize above the banner; member name
-                # and current points below it.
-                'headerFields': [],
-                'primaryFields': [
+                # POINTS: card name stays above the banner. Keeping
+                # primaryFields empty prevents Apple from overlaying text
+                # directly on the strip image.
+                'headerFields': [
+                    {'key': 'card_name', 'label': 'CARD', 'value': card_title[:32]}
+                ],
+                'primaryFields': [],
+                'secondaryFields': [
+                    {'key': 'member_name', 'label': 'NAME', 'value': cust_name[:24]},
+                    {
+                        'key': 'points',
+                        'label': 'POINTS',
+                        'value': str(int(points_balance or 0)),
+                        'changeMessage': 'Points updated: %@',
+                    },
+                ],
+                'auxiliaryFields': [
                     {
                         'key': 'next_reward',
                         'label': 'NEXT REWARD',
@@ -3289,84 +3314,81 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                         'changeMessage': 'Next reward: %@',
                     }
                 ],
-                'secondaryFields': [
-                    {'key': 'member_name', 'label': 'NAME', 'value': cust_name[:24]},
-                    {
-                        'key': 'points',
-                        'label': 'POINTS',
-                        'value': str(int(points_balance or 0)),
-                        'changeMessage': 'Points updated: %@',
-                    },
-                ],
                 'backFields': back_fields,
             }
             if card_type == 'points' else
             {
-                # STAMP: next milestone/reward above the banner; member name
-                # and stamp progress below it.
-                'headerFields': [],
-                'primaryFields': [
+                # STAMP: show current / FULL goal, never current / next milestone.
+                'headerFields': [
+                    {'key': 'card_name', 'label': 'CARD', 'value': card_title[:32]}
+                ],
+                'primaryFields': [],
+                'secondaryFields': [
+                    {'key': 'member_name', 'label': 'NAME', 'value': cust_name[:24]},
+                    {
+                        'key': 'stamps',
+                        'label': 'STAMPS',
+                        'value': f"{int(stamps or 0)}/{int(full_stamp_goal)}",
+                        'changeMessage': 'Stamp progress: %@',
+                    },
+                ],
+                'auxiliaryFields': [
                     {
                         'key': 'next_reward',
                         'label': 'NEXT REWARD',
                         'value': (
                             f"{next_stamp_reward.get('reward_name')} · {next_stamp_reward.get('stamps')} stamps"
                             if next_stamp_reward else
-                            f"{reward_name} · {stamp_goal} stamps"
+                            f"{reward_name} · {full_stamp_goal} stamps"
                         ),
                         'changeMessage': 'Next reward: %@',
                     }
-                ],
-                'secondaryFields': [
-                    {'key': 'member_name', 'label': 'NAME', 'value': cust_name[:24]},
-                    {
-                        'key': 'stamps',
-                        'label': 'STAMPS',
-                        'value': f"{int(stamps or 0)}/{int((next_stamp_reward or {}).get('stamps') or stamp_goal)}",
-                        'changeMessage': 'Stamp progress: %@',
-                    },
                 ],
                 'backFields': back_fields,
             }
             if card_type == 'stamp' else
             {
-                # MULTIPASS: pack status above the banner; remaining sessions
-                # and expiry below it.
-                'headerFields': [],
-                'primaryFields': [
-                    {
-                        'key': 'pass_status',
-                        'label': 'SESSIONS',
-                        'value': f"{sessions_remaining} of {sessions_total} remaining",
-                        'changeMessage': 'Sessions remaining: %@',
-                    }
+                # MULTIPASS
+                'headerFields': [
+                    {'key': 'card_name', 'label': 'CARD', 'value': card_title[:32]}
                 ],
+                'primaryFields': [],
                 'secondaryFields': [
                     {'key': 'member_name', 'label': 'NAME', 'value': cust_name[:24]},
+                    {
+                        'key': 'sessions',
+                        'label': 'SESSIONS',
+                        'value': f"{sessions_remaining}/{sessions_total}",
+                        'changeMessage': 'Sessions remaining: %@',
+                    },
+                ],
+                'auxiliaryFields': [
                     {
                         'key': 'expires',
                         'label': 'EXPIRES',
                         'value': (multipass_expires_at or 'No expiry set'),
                         'changeMessage': 'Pass expiry: %@',
-                    },
+                    }
                 ],
                 'backFields': back_fields,
             }
             if card_type == 'multipass' else
             {
-                # MEMBERSHIP: status above the banner; member name and active
-                # until below it.
-                'headerFields': [],
-                'primaryFields': [
+                # MEMBERSHIP
+                'headerFields': [
+                    {'key': 'card_name', 'label': 'CARD', 'value': card_title[:32]}
+                ],
+                'primaryFields': [],
+                'secondaryFields': [
+                    {'key': 'member_name', 'label': 'NAME', 'value': cust_name[:24]},
                     {
                         'key': 'membership_status',
                         'label': 'MEMBERSHIP',
                         'value': membership_effective_status(customer).upper(),
                         'changeMessage': 'Membership status: %@',
-                    }
+                    },
                 ],
-                'secondaryFields': [
-                    {'key': 'member_name', 'label': 'NAME', 'value': cust_name[:24]},
+                'auxiliaryFields': [
                     {
                         'key': 'active_until',
                         'label': 'ACTIVE UNTIL',
@@ -3376,23 +3398,17 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                             else (customer.get('membership_expires_at') or 'Not activated')
                         ),
                         'changeMessage': 'Active until: %@',
-                    },
+                    }
                 ],
                 'backFields': back_fields,
             }
             if card_type == 'membership' else
             {
-                # VIP: current tier above the banner; member name and VIP
-                # points below it.
-                'headerFields': [],
-                'primaryFields': [
-                    {
-                        'key': 'vip_tier',
-                        'label': 'VIP TIER',
-                        'value': (vip_tier or {}).get('name', 'VIP'),
-                        'changeMessage': 'VIP tier updated: %@',
-                    }
+                # VIP
+                'headerFields': [
+                    {'key': 'card_name', 'label': 'CARD', 'value': card_title[:32]}
                 ],
+                'primaryFields': [],
                 'secondaryFields': [
                     {'key': 'member_name', 'label': 'NAME', 'value': cust_name[:24]},
                     {
@@ -3401,6 +3417,14 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                         'value': str(int(customer.get('vip_points') or 0)),
                         'changeMessage': 'VIP points updated: %@',
                     },
+                ],
+                'auxiliaryFields': [
+                    {
+                        'key': 'vip_tier',
+                        'label': 'VIP TIER',
+                        'value': (vip_tier or {}).get('name', 'VIP'),
+                        'changeMessage': 'VIP tier updated: %@',
+                    }
                 ],
                 'backFields': back_fields,
             }
@@ -3795,7 +3819,7 @@ def push_apple_wallet_update(serial_number: str):
     return {"status": status, "registrations": len(tokens), "pushes_sent": sent}
 
 
-APPLE_PASS_LAYOUT_RELEASE = "wallet-layout-2026-08-23-v2"
+APPLE_PASS_LAYOUT_RELEASE = "wallet-layout-2026-08-23-v3-clean-banner"
 
 
 def refresh_business_apple_wallet_passes(business_id: int, reason: str = "card_config_change"):
