@@ -88,15 +88,28 @@ const PAGE_CONTENT = {
       'What started as a local idea in Isabela is growing into a platform with a broader purpose: helping service businesses of different sizes establish better customer connections, encourage repeat visits, and build long-term customer value.',
     ],
     founder: {
-      role: 'Developer / Founder',
+      role: 'Developer & Founder',
       name: 'Alfred',
       handle: 'Snoopscoops',
       bioTitle: 'About Alfred',
       bio: [
-        'Alfred has been developing systems as a hobby for around 15 years, building experience across different technologies and programming environments.',
-        'He has also completed different language certifications and studied at the University of the Philippines Diliman.',
-        'His technical background also includes blockchain and smart contract development, with particular experience using the Solidity programming language.',
-        'That combination of long-term hands-on development, continued learning, and interest in emerging technologies helped shape the technical foundation behind LoyaltyTree.',
+        'Alfred has been developing systems as a hobby for around 15 years, building hands-on experience across different technologies and programming environments.',
+        'He studied at the University of the Philippines Diliman and was part of the UP Diliman Taekwondo Team from 2015–2019. He has also completed different language certifications.',
+        'His technical background includes blockchain and smart contract development, with particular experience using the Solidity programming language. Previous work in the Philippine blockchain and digital community space received coverage from national and industry publications.',
+        'Alongside technology and entrepreneurship, Alfred is a DTI Kapatid Mentor ME (KMME) Batch 13 Graduate and serves as the 2026 Local Organization President of JCI Alicia Pagay.',
+        'That combination of long-term hands-on development, entrepreneurship, leadership, community involvement, and continued learning helped shape the foundation behind LoyaltyTree.',
+      ],
+      credentials: [
+        ['🎓', 'DTI Kapatid Mentor ME (KMME)', 'Batch 13 Graduate'],
+        ['🤝', 'JCI Alicia Pagay', '2026 Local Organization President'],
+        ['🥋', 'UP Diliman Taekwondo Team', '2015–2019'],
+      ],
+      media: [
+        ['Esquire Philippines', 'https://www.esquiremag.ph/culture/books-and-art/larry-alcala-nft-scarletbox-a2765-20220913'],
+        ['BusinessWorld', 'https://bworldonline.com/technology/2022/05/02/445840/group-chat-births-filipino-nft-movement/'],
+        ['Lifestyle Asia', 'https://lifestyleasia-onemega.com/arts-and-culture/tech/tale-of-the-token-this-filipino-crypto-success-story-started-with-a-pair-of-bored-punks/'],
+        ['Manila Standard', 'https://manilastandard.net/?p=314217761'],
+        ['The New Hue', 'https://www.thenewhueph.com/post/the-ten-the-bedrocks-of-bored-punks-of-society'],
       ],
     },
   },
@@ -991,6 +1004,32 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
               {page.founder.bio?.map((paragraph,index)=>(
                 <p key={index} style={s.founderBioText}>{paragraph}</p>
               ))}
+
+              {page.founder.credentials && <div style={s.founderCredentials}>
+                {page.founder.credentials.map(([icon,title,detail])=>(
+                  <div key={title} style={s.founderCredentialCard}>
+                    <div style={s.founderCredentialIcon}>{icon}</div>
+                    <div>
+                      <div style={s.founderCredentialTitle}>{title}</div>
+                      <div style={s.founderCredentialDetail}>{detail}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>}
+
+              {page.founder.media && <div style={s.founderMediaBlock}>
+                <div style={s.founderMediaLabel}>PREVIOUS WORK & MEDIA FEATURES</div>
+                <p style={s.founderMediaNote}>
+                  These publications covered Alfred&apos;s previous work and ventures. They are not media features or endorsements of LoyaltyTree.
+                </p>
+                <div style={s.founderMediaLinks}>
+                  {page.founder.media.map(([name,url])=>(
+                    <a key={name} href={url} target="_blank" rel="noopener noreferrer" style={s.founderMediaLink}>
+                      {name} <span aria-hidden="true">↗</span>
+                    </a>
+                  ))}
+                </div>
+              </div>}
             </div>
           </>}
           <button style={s.primary} onClick={()=>contactLoyaltyTree('pricing_or_cta')}>Contact LoyaltyTree</button>
@@ -1259,12 +1298,22 @@ const s={
   founderBioEyebrow:{fontSize:10,fontWeight:900,letterSpacing:1.2,color:'#0f766e',marginBottom:7},
   founderBioTitle:{fontSize:24,fontWeight:900,color:'#0f172a',margin:'0 0 14px'},
   founderBioText:{fontSize:14.5,lineHeight:1.75,color:'#475569',margin:'0 0 13px'},
+  founderCredentials:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:10,marginTop:20},
+  founderCredentialCard:{display:'flex',alignItems:'center',gap:11,padding:'12px 13px',border:'1px solid #e2e8f0',borderRadius:13,background:'#f8fafc'},
+  founderCredentialIcon:{width:34,height:34,borderRadius:10,background:'#ecfdf5',display:'grid',placeItems:'center',fontSize:17,flexShrink:0},
+  founderCredentialTitle:{fontSize:12.5,fontWeight:850,color:'#0f172a',lineHeight:1.35},
+  founderCredentialDetail:{fontSize:11.5,color:'#64748b',marginTop:2},
+  founderMediaBlock:{marginTop:20,padding:16,borderRadius:15,background:'#f0fdfa',border:'1px solid #ccfbf1'},
+  founderMediaLabel:{fontSize:10,fontWeight:900,letterSpacing:1.2,color:'#0f766e'},
+  founderMediaNote:{fontSize:11.5,lineHeight:1.55,color:'#64748b',margin:'6px 0 11px'},
+  founderMediaLinks:{display:'flex',flexWrap:'wrap',gap:8},
+  founderMediaLink:{display:'inline-flex',alignItems:'center',gap:4,padding:'8px 10px',borderRadius:9,background:'#fff',border:'1px solid #99f6e4',color:'#0f766e',fontSize:11.5,fontWeight:800,textDecoration:'none'},
   contactIntroCard:{maxWidth:760,margin:'0 auto 28px',textAlign:'center'},
   contactKicker:{fontSize:10,fontWeight:900,letterSpacing:1.5,color:'#0f766e'},
   contactHeading:{fontSize:'clamp(26px,4vw,40px)',lineHeight:1.12,fontWeight:900,margin:'8px 0 12px',color:'#0f172a'},
   contactLead:{fontSize:15,lineHeight:1.7,color:'#64748b',margin:0},
-  contactGrid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(280px,1fr))',gap:16,alignItems:'stretch'},
-  contactCard:{border:'1px solid #e2e8f0',borderRadius:20,padding:24,background:'#fff',display:'flex',gap:16,alignItems:'flex-start',boxShadow:'0 12px 30px rgba(15,23,42,.05)'},
+  contactGrid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(260px,340px))',justifyContent:'center',gap:16,alignItems:'start',maxWidth:1050,margin:'0 auto'},
+  contactCard:{width:'100%',boxSizing:'border-box',border:'1px solid #e2e8f0',borderRadius:20,padding:24,background:'#fff',display:'flex',gap:16,alignItems:'flex-start',boxShadow:'0 12px 30px rgba(15,23,42,.05)'},
   contactIconBox:{width:46,height:46,borderRadius:14,background:'#ecfdf5',display:'grid',placeItems:'center',fontSize:21,flexShrink:0},
   contactLabel:{fontSize:10,fontWeight:900,letterSpacing:1,color:'#0f766e',marginBottom:7},
   contactValue:{display:'block',fontSize:15,fontWeight:800,color:'#0f172a',textDecoration:'none',lineHeight:1.7,wordBreak:'break-word'},
