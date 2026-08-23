@@ -2482,7 +2482,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     return loyalty_object
 
 
-async def refresh_existing_member_wallets(business: dict, program: dict):
+async def refresh_existing_member_wallets(business: dict, program: dict, refresh_apple: bool = True):
     """Refresh already-issued Wallet cards after an explicit publish.
 
     Google still requires an object-level check/patch per member, but Apple
@@ -2512,7 +2512,7 @@ async def refresh_existing_member_wallets(business: dict, program: dict):
         # enough; Wallet then asks our list-updated endpoint which serial(s)
         # changed for that device.
         apple_rows = []
-        if supabase and APPLE_PASS_TYPE_IDENTIFIER:
+        if refresh_apple and supabase and APPLE_PASS_TYPE_IDENTIFIER:
             chunk_size = 100
             for i in range(0, len(serials), chunk_size):
                 chunk = serials[i:i + chunk_size]
@@ -2551,15 +2551,16 @@ async def refresh_existing_member_wallets(business: dict, program: dict):
         registered_serials = list({
             row.get('serial_number') for row in apple_rows if row.get('serial_number')
         })
-        if registered_serials:
-            _mark_apple_pass_dirty(registered_serials)
-
-        apple_tokens = list(dict.fromkeys(
-            row.get('push_token') for row in apple_rows if row.get('push_token')
-        ))
         apple_sent = 0
-        if apple_tokens:
-            apple_sent = await asyncio.to_thread(_send_apple_wallet_pushes, apple_tokens)
+        if refresh_apple:
+            if registered_serials:
+                _mark_apple_pass_dirty(registered_serials)
+
+            apple_tokens = list(dict.fromkeys(
+                row.get('push_token') for row in apple_rows if row.get('push_token')
+            ))
+            if apple_tokens:
+                apple_sent = await asyncio.to_thread(_send_apple_wallet_pushes, apple_tokens)
 
         google_updated = sum(
             1 for result in google_results
@@ -2813,6 +2814,26 @@ def _apple_pass_dirty_at(serial_number: str):
         _APPLE_PASS_DIRTY_AT.pop(str(serial_number or ''), None)
         return None
     return value
+
+
+def _apple_program_content_signature(program: Optional[dict]) -> str:
+    """Hash only program content that can affect an Apple pass.
+
+    Internal persistence fields and Google-only class IDs are excluded so a
+    Google publish does not make Apple think every pass changed.
+    """
+    program = dict(program or {})
+    ignored = {
+        'id',
+        'business_id',
+        'created_at',
+        'updated_at',
+        'google_wallet_class_id',
+    }
+    visible = {k: v for k, v in program.items() if k not in ignored}
+    return hashlib.sha256(
+        json.dumps(visible, sort_keys=True, default=str, separators=(',', ':')).encode('utf-8')
+    ).hexdigest()
 
 def get_apple_pass_credentials():
     """Loads (private_key, certificate, wwdr_certificate) from the env vars
@@ -8547,6 +8568,24 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
             )
         data['google_review_url'] = config.google_review_url
 
+    # Do not create a new timestamp/push for an identical configuration.
+    # This is especially important when the UI performs Save followed by
+    # Publish: the Google publish should not cause a second Apple refresh.
+    current_before_save = safe_get_loyalty_program(business.get("id")) or {}
+    prospective_program = dict(current_before_save)
+    prospective_program.update(data)
+
+    if current_before_save and (
+        _apple_program_content_signature(current_before_save)
+        == _apple_program_content_signature(prospective_program)
+    ):
+        return {
+            "message": "Configuration already up to date",
+            "card_type": current_before_save.get("card_type") or config.card_type,
+            "program": current_before_save,
+            "apple_wallet_refresh": "not_needed",
+        }
+
     try:
         existing = (
             supabase.table("loyalty_programs")
@@ -13028,9 +13067,11 @@ async def create_or_update_wallet_class(public_id: str):
 
         # Keep the stable root in DB. VIP tier class IDs are deterministic
         # children of this ID, so no schema migration is needed.
+        # Google-only metadata must not advance the loyalty program's
+        # Apple-visible updated_at timestamp; doing so caused Apple to fetch a
+        # byte-for-byte unchanged pass after every Google Publish.
         db_data = {
             'google_wallet_class_id': base_class_id,
-            'updated_at': datetime.utcnow().isoformat(),
         }
         if program and program.get('id'):
             supabase.table("loyalty_programs").update(db_data).eq("business_id", business.get("id")).execute()
@@ -13047,7 +13088,12 @@ async def create_or_update_wallet_class(public_id: str):
 
         # Refresh existing objects only after every required class exists.
         current_program = safe_get_loyalty_program(business.get('id')) or program
-        asyncio.create_task(refresh_existing_member_wallets(business, current_program))
+        # Publish Card is the Google Wallet class operation. Apple already
+        # refreshes when Apple-visible loyalty configuration is saved, so do
+        # not wake every iPhone again here.
+        asyncio.create_task(
+            refresh_existing_member_wallets(business, current_program, refresh_apple=False)
+        )
 
         return {
             "success": True,
@@ -18306,6 +18352,10 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
             f"APPLE PASS UPDATE 304: serial={serial_number} "
             f"ims={if_modified_since} newest={last_modified}"
         )
+        # This device is already at/after the newest dirty timestamp. Keep
+        # source timestamps as the durable truth and drop the transient hint
+        # so later polling does not keep treating the pass as artificially dirty.
+        _APPLE_PASS_DIRTY_AT.pop(str(serial_number), None)
         return Response(status_code=304)
 
     print(
