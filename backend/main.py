@@ -13705,6 +13705,17 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
             detail=f"This {dup_field} is already enrolled in this rewards program."
         )
 
+    # Normalize optional demographic selects server-side. Older/cached join pages or
+    # malformed clients must never be able to put an address/location value into
+    # the constrained occupation/gender columns. Unknown values are treated as
+    # unanswered because both fields are optional.
+    occupation = (signup.occupation or '').strip().lower() or None
+    if occupation not in {'working', 'business_owner', 'unemployed'}:
+        occupation = None
+    gender = (signup.gender or '').strip().lower() or None
+    if gender not in {'male', 'female', 'rather_not_say'}:
+        gender = None
+
     customer_public_id = generate_public_id()
     customer_data = {
         'business_id': business.get('id'),
@@ -13715,8 +13726,8 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
         'phone': signup.phone,
         'email': signup.email,
         'birthday': signup.birthday,
-        'occupation': signup.occupation,
-        'gender': signup.gender,
+        'occupation': occupation,
+        'gender': gender,
         'last_order_date': signup.last_order_date,
         'privacy_consent': True,
         'privacy_consent_at': datetime.utcnow().isoformat(),
@@ -13765,7 +13776,21 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
                     f"dashboard) before retrying."
                 ),
             )
-        raise HTTPException(status_code=500, detail=error_msg)
+        # Do not expose raw PostgreSQL/Supabase errors (which can contain the
+        # failing row and customer PII) to the public join page. A constraint
+        # mismatch is an operator/configuration problem, not something the
+        # customer can fix. Keep the full error in server logs only.
+        if 'customers_occupation_check' in error_msg or ('23514' in error_msg and 'occupation' in error_msg.lower()):
+            raise HTTPException(
+                status_code=500,
+                detail="Unable to save the membership right now. The business's occupation settings need to be updated.",
+            )
+        if '23514' in error_msg:
+            raise HTTPException(
+                status_code=500,
+                detail="Unable to save the membership right now because one of the submitted values is not accepted.",
+            )
+        raise HTTPException(status_code=500, detail="Unable to create the membership right now. Please try again.")
 
     # Prepare the signed Apple pass after the HTTP response is sent. The
     # success page normally gives this task enough time to finish before the
