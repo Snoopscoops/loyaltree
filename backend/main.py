@@ -2349,6 +2349,18 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
                 })
         stamp_rewards.sort(key=lambda r: r['stamps'])
 
+    # Full stamp goal shown on the Apple Wallet front card. If the business
+    # configured milestone rewards beyond the legacy stamp_goal, the final
+    # milestone is the true completion target; otherwise use stamp_goal.
+    # Defining this here keeps it in scope for every stamp-card field below.
+    try:
+        base_stamp_goal = max(int(stamp_goal or 0), 1)
+    except (TypeError, ValueError):
+        base_stamp_goal = 8
+    full_stamp_goal = max(
+        [base_stamp_goal] + [int(r.get('stamps') or 0) for r in stamp_rewards]
+    )
+
     next_stamp_reward = None
     if stamp_rewards:
         current_stamps = int(stamps or 0)
