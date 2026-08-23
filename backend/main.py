@@ -3149,6 +3149,18 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                 })
         stamp_rewards.sort(key=lambda r: r['stamps'])
 
+    # Full stamp-card goal shown in Apple Wallet (e.g. 3/15).
+    # This MUST be defined inside build_apple_pass_json(); values computed
+    # in other builders/functions are out of scope here.
+    try:
+        default_stamp_goal = int(stamp_goal or 8)
+    except (TypeError, ValueError):
+        default_stamp_goal = 8
+    full_stamp_goal = max(
+        [int(r.get('stamps') or 0) for r in stamp_rewards if int(r.get('stamps') or 0) > 0]
+        or [default_stamp_goal]
+    )
+
     next_stamp_reward = None
     if stamp_rewards:
         current_stamps = int(stamps or 0)
