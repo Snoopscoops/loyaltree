@@ -3086,6 +3086,58 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     description = program.get('description') if program else None
     stamps = customer.get('stamp_count', 0)
     points_balance = customer.get('points_balance', 0)
+
+    # Apple Wallet front-card reward targets. Keep these local to this
+    # builder: the similarly named values in build_loyalty_object() belong
+    # to the Google Wallet builder and are not visible in this function.
+    points_prizes = []
+    if card_type == 'points':
+        for prize in ((program or {}).get('points_prizes') or []):
+            if not isinstance(prize, dict):
+                continue
+            try:
+                cost = int(float(prize.get('points_cost') or 0))
+            except (TypeError, ValueError):
+                cost = 0
+            name = str(prize.get('name') or '').strip()
+            if cost > 0 and name:
+                points_prizes.append({**prize, 'points_cost': cost, 'name': name})
+        points_prizes.sort(key=lambda p: p['points_cost'])
+
+    next_points_prize = None
+    if points_prizes:
+        current_points = int(points_balance or 0)
+        next_points_prize = next(
+            (p for p in points_prizes if p['points_cost'] >= current_points),
+            points_prizes[-1],
+        )
+
+    stamp_rewards = []
+    if card_type == 'stamp':
+        for reward in ((program or {}).get('stamp_rewards') or []):
+            if not isinstance(reward, dict):
+                continue
+            try:
+                required_stamps = int(reward.get('stamps') or 0)
+            except (TypeError, ValueError):
+                required_stamps = 0
+            reward_label = str(reward.get('reward_name') or '').strip()
+            if required_stamps > 0 and reward_label:
+                stamp_rewards.append({
+                    **reward,
+                    'stamps': required_stamps,
+                    'reward_name': reward_label,
+                })
+        stamp_rewards.sort(key=lambda r: r['stamps'])
+
+    next_stamp_reward = None
+    if stamp_rewards:
+        current_stamps = int(stamps or 0)
+        next_stamp_reward = next(
+            (r for r in stamp_rewards if r['stamps'] >= current_stamps),
+            stamp_rewards[-1],
+        )
+
     sessions_remaining = customer.get('multipass_sessions_remaining', 0) or 0
     sessions_total = customer.get('multipass_total_sessions', 0) or (program.get('multipass_session_count', 12) if program else 12)
     multipass_expires_at = customer.get('multipass_expires_at')
