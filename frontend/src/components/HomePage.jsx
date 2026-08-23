@@ -341,6 +341,22 @@ const PLANS = [
   },
 ]
 
+
+const FOUNDER_CREDENTIALS = [
+  { icon: '🎓', title: 'DTI Kapatid Mentor ME (KMME)', detail: 'Batch 13 Graduate' },
+  { icon: '🤝', title: 'JCI Alicia Pagay', detail: '2026 Local Organization President' },
+  { icon: '🥋', title: 'UP Diliman Taekwondo Team', detail: '2015–2019' },
+]
+
+const FOUNDER_MEDIA = [
+  { name: 'Esquire Philippines', url: 'https://www.esquiremag.ph/culture/books-and-art/larry-alcala-nft-scarletbox-a2765-20220913' },
+  { name: 'BusinessWorld', url: 'https://bworldonline.com/technology/2022/05/02/445840/group-chat-births-filipino-nft-movement/' },
+  { name: 'Lifestyle Asia', url: 'https://lifestyleasia-onemega.com/arts-and-culture/tech/tale-of-the-token-this-filipino-crypto-success-story-started-with-a-pair-of-bored-punks/' },
+  { name: 'Manila Standard', url: 'https://manilastandard.net/?p=314217761' },
+  { name: 'BitPinas', url: 'https://bitpinas.com/news/nft-faq-how-important-is-pricing-in-nfts/' },
+  { name: 'The New Hue', url: 'https://www.thenewhueph.com/post/the-ten-the-bedrocks-of-bored-punks-of-society' },
+]
+
 function HomePage({ onNavigateLogin, API_BASE = '' }) {
   const navigate = useNavigate()
   const baseGoToLogin = onNavigateLogin || (() => navigate('/login'))
@@ -1073,7 +1089,51 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
               keeping existing customers matters. That idea became a platform focused on helping service-industry businesses build stronger,
               longer-lasting connections with the people they serve — through digital loyalty, retention tools, and direct customer engagement.
             </p>
-            <div style={styles.founderLine}>Developer / Founder — Alfred / Snoopscoops</div>
+            <div style={styles.founderBlock}>
+              <div style={styles.founderIdentity}>
+                <span style={styles.founderLabel}>FOUNDER</span>
+                <strong style={styles.founderName}>Alfred / Snoopscoops</strong>
+                <span style={styles.founderRole}>Developer & Founder, LoyaltyTree</span>
+              </div>
+
+              <p style={styles.founderIntro}>
+                Built from experience in technology, entrepreneurship, leadership, and community.
+                Before LoyaltyTree, the founder&apos;s work in the Philippine blockchain and digital
+                community space received coverage from national and industry publications.
+              </p>
+
+              <div style={styles.founderCredentialGrid}>
+                {FOUNDER_CREDENTIALS.map(item => (
+                  <div key={item.title} style={styles.founderCredentialCard}>
+                    <span style={styles.founderCredentialIcon}>{item.icon}</span>
+                    <div>
+                      <strong style={styles.founderCredentialTitle}>{item.title}</strong>
+                      <span style={styles.founderCredentialDetail}>{item.detail}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div style={styles.founderMediaBlock}>
+                <span style={styles.founderMediaLabel}>Previous work & media features</span>
+                <p style={styles.founderMediaNote}>
+                  Coverage below relates to previous work and ventures, not LoyaltyTree.
+                </p>
+                <div style={styles.founderMediaLinks}>
+                  {FOUNDER_MEDIA.map(item => (
+                    <a
+                      key={item.name}
+                      href={item.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={styles.founderMediaLink}
+                    >
+                      {item.name} <span aria-hidden="true">↗</span>
+                    </a>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
 
           <div id="contact" style={styles.contactCard}>
@@ -1480,6 +1540,59 @@ const styles = {
   },
   aboutTitle: { fontSize: 23, lineHeight: 1.25, fontWeight: 800, color: '#0f172a', margin: '0 0 12px' },
   aboutBody: { fontSize: 14, lineHeight: 1.7, color: '#475569', margin: 0 },
+  founderBlock: {
+    marginTop: 24, paddingTop: 22, borderTop: '1px solid #dbe4ea',
+  },
+  founderIdentity: {
+    display: 'flex', flexDirection: 'column', gap: 3, marginBottom: 14,
+  },
+  founderLabel: {
+    fontSize: 10, fontWeight: 900, letterSpacing: '0.14em', color: '#0d9488',
+  },
+  founderName: {
+    fontSize: 19, lineHeight: 1.25, color: '#0f172a',
+  },
+  founderRole: {
+    fontSize: 12.5, color: '#64748b', fontWeight: 650,
+  },
+  founderIntro: {
+    margin: '0 0 16px', color: '#475569', fontSize: 13.5, lineHeight: 1.7,
+  },
+  founderCredentialGrid: {
+    display: 'grid', gridTemplateColumns: '1fr', gap: 8, marginBottom: 18,
+  },
+  founderCredentialCard: {
+    display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
+    border: '1px solid #e2e8f0', borderRadius: 12, background: '#f8fafc',
+  },
+  founderCredentialIcon: {
+    width: 30, height: 30, borderRadius: 9, background: '#ecfdf5',
+    display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, flexShrink: 0,
+  },
+  founderCredentialTitle: {
+    display: 'block', fontSize: 12.5, color: '#0f172a',
+  },
+  founderCredentialDetail: {
+    display: 'block', marginTop: 2, fontSize: 11.5, color: '#64748b',
+  },
+  founderMediaBlock: {
+    padding: 14, borderRadius: 14, background: '#f0fdfa', border: '1px solid #ccfbf1',
+  },
+  founderMediaLabel: {
+    display: 'block', fontSize: 11, fontWeight: 900, letterSpacing: '0.08em',
+    textTransform: 'uppercase', color: '#0f766e',
+  },
+  founderMediaNote: {
+    margin: '5px 0 10px', fontSize: 11.5, lineHeight: 1.5, color: '#64748b',
+  },
+  founderMediaLinks: {
+    display: 'flex', flexWrap: 'wrap', gap: 7,
+  },
+  founderMediaLink: {
+    display: 'inline-flex', alignItems: 'center', gap: 4, padding: '7px 9px',
+    borderRadius: 9, background: '#ffffff', border: '1px solid #99f6e4',
+    color: '#0f766e', fontSize: 11.5, fontWeight: 800, textDecoration: 'none',
+  },
   founderLine:{marginTop:18,fontSize:12,fontWeight:850,color:'#0f766e'},
   homeContactDetails:{display:'grid',gap:8,marginTop:16},
   homeContactLink:{color:'#0f172a',fontSize:12.5,fontWeight:750,textDecoration:'none',wordBreak:'break-word'},
