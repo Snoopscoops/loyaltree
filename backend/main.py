@@ -2302,6 +2302,61 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
     stamps = customer.get('stamp_count', 0)
     points_balance = customer.get('points_balance', 0)
+
+    # Points-card front layout: identify the nearest configured prize at or
+    # above the member's current balance so Apple Wallet can show a clean
+    # "NEXT REWARD" summary above the full-width banner.
+    points_prizes = []
+    if card_type == 'points':
+        for prize in ((program or {}).get('points_prizes') or []):
+            if not isinstance(prize, dict):
+                continue
+            try:
+                cost = int(float(prize.get('points_cost') or 0))
+            except (TypeError, ValueError):
+                cost = 0
+            name = str(prize.get('name') or '').strip()
+            if cost > 0 and name:
+                points_prizes.append({**prize, 'points_cost': cost, 'name': name})
+        points_prizes.sort(key=lambda p: p['points_cost'])
+
+    next_points_prize = None
+    if points_prizes:
+        current_points = int(points_balance or 0)
+        next_points_prize = next(
+            (p for p in points_prizes if p['points_cost'] >= current_points),
+            points_prizes[-1],
+        )
+
+    # Shared "reference-style" Apple Wallet front layout for every LoyaltyTree
+    # card type: main status/reward above the full-width banner, then two
+    # important customer fields below it, with the barcode at the bottom.
+    stamp_rewards = []
+    if card_type == 'stamp':
+        for reward in ((program or {}).get('stamp_rewards') or []):
+            if not isinstance(reward, dict):
+                continue
+            try:
+                required_stamps = int(reward.get('stamps') or 0)
+            except (TypeError, ValueError):
+                required_stamps = 0
+            reward_label = str(reward.get('reward_name') or '').strip()
+            if required_stamps > 0 and reward_label:
+                stamp_rewards.append({
+                    **reward,
+                    'stamps': required_stamps,
+                    'reward_name': reward_label,
+                })
+        stamp_rewards.sort(key=lambda r: r['stamps'])
+
+    next_stamp_reward = None
+    if stamp_rewards:
+        current_stamps = int(stamps or 0)
+        next_stamp_reward = next(
+            (r for r in stamp_rewards if r['stamps'] >= current_stamps),
+            stamp_rewards[-1],
+        )
+
     sessions_remaining = customer.get('multipass_sessions_remaining', 0) or 0
     sessions_total = customer.get('multipass_total_sessions', 0) or (program.get('multipass_session_count', 12) if program else 12)
     cust_name = customer.get('name', 'Member')
@@ -3036,12 +3091,28 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     multipass_expires_at = customer.get('multipass_expires_at')
     reward_unlocked = bool(customer.get('reward_unlocked'))
     design = wallet_20_design(business, program)
+
+    # VIP is fully dynamic on Apple Wallet: tier name, next tier, points and
+    # the pass color all come from the customer's current VIP points.
+    vip_tier = get_vip_tier(customer, program or {}) if card_type == 'vip' else {}
+    vip_next_tier = get_next_vip_tier(customer, program or {}) if card_type == 'vip' else None
+
     if card_type == 'vip':
-        vip_tier_color = get_vip_tier(customer, program or {}).get('color') or '#111827'
+        vip_tier_color = (vip_tier or {}).get('color') or '#111827'
         primary_color = _normalize_hex_color(vip_tier_color, '#111827')
     else:
         primary_color = design['background']
     r, g, b = _hex_to_rgb(primary_color)
+
+    # Keep text readable even when a business uses a light VIP tier color
+    # such as gold, silver or pale yellow.
+    relative_luma = (0.2126 * r) + (0.7152 * g) + (0.0722 * b)
+    if relative_luma > 170:
+        apple_foreground = 'rgb(15, 23, 42)'
+        apple_label = 'rgba(15, 23, 42, 0.72)'
+    else:
+        apple_foreground = 'rgb(255, 255, 255)'
+        apple_label = 'rgba(255, 255, 255, 0.75)'
     membership_summary = (
         get_membership_summary(business.get('id'), customer.get('id'))
         if card_type == 'membership' else None
@@ -3070,8 +3141,19 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     if card_type == 'multipass':
         apple_details.append(('valid_until', 'VALID UNTIL', multipass_expires_at or 'No expiry set'))
     elif card_type == 'vip':
-        next_tier = get_next_vip_tier(customer, program or {})
-        apple_details.append(('next_tier', 'NEXT TIER', next_tier.get('name') if next_tier else 'Top tier'))
+        current_vip_points = int(customer.get('vip_points') or 0)
+        apple_details.append(('current_tier', 'CURRENT TIER', (vip_tier or {}).get('name') or 'VIP'))
+        if vip_next_tier:
+            next_threshold = int(vip_next_tier.get('min_points') or vip_next_tier.get('points') or 0)
+            points_to_next = max(next_threshold - current_vip_points, 0) if next_threshold > 0 else None
+            next_value = (
+                f"{vip_next_tier.get('name')} · {points_to_next} points to go"
+                if points_to_next is not None
+                else str(vip_next_tier.get('name') or 'Next tier')
+            )
+        else:
+            next_value = 'Top tier'
+        apple_details.append(('next_tier', 'NEXT TIER', next_value))
     elif card_type == 'membership':
         status = membership_effective_status(customer)
         expiry = customer.get('membership_expires_at')
@@ -3134,43 +3216,143 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         'serialNumber': cust_public_id,
         'description': f'{biz_name} Loyalty Card',
         'backgroundColor': f'rgb({r}, {g}, {b})',
-        'foregroundColor': 'rgb(255, 255, 255)',
-        'labelColor': 'rgba(255, 255, 255, 0.75)',
+        'foregroundColor': apple_foreground,
+        'labelColor': apple_label,
         'webServiceURL': APPLE_PASS_WEB_SERVICE_URL,
         'authenticationToken': apple_pass_auth_token(cust_public_id),
-        'storeCard': {
-            # Clean, real-card layout: one small header (member name), one
-            # BIG hero value (the number that matters - points or stamp
-            # progress), and a single short secondary line for the reward.
-            # Nothing repeats logoText/organizationName (already shown up
-            # top), so there's no duplicate "business name" field.
-            'headerFields': [
-                {'key': 'member', 'label': 'MEMBER', 'value': cust_name[:20]}
-            ],
-            'primaryFields': [
-                {'key': 'points', 'label': 'POINTS', 'value': str(points_balance), 'changeMessage': 'Points added! You now have %@ points.'}
-                if card_type == 'points' else
-                {'key': 'sessions', 'label': 'SESSIONS', 'value': f'{sessions_remaining}/{sessions_total}', 'changeMessage': 'Session used! %@ sessions left.'}
-                if card_type == 'multipass' else
-                {'key': 'vip_points', 'label': 'VIP POINTS', 'value': str(int(customer.get('vip_points') or 0)), 'changeMessage': 'VIP points updated: %@'}
-                if card_type == 'vip' else
-                {'key': 'membership_status', 'label': 'MEMBERSHIP', 'value': membership_effective_status(customer).upper(), 'changeMessage': 'Membership status: %@'}
-                if card_type == 'membership' else
-                {'key': 'stamps', 'label': 'STAMPS', 'value': f'{stamps}/{stamp_goal}', 'changeMessage': 'Stamp added! You now have %@ stamps.'}
-            ],
-            'secondaryFields': [
-                {'key': 'reward', 'label': 'REWARD', 'value': 'Redeem prizes in-store', 'changeMessage': '%@'}
-                if card_type == 'points' else
-                {'key': 'reward', 'label': 'EXPIRES', 'value': (multipass_expires_at or 'No expiry set'), 'changeMessage': '%@'}
-                if card_type == 'multipass' else
-                {'key': 'vip_tier', 'label': 'VIP TIER', 'value': get_vip_tier(customer, program or {}).get('name', 'VIP'), 'changeMessage': 'VIP tier: %@'}
-                if card_type == 'vip' else
-                {'key': 'reward', 'label': 'ACTIVE UNTIL', 'value': ('Lifetime' if membership_effective_status(customer) == 'lifetime' else (customer.get('membership_expires_at') or 'Not activated')), 'changeMessage': '%@'}
-                if card_type == 'membership' else
-                {'key': 'reward', 'label': 'REWARD', 'value': ('🎉 Ready to redeem!' if reward_unlocked else reward_name)[:30], 'changeMessage': '%@'}
-            ],
-            'backFields': back_fields
-        },
+        'storeCard': (
+            {
+                # POINTS: next configured prize above the banner; member name
+                # and current points below it.
+                'headerFields': [],
+                'primaryFields': [
+                    {
+                        'key': 'next_reward',
+                        'label': 'NEXT REWARD',
+                        'value': (
+                            f"{next_points_prize.get('name')} · {next_points_prize.get('points_cost')} points"
+                            if next_points_prize else
+                            'Ask in-store for rewards'
+                        ),
+                        'changeMessage': 'Next reward: %@',
+                    }
+                ],
+                'secondaryFields': [
+                    {'key': 'member_name', 'label': 'NAME', 'value': cust_name[:24]},
+                    {
+                        'key': 'points',
+                        'label': 'POINTS',
+                        'value': str(int(points_balance or 0)),
+                        'changeMessage': 'Points updated: %@',
+                    },
+                ],
+                'backFields': back_fields,
+            }
+            if card_type == 'points' else
+            {
+                # STAMP: next milestone/reward above the banner; member name
+                # and stamp progress below it.
+                'headerFields': [],
+                'primaryFields': [
+                    {
+                        'key': 'next_reward',
+                        'label': 'NEXT REWARD',
+                        'value': (
+                            f"{next_stamp_reward.get('reward_name')} · {next_stamp_reward.get('stamps')} stamps"
+                            if next_stamp_reward else
+                            f"{reward_name} · {stamp_goal} stamps"
+                        ),
+                        'changeMessage': 'Next reward: %@',
+                    }
+                ],
+                'secondaryFields': [
+                    {'key': 'member_name', 'label': 'NAME', 'value': cust_name[:24]},
+                    {
+                        'key': 'stamps',
+                        'label': 'STAMPS',
+                        'value': f"{int(stamps or 0)}/{int((next_stamp_reward or {}).get('stamps') or stamp_goal)}",
+                        'changeMessage': 'Stamp progress: %@',
+                    },
+                ],
+                'backFields': back_fields,
+            }
+            if card_type == 'stamp' else
+            {
+                # MULTIPASS: pack status above the banner; remaining sessions
+                # and expiry below it.
+                'headerFields': [],
+                'primaryFields': [
+                    {
+                        'key': 'pass_status',
+                        'label': 'SESSIONS',
+                        'value': f"{sessions_remaining} of {sessions_total} remaining",
+                        'changeMessage': 'Sessions remaining: %@',
+                    }
+                ],
+                'secondaryFields': [
+                    {'key': 'member_name', 'label': 'NAME', 'value': cust_name[:24]},
+                    {
+                        'key': 'expires',
+                        'label': 'EXPIRES',
+                        'value': (multipass_expires_at or 'No expiry set'),
+                        'changeMessage': 'Pass expiry: %@',
+                    },
+                ],
+                'backFields': back_fields,
+            }
+            if card_type == 'multipass' else
+            {
+                # MEMBERSHIP: status above the banner; member name and active
+                # until below it.
+                'headerFields': [],
+                'primaryFields': [
+                    {
+                        'key': 'membership_status',
+                        'label': 'MEMBERSHIP',
+                        'value': membership_effective_status(customer).upper(),
+                        'changeMessage': 'Membership status: %@',
+                    }
+                ],
+                'secondaryFields': [
+                    {'key': 'member_name', 'label': 'NAME', 'value': cust_name[:24]},
+                    {
+                        'key': 'active_until',
+                        'label': 'ACTIVE UNTIL',
+                        'value': (
+                            'Lifetime'
+                            if membership_effective_status(customer) == 'lifetime'
+                            else (customer.get('membership_expires_at') or 'Not activated')
+                        ),
+                        'changeMessage': 'Active until: %@',
+                    },
+                ],
+                'backFields': back_fields,
+            }
+            if card_type == 'membership' else
+            {
+                # VIP: current tier above the banner; member name and VIP
+                # points below it.
+                'headerFields': [],
+                'primaryFields': [
+                    {
+                        'key': 'vip_tier',
+                        'label': 'VIP TIER',
+                        'value': (vip_tier or {}).get('name', 'VIP'),
+                        'changeMessage': 'VIP tier updated: %@',
+                    }
+                ],
+                'secondaryFields': [
+                    {'key': 'member_name', 'label': 'NAME', 'value': cust_name[:24]},
+                    {
+                        'key': 'vip_points',
+                        'label': 'VIP POINTS',
+                        'value': str(int(customer.get('vip_points') or 0)),
+                        'changeMessage': 'VIP points updated: %@',
+                    },
+                ],
+                'backFields': back_fields,
+            }
+        ),
         'barcodes': [
             {
                 'format': 'PKBarcodeFormatQR',
@@ -3208,8 +3390,13 @@ def generate_apple_strip_bytes(customer: dict, business: dict, program: dict, wi
     stamp_goal = int((program or {}).get('stamp_goal') or 8)
     membership_summary = get_membership_summary(business.get('id'), customer.get('id')) if card_type == 'membership' else None
     vip_tier = get_vip_tier(customer, program or {}) if card_type == 'vip' else None
+    hero_primary_color = (
+        _normalize_hex_color((vip_tier or {}).get('color') or '#111827', '#111827')
+        if card_type == 'vip'
+        else design['background']
+    )
     raw = generate_personalized_hero_image_bytes(
-        design['background'],
+        hero_primary_color,
         (program or {}).get('reward_name') or 'Reward',
         int(customer.get('stamp_count') or 0),
         stamp_goal,
@@ -3224,7 +3411,11 @@ def generate_apple_strip_bytes(customer: dict, business: dict, program: dict, wi
         vip_tier_name=(vip_tier or {}).get('name'),
         membership_status=membership_effective_status(customer) if card_type == 'membership' else None,
         membership_expires_at=customer.get('membership_expires_at'),
-        secondary_color=design['secondary'],
+        secondary_color=(
+            _normalize_hex_color((vip_tier or {}).get('color') or design['secondary'], design['secondary'])
+            if card_type == 'vip'
+            else design['secondary']
+        ),
         wallet_style=design['style'],
         business_name=business.get('name'),
         card_label=design['card_label'],
@@ -3311,30 +3502,22 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
         'logo@3x.png': logo_480,
     }
     if design['show_background']:
-        # Thumbnail, not a full-width strip: a strip image sits behind
-        # Apple's own header/primary/secondary fields, which it *always*
-        # overlays on top - no matter what we send, that's Apple's fixed
-        # storeCard behavior, and it's what was making the pass look like
-        # text stamped over a photo instead of a real card. A thumbnail
-        # sits beside the fields instead of under them, so nothing gets
-        # overlaid on top of the photo - closer to how an actual membership
-        # card / GoTyme-style bank card reads at a glance.
+        # Restore the full-width Apple Wallet banner. Use the business's
+        # uploaded hero image when available; otherwise generate a branded
+        # LoyaltyTree fallback. Build @3x once and downscale for speed.
         hero_url = (program or {}).get('hero_image_url')
         hero_bytes = _fetch_image_bytes(hero_url)
 
-        # Same optimization for the thumbnail: make @3x once, then resize.
-        # If there is no uploaded hero, generate the personalized fallback only
-        # once instead of running the expensive renderer three separate times.
-        thumb_270 = apple_strip_from_image_bytes(hero_bytes, 270, 270) if hero_bytes else None
-        if not thumb_270:
-            thumb_270 = generate_apple_strip_bytes(customer, business, program, 270, 270)
-        thumb_180 = _resize_png_bytes(thumb_270, 180, 180)
-        thumb_90 = _resize_png_bytes(thumb_270, 90, 90)
+        strip_3x = apple_strip_from_image_bytes(hero_bytes, 1125, 369) if hero_bytes else None
+        if not strip_3x:
+            strip_3x = generate_apple_strip_bytes(customer, business, program, 1125, 369)
+        strip_2x = _resize_png_bytes(strip_3x, 750, 246)
+        strip_1x = _resize_png_bytes(strip_3x, 375, 123)
 
         files.update({
-            'thumbnail.png': thumb_90,
-            'thumbnail@2x.png': thumb_180,
-            'thumbnail@3x.png': thumb_270,
+            'strip.png': strip_1x,
+            'strip@2x.png': strip_2x,
+            'strip@3x.png': strip_3x,
         })
 
     manifest = {name: hashlib.sha1(content).hexdigest() for name, content in files.items()}
