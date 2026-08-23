@@ -3137,6 +3137,19 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                 })
         stamp_rewards.sort(key=lambda r: r['stamps'])
 
+    # Full stamp goal shown on Apple Wallet (e.g. 0/8). When milestone
+    # rewards exist, the complete goal is the highest configured milestone;
+    # otherwise fall back to the program's normal stamp_goal.
+    try:
+        full_stamp_goal = (
+            max(int(r.get('stamps') or 0) for r in stamp_rewards)
+            if stamp_rewards
+            else int(stamp_goal or 8)
+        )
+    except (TypeError, ValueError):
+        full_stamp_goal = int(stamp_goal or 8)
+    full_stamp_goal = max(full_stamp_goal, 1)
+
     next_stamp_reward = None
     if stamp_rewards:
         current_stamps = int(stamps or 0)
