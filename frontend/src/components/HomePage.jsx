@@ -353,7 +353,6 @@ const FOUNDER_MEDIA = [
   { name: 'BusinessWorld', url: 'https://bworldonline.com/technology/2022/05/02/445840/group-chat-births-filipino-nft-movement/' },
   { name: 'Lifestyle Asia', url: 'https://lifestyleasia-onemega.com/arts-and-culture/tech/tale-of-the-token-this-filipino-crypto-success-story-started-with-a-pair-of-bored-punks/' },
   { name: 'Manila Standard', url: 'https://manilastandard.net/?p=314217761' },
-  { name: 'BitPinas', url: 'https://bitpinas.com/news/nft-faq-how-important-is-pricing-in-nfts/' },
   { name: 'The New Hue', url: 'https://www.thenewhueph.com/post/the-ten-the-bedrocks-of-bored-punks-of-society' },
 ]
 
@@ -625,10 +624,15 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
           }
 
           .lt-home-overview-grid { grid-template-columns:1fr !important; }
+
+          .lt-about-grid { align-items:start; }
+          .lt-contact-card { align-self:start; height:auto !important; }
           .lt-impact-grid { grid-template-columns:repeat(2,minmax(0,1fr)) !important; }
         }
 
         @media (max-width: 700px) {
+          .lt-about-grid { grid-template-columns:1fr !important; }
+
           .lt-home-hero-actions {
             width:100%;
             display:grid !important;
@@ -1080,8 +1084,8 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
 
 
       <section id="about" style={styles.aboutSection}>
-        <div style={styles.aboutGrid}>
-          <div style={styles.aboutCard}>
+        <div className="lt-about-grid" style={styles.aboutGrid}>
+          <div className="lt-about-card" style={styles.aboutCard}>
             <span style={styles.navSectionEyebrow}>About LoyaltyTree</span>
             <h2 style={styles.aboutTitle}>Built in Isabela for businesses that depend on real customer relationships.</h2>
             <p style={styles.aboutBody}>
@@ -1136,7 +1140,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
             </div>
           </div>
 
-          <div id="contact" style={styles.contactCard}>
+          <div id="contact" className="lt-contact-card" style={styles.contactCard}>
             <span style={styles.navSectionEyebrow}>Contact Us</span>
             <h2 style={styles.aboutTitle}>Questions, support, or partnership inquiries?</h2>
             <p style={styles.aboutBody}>
@@ -1528,16 +1532,14 @@ const styles = {
     padding: '68px 32px', maxWidth: 1100, margin: '0 auto',
   },
   aboutGrid: {
-    display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(290px,1fr))', gap: 18,
-  },
+    display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(290px,1fr))', gap: 18,, alignItems: 'start'},
   aboutCard: {
     borderRadius: 18, padding: 28, background: 'linear-gradient(135deg,#f0fdf4,#ecfdf5)',
     border: '1px solid #bbf7d0',
   },
   contactCard: {
     borderRadius: 18, padding: 28, background: 'linear-gradient(135deg,#fffbeb,#fff7ed)',
-    border: '1px solid #fde68a',
-  },
+    border: '1px solid #fde68a',, alignSelf: 'start', height: 'fit-content'},
   aboutTitle: { fontSize: 23, lineHeight: 1.25, fontWeight: 800, color: '#0f172a', margin: '0 0 12px' },
   aboutBody: { fontSize: 14, lineHeight: 1.7, color: '#475569', margin: 0 },
   founderBlock: {
