@@ -7494,6 +7494,40 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
 
     update_data = {k: v for k, v in update.dict(exclude_unset=True).items() if v is not None}
 
+    # Repair legacy customer rows before ANY edit (including a points-only
+    # correction). PostgreSQL re-checks CHECK constraints on the whole row
+    # during UPDATE, so an old invalid occupation/gender value can block a
+    # completely unrelated points_balance change.
+    #
+    # Example seen in production: occupation='Marilao'. Lowering points then
+    # failed with customers_occupation_check even though occupation was not
+    # being edited. Clear only values that are outside the current allowed
+    # enums; valid profile data is preserved.
+    allowed_occupations = {'working', 'business_owner', 'unemployed'}
+    allowed_genders = {'male', 'female', 'rather_not_say'}
+
+    current_occupation = customer.get('occupation')
+    if current_occupation not in (None, '') and current_occupation not in allowed_occupations:
+        print(
+            f"CUSTOMER LEGACY REPAIR: public_id={customer_public_id} "
+            f"invalid occupation cleared"
+        )
+        update_data['occupation'] = None
+
+    current_gender = customer.get('gender')
+    if current_gender not in (None, '') and current_gender not in allowed_genders:
+        print(
+            f"CUSTOMER LEGACY REPAIR: public_id={customer_public_id} "
+            f"invalid gender cleared"
+        )
+        update_data['gender'] = None
+
+    # If occupation/gender are explicitly edited, normalize them too.
+    if 'occupation' in update_data and update_data.get('occupation') not in allowed_occupations:
+        update_data['occupation'] = None
+    if 'gender' in update_data and update_data.get('gender') not in allowed_genders:
+        update_data['gender'] = None
+
     # Empty-string dates ("" from a blank date input) aren't valid Postgres
     # date/timestamp values - Supabase rejects them outright ("invalid input
     # syntax for type timestamp/date: \"\""). Treat a blank date field as
@@ -7559,13 +7593,17 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
         if is_schema_mismatch:
             raise HTTPException(
                 status_code=500,
-                detail=(
-                    f"Database schema mismatch: {error_msg}. Add the missing column(s) to "
-                    f"'customers' in Supabase and run NOTIFY pgrst, 'reload schema'; "
-                    f"before retrying."
-                ),
+                detail="Customer update could not be saved because the database schema is out of date.",
             )
-        raise HTTPException(status_code=500, detail=error_msg)
+
+        # Supabase/Postgres check-constraint errors can include the complete
+        # failing customer row. Never return that raw payload to the browser.
+        if '23514' in error_msg or 'check constraint' in error_msg.lower():
+            raise HTTPException(
+                status_code=400,
+                detail="This customer has older profile data that is incompatible with the current form. Please retry the edit.",
+            )
+        raise HTTPException(status_code=500, detail="Customer update could not be saved.")
 
     # Owner-dashboard stamp edits use this generic customer PATCH endpoint.
     # Keep those manual corrections in the same Stamp Activity audit trail as
@@ -13705,17 +13743,6 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
             detail=f"This {dup_field} is already enrolled in this rewards program."
         )
 
-    # Normalize optional demographic selects server-side. Older/cached join pages or
-    # malformed clients must never be able to put an address/location value into
-    # the constrained occupation/gender columns. Unknown values are treated as
-    # unanswered because both fields are optional.
-    occupation = (signup.occupation or '').strip().lower() or None
-    if occupation not in {'working', 'business_owner', 'unemployed'}:
-        occupation = None
-    gender = (signup.gender or '').strip().lower() or None
-    if gender not in {'male', 'female', 'rather_not_say'}:
-        gender = None
-
     customer_public_id = generate_public_id()
     customer_data = {
         'business_id': business.get('id'),
@@ -13726,8 +13753,8 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
         'phone': signup.phone,
         'email': signup.email,
         'birthday': signup.birthday,
-        'occupation': occupation,
-        'gender': gender,
+        'occupation': signup.occupation,
+        'gender': signup.gender,
         'last_order_date': signup.last_order_date,
         'privacy_consent': True,
         'privacy_consent_at': datetime.utcnow().isoformat(),
@@ -13776,21 +13803,7 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
                     f"dashboard) before retrying."
                 ),
             )
-        # Do not expose raw PostgreSQL/Supabase errors (which can contain the
-        # failing row and customer PII) to the public join page. A constraint
-        # mismatch is an operator/configuration problem, not something the
-        # customer can fix. Keep the full error in server logs only.
-        if 'customers_occupation_check' in error_msg or ('23514' in error_msg and 'occupation' in error_msg.lower()):
-            raise HTTPException(
-                status_code=500,
-                detail="Unable to save the membership right now. The business's occupation settings need to be updated.",
-            )
-        if '23514' in error_msg:
-            raise HTTPException(
-                status_code=500,
-                detail="Unable to save the membership right now because one of the submitted values is not accepted.",
-            )
-        raise HTTPException(status_code=500, detail="Unable to create the membership right now. Please try again.")
+        raise HTTPException(status_code=500, detail=error_msg)
 
     # Prepare the signed Apple pass after the HTTP response is sent. The
     # success page normally gives this task enough time to finish before the
