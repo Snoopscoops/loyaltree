@@ -18088,6 +18088,7 @@ async def apple_list_updated_serials(device_library_identifier: str, pass_type_i
                 announcement = get_latest_active_announcement(business.get('id')) if business else None
                 raw_values = [
                     customer.get('updated_at'),
+                    business.get('updated_at') if business else None,
                     (program or {}).get('updated_at') or (program or {}).get('created_at'),
                     (announcement or {}).get('updated_at') or (announcement or {}).get('created_at'),
                     _apple_pass_dirty_at(serial),
@@ -18186,43 +18187,56 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
         raise HTTPException(status_code=404, detail="Not found")
 
     announcement = get_latest_active_announcement(business.get('id'))
+    program = safe_get_loyalty_program(business.get('id'))
 
-    # Last-Modified needs to reflect whichever changed more recently - the
-    # customer row (stamps/redemptions) or the business's active announcement.
-    # Without the announcement side of this, posting a new announcement would
-    # never actually change what this endpoint serves: the customer row is
-    # untouched by an announcement, so the old customer-only timestamp would
-    # keep matching If-Modified-Since and every device would get a 304
-    # forever, no matter how many times push_apple_wallet_announcement() woke
-    # them up to check.
+    # IMPORTANT: Last-Modified must represent the *whole generated pass*, not
+    # only the customer row. Apple sends If-Modified-Since after an APNs wake.
+    # If a layout/banner/reward/tier change marks a pass dirty but this endpoint
+    # compares only customer.updated_at, Wallet receives 304 and keeps the old
+    # design forever. Include every source that can change pass.json/artwork.
     customer_ts = _parse_ts(customer.get('updated_at'))
+    business_ts = _parse_ts(business.get('updated_at'))
+    program_ts_raw = (program or {}).get('updated_at') or (program or {}).get('created_at')
+    program_ts = _parse_ts(program_ts_raw)
     ann_ts_raw = (announcement or {}).get('updated_at') or (announcement or {}).get('created_at')
     ann_ts = _parse_ts(ann_ts_raw)
-    if ann_ts and (not customer_ts or ann_ts > customer_ts):
-        last_modified = ann_ts_raw
-        last_modified_ts = ann_ts
-    else:
-        last_modified = customer.get('updated_at') or datetime.utcnow().isoformat()
-        last_modified_ts = customer_ts
+    dirty_ts = _apple_pass_dirty_at(serial_number)
 
-    # Wallet echoes back whatever we previously sent as Last-Modified (see
-    # below) as If-Modified-Since on the next check. If neither side has
-    # changed since then, a 304 with no body is required here - Apple's own
-    # device logs flag it as a web service error when this is skipped and
-    # the full (unchanged) pass is sent back every time instead.
+    candidates = [
+        t for t in (customer_ts, business_ts, program_ts, ann_ts, dirty_ts)
+        if t
+    ]
+    last_modified_ts = max(candidates) if candidates else datetime.utcnow()
+    last_modified = last_modified_ts.replace(tzinfo=None).isoformat()
+
+    # Wallet echoes our previous Last-Modified as If-Modified-Since. A 304 is
+    # correct only when the phone already has a pass at least as new as the
+    # newest customer/business/program/announcement/dirty timestamp.
     since_ts = _parse_ts(if_modified_since)
     if (last_modified_ts and since_ts and
             last_modified_ts.replace(microsecond=0) <= since_ts.replace(microsecond=0)):
+        print(
+            f"APPLE PASS UPDATE 304: serial={serial_number} "
+            f"ims={if_modified_since} newest={last_modified}"
+        )
         return Response(status_code=304)
 
-    program = safe_get_loyalty_program(business.get('id'))
+    print(
+        f"APPLE PASS UPDATE 200: serial={serial_number} "
+        f"dirty={'yes' if dirty_ts else 'no'} ims={if_modified_since} newest={last_modified}"
+    )
+
     pkpass_bytes = build_pkpass_bytes(customer, business, program, announcement)
     if pkpass_bytes is None:
         raise HTTPException(status_code=500, detail="Could not build pass")
     return Response(
         content=pkpass_bytes,
         media_type="application/vnd.apple.pkpass",
-        headers={"Last-Modified": _http_date(last_modified)},
+        headers={
+            "Last-Modified": _http_date(last_modified),
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Content-Length": str(len(pkpass_bytes)),
+        },
     )
 
 @app.post("/api/v1/apple-wallet/v1/log")
