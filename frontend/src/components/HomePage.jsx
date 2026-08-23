@@ -624,15 +624,11 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
           }
 
           .lt-home-overview-grid { grid-template-columns:1fr !important; }
-
-          .lt-about-grid { align-items:start; }
-          .lt-contact-card { align-self:start; height:auto !important; }
           .lt-impact-grid { grid-template-columns:repeat(2,minmax(0,1fr)) !important; }
         }
 
         @media (max-width: 700px) {
-          .lt-about-grid { grid-template-columns:1fr !important; }
-
+          .lt-about-grid { grid-template-columns: 1fr !important; }
           .lt-home-hero-actions {
             width:100%;
             display:grid !important;
@@ -1085,7 +1081,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
 
       <section id="about" style={styles.aboutSection}>
         <div className="lt-about-grid" style={styles.aboutGrid}>
-          <div className="lt-about-card" style={styles.aboutCard}>
+          <div style={styles.aboutCard}>
             <span style={styles.navSectionEyebrow}>About LoyaltyTree</span>
             <h2 style={styles.aboutTitle}>Built in Isabela for businesses that depend on real customer relationships.</h2>
             <p style={styles.aboutBody}>
@@ -1140,7 +1136,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
             </div>
           </div>
 
-          <div id="contact" className="lt-contact-card" style={styles.contactCard}>
+          <div id="contact" style={styles.contactCard}>
             <span style={styles.navSectionEyebrow}>Contact Us</span>
             <h2 style={styles.aboutTitle}>Questions, support, or partnership inquiries?</h2>
             <p style={styles.aboutBody}>
@@ -1528,20 +1524,6 @@ const styles = {
     display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700,
     margin: '0 auto 16px', fontSize: 16,
   },
-  aboutSection: {
-    padding: '68px 32px', maxWidth: 1100, margin: '0 auto',
-  },
-  aboutGrid: {
-    display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(290px,1fr))', gap: 18, alignItems: 'start'},
-  aboutCard: {
-    borderRadius: 18, padding: 28, background: 'linear-gradient(135deg,#f0fdf4,#ecfdf5)',
-    border: '1px solid #bbf7d0',
-  },
-  contactCard: {
-    borderRadius: 18, padding: 28, background: 'linear-gradient(135deg,#fffbeb,#fff7ed)',
-    border: '1px solid #fde68a',, alignSelf: 'start', height: 'fit-content'},
-  aboutTitle: { fontSize: 23, lineHeight: 1.25, fontWeight: 800, color: '#0f172a', margin: '0 0 12px' },
-  aboutBody: { fontSize: 14, lineHeight: 1.7, color: '#475569', margin: 0 },
   founderBlock: {
     marginTop: 24, paddingTop: 22, borderTop: '1px solid #dbe4ea',
   },
@@ -1595,6 +1577,30 @@ const styles = {
     borderRadius: 9, background: '#ffffff', border: '1px solid #99f6e4',
     color: '#0f766e', fontSize: 11.5, fontWeight: 800, textDecoration: 'none',
   },
+  aboutSection: {
+    padding: '68px 32px', maxWidth: 1100, margin: '0 auto',
+  },
+  aboutGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1.08fr) minmax(320px, 0.92fr)',
+    gap: 18,
+    alignItems: 'start',
+  },
+  aboutCard: {
+    borderRadius: 18, padding: 28, background: 'linear-gradient(135deg,#f0fdf4,#ecfdf5)',
+    border: '1px solid #bbf7d0',
+  },
+  contactCard: {
+    borderRadius: 18,
+    padding: 28,
+    background: 'linear-gradient(135deg,#fffbeb,#fff7ed)',
+    border: '1px solid #fde68a',
+    alignSelf: 'start',
+    height: 'auto',
+    minHeight: 0,
+  },
+  aboutTitle: { fontSize: 23, lineHeight: 1.25, fontWeight: 800, color: '#0f172a', margin: '0 0 12px' },
+  aboutBody: { fontSize: 14, lineHeight: 1.7, color: '#475569', margin: 0 },
   founderLine:{marginTop:18,fontSize:12,fontWeight:850,color:'#0f766e'},
   homeContactDetails:{display:'grid',gap:8,marginTop:16},
   homeContactLink:{color:'#0f172a',fontSize:12.5,fontWeight:750,textDecoration:'none',wordBreak:'break-word'},
