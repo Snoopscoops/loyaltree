@@ -1532,7 +1532,7 @@ const styles = {
     padding: '68px 32px', maxWidth: 1100, margin: '0 auto',
   },
   aboutGrid: {
-    display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(290px,1fr))', gap: 18,, alignItems: 'start'},
+    display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(290px,1fr))', gap: 18, alignItems: 'start'},
   aboutCard: {
     borderRadius: 18, padding: 28, background: 'linear-gradient(135deg,#f0fdf4,#ecfdf5)',
     border: '1px solid #bbf7d0',
