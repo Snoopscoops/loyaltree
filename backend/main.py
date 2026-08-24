@@ -11970,7 +11970,7 @@ def attach_activity_location_names(rows: list) -> list:
 
 @app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/stamp-history")
 async def get_customer_stamp_history(public_id: str, customer_public_id: str):
-    """Every recorded stamp for one customer, including date, cashier and branch."""
+    """Stamp-card activity for one customer: stamps, corrections, and the full coupon lifecycle."""
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -11992,15 +11992,79 @@ async def get_customer_stamp_history(public_id: str, customer_public_id: str):
             .eq('customer_id', customer.get('id'))
             .execute()
         ).data or []
+        coupon_rows = (
+            supabase.table('coupons')
+            .select('id,reward_text,status,created_at,updated_at,redeemed_at,redeemed_by_staff_id')
+            .eq('business_id', business.get('id'))
+            .eq('customer_id', customer.get('id'))
+            .execute()
+        ).data or []
 
-        # Normalize both sources into one owner-visible Stamp Activity timeline.
+        # Normalize stamps, manual corrections, and the FULL coupon lifecycle
+        # into one owner-visible Stamp Activity timeline.
+        #
+        # A coupon row can create TWO timeline movements:
+        #   1) coupon_issued at created_at
+        #   2) coupon_redeemed OR coupon_cancelled later
+        #
+        # This keeps "Coupon issued" visible even after that same coupon is
+        # redeemed/cancelled, while never changing the member's stamp count.
         for row in stamp_rows:
             row['activity_type'] = 'stamp'
             row['delta'] = 1
         for row in adjustment_rows:
             row['activity_type'] = 'adjustment'
 
-        rows = stamp_rows + adjustment_rows
+        coupon_activity_rows = []
+        for coupon in coupon_rows:
+            reward_text = coupon.get('reward_text') or 'Reward coupon'
+
+            # Every coupon starts with an issuance event.
+            coupon_activity_rows.append({
+                'id': f"coupon-issued-{coupon.get('id')}",
+                'coupon_id': coupon.get('id'),
+                'activity_type': 'coupon_issued',
+                'activity_label': 'Coupon issued',
+                'activity_detail': reward_text,
+                'reward_text': reward_text,
+                'delta': 0,
+                'created_at': coupon.get('created_at'),
+                'staff_id': None,
+                'branch_id': None,
+                'actor_type': 'owner',
+            })
+
+            status = str(coupon.get('status') or '').lower()
+            if status == 'redeemed' and coupon.get('redeemed_at'):
+                coupon_activity_rows.append({
+                    'id': f"coupon-redeemed-{coupon.get('id')}",
+                    'coupon_id': coupon.get('id'),
+                    'activity_type': 'coupon_redeemed',
+                    'activity_label': 'Coupon redeemed',
+                    'activity_detail': reward_text,
+                    'reward_text': reward_text,
+                    'delta': 0,
+                    'created_at': coupon.get('redeemed_at'),
+                    'staff_id': coupon.get('redeemed_by_staff_id'),
+                    'branch_id': None,
+                    'actor_type': 'cashier' if coupon.get('redeemed_by_staff_id') else 'owner',
+                })
+            elif status == 'cancelled':
+                coupon_activity_rows.append({
+                    'id': f"coupon-cancelled-{coupon.get('id')}",
+                    'coupon_id': coupon.get('id'),
+                    'activity_type': 'coupon_cancelled',
+                    'activity_label': 'Coupon cancelled',
+                    'activity_detail': reward_text,
+                    'reward_text': reward_text,
+                    'delta': 0,
+                    'created_at': coupon.get('updated_at') or coupon.get('created_at'),
+                    'staff_id': None,
+                    'branch_id': None,
+                    'actor_type': 'owner',
+                })
+
+        rows = stamp_rows + adjustment_rows + coupon_activity_rows
         rows = attach_activity_location_names(rows)
         rows.sort(key=lambda r: r.get('created_at') or '', reverse=True)
 
@@ -12845,10 +12909,12 @@ async def redeem_coupon(public_id: str, req: CouponRedeem, authorization: str = 
         raise HTTPException(status_code=404, detail="Customer not found for this business")
 
     redeeming_staff_id = None
+    redeeming_branch_id = None
     session_claims = get_staff_session_claims(public_id, authorization)
 
     if session_claims:
         redeeming_staff_id = session_claims.get('staff_id')
+        redeeming_branch_id = session_claims.get('branch_id')
     elif req.as_owner:
         pass
     else:
@@ -12859,6 +12925,7 @@ async def redeem_coupon(public_id: str, req: CouponRedeem, authorization: str = 
             if not staff_res.data:
                 raise HTTPException(status_code=403, detail="Invalid staff PIN")
             redeeming_staff_id = staff_res.data[0].get('id')
+            redeeming_branch_id = staff_res.data[0].get('branch_id')
         except HTTPException:
             raise
         except Exception as e:
@@ -12868,16 +12935,33 @@ async def redeem_coupon(public_id: str, req: CouponRedeem, authorization: str = 
     if not coupon:
         raise HTTPException(status_code=400, detail="No active coupon to redeem")
 
+    redeemed_at = datetime.utcnow().isoformat()
     try:
         supabase.table("coupons").update({
             'status': 'redeemed',
-            'redeemed_at': datetime.utcnow().isoformat(),
+            'redeemed_at': redeemed_at,
             'redeemed_by_staff_id': redeeming_staff_id,
         }).eq("id", coupon.get("id")).execute()
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
-    return {"message": "Coupon redeemed!", "success": True, "reward_text": coupon.get('reward_text')}
+    # A coupon redemption is a real loyalty redemption. Record it in the
+    # same redemption stream used by analytics and branch/cashier reporting.
+    # Keep this schema-safe: reward_text stays on coupons; redemption_events
+    # only receives the base columns that already exist in all installations.
+    log_redemption_event(
+        business.get('id'),
+        customer.get('id'),
+        staff_id=redeeming_staff_id,
+        branch_id=redeeming_branch_id,
+    )
+
+    return {
+        "message": "Coupon redeemed!",
+        "success": True,
+        "reward_text": coupon.get('reward_text'),
+        "redeemed_at": redeemed_at,
+    }
 
 @app.get("/api/v1/business/{public_id}/hero-image.png")
 async def get_hero_image(public_id: str, c: Optional[str] = None):
