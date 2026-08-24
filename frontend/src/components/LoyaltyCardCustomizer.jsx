@@ -1201,29 +1201,44 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
               </div>
 
               <div style={styles.fieldGroup}>
-                <label style={styles.label}>Maximum points balance <span style={{fontWeight:500,color:'#94a3b8'}}>(optional)</span></label>
-                <div style={styles.row}>
+                <label style={styles.label}>Points balance cap <span style={{fontWeight:500,color:'#94a3b8'}}>(optional)</span></label>
+
+                <label style={{
+                  display:'flex',
+                  alignItems:'center',
+                  gap:10,
+                  fontSize:13,
+                  fontWeight:700,
+                  color:'#334155',
+                  cursor:'pointer'
+                }}>
                   <input
-                    style={{ ...styles.input, flex: 1 }}
-                    type="number"
-                    min={1}
-                    step={1}
-                    value={form.points_cap_limit}
-                    onChange={e => update('points_cap_limit', e.target.value)}
-                    placeholder="No limit"
+                    type="checkbox"
+                    checked={form.points_cap_limit !== ''}
+                    onChange={e => update('points_cap_limit', e.target.checked ? 500 : '')}
                   />
-                  {form.points_cap_limit !== '' && (
-                    <button
-                      type="button"
-                      onClick={() => update('points_cap_limit', '')}
-                      style={styles.typeChangeBtn}
-                    >
-                      Remove cap
-                    </button>
-                  )}
-                </div>
+                  Set a maximum points balance
+                </label>
+
+                {form.points_cap_limit !== '' && (
+                  <div style={{...styles.row, marginTop:10}}>
+                    <input
+                      style={{ ...styles.input, flex: 1 }}
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={form.points_cap_limit}
+                      onChange={e => update('points_cap_limit', e.target.value)}
+                      placeholder="e.g. 500"
+                    />
+                    <span style={styles.unit}>points max</span>
+                  </div>
+                )}
+
                 <p style={styles.hint}>
-                  Leave blank for unlimited points. Once a member reaches this balance, new purchases stop adding points until they redeem some.
+                  {form.points_cap_limit === ''
+                    ? 'No cap is enabled. Members can keep earning points without a maximum balance.'
+                    : 'Once a member reaches this balance, new purchases stop adding points until they redeem some.'}
                 </p>
               </div>
 
