@@ -220,6 +220,7 @@ function CashierApp({ API_BASE }) {
           // uses in /points-sale (amount_spent / points_amount_pesos * points_per_amount).
           points_per_amount: program.points_per_amount || 0,
           points_amount_pesos: program.points_amount_pesos || 1,
+          points_cap_limit: program.points_cap_limit || null,
           active_coupon: data.active_coupon || null,
           // Multipass fields - sessions_remaining/total come off the customer
           // row, session_count/validity_days are the program's defaults for
@@ -337,10 +338,23 @@ function CashierApp({ API_BASE }) {
       const data = await res.json()
 
       if (res.ok) {
-        setMessage(`✅ +${data.points_earned} points! ${customerData.name} now has ${data.points_balance} points`)
+        const capNote = data.points_cap_limit
+          ? (data.cap_reached
+              ? ` · Cap reached (${Number(data.points_cap_limit).toLocaleString()} pts)`
+              : ` · Cap ${Number(data.points_cap_limit).toLocaleString()} pts`)
+          : ''
+        const limitedNote = data.points_discarded > 0
+          ? ` · ${data.points_discarded} pts not added because of the cap`
+          : ''
+        setMessage(
+          data.points_earned > 0
+            ? `✅ +${data.points_earned} points! ${customerData.name} now has ${data.points_balance} points${capNote}${limitedNote}`
+            : `ℹ️ ${customerData.name} is already at the points cap. Balance remains ${data.points_balance} points.`
+        )
         setCustomerData(prev => prev ? {
           ...prev,
           points_balance: data.points_balance,
+          points_cap_limit: data.points_cap_limit ?? prev.points_cap_limit,
           active_coupon: data.active_coupon !== undefined ? data.active_coupon : prev.active_coupon,
         } : prev)
         setSaleAmount('')
@@ -749,7 +763,11 @@ function CashierApp({ API_BASE }) {
     if (!amount || amount <= 0) return 0
     const rate = customerData.points_per_amount || 0
     const pesos = customerData.points_amount_pesos || 1
-    return Math.floor((amount / pesos) * rate)
+    const raw = Math.floor((amount / pesos) * rate)
+    const cap = Number(customerData.points_cap_limit || 0)
+    if (!cap) return raw
+    const remaining = Math.max(cap - Number(customerData.points_balance || 0), 0)
+    return Math.min(raw, remaining)
   })()
 
   const previewVipPoints = (() => {
@@ -950,6 +968,11 @@ function CashierApp({ API_BASE }) {
               <div style={styles.pointsBalanceBox}>
                 <span style={styles.pointsBalanceNumber}>{customerData.points_balance}</span>
                 <span style={styles.pointsBalanceLabel}>points</span>
+                {customerData.points_cap_limit && (
+                  <span style={{ ...styles.pointsBalanceLabel, marginTop: 4 }}>
+                    Maximum balance: {Number(customerData.points_cap_limit).toLocaleString()} pts
+                  </span>
+                )}
               </div>
 
               {/* Prize catalog - every prize is listed, greyed out and

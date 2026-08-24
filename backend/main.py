@@ -1025,6 +1025,7 @@ class LoyaltyConfig(BaseModel):
     # --- Points card only ---
     points_per_amount: Optional[float] = Field(default=10, ge=0)     # points earned...
     points_amount_pesos: Optional[float] = Field(default=100, ge=1)  # ...per this many pesos spent
+    points_cap_limit: Optional[int] = Field(default=None, ge=1)       # null = unlimited member balance
     points_prizes: Optional[List[PointsPrize]] = None                # catalog of prizes customers can redeem points for
     # --- Multipass card only ---
     multipass_session_count: Optional[int] = Field(default=12, ge=2, le=200)  # sessions issued per pass, e.g. 12 sessions sold at the price of 10
@@ -8447,6 +8448,7 @@ async def get_loyalty_config(public_id: str, response: Response):
             "google_wallet_class_id": None,
             "points_per_amount": 10,
             "points_amount_pesos": 100,
+            "points_cap_limit": None,
             "points_prizes": [],
             "membership_services": [],
             "membership_duration_days": 30,
@@ -8559,6 +8561,7 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
     if config.card_type == 'points':
         data['points_per_amount'] = config.points_per_amount
         data['points_amount_pesos'] = config.points_amount_pesos
+        data['points_cap_limit'] = config.points_cap_limit
         # Backfill an id for any prize the owner added client-side without one,
         # so it can be referenced (e.g. from the cashier redemption flow) later.
         prizes = []
@@ -11520,14 +11523,52 @@ async def add_points_sale(public_id: str, req: PointsSaleRequest, background_tas
 
     points_per_amount = program.get('points_per_amount') or 0
     points_amount_pesos = program.get('points_amount_pesos') or 1
-    points_earned = int((req.amount_spent / points_amount_pesos) * points_per_amount)
-    if points_earned < 0:
-        points_earned = 0
+    raw_points_earned = int((req.amount_spent / points_amount_pesos) * points_per_amount)
+    if raw_points_earned < 0:
+        raw_points_earned = 0
 
-    old_balance=int(customer.get('points_balance') or 0)
-    new_balance=old_balance+points_earned
+    old_balance = int(customer.get('points_balance') or 0)
 
-    audit_row=start_transaction_audit(business_id=business.get('id'),customer_id=customer.get('id'),staff_id=sale_staff_id,branch_id=sale_branch_id,actor_type=_audit_actor(sale_staff_id,req.as_owner),action='points_sale',idempotency_key=x_idempotency_key,delta=points_earned,balance_before=old_balance,metadata={'card_type':'points','amount_spent':float(req.amount_spent)})
+    # Optional maximum points balance. NULL/blank means unlimited.
+    # If the owner later sets the cap below an existing balance, we preserve
+    # already-earned points and simply block future earning until redemption
+    # brings the balance below the cap.
+    cap_raw = program.get('points_cap_limit')
+    try:
+        points_cap_limit = int(cap_raw) if cap_raw not in (None, '', 0, '0') else None
+        if points_cap_limit is not None and points_cap_limit < 1:
+            points_cap_limit = None
+    except (TypeError, ValueError):
+        points_cap_limit = None
+
+    if points_cap_limit is not None:
+        remaining_capacity = max(points_cap_limit - old_balance, 0)
+        points_earned = min(raw_points_earned, remaining_capacity)
+    else:
+        points_earned = raw_points_earned
+
+    points_discarded = max(raw_points_earned - points_earned, 0)
+    new_balance = old_balance + points_earned
+    cap_reached = points_cap_limit is not None and new_balance >= points_cap_limit
+
+    audit_row=start_transaction_audit(
+        business_id=business.get('id'),
+        customer_id=customer.get('id'),
+        staff_id=sale_staff_id,
+        branch_id=sale_branch_id,
+        actor_type=_audit_actor(sale_staff_id,req.as_owner),
+        action='points_sale',
+        idempotency_key=x_idempotency_key,
+        delta=points_earned,
+        balance_before=old_balance,
+        metadata={
+            'card_type':'points',
+            'amount_spent':float(req.amount_spent),
+            'raw_points_earned':raw_points_earned,
+            'points_cap_limit':points_cap_limit,
+            'points_discarded_by_cap':points_discarded,
+        }
+    )
     if audit_row and audit_row.get('_duplicate_response'): return audit_row['_duplicate_response']
 
     try:
@@ -11537,14 +11578,15 @@ async def add_points_sale(public_id: str, req: PointsSaleRequest, background_tas
         }
         supabase.table("customers").update(update_data).eq("id", customer.get("id")).execute()
         customer['points_balance'] = new_balance
-        background_tasks.add_task(
-            sync_loyalty_wallets_background,
-            dict(customer), dict(business), dict(program),
-            'points_sale',
-            "Points added ⭐",
-            f"You now have {new_balance} points!",
-            f"points-{customer.get('id')}-{new_balance}-{int(datetime.utcnow().timestamp())}",
-        )
+        if points_earned > 0:
+            background_tasks.add_task(
+                sync_loyalty_wallets_background,
+                dict(customer), dict(business), dict(program),
+                'points_sale',
+                "Points added ⭐",
+                f"You now have {new_balance} points!",
+                f"points-{customer.get('id')}-{new_balance}-{int(datetime.utcnow().timestamp())}",
+            )
         log_points_event(business.get('id'), customer.get('id'), req.amount_spent, points_earned, sale_staff_id, sale_branch_id)
     except Exception as e:
         error_msg = str(e)
@@ -11565,10 +11607,18 @@ async def add_points_sale(public_id: str, req: PointsSaleRequest, background_tas
         raise HTTPException(status_code=500, detail=error_msg)
 
     response_payload = {
-        "message": f"{points_earned} points added!",
+        "message": (
+            f"{points_earned} points added!"
+            if points_earned > 0
+            else ("Points cap reached — no additional points added." if cap_reached else "0 points added.")
+        ),
         "amount_spent": req.amount_spent,
         "points_earned": points_earned,
+        "raw_points_earned": raw_points_earned,
+        "points_discarded": points_discarded,
         "points_balance": new_balance,
+        "points_cap_limit": points_cap_limit,
+        "cap_reached": cap_reached,
         "active_coupon": safe_get_active_coupon(customer.get('id')),
     }
     if audit_row and audit_row.get('transaction_id'): response_payload['transaction_id']=str(audit_row.get('transaction_id'))

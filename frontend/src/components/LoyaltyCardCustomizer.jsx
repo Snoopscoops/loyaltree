@@ -10,7 +10,7 @@ const DESCRIPTION_LIMIT = 140
 // onSaved is optional - call it (e.g. your existing loadData) to refresh any
 // parent state that depends on the program, such as OwnerDashboard's
 // `program` used for the customer card preview modal.
-function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
+function LoyaltyCardCustomizer({ API_BASE, user, onSaved }) {
   const [form, setForm] = useState({
     card_type: 'stamp', // 'stamp' | 'points' | 'membership' | 'multipass' | 'vip' - one active card at a time
     card_name: '',
@@ -31,6 +31,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
     // Points card only
     points_per_amount: 10,
     points_amount_pesos: 100,
+    points_cap_limit: '',
     points_prizes: [],
     // Membership card only
     membership_duration_days: 30,
@@ -69,15 +70,6 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
   // saved program yet) lands on 'picker'. Owners can still get back to
   // the picker any time via the "Change card type" button in the form.
   const [step, setStep] = useState('picker')
-  const [guidedStep, setGuidedStep] = useState(0)
-  const [guidedError, setGuidedError] = useState('')
-  const [guidedMobile, setGuidedMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth <= 640)
-
-  useEffect(() => {
-    const onResize = () => setGuidedMobile(window.innerWidth <= 640)
-    window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
-  }, [])
 
   // New-prize draft form (points card)
   const [prizeDraft, setPrizeDraft] = useState({ name: '', points_cost: '', description: '' })
@@ -122,6 +114,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
           google_review_url: data.google_review_url || '',
           points_per_amount: data.points_per_amount ?? 10,
           points_amount_pesos: data.points_amount_pesos ?? 100,
+          points_cap_limit: data.points_cap_limit ?? '',
           points_prizes: Array.isArray(data.points_prizes) ? data.points_prizes : [],
           membership_duration_days: data.membership_duration_days ?? 30,
           membership_price: data.membership_price ?? 0,
@@ -136,7 +129,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
         setWalletClassId(data.google_wallet_class_id || null)
         // Already chose a card type (at onboarding or a previous edit) -
         // skip straight to the editor instead of making them re-pick.
-        if (data.is_configured && !guided) setStep('form')
+        if (data.is_configured) setStep('form')
       } else {
         setError(data.detail || 'Failed to load your card settings')
       }
@@ -222,6 +215,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
     google_review_url: form.google_review_url || null,
     points_per_amount: Number(form.points_per_amount) || 0,
     points_amount_pesos: Number(form.points_amount_pesos) || 1,
+    points_cap_limit: form.points_cap_limit === '' || form.points_cap_limit == null
+      ? null
+      : Math.max(1, Math.floor(Number(form.points_cap_limit) || 1)),
     points_prizes: form.points_prizes,
     membership_duration_days: Number(form.membership_duration_days) || 30,
     membership_price: Number(form.membership_price) || 0,
@@ -365,354 +361,6 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
     ? `linear-gradient(135deg,#050505 0%,${previewPrimary} 135%)`
     : `linear-gradient(135deg,${previewPrimary} 0%,${previewSecondary} 100%)`
 
-  const guidedCardLabel = form.card_type === 'points'
-    ? 'Points Card'
-    : form.card_type === 'membership'
-    ? 'Membership Card'
-    : form.card_type === 'vip'
-    ? 'VIP Card'
-    : form.card_type === 'multipass'
-    ? 'Multi-Pass'
-    : 'Stamp Card'
-
-  const guidedNext = () => {
-    setGuidedError('')
-    if (guidedStep === 1 && !String(form.card_name || '').trim()) {
-      setGuidedError('Give your card a name before continuing.')
-      return
-    }
-    if (guidedStep === 2 && !String(form.description || '').trim()) {
-      setGuidedError('Add a short card description before continuing.')
-      return
-    }
-    setGuidedStep(s => Math.min(6, s + 1))
-  }
-
-  const guidedBack = () => {
-    setGuidedError('')
-    setGuidedStep(s => Math.max(0, s - 1))
-  }
-
-  const guidedPublish = async () => {
-    setGuidedError('')
-    try {
-      await handlePublish({ preventDefault: () => {} })
-    } catch (err) {
-      setGuidedError(err?.message || 'Could not publish your card.')
-    }
-  }
-
-  if (guided) {
-    const businessName = user?.business_name || 'your business'
-    const guidedTitles = [
-      'Choose your card type',
-      'What’s your card name?',
-      'What should customers know about it?',
-      `Set up your ${guidedCardLabel}`,
-      'Choose your card colors',
-      'Add your branding',
-      'Review and publish',
-    ]
-
-    return (
-      <div style={{...styles.page, maxWidth:920, margin:'0 auto', padding: guidedMobile ? '4px 0 10px' : styles.page.padding}}>
-        <div style={{marginBottom:18}}>
-          <div style={{fontSize:12,fontWeight:850,color:'#0d9488',textTransform:'uppercase',letterSpacing:.7}}>
-            Card setup · {guidedStep + 1} of 7
-          </div>
-          <h2 style={{...styles.title,margin:'5px 0 5px'}}>{guidedTitles[guidedStep]}</h2>
-          <div style={{display:'flex',gap:5,marginTop:10}}>
-            {Array.from({length:7}).map((_,i)=><span key={i} style={{
-              height:7,flex:1,borderRadius:99,background:i<=guidedStep?'#0d9488':'#e2e8f0'
-            }}/>)}
-          </div>
-        </div>
-
-        {guidedError && <div style={{...styles.error,marginBottom:14}}>{guidedError}</div>}
-        {error && <div style={{...styles.error,marginBottom:14}}>{error}</div>}
-
-        <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:guidedMobile?14:18,padding:guidedMobile?14:22,minWidth:0,overflow:'hidden'}}>
-          {guidedStep === 0 && (
-            <>
-              <p style={{margin:'0 0 18px',color:'#64748b',lineHeight:1.6}}>
-                Welcome <b>{businessName}</b> to LoyaltyTree! First, choose how you want customers to earn or use benefits.
-              </p>
-              <div style={{...styles.pickerGrid,gridTemplateColumns:guidedMobile?'1fr':'repeat(auto-fit, minmax(260px, 1fr))',gap:guidedMobile?10:20,marginBottom:0}}>
-                {[
-                  ['stamp','🎟️','Stamp Card','Customers collect stamps and unlock rewards at milestones.'],
-                  ['points','💎','Points Card','Customers earn points from spending and redeem them for prizes.'],
-                  ['membership','🏋️','Membership Card','For active memberships, subscriptions, access and benefits.'],
-                  ['vip','👑','VIP Card','Customers build VIP status and automatically move through tiers.'],
-                  ['multipass','🎫','Multi-Pass','Customers receive a fixed number of sessions or visits that count down.'],
-                ].map(([type,icon,label,desc])=>(
-                  <button key={type} type="button" onClick={()=>update('card_type',type)}
-                    style={{...styles.pickerCard,padding:guidedMobile?'16px 15px':'28px 24px',...(form.card_type===type?{borderColor:'#0d9488',background:'#f0fdfa',boxShadow:'0 0 0 2px rgba(13,148,136,.08)'}:{})}}>
-                    <span style={styles.pickerCardIcon}>{icon}</span>
-                    <span style={styles.pickerCardLabel}>{label}</span>
-                    <span style={styles.pickerCardDesc}>{desc}</span>
-                    {form.card_type===type && <span style={styles.pickerCardBadge}>Selected</span>}
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-
-          {guidedStep === 1 && (
-            <>
-              <p style={{margin:'0 0 16px',color:'#64748b',lineHeight:1.6}}>
-                Your business name is <b>{businessName}</b>, but your loyalty card can have its own name.
-                For example, a business called “JUS Beverage Manufacturing” could call its card “JUS Rewards”.
-              </p>
-              <label style={styles.label}>Card name</label>
-              <input autoFocus style={{...styles.input,fontSize:17,padding:'14px 15px'}}
-                value={form.card_name} onChange={e=>update('card_name',e.target.value)}
-                placeholder={`${businessName} Rewards`} maxLength={80}/>
-              <p style={styles.hint}>This will be the main title customers see on their digital card.</p>
-            </>
-          )}
-
-          {guidedStep === 2 && (
-            <>
-              <p style={{margin:'0 0 16px',color:'#64748b',lineHeight:1.6}}>
-                Now add a short description. Tell customers what this card is for or what they can look forward to.
-              </p>
-              <label style={styles.label}>Card description</label>
-              <textarea autoFocus style={{...styles.textarea,fontSize:15}} rows={4}
-                value={form.description} maxLength={DESCRIPTION_LIMIT}
-                onChange={e=>update('description',e.target.value)}
-                placeholder={form.card_type==='membership'
-                  ? 'Monthly membership with access and exclusive member benefits.'
-                  : form.card_type==='multipass'
-                  ? 'Use your sessions whenever you visit.'
-                  : 'Earn rewards every time you visit.'}/>
-              <p style={styles.hint}>{form.description.length}/{DESCRIPTION_LIMIT} characters</p>
-            </>
-          )}
-
-          {guidedStep === 3 && (
-            <>
-              <p style={{margin:'0 0 18px',color:'#64748b',lineHeight:1.6}}>
-                Great. Now let’s set the basic rules for your <b>{guidedCardLabel}</b>.
-              </p>
-
-              {form.card_type==='stamp' && <>
-                <p style={{...styles.hint,margin:'0 0 14px'}}>Set one or more reward milestones. Customers keep progressing after an intermediate reward until they reach the highest milestone.</p>
-                {(form.stamp_rewards || []).map((r,i) => (
-                  <div key={r.id || i} style={{display:'flex',flexDirection:guidedMobile?'column':'row',gap:8,alignItems:guidedMobile?'stretch':'center',padding:'10px 0',borderBottom:'1px solid #eef2f7'}}>
-                    <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'120px minmax(180px,1fr)',gap:8,flex:1,minWidth:0}}>
-                      <input style={{...styles.input,width:'100%',boxSizing:'border-box'}} type="number" min="1" max="500" value={r.stamps}
-                        onChange={e=>{
-                          const next=(form.stamp_rewards||[]).map((x,j)=>j===i?{...x,stamps:e.target.value}:x)
-                          update('stamp_rewards',next)
-                          const sorted=[...next].sort((a,b)=>Number(a.stamps)-Number(b.stamps)); const final=sorted[sorted.length-1]
-                          if(final){ update('stamp_goal',Number(final.stamps)||8); update('reward_name',final.reward_name||'Reward') }
-                        }}/>
-                      <input style={{...styles.input,width:'100%',boxSizing:'border-box'}} value={r.reward_name}
-                        onChange={e=>{
-                          const next=(form.stamp_rewards||[]).map((x,j)=>j===i?{...x,reward_name:e.target.value}:x)
-                          update('stamp_rewards',next)
-                          const sorted=[...next].sort((a,b)=>Number(a.stamps)-Number(b.stamps)); const final=sorted[sorted.length-1]
-                          if(final){ update('reward_name',final.reward_name||'Reward') }
-                        }} placeholder="Reward, e.g. Free Drink"/>
-                    </div>
-                    <button type="button" onClick={()=>{
-                      const next=(form.stamp_rewards||[]).filter((_,j)=>j!==i)
-                      if(!next.length) return setGuidedError('Keep at least one stamp milestone.')
-                      update('stamp_rewards',next)
-                      const sorted=[...next].sort((a,b)=>Number(a.stamps)-Number(b.stamps)); const final=sorted[sorted.length-1]
-                      update('stamp_goal',Number(final.stamps)||8); update('reward_name',final.reward_name||'Reward')
-                    }} style={{...styles.prizeRemoveBtn,alignSelf:guidedMobile?'flex-end':'center'}}>✕</button>
-                  </div>
-                ))}
-                <button type="button" onClick={()=>{
-                  const current=[...(form.stamp_rewards||[])].sort((a,b)=>Number(a.stamps)-Number(b.stamps))
-                  const max=current.length?Number(current[current.length-1].stamps)||0:0
-                  update('stamp_rewards',[...current,{id:Math.random().toString(16).slice(2,14),stamps:max+5,reward_name:''}])
-                }} style={{...styles.addPrizeBtn,width:guidedMobile?'100%':'auto',marginTop:12}}>+ Add Reward Milestone</button>
-                <label style={{display:'flex',gap:10,alignItems:'flex-start',marginTop:18,fontSize:13,fontWeight:700,lineHeight:1.4}}>
-                  <input type="checkbox" checked={form.stamp_once_per_day===true} onChange={e=>update('stamp_once_per_day',e.target.checked)} style={{marginTop:2}}/>
-                  <span>Limit each customer to 1 stamp per day</span>
-                </label>
-              </>}
-
-              {form.card_type==='points' && <>
-                <label style={styles.label}>How customers earn points</label>
-                <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-                  <span>Earn</span>
-                  <input style={{...styles.input,width:guidedMobile?'100%':95}} type="number" min="1" value={form.points_per_amount} onChange={e=>update('points_per_amount',e.target.value)}/>
-                  <span>points for every ₱</span>
-                  <input style={{...styles.input,width:guidedMobile?'100%':110}} type="number" min="1" value={form.points_amount_pesos} onChange={e=>update('points_amount_pesos',e.target.value)}/>
-                  <span>spent</span>
-                </div>
-
-                <div style={{marginTop:20}}>
-                  <label style={styles.label}>Points rewards</label>
-                  <p style={{...styles.hint,margin:'0 0 12px'}}>Add the prizes customers can redeem with their points.</p>
-                  {(form.points_prizes || []).map((p,i)=>(
-                    <div key={p.id || i} style={{display:'flex',flexDirection:guidedMobile?'column':'row',gap:8,alignItems:guidedMobile?'stretch':'center',padding:'10px 0',borderBottom:'1px solid #eef2f7'}}>
-                      <input style={{...styles.input,flex:1}} value={p.name || ''} placeholder="Reward, e.g. Free Drink"
-                        onChange={e=>update('points_prizes',(form.points_prizes||[]).map((x,j)=>j===i?{...x,name:e.target.value}:x))}/>
-                      <input style={{...styles.input,width:guidedMobile?'100%':150}} type="number" min="1" value={p.points_cost || ''}
-                        placeholder="Points"
-                        onChange={e=>update('points_prizes',(form.points_prizes||[]).map((x,j)=>j===i?{...x,points_cost:Number(e.target.value)}:x))}/>
-                      <button type="button" style={{...styles.prizeRemoveBtn,alignSelf:guidedMobile?'flex-end':'center'}}
-                        onClick={()=>update('points_prizes',(form.points_prizes||[]).filter((_,j)=>j!==i))}>✕</button>
-                    </div>
-                  ))}
-                  <button type="button" style={{...styles.addPrizeBtn,width:guidedMobile?'100%':'auto',marginTop:12}}
-                    onClick={()=>update('points_prizes',[...(form.points_prizes||[]),{id:Math.random().toString(16).slice(2,14),name:'',points_cost:100}])}>
-                    + Add Points Reward
-                  </button>
-                </div>
-              </>}
-
-              {form.card_type==='membership' && <>
-                <label style={styles.label}>Default membership duration</label>
-                <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-                  <input style={{...styles.input,width:guidedMobile?'100%':130}} type="number" min="1" max="3650" value={form.membership_duration_days} onChange={e=>update('membership_duration_days',e.target.value)}/>
-                  <span>days</span>
-                </div>
-                <label style={{...styles.label,marginTop:14}}>Default membership price</label>
-                <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-                  <span>₱</span>
-                  <input style={{...styles.input,width:guidedMobile?'100%':160}} type="number" min="0" step="any" value={form.membership_price} onChange={e=>update('membership_price',e.target.value)}/>
-                </div>
-
-                <label style={{...styles.label,marginTop:18}}>Member rewards / benefits</label>
-                <p style={{...styles.hint,margin:'0 0 10px'}}>Enter one included perk or reward per line.</p>
-                <textarea style={{...styles.textarea,width:'100%',boxSizing:'border-box'}} rows={guidedMobile?5:4}
-                  value={(form.membership_services || []).join('\n')}
-                  onChange={e=>update('membership_services',e.target.value.split('\n').map(v=>v.trim()).filter(Boolean))}
-                  placeholder={'Free monthly service\n10% member discount\nPriority booking'}/>
-              </>}
-
-              {form.card_type==='vip' && <>
-                <label style={styles.label}>VIP earning rule</label>
-                <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-                  <span>Earn</span>
-                  <input style={{...styles.input,width:guidedMobile?'100%':95}} type="number" min="1" value={form.vip_points_per_amount} onChange={e=>update('vip_points_per_amount',e.target.value)}/>
-                  <span>VIP points for every ₱</span>
-                  <input style={{...styles.input,width:guidedMobile?'100%':110}} type="number" min="1" value={form.vip_amount_pesos} onChange={e=>update('vip_amount_pesos',e.target.value)}/>
-                  <span>spent</span>
-                </div>
-
-                <div style={{marginTop:20}}>
-                  <label style={styles.label}>VIP tier rewards</label>
-                  <p style={{...styles.hint,margin:'0 0 12px'}}>Set what customers unlock when they reach each VIP tier.</p>
-                  {(form.vip_tiers || []).map((tier,i)=>(
-                    <div key={tier.id || i} style={{padding:'12px',marginBottom:10,border:'1px solid #e2e8f0',borderRadius:12,background:'#f8fafc'}}>
-                      <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'1fr 130px 120px',gap:8}}>
-                        <input style={styles.input} value={tier.name || ''} placeholder="Tier name"
-                          onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,name:e.target.value}:t))}/>
-                        <input style={styles.input} type="number" min="0" value={tier.threshold || 0} placeholder="Points"
-                          onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,threshold:Number(e.target.value)}:t))}/>
-                        <input style={styles.input} type="number" min="0" max="100" value={tier.discount_percent || 0} placeholder="Discount %"
-                          onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,discount_percent:Number(e.target.value)}:t))}/>
-                      </div>
-                      <textarea style={{...styles.textarea,width:'100%',boxSizing:'border-box',marginTop:8}} rows={3}
-                        value={(tier.benefits || []).join('\n')}
-                        onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,benefits:e.target.value.split('\n').map(v=>v.trim()).filter(Boolean)}:t))}
-                        placeholder={'One reward per line\nFree upgrade\nPriority service'}/>
-                      <button type="button" style={{...styles.prizeRemoveBtn,marginTop:8}}
-                        onClick={()=>update('vip_tiers',form.vip_tiers.filter((_,j)=>j!==i))}>Remove tier</button>
-                    </div>
-                  ))}
-                  <button type="button" style={{...styles.addPrizeBtn,width:guidedMobile?'100%':'auto'}}
-                    onClick={()=>update('vip_tiers',[...(form.vip_tiers||[]),{id:Math.random().toString(16).slice(2,14),name:'New Tier',threshold:0,color:'#64748b',discount_percent:0,benefits:[],active:true}])}>
-                    + Add VIP Tier
-                  </button>
-                </div>
-              </>}
-
-              {form.card_type==='multipass' && <>
-                <label style={styles.label}>Sessions / visits included</label>
-                <input style={{...styles.input,width:guidedMobile?'100%':150}} type="number" min="2" max="200" value={form.multipass_session_count} onChange={e=>update('multipass_session_count',e.target.value)}/>
-                <p style={styles.hint}>For Multi-Pass, the included sessions are the customer's redeemable benefit. Each use reduces the remaining session count.</p>
-                <label style={{...styles.label,marginTop:14}}>Pass validity</label>
-                <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-                  <input style={{...styles.input,width:guidedMobile?'100%':150}} type="number" min="1" value={form.multipass_validity_days} onChange={e=>update('multipass_validity_days',e.target.value)}/>
-                  <span>days</span>
-                </div>
-              </>}
-            </>
-          )}
-
-          {guidedStep === 4 && (
-            <>
-              <p style={{margin:'0 0 18px',color:'#64748b',lineHeight:1.6}}>
-                Pick the main color customers will associate with your card. You can fine-tune the Wallet style later.
-              </p>
-              <label style={styles.label}>Primary color</label>
-              <div style={{display:'flex',gap:12,alignItems:'center'}}>
-                <input type="color" value={form.primary_color || '#0d9488'} onChange={e=>update('primary_color',e.target.value)}
-                  style={{width:58,height:48,border:'1px solid #cbd5e1',borderRadius:10,padding:4,background:'#fff'}}/>
-                <input style={{...styles.input,maxWidth:180}} value={form.primary_color || '#0d9488'} onChange={e=>update('primary_color',e.target.value)}/>
-              </div>
-              <div style={{marginTop:18,borderRadius:16,padding:20,color:'#fff',background:`linear-gradient(135deg,${form.primary_color || '#0d9488'},${form.wallet_secondary_color || '#14b8a6'})`}}>
-                <div style={{fontSize:12,opacity:.85}}>{businessName}</div>
-                <div style={{fontSize:22,fontWeight:850,marginTop:4}}>{form.card_name || `${businessName} Rewards`}</div>
-                <div style={{fontSize:13,opacity:.9,marginTop:22}}>{guidedCardLabel}</div>
-              </div>
-            </>
-          )}
-
-          {guidedStep === 5 && (
-            <>
-              <p style={{margin:'0 0 18px',color:'#64748b',lineHeight:1.6}}>
-                Add your logo and optional background image. You can skip either one and add it later from Edit Card.
-              </p>
-              <label style={styles.label}>Business / card logo</label>
-              <input type="file" accept="image/*" onChange={e=>uploadImage('program_logo_url',e.target.files?.[0])}/>
-              {imageUpload.program_logo_url.uploading && <p style={styles.hint}>Uploading logo…</p>}
-              {form.program_logo_url && <img src={form.program_logo_url} alt="Logo preview" style={{width:72,height:72,objectFit:'cover',borderRadius:14,marginTop:10,border:'1px solid #e2e8f0'}}/>}
-              <div style={{height:18}}/>
-              <label style={styles.label}>Card background / hero image <span style={{fontWeight:500,color:'#94a3b8'}}>(optional)</span></label>
-              <input type="file" accept="image/*" onChange={e=>uploadImage('hero_image_url',e.target.files?.[0])}/>
-              {imageUpload.hero_image_url.uploading && <p style={styles.hint}>Uploading image…</p>}
-              {form.hero_image_url && <img src={form.hero_image_url} alt="Background preview" style={{width:'100%',maxWidth:360,height:130,objectFit:'cover',borderRadius:14,marginTop:10,border:'1px solid #e2e8f0'}}/>}
-            </>
-          )}
-
-          {guidedStep === 6 && (
-            <>
-              <p style={{margin:'0 0 18px',color:'#64748b',lineHeight:1.6}}>
-                Here’s what we’ll publish. You can change any advanced setting later from <b>Edit Card</b>.
-              </p>
-              <div style={{display:'grid',gap:10}}>
-                <div style={{padding:13,borderRadius:12,background:'#f8fafc'}}><b>Card type:</b> {guidedCardLabel}</div>
-                <div style={{padding:13,borderRadius:12,background:'#f8fafc'}}><b>Card name:</b> {form.card_name || `${businessName} Rewards`}</div>
-                <div style={{padding:13,borderRadius:12,background:'#f8fafc'}}><b>Description:</b> {form.description || '—'}</div>
-                <div style={{padding:13,borderRadius:12,background:'#f8fafc',display:'flex',alignItems:'center',gap:9}}>
-                  <b>Color:</b><span style={{width:22,height:22,borderRadius:6,background:form.primary_color,border:'1px solid #cbd5e1'}}/> {form.primary_color}
-                </div>
-              </div>
-              <div style={{marginTop:18,padding:14,borderRadius:12,background:'#f0fdfa',border:'1px solid #99f6e4',color:'#0f766e',fontSize:13,lineHeight:1.55}}>
-                Publishing saves your card settings and prepares the Wallet card configuration. After this, LoyaltyTree will guide you to cashier and customer QR setup.
-              </div>
-            </>
-          )}
-        </div>
-
-        <div style={{display:'flex',flexDirection:guidedMobile?'column-reverse':'row',justifyContent:'space-between',gap:10,marginTop:16,flexWrap:'wrap'}}>
-          <button type="button" onClick={guidedBack} disabled={guidedStep===0 || publishing}
-            style={{...styles.typeChangeBtn,padding:'11px 18px',width:guidedMobile?'100%':'auto',opacity:guidedStep===0?.45:1}}>
-            ← Back
-          </button>
-
-          {guidedStep < 6 ? (
-            <button type="button" onClick={guidedNext} style={{...styles.pickerContinueBtn,margin:0,width:guidedMobile?'100%':'auto',minWidth:guidedMobile?0:170}}>
-              {guidedStep===0 ? `Choose ${guidedCardLabel} →` : 'Continue →'}
-            </button>
-          ) : (
-            <button type="button" onClick={guidedPublish} disabled={publishing} style={{...styles.publishBtn,flex:guidedMobile?'1 1 auto':'0 1 240px',width:guidedMobile?'100%':'auto'}}>
-              {publishing ? 'Publishing…' : '✓ Publish Card & Continue'}
-            </button>
-          )}
-        </div>
-      </div>
-    )
-  }
-
   if (step === 'picker') {
     return (
       <div style={styles.page}>
@@ -837,6 +485,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                     </div>
                     <div style={styles.cardFoot}>
                       Earn {Number(form.points_per_amount) || 0} pts per ₱{Number(form.points_amount_pesos) || 0} spent
+                      {form.points_cap_limit !== '' && (
+                        <><br />Maximum balance: {Number(form.points_cap_limit).toLocaleString()} pts</>
+                      )}
                     </div>
                     {form.points_prizes.length > 0 && (
                       <div style={styles.previewPrizeList}>
@@ -1174,6 +825,33 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                   <span style={styles.earnRateText}>spent</span>
                 </div>
                 <p style={styles.hint}>Adjustable any time — a change only affects points earned on transactions going forward.</p>
+              </div>
+
+              <div style={styles.fieldGroup}>
+                <label style={styles.label}>Maximum points balance (optional)</label>
+                <div style={styles.row}>
+                  <input
+                    style={{ ...styles.input, flex: 1 }}
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={form.points_cap_limit}
+                    onChange={e => update('points_cap_limit', e.target.value)}
+                    placeholder="No limit"
+                  />
+                  {form.points_cap_limit !== '' && (
+                    <button
+                      type="button"
+                      onClick={() => update('points_cap_limit', '')}
+                      style={styles.pointsCapClearBtn}
+                    >
+                      Remove cap
+                    </button>
+                  )}
+                </div>
+                <p style={styles.hint}>
+                  Leave blank for unlimited points. Once a member reaches this balance, new purchases stop adding points until they redeem some.
+                </p>
               </div>
 
               <div style={styles.fieldGroup}>
@@ -1937,6 +1615,18 @@ const styles = {
     fontSize: 13,
     fontWeight: 600,
   },
+  pointsCapClearBtn: {
+    padding: '10px 12px',
+    borderRadius: 9,
+    border: '1px solid #cbd5e1',
+    background: '#ffffff',
+    color: '#475569',
+    fontSize: 12,
+    fontWeight: 700,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  },
+
 }
 
 export default LoyaltyCardCustomizer
