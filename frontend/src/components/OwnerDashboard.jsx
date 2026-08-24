@@ -2054,6 +2054,12 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                         ? (item.service_name || 'Visit')
                         : isMultipassCard
                         ? (item.action === 'issued' ? 'Pass issued' : 'Session stamped')
+                        : isCouponEvent
+                        ? couponAction === 'redeemed'
+                          ? `🎟️ Coupon Redeemed · ${couponReward}`
+                          : couponAction === 'cancelled'
+                          ? `❌ Coupon Cancelled · ${couponReward}`
+                          : `🎟️ Coupon Issued · ${couponReward}`
                         : isPointsCard
                         ? item.activity_type === 'adjustment'
                           ? `${Number(item.points_delta || 0) >= 0 ? '+' : ''}${Number(item.points_delta || 0)} pts · Owner adjustment`
@@ -2062,12 +2068,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                           : `+${item.points_earned ?? item.points_delta ?? 0} pts earned`
                         : isVipCard
                         ? `${(item.points_delta ?? 0) >= 0 ? '+' : ''}${item.points_delta ?? 0} VIP pts`
-                        : isCouponEvent
-                        ? couponAction === 'redeemed'
-                          ? `🎟️ Coupon Redeemed · ${couponReward}`
-                          : couponAction === 'cancelled'
-                          ? `❌ Coupon Cancelled · ${couponReward}`
-                          : `🎟️ Coupon Issued · ${couponReward}`
                         : item.activity_type === 'adjustment'
                         ? `${Number(item.delta || 0) >= 0 ? '+' : ''}${Number(item.delta || 0)} Stamp${Math.abs(Number(item.delta || 0)) === 1 ? '' : 's'} · ${item.staff_name ? 'Cashier correction' : 'Owner correction'}`
                         : item.stamp_number != null
@@ -2112,8 +2112,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                           )}
                           {isMultipassCard && <div style={{fontSize:13,color:'#475569',marginTop:3}}>{item.sessions_remaining ?? 0} sessions remaining after this activity</div>}
                           {isMembershipCard && item.note && <div style={{fontSize:13,color:'#334155',whiteSpace:'pre-wrap',marginTop:6,padding:8,background:'#f8fafc',borderRadius:8}}>{item.note}</div>}
-                          {isPointsCard && item.amount_spent_pesos != null && <div style={{fontSize:13,color:'#475569',marginTop:3}}>₱{Number(item.amount_spent_pesos).toLocaleString()} spent</div>}
-                          {isPointsCard && item.activity_type === 'adjustment' && (
+                          {isPointsCard && !isCouponEvent && item.amount_spent_pesos != null && <div style={{fontSize:13,color:'#475569',marginTop:3}}>₱{Number(item.amount_spent_pesos).toLocaleString()} spent</div>}
+                          {isPointsCard && !isCouponEvent && item.activity_type === 'adjustment' && (
                             <>
                               <div style={{fontSize:13,color:Number(item.points_delta || 0) < 0 ? '#b91c1c' : '#166534',fontWeight:700,marginTop:3}}>
                                 {item.balance_before ?? 0} points → {item.balance_after ?? item.points_balance ?? 0} points

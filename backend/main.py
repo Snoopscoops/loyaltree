@@ -12162,6 +12162,7 @@ async def get_points_history(public_id: str, customer_public_id: str):
       - points earned from purchases (points_events)
       - owner/manual point corrections (transaction_audit: points_adjust)
       - prize redemptions/deductions (transaction_audit: points_redeem)
+      - one-time coupon issuance, redemption, and cancellation (coupons)
 
     Older purchase history remains visible because points_events is preserved,
     while newer balance movements use transaction_audit for reliable before /
@@ -12227,6 +12228,60 @@ async def get_points_history(public_id: str, customer_public_id: str):
                 'prize_name': metadata.get('prize_name'),
                 'metadata': metadata,
             })
+
+        # One-time coupons are available on points cards too, so include the
+        # coupon lifecycle in this same customer timeline. These are audit-only
+        # activities: points_delta stays 0 and the points balance is untouched.
+        coupon_rows = (
+            supabase.table('coupons')
+            .select('id,public_id,reward_text,status,created_at,updated_at,redeemed_at,redeemed_by_staff_id')
+            .eq('business_id', business.get('id'))
+            .eq('customer_id', customer.get('id'))
+            .execute()
+        ).data or []
+
+        for coupon in coupon_rows:
+            reward_text = coupon.get('reward_text') or 'One-time coupon'
+            activities.append({
+                'id': f"coupon-issued-{coupon.get('id')}",
+                'coupon_public_id': coupon.get('public_id'),
+                'activity_type': 'coupon_issued',
+                'activity_label': 'Coupon issued',
+                'reward_text': reward_text,
+                'points_delta': 0,
+                'created_at': coupon.get('created_at'),
+                'staff_id': None,
+                'branch_id': None,
+                'actor_type': 'owner',
+            })
+
+            status = str(coupon.get('status') or '').lower()
+            if status == 'redeemed' and coupon.get('redeemed_at'):
+                activities.append({
+                    'id': f"coupon-redeemed-{coupon.get('id')}",
+                    'coupon_public_id': coupon.get('public_id'),
+                    'activity_type': 'coupon_redeemed',
+                    'activity_label': 'Coupon redeemed',
+                    'reward_text': reward_text,
+                    'points_delta': 0,
+                    'created_at': coupon.get('redeemed_at'),
+                    'staff_id': coupon.get('redeemed_by_staff_id'),
+                    'branch_id': None,
+                    'actor_type': 'cashier' if coupon.get('redeemed_by_staff_id') else 'owner',
+                })
+            elif status == 'cancelled':
+                activities.append({
+                    'id': f"coupon-cancelled-{coupon.get('id')}",
+                    'coupon_public_id': coupon.get('public_id'),
+                    'activity_type': 'coupon_cancelled',
+                    'activity_label': 'Coupon cancelled',
+                    'reward_text': reward_text,
+                    'points_delta': 0,
+                    'created_at': coupon.get('updated_at') or coupon.get('created_at'),
+                    'staff_id': None,
+                    'branch_id': None,
+                    'actor_type': 'owner',
+                })
 
         activities = attach_activity_location_names(activities)
         activities.sort(
