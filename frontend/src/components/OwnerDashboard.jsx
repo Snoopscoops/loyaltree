@@ -600,6 +600,9 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         setShowCouponForm(false)
         setCouponText('')
         setCouponExpiry('')
+        // Coupon issuance is part of the customer's loyalty timeline too.
+        // Refresh immediately so the owner sees it without closing/reopening.
+        if (editForm.public_id) fetchMemberHistory(editForm.public_id)
       } else {
         setCouponError(data.detail || 'Failed to create coupon')
       }
@@ -618,6 +621,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       })
       if (res.ok) {
         setActiveCoupon(null)
+        // Keep the loyalty timeline in sync with coupon cancellation.
+        if (editForm.public_id) fetchMemberHistory(editForm.public_id)
       }
     } catch (err) {
       setCouponError('Failed to cancel coupon')
@@ -1996,7 +2001,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:12, marginBottom:12}}>
                   <div>
                     <strong style={{fontSize:15,color:'#115e59'}}>
-                      {isMultipassCard ? 'Multi-Pass activity' : isMembershipCard ? 'Member visit analytics' : isPointsCard ? 'Points activity' : isVipCard ? 'VIP activity' : 'Stamp activity'}
+                      {isMultipassCard ? 'Multi-Pass activity' : isMembershipCard ? 'Member visit analytics' : isPointsCard ? 'Points activity' : isVipCard ? 'VIP activity' : 'Loyalty activity'}
                     </strong>
                     <div style={{fontSize:12,color:'#64748b',marginTop:3}}>
                       {isMembershipCard
@@ -2007,7 +2012,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                         ? 'Every points movement — purchases, redemptions, and owner adjustments'
                         : isVipCard
                         ? 'Every VIP points award and tier change'
-                        : 'The date, cashier, and branch for every recorded stamp'}
+                        : 'Stamps, coupon issuance, redemptions, cancellations, cashier, branch, and date'}
                     </div>
                   </div>
                   <div style={{minWidth:76,textAlign:'center',background:'white',border:'1px solid #99f6e4',borderRadius:10,padding:'8px 10px'}}>
@@ -2035,6 +2040,16 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     {memberHistory.map((item, i) => {
                       const eventDate = item.created_at || item.service_date
                       const location = [item.staff_name ? `By ${item.staff_name}` : null, item.branch_name ? `at ${item.branch_name}` : null].filter(Boolean).join(' ')
+                      // Stamp history can also contain one-time coupon events. Never
+                      // render those as an empty "Stamp #" row.
+                      const rawActivityType = String(item.activity_type || item.action || item.event_type || '').toLowerCase()
+                      const isCouponEvent = rawActivityType.includes('coupon') || !!item.coupon_public_id
+                      const couponReward = item.reward_text || item.coupon_reward_text || item.reward_name || item.description || 'One-time coupon'
+                      const couponAction = rawActivityType.includes('redeem') || rawActivityType === 'used'
+                        ? 'redeemed'
+                        : rawActivityType.includes('cancel') || rawActivityType.includes('delete') || rawActivityType.includes('void')
+                        ? 'cancelled'
+                        : 'issued'
                       const title = isMembershipCard
                         ? (item.service_name || 'Visit')
                         : isMultipassCard
@@ -2047,9 +2062,17 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                           : `+${item.points_earned ?? item.points_delta ?? 0} pts earned`
                         : isVipCard
                         ? `${(item.points_delta ?? 0) >= 0 ? '+' : ''}${item.points_delta ?? 0} VIP pts`
+                        : isCouponEvent
+                        ? couponAction === 'redeemed'
+                          ? `🎟️ Coupon Redeemed · ${couponReward}`
+                          : couponAction === 'cancelled'
+                          ? `❌ Coupon Cancelled · ${couponReward}`
+                          : `🎟️ Coupon Issued · ${couponReward}`
                         : item.activity_type === 'adjustment'
                         ? `${Number(item.delta || 0) >= 0 ? '+' : ''}${Number(item.delta || 0)} Stamp${Math.abs(Number(item.delta || 0)) === 1 ? '' : 's'} · ${item.staff_name ? 'Cashier correction' : 'Owner correction'}`
-                        : `Stamp #${item.stamp_number || ''}`
+                        : item.stamp_number != null
+                        ? `Stamp #${item.stamp_number}`
+                        : 'Loyalty activity'
                       // vip_events.action is always 'sale' or 'adjustment' -
                       // never a distinct 'tier_change' value - so a tier
                       // change is detected by comparing old_tier/new_tier on
@@ -2064,12 +2087,12 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                           width:10,height:10,borderRadius:'50%',
                           background:(
                             (isPointsCard && Number(item.points_delta || 0) < 0) ||
-                            (!isMembershipCard && !isMultipassCard && !isPointsCard && !isVipCard && item.activity_type === 'adjustment' && Number(item.delta || 0) < 0)
+                            (!isCouponEvent && !isMembershipCard && !isMultipassCard && !isPointsCard && !isVipCard && item.activity_type === 'adjustment' && Number(item.delta || 0) < 0)
                           ) ? '#dc2626' : '#14b8a6',
                           marginTop:5,
                           boxShadow:(
                             (isPointsCard && Number(item.points_delta || 0) < 0) ||
-                            (!isMembershipCard && !isMultipassCard && !isPointsCard && !isVipCard && item.activity_type === 'adjustment' && Number(item.delta || 0) < 0)
+                            (!isCouponEvent && !isMembershipCard && !isMultipassCard && !isPointsCard && !isVipCard && item.activity_type === 'adjustment' && Number(item.delta || 0) < 0)
                           ) ? '0 0 0 4px #fee2e2' : '0 0 0 4px #ccfbf1'
                         }} />
                         <div>
@@ -2079,7 +2102,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                               {eventDate ? new Date(eventDate).toLocaleString([], {year:'numeric',month:'short',day:'numeric',hour:eventDate.includes?.('T')?'numeric':undefined,minute:eventDate.includes?.('T')?'2-digit':undefined}) : 'Date unavailable'}
                             </span>
                           </div>
-                          {!isMembershipCard && !isMultipassCard && !isPointsCard && !isVipCard && item.activity_type === 'adjustment' && (
+                          {!isCouponEvent && !isMembershipCard && !isMultipassCard && !isPointsCard && !isVipCard && item.activity_type === 'adjustment' && (
                             <>
                               <div style={{fontSize:13,color:Number(item.delta || 0) < 0 ? '#b91c1c' : '#166534',fontWeight:700,marginTop:3}}>
                                 {item.old_count ?? 0} stamps → {item.new_count ?? 0} stamps
