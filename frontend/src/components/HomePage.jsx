@@ -675,6 +675,13 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         .lt-stamp-count { animation: ltStampPulse 3s ease-in-out infinite; }
         @keyframes ltPhoneFloat { 0%,100% { transform: translateY(0px); } 50% { transform: translateY(-10px); } }
         @keyframes ltStampPulse { 0%,70%,100% { opacity:1; transform:scale(1); } 82% { opacity:.78; transform:scale(1.045); } }
+        @keyframes ltLogoMarqueeRight { from { transform: translateX(-50%); } to { transform: translateX(0); } }
+        .lt-logo-marquee-track { animation: ltLogoMarqueeRight 32s linear infinite; }
+        .lt-logo-marquee:hover .lt-logo-marquee-track { animation-play-state: paused; }
+
+        @media (prefers-reduced-motion: reduce) {
+          .lt-logo-marquee-track { animation: none !important; transform: none !important; }
+        }
 
         @media (max-width: 980px) {
           .lt-phone-float { transform:none; animation:none; }
@@ -699,6 +706,9 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
           .lt-brand-pillar { padding:12px 8px !important; }
           .lt-brand-pillar-word { font-size:13px !important; }
           .lt-brand-pillar-copy { font-size:10px !important; }
+          .lt-logo-marquee-track { gap:24px !important; }
+          .lt-logo-marquee a { width:132px !important; height:112px !important; }
+          .lt-logo-marquee img { max-height:92px !important; }
         }
 
         @media (max-width: 560px) {
@@ -1009,30 +1019,30 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         <button onClick={() => { setMobileMenuOpen(false); goPublicPage('/how-it-works#pricing') }} style={styles.homePricingButton}>View full pricing & branch options →</button>
       </section>
 
-      <section style={{ ...styles.section, background: '#ffffff' }}>
+      <section style={{ ...styles.section, background: '#ffffff', overflow: 'hidden' }}>
         <div style={styles.partnerHeader}>
           <span style={styles.partnerEyebrow}>Our growing community</span>
-          <h2 style={styles.h2}>Businesses growing with LoyaltyTree</h2>
+          <h2 style={styles.h2}>Businesses currently using LoyaltyTree</h2>
+          <p style={styles.partnerIntro}>Trusted by growing businesses across different industries.</p>
         </div>
 
-        {!partnersLoading && !partnersError && partners.filter(p => p.plan_segment === 'partners').length > 0 && (
-          <div style={styles.logoCommunityBlock}>
-            <div style={styles.logoCommunityHeading}>Specialized Partners</div>
-            <div style={styles.logoOnlyGrid}>
-              {partners.filter(p => p.plan_segment === 'partners').map(partner => (
+        {!partnersLoading && !partnersError && partners.length > 0 && (
+          <div className="lt-logo-marquee" style={styles.logoMarqueeViewport}>
+            <div className="lt-logo-marquee-track" style={styles.logoMarqueeTrack}>
+              {[...partners, ...partners].map((partner, index) => (
                 <a
-                  key={partner.public_id}
+                  key={`${partner.public_id}-${index}`}
                   href={partner.website_url || undefined}
                   target={partner.website_url ? '_blank' : undefined}
                   rel={partner.website_url ? 'noopener noreferrer' : undefined}
-                  style={styles.logoOnlyTile}
+                  style={styles.logoMarqueeTile}
                   title={partner.name}
                   aria-label={partner.name}
                 >
                   <img
                     src={partnerLogoSrc(partner)}
                     alt={partner.name}
-                    style={styles.logoOnlyImage}
+                    style={styles.logoMarqueeImage}
                     loading="lazy"
                     onError={e => { e.currentTarget.style.display = 'none' }}
                   />
@@ -1042,37 +1052,10 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
           </div>
         )}
 
-        {!partnersLoading && !partnersError && partners.filter(p => p.plan_segment !== 'partners').length > 0 && (
-          <div style={{ ...styles.logoCommunityBlock, marginTop: 42 }}>
-            <div style={styles.logoCommunityHeading}>Businesses Using LoyaltyTree</div>
-            <div style={styles.logoOnlyGrid}>
-              {partners.filter(p => p.plan_segment !== 'partners').map(partner => (
-                <a
-                  key={partner.public_id}
-                  href={partner.website_url || undefined}
-                  target={partner.website_url ? '_blank' : undefined}
-                  rel={partner.website_url ? 'noopener noreferrer' : undefined}
-                  style={styles.logoOnlyTile}
-                  title={partner.name}
-                  aria-label={partner.name}
-                >
-                  <img
-                    src={partnerLogoSrc(partner)}
-                    alt={partner.name}
-                    style={styles.logoOnlyImage}
-                    loading="lazy"
-                    onError={e => { e.currentTarget.style.display = 'none' }}
-                  />
-                </a>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {partnersLoading && <div style={styles.partnerStatus}>Loading partner information...</div>}
+        {partnersLoading && <div style={styles.partnerStatus}>Loading business logos...</div>}
         {!partnersLoading && partnersError && (
           <div style={{...styles.partnerStatus, color:'#b91c1c', background:'#fef2f2', borderColor:'#fecaca'}}>
-            Partner information could not load: {partnersError}
+            Business information could not load: {partnersError}
           </div>
         )}
       </section>
@@ -1689,6 +1672,10 @@ const styles = {
   logoOnlyGrid: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 30, flexWrap: 'wrap' },
   logoOnlyTile: { width: 150, height: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 12, boxSizing: 'border-box', textDecoration: 'none', background: 'transparent' },
   logoOnlyImage: { maxWidth: '100%', maxHeight: '82px', width: 'auto', height: 'auto', objectFit: 'contain', display: 'block' },
+  logoMarqueeViewport: { width: '100vw', marginLeft: 'calc(50% - 50vw)', overflow: 'hidden', padding: '18px 0 28px', WebkitMaskImage: 'linear-gradient(to right, transparent 0, black 6%, black 94%, transparent 100%)', maskImage: 'linear-gradient(to right, transparent 0, black 6%, black 94%, transparent 100%)' },
+  logoMarqueeTrack: { display: 'flex', alignItems: 'center', gap: 44, width: 'max-content', willChange: 'transform' },
+  logoMarqueeTile: { width: 168, height: 130, flex: '0 0 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 12, boxSizing: 'border-box', textDecoration: 'none', background: '#fff', border: '1px solid #eef2f7', borderRadius: 16, boxShadow: '0 8px 22px rgba(15,23,42,.055)' },
+  logoMarqueeImage: { maxWidth: '100%', maxHeight: 104, width: 'auto', height: 'auto', objectFit: 'contain', display: 'block' },
   specialPartnerLogoWrap: { height: 92, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc', borderRadius: 14, marginBottom: 13, padding: 12 },
   impactHeader: { maxWidth: 680, margin: '12px auto 24px', textAlign: 'center' },
   impactEyebrow: { display: 'inline-block', color: '#0d9488', fontSize: 12, fontWeight: 850, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 },
