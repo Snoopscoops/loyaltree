@@ -836,29 +836,49 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         </div>
       </section>
 
-      <section style={styles.scanSection}>
-        <span style={styles.scanEyebrow}>No app needed</span>
-        <h2 style={styles.h2}>Scan to Join. Scan to Stamp.</h2>
-        <p style={styles.scanIntro}>
-          That's the whole system. No applications needed &mdash; the card goes straight to your
-          customer's Google Wallet or Apple Wallet, and stays there.
-        </p>
-        <div style={styles.scanRow}>
-          {SCAN_STEPS.map((s, i) => (
-            <React.Fragment key={s.n}>
-              <div style={styles.scanCard}>
-                <div style={styles.scanCardIcon}>{s.icon}</div>
-                <div style={styles.scanCardBadge}>Step {s.n}</div>
-                <h3 style={styles.scanCardTitle}>{s.title}</h3>
-                <p style={styles.scanCardBody}>{s.body}</p>
+      <section style={styles.notificationSection}>
+        <style>{`
+          @media (max-width: 780px) {
+            .lt-notification-grid { grid-template-columns: 1fr !important; gap: 34px !important; }
+            .lt-notification-content { text-align: center !important; }
+            .lt-notification-features { grid-template-columns: 1fr !important; text-align: left !important; max-width: 460px; margin: 0 auto; }
+            .lt-notification-heading { font-size: 38px !important; }
+            .lt-notification-intro { margin-left: auto !important; margin-right: auto !important; }
+          }
+        `}</style>
+        <div className="lt-notification-grid" style={styles.notificationGrid}>
+          <div style={styles.iphoneWrap} aria-label="Example LoyaltyTree wallet notification on iPhone">
+            <div style={styles.iphoneFrame}>
+              <div style={styles.iphoneScreen}>
+                <div style={styles.iphoneDynamicIsland}></div>
+                <div style={styles.iphoneStatus}><span>Globe</span><span>▮▮▮  ◔  ▰</span></div>
+                <div style={styles.lockDate}>Monday, August 10</div>
+                <div style={styles.lockTime}>13:58</div>
+                <div style={styles.iosNotification}>
+                  <img src={logo64} alt="LoyaltyTree" style={styles.notificationLogo} />
+                  <div style={styles.notificationCopy}>
+                    <div style={styles.notificationMeta}><strong>LOYALTYTREE</strong><span>now</span></div>
+                    <div style={styles.notificationTitle}>You earned a stamp at Bummed Cafe! 🎉</div>
+                    <div style={styles.notificationBody}>Keep going! 2 more stamps to unlock your reward.</div>
+                  </div>
+                </div>
+                <div style={styles.lockBottomRow}><span style={styles.lockCircle}>⌁</span><span style={styles.lockCircle}>◉</span></div>
+                <div style={styles.homeIndicator}></div>
               </div>
-              {i === 0 && <div style={styles.scanArrow} aria-hidden="true">&rarr;</div>}
-            </React.Fragment>
-          ))}
-        </div>
-        <div style={styles.walletRow}>
-          <span style={styles.walletPill}>📱 Google Wallet</span>
-          <span style={styles.walletPill}>🍎 Apple Wallet</span>
+            </div>
+          </div>
+
+          <div className="lt-notification-content" style={styles.notificationContent}>
+            <span style={styles.scanEyebrow}>🔔 No app needed</span>
+            <h2 className="lt-notification-heading" style={styles.notificationHeading}>Stay Updated.<br />Get Notified.</h2>
+            <p className="lt-notification-intro" style={styles.notificationIntro}>Get real-time notifications when customers earn a stamp, unlock a reward, or receive exclusive offers.</p>
+            <div className="lt-notification-features" style={styles.notificationFeatures}>
+              <div style={styles.notificationFeature}><span style={styles.notificationFeatureIcon}>🔔</span><div><strong>Instant Notifications</strong><p>Customers know right away when they earn a stamp or reward.</p></div></div>
+              <div style={styles.notificationFeature}><span style={styles.notificationFeatureIcon}>🎁</span><div><strong>Reward Updates</strong><p>Keep customers excited about new rewards and offers.</p></div></div>
+              <div style={styles.notificationFeature}><span style={styles.notificationFeatureIcon}>%</span><div><strong>Exclusive Offers</strong><p>Send special deals and promotions directly to loyal customers.</p></div></div>
+              <div style={styles.notificationFeature}><span style={styles.notificationFeatureIcon}>▣</span><div><strong>Always in Their Wallet</strong><p>Updates stay connected to their Apple or Google Wallet card.</p></div></div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -1427,6 +1447,31 @@ const styles = {
   pillarTitle: { fontSize: 17, fontWeight: 700, color: '#0f172a', margin: '0 0 8px' },
   pillarBody: { fontSize: 14, lineHeight: 1.6, color: '#64748b', margin: 0 },
 
+  // Wallet notification showcase
+  notificationSection: { padding: '58px 32px 70px', maxWidth: 1120, margin: '0 auto' },
+  notificationGrid: { display: 'grid', gridTemplateColumns: 'minmax(300px, 0.9fr) minmax(360px, 1.1fr)', gap: 72, alignItems: 'center' },
+  iphoneWrap: { display: 'flex', justifyContent: 'center' },
+  iphoneFrame: { width: 350, maxWidth: '100%', padding: 10, borderRadius: 58, background: '#111', boxShadow: '0 28px 55px rgba(15,23,42,.20), inset 0 0 0 2px #3f3f46' },
+  iphoneScreen: { position: 'relative', height: 620, overflow: 'hidden', borderRadius: 49, padding: '24px 18px', boxSizing: 'border-box', color: '#fff', background: 'linear-gradient(145deg,#335f58 0%,#6f9b89 36%,#d9d8c8 67%,#7aa28f 100%)' },
+  iphoneDynamicIsland: { position: 'absolute', top: 14, left: '50%', transform: 'translateX(-50%)', width: 112, height: 31, borderRadius: 20, background: '#050505' },
+  iphoneStatus: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12, fontWeight: 700, padding: '3px 7px 0' },
+  lockDate: { marginTop: 62, textAlign: 'center', fontSize: 20, fontWeight: 500, textShadow: '0 1px 8px rgba(0,0,0,.12)' },
+  lockTime: { textAlign: 'center', fontSize: 78, lineHeight: 1.05, letterSpacing: '-4px', fontWeight: 300, marginTop: 4 },
+  iosNotification: { display: 'flex', gap: 11, alignItems: 'flex-start', marginTop: 76, padding: '14px 15px', borderRadius: 22, color: '#111827', background: 'rgba(247,249,249,.88)', boxShadow: '0 10px 30px rgba(15,23,42,.13)', backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)' },
+  notificationLogo: { width: 42, height: 42, borderRadius: 10, objectFit: 'cover', flex: '0 0 auto' },
+  notificationCopy: { minWidth: 0, flex: 1 },
+  notificationMeta: { display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11, marginBottom: 4, letterSpacing: '.01em' },
+  notificationTitle: { fontSize: 13, fontWeight: 750, lineHeight: 1.35, marginBottom: 3 },
+  notificationBody: { fontSize: 12.5, lineHeight: 1.4, color: '#1f2937' },
+  lockBottomRow: { position: 'absolute', left: 25, right: 25, bottom: 48, display: 'flex', justifyContent: 'space-between' },
+  lockCircle: { width: 43, height: 43, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(17,24,39,.42)', color: '#fff', fontSize: 19 },
+  homeIndicator: { position: 'absolute', left: '50%', bottom: 14, transform: 'translateX(-50%)', width: 112, height: 5, borderRadius: 999, background: '#fff' },
+  notificationContent: { textAlign: 'left' },
+  notificationHeading: { fontSize: 48, lineHeight: 1.03, letterSpacing: '-1.8px', fontWeight: 850, color: '#0f172a', margin: '8px 0 18px' },
+  notificationIntro: { maxWidth: 520, fontSize: 16, lineHeight: 1.65, color: '#475569', margin: '0 0 30px' },
+  notificationFeatures: { display: 'grid', gridTemplateColumns: 'repeat(2,minmax(0,1fr))', gap: '26px 24px' },
+  notificationFeature: { display: 'flex', gap: 13, alignItems: 'flex-start' },
+  notificationFeatureIcon: { width: 46, height: 46, flex: '0 0 46px', borderRadius: '50%', background: '#dcfce7', color: '#07836f', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, fontWeight: 850 },
   // Scan to Join / Scan to Stamp section
   scanSection: {
     padding: '56px 32px 64px', maxWidth: 1000, margin: '0 auto', textAlign: 'center',
