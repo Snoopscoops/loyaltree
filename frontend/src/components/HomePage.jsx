@@ -1012,72 +1012,62 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
       <section style={{ ...styles.section, background: '#ffffff' }}>
         <div style={styles.partnerHeader}>
           <span style={styles.partnerEyebrow}>Our growing community</span>
-          <h2 style={styles.h2}>Thank you for trusting us</h2>
-          <p style={styles.partnerIntro}>
-            We are proud to support businesses that use LoyaltyTree to serve, retain, and appreciate their customers.
-          </p>
+          <h2 style={styles.h2}>Businesses growing with LoyaltyTree</h2>
         </div>
 
-        {/* Specialized partners stay featured above the community numbers. */}
         {!partnersLoading && !partnersError && partners.filter(p => p.plan_segment === 'partners').length > 0 && (
-          <div style={styles.specialPartnerBlock}>
-            <div style={styles.partnerPlanHeading}>
-              <span style={{ ...styles.partnerPlanBadge, background: '#0f766e' }}>Specialized Partners</span>
-            </div>
-            <div style={styles.specialPartnerGrid}>
+          <div style={styles.logoCommunityBlock}>
+            <div style={styles.logoCommunityHeading}>Specialized Partners</div>
+            <div style={styles.logoOnlyGrid}>
               {partners.filter(p => p.plan_segment === 'partners').map(partner => (
                 <a
                   key={partner.public_id}
                   href={partner.website_url || undefined}
                   target={partner.website_url ? '_blank' : undefined}
                   rel={partner.website_url ? 'noopener noreferrer' : undefined}
-                  style={styles.specialPartnerCard}
+                  style={styles.logoOnlyTile}
+                  title={partner.name}
+                  aria-label={partner.name}
                 >
-                  <div style={styles.specialPartnerLogoWrap}>
-                    <img src={partnerLogoSrc(partner)} alt={partner.name} style={styles.partnerLogo} loading="lazy" onError={e => { e.currentTarget.style.display = 'none' }} />
-                  </div>
-                  <div style={styles.partnerName}>{partner.name}</div>
-                  <div style={styles.partnerSector}>{partner.sector || 'Specialized Partner'}</div>
+                  <img
+                    src={partnerLogoSrc(partner)}
+                    alt={partner.name}
+                    style={styles.logoOnlyImage}
+                    loading="lazy"
+                    onError={e => { e.currentTarget.style.display = 'none' }}
+                  />
                 </a>
               ))}
             </div>
           </div>
         )}
 
-        <div style={styles.impactHeader}>
-          <span style={styles.impactEyebrow}>Our impact so far</span>
-          <h3 style={styles.impactTitle}>Growing together, one visit at a time.</h3>
-          <p style={styles.impactIntro}>Live platform activity across the LoyaltyTree community.</p>
-        </div>
-
-        <div className="lt-impact-grid" style={styles.impactGrid}>
-          <div style={styles.impactCard}>
-            <div style={styles.impactIcon}>🏪</div>
-            <strong style={styles.impactValue}>{formatCommunityMetric(communityStats.businesses)}</strong>
-            <span style={styles.impactLabel}>Total Businesses</span>
-            <span style={styles.impactCaption}>and growing</span>
+        {!partnersLoading && !partnersError && partners.filter(p => p.plan_segment !== 'partners').length > 0 && (
+          <div style={{ ...styles.logoCommunityBlock, marginTop: 42 }}>
+            <div style={styles.logoCommunityHeading}>Businesses Using LoyaltyTree</div>
+            <div style={styles.logoOnlyGrid}>
+              {partners.filter(p => p.plan_segment !== 'partners').map(partner => (
+                <a
+                  key={partner.public_id}
+                  href={partner.website_url || undefined}
+                  target={partner.website_url ? '_blank' : undefined}
+                  rel={partner.website_url ? 'noopener noreferrer' : undefined}
+                  style={styles.logoOnlyTile}
+                  title={partner.name}
+                  aria-label={partner.name}
+                >
+                  <img
+                    src={partnerLogoSrc(partner)}
+                    alt={partner.name}
+                    style={styles.logoOnlyImage}
+                    loading="lazy"
+                    onError={e => { e.currentTarget.style.display = 'none' }}
+                  />
+                </a>
+              ))}
+            </div>
           </div>
-          <div style={styles.impactCard}>
-            <div style={styles.impactIcon}>🎟️</div>
-            <strong style={styles.impactValue}>{formatCommunityMetric(communityStats.stamps)}</strong>
-            <span style={styles.impactLabel}>Stamps Issued</span>
-            <span style={styles.impactCaption}>across all businesses</span>
-          </div>
-          <div style={styles.impactCard}>
-            <div style={styles.impactIcon}>⭐</div>
-            <strong style={styles.impactValue}>{formatCommunityMetric(communityStats.points)}</strong>
-            <span style={styles.impactLabel}>Points Issued</span>
-            <span style={styles.impactCaption}>rewarding loyal customers</span>
-          </div>
-          <div style={styles.impactCard}>
-            <div style={styles.impactIcon}>👥</div>
-            <strong style={styles.impactValue}>{formatCommunityMetric(communityStats.members)}</strong>
-            <span style={styles.impactLabel}>Total Members</span>
-            <span style={styles.impactCaption}>part of our community</span>
-          </div>
-        </div>
-
-        <div style={styles.impactBanner}>🌱 Together, we're building stronger relationships between businesses and customers.</div>
+        )}
 
         {partnersLoading && <div style={styles.partnerStatus}>Loading partner information...</div>}
         {!partnersLoading && partnersError && (
@@ -1086,7 +1076,6 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
           </div>
         )}
       </section>
-
 
       <section id="about" style={styles.aboutSection}>
         <div style={styles.aboutGrid}>
@@ -1694,6 +1683,11 @@ const styles = {
   specialPartnerBlock: { maxWidth: 1080, margin: '0 auto 46px' },
   specialPartnerGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 16 },
   specialPartnerCard: { textDecoration: 'none', color: 'inherit', background: '#fff', border: '1px solid #dbe4ea', borderRadius: 18, padding: '18px 16px', textAlign: 'center', boxShadow: '0 10px 28px rgba(15,23,42,.06)' },
+  logoCommunityBlock: { maxWidth: 1080, margin: '28px auto 0' },
+  logoCommunityHeading: { textAlign: 'center', fontSize: 15, fontWeight: 800, color: '#0f766e', letterSpacing: '.04em', textTransform: 'uppercase', marginBottom: 20 },
+  logoOnlyGrid: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 30, flexWrap: 'wrap' },
+  logoOnlyTile: { width: 150, height: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 12, boxSizing: 'border-box', textDecoration: 'none', background: 'transparent' },
+  logoOnlyImage: { maxWidth: '100%', maxHeight: '82px', width: 'auto', height: 'auto', objectFit: 'contain', display: 'block' },
   specialPartnerLogoWrap: { height: 92, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc', borderRadius: 14, marginBottom: 13, padding: 12 },
   impactHeader: { maxWidth: 680, margin: '12px auto 24px', textAlign: 'center' },
   impactEyebrow: { display: 'inline-block', color: '#0d9488', fontSize: 12, fontWeight: 850, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 },
