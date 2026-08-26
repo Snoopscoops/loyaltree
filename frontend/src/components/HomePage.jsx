@@ -777,9 +777,9 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
           <div style={styles.heroHowCard}>
             <div style={styles.heroHowTitle}>How it works for your customers</div>
             <div className="lt-hero-how-grid" style={styles.heroHowGrid}>
-              <div style={styles.heroHowStep}><div style={styles.heroHowIcon}>▣</div><strong>1. Save to Wallet</strong><span>Customers add your loyalty card to their phone.</span></div>
-              <div style={styles.heroHowStep}><div style={styles.heroHowIcon}>⌗</div><strong>2. Earn Stamps</strong><span>They scan at checkout and your team records the visit.</span></div>
-              <div style={styles.heroHowStep}><div style={styles.heroHowIcon}>🎁</div><strong>3. Get Rewarded</strong><span>The reward unlocks when their card is complete.</span></div>
+              <div style={styles.heroHowStep}><div style={styles.heroHowIcon}>▣</div><strong>1. Scan Business QR</strong><span>Customers scan the business&apos;s LoyaltyTree QR code to join.</span></div>
+              <div style={styles.heroHowStep}><div style={styles.heroHowIcon}>👛</div><strong>2. Add to Wallet</strong><span>They register once, then save the card to Apple Wallet or Google Wallet.</span></div>
+              <div style={styles.heroHowStep}><div style={styles.heroHowIcon}>🎁</div><strong>3. Earn &amp; Get Rewarded</strong><span>They collect stamps or points on visits and unlock rewards.</span></div>
             </div>
           </div>
         </div>
@@ -791,10 +791,10 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
       </section>
 
       <section className="lt-hero-impact-strip" style={styles.heroImpactStrip} aria-label="LoyaltyTree platform activity">
-        <div style={styles.heroImpactItem}><strong>{formatCommunityMetric(communityStats.businesses)}</strong><span>Businesses</span></div>
-        <div style={styles.heroImpactItem}><strong>{formatCommunityMetric(communityStats.members)}</strong><span>Customers</span></div>
-        <div style={styles.heroImpactItem}><strong>{formatCommunityMetric(communityStats.stamps)}</strong><span>Stamps Issued</span></div>
-        <div style={styles.heroImpactItem}><strong>{formatCommunityMetric(communityStats.points)}</strong><span>Points Issued</span></div>
+        <div style={styles.heroImpactItem}><div style={styles.heroImpactIcon}>🏢</div><strong>{formatCommunityMetric(communityStats.businesses)}</strong><span>Businesses</span></div>
+        <div style={styles.heroImpactItem}><div style={styles.heroImpactIcon}>👥</div><strong>{formatCommunityMetric(communityStats.members)}</strong><span>Customers</span></div>
+        <div style={styles.heroImpactItem}><div style={styles.heroImpactIcon}>🎟️</div><strong>{formatCommunityMetric(communityStats.stamps)}</strong><span>Stamps Issued</span></div>
+        <div style={{...styles.heroImpactItem,borderRight:'none'}}><div style={styles.heroImpactIcon}>⭐</div><strong>{formatCommunityMetric(communityStats.points)}</strong><span>Points Issued</span></div>
       </section>
 
       <section id="how-it-works" style={styles.topHowSection}>
@@ -1377,7 +1377,8 @@ const styles = {
     maxWidth:1180,margin:'0 auto 56px',padding:'20px 24px',display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:0,
     background:'#fff',border:'1px solid #e2e8f0',borderRadius:20,boxShadow:'0 16px 42px rgba(15,23,42,.07)',
   },
-  heroImpactItem:{display:'flex',flexDirection:'column',alignItems:'center',gap:4,padding:'4px 12px',borderRight:'1px solid #eef2f7',fontSize:11.5,color:'#64748b'},
+  heroImpactItem:{display:'flex',flexDirection:'column',alignItems:'center',gap:5,padding:'4px 12px',borderRight:'1px solid #eef2f7',fontSize:11.5,color:'#64748b'},
+  heroImpactIcon:{width:44,height:44,borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',background:'#e7f8f3',fontSize:21,marginBottom:3},
   heroCard: {
     width: 260, borderRadius: 20, background: 'white', boxShadow: '0 20px 50px rgba(0,0,0,0.12)',
     padding: 20, transform: 'rotate(-3deg)',
