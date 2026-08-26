@@ -882,44 +882,68 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         </div>
       </section>
 
-      <section id="why-digital" style={{ ...styles.section, paddingTop: 0 }}>
-        <h2 style={styles.h2}>Why a digital loyalty card wins</h2>
-        <p style={styles.comparisonIntro}>
-          A loyalty program only works if customers actually keep coming back to use it.
-          Paper punch cards were never built for that &mdash; they get lost, forgotten, and thrown away
-          before the reward is ever earned. A digital card removes every one of those friction points
-          by living somewhere customers never lose: their phone.
-        </p>
-        <style>{`
-          @media (max-width: 640px) {
-            .lt-comparison-row { grid-template-columns: 1fr !important; }
-            .lt-comparison-cell-bad { border-right: none !important; border-bottom: 1px solid #f1f5f9; }
-          }
-        `}</style>
-        <div style={styles.comparisonTable}>
-          <div className="lt-comparison-row" style={styles.comparisonHeaderRow}>
-            <div style={styles.comparisonHeaderCell}>
-              <span style={styles.comparisonHeaderIcon}>🧾</span>
-              Traditional punch card
-            </div>
-            <div style={{ ...styles.comparisonHeaderCell, ...styles.comparisonHeaderCellGood }}>
-              <span style={styles.comparisonHeaderIcon}>📱</span>
-              LoyaltyTree digital card
-            </div>
-          </div>
-          {COMPARISON.map((row, i) => (
-            <div key={i} className="lt-comparison-row" style={styles.comparisonRow}>
-              <div className="lt-comparison-cell-bad" style={{ ...styles.comparisonCell, ...styles.comparisonCellBad }}>
-                <span style={{ ...styles.comparisonMark, ...styles.comparisonMarkBad }}>✕</span>
-                <span>{row.traditional}</span>
-              </div>
-              <div style={{ ...styles.comparisonCell, ...styles.comparisonCellGood }}>
-                <span style={{ ...styles.comparisonMark, ...styles.comparisonMarkGood }}>✓</span>
-                <span>{row.digital}</span>
-              </div>
+      <style>{`
+        .lt-analytics-kpis strong{font-size:21px;color:#0f172a}.lt-analytics-kpis small{font-size:9px;color:#64748b}.lt-analytics-benefits p{margin:3px 0 0;color:#64748b;line-height:1.4}.lt-analytics-charts .lineChart{}
+        .lt-analytics-charts i{display:block;width:8%;border-radius:4px 4px 0 0;background:#0d9488}.lt-analytics-charts i:nth-child(1){height:10%}.lt-analytics-charts i:nth-child(2){height:15%}.lt-analytics-charts i:nth-child(3){height:20%}.lt-analytics-charts i:nth-child(4){height:25%}.lt-analytics-charts i:nth-child(5){height:70%}.lt-analytics-charts i:nth-child(6){height:22%}.lt-analytics-charts i:nth-child(7){height:18%}
+        @media(max-width:900px){.lt-analytics-benefits{grid-template-columns:repeat(2,minmax(0,1fr))!important}.lt-analytics-shell{grid-template-columns:1fr!important}.lt-analytics-sidebar{display:none}.lt-analytics-kpis{grid-template-columns:repeat(3,minmax(0,1fr))!important}.lt-analytics-titlebar{flex-direction:column}.lt-analytics-charts{grid-template-columns:1fr!important}.lt-analytics-insights{grid-template-columns:1fr!important}}
+        @media(max-width:560px){.lt-analytics-benefits{grid-template-columns:1fr!important}.lt-analytics-kpis{grid-template-columns:repeat(2,minmax(0,1fr))!important}.lt-analytics-filters{display:none!important}}
+      `}</style>
+      <section id="analytics-showcase" style={styles.analyticsSection}>
+        <div style={styles.analyticsHeader}>
+          <span style={styles.analyticsEyebrow}>📊 Powerful Analytics</span>
+          <h2 style={styles.analyticsHeading}>Know Your Customers. <span style={styles.analyticsAccent}>Grow Smarter.</span></h2>
+          <p style={styles.analyticsIntro}>Track customer activity, loyalty performance, rewards, and trends — all in one dashboard.</p>
+        </div>
+
+        <div className="lt-analytics-benefits" style={styles.analyticsBenefits}>
+          {[
+            ['👥','Understand Customers','See who your customers are and how they engage.'],
+            ['📈','Track Performance','Monitor stamps, visits, redemptions, and growth.'],
+            ['🎁','Improve Loyalty','Identify trends and reward what drives results.'],
+            ['🎯','Make Smarter Decisions','Use real data to plan offers that keep customers coming back.'],
+          ].map(([icon,title,body]) => (
+            <div key={title} style={styles.analyticsBenefit}>
+              <span style={styles.analyticsBenefitIcon}>{icon}</span>
+              <div><strong>{title}</strong><p>{body}</p></div>
             </div>
           ))}
         </div>
+
+        <div style={styles.analyticsBrowser}>
+          <div style={styles.analyticsBrowserTop}><span>●</span><span>●</span><span>●</span></div>
+          <div className="lt-analytics-shell" style={styles.analyticsShell}>
+            <aside className="lt-analytics-sidebar" style={styles.analyticsSidebar}>
+              <div style={styles.analyticsBrand}>🌳 <strong>LoyaltyTree</strong></div>
+              {['▦  Overview','♙  Customers','☆  Stamps & Rewards','◉  Points','➤  Campaigns','▤  Transactions','▥  Analytics','▧  Reports'].map((item,i)=>(
+                <div key={item} style={{...styles.analyticsNavItem,...(i===6?styles.analyticsNavActive:{})}}>{item}</div>
+              ))}
+            </aside>
+            <div style={styles.analyticsMain}>
+              <div className="lt-analytics-titlebar" style={styles.analyticsTitlebar}>
+                <div><h3 style={styles.analyticsDashboardTitle}>Analytics Dashboard</h3><p style={styles.analyticsDashboardSub}>Here’s what’s happening with your loyalty program.</p></div>
+                <div style={styles.analyticsFilters}><b>Last 7 Days</b><span>Last 30 Days</span><span>Last 90 Days</span><span>All Time</span></div>
+              </div>
+              <div className="lt-analytics-kpis" style={styles.analyticsKpis}>
+                {[['👥','37','Total Customers'],['⭐','1','Active Members'],['🎯','1','Stamps Issued'],['🎁','1','Rewards Redeemed'],['📈','1','Avg. Stamps/Customer'],['🆕','0','New Customers']].map(([icon,num,label])=>(
+                  <div key={label} style={styles.analyticsKpi}><span>{icon}</span><strong>{num}</strong><small>{label}</small></div>
+                ))}
+              </div>
+              <div className="lt-analytics-charts" style={styles.analyticsCharts}>
+                <div style={styles.analyticsChartCard}><b>📈 Customer Growth</b><div style={styles.lineChart}><i></i><i></i><i></i><i></i><i></i><i></i></div><div style={styles.chartAxis}>Aug 19 <span>Aug 21</span><span>Aug 23</span> Aug 25</div></div>
+                <div style={styles.analyticsChartCard}><b>🎯 Stamp Activity</b><div style={styles.stampChart}><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div style={styles.chartAxis}>Aug 19 <span>Aug 21</span><span>Aug 23</span> Aug 25</div></div>
+                <div style={styles.analyticsChartCard}><b>🎁 Reward Redemptions</b><div style={styles.redemptionChart}></div><div style={styles.chartAxis}>Aug 19 <span>Aug 22</span><span>Aug 25</span> Aug 26</div></div>
+                <div style={styles.analyticsChartCard}><b>📅 Activity by Day of Week</b><div style={styles.dayChart}><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div style={styles.dayLabels}><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div></div>
+              </div>
+              <div style={styles.analyticsInsightsTitle}>👥 Customer Insights</div>
+              <div className="lt-analytics-insights" style={styles.analyticsInsights}>
+                <div style={styles.analyticsInsight}><b>Top Customers</b><strong>Juan Dela Cruz</strong><small>2 visits · 1 stamp</small></div>
+                <div style={styles.analyticsInsight}><b>Retention Rate</b><strong style={styles.insightNumber}>2.7%</strong><small>Customers who came back this week</small></div>
+                <div style={styles.analyticsInsight}><b>Churn Risk</b><strong style={styles.insightNumber}>94.6%</strong><small>Customers who haven't returned</small></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style={styles.analyticsFooter}>🛡️ Real-time data. Easy to understand. Built to help your business grow.</div>
       </section>
 
       <section id="customer-tools" style={styles.section}>
@@ -1506,6 +1530,23 @@ const styles = {
     border: '1px solid #e2e8f0', borderRadius: 999, padding: '8px 16px',
   },
 
+  // Analytics homepage showcase
+  analyticsSection:{padding:'64px 32px 72px',maxWidth:1180,margin:'0 auto'},
+  analyticsHeader:{textAlign:'center',marginBottom:24},
+  analyticsEyebrow:{display:'inline-block',fontSize:12.5,fontWeight:850,textTransform:'uppercase',letterSpacing:'.06em',color:'#087f6b',background:'#dcfce7',padding:'7px 15px',borderRadius:999},
+  analyticsHeading:{fontSize:42,lineHeight:1.08,letterSpacing:'-1.4px',fontWeight:900,color:'#0f172a',margin:'14px 0 8px'},
+  analyticsAccent:{color:'#0b8f76'}, analyticsIntro:{fontSize:16,color:'#64748b',margin:0},
+  analyticsBenefits:{display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:18,margin:'28px auto 30px'},
+  analyticsBenefit:{display:'flex',gap:11,alignItems:'flex-start',fontSize:12,color:'#0f172a'},
+  analyticsBenefitIcon:{width:42,height:42,borderRadius:'50%',background:'#e6f9f1',display:'flex',alignItems:'center',justifyContent:'center',fontSize:19,flex:'0 0 42px'},
+  analyticsBrowser:{background:'#fff',border:'1px solid #dce7e3',borderRadius:18,overflow:'hidden',boxShadow:'0 22px 55px rgba(15,118,110,.10)'},
+  analyticsBrowserTop:{height:28,display:'flex',alignItems:'center',gap:5,padding:'0 14px',color:'#94a3b8',fontSize:9,borderBottom:'1px solid #edf2f0'},
+  analyticsShell:{display:'grid',gridTemplateColumns:'180px 1fr',minHeight:600}, analyticsSidebar:{padding:18,background:'#fbfdfc',borderRight:'1px solid #e7efec'},
+  analyticsBrand:{fontSize:15,color:'#0f172a',marginBottom:22}, analyticsNavItem:{fontSize:11,color:'#475569',padding:'9px 10px',borderRadius:8,marginBottom:3}, analyticsNavActive:{background:'#e7f8f2',color:'#087f6b',fontWeight:800},
+  analyticsMain:{padding:22,minWidth:0}, analyticsTitlebar:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:16,marginBottom:16}, analyticsDashboardTitle:{fontSize:20,margin:0,color:'#0f172a'}, analyticsDashboardSub:{fontSize:11,color:'#64748b',margin:'4px 0 0'},
+  analyticsFilters:{display:'flex',gap:7,fontSize:9,color:'#64748b'},
+  analyticsKpis:{display:'grid',gridTemplateColumns:'repeat(6,minmax(0,1fr))',gap:10,marginBottom:14}, analyticsKpi:{border:'1px solid #e2e8f0',borderRadius:11,padding:12,display:'grid',gap:4,background:'#fff'}, analyticsCharts:{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:12},
+  analyticsChartCard:{height:155,border:'1px solid #e2e8f0',borderRadius:12,padding:14,fontSize:11,color:'#1e293b',overflow:'hidden'}, lineChart:{height:80,marginTop:12,borderBottom:'1px solid #e2e8f0',position:'relative',display:'flex',alignItems:'flex-end',justifyContent:'space-around'}, stampChart:{height:80,marginTop:12,borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'flex-end',justifyContent:'space-around'}, redemptionChart:{height:78,marginTop:14,borderBottom:'4px solid #ec4899'}, chartAxis:{fontSize:8,color:'#94a3b8',display:'flex',justifyContent:'space-between',marginTop:7}, dayChart:{height:76,marginTop:13,display:'flex',alignItems:'flex-end',justifyContent:'space-around'}, dayLabels:{fontSize:8,color:'#94a3b8',display:'grid',gridTemplateColumns:'repeat(7,1fr)',textAlign:'center',marginTop:6}, analyticsInsightsTitle:{fontSize:13,fontWeight:850,color:'#1e293b',margin:'14px 0 8px'}, analyticsInsights:{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:10}, analyticsInsight:{border:'1px solid #e2e8f0',borderRadius:11,padding:12,display:'grid',gap:5,fontSize:10}, insightNumber:{fontSize:18,color:'#0b8f76'}, analyticsFooter:{textAlign:'center',fontSize:11,color:'#087f6b',marginTop:14},
   h2: { fontSize: 28, fontWeight: 800, textAlign: 'center', margin: '0 0 40px', color: '#0f172a' },
   featureGrid: {
     display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 24,
