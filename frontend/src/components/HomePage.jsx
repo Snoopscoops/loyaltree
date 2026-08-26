@@ -363,8 +363,8 @@ function DemoQR() {
 
 function AndroidWalletPreview() {
   return (
-    <div className="lt-phone-float" style={styles.androidPhoneShell}>
-      <div style={styles.androidPhoneScreen}>
+    <div className="lt-phone-float lt-android-phone" style={styles.androidPhoneShell}>
+      <div className="lt-android-screen" style={styles.androidPhoneScreen}>
         <div style={styles.androidStatusBar}>
           <span>10:45</span>
           <span style={styles.androidStatusIcons}>● ︿ ▮▮ 100%</span>
@@ -718,6 +718,76 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
           .lt-home-login { padding:9px 10px !important; font-size:11.5px !important; border-radius:9px !important; }
           .lt-impact-grid { grid-template-columns:1fr !important; }
           .lt-home-mobile-toggle { width:40px; height:40px; font-size:20px; }
+
+          /* Mobile homepage polish */
+          body { overflow-x:hidden; }
+          section#top { padding:34px 18px 34px !important; gap:30px !important; }
+          .lt-hero-copy { max-width:none !important; text-align:center; }
+          .lt-hero-eyebrow { margin-bottom:16px !important; font-size:10px !important; padding:7px 12px !important; }
+          .lt-hero-title { font-size:38px !important; line-height:1.02 !important; letter-spacing:-1.5px !important; margin-bottom:16px !important; }
+          .lt-hero-sub { font-size:15px !important; line-height:1.58 !important; margin:0 auto 22px !important; max-width:420px !important; }
+          .lt-home-hero-actions { max-width:420px; margin:0 auto; }
+          .lt-home-hero-actions button { padding:14px 16px !important; font-size:13px !important; }
+          .lt-hero-trust { justify-content:center !important; gap:8px 14px !important; margin-top:18px !important; font-size:11.5px !important; }
+          .lt-hero-how-card { margin-top:22px !important; padding:16px !important; text-align:left !important; }
+          .lt-hero-how-title { text-align:center !important; margin-bottom:13px !important; }
+          .lt-hero-how-grid { gap:10px !important; }
+          .lt-hero-how-grid > div { display:grid !important; grid-template-columns:38px 1fr !important; column-gap:10px !important; align-items:start !important; padding:10px !important; border-radius:12px; background:#f8fffc; }
+          .lt-hero-how-grid > div > div:first-child { grid-row:1 / span 2; margin:0 !important; }
+          .lt-hero-how-grid > div strong { align-self:end; }
+          .lt-hero-how-grid > div span { font-size:11px; }
+          .lt-hero-phone-visual { padding-top:2px; }
+          .lt-android-phone { max-width:310px !important; border-radius:39px !important; padding:7px !important; box-shadow:0 20px 48px rgba(15,23,42,.20) !important; }
+          .lt-android-screen { min-height:520px !important; border-radius:33px !important; padding:11px 11px 14px !important; }
+          .lt-hero-impact-strip { margin:0 14px !important; border-radius:18px !important; overflow:hidden !important; box-shadow:0 12px 30px rgba(15,23,42,.07) !important; }
+          .lt-hero-impact-strip > div { min-height:105px !important; padding:16px 8px !important; border-right:0 !important; }
+          .lt-hero-impact-strip > div:nth-child(odd) { border-right:1px solid #e2e8f0 !important; }
+          .lt-hero-impact-strip > div:nth-child(-n+2) { border-bottom:1px solid #e2e8f0 !important; }
+          .lt-hero-impact-strip strong { font-size:25px !important; }
+
+          .lt-top-how, .lt-pillar-section, .lt-notification-section, .lt-analytics-section, .lt-standard-section, .lt-pricing-section, .lt-community-section, .lt-about-section {
+            padding-left:18px !important; padding-right:18px !important;
+          }
+          .lt-top-how { padding-top:54px !important; padding-bottom:48px !important; }
+          .lt-pillar-section { padding-bottom:48px !important; }
+          .lt-notification-section { padding-top:48px !important; padding-bottom:52px !important; }
+          .lt-notification-grid { gap:26px !important; }
+          .lt-iphone-frame { width:286px !important; padding:8px !important; border-radius:47px !important; }
+          .lt-iphone-screen { height:508px !important; border-radius:40px !important; padding:20px 14px !important; }
+          .lt-ios-notification { margin-top:56px !important; padding:12px !important; border-radius:18px !important; }
+          .lt-notification-heading { font-size:36px !important; letter-spacing:-1.2px !important; margin-bottom:13px !important; }
+          .lt-notification-intro { font-size:14px !important; line-height:1.55 !important; margin-bottom:22px !important; }
+          .lt-notification-features { gap:12px !important; }
+          .lt-notification-features > div { padding:12px !important; background:#fff; border:1px solid #e5efec; border-radius:14px; box-shadow:0 8px 22px rgba(15,23,42,.035); }
+          .lt-notification-features p { margin:4px 0 0 !important; font-size:12px !important; line-height:1.45 !important; }
+
+          .lt-analytics-section { padding-top:52px !important; padding-bottom:54px !important; }
+          .lt-analytics-heading { font-size:34px !important; line-height:1.05 !important; letter-spacing:-1px !important; }
+          .lt-analytics-intro { font-size:14px !important; line-height:1.55 !important; }
+          .lt-analytics-benefits { grid-template-columns:repeat(2,minmax(0,1fr)) !important; gap:10px !important; margin:22px 0 !important; }
+          .lt-analytics-benefits > div { padding:11px !important; background:#fff; border:1px solid #e5efec; border-radius:13px; }
+          .lt-analytics-browser { border-radius:14px !important; box-shadow:0 16px 38px rgba(15,118,110,.09) !important; }
+          .lt-analytics-main { padding:14px !important; }
+          .lt-analytics-kpis { gap:8px !important; }
+          .lt-analytics-kpis > div { padding:10px !important; }
+          .lt-analytics-kpis strong { font-size:18px !important; }
+          .lt-analytics-charts > div { height:138px !important; padding:11px !important; }
+          .lt-analytics-footer { font-size:10.5px !important; line-height:1.5 !important; padding:0 8px; }
+
+          .lt-card-available, .lt-card-coming { gap:10px !important; }
+          .lt-community-section { padding-top:52px !important; padding-bottom:52px !important; }
+          .lt-logo-marquee-track { gap:28px !important; }
+          .lt-logo-marquee a { width:148px !important; height:116px !important; }
+          .lt-logo-marquee img { max-width:128px !important; max-height:94px !important; }
+          .lt-about-section { padding-top:50px !important; padding-bottom:50px !important; }
+        }
+
+        @media (max-width: 390px) {
+          .lt-hero-title { font-size:34px !important; }
+          .lt-android-phone { max-width:286px !important; }
+          .lt-iphone-frame { width:270px !important; }
+          .lt-analytics-benefits { grid-template-columns:1fr !important; }
+          .lt-home-login { display:none !important; }
         }
       `}</style>
       <header className="lt-home-header" style={styles.nav}>
@@ -768,24 +838,24 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
       </header>
 
       <section id="top" style={styles.hero}>
-        <div style={styles.heroInner}>
-          <div style={styles.heroEyebrow}>DIGITAL LOYALTY. REAL CONNECTIONS.</div>
-          <h1 style={styles.h1}>A First Visit Is Good. <span style={styles.heroAccent}>A Repeat Customer Is Better.</span></h1>
-          <p style={styles.heroSub}>
+        <div className="lt-hero-copy" style={styles.heroInner}>
+          <div className="lt-hero-eyebrow" style={styles.heroEyebrow}>DIGITAL LOYALTY. REAL CONNECTIONS.</div>
+          <h1 className="lt-hero-title" style={styles.h1}>A First Visit Is Good. <span style={styles.heroAccent}>A Repeat Customer Is Better.</span></h1>
+          <p className="lt-hero-sub" style={styles.heroSub}>
             LoyaltyTree turns everyday visits into lasting loyalty with branded digital cards in Apple Wallet and Google Wallet.
           </p>
           <div className="lt-home-hero-actions" style={styles.heroActions}>
             <button onClick={() => { setMobileMenuOpen(false); goPublicPage('/how-it-works') }} style={styles.heroSecondaryBtn}>▶ &nbsp; See How It Works &nbsp; →</button>
             <button onClick={() => applyBusiness('hero')} style={styles.heroBtn}>Get Started for Your Business</button>
           </div>
-          <div style={styles.heroTrustRow}>
+          <div className="lt-hero-trust" style={styles.heroTrustRow}>
             <span>✓ No customer app</span>
             <span>✓ Apple & Google Wallet</span>
             <span>✓ Built for repeat business</span>
           </div>
 
-          <div style={styles.heroHowCard}>
-            <div style={styles.heroHowTitle}>How it works for your customers</div>
+          <div className="lt-hero-how-card" style={styles.heroHowCard}>
+            <div className="lt-hero-how-title" style={styles.heroHowTitle}>How it works for your customers</div>
             <div className="lt-hero-how-grid" style={styles.heroHowGrid}>
               <div style={styles.heroHowStep}><div style={styles.heroHowIcon}>▣</div><strong>1. Scan Business QR</strong><span>Customers scan the business&apos;s LoyaltyTree QR code to join.</span></div>
               <div style={styles.heroHowStep}><div style={styles.heroHowIcon}>👛</div><strong>2. Add to Wallet</strong><span>They register once, then save the card to Apple Wallet or Google Wallet.</span></div>
@@ -807,7 +877,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         <div style={{...styles.heroImpactItem,borderRight:'none'}}><div style={styles.heroImpactIcon}>⭐</div><strong>{formatCommunityMetric(communityStats.points)}</strong><span>Points Issued</span></div>
       </section>
 
-      <section id="how-it-works" style={styles.topHowSection}>
+      <section id="how-it-works" className="lt-top-how" style={styles.topHowSection}>
         <span style={styles.navSectionEyebrow}>Simple from day one</span>
         <h2 style={styles.h2Compact}>A better connection with every visit.</h2>
         <p style={styles.topSectionIntro}>
@@ -824,7 +894,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         </div>
       </section>
 
-      <section style={styles.pillarSection}>
+      <section className="lt-pillar-section" style={styles.pillarSection}>
         <div style={styles.pillarGrid}>
           {PILLARS.map(p => (
             <div key={p.title} style={styles.pillarCard}>
@@ -836,7 +906,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         </div>
       </section>
 
-      <section style={styles.notificationSection}>
+      <section className="lt-notification-section" style={styles.notificationSection}>
         <style>{`
           @media (max-width: 780px) {
             .lt-notification-grid { grid-template-columns: 1fr !important; gap: 34px !important; }
@@ -847,14 +917,14 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
           }
         `}</style>
         <div className="lt-notification-grid" style={styles.notificationGrid}>
-          <div style={styles.iphoneWrap} aria-label="Example LoyaltyTree wallet notification on iPhone">
-            <div style={styles.iphoneFrame}>
-              <div style={styles.iphoneScreen}>
+          <div className="lt-iphone-wrap" style={styles.iphoneWrap} aria-label="Example LoyaltyTree wallet notification on iPhone">
+            <div className="lt-iphone-frame" style={styles.iphoneFrame}>
+              <div className="lt-iphone-screen" style={styles.iphoneScreen}>
                 <div style={styles.iphoneDynamicIsland}></div>
                 <div style={styles.iphoneStatus}><span>Globe</span><span>▮▮▮  ◔  ▰</span></div>
                 <div style={styles.lockDate}>Monday, August 10</div>
                 <div style={styles.lockTime}>13:58</div>
-                <div style={styles.iosNotification}>
+                <div className="lt-ios-notification" style={styles.iosNotification}>
                   <img src={logo64} alt="LoyaltyTree" style={styles.notificationLogo} />
                   <div style={styles.notificationCopy}>
                     <div style={styles.notificationMeta}><strong>LOYALTYTREE</strong><span>now</span></div>
@@ -885,14 +955,14 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
       <style>{`
         .lt-analytics-kpis strong{font-size:21px;color:#0f172a}.lt-analytics-kpis small{font-size:9px;color:#64748b}.lt-analytics-benefits p{margin:3px 0 0;color:#64748b;line-height:1.4}.lt-analytics-charts .lineChart{}
         .lt-analytics-charts i{display:block;width:8%;border-radius:4px 4px 0 0;background:#0d9488}.lt-analytics-charts i:nth-child(1){height:10%}.lt-analytics-charts i:nth-child(2){height:15%}.lt-analytics-charts i:nth-child(3){height:20%}.lt-analytics-charts i:nth-child(4){height:25%}.lt-analytics-charts i:nth-child(5){height:70%}.lt-analytics-charts i:nth-child(6){height:22%}.lt-analytics-charts i:nth-child(7){height:18%}
-        @media(max-width:900px){.lt-analytics-benefits{grid-template-columns:repeat(2,minmax(0,1fr))!important}.lt-analytics-shell{grid-template-columns:1fr!important}.lt-analytics-sidebar{display:none}.lt-analytics-kpis{grid-template-columns:repeat(3,minmax(0,1fr))!important}.lt-analytics-titlebar{flex-direction:column}.lt-analytics-charts{grid-template-columns:1fr!important}.lt-analytics-insights{grid-template-columns:1fr!important}}
-        @media(max-width:560px){.lt-analytics-benefits{grid-template-columns:1fr!important}.lt-analytics-kpis{grid-template-columns:repeat(2,minmax(0,1fr))!important}.lt-analytics-filters{display:none!important}}
+        @media(max-width:900px){.lt-analytics-benefits{grid-template-columns:repeat(2,minmax(0,1fr))!important}.lt-analytics-shell{grid-template-columns:1fr!important;min-height:0!important}.lt-analytics-sidebar{display:none}.lt-analytics-kpis{grid-template-columns:repeat(3,minmax(0,1fr))!important}.lt-analytics-titlebar{flex-direction:column}.lt-analytics-charts{grid-template-columns:1fr!important}.lt-analytics-insights{grid-template-columns:1fr!important}}
+        @media(max-width:560px){.lt-analytics-kpis{grid-template-columns:repeat(2,minmax(0,1fr))!important}.lt-analytics-filters{display:none!important}.lt-analytics-titlebar{margin-bottom:12px!important}.lt-analytics-charts{gap:9px!important}.lt-analytics-insights{gap:8px!important}}
       `}</style>
-      <section id="analytics-showcase" style={styles.analyticsSection}>
-        <div style={styles.analyticsHeader}>
+      <section id="analytics-showcase" className="lt-analytics-section" style={styles.analyticsSection}>
+        <div className="lt-analytics-header" style={styles.analyticsHeader}>
           <span style={styles.analyticsEyebrow}>📊 Powerful Analytics</span>
-          <h2 style={styles.analyticsHeading}>Know Your Customers. <span style={styles.analyticsAccent}>Grow Smarter.</span></h2>
-          <p style={styles.analyticsIntro}>Track customer activity, loyalty performance, rewards, and trends — all in one dashboard.</p>
+          <h2 className="lt-analytics-heading" style={styles.analyticsHeading}>Know Your Customers. <span style={styles.analyticsAccent}>Grow Smarter.</span></h2>
+          <p className="lt-analytics-intro" style={styles.analyticsIntro}>Track customer activity, loyalty performance, rewards, and trends — all in one dashboard.</p>
         </div>
 
         <div className="lt-analytics-benefits" style={styles.analyticsBenefits}>
@@ -909,7 +979,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
           ))}
         </div>
 
-        <div style={styles.analyticsBrowser}>
+        <div className="lt-analytics-browser" style={styles.analyticsBrowser}>
           <div style={styles.analyticsBrowserTop}><span>●</span><span>●</span><span>●</span></div>
           <div className="lt-analytics-shell" style={styles.analyticsShell}>
             <aside className="lt-analytics-sidebar" style={styles.analyticsSidebar}>
@@ -918,7 +988,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
                 <div key={item} style={{...styles.analyticsNavItem,...(i===6?styles.analyticsNavActive:{})}}>{item}</div>
               ))}
             </aside>
-            <div style={styles.analyticsMain}>
+            <div className="lt-analytics-main" style={styles.analyticsMain}>
               <div className="lt-analytics-titlebar" style={styles.analyticsTitlebar}>
                 <div><h3 style={styles.analyticsDashboardTitle}>Analytics Dashboard</h3><p style={styles.analyticsDashboardSub}>Here’s what’s happening with your loyalty program.</p></div>
                 <div style={styles.analyticsFilters}><b>Last 7 Days</b><span>Last 30 Days</span><span>Last 90 Days</span><span>All Time</span></div>
@@ -943,10 +1013,10 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
             </div>
           </div>
         </div>
-        <div style={styles.analyticsFooter}>🛡️ Real-time data. Easy to understand. Built to help your business grow.</div>
+        <div className="lt-analytics-footer" style={styles.analyticsFooter}>🛡️ Real-time data. Easy to understand. Built to help your business grow.</div>
       </section>
 
-      <section id="customer-tools" style={styles.section}>
+      <section id="customer-tools" className="lt-standard-section" style={styles.section}>
         <h2 style={styles.h2}>What your customers get</h2>
         <div style={styles.featureGrid}>
           {FEATURES.map(f => (
@@ -968,7 +1038,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
           .lt-card-available, .lt-card-coming { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
         }
       `}</style>
-      <section id="business-tools" style={{...styles.section,background:'#f8fafc'}}>
+      <section id="business-tools" className="lt-standard-section" style={{...styles.section,background:'#f8fafc'}}>
         <div style={styles.industryHeader}>
           <span style={styles.partnerEyebrow}>Built for everyday businesses</span>
           <h2 style={styles.h2}>Choose your industry. LoyaltyTree adapts.</h2>
@@ -982,7 +1052,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         </div>
       </section>
 
-      <section style={styles.section}>
+      <section className="lt-standard-section lt-card-types-section" style={styles.section}>
         <h2 style={styles.h2}>Choose your card type</h2>
         <p style={styles.cardTypesIntro}>Choose the card that fits your business: rewards, subscriptions, session packs, or VIP tiers.</p>
 
@@ -1017,7 +1087,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         </div>
       </section>
 
-      <section style={{...styles.section, background:'#ecfdf5'}}>
+      <section className="lt-standard-section" style={{...styles.section, background:'#ecfdf5'}}>
         <div style={styles.nfcSpecialWrap}>
           <div style={styles.nfcSpecialIcon}>📡</div>
           <div style={styles.nfcSpecialContent}>
@@ -1036,7 +1106,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         </div>
       </section>
 
-      <section id="pricing" style={styles.homePricingSection}>
+      <section id="pricing" className="lt-pricing-section" style={styles.homePricingSection}>
         <div style={styles.homePricingHeader}>
           <span style={styles.partnerEyebrow}>Simple pricing</span>
           <h2 style={styles.h2}>Start small. Grow when you need to.</h2>
@@ -1063,7 +1133,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         <button onClick={() => { setMobileMenuOpen(false); goPublicPage('/how-it-works#pricing') }} style={styles.homePricingButton}>View full pricing & branch options →</button>
       </section>
 
-      <section style={{ ...styles.section, background: '#ffffff', overflow: 'hidden' }}>
+      <section className="lt-community-section" style={{ ...styles.section, background: '#ffffff', overflow: 'hidden' }}>
         <div style={styles.partnerHeader}>
           <span style={styles.partnerEyebrow}>Our growing community</span>
           <h2 style={styles.h2}>Businesses currently using LoyaltyTree</h2>
@@ -1104,7 +1174,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         )}
       </section>
 
-      <section id="about" style={styles.aboutSection}>
+      <section id="about" className="lt-about-section" style={styles.aboutSection}>
         <div style={styles.aboutGrid}>
           <div style={styles.aboutCard}>
             <span style={styles.navSectionEyebrow}>About LoyaltyTree</span>
