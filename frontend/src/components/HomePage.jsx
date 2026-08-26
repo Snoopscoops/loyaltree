@@ -770,7 +770,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
       <section id="top" style={styles.hero}>
         <div style={styles.heroInner}>
           <div style={styles.heroEyebrow}>DIGITAL LOYALTY. REAL CONNECTIONS.</div>
-          <h1 style={styles.h1}>Your customer relationship, <span style={styles.heroAccent}>in their pocket.</span></h1>
+          <h1 style={styles.h1}>A First Visit Is Good. <span style={styles.heroAccent}>A Repeat Customer Is Better.</span></h1>
           <p style={styles.heroSub}>
             LoyaltyTree turns everyday visits into lasting loyalty with branded digital cards in Apple Wallet and Google Wallet.
           </p>
@@ -924,7 +924,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
                 <div style={styles.analyticsFilters}><b>Last 7 Days</b><span>Last 30 Days</span><span>Last 90 Days</span><span>All Time</span></div>
               </div>
               <div className="lt-analytics-kpis" style={styles.analyticsKpis}>
-                {[['👥','37','Total Customers'],['⭐','1','Active Members'],['🎯','1','Stamps Issued'],['🎁','1','Rewards Redeemed'],['📈','1','Avg. Stamps/Customer'],['🆕','0','New Customers']].map(([icon,num,label])=>(
+                {[['👥','184','Total Customers'],['⭐','126','Active Members'],['🎯','428','Stamps Issued'],['🎁','53','Rewards Redeemed'],['📈','2.3','Avg. Stamps/Customer'],['🆕','31','New Customers']].map(([icon,num,label])=>(
                   <div key={label} style={styles.analyticsKpi}><span>{icon}</span><strong>{num}</strong><small>{label}</small></div>
                 ))}
               </div>
@@ -936,9 +936,9 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
               </div>
               <div style={styles.analyticsInsightsTitle}>👥 Customer Insights</div>
               <div className="lt-analytics-insights" style={styles.analyticsInsights}>
-                <div style={styles.analyticsInsight}><b>Top Customers</b><strong>Juan Dela Cruz</strong><small>2 visits · 1 stamp</small></div>
-                <div style={styles.analyticsInsight}><b>Retention Rate</b><strong style={styles.insightNumber}>2.7%</strong><small>Customers who came back this week</small></div>
-                <div style={styles.analyticsInsight}><b>Churn Risk</b><strong style={styles.insightNumber}>94.6%</strong><small>Customers who haven't returned</small></div>
+                <div style={styles.analyticsInsight}><b>Top Customers</b><strong>Juan Dela Cruz</strong><small>12 visits · 21 stamps</small></div>
+                <div style={styles.analyticsInsight}><b>Retention Rate</b><strong style={styles.insightNumber}>68.5%</strong><small>Customers who came back this week</small></div>
+                <div style={styles.analyticsInsight}><b>Churn Risk</b><strong style={styles.insightNumber}>14.7%</strong><small>Customers who may need re-engagement</small></div>
               </div>
             </div>
           </div>
