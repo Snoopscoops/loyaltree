@@ -342,19 +342,63 @@ const PLANS = [
 ]
 
 
-const FOUNDER_CREDENTIALS = [
-  { icon: '🎓', title: 'DTI Kapatid Mentor ME (KMME)', detail: 'Batch 13 Graduate' },
-  { icon: '🤝', title: 'JCI Alicia Pagay', detail: '2026 Local Organization President' },
-  { icon: '🥋', title: 'UP Diliman Taekwondo Team', detail: '2015–2019' },
-]
+function DemoQR() {
+  const size = 21
+  const isFinder = (r, c, top, left) => {
+    const rr = r - top
+    const cc = c - left
+    if (rr < 0 || rr > 6 || cc < 0 || cc > 6) return false
+    return rr === 0 || rr === 6 || cc === 0 || cc === 6 || (rr >= 2 && rr <= 4 && cc >= 2 && cc <= 4)
+  }
+  const cells = []
+  for (let r = 0; r < size; r++) {
+    for (let c = 0; c < size; c++) {
+      const finder = isFinder(r,c,0,0) || isFinder(r,c,0,14) || isFinder(r,c,14,0)
+      const data = ((r * 7 + c * 11 + r * c * 3) % 13 < 5) && !((r < 8 && c < 8) || (r < 8 && c > 12) || (r > 12 && c < 8))
+      cells.push(<span key={`${r}-${c}`} style={{background: finder || data ? '#050505' : '#fff'}} />)
+    }
+  }
+  return <div style={styles.demoQr} aria-hidden="true">{cells}</div>
+}
 
-const FOUNDER_MEDIA = [
-  { name: 'Esquire Philippines', url: 'https://www.esquiremag.ph/culture/books-and-art/larry-alcala-nft-scarletbox-a2765-20220913' },
-  { name: 'BusinessWorld', url: 'https://bworldonline.com/technology/2022/05/02/445840/group-chat-births-filipino-nft-movement/' },
-  { name: 'Lifestyle Asia', url: 'https://lifestyleasia-onemega.com/arts-and-culture/tech/tale-of-the-token-this-filipino-crypto-success-story-started-with-a-pair-of-bored-punks/' },
-  { name: 'Manila Standard', url: 'https://manilastandard.net/?p=314217761' },
-  { name: 'The New Hue', url: 'https://www.thenewhueph.com/post/the-ten-the-bedrocks-of-bored-punks-of-society' },
-]
+function AndroidWalletPreview() {
+  return (
+    <div className="lt-phone-float" style={styles.androidPhoneShell}>
+      <div style={styles.androidPhoneScreen}>
+        <div style={styles.androidStatusBar}>
+          <span>10:45</span>
+          <span style={styles.androidStatusIcons}>● ︿ ▮▮ 100%</span>
+        </div>
+        <div style={styles.androidWalletToolbar}>
+          <span style={styles.androidBack}>←</span>
+          <span style={styles.androidToolbarSpacer}></span>
+          <span style={styles.androidStar}>☆</span>
+          <span style={styles.androidDots}>⋮</span>
+        </div>
+        <div style={styles.androidPass}>
+          <div style={styles.androidPassTop}>
+            <div style={styles.androidBrandRow}>
+              <img src={logo64} alt="" style={styles.androidBusinessLogo} />
+              <strong style={styles.androidBusinessName}>Your Business</strong>
+            </div>
+            <div style={styles.androidDivider}></div>
+            <div style={styles.androidProgramName}>Your Rewards</div>
+            <div style={styles.androidStampLabel}>Stamps</div>
+            <div className="lt-stamp-count" style={styles.androidStampCount}>5/8</div>
+            <div style={styles.androidQrWrap}><DemoQR /></div>
+            <div style={styles.androidCustomerName}>Your Customer</div>
+          </div>
+          <div style={styles.androidPassBottom}>
+            <div style={styles.androidRewardSmall}>YOUR BUSINESS · STAMP CARD</div>
+            <div style={styles.androidRewardTitle}>FREE REWARD</div>
+            <div style={styles.androidRewardMeta}>Collect 8 stamps to unlock</div>
+          </div>
+        </div>
+        <div style={styles.androidPageDots}><span style={styles.androidDotActive}></span><span style={styles.androidDot}></span></div>
+      </div>
+    </div>
+  )
+}
 
 function HomePage({ onNavigateLogin, API_BASE = '' }) {
   const navigate = useNavigate()
@@ -627,8 +671,16 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
           .lt-impact-grid { grid-template-columns:repeat(2,minmax(0,1fr)) !important; }
         }
 
+        .lt-phone-float { animation: ltPhoneFloat 4.6s ease-in-out infinite; }
+        .lt-stamp-count { animation: ltStampPulse 3s ease-in-out infinite; }
+        @keyframes ltPhoneFloat { 0%,100% { transform: translateY(0px); } 50% { transform: translateY(-10px); } }
+        @keyframes ltStampPulse { 0%,70%,100% { opacity:1; transform:scale(1); } 82% { opacity:.78; transform:scale(1.045); } }
+
+        @media (max-width: 980px) {
+          .lt-phone-float { transform:none; animation:none; }
+        }
+
         @media (max-width: 700px) {
-          .lt-about-grid { grid-template-columns: 1fr !important; }
           .lt-home-hero-actions {
             width:100%;
             display:grid !important;
@@ -637,6 +689,11 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
           }
 
           .lt-home-hero-actions button { width:100%; }
+          section#top { padding-top:46px !important; }
+          .lt-hero-phone-visual { min-width:0 !important; width:100% !important; }
+          .lt-hero-how-grid { grid-template-columns:1fr !important; }
+          .lt-hero-impact-strip { grid-template-columns:repeat(2,1fr) !important; margin-left:16px !important; margin-right:16px !important; }
+
 
           .lt-brand-pillars { gap:7px; margin-bottom:18px; }
           .lt-brand-pillar { padding:12px 8px !important; }
@@ -702,90 +759,42 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
 
       <section id="top" style={styles.hero}>
         <div style={styles.heroInner}>
-          <div style={styles.heroEyebrow}>🌱 DIGITAL LOYALTY FOR SERVICE BUSINESSES</div>
-
-          <div className="lt-brand-pillars" aria-label="Digitalize, Secure, Connect">
-            <div className="lt-brand-pillar" style={styles.brandPillar}>
-              <span style={styles.brandPillarIcon}>01</span>
-              <strong className="lt-brand-pillar-word" style={styles.brandPillarWord}>DIGITALIZE</strong>
-              <span className="lt-brand-pillar-copy" style={styles.brandPillarCopy}>Modernize loyalty</span>
-            </div>
-            <div className="lt-brand-pillar" style={styles.brandPillar}>
-              <span style={styles.brandPillarIcon}>02</span>
-              <strong className="lt-brand-pillar-word" style={styles.brandPillarWord}>SECURE</strong>
-              <span className="lt-brand-pillar-copy" style={styles.brandPillarCopy}>Protect every interaction</span>
-            </div>
-            <div className="lt-brand-pillar" style={styles.brandPillar}>
-              <span style={styles.brandPillarIcon}>03</span>
-              <strong className="lt-brand-pillar-word" style={styles.brandPillarWord}>CONNECT</strong>
-              <span className="lt-brand-pillar-copy" style={styles.brandPillarCopy}>Build lasting relationships</span>
-            </div>
-          </div>
-
-          <h1 style={styles.h1}>Modernize the way you build customer relationships.</h1>
+          <div style={styles.heroEyebrow}>DIGITAL LOYALTY. REAL CONNECTIONS.</div>
+          <h1 style={styles.h1}>Your customer relationship, <span style={styles.heroAccent}>in their pocket.</span></h1>
           <p style={styles.heroSub}>
-            LoyaltyTree helps service businesses digitalize customer loyalty, keep every interaction
-            organized and secure, and stay connected with customers beyond every visit.
+            LoyaltyTree turns everyday visits into lasting loyalty with branded digital cards in Apple Wallet and Google Wallet.
           </p>
           <div className="lt-home-hero-actions" style={styles.heroActions}>
-            <button onClick={goToLogin} style={styles.heroBtn}>Get Started for Your Business</button>
-            <button onClick={() => { setMobileMenuOpen(false); goPublicPage('/how-it-works') }} style={styles.heroSecondaryBtn}>See How It Works →</button>
+            <button onClick={() => { setMobileMenuOpen(false); goPublicPage('/how-it-works') }} style={styles.heroSecondaryBtn}>▶ &nbsp; See How It Works &nbsp; →</button>
+            <button onClick={() => applyBusiness('hero')} style={styles.heroBtn}>Get Started for Your Business</button>
           </div>
           <div style={styles.heroTrustRow}>
             <span>✓ No customer app</span>
             <span>✓ Apple & Google Wallet</span>
             <span>✓ Built for repeat business</span>
           </div>
-        </div>
 
-        <div style={styles.heroVisual} aria-label="LoyaltyTree digital loyalty preview">
-          <div style={styles.heroVisualGlow}></div>
-          <div style={styles.heroDashboardCard}>
-            <div style={styles.heroDashboardTop}>
-              <div>
-                <div style={styles.heroMiniLabel}>LOYALTYTREE</div>
-                <div style={styles.heroDashboardTitle}>Your customer relationship, in one place.</div>
-              </div>
-              <div style={styles.heroLiveBadge}>● LIVE</div>
-            </div>
-
-            <div style={styles.heroMetricGrid}>
-              <div style={styles.heroMetric}>
-                <strong style={styles.heroMetricValue}>128</strong>
-                <span style={styles.heroMetricLabel}>Customers</span>
-              </div>
-              <div style={styles.heroMetric}>
-                <strong style={styles.heroMetricValue}>342</strong>
-                <span style={styles.heroMetricLabel}>Stamps</span>
-              </div>
-              <div style={styles.heroMetric}>
-                <strong style={styles.heroMetricValue}>24</strong>
-                <span style={styles.heroMetricLabel}>Rewards</span>
-              </div>
-            </div>
-
-            <div style={styles.heroWalletCard}>
-              <div style={styles.heroCardHeader}>
-                <span>Free Coffee</span>
-                <span style={{ fontSize: 12, opacity: 0.85 }}>Your Business</span>
-              </div>
-              <div style={styles.heroStampRow}>
-                {Array.from({ length: 8 }).map((_, i) => (
-                  <div key={i} style={{ ...styles.heroStamp, background: i < 5 ? '#0d9488' : '#e2e8f0' }} />
-                ))}
-              </div>
-              <div style={styles.heroCardFoot}>5 of 8 stamps &middot; 3 to your reward</div>
-            </div>
-
-            <div style={styles.heroNotification}>
-              <span style={styles.heroNotificationIcon}>🎉</span>
-              <div>
-                <strong style={styles.heroNotificationTitle}>Stay connected after every visit</strong>
-                <span style={styles.heroNotificationText}>Announcements, birthday greetings & wallet updates</span>
-              </div>
+          <div style={styles.heroHowCard}>
+            <div style={styles.heroHowTitle}>How it works for your customers</div>
+            <div className="lt-hero-how-grid" style={styles.heroHowGrid}>
+              <div style={styles.heroHowStep}><div style={styles.heroHowIcon}>▣</div><strong>1. Save to Wallet</strong><span>Customers add your loyalty card to their phone.</span></div>
+              <div style={styles.heroHowStep}><div style={styles.heroHowIcon}>⌗</div><strong>2. Earn Stamps</strong><span>They scan at checkout and your team records the visit.</span></div>
+              <div style={styles.heroHowStep}><div style={styles.heroHowIcon}>🎁</div><strong>3. Get Rewarded</strong><span>The reward unlocks when their card is complete.</span></div>
             </div>
           </div>
         </div>
+
+        <div className="lt-hero-phone-visual" style={styles.heroVisual} aria-label="Android phone showing a LoyaltyTree digital loyalty card">
+          <div style={styles.heroVisualGlow}></div>
+          <AndroidWalletPreview />
+        </div>
+      </section>
+
+      <section className="lt-hero-impact-strip" style={styles.heroImpactStrip} aria-label="LoyaltyTree platform activity">
+        <div style={styles.heroImpactItem}><strong>{formatCommunityMetric(communityStats.businesses)}</strong><span>Businesses</span></div>
+        <div style={styles.heroImpactItem}><strong>{formatCommunityMetric(communityStats.members)}</strong><span>Customers</span></div>
+        <div style={styles.heroImpactItem}><strong>{formatCommunityMetric(communityStats.stamps)}</strong><span>Stamps Issued</span></div>
+        <div style={styles.heroImpactItem}><strong>{formatCommunityMetric(communityStats.points)}</strong><span>Points Issued</span></div>
       </section>
 
       <section id="how-it-works" style={styles.topHowSection}>
@@ -1080,7 +1089,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
 
 
       <section id="about" style={styles.aboutSection}>
-        <div className="lt-about-grid" style={styles.aboutGrid}>
+        <div style={styles.aboutGrid}>
           <div style={styles.aboutCard}>
             <span style={styles.navSectionEyebrow}>About LoyaltyTree</span>
             <h2 style={styles.aboutTitle}>Built in Isabela for businesses that depend on real customer relationships.</h2>
@@ -1089,51 +1098,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
               keeping existing customers matters. That idea became a platform focused on helping service-industry businesses build stronger,
               longer-lasting connections with the people they serve — through digital loyalty, retention tools, and direct customer engagement.
             </p>
-            <div style={styles.founderBlock}>
-              <div style={styles.founderIdentity}>
-                <span style={styles.founderLabel}>FOUNDER</span>
-                <strong style={styles.founderName}>Alfred / Snoopscoops</strong>
-                <span style={styles.founderRole}>Developer & Founder, LoyaltyTree</span>
-              </div>
-
-              <p style={styles.founderIntro}>
-                Built from experience in technology, entrepreneurship, leadership, and community.
-                Before LoyaltyTree, the founder&apos;s work in the Philippine blockchain and digital
-                community space received coverage from national and industry publications.
-              </p>
-
-              <div style={styles.founderCredentialGrid}>
-                {FOUNDER_CREDENTIALS.map(item => (
-                  <div key={item.title} style={styles.founderCredentialCard}>
-                    <span style={styles.founderCredentialIcon}>{item.icon}</span>
-                    <div>
-                      <strong style={styles.founderCredentialTitle}>{item.title}</strong>
-                      <span style={styles.founderCredentialDetail}>{item.detail}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div style={styles.founderMediaBlock}>
-                <span style={styles.founderMediaLabel}>Previous work & media features</span>
-                <p style={styles.founderMediaNote}>
-                  Coverage below relates to previous work and ventures, not LoyaltyTree.
-                </p>
-                <div style={styles.founderMediaLinks}>
-                  {FOUNDER_MEDIA.map(item => (
-                    <a
-                      key={item.name}
-                      href={item.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={styles.founderMediaLink}
-                    >
-                      {item.name} <span aria-hidden="true">↗</span>
-                    </a>
-                  ))}
-                </div>
-              </div>
-            </div>
+            <div style={styles.founderLine}>Developer / Founder — Alfred / Snoopscoops</div>
           </div>
 
           <div id="contact" style={styles.contactCard}>
@@ -1338,73 +1303,92 @@ const styles = {
     fontSize: 12.5, fontWeight: 800, cursor: 'pointer',
   },
   hero: {
-    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 54,
-    padding: '88px 32px 82px', maxWidth: 1180, margin: '0 auto', flexWrap: 'wrap',
-    position: 'relative',
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 52,
+    padding: '72px 32px 48px', maxWidth: 1220, margin: '0 auto', flexWrap: 'wrap', position: 'relative',
   },
-  heroInner: { flex: '1 1 440px', maxWidth: 600 },
+  heroInner: { flex: '1 1 500px', maxWidth: 650 },
   heroEyebrow: {
-    display:'inline-flex', alignItems:'center', padding:'7px 12px', borderRadius:999,
-    background:'#ecfdf5', color:'#0f766e', fontSize:11, fontWeight:850,
-    letterSpacing:'.07em', marginBottom:18, border:'1px solid #ccfbf1',
+    display:'inline-flex', alignItems:'center', padding:'8px 16px', borderRadius:999,
+    background:'#ecfdf5', color:'#0f766e', fontSize:11.5, fontWeight:900, letterSpacing:'.08em',
+    marginBottom:22, border:'1px solid #d1fae5',
   },
   brandPillar: {
     display:'flex', flexDirection:'column', alignItems:'flex-start', justifyContent:'center',
     padding:'14px 13px', background:'rgba(255,255,255,.78)', border:'1px solid #ccfbf1',
     borderRadius:14, boxShadow:'0 8px 24px rgba(15,23,42,.035)',
   },
-  brandPillarIcon: {
-    fontSize:9, fontWeight:900, letterSpacing:'.08em', color:'#0d9488', marginBottom:5,
-  },
-  brandPillarWord: {
-    fontSize:15, lineHeight:1.1, fontWeight:900, letterSpacing:'.035em', color:'#0f172a',
-  },
-  brandPillarCopy: {
-    display:'block', marginTop:5, fontSize:10.5, lineHeight:1.3, color:'#64748b', fontWeight:650,
-  },
-  h1: { fontSize: 'clamp(40px,5.2vw,64px)', lineHeight: 1.03, letterSpacing:'-0.035em', margin: '0 0 20px', fontWeight: 900, color: '#0f172a' },
-  heroSub: { fontSize: 17, lineHeight: 1.72, color: '#475569', margin: '0 0 28px', maxWidth:580 },
+  brandPillarIcon: { fontSize:9, fontWeight:900, letterSpacing:'.08em', color:'#0d9488', marginBottom:5 },
+  brandPillarWord: { fontSize:15, lineHeight:1.1, fontWeight:900, letterSpacing:'.035em', color:'#0f172a' },
+  brandPillarCopy: { display:'block', marginTop:5, fontSize:10.5, lineHeight:1.3, color:'#64748b', fontWeight:650 },
+  h1: { fontSize: 'clamp(42px,5.1vw,68px)', lineHeight: 1.02, letterSpacing:'-0.045em', margin: '0 0 22px', fontWeight: 900, color: '#0f172a' },
+  heroAccent: { color:'#0f8f7d' },
+  heroSub: { fontSize: 17, lineHeight: 1.68, color: '#475569', margin: '0 0 28px', maxWidth:600 },
   heroActions:{display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'},
   heroBtn: {
-    padding: '15px 22px', background: '#0d9488', color: 'white', border: 'none',
-    borderRadius: 12, fontSize: 14, fontWeight: 800, cursor: 'pointer',
-    boxShadow: '0 10px 24px rgba(13,148,136,0.22)',
+    padding: '15px 22px', background: '#0d9488', color: 'white', border: 'none', borderRadius: 13,
+    fontSize: 14, fontWeight: 850, cursor: 'pointer', boxShadow: '0 10px 24px rgba(13,148,136,0.20)',
   },
   heroSecondaryBtn:{
-    padding:'14px 20px',background:'#fff',color:'#0f766e',border:'1px solid #cbd5e1',
-    borderRadius:12,fontSize:14,fontWeight:800,cursor:'pointer',
+    padding:'14px 20px',background:'#fff',color:'#0f766e',border:'1px solid #dbe4ea',
+    borderRadius:13,fontSize:14,fontWeight:850,cursor:'pointer',boxShadow:'0 9px 24px rgba(15,23,42,.055)',
   },
-  heroTrustRow:{
-    display:'flex',gap:16,flexWrap:'wrap',marginTop:22,color:'#64748b',fontSize:12,fontWeight:700,
+  heroTrustRow:{ display:'flex',gap:20,flexWrap:'wrap',marginTop:24,color:'#64748b',fontSize:12.5,fontWeight:750 },
+  heroHowCard:{
+    marginTop:30, padding:'18px 20px 20px', border:'1px solid #d8eee9', borderRadius:18,
+    background:'rgba(255,255,255,.62)', boxShadow:'0 12px 32px rgba(15,23,42,.035)',
   },
-  heroVisual: { flex: '1 1 380px', minWidth:280, display: 'flex', justifyContent: 'center', position:'relative' },
+  heroHowTitle:{fontSize:13.5,fontWeight:850,color:'#0f766e',marginBottom:15},
+  heroHowGrid:{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:16},
+  heroHowStep:{display:'flex',flexDirection:'column',gap:5,fontSize:11.5,lineHeight:1.45,color:'#64748b'},
+  heroHowIcon:{width:38,height:38,borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',background:'#e7f8f3',color:'#0f8f7d',fontSize:19,marginBottom:3},
+  heroVisual: { flex: '1 1 390px', minWidth:300, display: 'flex', justifyContent: 'center', position:'relative', alignSelf:'stretch', alignItems:'center' },
   heroVisualGlow:{
-    position:'absolute',width:'82%',height:'82%',borderRadius:'50%',background:'#ccfbf1',
-    filter:'blur(46px)',opacity:.7,top:'8%',left:'9%',
+    position:'absolute',width:'92%',height:'76%',borderRadius:'50%',background:'#c9f7e8',
+    filter:'blur(54px)',opacity:.65,top:'12%',left:'4%',
   },
-  heroDashboardCard:{
-    position:'relative',zIndex:1,width:'100%',maxWidth:430,background:'#fff',border:'1px solid #dbeafe',
-    borderRadius:24,padding:20,boxShadow:'0 28px 70px rgba(15,23,42,.14)',
+  androidPhoneShell:{
+    position:'relative',zIndex:2,width:'100%',maxWidth:390,padding:9,borderRadius:48,
+    background:'linear-gradient(145deg,#121212,#3d4144 48%,#0b0b0b)',
+    boxShadow:'0 28px 70px rgba(15,23,42,.24), inset 0 0 0 1px rgba(255,255,255,.35)',
   },
-  heroDashboardTop:{display:'flex',justifyContent:'space-between',gap:14,alignItems:'flex-start',marginBottom:16},
-  heroMiniLabel:{fontSize:9,fontWeight:900,letterSpacing:1.3,color:'#0d9488',marginBottom:4},
-  heroDashboardTitle:{fontSize:16,fontWeight:850,color:'#0f172a',lineHeight:1.3,maxWidth:250},
-  heroLiveBadge:{fontSize:9,fontWeight:900,color:'#047857',background:'#d1fae5',padding:'5px 8px',borderRadius:999,whiteSpace:'nowrap'},
-  heroMetricGrid:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8,marginBottom:14},
-  heroMetric:{background:'#f8fafc',border:'1px solid #eef2f7',borderRadius:12,padding:'10px 9px'},
-  heroMetricValue:{display:'block',fontSize:19,color:'#0f172a',lineHeight:1.1},
-  heroMetricLabel:{display:'block',fontSize:9.5,color:'#64748b',marginTop:4},
-  heroWalletCard:{
-    borderRadius:16,background:'#fff',border:'1px solid #e2e8f0',padding:14,
-    boxShadow:'0 8px 24px rgba(15,23,42,.06)',marginBottom:12,
+  androidPhoneScreen:{
+    minHeight:650,borderRadius:40,background:'#f4f5f4',overflow:'hidden',padding:'14px 14px 18px',
+    boxSizing:'border-box',position:'relative',fontFamily:'Arial, sans-serif',
   },
-  heroNotification:{
-    display:'flex',gap:10,alignItems:'center',padding:'11px 12px',borderRadius:14,
-    background:'#f0fdfa',border:'1px solid #ccfbf1',
+  androidStatusBar:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'2px 10px 8px',fontSize:12,fontWeight:800,color:'#111'},
+  androidStatusIcons:{fontSize:9.5,letterSpacing:'.02em'},
+  androidWalletToolbar:{display:'flex',alignItems:'center',gap:16,padding:'10px 7px 14px',color:'#111'},
+  androidBack:{fontSize:28,lineHeight:1,fontWeight:300},
+  androidToolbarSpacer:{flex:1},
+  androidStar:{fontSize:27,lineHeight:1},
+  androidDots:{fontSize:27,lineHeight:1},
+  androidPass:{borderRadius:25,overflow:'hidden',boxShadow:'0 14px 34px rgba(15,23,42,.20)',background:'#111'},
+  androidPassTop:{background:'#070707',color:'#fff',padding:'20px 18px 18px'},
+  androidBrandRow:{display:'flex',alignItems:'center',gap:11},
+  androidBusinessLogo:{width:34,height:34,borderRadius:'50%',background:'#fff',objectFit:'cover'},
+  androidBusinessName:{fontSize:17,fontWeight:750},
+  androidDivider:{height:1,background:'rgba(255,255,255,.12)',margin:'16px -18px 17px'},
+  androidProgramName:{fontSize:30,lineHeight:1.05,fontWeight:500,marginBottom:22},
+  androidStampLabel:{fontSize:12,opacity:.88},
+  androidStampCount:{fontSize:19,fontWeight:650,marginBottom:18,transformOrigin:'left center'},
+  androidQrWrap:{width:184,height:184,background:'#fff',borderRadius:19,padding:16,boxSizing:'border-box',margin:'0 auto 14px'},
+  demoQr:{display:'grid',gridTemplateColumns:'repeat(21,1fr)',gridTemplateRows:'repeat(21,1fr)',width:'100%',height:'100%',gap:0,background:'#fff'},
+  androidCustomerName:{fontSize:15.5,fontWeight:650,textAlign:'center',marginTop:4},
+  androidPassBottom:{
+    minHeight:126,padding:'18px 18px 20px',boxSizing:'border-box',color:'#111',
+    background:'linear-gradient(135deg,#f2dfc8 0%,#f7eee2 54%,#d9f0e9 100%)',
   },
-  heroNotificationIcon:{fontSize:20},
-  heroNotificationTitle:{display:'block',fontSize:11.5,color:'#0f172a',marginBottom:2},
-  heroNotificationText:{display:'block',fontSize:9.5,color:'#64748b',lineHeight:1.35},
+  androidRewardSmall:{fontSize:9,fontWeight:800,letterSpacing:'.08em',marginBottom:9},
+  androidRewardTitle:{fontSize:31,fontWeight:950,lineHeight:1,letterSpacing:'-.02em'},
+  androidRewardMeta:{fontSize:11.5,marginTop:7,color:'#4b5563'},
+  androidPageDots:{display:'flex',gap:7,justifyContent:'center',paddingTop:19},
+  androidDotActive:{width:8,height:8,borderRadius:'50%',background:'#111'},
+  androidDot:{width:8,height:8,borderRadius:'50%',background:'#c4c7c5'},
+  heroImpactStrip:{
+    maxWidth:1180,margin:'0 auto 56px',padding:'20px 24px',display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:0,
+    background:'#fff',border:'1px solid #e2e8f0',borderRadius:20,boxShadow:'0 16px 42px rgba(15,23,42,.07)',
+  },
+  heroImpactItem:{display:'flex',flexDirection:'column',alignItems:'center',gap:4,padding:'4px 12px',borderRight:'1px solid #eef2f7',fontSize:11.5,color:'#64748b'},
   heroCard: {
     width: 260, borderRadius: 20, background: 'white', boxShadow: '0 20px 50px rgba(0,0,0,0.12)',
     padding: 20, transform: 'rotate(-3deg)',
@@ -1524,80 +1508,19 @@ const styles = {
     display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700,
     margin: '0 auto 16px', fontSize: 16,
   },
-  founderBlock: {
-    marginTop: 24, paddingTop: 22, borderTop: '1px solid #dbe4ea',
-  },
-  founderIdentity: {
-    display: 'flex', flexDirection: 'column', gap: 3, marginBottom: 14,
-  },
-  founderLabel: {
-    fontSize: 10, fontWeight: 900, letterSpacing: '0.14em', color: '#0d9488',
-  },
-  founderName: {
-    fontSize: 19, lineHeight: 1.25, color: '#0f172a',
-  },
-  founderRole: {
-    fontSize: 12.5, color: '#64748b', fontWeight: 650,
-  },
-  founderIntro: {
-    margin: '0 0 16px', color: '#475569', fontSize: 13.5, lineHeight: 1.7,
-  },
-  founderCredentialGrid: {
-    display: 'grid', gridTemplateColumns: '1fr', gap: 8, marginBottom: 18,
-  },
-  founderCredentialCard: {
-    display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
-    border: '1px solid #e2e8f0', borderRadius: 12, background: '#f8fafc',
-  },
-  founderCredentialIcon: {
-    width: 30, height: 30, borderRadius: 9, background: '#ecfdf5',
-    display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, flexShrink: 0,
-  },
-  founderCredentialTitle: {
-    display: 'block', fontSize: 12.5, color: '#0f172a',
-  },
-  founderCredentialDetail: {
-    display: 'block', marginTop: 2, fontSize: 11.5, color: '#64748b',
-  },
-  founderMediaBlock: {
-    padding: 14, borderRadius: 14, background: '#f0fdfa', border: '1px solid #ccfbf1',
-  },
-  founderMediaLabel: {
-    display: 'block', fontSize: 11, fontWeight: 900, letterSpacing: '0.08em',
-    textTransform: 'uppercase', color: '#0f766e',
-  },
-  founderMediaNote: {
-    margin: '5px 0 10px', fontSize: 11.5, lineHeight: 1.5, color: '#64748b',
-  },
-  founderMediaLinks: {
-    display: 'flex', flexWrap: 'wrap', gap: 7,
-  },
-  founderMediaLink: {
-    display: 'inline-flex', alignItems: 'center', gap: 4, padding: '7px 9px',
-    borderRadius: 9, background: '#ffffff', border: '1px solid #99f6e4',
-    color: '#0f766e', fontSize: 11.5, fontWeight: 800, textDecoration: 'none',
-  },
   aboutSection: {
     padding: '68px 32px', maxWidth: 1100, margin: '0 auto',
   },
   aboutGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'minmax(0, 1.08fr) minmax(320px, 0.92fr)',
-    gap: 18,
-    alignItems: 'start',
+    display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(290px,1fr))', gap: 18,
   },
   aboutCard: {
     borderRadius: 18, padding: 28, background: 'linear-gradient(135deg,#f0fdf4,#ecfdf5)',
     border: '1px solid #bbf7d0',
   },
   contactCard: {
-    borderRadius: 18,
-    padding: 28,
-    background: 'linear-gradient(135deg,#fffbeb,#fff7ed)',
+    borderRadius: 18, padding: 28, background: 'linear-gradient(135deg,#fffbeb,#fff7ed)',
     border: '1px solid #fde68a',
-    alignSelf: 'start',
-    height: 'auto',
-    minHeight: 0,
   },
   aboutTitle: { fontSize: 23, lineHeight: 1.25, fontWeight: 800, color: '#0f172a', margin: '0 0 12px' },
   aboutBody: { fontSize: 14, lineHeight: 1.7, color: '#475569', margin: 0 },
