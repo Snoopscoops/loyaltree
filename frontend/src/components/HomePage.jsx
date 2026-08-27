@@ -263,7 +263,7 @@ const CARD_SAMPLES = {
 
 const BRANCH_TIERS = [
   { key: '1', label: '1 branch' },
-  { key: '2-3', label: '2\u20133 branches' },
+  { key: '3', label: '3 branches' },
   { key: '5', label: 'Up to 5 branches' },
 ]
 
@@ -271,7 +271,7 @@ const PLANS = [
   {
     key: 'starter',
     name: 'Starter',
-    prices: { '1': 350, '2-3': 650, '5': 1300 },
+    prices: { '1': 350, '3': 1000, '5': 1600 },
     features: [
       'Google Wallet & Apple Wallet',
       '2 active announcements',
@@ -286,7 +286,7 @@ const PLANS = [
     key: 'growth',
     name: 'Growth',
     highlight: true,
-    prices: { '1': 550, '2-3': 1050, '5': 2100 },
+    prices: { '1': 550, '3': 1600, '5': 2600 },
     features: [
       'Google Wallet & Apple Wallet',
       'Up to 5 active announcements',
@@ -303,7 +303,7 @@ const PLANS = [
     key: 'pro',
     name: 'Pro',
     comingSoon: true,
-    prices: { '1': 750, '2-3': 1450, '5': 2900 },
+    prices: { '1': 750, '3': 2100, '5': 3600 },
     features: [
       'Google Wallet & Apple Wallet',
       'Up to 7 active announcements',

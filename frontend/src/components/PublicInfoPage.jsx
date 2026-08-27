@@ -266,7 +266,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
 
   const pricingBranches = [
     { key: '1', label: '1 branch' },
-    { key: '2-3', label: '2–3 branches' },
+    { key: '3', label: '3 branches' },
     { key: '5', label: 'Up to 5 branches' },
   ]
 
@@ -274,7 +274,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
     {
       key: 'starter',
       name: 'Starter',
-      prices: { '1': 350, '2-3': 650, '5': 1300 },
+      prices: { '1': 350, '3': 1000, '5': 1600 },
       tagline: 'A complete digital loyalty system for smaller businesses getting started.',
       features: [
         'Google Wallet & Apple Wallet',
@@ -290,7 +290,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
       key: 'growth',
       name: 'Growth',
       highlight: true,
-      prices: { '1': 550, '2-3': 1050, '5': 2100 },
+      prices: { '1': 550, '3': 1600, '5': 2600 },
       tagline: 'More customer engagement and retention tools for growing businesses.',
       features: [
         'Google Wallet & Apple Wallet',
@@ -308,7 +308,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
       key: 'pro',
       name: 'Pro',
       comingSoon: true,
-      prices: { '1': 750, '2-3': 1450, '5': 2900 },
+      prices: { '1': 750, '3': 2100, '5': 3600 },
       tagline: 'Advanced loyalty tools for businesses ready to run more complex programs.',
       features: [
         'Google Wallet & Apple Wallet',
