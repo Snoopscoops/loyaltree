@@ -1507,6 +1507,20 @@ def _card_cycle_validity_days(program: Optional[dict]) -> int:
         return 365
 
 
+def card_cycle_reset_on_date(customer: Optional[dict], program: Optional[dict]) -> Optional[str]:
+    """Customer-facing date when a resettable card actually rolls over.
+
+    card_expires_at is inclusive (the card remains valid through that local
+    date), so the balance reset happens on the following Asia/Manila day.
+    """
+    if not customer or not _card_cycle_enabled(program):
+        return None
+    if (program or {}).get('card_type') not in ('stamp', 'points', 'vip'):
+        return None
+    expires = _date_only(customer.get('card_expires_at'))
+    return (expires + timedelta(days=1)).isoformat() if expires else None
+
+
 def card_cycle_signup_fields(program: Optional[dict]) -> dict:
     """Initial per-customer card-cycle metadata. No balance changes happen here."""
     today = _loyalty_today()
@@ -2563,10 +2577,13 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     )
 
     details = []  # [(header, body), ...] - mirrors WalletPass.jsx's `view.details`
+    card_cycle_reset_on = card_cycle_reset_on_date(customer, program)
     if card_type == 'points':
         loyalty_points_label = 'Points'
         loyalty_points_balance = str(points_balance)
         details.append(('REWARD', reward_name))
+        if card_cycle_reset_on:
+            details.append(('RESET ON', card_cycle_reset_on))
     elif card_type == 'multipass':
         loyalty_points_label = 'Sessions'
         loyalty_points_balance = f'{sessions_remaining}/{sessions_total}'
@@ -2578,6 +2595,8 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         loyalty_points_label = 'VIP Points'
         loyalty_points_balance = str(int(customer.get('vip_points') or 0))
         details.append(('NEXT TIER', next_tier.get('name') if next_tier else 'Top tier'))
+        if card_cycle_reset_on:
+            details.append(('RESET ON', card_cycle_reset_on))
     elif card_type == 'membership':
         status = membership_effective_status(customer)
         expiry = customer.get('membership_expires_at')
@@ -2593,6 +2612,8 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         loyalty_points_balance = f'{stamps}/{stamp_goal}'
         left = max(full_stamp_goal - stamps, 0)
         details.append(('REWARD', reward_name if left == 0 else f'{left} more to {reward_name}'))
+        if card_cycle_reset_on:
+            details.append(('RESET ON', card_cycle_reset_on))
     description = program.get('description') if program else None
     if len(details) < 4 and description:
         details.append(('ABOUT', description))
@@ -3417,6 +3438,17 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     ann_message = (announcement or {}).get('message', '') or ''
     announcement_value = ann_title.strip() or ann_message.strip() or 'Check back for updates'
 
+    card_cycle_reset_on = card_cycle_reset_on_date(customer, program)
+    cycle_auxiliary_fields = (
+        [{
+            'key': 'card_reset_on',
+            'label': 'RESET ON',
+            'value': card_cycle_reset_on,
+            'changeMessage': 'Card resets on %@',
+        }]
+        if card_cycle_reset_on else []
+    )
+
     # Same per-type detail rows as build_loyalty_object (Google) and
     # WalletPass.jsx (website) - kept in sync so flipping to the back of the
     # Apple pass shows the same Active Until / Member Since / Membership
@@ -3450,6 +3482,9 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     else:
         left = max(stamp_goal - stamps, 0)
         apple_details.append(('reward_detail', 'REWARD', reward_name if left == 0 else f'{left} more to {reward_name}'))
+
+    if card_cycle_reset_on:
+        apple_details.append(('card_reset_on', 'RESET ON', card_cycle_reset_on))
 
     # Recent Activity: one backField per movement (stamp added, points
     # earned/redeemed, session used, VIP tier change, membership visit -
@@ -3533,7 +3568,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                         'changeMessage': 'Points updated: %@',
                     },
                 ],
-                'auxiliaryFields': [],
+                'auxiliaryFields': cycle_auxiliary_fields,
                 'backFields': back_fields,
             }
             if card_type == 'points' else
@@ -3565,7 +3600,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                         'changeMessage': 'Stamp progress: %@',
                     },
                 ],
-                'auxiliaryFields': [],
+                'auxiliaryFields': cycle_auxiliary_fields,
                 'backFields': back_fields,
             }
             if card_type == 'stamp' else
@@ -3644,7 +3679,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                         'changeMessage': 'VIP points updated: %@',
                     },
                 ],
-                'auxiliaryFields': [],
+                'auxiliaryFields': cycle_auxiliary_fields,
                 'backFields': back_fields,
             }
         ),
@@ -18443,6 +18478,13 @@ async def get_wallet_pass(customer_public_id: str):
             "card_type": card_type,
             "card_name": program.get('card_name') if program else None,
             "description": program.get('description') if program else None,
+            "card_expiration_enabled": bool(program.get('card_expiration_enabled')) if program else False,
+            "card_validity_days": int(program.get('card_validity_days') or 365) if program else 365,
+            "card_cycle": int(customer.get('card_cycle') or 1),
+            "card_started_at": customer.get('card_started_at'),
+            "card_expires_at": customer.get('card_expires_at'),
+            "card_reset_on": card_cycle_reset_on_date(customer, program),
+            "last_card_reset_at": customer.get('last_card_reset_at'),
             "program_logo_url": (program.get('program_logo_url') if program else None) or business.get('logo_url'),
             "hero_image_url": program.get('hero_image_url') if program else None,
             "wallet_design": wallet_20_design(business, program),

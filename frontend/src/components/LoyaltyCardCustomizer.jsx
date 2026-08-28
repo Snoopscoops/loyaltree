@@ -375,6 +375,12 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
     : walletPreset === 'premium'
     ? `linear-gradient(135deg,#050505 0%,${previewPrimary} 135%)`
     : `linear-gradient(135deg,${previewPrimary} 0%,${previewSecondary} 100%)`
+  const previewResetDate = (() => {
+    if (!form.card_expiration_enabled || !['stamp','points','vip'].includes(form.card_type)) return ''
+    const d = new Date()
+    d.setDate(d.getDate() + Math.max(1, Number(form.card_validity_days) || 365) + 1)
+    return d.toLocaleDateString(undefined, { year:'numeric', month:'short', day:'numeric' })
+  })()
 
   const guidedCardLabel = form.card_type === 'points'
     ? 'Points Card'
@@ -1504,6 +1510,12 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                   <img style={styles.wallet20PreviewQr} alt="QR preview" src={`https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(`${API_BASE}/join/${user?.business_slug||'preview'}`)}`}/>
                 </div>
               </div>
+              {previewResetDate && (
+                <div style={styles.wallet20ResetPreview}>
+                  <span>🔄 RESET ON</span>
+                  <strong>{previewResetDate}</strong>
+                </div>
+              )}
             </div>
             <p style={styles.hint}>Preview is intentionally approximate: Apple and Google control parts of their native layout. LoyaltyTree keeps your logo, colors and customer information as consistent as each platform allows.</p>
           </div>
@@ -2011,6 +2023,7 @@ const styles = {
   wallet20PreviewMetric:{},
   wallet20PreviewQrBox:{width:64,height:64,flexShrink:0,background:'#fff',borderRadius:12,padding:6,boxShadow:'0 8px 22px rgba(0,0,0,.28)'},
   wallet20PreviewQr:{display:'block',width:'100%',height:'100%'},
+  wallet20ResetPreview:{marginTop:14,paddingTop:12,borderTop:'1px solid rgba(255,255,255,.18)',display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,fontSize:11,color:'rgba(255,255,255,.72)',letterSpacing:.8,fontWeight:800},
   walletStatus: {
     display: 'flex',
     justifyContent: 'space-between',
