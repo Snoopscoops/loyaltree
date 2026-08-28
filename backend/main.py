@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import html as html_lib
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from email.utils import format_datetime, parsedate_to_datetime
 from typing import Optional, List, Literal
 
@@ -109,6 +110,10 @@ CLOUDINARY_API_KEY = os.getenv('CLOUDINARY_API_KEY', '')
 CLOUDINARY_API_SECRET = os.getenv('CLOUDINARY_API_SECRET', '')
 CLOUDINARY_UPLOAD_PRESET = os.getenv('CLOUDINARY_UPLOAD_PRESET', 'LoyaltyTree_Images')
 SUBSCRIPTION_PERIOD_DAYS = 30  # how long a successful payment extends access for
+
+# Loyalty-card cycle dates follow Philippine local time. Database timestamps remain UTC.
+LOYALTY_TIMEZONE = ZoneInfo(os.getenv('LOYALTY_TIMEZONE', 'Asia/Manila'))
+CARD_EXPIRATION_CRON_SECRET = os.getenv('CARD_EXPIRATION_CRON_SECRET', '')
 
 # Subscription expiry reminder emails, sent via Resend (resend.com). Get
 # RESEND_API_KEY from Resend's dashboard once you've verified a sending
@@ -1013,6 +1018,10 @@ class LoyaltyConfig(BaseModel):
     stamp_reset_after_final: bool = True
     primary_color: str = '#3b82f6'
     reward_expiry_days: int = Field(default=30, ge=1)
+    # Program-level card cycle. At cycle expiry: stamp/points/VIP balances reset;
+    # multipass/membership become expired. History is preserved.
+    card_expiration_enabled: bool = False
+    card_validity_days: int = Field(default=365, ge=1, le=3650)
     program_logo_url: Optional[str] = None
     hero_image_url: Optional[str] = None
     card_name: Optional[str] = None
@@ -1347,8 +1356,14 @@ def safe_get_customer(public_id: str):
         return None
     try:
         res = supabase.table("customers").select("*").eq("public_id", public_id).maybe_single().execute()
-        return res.data
-    except Exception:
+        customer = res.data
+        if not customer:
+            return None
+        # Lazy enforcement guarantees cashier, QR, Wallet-refresh and customer
+        # detail routes all see the new cycle even if the nightly sweep missed.
+        return apply_card_cycle_expiration_if_needed(customer)
+    except Exception as exc:
+        print(f"CUSTOMER lookup warning: {exc}")
         return None
 
 def safe_get_staff(public_id: str):
@@ -1466,6 +1481,177 @@ def safe_get_loyalty_program(business_id: int):
     except Exception as e:
         print(f"LOYALTY PROGRAM lookup error for business {business_id}: {e}")
         return None
+
+def _loyalty_today():
+    """Business-facing loyalty dates use Asia/Manila (or LOYALTY_TIMEZONE env)."""
+    return datetime.now(LOYALTY_TIMEZONE).date()
+
+
+def _date_only(value):
+    if not value:
+        return None
+    try:
+        return datetime.strptime(str(value)[:10], '%Y-%m-%d').date()
+    except Exception:
+        return None
+
+
+def _card_cycle_enabled(program: Optional[dict]) -> bool:
+    return bool((program or {}).get('card_expiration_enabled'))
+
+
+def _card_cycle_validity_days(program: Optional[dict]) -> int:
+    try:
+        return max(1, min(3650, int((program or {}).get('card_validity_days') or 365)))
+    except Exception:
+        return 365
+
+
+def card_cycle_signup_fields(program: Optional[dict]) -> dict:
+    """Initial per-customer card-cycle metadata. No balance changes happen here."""
+    today = _loyalty_today()
+    return {
+        'card_cycle': 1,
+        'card_started_at': today.isoformat(),
+        'card_expires_at': (
+            (today + timedelta(days=_card_cycle_validity_days(program))).isoformat()
+            if _card_cycle_enabled(program) else None
+        ),
+        'last_card_reset_at': None,
+    }
+
+
+def apply_card_cycle_expiration_if_needed(customer: dict, business: Optional[dict] = None,
+                                           program: Optional[dict] = None,
+                                           queue_wallet: bool = True) -> dict:
+    """Apply one overdue program-level card expiration atomically.
+
+    Stamp / Points / VIP begin a fresh cycle with zero progress. Multipass and
+    Membership are forced expired. Transaction/event history is never deleted.
+    A compare-on-card_cycle update prevents two simultaneous cashier requests
+    from resetting/incrementing the same member twice.
+    """
+    if not customer or not supabase:
+        return customer
+    business_id = customer.get('business_id')
+    program = program or (safe_get_loyalty_program(business_id) if business_id else None)
+    if not _card_cycle_enabled(program):
+        return customer
+
+    today = _loyalty_today()
+    expires = _date_only(customer.get('card_expires_at'))
+
+    # Older customers may predate the migration/feature. Start their timer now
+    # instead of immediately wiping balances based on an old created_at date.
+    if not expires:
+        started = today
+        expires = started + timedelta(days=_card_cycle_validity_days(program))
+        init_data = {
+            'card_cycle': max(1, int(customer.get('card_cycle') or 1)),
+            'card_started_at': started.isoformat(),
+            'card_expires_at': expires.isoformat(),
+            'updated_at': datetime.utcnow().isoformat(),
+        }
+        try:
+            res = supabase.table('customers').update(init_data).eq('id', customer.get('id')).execute()
+            updated = (res.data or [{**customer, **init_data}])[0]
+            customer.update(updated)
+        except Exception as exc:
+            print(f"CARD CYCLE INIT warning: {exc}")
+        return customer
+
+    # Valid through the displayed expiry date; expire starting the next local day.
+    if expires >= today:
+        return customer
+
+    old_cycle = max(1, int(customer.get('card_cycle') or 1))
+    new_cycle = old_cycle + 1
+    new_expiry = today + timedelta(days=_card_cycle_validity_days(program))
+    card_type = (program or {}).get('card_type') or 'stamp'
+    old_balances = {
+        'stamp_count': int(customer.get('stamp_count') or 0),
+        'points_balance': int(customer.get('points_balance') or 0),
+        'vip_points': int(customer.get('vip_points') or 0),
+        'multipass_sessions_remaining': int(customer.get('multipass_sessions_remaining') or 0),
+        'membership_status': customer.get('membership_status'),
+    }
+
+    update_data = {
+        'card_cycle': new_cycle,
+        'card_started_at': today.isoformat(),
+        'card_expires_at': new_expiry.isoformat(),
+        'last_card_reset_at': datetime.utcnow().isoformat(),
+        'updated_at': datetime.utcnow().isoformat(),
+    }
+    if card_type == 'stamp':
+        update_data.update({'stamp_count': 0, 'reward_unlocked': False})
+    elif card_type == 'points':
+        update_data['points_balance'] = 0
+    elif card_type == 'vip':
+        update_data.update({'vip_points': 0, 'vip_manual_tier_id': None})
+    elif card_type == 'multipass':
+        # Keep the unused-session history/balance visible, but make it unusable.
+        update_data['multipass_expires_at'] = expires.isoformat()
+    elif card_type == 'membership':
+        # Force effective status to EXPIRED even if the previous membership was lifetime.
+        update_data.update({
+            'membership_status': 'active',
+            'membership_expires_at': expires.isoformat(),
+        })
+
+    try:
+        query = supabase.table('customers').update(update_data).eq('id', customer.get('id'))
+        # Optimistic concurrency: only the request that still sees the old cycle wins.
+        query = query.eq('card_cycle', old_cycle)
+        result = query.execute()
+        if not result.data:
+            fresh = supabase.table('customers').select('*').eq('id', customer.get('id')).maybe_single().execute()
+            return fresh.data or customer
+        updated = result.data[0]
+    except Exception as exc:
+        print(f"CARD CYCLE RESET error customer={customer.get('public_id')}: {exc}")
+        return customer
+
+    try:
+        supabase.table('transaction_audit').insert({
+            'business_id': business_id,
+            'customer_id': customer.get('id'),
+            'actor_type': 'system',
+            'action': 'card_cycle_expired',
+            'status': 'success',
+            'balance_before': old_balances.get(
+                'points_balance' if card_type == 'points' else
+                'vip_points' if card_type == 'vip' else
+                'multipass_sessions_remaining' if card_type == 'multipass' else
+                'stamp_count' if card_type == 'stamp' else 'stamp_count'
+            ),
+            'balance_after': 0 if card_type in ('stamp', 'points', 'vip') else None,
+            'metadata': {
+                'card_type': card_type,
+                'previous_cycle': old_cycle,
+                'new_cycle': new_cycle,
+                'expired_on': expires.isoformat(),
+                'new_cycle_expires_on': new_expiry.isoformat(),
+                'previous_balances': old_balances,
+            },
+            'completed_at': datetime.utcnow().isoformat(),
+        }).execute()
+    except Exception as exc:
+        print(f"CARD CYCLE AUDIT warning: {exc}")
+
+    business = business or (safe_get_business_by_id(business_id) if business_id else None)
+    if queue_wallet and business:
+        try:
+            enqueue_wallet_sync(updated, business, 'card_cycle_expired')
+        except Exception as exc:
+            print(f"CARD CYCLE WALLET QUEUE warning: {exc}")
+
+    print(
+        f"CARD CYCLE RESET customer={updated.get('public_id')} type={card_type} "
+        f"cycle={old_cycle}->{new_cycle} expired={expires.isoformat()}"
+    )
+    return updated
+
 
 def safe_get_active_coupon(customer_id: int):
     """The customer's current active, non-expired coupon (there's only ever
@@ -7437,6 +7623,10 @@ async def get_customers(public_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+    program = safe_get_loyalty_program(business.get('id'))
+    if program and program.get('card_expiration_enabled'):
+        customers = [apply_card_cycle_expiration_if_needed(c, business, program) for c in customers]
+
     # Attach last_stamp_at from stamp_events (most recent stamp per customer),
     # so the owner dashboard can show "last stamped" instead of only the
     # cumulative stamp_count. Best-effort - if this fails, customers still
@@ -7464,7 +7654,6 @@ async def get_customers(public_id: str):
         for c in customers:
             c.setdefault('last_stamp_at', None)
 
-    program = safe_get_loyalty_program(business.get('id'))
     if program and program.get('card_type') == 'membership':
         for c in customers:
             c['membership_effective_status'] = membership_effective_status(c)
@@ -7477,6 +7666,38 @@ async def get_customers(public_id: str):
             c['vip_next_tier'] = get_next_vip_tier(c, program)
 
     return customers
+
+@app.post("/api/v1/admin/card-expiration/sweep")
+async def admin_sweep_card_expirations(_: bool = Depends(require_admin)):
+    """Manual/cron-friendly sweep. Lazy request-time enforcement remains the fallback."""
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Database not connected")
+    businesses = supabase.table('businesses').select('*').execute().data or []
+    checked = 0
+    reset = 0
+    for business in businesses:
+        program = safe_get_loyalty_program(business.get('id'))
+        if not _card_cycle_enabled(program):
+            continue
+        rows = supabase.table('customers').select('*').eq('business_id', business.get('id')).execute().data or []
+        for customer in rows:
+            checked += 1
+            before = int(customer.get('card_cycle') or 1)
+            updated = apply_card_cycle_expiration_if_needed(customer, business, program)
+            if int((updated or {}).get('card_cycle') or 1) > before:
+                reset += 1
+    return {'checked': checked, 'expired_and_advanced': reset, 'date': _loyalty_today().isoformat()}
+
+
+@app.post("/api/v1/maintenance/card-expiration/sweep")
+async def maintenance_card_expiration_sweep(x_cron_secret: str = Header(default='', alias='X-Cron-Secret')):
+    """Daily scheduler hook. Configure CARD_EXPIRATION_CRON_SECRET and send it in X-Cron-Secret."""
+    if not CARD_EXPIRATION_CRON_SECRET:
+        raise HTTPException(status_code=503, detail='CARD_EXPIRATION_CRON_SECRET is not configured')
+    if not hmac.compare_digest(str(x_cron_secret or ''), CARD_EXPIRATION_CRON_SECRET):
+        raise HTTPException(status_code=401, detail='Invalid cron secret')
+    return await admin_sweep_card_expirations(True)
+
 
 @app.api_route("/api/v1/business/{public_id}/customers/{customer_public_id}", methods=["PUT", "PATCH"])
 async def update_customer(public_id: str, customer_public_id: str, update: CustomerUpdate):
@@ -8438,6 +8659,8 @@ async def get_loyalty_config(public_id: str, response: Response):
             "stamp_reset_after_final": True,
             "primary_color": "#3b82f6",
             "reward_expiry_days": 30,
+            "card_expiration_enabled": False,
+            "card_validity_days": 365,
             "program_logo_url": None,
             "hero_image_url": None,
             "card_name": None,
@@ -8522,6 +8745,8 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
         'wallet_secondary_color': config.wallet_secondary_color,
         'wallet_show_background': bool(config.wallet_show_background),
         'reward_expiry_days': config.reward_expiry_days,
+        'card_expiration_enabled': bool(config.card_expiration_enabled),
+        'card_validity_days': int(config.card_validity_days or 365),
         'updated_at': datetime.utcnow().isoformat(),
     }
 
@@ -8653,6 +8878,18 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
 
         persisted = safe_get_loyalty_program(business.get("id"))
         persisted_type = (persisted or {}).get("card_type")
+
+        # Turning card expiration on starts a fresh timer for EXISTING members
+        # from today without deleting/resetting their current balances.
+        was_expiration_enabled = bool(current_before_save.get('card_expiration_enabled'))
+        if bool(config.card_expiration_enabled) and not was_expiration_enabled:
+            cycle_start = _loyalty_today()
+            cycle_expiry = cycle_start + timedelta(days=int(config.card_validity_days or 365))
+            supabase.table('customers').update({
+                'card_started_at': cycle_start.isoformat(),
+                'card_expires_at': cycle_expiry.isoformat(),
+                'updated_at': datetime.utcnow().isoformat(),
+            }).eq('business_id', business.get('id')).execute()
 
         if persisted_type != config.card_type:
             raise HTTPException(
@@ -10763,18 +11000,32 @@ def get_stamp_rewards(program: Optional[dict]) -> List[dict]:
         dedup[r['stamps']] = r
     return [dedup[k] for k in sorted(dedup)]
 
-def get_stamp_claims(customer_id: int) -> List[dict]:
+def get_stamp_claims(customer_id: int, card_cycle: Optional[int] = None) -> List[dict]:
     try:
-        res = (supabase.table('stamp_reward_claims').select('*')
-               .eq('customer_id', customer_id).execute())
+        query = (supabase.table('stamp_reward_claims').select('*')
+                 .eq('customer_id', customer_id))
+        if card_cycle is not None:
+            query = query.eq('card_cycle', int(card_cycle))
+        res = query.execute()
         return res.data or []
     except Exception as e:
+        # Rolling-deploy safety: before CARD_EXPIRATION_CYCLE_V1.sql is run,
+        # fall back to legacy all-time claims rather than accidentally allowing
+        # a previously redeemed reward to be claimed twice.
+        if card_cycle is not None and 'card_cycle' in str(e).lower():
+            try:
+                legacy = (supabase.table('stamp_reward_claims').select('*')
+                          .eq('customer_id', customer_id).execute())
+                return legacy.data or []
+            except Exception:
+                pass
         print(f"STAMP CLAIM lookup warning: {e}")
         return []
 
 def get_available_stamp_rewards(customer: dict, program: Optional[dict]) -> List[dict]:
     count = int(customer.get('stamp_count') or 0)
-    claimed_ids = {str(x.get('milestone_id')) for x in get_stamp_claims(customer.get('id'))}
+    cycle = max(1, int(customer.get('card_cycle') or 1))
+    claimed_ids = {str(x.get('milestone_id')) for x in get_stamp_claims(customer.get('id'), cycle)}
     return [r for r in get_stamp_rewards(program)
             if count >= int(r['stamps']) and str(r['id']) not in claimed_ids]
 
@@ -12850,6 +13101,7 @@ async def redeem_reward(public_id: str, req: RedeemRequest, authorization: str =
         supabase.table('stamp_reward_claims').insert({
             'business_id': business.get('id'),
             'customer_id': customer.get('id'),
+            'card_cycle': max(1, int(customer.get('card_cycle') or 1)),
             'milestone_id': str(reward['id']),
             'milestone_stamps': int(reward['stamps']),
             'reward_name': reward['reward_name'],
@@ -13933,6 +14185,7 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
         )
 
     customer_public_id = generate_public_id()
+    program = safe_get_loyalty_program(business.get('id'))
     customer_data = {
         'business_id': business.get('id'),
         'public_id': customer_public_id,
@@ -13952,9 +14205,9 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
         'points_balance': 0,
         'created_at': datetime.utcnow().isoformat(),
         'updated_at': datetime.utcnow().isoformat(),
+        **card_cycle_signup_fields(program),
     }
 
-    program = safe_get_loyalty_program(business.get('id'))
     if program and program.get('card_type') == 'multipass':
         session_count = int(program.get('multipass_session_count') or 12)
         validity_days = int(program.get('multipass_validity_days') or 90)

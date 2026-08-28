@@ -21,6 +21,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
     stamp_once_per_day: false,
     stamp_reset_after_final: true,
     reward_expiry_days: 30,
+    card_expiration_enabled: false,
+    card_validity_days: 365,
     program_logo_url: '',
     hero_image_url: '',
     wallet_style: 'gradient',
@@ -114,6 +116,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
           stamp_once_per_day: data.stamp_once_per_day === true,
           stamp_reset_after_final: data.stamp_reset_after_final !== false,
           reward_expiry_days: data.reward_expiry_days || 30,
+          card_expiration_enabled: data.card_expiration_enabled === true,
+          card_validity_days: data.card_validity_days ?? 365,
           program_logo_url: data.program_logo_url || '',
           hero_image_url: data.hero_image_url || '',
           wallet_style: data.wallet_style || 'gradient',
@@ -215,6 +219,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
     stamp_once_per_day: form.stamp_once_per_day === true,
     stamp_reset_after_final: form.stamp_reset_after_final !== false,
     reward_expiry_days: Number(form.reward_expiry_days) || 30,
+    card_expiration_enabled: form.card_expiration_enabled === true,
+    card_validity_days: Math.max(1, Math.min(3650, Number(form.card_validity_days) || 365)),
     program_logo_url: form.program_logo_url || null,
     hero_image_url: form.hero_image_url || null,
     wallet_style: form.wallet_style || 'gradient',
@@ -1291,6 +1297,60 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
               </div>
             </div>
           )}
+
+          <div style={styles.wallet20Box}>
+            <div style={styles.wallet20TitleRow}>
+              <div>
+                <div style={styles.wallet20Eyebrow}>Card Cycle</div>
+                <h3 style={styles.wallet20Title}>Card expiration</h3>
+              </div>
+              <span style={styles.wallet20Badge}>{form.card_expiration_enabled ? 'Enabled' : 'Optional'}</span>
+            </div>
+
+            <label style={{display:'flex',gap:10,alignItems:'flex-start',fontSize:13,fontWeight:800,cursor:'pointer',marginBottom:12}}>
+              <input
+                type="checkbox"
+                checked={form.card_expiration_enabled === true}
+                onChange={e => update('card_expiration_enabled', e.target.checked)}
+                style={{marginTop:2}}
+              />
+              <span>
+                Automatically expire each customer's card
+                <span style={{display:'block',fontWeight:500,color:'#64748b',marginTop:4,lineHeight:1.5}}>
+                  Each member gets their own cycle starting from enrollment. Turning this on for the first time starts existing members from today.
+                </span>
+              </span>
+            </label>
+
+            {form.card_expiration_enabled && (
+              <div style={styles.fieldGroup}>
+                <label style={styles.label}>Card valid for</label>
+                <div style={{...styles.colorRow,maxWidth:190}}>
+                  <input
+                    style={styles.input}
+                    type="number"
+                    min={1}
+                    max={3650}
+                    value={form.card_validity_days}
+                    onChange={e => update('card_validity_days', e.target.value)}
+                  />
+                  <span style={styles.unit}>days</span>
+                </div>
+                <p style={styles.hint}>
+                  {form.card_type === 'stamp'
+                    ? 'At expiry, stamps reset to 0 and reward milestones become available again in the new cycle.'
+                    : form.card_type === 'points'
+                    ? 'At expiry, the current points balance resets to 0. Purchase/redemption history is kept.'
+                    : form.card_type === 'vip'
+                    ? 'At expiry, VIP points reset to 0 and the member returns to the starting tier. VIP history is kept.'
+                    : form.card_type === 'multipass'
+                    ? 'At expiry, the current multi-pass becomes unusable even if sessions remain. A new pass must be issued.'
+                    : 'At expiry, the membership becomes EXPIRED and must be renewed or reactivated.'}
+                </p>
+                <p style={styles.hint}>Changing the number of days affects new/next cycles; it does not wipe current balances when you save.</p>
+              </div>
+            )}
+          </div>
 
           {form.card_type === 'stamp' && (
             <div style={styles.fieldGroup}>
