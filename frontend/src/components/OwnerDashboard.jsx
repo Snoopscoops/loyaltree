@@ -23,6 +23,32 @@ function formatLastStamped(isoString) {
   return `Stamped ${diffYears} year${diffYears !== 1 ? 's' : ''} ago`
 }
 
+// Card-cycle dates are DATE values (YYYY-MM-DD), so parse them without the
+// browser's timezone conversion. The backend keeps a card valid THROUGH
+// card_expires_at and resets Stamp/Points/VIP on the following Manila day.
+function cardDateParts(value) {
+  const match = String(value || '').slice(0, 10).match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!match) return null
+  return { year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) }
+}
+
+function formatCardDate(value) {
+  const parts = cardDateParts(value)
+  if (!parts) return '—'
+  const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day))
+  return new Intl.DateTimeFormat('en-US', {
+    year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC'
+  }).format(date)
+}
+
+function cardResetDate(value) {
+  const parts = cardDateParts(value)
+  if (!parts) return null
+  const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day))
+  date.setUTCDate(date.getUTCDate() + 1)
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`
+}
+
 const INDUSTRY_META = {
   spa:{icon:'🌿',label:'Spa',recommend:'Membership or VIP',focus:'repeat visits and membership activity'},
   salon:{icon:'✂️',label:'Salon / Barber',recommend:'VIP, Stamps or Points',focus:'repeat appointments and reward activity'},
@@ -1468,6 +1494,24 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                       </>
                     )}
                     <p style={styles.lastStampedText}>{formatLastStamped(c.last_stamp_at)}</p>
+                    {program?.card_expiration_enabled && ['stamp', 'points', 'vip'].includes(program?.card_type) && c.card_expires_at && (
+                      <span style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 5,
+                        width: 'fit-content',
+                        marginTop: 6,
+                        padding: '5px 8px',
+                        borderRadius: 999,
+                        background: '#eff6ff',
+                        color: '#1d4ed8',
+                        border: '1px solid #bfdbfe',
+                        fontSize: 11.5,
+                        fontWeight: 800,
+                      }}>
+                        ↻ Resets {formatCardDate(cardResetDate(c.card_expires_at))}
+                      </span>
+                    )}
                     {c.reward_unlocked && <span style={styles.fruitBadge}>🍎 Reward Ready!</span>}
                     {isMultipassCard && (c.multipass_sessions_remaining || 0) <= 0 && (c.multipass_total_sessions || 0) > 0 && (
                       <span style={styles.fruitBadge}>🎫 Pass Complete</span>
@@ -1942,6 +1986,53 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 )}
               </div>
             </div>
+
+            {program?.card_expiration_enabled && ['stamp', 'points', 'vip'].includes(program?.card_type) && (
+              <div style={{
+                marginBottom: 18,
+                padding: 16,
+                border: '1px solid #bfdbfe',
+                background: 'linear-gradient(135deg, #f8fbff 0%, #eff6ff 100%)',
+                borderRadius: 14,
+              }}>
+                <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, marginBottom:12}}>
+                  <div>
+                    <div style={{fontSize:11, fontWeight:900, letterSpacing:1.1, color:'#2563eb', textTransform:'uppercase'}}>Card Cycle</div>
+                    <div style={{fontSize:17, fontWeight:900, color:'#0f172a', marginTop:2}}>Current Card Cycle</div>
+                  </div>
+                  <span style={{
+                    padding:'6px 10px', borderRadius:999, background:'#dbeafe', color:'#1d4ed8',
+                    fontSize:12, fontWeight:900, whiteSpace:'nowrap'
+                  }}>
+                    Cycle #{selectedCustomer.card_cycle || 1}
+                  </span>
+                </div>
+
+                {selectedCustomer.card_expires_at ? (
+                  <div style={{display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(2, minmax(0, 1fr))', gap:10}}>
+                    <div style={{background:'white', border:'1px solid #dbeafe', borderRadius:12, padding:12}}>
+                      <div style={{fontSize:11, fontWeight:800, color:'#64748b', textTransform:'uppercase', letterSpacing:.5}}>Started</div>
+                      <div style={{fontSize:15, fontWeight:900, color:'#0f172a', marginTop:5}}>
+                        {formatCardDate(selectedCustomer.card_started_at)}
+                      </div>
+                    </div>
+                    <div style={{background:'white', border:'1px solid #93c5fd', borderRadius:12, padding:12}}>
+                      <div style={{fontSize:11, fontWeight:800, color:'#2563eb', textTransform:'uppercase', letterSpacing:.5}}>Resets on</div>
+                      <div style={{fontSize:17, fontWeight:900, color:'#1d4ed8', marginTop:5}}>
+                        {formatCardDate(cardResetDate(selectedCustomer.card_expires_at))}
+                      </div>
+                      <div style={{fontSize:11.5, color:'#64748b', marginTop:4}}>
+                        Current balance is valid through {formatCardDate(selectedCustomer.card_expires_at)}.
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{background:'white', border:'1px solid #dbeafe', borderRadius:12, padding:12, color:'#64748b', fontSize:13}}>
+                    This customer's reset cycle will start after Card Expiration is published and initialized.
+                  </div>
+                )}
+              </div>
+            )}
 
             <div style={{marginBottom:18, padding:16, border:'1px solid #ccfbf1', background:'#f0fdfa', borderRadius:14}}>
               {isMembershipCard && (

@@ -944,7 +944,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                         />
                       ))}
                     </div>
-                    <div style={styles.cardFoot}>{previewFilled} of {stampGoal} stamps &middot; expires {form.reward_expiry_days || 30} days after earned</div>
+                    <div style={styles.cardFoot}>{previewFilled} of {stampGoal} stamps</div>
                   </>
                 )}
               </div>
@@ -1357,22 +1357,6 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
               </div>
             )}
           </div>
-
-          {form.card_type === 'stamp' && (
-            <div style={styles.fieldGroup}>
-              <label style={styles.label}>Reward expiry</label>
-              <div style={{...styles.colorRow, maxWidth: 150}}>
-                <input
-                  style={styles.input}
-                  type="number"
-                  min={1}
-                  value={form.reward_expiry_days}
-                  onChange={e => update('reward_expiry_days', e.target.value)}
-                />
-                <span style={styles.unit}>days</span>
-              </div>
-            </div>
-          )}
 
           <div style={styles.wallet20Box}>
             <div style={styles.wallet20TitleRow}>
