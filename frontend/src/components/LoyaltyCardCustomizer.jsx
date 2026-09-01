@@ -131,7 +131,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
           card_validity_days: data.card_validity_days ?? 365,
           program_logo_url: data.program_logo_url || '',
           hero_image_url: data.hero_image_url || '',
-          wallet_style: data.wallet_style || 'gradient',
+          wallet_style: data.wallet_style === 'minimal' ? 'classic' : data.wallet_style === 'modern' ? 'gradient' : (['classic','gradient','premium'].includes(data.wallet_style) ? data.wallet_style : 'gradient'),
           wallet_secondary_color: data.wallet_secondary_color || '#14b8a6',
           wallet_show_background: data.wallet_show_background !== false,
           description: data.description || '',
@@ -243,7 +243,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
     card_validity_days: Math.max(1, Math.min(3650, Number(form.card_validity_days) || 365)),
     program_logo_url: form.program_logo_url || null,
     hero_image_url: form.hero_image_url || null,
-    wallet_style: form.wallet_style || 'gradient',
+    // UI calls the legacy backend styles Gradient/Classic. Persist the
+    // schema-compatible values so FastAPI + the DB CHECK constraint accept it.
+    wallet_style: form.wallet_style === 'classic' ? 'minimal' : form.wallet_style === 'gradient' ? 'modern' : (['modern','premium','minimal','dark'].includes(form.wallet_style) ? form.wallet_style : 'modern'),
     wallet_secondary_color: form.wallet_secondary_color || null,
     wallet_show_background: form.wallet_show_background !== false,
     description: form.description || '',
@@ -347,7 +349,15 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
       body: JSON.stringify(buildPayload())
     })
     const data = await res.json()
-    if (!res.ok) throw new Error(data.detail || 'Failed to save changes')
+    if (!res.ok) {
+      const validationMessage = Array.isArray(data.detail)
+        ? data.detail.map(item => {
+            const field = Array.isArray(item?.loc) ? item.loc.filter(x => x !== 'body').join('.') : ''
+            return `${field ? field + ': ' : ''}${item?.msg || 'Invalid value'}`
+          }).join(' · ')
+        : data.detail
+      throw new Error(validationMessage || 'Failed to save changes')
+    }
 
     if (data.card_type !== form.card_type) {
       throw new Error(
