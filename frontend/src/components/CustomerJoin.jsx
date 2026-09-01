@@ -28,7 +28,8 @@ function CustomerJoin({ API_BASE }) {
 
   const rewardSummary = (() => {
     if (!businessInfo) return null
-    const type = businessInfo.card_type || 'stamp'
+    const rawType = businessInfo.card_type || 'stamp'
+    const type = rawType === 'hybrid' ? (businessInfo.hybrid_loyalty_type === 'stamp' ? 'stamp' : 'points') : rawType
 
     if (type === 'points') {
       const prizes = [...(businessInfo.points_prizes || [])]
@@ -58,7 +59,8 @@ function CustomerJoin({ API_BASE }) {
 
   const earningRule = (() => {
     if (!businessInfo) return null
-    if (businessInfo.card_type === 'points') {
+    const loyaltyType = businessInfo.card_type === 'hybrid' ? (businessInfo.hybrid_loyalty_type === 'stamp' ? 'stamp' : 'points') : businessInfo.card_type
+    if (loyaltyType === 'points') {
       const points = Number(businessInfo.points_per_amount || 0)
       const pesos = Number(businessInfo.points_amount_pesos || 0)
       if (points > 0 && pesos > 0) {
@@ -67,6 +69,19 @@ function CustomerJoin({ API_BASE }) {
       }
     }
     return null
+  })()
+
+  const hybridMembership = (() => {
+    if (!businessInfo || businessInfo.card_type !== 'hybrid') return null
+    return {
+      name: businessInfo.membership_name || 'Membership',
+      price: Number(businessInfo.membership_price || 0),
+      duration: Number(businessInfo.membership_duration_days || 30),
+      enrollment: businessInfo.subscription_enrollment_mode === 'automatic' ? 'automatic' : 'manual',
+      benefits: Array.isArray(businessInfo.membership_benefits) && businessInfo.membership_benefits.length
+        ? businessInfo.membership_benefits
+        : (Array.isArray(businessInfo.membership_services) ? businessInfo.membership_services.map((name,i)=>({id:`legacy-${i}`,name})) : []),
+    }
   })()
 
   useEffect(()=>{
@@ -178,7 +193,7 @@ function CustomerJoin({ API_BASE }) {
             <div style={styles.walletPreviewMeta}>
               <small>{businessInfo?.category?.label || 'LoyaltyTree'}</small>
               <strong>{businessInfo?.name || 'Your loyalty card'}</strong>
-              <span>{businessInfo?.card_name || `${String(businessInfo?.card_type || 'stamp').toUpperCase()} CARD`}</span>
+              <span>{businessInfo?.card_name || (businessInfo?.card_type==='hybrid'?'HYBRID CARD':`${String(businessInfo?.card_type || 'stamp').toUpperCase()} CARD`)}</span>
             </div>
             <div style={styles.walletPreviewMember}>Your Wallet 2.0 card is ready</div>
           </div>
@@ -216,8 +231,14 @@ function CustomerJoin({ API_BASE }) {
           {businessInfo?.logo_url?<img src={businessInfo.logo_url} alt="" style={styles.businessLogo}/>:<span style={styles.logoIcon}>{businessInfo?.category?.icon||'🌳'}</span>}
         </div>
         <h1 style={styles.title}>{businessInfo?.name?`Join ${businessInfo.name}`:'Join Rewards'}</h1>
-        <p style={styles.subtitle}>{businessInfo?.category?.label?`${businessInfo.category.label} · `:''}Add your loyalty card to your phone and use it every visit.</p>
+        <p style={styles.subtitle}>{businessInfo?.category?.label?`${businessInfo.category.label} · `:''}{businessInfo?.card_type==='hybrid'?'One card for membership plus rewards.':'Add your loyalty card to your phone and use it every visit.'}</p>
 
+        {hybridMembership && <div style={{...styles.rewardBox,border:'1px solid #99f6e4',background:'#f0fdfa'}}>
+          <div style={styles.rewardTitle}>✨ {hybridMembership.name} + {businessInfo?.hybrid_loyalty_type==='stamp'?'Stamps':'Points'}</div>
+          <div style={styles.rewardRequirement}>{hybridMembership.price>0?`₱${hybridMembership.price.toLocaleString()} / ${hybridMembership.duration} days`:`${hybridMembership.duration}-day membership`}</div>
+          <div style={{fontSize:12,color:'#475569',marginTop:6,fontWeight:700}}>{hybridMembership.enrollment==='automatic'?'Your membership activates automatically when you join.':'You join the loyalty program now. The business activates membership access for approved/paid subscribers.'}</div>
+          {hybridMembership.benefits.slice(0,3).map((benefit,i)=><div key={benefit.id||i} style={{fontSize:12,color:'#0f766e',marginTop:4}}>✓ {benefit.name}</div>)}
+        </div>}
         {rewardSummary && <div style={styles.rewardBox}>
           <div style={styles.rewardTitle}>🎁 {rewardSummary.title}</div>
           <div style={styles.rewardRequirement}>{rewardSummary.requirement}</div>

@@ -5,7 +5,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 // Only shows the raw scan/debug panel in local dev - never in a production
 // build, since it prints internal API paths and response codes on-screen.
 const DEBUG = import.meta.env.DEV
-const CASHIER_BUILD = 'VIP-MEMBERSHIP-MULTIPASS-V16-NFC-READY'
+const CASHIER_BUILD = 'HYBRID-V17-MEMBERSHIP-LOYALTY'
 const BUSINESS_ICONS={spa:'🌿',salon:'✂️',fitness:'🏋️',restaurant:'🍽️',coffee:'☕',retail:'🛍️',clinic:'🩺',laundry:'🧺',gas_station:'⛽',car_wash:'🚿',pharmacy:'💊',bakery:'🥐',hotel:'🏨',other:'🏪',car_lending:'🚗',cockpit:'🏆'}
 
 function CashierApp({ API_BASE }) {
@@ -186,7 +186,7 @@ function CashierApp({ API_BASE }) {
         // Use the same program object returned with the scanned customer.
         // This is the exact source already used successfully by the Points flow.
         const program = data.program || {}
-        const allowedCardTypes = ['stamp', 'points', 'membership', 'vip', 'multipass']
+        const allowedCardTypes = ['stamp', 'points', 'membership', 'vip', 'multipass', 'hybrid']
         const returnedCardType = data.current_card_type || program.card_type
 
         if (!allowedCardTypes.includes(returnedCardType)) {
@@ -197,6 +197,14 @@ function CashierApp({ API_BASE }) {
 
         const cardType = returnedCardType
         const goal = program.stamp_goal || 8
+        let membershipBenefitState = { benefits: [], membership_name: program.membership_name || 'Membership' }
+        if (cardType === 'membership' || cardType === 'hybrid') {
+          try {
+            const benefitRes = await fetch(`${API_BASE}/api/v1/business/${scannedBusinessSlug || businessSlug}/customers/${c.public_id}/membership-benefits`, { cache:'no-store' })
+            const benefitData = await benefitRes.json().catch(() => ({}))
+            if (benefitRes.ok) membershipBenefitState = benefitData
+          } catch (_) {}
+        }
 
         if (DEBUG) {
           setDebugInfo(prev =>
@@ -210,6 +218,7 @@ function CashierApp({ API_BASE }) {
           business_name: data.business?.name || '',
           business_type: data.business?.business_type || 'other',
           card_type: cardType,
+          hybrid_loyalty_type: program.hybrid_loyalty_type === 'stamp' ? 'stamp' : 'points',
           stamp_count: c.stamp_count || 0,
           reward_unlocked: !!c.reward_unlocked,
           reward_threshold: goal,
@@ -234,7 +243,9 @@ function CashierApp({ API_BASE }) {
           membership_status: c.membership_effective_status || c.membership_status || 'inactive',
           membership_start_date: c.membership_start_date || null,
           membership_expires_at: c.membership_expires_at || null,
+          membership_name: membershipBenefitState.membership_name || program.membership_name || program.card_name || 'Membership',
           membership_services: Array.isArray(program.membership_services) ? program.membership_services : [],
+          membership_benefits: Array.isArray(membershipBenefitState.benefits) ? membershipBenefitState.benefits : [],
           membership_description: program.description || '',
           membership_quick_checkin: !!program.membership_quick_checkin,
           vip_points: c.vip_points || 0,
@@ -447,6 +458,38 @@ function CashierApp({ API_BASE }) {
     } catch (err) {
       setMessage(`❌ ${err.message}`)
     }
+    setLoading(false)
+  }
+
+  const refreshMembershipBenefits = async () => {
+    if (!customerData?.public_id || !businessSlug) return
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/customers/${customerData.public_id}/membership-benefits`, {cache:'no-store'})
+      const data = await res.json().catch(() => ({}))
+      if (res.ok) setCustomerData(prev => prev ? {...prev, membership_name:data.membership_name||prev.membership_name, membership_benefits:Array.isArray(data.benefits)?data.benefits:[]} : prev)
+    } catch (_) {}
+  }
+
+  const redeemMembershipBenefit = async (benefit) => {
+    if (!customerData || !businessSlug || !benefit?.id) return
+    if (!['active','lifetime'].includes(customerData.membership_status)) {
+      setMessage(`❌ Membership is ${customerData.membership_status}`); return
+    }
+    const ok = window.confirm(`Redeem “${benefit.name}” for ${customerData.name}?`)
+    if (!ok) return
+    setLoading(true)
+    try {
+      const idempotencyKey = (globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`)
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/membership-benefit/redeem`, {
+        method:'POST',
+        headers:{'Content-Type':'application/json','X-Idempotency-Key':idempotencyKey,...(sessionToken?{Authorization:`Bearer ${sessionToken}`}:{})},
+        body:JSON.stringify({customer_public_id:customerData.public_id,benefit_id:benefit.id,quantity:1,...(sessionToken?{}:{staff_pin:staffPin}),as_owner:isOwner}),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not redeem benefit')
+      setCustomerData(prev => prev ? {...prev,membership_benefits:Array.isArray(data.benefits)?data.benefits:prev.membership_benefits} : prev)
+      setMessage(`✅ ${benefit.name} redeemed for ${customerData.name}`)
+    } catch (err) { setMessage(`❌ ${err.message}`) }
     setLoading(false)
   }
 
@@ -758,7 +801,7 @@ function CashierApp({ API_BASE }) {
   // (and customer) see the conversion before tapping "Add Points" instead of
   // only finding out afterward.
   const previewPoints = (() => {
-    if (!customerData || customerData.card_type !== 'points') return 0
+    if (!customerData || !(customerData.card_type === 'points' || (customerData.card_type === 'hybrid' && customerData.hybrid_loyalty_type === 'points'))) return 0
     const amount = parseFloat(saleAmount)
     if (!amount || amount <= 0) return 0
     const rate = customerData.points_per_amount || 0
@@ -779,7 +822,22 @@ function CashierApp({ API_BASE }) {
     return Math.floor((amount / pesos) * rate)
   })()
 
-  const cardExperience = customerData?.card_type === 'points'
+  const isHybrid = customerData?.card_type === 'hybrid'
+  const hybridLoyaltyType = customerData?.hybrid_loyalty_type === 'stamp' ? 'stamp' : 'points'
+  const usesPoints = customerData?.card_type === 'points' || (isHybrid && hybridLoyaltyType === 'points')
+  const usesStamps = customerData?.card_type === 'stamp' || (isHybrid && hybridLoyaltyType === 'stamp')
+  const hasMembership = customerData?.card_type === 'membership' || isHybrid
+
+  const cardExperience = isHybrid
+    ? {
+        accent: '#0d9488',
+        soft: '#f0fdfa',
+        border: '#99f6e4',
+        icon: '✨',
+        label: `Hybrid Card · Membership + ${hybridLoyaltyType === 'points' ? 'Points' : 'Stamps'}`,
+        actionTitle: 'Membership & Loyalty Actions',
+      }
+    : customerData?.card_type === 'points'
     ? {
         accent: '#2563eb',
         soft: '#eff6ff',
@@ -878,7 +936,7 @@ function CashierApp({ API_BASE }) {
           <div style={styles.scanCard}>
             <h3 style={styles.scanTitle}>📷 Scan Customer Card</h3>
             <div id="reader" style={styles.reader}></div>
-            <p style={styles.scanHint}>Scan any LoyaltyTree card: Stamp, Points, Membership, VIP, or Multi-Pass.</p>
+            <p style={styles.scanHint}>Scan any LoyaltyTree card: Stamp, Points, Membership, VIP, Multi-Pass, or Hybrid.</p>
 
             <button style={styles.manualBtn} onClick={() => setShowManual(true)}>
               ✏️ Enter ID Manually
@@ -935,7 +993,9 @@ function CashierApp({ API_BASE }) {
               </div>
               <h3 style={styles.customerName}>{customerData.name}</h3>
               <p style={styles.customerMeta}>
-                {customerData.card_type === 'points'
+                {customerData.card_type === 'hybrid'
+                  ? `${customerData.membership_status.toUpperCase()}${customerData.membership_expires_at ? ` • until ${customerData.membership_expires_at}` : ''} • ${hybridLoyaltyType === 'points' ? `${customerData.points_balance} points` : `${customerData.stamp_count}/${customerData.reward_threshold} stamps`}`
+                  : customerData.card_type === 'points'
                   ? `${customerData.points_balance} points`
                   : customerData.card_type === 'multipass'
                   ? `${customerData.sessions_remaining}/${customerData.sessions_total} sessions left`
@@ -962,7 +1022,64 @@ function CashierApp({ API_BASE }) {
             SERVER CARD TYPE: {String(customerData.card_type || 'none').toUpperCase()}
           </div>
 
-          {customerData.card_type === 'points' ? (
+          {customerData.card_type === 'hybrid' ? (
+            <>
+              <div style={{
+                ...styles.pointsBalanceBox,
+                background: ['active','lifetime'].includes(customerData.membership_status) ? '#dcfce7' : '#fee2e2',
+                marginBottom: 10,
+              }}>
+                <span style={{...styles.pointsBalanceNumber,fontSize:26}}>
+                  {customerData.membership_status.toUpperCase()}
+                </span>
+                <span style={styles.pointsBalanceLabel}>
+                  {customerData.membership_status === 'lifetime'
+                    ? 'Lifetime membership'
+                    : customerData.membership_expires_at
+                    ? `Membership until ${customerData.membership_expires_at}`
+                    : 'No active membership'}
+                </span>
+              </div>
+              {hybridLoyaltyType === 'points' ? (
+                <>
+                  <div style={styles.pointsBalanceBox}>
+                    <span style={styles.pointsBalanceNumber}>{customerData.points_balance}</span>
+                    <span style={styles.pointsBalanceLabel}>points</span>
+                    {customerData.points_cap_limit && <span style={{...styles.pointsBalanceLabel,marginTop:4}}>Maximum balance: {Number(customerData.points_cap_limit).toLocaleString()} pts</span>}
+                  </div>
+                  {customerData.points_prizes?.length > 0 && (
+                    <div style={styles.prizeList}>
+                      {customerData.points_prizes.map(prize => {
+                        const affordable = customerData.points_balance >= prize.points_cost
+                        return <div key={prize.id} style={{...styles.prizeRow,opacity:affordable?1:.5}}>
+                          <div><div style={styles.prizeName}>{prize.name}</div><div style={styles.prizeCost}>{prize.points_cost} pts</div></div>
+                          <button style={{...styles.prizeRedeemBtn,background:affordable?'#2563eb':'#cbd5e1',cursor:affordable?'pointer':'not-allowed'}} disabled={!affordable||loading} onClick={()=>redeemPointsPrize(prize)}>Redeem</button>
+                        </div>
+                      })}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div style={styles.stampVisual}>
+                  {Array.from({length:customerData.reward_threshold||8}).map((_,i)=><div key={i} style={{...styles.stampDot,background:i<(customerData.stamp_count%(customerData.reward_threshold||8))?'#0d9488':'#e2e8f0'}}>{i<(customerData.stamp_count%(customerData.reward_threshold||8))?'🍃':''}</div>)}
+                </div>
+              )}
+              {customerData.membership_benefits?.length > 0 && <div style={{margin:'14px 0'}}>
+                <div style={{fontSize:12,fontWeight:900,color:'#334155',marginBottom:8}}>MEMBER BENEFITS · {customerData.membership_name}</div>
+                <div style={styles.prizeList}>
+                  {customerData.membership_benefits.map(benefit => {
+                    const remaining = benefit.remaining_in_window
+                    const rule = remaining == null ? 'Unlimited' : `${remaining} remaining`
+                    const next = benefit.next_available_at ? ` · resets ${new Date(benefit.next_available_at).toLocaleString()}` : ''
+                    return <div key={benefit.id} style={{...styles.prizeRow,opacity:benefit.available?1:.58}}>
+                      <div style={{minWidth:0}}><div style={styles.prizeName}>{benefit.name}</div><div style={styles.prizeCost}>{benefit.available?rule:(benefit.unavailable_reason||'Unavailable')}{next}</div></div>
+                      <button style={{...styles.prizeRedeemBtn,background:benefit.available?'#0d9488':'#cbd5e1',cursor:benefit.available?'pointer':'not-allowed'}} disabled={!benefit.available||loading} onClick={()=>redeemMembershipBenefit(benefit)}>{benefit.benefit_type?.includes('discount')?'Apply':'Redeem'}</button>
+                    </div>
+                  })}
+                </div>
+              </div>}
+            </>
+          ) : customerData.card_type === 'points' ? (
             <>
               {/* Points Balance */}
               <div style={styles.pointsBalanceBox}>
@@ -1040,9 +1157,13 @@ function CashierApp({ API_BASE }) {
                     : 'No active subscription'}
                 </span>
               </div>
-              {customerData.membership_services?.length > 0 && (
-                <div style={{margin: '12px 0', color: '#475569', fontSize: 13}}>
-                  {customerData.membership_services.map((s, i) => <div key={i}>✓ {s}</div>)}
+              {customerData.membership_benefits?.length > 0 && (
+                <div style={{margin:'14px 0'}}>
+                  <div style={{fontSize:12,fontWeight:900,color:'#334155',marginBottom:8}}>MEMBER BENEFITS · {customerData.membership_name}</div>
+                  <div style={styles.prizeList}>{customerData.membership_benefits.map(benefit => <div key={benefit.id} style={{...styles.prizeRow,opacity:benefit.available?1:.58}}>
+                    <div><div style={styles.prizeName}>{benefit.name}</div><div style={styles.prizeCost}>{benefit.remaining_in_window==null?'Unlimited':`${benefit.remaining_in_window} remaining`}{benefit.unavailable_reason?` · ${benefit.unavailable_reason}`:''}</div></div>
+                    <button style={{...styles.prizeRedeemBtn,background:benefit.available?'#0d9488':'#cbd5e1'}} disabled={!benefit.available||loading} onClick={()=>redeemMembershipBenefit(benefit)}>{benefit.benefit_type?.includes('discount')?'Apply':'Redeem'}</button>
+                  </div>)}</div>
                 </div>
               )}
             </>
@@ -1061,7 +1182,7 @@ function CashierApp({ API_BASE }) {
           )}
 
           {/* Reward Banner (stamp cards only) */}
-          {customerData.card_type === 'stamp' && customerData.reward_unlocked && (
+          {usesStamps && customerData.reward_unlocked && (
             <div style={styles.rewardBanner}>
               <span style={styles.rewardEmoji}>🍎</span>
               <span style={styles.rewardText}>Fruit Ready!</span>
@@ -1103,7 +1224,7 @@ function CashierApp({ API_BASE }) {
           </div>
 
           {/* Actions */}
-          {customerData.card_type === 'points' ? (
+          {usesPoints ? (
             <div style={styles.pointsSaleSection}>
               <div style={styles.pointsSaleRow}>
                 <input
@@ -1202,7 +1323,7 @@ function CashierApp({ API_BASE }) {
             </div>
           ) : null}
           <div style={styles.actions}>
-            {customerData.card_type === 'stamp' && (
+            {usesStamps && (
               <button
                 style={{...styles.actionBtn, background: '#0d9488'}}
                 onClick={addStamp}
@@ -1211,7 +1332,7 @@ function CashierApp({ API_BASE }) {
                 {loading ? '...' : '🎟️ Add Stamp'}
               </button>
             )}
-            {customerData.card_type === 'membership' && (
+            {hasMembership && (
               <button
                 style={{...styles.actionBtn, background: '#0d9488'}}
                 onClick={logMembershipVisit}
@@ -1220,7 +1341,7 @@ function CashierApp({ API_BASE }) {
                 {loading ? '...' : entrySource === 'nfc' ? '📡 Log NFC Activity' : '🏋️ Check In Member'}
               </button>
             )}
-            {customerData.card_type === 'membership' && !['active','lifetime'].includes(customerData.membership_status) && (
+            {hasMembership && !['active','lifetime'].includes(customerData.membership_status) && (
               <div style={{width: '100%', color: '#991b1b', fontWeight: 700, textAlign: 'center'}}>
                 Access denied — membership is {customerData.membership_status}.
               </div>
@@ -1234,7 +1355,7 @@ function CashierApp({ API_BASE }) {
                 {loading ? '...' : '🎫 Use One Session'}
               </button>
             )}
-            {customerData.card_type === 'stamp' && customerData.reward_unlocked && (
+            {usesStamps && customerData.reward_unlocked && (
               <button
                 style={{...styles.actionBtn, background: '#f59e0b'}}
                 onClick={redeemReward}

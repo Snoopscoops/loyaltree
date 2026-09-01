@@ -202,6 +202,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [membershipActionLoading, setMembershipActionLoading] = useState(false)
   const [memberHistory, setMemberHistory] = useState([])
   const [memberHistoryLoading, setMemberHistoryLoading] = useState(false)
+  const [membershipBenefitStatus, setMembershipBenefitStatus] = useState([])
   const [memberVisitService, setMemberVisitService] = useState('')
   const [memberVisitNote, setMemberVisitNote] = useState('')
   const [setupKit, setSetupKit] = useState(null)
@@ -366,7 +367,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       setStaff(staffData)
       setStats(statsData)
       setProgram(progData)
-      if (progData?.card_type === 'membership') {
+      if (['membership','hybrid'].includes(progData?.card_type)) {
         setMembershipSettings({
           membership_duration_days: progData.membership_duration_days || 30,
           membership_price: progData.membership_price || 0,
@@ -540,22 +541,49 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const fetchMemberHistory = async (customerPublicId) => {
     setMemberHistoryLoading(true)
     try {
-      const suffix = program?.card_type === 'multipass'
-        ? 'multipass-history'
-        : program?.card_type === 'membership'
-        ? 'leaves'
-        : program?.card_type === 'points'
-        ? 'points-history'
-        : program?.card_type === 'vip'
-        ? 'vip-history'
-        : 'stamp-history'
-      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${customerPublicId}/${suffix}`)
-      const data = await res.json().catch(() => [])
-      setMemberHistory(res.ok && Array.isArray(data) ? data : [])
+      if (program?.card_type === 'hybrid') {
+        const loyaltySuffix = program?.hybrid_loyalty_type === 'stamp' ? 'stamp-history' : 'points-history'
+        const [loyaltyRes, membershipRes, benefitRes] = await Promise.all([
+          authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${customerPublicId}/${loyaltySuffix}`),
+          authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${customerPublicId}/leaves`),
+          authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${customerPublicId}/membership-benefit-history`),
+        ])
+        const loyaltyData = await loyaltyRes.json().catch(() => [])
+        const membershipData = await membershipRes.json().catch(() => [])
+        const benefitData = await benefitRes.json().catch(() => [])
+        const combined = [
+          ...(Array.isArray(loyaltyData) ? loyaltyData.map(x => ({...x, hybrid_source:'loyalty'})) : []),
+          ...(Array.isArray(membershipData) ? membershipData.map(x => ({...x, hybrid_source:'membership', activity_type:x.activity_type || 'membership_visit'})) : []),
+          ...(Array.isArray(benefitData) ? benefitData.map(x => ({...x, hybrid_source:'benefit', activity_type:'membership_benefit_redeemed', created_at:x.redeemed_at || x.created_at})) : []),
+        ].sort((a,b) => String(b.created_at || b.service_date || '').localeCompare(String(a.created_at || a.service_date || '')))
+        setMemberHistory(combined)
+      } else {
+        const suffix = program?.card_type === 'multipass'
+          ? 'multipass-history'
+          : program?.card_type === 'membership'
+          ? 'leaves'
+          : program?.card_type === 'points'
+          ? 'points-history'
+          : program?.card_type === 'vip'
+          ? 'vip-history'
+          : 'stamp-history'
+        const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${customerPublicId}/${suffix}`)
+        const data = await res.json().catch(() => [])
+        setMemberHistory(res.ok && Array.isArray(data) ? data : [])
+      }
     } catch (err) {
       setMemberHistory([])
     }
     setMemberHistoryLoading(false)
+  }
+
+  const fetchMembershipBenefitStatus = async (customerPublicId) => {
+    if (!customerPublicId || !['membership','hybrid'].includes(program?.card_type)) { setMembershipBenefitStatus([]); return }
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${customerPublicId}/membership-benefits`)
+      const data = await res.json().catch(() => ({}))
+      setMembershipBenefitStatus(res.ok && Array.isArray(data.benefits) ? data.benefits : [])
+    } catch (_) { setMembershipBenefitStatus([]) }
   }
 
   const logMemberVisitFromOwner = async () => {
@@ -667,16 +695,24 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          card_type: 'membership',
+          card_type: program?.card_type === 'hybrid' ? 'hybrid' : 'membership',
+          hybrid_loyalty_type: program?.hybrid_loyalty_type || 'points',
           stamp_goal: program?.stamp_goal || 8,
           reward_name: program?.reward_name || 'Membership',
+          stamp_rewards: program?.stamp_rewards || [],
+          stamp_once_per_day: !!program?.stamp_once_per_day,
+          stamp_reset_after_final: program?.stamp_reset_after_final !== false,
+          points_per_amount: Number(program?.points_per_amount || 0),
+          points_amount_pesos: Number(program?.points_amount_pesos || 1),
+          points_cap_limit: program?.points_cap_limit ?? null,
+          points_prizes: program?.points_prizes || [],
           primary_color: program?.primary_color || '#3b82f6',
           reward_expiry_days: program?.reward_expiry_days || 30,
           program_logo_url: program?.program_logo_url || null,
           hero_image_url: program?.hero_image_url || null,
           card_name: program?.card_name || 'Membership Card',
           description: program?.description || '',
-          membership_services: services,
+          membership_services: Array.isArray(program?.membership_benefits) && program.membership_benefits.length ? undefined : services,
           membership_duration_days: Number(membershipSettings.membership_duration_days) || 30,
           membership_price: Number(membershipSettings.membership_price) || 0,
           membership_terms: membershipSettings.membership_terms || null,
@@ -953,11 +989,13 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     fetchCoupons(customer.public_id)
     setMemberVisitService('')
     setMemberVisitNote('')
-    if (['stamp', 'membership', 'multipass', 'points', 'vip'].includes(program?.card_type)) {
+    if (['stamp', 'membership', 'multipass', 'points', 'vip', 'hybrid'].includes(program?.card_type)) {
       fetchMemberHistory(customer.public_id)
     } else {
       setMemberHistory([])
     }
+    if (['membership','hybrid'].includes(program?.card_type)) fetchMembershipBenefitStatus(customer.public_id)
+    else setMembershipBenefitStatus([])
     setShowCardModal(true)
   }
 
@@ -983,7 +1021,22 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const isMultipassCard = program?.card_type === 'multipass'
   const isMembershipCard = program?.card_type === 'membership'
   const isVipCard = program?.card_type === 'vip'
-  const cardExperience = isPointsCard
+  const isHybridCard = program?.card_type === 'hybrid'
+  const hybridLoyaltyType = program?.hybrid_loyalty_type === 'stamp' ? 'stamp' : 'points'
+  const hybridUsesPoints = isHybridCard && hybridLoyaltyType === 'points'
+  const hybridUsesStamps = isHybridCard && hybridLoyaltyType === 'stamp'
+  const hasMembershipFeatures = isMembershipCard || isHybridCard
+  const pointsExperience = isPointsCard || hybridUsesPoints
+  const stampExperience = (!isPointsCard && !isMembershipCard && !isMultipassCard && !isVipCard && !isHybridCard) || hybridUsesStamps
+  const cardExperience = isHybridCard
+    ? {
+        key:'hybrid', accent:'#0d9488', soft:'#f0fdfa', border:'#99f6e4', icon:'✨',
+        title:`Hybrid · Membership + ${hybridLoyaltyType === 'points' ? 'Points' : 'Stamps'}`,
+        customerLabel:'Members', customerIcon:'✨', dashboardLabel:'Hybrid Dashboard',
+        scanTitle:'Scan Hybrid Card', scanDescription:'Verify membership and record loyalty activity',
+        recentTitle:'Recent Hybrid Activity', editDescription:'Configure membership plus points or stamp rewards',
+      }
+    : isPointsCard
     ? {
         key: 'points',
         accent: '#2563eb',
@@ -1273,6 +1326,12 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         <div style={{...styles.metricsGrid,...(isTablet?styles.metricsGridTablet:{}),...(isMobile?styles.metricsGridMobile:{})}}>
           {(isVipCard
             ? [{value:customers.length,label:'VIP Customers',hint:'Enrolled in your VIP program'},{value:totalVipPoints,label:'VIP Points',hint:'Current points across customers'},{value:customers.filter(c=>c.vip_tier?.name).length,label:'Tiered Customers',hint:'Customers with an assigned tier'}]
+            : isHybridCard
+            ? [
+                { value: membershipActive, label: 'Active Members', hint: 'Currently active subscriptions' },
+                { value: hybridUsesPoints ? totalPoints : confirmedStamps, label: hybridUsesPoints ? 'Points Balance' : 'Stamps Issued', hint: hybridUsesPoints ? 'Total unredeemed points' : 'Total stamps currently recorded' },
+                { value: membershipExpiringSoon, label: 'Expiring Soon', hint: 'Memberships ending within 7 days' },
+              ]
             : isMembershipCard
             ? [
                 { value: membershipActive, label: 'Active Members', hint: 'Currently allowed to check in' },
@@ -1445,7 +1504,12 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                         {c.age ? `${c.age} yrs` : ''}{c.age && c.occupation ? ' · ' : ''}{c.occupation ? c.occupation.replace('_', ' ') : ''}
                       </p>
                     )}
-                    {isPointsCard ? (
+                    {isHybridCard ? (
+                      <>
+                        <p style={{...styles.stampText,fontWeight:800}}>✨ {(c.membership_effective_status || c.membership_status || 'inactive').toUpperCase()} · {hybridUsesPoints ? `${c.points_balance || 0} points` : `${c.stamp_count || 0}/${program?.stamp_goal || 8} stamps`}</p>
+                        <p style={styles.lastStampedText}>{(c.membership_effective_status || c.membership_status) === 'lifetime' ? 'Lifetime membership' : c.membership_expires_at ? `Active until ${c.membership_expires_at}` : 'Membership not yet activated'}</p>
+                      </>
+                    ) : isPointsCard ? (
                       <p style={styles.stampText}>💎 {c.points_balance || 0} points</p>
                     ) : isMultipassCard ? (
                       <>
@@ -1494,7 +1558,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                       </>
                     )}
                     <p style={styles.lastStampedText}>{formatLastStamped(c.last_stamp_at)}</p>
-                    {program?.card_expiration_enabled && ['stamp', 'points', 'vip'].includes(program?.card_type) && c.card_expires_at && (
+                    {program?.card_expiration_enabled && ['stamp', 'points', 'vip', 'hybrid'].includes(program?.card_type) && c.card_expires_at && (
                       <span style={{
                         display: 'inline-flex',
                         alignItems: 'center',
@@ -1863,7 +1927,25 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               <div style={styles.cardBody}>
                 <h3 style={styles.cardName}>{selectedCustomer.name}</h3>
                 <p style={{...styles.cardId, overflowWrap: 'anywhere', wordBreak: 'break-word'}}>ID: {selectedCustomer.public_id}</p>
-                {isPointsCard ? (
+                {isHybridCard ? (
+                  <div style={styles.cardProgress}>
+                    <p style={{fontSize:26,fontWeight:900,color:'white',margin:'8px 0 2px'}}>✨ {(selectedCustomer.membership_effective_status || selectedCustomer.membership_status || 'inactive').toUpperCase()}</p>
+                    <p style={{fontSize:12.5,color:'rgba(255,255,255,.85)',margin:'2px 0 10px'}}>{(selectedCustomer.membership_effective_status || selectedCustomer.membership_status) === 'lifetime' ? 'Lifetime membership' : selectedCustomer.membership_expires_at ? `Membership until ${selectedCustomer.membership_expires_at}` : 'Membership not yet activated'}</p>
+                    {hybridUsesPoints ? (
+                      <>
+                        <p style={{fontSize:32,fontWeight:800,color:'white',margin:'8px 0 0'}}>{selectedCustomer.points_balance || 0}</p>
+                        <p style={{fontSize:13,color:'rgba(255,255,255,.85)',margin:'2px 0 0'}}>points</p>
+                        {(program?.points_prizes || []).slice(0,3).map((prize,i)=><p key={prize.id||i} style={{fontSize:12,color:'white',margin:'4px 0',textAlign:'left',opacity:(selectedCustomer.points_balance||0)>=prize.points_cost?1:.6}}>🎁 {prize.name} · {prize.points_cost} pts</p>)}
+                      </>
+                    ) : (
+                      <>
+                        <div style={styles.cardStamps}>{Array.from({length:program?.stamp_goal||8}).map((_,i)=><span key={i} style={{...styles.cardStamp,background:i<(selectedCustomer.stamp_count%(program?.stamp_goal||8))?'white':'rgba(255,255,255,.3)'}}>★</span>)}</div>
+                        <p style={styles.cardProgress}>{selectedCustomer.stamp_count % (program?.stamp_goal || 8)} / {program?.stamp_goal || 8} stamps</p>
+                      </>
+                    )}
+                    {(Array.isArray(program?.membership_benefits) && program.membership_benefits.length ? program.membership_benefits : (program?.membership_services||[]).map((name,i)=>({id:`legacy-${i}`,name}))).slice(0,3).map((benefit,i)=><p key={benefit.id||i} style={{fontSize:12,color:'white',margin:'4px 0',textAlign:'left'}}>✓ {benefit.name || benefit}</p>)}
+                  </div>
+                ) : isPointsCard ? (
                   <div style={styles.cardProgress}>
                     <p style={{fontSize: 32, fontWeight: 800, color: 'white', margin: '8px 0 0'}}>
                       {selectedCustomer.points_balance || 0}
@@ -1987,7 +2069,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               </div>
             </div>
 
-            {program?.card_expiration_enabled && ['stamp', 'points', 'vip'].includes(program?.card_type) && (
+            {program?.card_expiration_enabled && ['stamp', 'points', 'vip', 'hybrid'].includes(program?.card_type) && (
               <div style={{
                 marginBottom: 18,
                 padding: 16,
@@ -2035,7 +2117,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             )}
 
             <div style={{marginBottom:18, padding:16, border:'1px solid #ccfbf1', background:'#f0fdfa', borderRadius:14}}>
-              {isMembershipCard && (
+              {hasMembershipFeatures && (
                   <>
                     <div style={{display:'grid', gridTemplateColumns:'repeat(2, minmax(0, 1fr))', gap:10, marginBottom:14}}>
                       <div style={{background:'white', border:'1px solid #99f6e4', borderRadius:12, padding:12}}>
@@ -2089,13 +2171,23 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                   </>
                 )}
 
+                {(isMembershipCard || isHybridCard) && membershipBenefitStatus.length > 0 && <div style={{marginBottom:14,display:'grid',gap:8}}>
+                  <strong style={{fontSize:14,color:'#115e59'}}>Membership benefits</strong>
+                  {membershipBenefitStatus.map(benefit => <div key={benefit.id} style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'center',padding:'9px 11px',border:'1px solid #e2e8f0',borderRadius:10,background:benefit.available?'#f0fdf4':'#f8fafc'}}>
+                    <div><div style={{fontSize:13,fontWeight:800,color:'#0f172a'}}>{benefit.name}</div><div style={{fontSize:11,color:'#64748b'}}>{benefit.remaining_in_window==null?'Unlimited':`${benefit.remaining_in_window} remaining`}{benefit.unavailable_reason?` · ${benefit.unavailable_reason}`:''}</div></div>
+                    <span style={{fontSize:10,fontWeight:900,color:benefit.available?'#15803d':'#64748b'}}>{benefit.available?'AVAILABLE':'USED / UNAVAILABLE'}</span>
+                  </div>)}
+                </div>}
+
                 <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:12, marginBottom:12}}>
                   <div>
                     <strong style={{fontSize:15,color:'#115e59'}}>
-                      {isMultipassCard ? 'Multi-Pass activity' : isMembershipCard ? 'Member visit analytics' : isPointsCard ? 'Points activity' : isVipCard ? 'VIP activity' : 'Loyalty activity'}
+                      {isHybridCard ? 'Hybrid membership & loyalty activity' : isMultipassCard ? 'Multi-Pass activity' : isMembershipCard ? 'Member visit analytics' : isPointsCard ? 'Points activity' : isVipCard ? 'VIP activity' : 'Loyalty activity'}
                     </strong>
                     <div style={{fontSize:12,color:'#64748b',marginTop:3}}>
-                      {isMembershipCard
+                      {isHybridCard
+                        ? `Membership visits plus ${hybridUsesPoints ? 'points' : 'stamp'} activity`
+                        : isMembershipCard
                         ? 'Service, notes, cashier, branch, and visit date'
                         : isMultipassCard
                         ? 'Every issued pass and stamped session'
@@ -2108,7 +2200,9 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                   </div>
                   <div style={{minWidth:76,textAlign:'center',background:'white',border:'1px solid #99f6e4',borderRadius:10,padding:'8px 10px'}}>
                     <strong style={{display:'block',fontSize:20,color:'#0f766e'}}>
-                      {isMembershipCard
+                      {isHybridCard
+                        ? memberHistory.length
+                        : isMembershipCard
                         ? (selectedCustomer.membership_visit_count || memberHistory.length || 0)
                         : isMultipassCard
                         ? memberHistory.filter(item => item.action === 'used').length
@@ -2117,7 +2211,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                         : (selectedCustomer.stamp_count ?? 0)}
                     </strong>
                     <span style={{fontSize:11,color:'#64748b'}}>
-                      {isMembershipCard ? 'Visits' : isMultipassCard ? 'Used' : isPointsCard ? 'Activities' : isVipCard ? 'Updates' : 'Stamps'}
+                      {isHybridCard ? 'Activities' : isMembershipCard ? 'Visits' : isMultipassCard ? 'Used' : isPointsCard ? 'Activities' : isVipCard ? 'Updates' : 'Stamps'}
                     </span>
                   </div>
                 </div>
@@ -2141,7 +2235,21 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                         : rawActivityType.includes('cancel') || rawActivityType.includes('delete') || rawActivityType.includes('void')
                         ? 'cancelled'
                         : 'issued'
-                      const title = isMembershipCard
+                      const title = isHybridCard && item.hybrid_source === 'benefit'
+                        ? `🎁 ${item.benefit_name || 'Membership benefit'} redeemed`
+                        : isHybridCard && item.hybrid_source === 'membership'
+                        ? `🏋️ ${item.service_name || 'Membership visit'}`
+                        : isHybridCard && item.hybrid_source === 'loyalty' && hybridUsesPoints
+                        ? item.activity_type === 'adjustment'
+                          ? `${Number(item.points_delta || 0) >= 0 ? '+' : ''}${Number(item.points_delta || 0)} pts · Owner adjustment`
+                          : item.activity_type === 'redemption'
+                          ? `-${Math.abs(Number(item.points_delta || item.points_spent || 0))} pts · ${item.prize_name || 'Reward redeemed'}`
+                          : `+${item.points_earned ?? item.points_delta ?? 0} pts earned`
+                        : isHybridCard && item.hybrid_source === 'loyalty'
+                        ? item.activity_type === 'adjustment'
+                          ? `${Number(item.delta || 0) >= 0 ? '+' : ''}${Number(item.delta || 0)} Stamp${Math.abs(Number(item.delta || 0)) === 1 ? '' : 's'} · Adjustment`
+                          : item.stamp_number != null ? `Stamp #${item.stamp_number}` : 'Stamp activity'
+                        : isMembershipCard
                         ? (item.service_name || 'Visit')
                         : isMultipassCard
                         ? (item.action === 'issued' ? 'Pass issued' : 'Session stamped')
@@ -2202,9 +2310,9 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                             </>
                           )}
                           {isMultipassCard && <div style={{fontSize:13,color:'#475569',marginTop:3}}>{item.sessions_remaining ?? 0} sessions remaining after this activity</div>}
-                          {isMembershipCard && item.note && <div style={{fontSize:13,color:'#334155',whiteSpace:'pre-wrap',marginTop:6,padding:8,background:'#f8fafc',borderRadius:8}}>{item.note}</div>}
-                          {isPointsCard && !isCouponEvent && item.amount_spent_pesos != null && <div style={{fontSize:13,color:'#475569',marginTop:3}}>₱{Number(item.amount_spent_pesos).toLocaleString()} spent</div>}
-                          {isPointsCard && !isCouponEvent && item.activity_type === 'adjustment' && (
+                          {(isMembershipCard || (isHybridCard && item.hybrid_source === 'membership')) && item.note && <div style={{fontSize:13,color:'#334155',whiteSpace:'pre-wrap',marginTop:6,padding:8,background:'#f8fafc',borderRadius:8}}>{item.note}</div>}
+                          {(isPointsCard || (isHybridCard && hybridUsesPoints && item.hybrid_source === 'loyalty')) && !isCouponEvent && item.amount_spent_pesos != null && <div style={{fontSize:13,color:'#475569',marginTop:3}}>₱{Number(item.amount_spent_pesos).toLocaleString()} spent</div>}
+                          {(isPointsCard || (isHybridCard && hybridUsesPoints && item.hybrid_source === 'loyalty')) && !isCouponEvent && item.activity_type === 'adjustment' && (
                             <>
                               <div style={{fontSize:13,color:Number(item.points_delta || 0) < 0 ? '#b91c1c' : '#166534',fontWeight:700,marginTop:3}}>
                                 {item.balance_before ?? 0} points → {item.balance_after ?? item.points_balance ?? 0} points
@@ -2215,7 +2323,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                               {item.reason && <div style={{fontSize:12,color:'#64748b',marginTop:3}}>Reason: {item.reason}</div>}
                             </>
                           )}
-                          {isPointsCard && item.activity_type === 'redemption' && (
+                          {(isPointsCard || (isHybridCard && hybridUsesPoints && item.hybrid_source === 'loyalty')) && item.activity_type === 'redemption' && (
                             <div style={{fontSize:13,color:'#475569',marginTop:3}}>
                               {item.points_balance != null ? `${item.points_balance} points remaining` : 'Points deducted for reward'}
                             </div>
@@ -2306,7 +2414,35 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             <form onSubmit={saveCustomer}>
               <label style={styles.label}>Full Name</label>
               <input style={styles.input} value={editForm.name || ''} onChange={e => setEditForm({...editForm, name: e.target.value})} required />
-              {isPointsCard ? (
+              {isHybridCard ? (
+                <>
+                  <div style={{padding:12,border:'1px solid #99f6e4',background:'#f0fdfa',borderRadius:12,marginBottom:14}}>
+                    <strong style={{color:'#115e59'}}>✨ Hybrid Card</strong>
+                    <div style={{fontSize:12,color:'#64748b',marginTop:3}}>Membership + {hybridLoyaltyType === 'points' ? 'Points' : 'Stamps'}</div>
+                  </div>
+                  {hybridUsesPoints ? (<>
+                    <label style={styles.label}>Points Balance</label>
+                    <input style={styles.input} type="number" min="0" value={editForm.points_balance} onChange={e=>setEditForm({...editForm,points_balance:e.target.value})}/>
+                  </>) : (<>
+                    <label style={styles.label}>Stamps {program?.stamp_goal ? `(of ${program.stamp_goal} for a reward)` : ''}</label>
+                    <input style={styles.input} type="number" min="0" value={editForm.stamp_count} onChange={e=>setEditForm({...editForm,stamp_count:e.target.value})}/>
+                  </>)}
+                  <label style={styles.label}>Membership status</label>
+                  <input style={styles.input} value={(editForm.membership_status || 'inactive').toUpperCase()} readOnly />
+                  <label style={styles.label}>Started</label>
+                  <input style={styles.input} type="date" value={editForm.membership_start_date || ''} readOnly />
+                  <label style={styles.label}>Expires</label>
+                  <input style={styles.input} type="date" value={editForm.membership_expires_at || ''} readOnly />
+                  <div style={{display:'flex',flexWrap:'wrap',gap:8,marginBottom:18}}>
+                    <button type="button" style={{...styles.submitBtn,width:'auto',flex:'1 1 120px'}} disabled={membershipActionLoading} onClick={()=>runMembershipAction('activate')}>Activate</button>
+                    <button type="button" style={{...styles.submitBtn,width:'auto',flex:'1 1 120px'}} disabled={membershipActionLoading} onClick={()=>runMembershipAction('renew')}>Renew</button>
+                    <button type="button" style={{...styles.submitBtn,width:'auto',flex:'1 1 120px',background:'#f59e0b'}} disabled={membershipActionLoading} onClick={()=>runMembershipAction('suspend')}>Suspend</button>
+                    <button type="button" style={{...styles.submitBtn,width:'auto',flex:'1 1 120px',background:'#0d9488'}} disabled={membershipActionLoading} onClick={()=>runMembershipAction('reactivate')}>Reactivate</button>
+                    <button type="button" style={{...styles.submitBtn,width:'auto',flex:'1 1 120px',background:'#334155'}} disabled={membershipActionLoading} onClick={()=>runMembershipAction('lifetime')}>Lifetime</button>
+                    <button type="button" style={{...styles.submitBtn,width:'auto',flex:'1 1 120px',background:'#dc2626'}} disabled={membershipActionLoading} onClick={()=>runMembershipAction('cancel')}>Cancel</button>
+                  </div>
+                </>
+              ) : isPointsCard ? (
                 <>
                   <label style={styles.label}>Points Balance</label>
                   <input

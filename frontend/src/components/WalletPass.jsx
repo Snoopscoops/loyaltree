@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router-dom'
 
-const CARD_LABELS = {stamp:'STAMP CARD',points:'POINTS CARD',membership:'MEMBERSHIP CARD',multipass:'MULTIPASS',vip:'VIP CARD'}
-const PLAN_ICONS = {stamp:'🎫',points:'⭐',multipass:'🎟️',membership:'👑',vip:'💎'}
+const CARD_LABELS = {stamp:'STAMP CARD',points:'POINTS CARD',membership:'MEMBERSHIP CARD',multipass:'MULTIPASS',vip:'VIP CARD',hybrid:'HYBRID CARD'}
+const PLAN_ICONS = {stamp:'🎫',points:'⭐',multipass:'🎟️',membership:'👑',vip:'💎',hybrid:'✨'}
 const STAT_ICONS = {
   'Active until':'📅','Valid until':'📅','Member since':'🧑','Membership type':'🏋️',
   'Next benefit':'🎁','Reward':'🎁','Next tier':'🏆','Visits':'👣','About':'ℹ️','Business':'🏢',
@@ -33,7 +33,38 @@ function WalletPass({API_BASE}){
     let metricLabel='STAMPS',metricValue=`${p.stamps||0} / ${p.goal||8}`,metricSub=p.reward_name||'Reward'
     let planTitle=p.card_name||CARD_LABELS[type]||'Loyalty Card',planSub=p.description||''
     const details=[]
-    if(type==='points'){
+    if(type==='hybrid'){
+      const loyaltyType=p.hybrid_loyalty_type==='stamp'?'stamp':'points'
+      const status=String(p.membership_effective_status||p.membership_status||'inactive').toUpperCase()
+      if(loyaltyType==='points'){
+        metricLabel='POINTS BALANCE';metricValue=Number(p.points_balance||0).toLocaleString();metricSub='points'
+      }else{
+        const goal=Number(p.goal||8),current=Number(p.stamps||0)
+        metricLabel='STAMPS';metricValue=`${current} / ${goal}`;metricSub='stamps'
+      }
+      const membershipName=p.membership_name||'Membership'
+      planSub=planSub||`${membershipName} ${status} · ${loyaltyType==='points'?'Points':'Stamps'} rewards`
+      details.push(
+        [membershipName,status],
+        ['Active until',status==='LIFETIME'?'Lifetime':formatDate(p.membership_expires_at)],
+      )
+      const benefitStatuses=Array.isArray(p.membership_benefit_statuses)?p.membership_benefit_statuses:[]
+      const benefits=benefitStatuses.length?benefitStatuses:(Array.isArray(p.membership_benefits)?p.membership_benefits:[])
+      const nextBenefit=benefits.find(b=>b.available)||benefits[0]
+      if(nextBenefit) details.push(['Next benefit',`${nextBenefit.name}${nextBenefit.available?' · Available':''}`])
+      if(loyaltyType==='points'){
+        const prizes=Array.isArray(p.points_prizes)?[...p.points_prizes].sort((a,b)=>Number(a.points_cost||0)-Number(b.points_cost||0)):[]
+        const balance=Number(p.points_balance||0)
+        const next=prizes.find(x=>Number(x.points_cost||0)>balance)||prizes[0]
+        if(next){
+          const remaining=Math.max(Number(next.points_cost||0)-balance,0)
+          details.push(['Next reward',remaining>0?`${next.name} · ${remaining} pts to go`:`${next.name} · Ready`])
+        }
+      }else{
+        const left=Math.max(Number(p.goal||8)-Number(p.stamps||0),0)
+        details.push(['Reward',left?`${left} more to ${p.reward_name||'reward'}`:`${p.reward_name||'Reward'} ready`])
+      }
+    }else if(type==='points'){
       metricLabel='POINTS BALANCE';metricValue=Number(p.points_balance||0).toLocaleString();metricSub='points'
       planSub=planSub||`${metricValue} points available`
       details.push(['Reward',p.reward_name||'Rewards'])
