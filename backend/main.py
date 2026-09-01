@@ -1140,7 +1140,7 @@ class LoyaltyConfig(BaseModel):
     hero_image_url: Optional[str] = None
     card_name: Optional[str] = None
     # --- LoyaltyTree Wallet 2.0 ---
-    wallet_style: Literal['modern', 'premium', 'minimal', 'dark'] = 'modern'
+    wallet_style: Literal['modern', 'premium', 'minimal', 'dark', 'classic', 'gradient'] = 'modern'
     wallet_secondary_color: Optional[str] = None
     wallet_show_background: bool = True
     description: Optional[str] = Field(default=None, max_length=140)  # short blurb shown below the card on the join page / wallet pass - also doubles as the multipass card's "what these sessions are for" description
@@ -2349,6 +2349,13 @@ def wallet_20_design(business: dict, program: Optional[dict]) -> dict:
     category = business_category_meta(business.get('business_type'))
     card_type = program.get('card_type') or 'stamp'
     style = str(program.get('wallet_style') or 'modern').lower()
+    # UI names are friendlier than the legacy stored values. Normalize both so
+    # old and new clients render identically while the DB keeps its existing
+    # wallet_style CHECK constraint.
+    if style == 'gradient':
+        style = 'modern'
+    elif style == 'classic':
+        style = 'minimal'
     if style not in ('modern', 'premium', 'minimal', 'dark'):
         style = 'modern'
 
@@ -9306,7 +9313,9 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
         'stamp_once_per_day': bool(config.stamp_once_per_day),
         'stamp_reset_after_final': bool(config.stamp_reset_after_final),
         'primary_color': config.primary_color,
-        'wallet_style': config.wallet_style,
+        # LoyaltyCardCustomizer uses UI labels `gradient`/`classic`; the DB
+        # constraint stores their legacy equivalents `modern`/`minimal`.
+        'wallet_style': {'gradient': 'modern', 'classic': 'minimal'}.get(config.wallet_style, config.wallet_style),
         'wallet_secondary_color': config.wallet_secondary_color,
         'wallet_show_background': bool(config.wallet_show_background),
         'reward_expiry_days': config.reward_expiry_days,
