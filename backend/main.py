@@ -2526,6 +2526,11 @@ def build_loyalty_class(
     class_id = class_id_override or _google_wallet_base_class_id(business, program)
 
     design = wallet_20_design(business, program)
+    card_title = str(
+        (program or {}).get('card_name')
+        or design['card_label']
+        or f'{biz_name} Rewards'
+    ).strip()
     category = design['category']
     primary_color = background_color_override or design['background']
     reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
@@ -2681,8 +2686,20 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     card_cycle_reset_on = card_cycle_reset_on_date(customer, program)
     if card_type == 'points':
         loyalty_points_label = 'Points'
-        loyalty_points_balance = str(points_balance)
-        details.append(('REWARD', reward_name))
+        current_points = int(points_balance or 0)
+        loyalty_points_balance = str(current_points)
+        if next_points_prize:
+            prize_cost = int(next_points_prize.get('points_cost') or 0)
+            prize_name = str(next_points_prize.get('name') or 'Reward')
+            points_to_go = max(prize_cost - current_points, 0)
+            next_reward_value = (
+                f'{prize_name} · Ready to redeem'
+                if points_to_go == 0 else
+                f'{prize_name} · {points_to_go} points to go'
+            )
+        else:
+            next_reward_value = 'Ask in-store for rewards'
+        details.append(('NEXT REWARD', next_reward_value))
         if card_cycle_reset_on:
             details.append(('RESET ON', card_cycle_reset_on))
     elif card_type == 'multipass':
@@ -2742,7 +2759,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
             )
         },
         'textModulesData': [
-            {'header': design['card_label'], 'body': cust_name},
+            {'header': card_title, 'body': cust_name},
             *[{'header': header, 'body': str(body)} for header, body in details],
         ],
         'linksModuleData': {
@@ -3556,7 +3573,22 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     # Type / Next Benefit style breakdown instead of duplicating whatever's
     # already on the front (primary/secondary fields below).
     apple_details = []
-    if card_type == 'multipass':
+    if card_type == 'points':
+        current_points = int(points_balance or 0)
+        apple_details.append(('points_balance', 'POINTS BALANCE', f'{current_points:,} points'))
+        if next_points_prize:
+            prize_cost = int(next_points_prize.get('points_cost') or 0)
+            prize_name = str(next_points_prize.get('name') or 'Reward')
+            points_to_go = max(prize_cost - current_points, 0)
+            next_reward_value = (
+                f'{prize_name} · Ready to redeem'
+                if points_to_go == 0 else
+                f'{prize_name} · {points_to_go} points to go'
+            )
+        else:
+            next_reward_value = 'Ask in-store for rewards'
+        apple_details.append(('next_reward_detail', 'NEXT REWARD', next_reward_value))
+    elif card_type == 'multipass':
         apple_details.append(('valid_until', 'VALID UNTIL', multipass_expires_at or 'No expiry set'))
     elif card_type == 'vip':
         current_vip_points = int(customer.get('vip_points') or 0)
@@ -3603,7 +3635,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         ]
 
     back_fields = [
-        {'key': 'card', 'label': 'CARD', 'value': design['card_label']},
+        {'key': 'card', 'label': 'CARD', 'value': card_title},
         *[{'key': key, 'label': label, 'value': str(value)} for key, label, value in apple_details],
         *activity_fields,
         {'key': 'about', 'label': 'ABOUT', 'value': description or f'{biz_name} digital loyalty card powered by LoyaltyTree.'},
@@ -3635,7 +3667,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         'teamIdentifier': APPLE_TEAM_IDENTIFIER,
         'organizationName': biz_name,
         'serialNumber': cust_public_id,
-        'description': f'{biz_name} Loyalty Card',
+        'description': card_title,
         'backgroundColor': f'rgb({r}, {g}, {b})',
         'foregroundColor': apple_foreground,
         'labelColor': apple_label,
@@ -3655,7 +3687,11 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                         'key': 'next_reward',
                         'label': 'NEXT REWARD',
                         'value': (
-                            f"{next_points_prize.get('name')} · {next_points_prize.get('points_cost')} points"
+                            (
+                                f"{next_points_prize.get('name')} · Ready to redeem"
+                                if max(int(next_points_prize.get('points_cost') or 0) - int(points_balance or 0), 0) == 0
+                                else f"{next_points_prize.get('name')} · {max(int(next_points_prize.get('points_cost') or 0) - int(points_balance or 0), 0)} points to go"
+                            )
                             if next_points_prize else
                             'Ask in-store for rewards'
                         ),
