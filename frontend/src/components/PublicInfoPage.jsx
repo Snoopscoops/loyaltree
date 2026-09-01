@@ -278,7 +278,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
       tagline: 'A complete digital loyalty system for smaller businesses getting started.',
       features: [
         'Google Wallet & Apple Wallet',
-        '2 active announcements',
+        '2 announcements per subscription cycle',
         'Full digital loyalty system',
         'Full loyalty card customization',
         'Analytics',
@@ -294,7 +294,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
       tagline: 'More customer engagement and retention tools for growing businesses.',
       features: [
         'Google Wallet & Apple Wallet',
-        'Up to 5 active announcements',
+        'Up to 5 announcements per subscription cycle',
         'Full digital loyalty system',
         'Full loyalty card customization',
         'Analytics',
@@ -312,7 +312,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
       tagline: 'Advanced loyalty tools for businesses ready to run more complex programs.',
       features: [
         'Google Wallet & Apple Wallet',
-        'Up to 7 active announcements',
+        'Up to 7 announcements per subscription cycle',
         'Full digital loyalty system',
         'Full loyalty card customization',
         'Analytics',

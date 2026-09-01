@@ -130,7 +130,7 @@ SUBSCRIPTION_REMINDER_RESEND_DAYS = 3  # don't re-email more often than this whi
 # truth the admin dashboard AND the API's feature gates read from - nothing
 # else needs to change to introduce a new plan or adjust a limit.
 #
-# announcements_per_month: legacy field name; now used as max concurrently-active announcements
+# announcements_per_month: legacy field name; now means announcements included per paid subscription cycle
 # max_loyalty_cards: how many concurrent loyalty_programs rows a business
 #   may run at once (multi-card support itself is not implemented yet -
 #   this limit is reserved for that follow-up feature)
@@ -144,7 +144,7 @@ SUBSCRIPTION_PLANS = {
         'customer_limit': None,  # unlimited customers
         'google_wallet': True,
         'apple_wallet': True,
-        # Maximum concurrently-active customer announcements (not a monthly post quota).
+        # Customer announcement sends included in each paid subscription cycle.
         'announcements_per_month': 2,
         'analytics': True,
         'google_review_prompt': False,
@@ -196,14 +196,12 @@ def get_plan_features(plan: Optional[str]) -> dict:
     return SUBSCRIPTION_PLANS.get(plan or 'starter', SUBSCRIPTION_PLANS['starter'])
 
 def get_effective_announcement_limit(business: dict) -> Optional[int]:
-    """The plan's active announcement cap (2/5/7 for Starter/Growth/Pro),
-    adjusted by whatever an admin has manually granted or deducted for this
-    specific business (businesses.announcement_limit_adjustment, e.g. +3 as
-    a goodwill bonus or -1 to rein in an abuser) - see admin_update_business.
-    Returns None only when the plan itself has no limit at all (there's no
-    such plan today, but the field supports it). Otherwise the result is
-    clamped to [0, 99] - never negative, and 99 is treated as a practical
-    ceiling an admin can raise a business to but not beyond."""
+    """Announcements included in one paid subscription cycle.
+
+    The legacy config key is still named ``announcements_per_month`` so older
+    frontends keep working, but the quota no longer follows the calendar month
+    and it is no longer a concurrently-active slot limit. A successful
+    subscription payment starts a fresh cycle."""
     base_limit = get_plan_features(business.get('plan')).get('announcements_per_month')
     if base_limit is None:
         return None
@@ -214,33 +212,136 @@ def get_effective_announcement_limit(business: dict) -> Optional[int]:
         adjustment = 0
     return max(0, min(99, base_limit + adjustment))
 
-def count_active_announcements(business_id: int, exclude_id: Optional[str] = None) -> int:
-    """Count announcements that are active *right now*. Expired rows do not
-    consume a plan slot, and editing an existing row can exclude itself.
-    This matches the public pricing language: Starter 2, Growth 5, Pro 7
-    concurrently-active announcements."""
-    today = datetime.utcnow().date().isoformat()
-    try:
-        rows = (
-            supabase.table("announcements")
-            .select("id,is_active,end_date")
-            .eq("business_id", business_id)
-            .eq("is_active", True)
-            .execute()
-            .data or []
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
-    active = 0
-    for row in rows:
-        if exclude_id is not None and str(row.get('id')) == str(exclude_id):
-            continue
-        end_date = row.get('end_date')
-        if end_date and str(end_date)[:10] < today:
-            continue
-        active += 1
-    return active
+def get_announcement_cycle_start(business: dict) -> str:
+    """Return the exact UTC timestamp at which this announcement quota began.
+
+    The newest successful ``subscription_payments.paid_at`` is the source of
+    truth. That timestamp is written by the verified PayMongo ``payment.paid``
+    webhook, so every successful resubscription immediately opens a fresh
+    quota. Older/manual accounts fall back to businesses.last_paid_at and then
+    businesses.created_at so they remain usable before their first PayMongo
+    renewal.
+    """
+    business_id = business.get('id')
+    if business_id and supabase:
+        try:
+            rows = (
+                supabase.table('subscription_payments')
+                .select('paid_at')
+                .eq('business_id', business_id)
+                .eq('status', 'paid')
+                .order('paid_at', desc=True)
+                .limit(1)
+                .execute()
+                .data or []
+            )
+            if rows and rows[0].get('paid_at'):
+                parsed = _parse_ts(rows[0]['paid_at'])
+                if parsed:
+                    return parsed.isoformat()
+        except Exception as e:
+            # Do not take the whole dashboard down if an old database is still
+            # missing paid_at; the fallbacks below preserve existing accounts.
+            print(f"ANNOUNCEMENT CYCLE payment lookup fallback: {e}")
+
+    for candidate in (business.get('last_paid_at'), business.get('created_at')):
+        parsed = _parse_ts(candidate)
+        if parsed:
+            return parsed.isoformat()
+
+    # Extremely old/malformed rows should still have a deterministic boundary.
+    # Starting now is safer than accidentally counting the business's full
+    # announcement history as the current subscription cycle.
+    return datetime.utcnow().isoformat()
+
+
+def count_announcements_in_current_cycle(business: dict) -> int:
+    """Count committed quota uses since the most recent paid renewal.
+
+    Usage lives in ``announcement_usage`` rather than the announcements table,
+    so deleting or editing an announcement does not refund quota. Only a new
+    successful subscription payment changes the cycle boundary and resets the
+    effective count to zero.
+    """
+    cycle_start = get_announcement_cycle_start(business)
+    try:
+        res = (
+            supabase.table('announcement_usage')
+            .select('id', count='exact')
+            .eq('business_id', business.get('id'))
+            .eq('status', 'committed')
+            .gte('created_at', cycle_start)
+            .execute()
+        )
+        return res.count or 0
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Announcement quota migration is not installed. Run "
+                "announcement_quota_per_subscription_cycle.sql in Supabase first. "
+                f"Database error: {friendly_db_error(e)}"
+            ),
+        )
+
+
+def reserve_announcement_quota(business: dict, limit: int) -> str:
+    """Atomically reserve one announcement use for the current cycle."""
+    usage_key = str(uuid.uuid4())
+    cycle_start = get_announcement_cycle_start(business)
+    try:
+        result = supabase.rpc('reserve_announcement_quota', {
+            'p_business_id': business.get('id'),
+            'p_cycle_started_at': cycle_start,
+            'p_limit': int(limit),
+            'p_usage_key': usage_key,
+        }).execute()
+        allowed = bool(result.data)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Announcement quota migration is not installed. Run "
+                "announcement_quota_per_subscription_cycle.sql in Supabase first. "
+                f"Database error: {friendly_db_error(e)}"
+            ),
+        )
+    if not allowed:
+        plan_label = SUBSCRIPTION_PLANS.get(business.get('plan', 'starter'), {}).get('label', 'your plan')
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"You've used all {limit} announcements included in {plan_label} "
+                "for this subscription cycle. Your allowance refreshes after your next successful renewal."
+            ),
+        )
+    return usage_key
+
+
+def commit_announcement_quota(usage_key: Optional[str], announcement_id) -> None:
+    if not usage_key:
+        return
+    try:
+        supabase.table('announcement_usage').update({
+            'announcement_id': str(announcement_id) if announcement_id is not None else None,
+            'status': 'committed',
+        }).eq('public_id', usage_key).execute()
+    except Exception as e:
+        # The announcement already exists and may already have pushed. Never
+        # refund it silently; leave the reservation to count until the stale
+        # reservation cleanup window, and surface the failure in logs.
+        print(f"ANNOUNCEMENT QUOTA commit error: {e}")
+
+
+def release_announcement_quota(usage_key: Optional[str]) -> None:
+    """Refund a reservation only when announcement creation itself failed."""
+    if not usage_key:
+        return
+    try:
+        supabase.table('announcement_usage').delete().eq('public_id', usage_key).eq('status', 'reserved').execute()
+    except Exception as e:
+        print(f"ANNOUNCEMENT QUOTA release error: {e}")
 
 def branch_price_bracket(branch_count: int) -> str:
     """Maps an actual branch count to one of the pricing brackets shown on
@@ -7494,12 +7595,13 @@ async def paymongo_webhook(request: Request):
         return {"received": True}
 
     business = None
+    payment_row = None
     business_public_id = metadata.get("business_public_id")
     if business_public_id:
         business = safe_get_business(business_public_id)
-    if not business and payment_intent_id:
+    if payment_intent_id:
         try:
-            row = (
+            payment_row = (
                 supabase.table("subscription_payments")
                 .select("*")
                 .eq("paymongo_payment_intent_id", payment_intent_id)
@@ -7507,12 +7609,17 @@ async def paymongo_webhook(request: Request):
                 .execute()
                 .data
             )
-            if row:
-                business = safe_get_business_by_id(row.get("business_id"))
+            if not business and payment_row:
+                business = safe_get_business_by_id(payment_row.get("business_id"))
         except Exception:
-            pass
+            payment_row = None
 
     if event_type == "payment.paid":
+        # PayMongo can retry an already-delivered webhook. Treat the payment
+        # row as the idempotency record so one real payment can only start one
+        # new subscription/announcement cycle.
+        if payment_row and str(payment_row.get('status') or '').lower() == 'paid':
+            return {"received": True, "duplicate": True}
         if business:
             now = datetime.utcnow()
             new_expiry = (now + timedelta(days=SUBSCRIPTION_PERIOD_DAYS)).date().isoformat()
@@ -8205,32 +8312,34 @@ async def get_stats(public_id: str):
 
 @app.get("/api/v1/business/{public_id}/plan")
 async def get_plan_info(public_id: str):
-    """Plan name, feature flags/limits, and current usage against those
-    limits - lets the owner dashboard show/hide Pro-only UI and display
-    'X of Y active announcements' without duplicating the plan
-    matrix on the frontend."""
+    """Plan limits plus announcement usage for the current paid cycle."""
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
     plan = business.get('plan', 'starter')
     features = get_plan_features(plan)
-
     limit = get_effective_announcement_limit(business)
+    cycle_start = get_announcement_cycle_start(business)
+
     try:
-        active_announcements = count_active_announcements(business.get('id'))
+        announcements_used = count_announcements_in_current_cycle(business)
     except HTTPException:
-        active_announcements = 0
+        # Preserve dashboard availability during deployment ordering. The
+        # create endpoint still fails closed until the migration is installed.
+        announcements_used = 0
 
     return {
         "plan": plan,
         "plan_label": SUBSCRIPTION_PLANS.get(plan, {}).get("label", plan),
         "features": features,
         "usage": {
-            "active_announcements": active_announcements,
+            "announcements_used_this_cycle": announcements_used,
             "announcements_limit": limit,
-            # Backward-compatible alias for older frontends; semantics are now active slots, not monthly posts.
-            "announcements_used_this_month": active_announcements,
+            "announcement_cycle_started_at": cycle_start,
+            # Temporary compatibility aliases for older deployed frontends.
+            "announcements_used_this_month": announcements_used,
+            "active_announcements": announcements_used,
         },
         "last_paid_at": business.get("last_paid_at"),
         "subscription_expires_at": business.get("subscription_expires_at"),
@@ -10691,16 +10800,16 @@ async def create_announcement(public_id: str, ann: AnnouncementCreate):
         raise HTTPException(status_code=404, detail="Business not found")
 
     is_active = ann.is_active if ann.is_active is not None else True
-    not_expired = not ann.end_date or str(ann.end_date)[:10] >= datetime.utcnow().date().isoformat()
     limit = get_effective_announcement_limit(business)
-    if is_active and not_expired and limit is not None:
-        used = count_active_announcements(business.get('id'))
-        if used >= limit:
-            plan_label = SUBSCRIPTION_PLANS.get(business.get('plan', 'starter'), {}).get('label', 'your plan')
-            raise HTTPException(
-                status_code=403,
-                detail=f"{plan_label} allows up to {limit} active announcements at a time. Deactivate or delete one before activating another, or upgrade your plan."
-            )
+
+    # Every NEW announcement consumes one allowance from the current paid
+    # subscription cycle, whether it is posted active immediately or saved
+    # inactive first. Editing/deactivating/deleting that same announcement does
+    # not refund quota, so drafts cannot be used to bypass the plan allowance.
+    usage_key = None
+    if limit is not None:
+        usage_key = reserve_announcement_quota(business, limit)
+
     data = {
         'business_id': business.get('id'),
         'title': ann.title,
@@ -10716,7 +10825,10 @@ async def create_announcement(public_id: str, ann: AnnouncementCreate):
         res = supabase.table("announcements").insert(data).execute()
         created = res.data[0] if res.data else data
     except Exception as e:
+        release_announcement_quota(usage_key)
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    commit_announcement_quota(usage_key, created.get('id'))
 
     # Auto-push on creation of a new, active announcement. Editing an existing
     # one later does NOT re-push automatically - use the Notify button for that,
@@ -10784,20 +10896,8 @@ async def update_announcement(public_id: str, announcement_id: str, ann: Announc
     if not update_data:
         return existing.data
 
-    # If this edit will leave the announcement active, enforce the active-slot cap.
-    resulting_active = update_data.get('is_active', existing.data.get('is_active', True))
-    resulting_end_date = update_data.get('end_date', existing.data.get('end_date'))
-    not_expired = not resulting_end_date or str(resulting_end_date)[:10] >= datetime.utcnow().date().isoformat()
-    limit = get_effective_announcement_limit(business)
-    if resulting_active and not_expired and limit is not None:
-        used_elsewhere = count_active_announcements(business.get('id'), exclude_id=announcement_id)
-        if used_elsewhere >= limit:
-            plan_label = SUBSCRIPTION_PLANS.get(business.get('plan', 'starter'), {}).get('label', 'your plan')
-            raise HTTPException(
-                status_code=403,
-                detail=f"{plan_label} allows up to {limit} active announcements at a time. Deactivate or delete one before activating this announcement."
-            )
-
+    # Editing an existing announcement never consumes or refunds quota. The
+    # allowance is charged when a new active announcement is first published.
     update_data['updated_at'] = datetime.utcnow().isoformat()
 
     try:
