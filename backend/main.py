@@ -1110,8 +1110,21 @@ class StampRewardMilestone(BaseModel):
     stamps: int = Field(ge=1, le=500)
     reward_name: str = Field(min_length=1, max_length=100)
 
+class MembershipBenefitConfig(BaseModel):
+    id: Optional[str] = None
+    name: str = Field(min_length=1, max_length=100)
+    benefit_type: Literal['free_item', 'percentage_discount', 'fixed_discount', 'custom'] = 'free_item'
+    value: Optional[float] = Field(default=None, ge=0)
+    description: Optional[str] = Field(default=None, max_length=240)
+    usage_limit: Optional[int] = Field(default=1, ge=1, le=10000)  # None = unlimited
+    reset_period: Literal['daily', 'weekly', 'monthly', 'membership_cycle', 'never'] = 'daily'
+    active: bool = True
+
 class LoyaltyConfig(BaseModel):
-    card_type: Literal['stamp', 'points', 'multipass', 'membership', 'vip'] = 'stamp'  # a business runs ONE active card at a time
+    card_type: Literal['stamp', 'points', 'multipass', 'membership', 'vip', 'hybrid'] = 'stamp'
+    # Hybrid keeps one Wallet card/customer identity while combining Membership
+    # with exactly one loyalty engine. V1 intentionally supports Points OR Stamps.
+    hybrid_loyalty_type: Literal['points', 'stamp'] = 'points'
     stamp_goal: int = Field(default=8, ge=1, le=500)
     reward_name: str = 'Free Service'
     stamp_rewards: Optional[List[StampRewardMilestone]] = None
@@ -1140,8 +1153,13 @@ class LoyaltyConfig(BaseModel):
     # --- Multipass card only ---
     multipass_session_count: Optional[int] = Field(default=12, ge=2, le=200)  # sessions issued per pass, e.g. 12 sessions sold at the price of 10
     multipass_validity_days: Optional[int] = Field(default=90, ge=1)          # days a freshly-issued pass stays valid before it expires unused
-    # --- Membership card only ---
+    # --- Membership / Hybrid subscription engine ---
+    membership_name: Optional[str] = Field(default=None, max_length=100)
+    subscription_enrollment_mode: Optional[Literal['manual', 'automatic']] = None
+    # Legacy display-only list retained for old cards/clients. New cards should
+    # use membership_benefits, which adds redemption limits/reset rules.
     membership_services: Optional[List[str]] = None
+    membership_benefits: Optional[List[MembershipBenefitConfig]] = None
     membership_duration_days: Optional[int] = Field(default=30, ge=1, le=3650)
     membership_price: Optional[float] = Field(default=0, ge=0)
     membership_terms: Optional[str] = Field(default=None, max_length=2000)
@@ -1261,6 +1279,14 @@ class MembershipActionRequest(BaseModel):
     duration_days: Optional[int] = Field(default=None, ge=1, le=3650)
     price_paid: Optional[float] = Field(default=None, ge=0)
     payment_method: Optional[str] = Field(default=None, max_length=80)
+    note: Optional[str] = Field(default=None, max_length=500)
+    staff_pin: Optional[str] = None
+    as_owner: Optional[bool] = False
+
+class MembershipBenefitRedeemRequest(BaseModel):
+    customer_public_id: str
+    benefit_id: str = Field(min_length=1, max_length=120)
+    quantity: int = Field(default=1, ge=1, le=100)
     note: Optional[str] = Field(default=None, max_length=500)
     staff_pin: Optional[str] = None
     as_owner: Optional[bool] = False
@@ -1583,6 +1609,27 @@ def safe_get_loyalty_program(business_id: int):
         print(f"LOYALTY PROGRAM lookup error for business {business_id}: {e}")
         return None
 
+def hybrid_loyalty_type(program: Optional[dict]) -> str:
+    """Selected rewards engine for a Hybrid card. Defaults safely to Points."""
+    value = str((program or {}).get('hybrid_loyalty_type') or 'points').lower()
+    return value if value in ('points', 'stamp') else 'points'
+
+
+def effective_loyalty_type(program: Optional[dict]) -> str:
+    """Return the transaction/reward engine used by a program.
+
+    Normal cards return their card_type. Hybrid returns its configured
+    points-or-stamp child engine while membership remains available in parallel.
+    """
+    card_type = str((program or {}).get('card_type') or 'stamp').lower()
+    return hybrid_loyalty_type(program) if card_type == 'hybrid' else card_type
+
+
+def program_has_membership(program: Optional[dict]) -> bool:
+    """Membership features are available on Membership and Hybrid cards."""
+    return str((program or {}).get('card_type') or '').lower() in ('membership', 'hybrid')
+
+
 def _loyalty_today():
     """Business-facing loyalty dates use Asia/Manila (or LOYALTY_TIMEZONE env)."""
     return datetime.now(LOYALTY_TIMEZONE).date()
@@ -1616,7 +1663,7 @@ def card_cycle_reset_on_date(customer: Optional[dict], program: Optional[dict]) 
     """
     if not customer or not _card_cycle_enabled(program):
         return None
-    if (program or {}).get('card_type') not in ('stamp', 'points', 'vip'):
+    if effective_loyalty_type(program) not in ('stamp', 'points', 'vip'):
         return None
     expires = _date_only(customer.get('card_expires_at'))
     return (expires + timedelta(days=1)).isoformat() if expires else None
@@ -1683,6 +1730,7 @@ def apply_card_cycle_expiration_if_needed(customer: dict, business: Optional[dic
     new_cycle = old_cycle + 1
     new_expiry = today + timedelta(days=_card_cycle_validity_days(program))
     card_type = (program or {}).get('card_type') or 'stamp'
+    loyalty_type = effective_loyalty_type(program)
     old_balances = {
         'stamp_count': int(customer.get('stamp_count') or 0),
         'points_balance': int(customer.get('points_balance') or 0),
@@ -1698,11 +1746,11 @@ def apply_card_cycle_expiration_if_needed(customer: dict, business: Optional[dic
         'last_card_reset_at': datetime.utcnow().isoformat(),
         'updated_at': datetime.utcnow().isoformat(),
     }
-    if card_type == 'stamp':
+    if loyalty_type == 'stamp':
         update_data.update({'stamp_count': 0, 'reward_unlocked': False})
-    elif card_type == 'points':
+    elif loyalty_type == 'points':
         update_data['points_balance'] = 0
-    elif card_type == 'vip':
+    elif loyalty_type == 'vip':
         update_data.update({'vip_points': 0, 'vip_manual_tier_id': None})
     elif card_type == 'multipass':
         # Keep the unused-session history/balance visible, but make it unusable.
@@ -1735,14 +1783,15 @@ def apply_card_cycle_expiration_if_needed(customer: dict, business: Optional[dic
             'action': 'card_cycle_expired',
             'status': 'success',
             'balance_before': old_balances.get(
-                'points_balance' if card_type == 'points' else
-                'vip_points' if card_type == 'vip' else
+                'points_balance' if loyalty_type == 'points' else
+                'vip_points' if loyalty_type == 'vip' else
                 'multipass_sessions_remaining' if card_type == 'multipass' else
-                'stamp_count' if card_type == 'stamp' else 'stamp_count'
+                'stamp_count' if loyalty_type == 'stamp' else 'stamp_count'
             ),
-            'balance_after': 0 if card_type in ('stamp', 'points', 'vip') else None,
+            'balance_after': 0 if loyalty_type in ('stamp', 'points', 'vip') else None,
             'metadata': {
                 'card_type': card_type,
+                'hybrid_loyalty_type': hybrid_loyalty_type(program) if card_type == 'hybrid' else None,
                 'previous_cycle': old_cycle,
                 'new_cycle': new_cycle,
                 'expired_on': expires.isoformat(),
@@ -1932,6 +1981,7 @@ def business_summary(biz: dict) -> dict:
     points_balance_outstanding = 0
     program = safe_get_loyalty_program(biz_id)
     card_type = program.get('card_type', 'stamp') if program else 'stamp'
+    loyalty_type = effective_loyalty_type(program)
     sessions_outstanding = 0
     try:
         cust_res = supabase.table("customers").select("id", count="exact").eq("business_id", biz_id).execute()
@@ -1950,7 +2000,7 @@ def business_summary(biz: dict) -> dict:
         # /multipass) - read from whichever table actually holds this
         # business's activity so it doesn't show a false 0.
         since = (datetime.utcnow() - timedelta(days=30)).isoformat()
-        if card_type == 'points':
+        if loyalty_type == 'points':
             activity_table = "points_events"
         elif card_type == 'multipass':
             activity_table = "multipass_events"
@@ -1964,7 +2014,7 @@ def business_summary(biz: dict) -> dict:
         activity_30d = activity_res.count or 0
     except Exception:
         pass
-    if card_type == 'points':
+    if loyalty_type == 'points':
         try:
             # Outstanding points liability across all customers - lets
             # admin monitor how many unredeemed points a points-card
@@ -2036,12 +2086,14 @@ def business_summary(biz: dict) -> dict:
         "customer_count": customer_count,
         "staff_count": staff_count,
         "card_type": card_type,
+        "hybrid_loyalty_type": hybrid_loyalty_type(program) if card_type == 'hybrid' else None,
+        "effective_loyalty_type": loyalty_type,
         # stamps_30d holds stamp punches for stamp cards, points sales
         # (transactions, not points earned) for points cards, or sessions
         # used for multipass cards - see card_type to know which. Kept as
         # one key so existing callers keep working.
         "stamps_30d": activity_30d,
-        "points_balance_outstanding": points_balance_outstanding if card_type == 'points' else None,
+        "points_balance_outstanding": points_balance_outstanding if loyalty_type == 'points' else None,
         "sessions_outstanding": sessions_outstanding if card_type == 'multipass' else None,
     }
 
@@ -2129,6 +2181,7 @@ def generate_personalized_hero_image_bytes(
     stamp_goal: int,
     description: Optional[str] = None,
     card_type: str = 'stamp',
+    hybrid_loyalty_type: str = 'points',
     points_balance: int = 0,
     sessions_remaining: int = 0,
     sessions_total: int = 0,
@@ -2219,7 +2272,14 @@ def generate_personalized_hero_image_bytes(
     font_progress = ImageFont.load_default(size=24)
     font_desc = ImageFont.load_default(size=19)
 
-    if card_type == 'points':
+    if card_type == 'hybrid':
+        reward_line = f'Membership · {membership_status.upper() if membership_status else "INACTIVE"}'
+        progress_line = (
+            f'{points_balance} points'
+            if hybrid_loyalty_type == 'points' else
+            f'{stamps} of {stamp_goal} stamps'
+        )
+    elif card_type == 'points':
         reward_line = f'{points_balance} points'
         progress_line = 'Redeem prizes in-store'
     elif card_type == 'multipass':
@@ -2266,6 +2326,7 @@ WALLET_CARD_LABELS = {
     'membership': 'MEMBERSHIP',
     'multipass': 'MULTIPASS',
     'vip': 'VIP MEMBER',
+    'hybrid': 'HYBRID REWARDS',
 }
 
 def _normalize_hex_color(value: Optional[str], fallback: str = '#0d9488') -> str:
@@ -2333,6 +2394,12 @@ def wallet_20_program_name(business: dict, program: Optional[dict]) -> str:
 
 def wallet_20_short_status(customer: dict, business: dict, program: dict) -> tuple:
     card_type = (program or {}).get('card_type', 'stamp')
+    loyalty_type = effective_loyalty_type(program)
+    if card_type == 'hybrid':
+        if loyalty_type == 'points':
+            return 'POINTS', f"{int(customer.get('points_balance') or 0):,}"
+        goal = int((program or {}).get('stamp_goal') or 8)
+        return 'STAMPS', f"{int(customer.get('stamp_count') or 0)} / {goal}"
     if card_type == 'points':
         return 'POINTS', f"{int(customer.get('points_balance') or 0):,}"
     if card_type == 'multipass':
@@ -2526,6 +2593,7 @@ def build_loyalty_class(
     class_id = class_id_override or _google_wallet_base_class_id(business, program)
 
     design = wallet_20_design(business, program)
+    biz_name = business.get('name', 'Loyalty')
     card_title = str(
         (program or {}).get('card_name')
         or design['card_label']
@@ -2535,12 +2603,16 @@ def build_loyalty_class(
     primary_color = background_color_override or design['background']
     reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
     card_type = program.get('card_type', 'stamp') if program else 'stamp'
+    loyalty_type = effective_loyalty_type(program)
     card_name = program.get('card_name') if program else None
     description = program.get('description') if program else None
-    biz_name = business.get('name', 'Loyalty')
     program_name = wallet_20_program_name(business, program)
 
-    if card_type == 'multipass':
+    if card_type == 'hybrid':
+        services = (program.get('membership_services') if program else None) or []
+        membership_name = ((program.get('membership_name') if program else None) or (services[0] if services else 'Membership'))
+        reward_module_body = f"{membership_name} + {'Points rewards' if loyalty_type == 'points' else 'Stamp rewards'}"
+    elif card_type == 'multipass':
         session_count = program.get('multipass_session_count', 12) if program else 12
         reward_module_body = f'{session_count}-session pass'
     elif card_type == 'membership':
@@ -2560,7 +2632,7 @@ def build_loyalty_class(
         'reviewStatus': review_status,
         'hexBackgroundColor': primary_color if primary_color.startswith('#') else f'#{primary_color}',
         'textModulesData': [
-            {'header': 'CARD', 'body': design['card_label']},
+            {'header': 'CARD', 'body': card_title},
             {'header': 'BUSINESS TYPE', 'body': f"{category['icon']} {category['label']}"},
             {'header': 'BENEFIT / REWARD', 'body': reward_module_body},
             {'header': 'ABOUT', 'body': description if description else f"{biz_name} digital loyalty card powered by LoyaltyTree"}
@@ -2593,7 +2665,7 @@ def build_loyalty_class(
     # NFC trial safety gate: Smart Tap is exposed only on MEMBERSHIP cards
     # explicitly enabled by the LoyaltyTree super admin. A business owner cannot
     # turn this on through normal loyalty-config updates.
-    nfc_trial_active = bool(card_type == 'membership' and program and program.get('nfc_trial_enabled'))
+    nfc_trial_active = bool(program_has_membership(program) and program and program.get('nfc_trial_enabled'))
     if nfc_trial_active and GOOGLE_SMART_TAP_ENABLED and GOOGLE_SMART_TAP_REDEMPTION_ISSUER_ID:
         loyalty_class['enableSmartTap'] = True
         loyalty_class['redemptionIssuers'] = [str(GOOGLE_SMART_TAP_REDEMPTION_ISSUER_ID)]
@@ -2605,6 +2677,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     class_id = google_wallet_class_id_for_customer(customer, business, program or {})
     object_id = f'{GOOGLE_WALLET_ISSUER_ID}.{cust_public_id}'
     card_type = program.get('card_type', 'stamp') if program else 'stamp'
+    loyalty_type = effective_loyalty_type(program)
     stamp_goal = program.get('stamp_goal', 8) if program else 8
     reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
     stamps = customer.get('stamp_count', 0)
@@ -2614,7 +2687,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     # above the member's current balance so Apple Wallet can show a clean
     # "NEXT REWARD" summary above the full-width banner.
     points_prizes = []
-    if card_type == 'points':
+    if loyalty_type == 'points':
         for prize in ((program or {}).get('points_prizes') or []):
             if not isinstance(prize, dict):
                 continue
@@ -2639,7 +2712,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     # card type: main status/reward above the full-width banner, then two
     # important customer fields below it, with the barcode at the bottom.
     stamp_rewards = []
-    if card_type == 'stamp':
+    if loyalty_type == 'stamp':
         for reward in ((program or {}).get('stamp_rewards') or []):
             if not isinstance(reward, dict):
                 continue
@@ -2676,30 +2749,59 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     cust_name = customer.get('name', 'Member')
     biz_name = business.get('name', '')
     design = wallet_20_design(business, program)
+    card_title = str((program or {}).get('card_name') or f'{biz_name} Rewards').strip()
     category = design['category']
     membership_summary = (
         get_membership_summary(business.get('id'), customer.get('id'))
-        if card_type == 'membership' else None
+        if program_has_membership(program) else None
     )
 
     details = []  # [(header, body), ...] - mirrors WalletPass.jsx's `view.details`
     card_cycle_reset_on = card_cycle_reset_on_date(customer, program)
-    if card_type == 'points':
-        loyalty_points_label = 'Points'
+
+    def _points_next_reward_value():
         current_points = int(points_balance or 0)
-        loyalty_points_balance = str(current_points)
         if next_points_prize:
             prize_cost = int(next_points_prize.get('points_cost') or 0)
             prize_name = str(next_points_prize.get('name') or 'Reward')
             points_to_go = max(prize_cost - current_points, 0)
-            next_reward_value = (
+            return (
                 f'{prize_name} · Ready to redeem'
                 if points_to_go == 0 else
                 f'{prize_name} · {points_to_go} points to go'
             )
+        return 'Ask in-store for rewards'
+
+    def _stamp_next_reward_value():
+        current_stamps = int(stamps or 0)
+        if next_stamp_reward:
+            required = int(next_stamp_reward.get('stamps') or full_stamp_goal)
+            name = str(next_stamp_reward.get('reward_name') or reward_name)
+            remaining = max(required - current_stamps, 0)
+            return f'{name} · Ready to redeem' if remaining == 0 else f'{name} · {remaining} stamps to go'
+        remaining = max(full_stamp_goal - current_stamps, 0)
+        return reward_name if remaining == 0 else f'{reward_name} · {remaining} stamps to go'
+
+    if card_type == 'hybrid':
+        status = membership_effective_status(customer)
+        expiry = customer.get('membership_expires_at')
+        services = (program.get('membership_services') if program else None) or []
+        if loyalty_type == 'points':
+            loyalty_points_label = 'Points'
+            loyalty_points_balance = str(int(points_balance or 0))
+            next_reward_value = _points_next_reward_value()
         else:
-            next_reward_value = 'Ask in-store for rewards'
+            loyalty_points_label = 'Stamps'
+            loyalty_points_balance = f'{int(stamps or 0)}/{int(full_stamp_goal)}'
+            next_reward_value = _stamp_next_reward_value()
+        details.append((((program.get('membership_name') if program else None) or 'MEMBERSHIP').upper(), status.upper()))
+        details.append(('ACTIVE UNTIL', 'Lifetime' if status == 'lifetime' else (expiry or 'Not activated')))
         details.append(('NEXT REWARD', next_reward_value))
+        details.append(('NEXT BENEFIT', services[0] if services else 'Membership perks'))
+    elif card_type == 'points':
+        loyalty_points_label = 'Points'
+        loyalty_points_balance = str(int(points_balance or 0))
+        details.append(('NEXT REWARD', _points_next_reward_value()))
         if card_cycle_reset_on:
             details.append(('RESET ON', card_cycle_reset_on))
     elif card_type == 'multipass':
@@ -2722,14 +2824,13 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         loyalty_points_balance = status.upper()
         services = (program.get('membership_services') if program else None) or []
         details.append(('ACTIVE UNTIL', 'Lifetime' if status == 'lifetime' else (expiry or 'Not activated')))
-        details.append(('MEMBER SINCE', customer.get('membership_started_at') or '—'))
-        details.append(('MEMBERSHIP TYPE', (program.get('card_name') if program else None) or design['card_label']))
+        details.append(('MEMBER SINCE', customer.get('membership_start_date') or '—'))
+        details.append(('MEMBERSHIP TYPE', (program.get('membership_name') if program else None) or (program.get('card_name') if program else None) or design['card_label']))
         details.append(('NEXT BENEFIT', services[0] if services else 'Rewards'))
     else:
         loyalty_points_label = 'Stamps'
-        loyalty_points_balance = f'{stamps}/{stamp_goal}'
-        left = max(full_stamp_goal - stamps, 0)
-        details.append(('REWARD', reward_name if left == 0 else f'{left} more to {reward_name}'))
+        loyalty_points_balance = f'{stamps}/{full_stamp_goal}'
+        details.append(('NEXT REWARD', _stamp_next_reward_value()))
         if card_cycle_reset_on:
             details.append(('RESET ON', card_cycle_reset_on))
     description = program.get('description') if program else None
@@ -2783,12 +2884,12 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         )
         description = program.get('description') if program else None
         color_key = primary_color.lstrip('#')
-        if card_type == 'points':
+        if loyalty_type == 'points':
             progress_key = points_balance
         elif card_type == 'multipass':
             progress_key = sessions_remaining
         elif card_type == 'membership':
-            progress_key = membership_summary['total_visits']
+            progress_key = (membership_summary or {}).get('total_visits', 0)
         elif card_type == 'vip':
             progress_key = int(customer.get('vip_points') or 0)
         else:
@@ -2801,7 +2902,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
 
 
     contactless_token = contactless_member_token(cust_public_id)
-    nfc_trial_active = bool(card_type == 'membership' and program and program.get('nfc_trial_enabled'))
+    nfc_trial_active = bool(program_has_membership(program) and program and program.get('nfc_trial_enabled'))
     if nfc_trial_active and GOOGLE_SMART_TAP_ENABLED and GOOGLE_SMART_TAP_REDEMPTION_ISSUER_ID and contactless_token:
         loyalty_object['smartTapRedemptionValue'] = contactless_token
 
@@ -3435,6 +3536,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     cust_name = customer.get('name', 'Member')
     biz_name = business.get('name', 'Loyalty')
     card_type = program.get('card_type', 'stamp') if program else 'stamp'
+    loyalty_type = effective_loyalty_type(program)
     stamp_goal = program.get('stamp_goal', 8) if program else 8
     reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
     description = program.get('description') if program else None
@@ -3445,7 +3547,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     # builder: the similarly named values in build_loyalty_object() belong
     # to the Google Wallet builder and are not visible in this function.
     points_prizes = []
-    if card_type == 'points':
+    if loyalty_type == 'points':
         for prize in ((program or {}).get('points_prizes') or []):
             if not isinstance(prize, dict):
                 continue
@@ -3467,7 +3569,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         )
 
     stamp_rewards = []
-    if card_type == 'stamp':
+    if loyalty_type == 'stamp':
         for reward in ((program or {}).get('stamp_rewards') or []):
             if not isinstance(reward, dict):
                 continue
@@ -3539,7 +3641,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         apple_label = 'rgba(255, 255, 255, 0.75)'
     membership_summary = (
         get_membership_summary(business.get('id'), customer.get('id'))
-        if card_type == 'membership' else None
+        if program_has_membership(program) else None
     )
 
     # Announcement field: always present (rather than added/removed) so the
@@ -3567,27 +3669,47 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         if card_cycle_reset_on else []
     )
 
+    current_points = int(points_balance or 0)
+    if next_points_prize:
+        _pp_cost = int(next_points_prize.get('points_cost') or 0)
+        _pp_name = str(next_points_prize.get('name') or 'Reward')
+        _pp_left = max(_pp_cost - current_points, 0)
+        points_next_reward_value = f'{_pp_name} · Ready to redeem' if _pp_left == 0 else f'{_pp_name} · {_pp_left} points to go'
+    else:
+        points_next_reward_value = 'Ask in-store for rewards'
+
+    current_stamps = int(stamps or 0)
+    if next_stamp_reward:
+        _sr_required = int(next_stamp_reward.get('stamps') or full_stamp_goal)
+        _sr_name = str(next_stamp_reward.get('reward_name') or reward_name)
+        _sr_left = max(_sr_required - current_stamps, 0)
+        stamp_next_reward_value = f'{_sr_name} · Ready to redeem' if _sr_left == 0 else f'{_sr_name} · {_sr_left} stamps to go'
+    else:
+        _sr_left = max(full_stamp_goal - current_stamps, 0)
+        stamp_next_reward_value = reward_name if _sr_left == 0 else f'{reward_name} · {_sr_left} stamps to go'
+
     # Same per-type detail rows as build_loyalty_object (Google) and
     # WalletPass.jsx (website) - kept in sync so flipping to the back of the
     # Apple pass shows the same Active Until / Member Since / Membership
     # Type / Next Benefit style breakdown instead of duplicating whatever's
     # already on the front (primary/secondary fields below).
     apple_details = []
-    if card_type == 'points':
-        current_points = int(points_balance or 0)
-        apple_details.append(('points_balance', 'POINTS BALANCE', f'{current_points:,} points'))
-        if next_points_prize:
-            prize_cost = int(next_points_prize.get('points_cost') or 0)
-            prize_name = str(next_points_prize.get('name') or 'Reward')
-            points_to_go = max(prize_cost - current_points, 0)
-            next_reward_value = (
-                f'{prize_name} · Ready to redeem'
-                if points_to_go == 0 else
-                f'{prize_name} · {points_to_go} points to go'
-            )
+    if card_type == 'hybrid':
+        status = membership_effective_status(customer)
+        expiry = customer.get('membership_expires_at')
+        services = (program.get('membership_services') if program else None) or []
+        apple_details.append(('membership_status', ((program.get('membership_name') if program else None) or 'MEMBERSHIP').upper(), status.upper()))
+        apple_details.append(('active_until', 'ACTIVE UNTIL', 'Lifetime' if status == 'lifetime' else (expiry or 'Not activated')))
+        if loyalty_type == 'points':
+            apple_details.append(('points_balance', 'POINTS BALANCE', f'{current_points:,} points'))
+            apple_details.append(('next_reward_detail', 'NEXT REWARD', points_next_reward_value))
         else:
-            next_reward_value = 'Ask in-store for rewards'
-        apple_details.append(('next_reward_detail', 'NEXT REWARD', next_reward_value))
+            apple_details.append(('stamp_progress', 'STAMPS', f'{current_stamps}/{full_stamp_goal}'))
+            apple_details.append(('next_reward_detail', 'NEXT REWARD', stamp_next_reward_value))
+        apple_details.append(('next_benefit', 'NEXT BENEFIT', services[0] if services else 'Membership perks'))
+    elif card_type == 'points':
+        apple_details.append(('points_balance', 'POINTS BALANCE', f'{current_points:,} points'))
+        apple_details.append(('next_reward_detail', 'NEXT REWARD', points_next_reward_value))
     elif card_type == 'multipass':
         apple_details.append(('valid_until', 'VALID UNTIL', multipass_expires_at or 'No expiry set'))
     elif card_type == 'vip':
@@ -3609,12 +3731,12 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         expiry = customer.get('membership_expires_at')
         services = (program.get('membership_services') if program else None) or []
         apple_details.append(('active_until', 'ACTIVE UNTIL', 'Lifetime' if status == 'lifetime' else (expiry or 'Not activated')))
-        apple_details.append(('member_since', 'MEMBER SINCE', customer.get('membership_started_at') or '—'))
-        apple_details.append(('membership_type', 'MEMBERSHIP TYPE', (program.get('card_name') if program else None) or design['card_label']))
+        apple_details.append(('member_since', 'MEMBER SINCE', customer.get('membership_start_date') or '—'))
+        apple_details.append(('membership_type', 'MEMBERSHIP TYPE', (program.get('membership_name') if program else None) or (program.get('card_name') if program else None) or design['card_label']))
         apple_details.append(('next_benefit', 'NEXT BENEFIT', services[0] if services else 'Rewards'))
     else:
-        left = max(stamp_goal - stamps, 0)
-        apple_details.append(('reward_detail', 'REWARD', reward_name if left == 0 else f'{left} more to {reward_name}'))
+        apple_details.append(('stamp_progress', 'STAMPS', f'{current_stamps}/{full_stamp_goal}'))
+        apple_details.append(('next_reward_detail', 'NEXT REWARD', stamp_next_reward_value))
 
     if card_cycle_reset_on:
         apple_details.append(('card_reset_on', 'RESET ON', card_cycle_reset_on))
@@ -3625,7 +3747,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     # get_recent_activity). Sits below the per-type summary above and
     # above the static About/link/announcement rows so flipping the pass
     # reads top-to-bottom as: status summary -> history -> about.
-    activity = get_recent_activity(business.get('id'), customer.get('id'), card_type)
+    activity = get_recent_activity(business.get('id'), customer.get('id'), card_type, program=program)
     activity_fields = []
     if activity:
         activity_fields.append({'key': 'activity_header', 'label': 'RECENT ACTIVITY', 'value': f'Last {len(activity)} movement{"s" if len(activity) != 1 else ""}'})
@@ -3674,6 +3796,53 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         'webServiceURL': APPLE_PASS_WEB_SERVICE_URL,
         'authenticationToken': apple_pass_auth_token(cust_public_id),
         'storeCard': (
+            {
+                # HYBRID: Membership status and the selected loyalty balance share one pass.
+                'headerFields': [
+                    {'key': 'card_name', 'label': 'CARD', 'value': card_title[:32]}
+                ],
+                'primaryFields': [],
+                'secondaryFields': [
+                    {
+                        'key': 'membership_status',
+                        'label': 'MEMBERSHIP',
+                        'value': membership_effective_status(customer).upper(),
+                        'changeMessage': 'Membership status: %@',
+                    },
+                    {
+                        'key': 'hybrid_loyalty',
+                        'label': 'POINTS' if loyalty_type == 'points' else 'STAMPS',
+                        'value': (
+                            str(int(points_balance or 0))
+                            if loyalty_type == 'points' else
+                            f"{int(stamps or 0)}/{int(full_stamp_goal)}"
+                        ),
+                        'textAlignment': 'PKTextAlignmentRight',
+                        'changeMessage': ('Points updated: %@' if loyalty_type == 'points' else 'Stamp progress: %@'),
+                    },
+                ],
+                'auxiliaryFields': [
+                    {
+                        'key': 'active_until',
+                        'label': 'ACTIVE UNTIL',
+                        'value': (
+                            'Lifetime'
+                            if membership_effective_status(customer) == 'lifetime'
+                            else (customer.get('membership_expires_at') or 'Not activated')
+                        ),
+                        'changeMessage': 'Active until: %@',
+                    },
+                    {
+                        'key': 'next_reward',
+                        'label': 'NEXT REWARD',
+                        'value': points_next_reward_value if loyalty_type == 'points' else stamp_next_reward_value,
+                        'changeMessage': 'Next reward: %@',
+                    },
+                    *cycle_auxiliary_fields,
+                ],
+                'backFields': back_fields,
+            }
+            if card_type == 'hybrid' else
             {
                 # POINTS
                 # Card name stays at the top. Banner is image-only.
@@ -3833,7 +4002,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     # Keep the QR fallback exactly as it is. Apple VAS NFC is additionally
     # gated to a super-admin-enabled MEMBERSHIP trial.
     contactless_token = contactless_member_token(cust_public_id)
-    nfc_trial_active = bool(card_type == 'membership' and program and program.get('nfc_trial_enabled'))
+    nfc_trial_active = bool(program_has_membership(program) and program and program.get('nfc_trial_enabled'))
     if nfc_trial_active and APPLE_NFC_ENABLED and APPLE_NFC_ENCRYPTION_PUBLIC_KEY and contactless_token:
         pass_dict['nfc'] = {
             'message': contactless_token,
@@ -3855,7 +4024,7 @@ def generate_apple_strip_bytes(customer: dict, business: dict, program: dict, wi
     design = wallet_20_design(business, program)
     card_type = (program or {}).get('card_type', 'stamp')
     stamp_goal = int((program or {}).get('stamp_goal') or 8)
-    membership_summary = get_membership_summary(business.get('id'), customer.get('id')) if card_type == 'membership' else None
+    membership_summary = get_membership_summary(business.get('id'), customer.get('id')) if program_has_membership(program) else None
     vip_tier = get_vip_tier(customer, program or {}) if card_type == 'vip' else None
     hero_primary_color = (
         _normalize_hex_color((vip_tier or {}).get('color') or '#111827', '#111827')
@@ -3869,6 +4038,7 @@ def generate_apple_strip_bytes(customer: dict, business: dict, program: dict, wi
         stamp_goal,
         (program or {}).get('description'),
         card_type=card_type,
+        hybrid_loyalty_type=hybrid_loyalty_type(program),
         points_balance=int(customer.get('points_balance') or 0),
         sessions_remaining=int(customer.get('multipass_sessions_remaining') or 0),
         sessions_total=int(customer.get('multipass_total_sessions') or (program or {}).get('multipass_session_count') or 0),
@@ -3876,7 +4046,7 @@ def generate_apple_strip_bytes(customer: dict, business: dict, program: dict, wi
         last_service_name=(membership_summary or {}).get('last_service_name'),
         vip_points=int(customer.get('vip_points') or 0),
         vip_tier_name=(vip_tier or {}).get('name'),
-        membership_status=membership_effective_status(customer) if card_type == 'membership' else None,
+        membership_status=membership_effective_status(customer) if program_has_membership(program) else None,
         membership_expires_at=customer.get('membership_expires_at'),
         secondary_color=(
             _normalize_hex_color((vip_tier or {}).get('color') or design['secondary'], design['secondary'])
@@ -5044,6 +5214,186 @@ def membership_effective_status(customer: dict) -> str:
 def membership_access_allowed(customer: dict) -> bool:
     return membership_effective_status(customer) in ('active', 'lifetime')
 
+
+def normalize_membership_benefits(program: Optional[dict]) -> list:
+    """Normalize structured membership entitlements stored on loyalty_programs.
+
+    Legacy membership_services remain display-only and are not silently turned
+    into limited/redeemable benefits because their intended usage rules are
+    unknown. The card customizer converts them explicitly when an owner edits.
+    """
+    raw = (program or {}).get('membership_benefits') or []
+    if not isinstance(raw, list):
+        return []
+    normalized = []
+    allowed_types = {'free_item', 'percentage_discount', 'fixed_discount', 'custom'}
+    allowed_resets = {'daily', 'weekly', 'monthly', 'membership_cycle', 'never'}
+    for idx, item in enumerate(raw):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get('name') or '').strip()
+        if not name:
+            continue
+        benefit_type = str(item.get('benefit_type') or 'free_item').lower()
+        if benefit_type not in allowed_types:
+            benefit_type = 'custom'
+        reset_period = str(item.get('reset_period') or 'daily').lower()
+        if reset_period not in allowed_resets:
+            reset_period = 'daily'
+        usage_limit = item.get('usage_limit')
+        try:
+            usage_limit = int(usage_limit) if usage_limit is not None else None
+            if usage_limit is not None and usage_limit < 1:
+                usage_limit = None
+        except Exception:
+            usage_limit = None
+        value = item.get('value')
+        try:
+            value = float(value) if value is not None else None
+        except Exception:
+            value = None
+        if benefit_type == 'percentage_discount' and value is not None:
+            value = max(0.0, min(100.0, value))
+        normalized.append({
+            'id': str(item.get('id') or f'benefit-{idx+1}'),
+            'name': name,
+            'benefit_type': benefit_type,
+            'value': value,
+            'description': str(item.get('description') or '').strip() or None,
+            'usage_limit': usage_limit,
+            'reset_period': reset_period,
+            'active': item.get('active') is not False,
+        })
+    return normalized
+
+
+def _membership_cycle_started_at(business_id: int, customer_id: int, customer: dict) -> datetime:
+    """Best known start for the current membership entitlement cycle."""
+    try:
+        rows = (
+            supabase.table('membership_history')
+            .select('action,created_at')
+            .eq('business_id', business_id)
+            .eq('customer_id', customer_id)
+            .order('created_at', desc=True)
+            .limit(20)
+            .execute()
+        ).data or []
+        for row in rows:
+            if str(row.get('action') or '').lower() in (
+                'activate', 'renew', 'reactivate', 'lifetime', 'auto_activate_on_join'
+            ):
+                dt = _parse_iso_datetime(row.get('created_at'))
+                if dt:
+                    return dt
+    except Exception:
+        pass
+    raw = customer.get('membership_start_date') or customer.get('created_at')
+    dt = _parse_iso_datetime(raw)
+    return dt or datetime.now(timezone.utc)
+
+
+def _parse_iso_datetime(value) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        text = str(value).strip().replace('Z', '+00:00')
+        # Date-only values represent midnight Manila for membership semantics.
+        if len(text) == 10:
+            local = datetime.strptime(text, '%Y-%m-%d').replace(tzinfo=ZoneInfo('Asia/Manila'))
+            return local.astimezone(timezone.utc)
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _benefit_window(benefit: dict, business_id: int, customer_id: int, customer: dict):
+    """Return (window_start_utc, window_end_utc, next_available_iso)."""
+    reset = benefit.get('reset_period') or 'daily'
+    now_local = datetime.now(ZoneInfo('Asia/Manila'))
+    start_local = None
+    end_local = None
+    if reset == 'daily':
+        start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_local = start_local + timedelta(days=1)
+    elif reset == 'weekly':
+        start_local = (now_local - timedelta(days=now_local.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+        end_local = start_local + timedelta(days=7)
+    elif reset == 'monthly':
+        start_local = now_local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if start_local.month == 12:
+            end_local = start_local.replace(year=start_local.year + 1, month=1)
+        else:
+            end_local = start_local.replace(month=start_local.month + 1)
+    elif reset == 'membership_cycle':
+        start_utc = _membership_cycle_started_at(business_id, customer_id, customer)
+        expiry = customer.get('membership_expires_at')
+        end_utc = None
+        if expiry:
+            try:
+                # Membership stays valid through the expiry date, so the window
+                # closes at midnight after it in Manila.
+                expiry_local = datetime.strptime(str(expiry)[:10], '%Y-%m-%d').replace(tzinfo=ZoneInfo('Asia/Manila'))
+                end_utc = (expiry_local + timedelta(days=1)).astimezone(timezone.utc)
+            except Exception:
+                pass
+        return start_utc, end_utc, end_utc.isoformat() if end_utc else None
+    elif reset == 'never':
+        return None, None, None
+    start_utc = start_local.astimezone(timezone.utc) if start_local else None
+    end_utc = end_local.astimezone(timezone.utc) if end_local else None
+    return start_utc, end_utc, end_utc.isoformat() if end_utc else None
+
+
+def get_membership_benefit_statuses(business: dict, customer: dict, program: dict) -> list:
+    benefits = normalize_membership_benefits(program)
+    access = membership_access_allowed(customer)
+    statuses = []
+    for benefit in benefits:
+        used = 0
+        start_utc, end_utc, next_available_at = _benefit_window(
+            benefit, business.get('id'), customer.get('id'), customer
+        )
+        try:
+            q = (
+                supabase.table('membership_benefit_redemptions')
+                .select('quantity')
+                .eq('business_id', business.get('id'))
+                .eq('customer_id', customer.get('id'))
+                .eq('benefit_id', benefit.get('id'))
+            )
+            if start_utc:
+                q = q.gte('redeemed_at', start_utc.isoformat())
+            if end_utc:
+                q = q.lt('redeemed_at', end_utc.isoformat())
+            rows = q.execute().data or []
+            used = sum(max(1, int(r.get('quantity') or 1)) for r in rows)
+        except Exception as e:
+            print(f'MEMBERSHIP BENEFIT STATUS error: {e}')
+        limit = benefit.get('usage_limit')
+        remaining = None if limit is None else max(0, int(limit) - used)
+        available = bool(access and benefit.get('active') and (remaining is None or remaining > 0))
+        reason = None
+        if not access:
+            reason = f"Membership is {membership_effective_status(customer)}"
+        elif not benefit.get('active'):
+            reason = 'Benefit is inactive'
+        elif remaining == 0:
+            reason = 'Usage limit reached'
+        statuses.append({
+            **benefit,
+            'used_in_window': used,
+            'remaining_in_window': remaining,
+            'available': available,
+            'unavailable_reason': reason,
+            'next_available_at': next_available_at if (remaining == 0 and benefit.get('reset_period') != 'never') else None,
+        })
+    return statuses
+
+
 def add_days_to_date(date_value: Optional[str], days: int) -> str:
     base = datetime.utcnow().date()
     if date_value:
@@ -5144,7 +5494,7 @@ def format_activity_date(value) -> str:
     except Exception:
         return s[:10] or s
 
-def get_recent_activity(business_id: int, customer_id: int, card_type: str, limit: int = 15) -> List[tuple]:
+def get_recent_activity(business_id: int, customer_id: int, card_type: str, limit: int = 15, program: Optional[dict] = None) -> List[tuple]:
     """Best-effort per-customer movement log, newest first, pulled from
     whichever event table this card type actually writes to (see
     log_stamp_event/log_points_event/log_multipass_event/log_vip_event/
@@ -5154,6 +5504,19 @@ def get_recent_activity(business_id: int, customer_id: int, card_type: str, limi
     sorted/trimmed to `limit`. Never raises - a query failure (including a
     table not existing yet) just means no activity section, same tradeoff
     as get_membership_summary."""
+    # Hybrid merges the selected loyalty activity with membership visits into
+    # one chronological history on the same Wallet card.
+    if card_type == 'hybrid':
+        loyalty_entries = get_recent_activity(
+            business_id, customer_id, effective_loyalty_type(program), limit=limit, program=program
+        )
+        membership_entries = get_recent_activity(
+            business_id, customer_id, 'membership', limit=limit, program=program
+        )
+        combined = loyalty_entries + membership_entries
+        combined.sort(key=lambda item: str(item[0] or ''), reverse=True)
+        return combined[:limit]
+
     entries = []
     try:
         if card_type == 'stamp':
@@ -5222,6 +5585,19 @@ def get_recent_activity(business_id: int, customer_id: int, card_type: str, limi
                 if r.get('note'):
                     desc += f" — {r['note']}"
                 entries.append((r.get('service_date'), desc))
+            try:
+                benefit_rows = (supabase.table('membership_benefit_redemptions')
+                        .select('redeemed_at,benefit_name,quantity')
+                        .eq('business_id', business_id).eq('customer_id', customer_id)
+                        .order('redeemed_at', desc=True).limit(limit).execute().data or [])
+                for r in benefit_rows:
+                    qty = int(r.get('quantity') or 1)
+                    desc = f"{r.get('benefit_name') or 'Membership benefit'} redeemed"
+                    if qty > 1:
+                        desc += f" ×{qty}"
+                    entries.append((r.get('redeemed_at'), desc))
+            except Exception:
+                pass
     except Exception as e:
         print(f"ACTIVITY LOG error: {e}")
         return []
@@ -5320,7 +5696,7 @@ def _api_limit_for_path(path: str, method: str):
     if any(token in p for token in (
         "/stamp", "/points-sale", "/points-redeem", "/vip-sale",
         "/vip-adjust", "/multipass/issue", "/multipass/use",
-        "/membership/action", "/membership/note",
+        "/membership/action", "/membership/note", "/membership-benefit/redeem",
     )):
         return "transaction", API_TRANSACTION_PER_MINUTE
     if p.startswith("/api/"):
@@ -6650,7 +7026,7 @@ async def admin_get_business(public_id: str, _: bool = Depends(require_admin)):
         summary["redemptions_30d"] = redemptions_res.count or 0
     except Exception:
         summary["redemptions_30d"] = 0
-    if summary.get("card_type") == 'points':
+    if effective_loyalty_type(program) == 'points':
         try:
             since = (datetime.utcnow() - timedelta(days=30)).isoformat()
             pe_res = supabase.table("points_events").select("points_earned").eq("business_id", business.get('id')).gte("created_at", since).execute()
@@ -6668,8 +7044,8 @@ async def admin_get_business(public_id: str, _: bool = Depends(require_admin)):
             summary["sessions_used_30d"] = 0
     summary["loyalty_program"] = program
     summary["nfc_trial"] = {
-        'enabled': bool(program and program.get('card_type') == 'membership' and program.get('nfc_trial_enabled')),
-        'eligible': bool(program and program.get('card_type') == 'membership'),
+        'enabled': bool(program_has_membership(program) and program.get('nfc_trial_enabled')),
+        'eligible': bool(program_has_membership(program)),
         'token_secret_configured': bool(NFC_TOKEN_SECRET),
         'google_smart_tap_configured': bool(GOOGLE_SMART_TAP_ENABLED and GOOGLE_SMART_TAP_REDEMPTION_ISSUER_ID),
         'apple_nfc_configured': bool(APPLE_NFC_ENABLED and APPLE_NFC_ENCRYPTION_PUBLIC_KEY),
@@ -6681,7 +7057,7 @@ async def admin_set_nfc_trial(public_id: str, update: AdminNfcTrialUpdate, backg
     """Super-admin-only switch for the first NFC membership pilot.
 
     The flag lives on loyalty_programs, not businesses, so NFC is attached to
-    the active card program. It cannot be enabled for stamp/points/VIP/etc.
+    the active card program. It can be enabled for a standalone Membership card or a Hybrid card, because both include the membership engine.
     """
     business = safe_get_business(public_id)
     if not business:
@@ -6689,8 +7065,8 @@ async def admin_set_nfc_trial(public_id: str, update: AdminNfcTrialUpdate, backg
     program = safe_get_loyalty_program(business.get('id'))
     if not program:
         raise HTTPException(status_code=400, detail="Create a loyalty program before enabling NFC")
-    if update.enabled and program.get('card_type') != 'membership':
-        raise HTTPException(status_code=400, detail="NFC trial can only be enabled for a membership card")
+    if update.enabled and not program_has_membership(program):
+        raise HTTPException(status_code=400, detail="NFC trial can only be enabled for a Membership or Hybrid card")
 
     try:
         supabase.table('loyalty_programs').update({
@@ -7764,11 +8140,11 @@ async def get_customer_api(public_id: str, response: Response):
     program = safe_get_loyalty_program(customer.get('business_id')) if business else None
     current_card_type = (
         program.get('card_type')
-        if program and program.get('card_type') in ('stamp', 'points', 'membership', 'vip', 'multipass')
+        if program and program.get('card_type') in ('stamp', 'points', 'membership', 'vip', 'multipass', 'hybrid')
         else None
     )
 
-    if program and program.get('card_type') == 'membership':
+    if program and program_has_membership(program):
         customer['membership_effective_status'] = membership_effective_status(customer)
         membership_summary = get_membership_summary(customer.get('business_id'), customer.get('id'))
         customer['membership_visit_count'] = membership_summary.get('total_visits', 0)
@@ -7832,7 +8208,7 @@ async def get_customers(public_id: str):
         for c in customers:
             c.setdefault('last_stamp_at', None)
 
-    if program and program.get('card_type') == 'membership':
+    if program and program_has_membership(program):
         for c in customers:
             c['membership_effective_status'] = membership_effective_status(c)
             membership_summary = get_membership_summary(business.get('id'), c.get('id'))
@@ -8177,7 +8553,8 @@ async def get_branch_stamp_counts(public_id: str, authorization: str = Header(de
         # doesn't need a second shape to handle.
         program = safe_get_loyalty_program(business.get("id"))
         card_type = program.get('card_type', 'stamp') if program else 'stamp'
-        if card_type == 'points':
+        loyalty_type = effective_loyalty_type(program)
+        if loyalty_type == 'points':
             activity_table = "points_events"
         elif card_type == 'multipass':
             activity_table = "multipass_events"
@@ -8511,6 +8888,7 @@ async def get_analytics(public_id: str, range: str = '30d'):
 
     program = safe_get_loyalty_program(business_id)
     card_type = program.get('card_type', 'stamp') if program else 'stamp'
+    loyalty_type = effective_loyalty_type(program)
     # Points-card businesses never generate stamp_events (add_stamp rejects
     # them - see the card_type guard there), so all "activity" metrics below
     # - active members, trend charts, peak-activity heatmap, per-customer
@@ -8533,7 +8911,7 @@ async def get_analytics(public_id: str, range: str = '30d'):
     # multipass businesses.
     multipass_completed_events = [e for e in multipass_used_events if (e.get('sessions_remaining') or 0) <= 0]
 
-    if card_type == 'points':
+    if loyalty_type == 'points':
         activity_events = points_events
     elif card_type == 'multipass':
         activity_events = multipass_used_events
@@ -8588,11 +8966,13 @@ async def get_analytics(public_id: str, range: str = '30d'):
 
     adoption_rate = round((active_members / total_customers) * 100, 1) if total_customers else 0
 
-    total_points_earned = sum(e.get('points_earned', 0) or 0 for e in stamps_period) if card_type == 'points' else None
-    total_points_earned_prev = sum(e.get('points_earned', 0) or 0 for e in stamps_prev) if card_type == 'points' else None
+    total_points_earned = sum(e.get('points_earned', 0) or 0 for e in stamps_period) if loyalty_type == 'points' else None
+    total_points_earned_prev = sum(e.get('points_earned', 0) or 0 for e in stamps_prev) if loyalty_type == 'points' else None
 
     overview = {
         "card_type": card_type,
+        "hybrid_loyalty_type": hybrid_loyalty_type(program) if card_type == 'hybrid' else None,
+        "effective_loyalty_type": loyalty_type,
         "total_customers": total_customers,
         "customer_change": _pct_change(new_customers, new_customers_prev),
         "new_customers": new_customers,
@@ -8606,7 +8986,7 @@ async def get_analytics(public_id: str, range: str = '30d'):
         "avg_change": _pct_change(avg_stamps, avg_stamps_prev),
         "adoption_rate": adoption_rate,
         "total_points_earned": total_points_earned,
-        "points_change": _pct_change(total_points_earned, total_points_earned_prev) if card_type == 'points' else None,
+        "points_change": _pct_change(total_points_earned, total_points_earned_prev) if loyalty_type == 'points' else None,
     }
 
     trends = {
@@ -8630,7 +9010,7 @@ async def get_analytics(public_id: str, range: str = '30d'):
             for c in top_customers if _sessions_used(c) > 0
         ]
     else:
-        top_sort_field = 'points_balance' if card_type == 'points' else 'stamp_count'
+        top_sort_field = 'points_balance' if loyalty_type == 'points' else 'stamp_count'
         top_customers = sorted(customers, key=lambda c: c.get(top_sort_field, 0), reverse=True)[:5]
         top_customers_out = [
             {"name": c.get("name") or "Customer", "stamps": c.get(top_sort_field, 0), "metric": top_sort_field}
@@ -8641,7 +9021,7 @@ async def get_analytics(public_id: str, range: str = '30d'):
     retention_rate = round((len(returning) / len(active_ids_prev)) * 100, 1) if active_ids_prev else 0
 
     thirty_days_ago = now - timedelta(days=30)
-    if card_type == 'points':
+    if loyalty_type == 'points':
         # "At risk" for a points card is a customer sitting on an unspent
         # balance who hasn't earned or redeemed anything in 30+ days -
         # stamp_count doesn't exist for these customers, so gate on
@@ -8755,7 +9135,7 @@ async def get_analytics(public_id: str, range: str = '30d'):
     # and redemption events. For points cards there's no single goal, so the
     # closest equivalent is "can currently afford at least one prize" (using
     # the cheapest configured prize), plus redemptions this period.
-    if card_type == 'points':
+    if loyalty_type == 'points':
         prize_costs = [p.get('points_cost', 0) for p in (program.get('points_prizes') or [])]
         cheapest_prize_cost = min(prize_costs) if prize_costs else None
         currently_unlocked = (
@@ -8788,7 +9168,7 @@ async def get_analytics(public_id: str, range: str = '30d'):
     # are different: every points_events row already stores the real sale
     # amount (amount_spent_pesos) via log_points_event, so revenue for those
     # businesses is genuinely trackable.
-    if card_type == 'points':
+    if loyalty_type == 'points':
         revenue_period = sum(e.get('amount_spent_pesos', 0) or 0 for e in stamps_period)
         revenue_prev = sum(e.get('amount_spent_pesos', 0) or 0 for e in stamps_prev)
         transaction_count = len(stamps_period)
@@ -8832,6 +9212,8 @@ async def get_loyalty_config(public_id: str, response: Response):
     if not program:
         return {
             "card_type": "stamp",
+            "hybrid_loyalty_type": "points",
+            "subscription_enrollment_mode": "manual",
             "stamp_goal": 8,
             "reward_name": "Free Service",
             "stamp_rewards": [{"id": "legacy-final", "stamps": 8, "reward_name": "Free Service"}],
@@ -8853,7 +9235,9 @@ async def get_loyalty_config(public_id: str, response: Response):
             "points_amount_pesos": 100,
             "points_cap_limit": None,
             "points_prizes": [],
+            "membership_name": None,
             "membership_services": [],
+            "membership_benefits": [],
             "membership_duration_days": 30,
             "membership_price": 0,
             "membership_terms": None,
@@ -8894,7 +9278,7 @@ async def get_cashier_program(public_id: str, response: Response):
         )
 
     card_type = program.get("card_type")
-    allowed = ("stamp", "points", "membership", "vip", "multipass")
+    allowed = ("stamp", "points", "membership", "vip", "multipass", "hybrid")
     if card_type not in allowed:
         raise HTTPException(
             status_code=500,
@@ -8916,6 +9300,7 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
     data = {
         'business_id': business.get('id'),
         'card_type': config.card_type,
+        'hybrid_loyalty_type': config.hybrid_loyalty_type,
         'stamp_goal': config.stamp_goal,
         'reward_name': config.reward_name,
         'stamp_once_per_day': bool(config.stamp_once_per_day),
@@ -8930,7 +9315,7 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
         'updated_at': datetime.utcnow().isoformat(),
     }
 
-    if config.card_type == 'stamp':
+    if config.card_type == 'stamp' or (config.card_type == 'hybrid' and config.hybrid_loyalty_type == 'stamp'):
         milestones = []
         seen = set()
         for item in (config.stamp_rewards or []):
@@ -8963,7 +9348,7 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
         data['card_name'] = config.card_name
     if config.description is not None:
         data['description'] = config.description
-    if config.card_type == 'points':
+    if config.card_type == 'points' or (config.card_type == 'hybrid' and config.hybrid_loyalty_type == 'points'):
         data['points_per_amount'] = config.points_per_amount
         data['points_amount_pesos'] = config.points_amount_pesos
         data['points_cap_limit'] = config.points_cap_limit
@@ -8998,8 +9383,32 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
                 'active': t.get('active') is not False,
             })
         data['vip_tiers'] = tiers
-    if config.card_type == 'membership':
-        if config.membership_services is not None:
+    if config.card_type in ('membership', 'hybrid'):
+        if config.membership_name is not None:
+            data['membership_name'] = (config.membership_name or '').strip() or None
+        if config.card_type == 'hybrid' and config.subscription_enrollment_mode is not None:
+            data['subscription_enrollment_mode'] = config.subscription_enrollment_mode
+        if config.membership_benefits is not None:
+            benefits = []
+            for item in config.membership_benefits:
+                benefit_type = item.benefit_type
+                value = item.value
+                if benefit_type == 'percentage_discount' and value is not None:
+                    value = max(0, min(100, float(value)))
+                benefits.append({
+                    'id': item.id or uuid.uuid4().hex[:12],
+                    'name': item.name.strip(),
+                    'benefit_type': benefit_type,
+                    'value': value,
+                    'description': (item.description or '').strip() or None,
+                    'usage_limit': item.usage_limit,
+                    'reset_period': item.reset_period,
+                    'active': bool(item.active),
+                })
+            data['membership_benefits'] = benefits
+            # Keep legacy display names synchronized for native Wallet/backward compatibility.
+            data['membership_services'] = [b['name'] for b in benefits]
+        elif config.membership_services is not None:
             data['membership_services'] = [s.strip() for s in config.membership_services if s and s.strip()]
         data['membership_duration_days'] = config.membership_duration_days or 30
         data['membership_price'] = config.membership_price or 0
@@ -11094,7 +11503,7 @@ async def resolve_nfc_member(public_id: str, req: NfcResolveRequest, authorizati
         raise HTTPException(status_code=404, detail="Business not found")
 
     program = safe_get_loyalty_program(business.get('id'))
-    if not program or program.get('card_type') != 'membership':
+    if not program or not program_has_membership(program):
         raise HTTPException(status_code=403, detail="NFC trial is available only for membership cards")
     if not bool(program.get('nfc_trial_enabled')):
         raise HTTPException(status_code=403, detail="NFC trial is not enabled for this membership card")
@@ -11573,8 +11982,8 @@ async def add_stamp(public_id: str, req: StampRequest, background_tasks: Backgro
             raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
 
     program = safe_get_loyalty_program(business.get('id'))
-    if program and program.get('card_type') == 'points':
-        raise HTTPException(status_code=400, detail="This business is on a points card - use /points-sale instead")
+    if program and effective_loyalty_type(program) != 'stamp':
+        raise HTTPException(status_code=400, detail="This card does not use stamps. Use its configured loyalty action instead.")
 
     rewards = get_stamp_rewards(program)
     goal = int(rewards[-1]['stamps'])
@@ -11735,7 +12144,7 @@ async def adjust_stamp(public_id: str, req: StampAdjustRequest, background_tasks
         branch_id = staff_res.data[0].get('branch_id')
 
     program = safe_get_loyalty_program(business.get('id'))
-    if program and program.get('card_type') != 'stamp':
+    if program and effective_loyalty_type(program) != 'stamp':
         raise HTTPException(status_code=400, detail="Stamp adjustments are only available for Stamp Cards")
 
     old_count = int(customer.get('stamp_count') or 0)
@@ -11914,7 +12323,7 @@ async def add_points_sale(public_id: str, req: PointsSaleRequest, background_tas
     if previous_response is not None:
         return previous_response
     program = safe_get_loyalty_program(business.get('id'))
-    if not program or program.get('card_type') != 'points':
+    if not program or effective_loyalty_type(program) != 'points':
         raise HTTPException(status_code=400, detail="This business is not on a points card - use /stamp instead")
 
     sale_staff_id = None
@@ -12069,7 +12478,7 @@ async def redeem_points_prize(public_id: str, req: PointsRedeemRequest, backgrou
     if previous_response is not None:
         return previous_response
     program = safe_get_loyalty_program(business.get('id'))
-    if not program or program.get('card_type') != 'points':
+    if not program or effective_loyalty_type(program) != 'points':
         raise HTTPException(status_code=400, detail="This business is not on a points card")
 
     prize = next((p for p in (program.get('points_prizes') or []) if p.get('id') == req.prize_id), None)
@@ -12342,6 +12751,168 @@ async def use_multipass_session(public_id: str, req: MultipassUseRequest, backgr
     return response_payload
 
 
+@app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/membership-benefits")
+async def get_customer_membership_benefits(public_id: str, customer_public_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    customer = safe_get_customer(customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail='Customer not found for this business')
+    program = safe_get_loyalty_program(business.get('id'))
+    if not program or not program_has_membership(program):
+        raise HTTPException(status_code=400, detail='This business is not using membership benefits')
+    return {
+        'membership_name': program.get('membership_name') or program.get('card_name') or 'Membership',
+        'membership_status': membership_effective_status(customer),
+        'membership_expires_at': customer.get('membership_expires_at'),
+        'benefits': get_membership_benefit_statuses(business, customer, program),
+    }
+
+
+@app.post("/api/v1/business/{public_id}/membership-benefit/redeem")
+async def redeem_membership_benefit(
+    public_id: str,
+    req: MembershipBenefitRedeemRequest,
+    background_tasks: BackgroundTasks,
+    authorization: str = Header(default=''),
+    x_idempotency_key: Optional[str] = Header(default=None),
+):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    customer = safe_get_customer(req.customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail='Customer not found for this business')
+    program = safe_get_loyalty_program(business.get('id'))
+    if not program or not program_has_membership(program):
+        raise HTTPException(status_code=400, detail='This business is not using membership benefits')
+    if not membership_access_allowed(customer):
+        raise HTTPException(status_code=400, detail=f"Membership is {membership_effective_status(customer)}")
+
+    benefits = normalize_membership_benefits(program)
+    benefit = next((b for b in benefits if b.get('id') == req.benefit_id), None)
+    if not benefit:
+        raise HTTPException(status_code=404, detail='Membership benefit not found')
+    if not benefit.get('active'):
+        raise HTTPException(status_code=400, detail='This membership benefit is inactive')
+
+    # Authenticate using the same cashier-session / owner / legacy-PIN pattern
+    # used by stamp, points, multipass and membership visits.
+    redeeming_staff_id = None
+    redeeming_branch_id = None
+    session_claims = get_staff_session_claims(public_id, authorization)
+    if session_claims:
+        redeeming_staff_id = session_claims.get('staff_id')
+        redeeming_branch_id = session_claims.get('branch_id')
+    elif req.as_owner:
+        pass
+    else:
+        if not req.staff_pin:
+            raise HTTPException(status_code=400, detail='Staff PIN required')
+        staff_res = (
+            supabase.table('staff').select('*')
+            .eq('business_id', business.get('id')).eq('pin', req.staff_pin).execute()
+        )
+        if not staff_res.data:
+            raise HTTPException(status_code=403, detail='Invalid staff PIN')
+        redeeming_staff_id = staff_res.data[0].get('id')
+        redeeming_branch_id = staff_res.data[0].get('branch_id')
+
+    # Safe retry handling: the cashier sends a fresh key for each deliberate
+    # button tap. A network retry with the same key returns the first result.
+    if x_idempotency_key:
+        try:
+            prior = (
+                supabase.table('membership_benefit_redemptions').select('*')
+                .eq('business_id', business.get('id'))
+                .eq('idempotency_key', x_idempotency_key)
+                .limit(1).execute()
+            ).data or []
+            if prior:
+                return {
+                    'message': 'Benefit already redeemed', 'duplicate': True,
+                    'redemption': prior[0],
+                    'benefits': get_membership_benefit_statuses(business, customer, program),
+                }
+        except Exception:
+            pass
+
+    current = next(
+        (x for x in get_membership_benefit_statuses(business, customer, program) if x.get('id') == benefit.get('id')),
+        benefit,
+    )
+    remaining = current.get('remaining_in_window')
+    if remaining is not None and req.quantity > remaining:
+        detail = 'Benefit already used for this period' if remaining <= 0 else f'Only {remaining} use(s) remaining for this period'
+        raise HTTPException(status_code=400, detail=detail)
+
+    row = {
+        'business_id': business.get('id'),
+        'customer_id': customer.get('id'),
+        'benefit_id': benefit.get('id'),
+        'benefit_name': benefit.get('name'),
+        'benefit_type': benefit.get('benefit_type'),
+        'benefit_value': benefit.get('value'),
+        'quantity': req.quantity,
+        'staff_id': redeeming_staff_id,
+        'branch_id': redeeming_branch_id,
+        'note': (req.note or '').strip() or None,
+        'idempotency_key': x_idempotency_key,
+        'redeemed_at': datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        result = supabase.table('membership_benefit_redemptions').insert(row).execute()
+        inserted = (result.data or [row])[0]
+    except Exception as e:
+        msg = str(e)
+        if x_idempotency_key and ('duplicate' in msg.lower() or 'unique' in msg.lower()):
+            prior = (
+                supabase.table('membership_benefit_redemptions').select('*')
+                .eq('business_id', business.get('id')).eq('idempotency_key', x_idempotency_key)
+                .limit(1).execute()
+            ).data or []
+            if prior:
+                inserted = prior[0]
+            else:
+                raise HTTPException(status_code=500, detail=friendly_db_error(e))
+        else:
+            raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+    background_tasks.add_task(
+        sync_loyalty_wallets_background,
+        dict(customer), dict(business), dict(program),
+        'membership_benefit_redeemed',
+        'Membership benefit used',
+        f"{benefit.get('name')} was redeemed.",
+        f"membership-benefit-{customer.get('id')}-{benefit.get('id')}-{int(datetime.utcnow().timestamp())}",
+    )
+    return {
+        'message': f"{benefit.get('name')} redeemed",
+        'redemption': inserted,
+        'benefits': get_membership_benefit_statuses(business, customer, program),
+    }
+
+
+@app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/membership-benefit-history")
+async def membership_benefit_history(public_id: str, customer_public_id: str):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    customer = safe_get_customer(customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail='Customer not found for this business')
+    try:
+        rows = (
+            supabase.table('membership_benefit_redemptions').select('*')
+            .eq('business_id', business.get('id')).eq('customer_id', customer.get('id'))
+            .order('redeemed_at', desc=True).limit(200).execute()
+        ).data or []
+        return attach_activity_location_names(rows)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+
 @app.post("/api/v1/business/{public_id}/membership/action")
 async def membership_action(public_id: str, req: MembershipActionRequest, background_tasks: BackgroundTasks):
     business = safe_get_business(public_id)
@@ -12351,7 +12922,7 @@ async def membership_action(public_id: str, req: MembershipActionRequest, backgr
     if not customer or customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
     program = safe_get_loyalty_program(business.get('id'))
-    if not program or program.get('card_type') != 'membership':
+    if not program or not program_has_membership(program):
         raise HTTPException(status_code=400, detail="This business is not using a membership card")
 
     old_status = membership_effective_status(customer)
@@ -12793,7 +13364,7 @@ async def add_membership_note(public_id: str, req: MembershipNoteRequest, backgr
     if previous_response is not None:
         return previous_response
     program = safe_get_loyalty_program(business.get('id'))
-    if not program or program.get('card_type') != 'membership':
+    if not program or not program_has_membership(program):
         raise HTTPException(status_code=400, detail="This business is not on a membership card")
     effective_status = membership_effective_status(customer)
     if effective_status not in ('active', 'lifetime'):
@@ -13239,6 +13810,8 @@ async def redeem_reward(public_id: str, req: RedeemRequest, authorization: str =
             raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
 
     program = safe_get_loyalty_program(business.get('id'))
+    if not program or effective_loyalty_type(program) != 'stamp':
+        raise HTTPException(status_code=400, detail="Stamp reward redemption is only available for Stamp cards and Hybrid cards using Stamps")
     rewards = get_stamp_rewards(program)
     available = get_available_stamp_rewards(customer, program)
     if not available:
@@ -13541,7 +14114,7 @@ async def get_customer_hero_image(customer_public_id: str, s: Optional[str] = No
     sessions_total = customer.get('multipass_total_sessions', 0) or (program.get('multipass_session_count', 12) if program else 12)
     membership_summary = (
         get_membership_summary(business.get('id'), customer.get('id'))
-        if card_type == 'membership' else None
+        if program_has_membership(program) else None
     )
 
     design = wallet_20_design(business, program)
@@ -13549,13 +14122,13 @@ async def get_customer_hero_image(customer_public_id: str, s: Optional[str] = No
     rendered_primary_color = (vip_tier or {}).get('color') or design['background']
     png_bytes = generate_personalized_hero_image_bytes(
         rendered_primary_color, reward_name, stamps, stamp_goal, description,
-        card_type=card_type, points_balance=points_balance,
+        card_type=card_type, hybrid_loyalty_type=hybrid_loyalty_type(program), points_balance=points_balance,
         sessions_remaining=sessions_remaining, sessions_total=sessions_total,
         total_visits=(membership_summary['total_visits'] if membership_summary else 0),
         last_service_name=(membership_summary['last_service_name'] if membership_summary else None),
         vip_points=int(customer.get('vip_points') or 0),
         vip_tier_name=(vip_tier or {}).get('name'),
-        membership_status=membership_effective_status(customer) if card_type == 'membership' else None,
+        membership_status=membership_effective_status(customer) if program_has_membership(program) else None,
         membership_expires_at=customer.get('membership_expires_at'),
         secondary_color=design['secondary'],
         wallet_style=design['style'],
@@ -14058,6 +14631,7 @@ async def customer_join_page(business_public_id: str):
         
         primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
         card_type = (program.get('card_type') if program else None) or 'stamp'
+        loyalty_type = effective_loyalty_type(program)
         reward_name = program.get('reward_name', 'Free Service') if program else 'Free Service'
         stamp_goal = int(program.get('stamp_goal', 8) or 8) if program else 8
         card_name = program.get('card_name') if program else None
@@ -14070,7 +14644,7 @@ async def customer_join_page(business_public_id: str):
         earning_rule_html = ''
         earning_rule_text = ''
 
-        if card_type == 'points':
+        if loyalty_type == 'points':
             prizes = [
                 p for p in ((program or {}).get('points_prizes') or [])
                 if isinstance(p, dict) and str(p.get('name') or '').strip()
@@ -14110,7 +14684,7 @@ async def customer_join_page(business_public_id: str):
                     '<p class="earning-rule">' + earning_rule_text + '</p>'
                 )
 
-        elif card_type == 'stamp':
+        elif loyalty_type == 'stamp':
             milestones = [
                 r for r in ((program or {}).get('stamp_rewards') or [])
                 if isinstance(r, dict) and str(r.get('reward_name') or '').strip()
@@ -14133,10 +14707,23 @@ async def customer_join_page(business_public_id: str):
         # settings above, suppress the description only when it is the same
         # sentence, preventing duplicated text on the Join page.
         display_description = description
-        if card_type == 'points' and description and earning_rule_text:
+        if loyalty_type == 'points' and description and earning_rule_text:
             normalize = lambda s: ' '.join(str(s or '').strip().lower().split()).rstrip('.')
             if normalize(description) == normalize(earning_rule_text):
                 display_description = None
+
+        if card_type == 'hybrid':
+            membership_services = (program or {}).get('membership_services') or []
+            membership_duration_days = int((program or {}).get('membership_duration_days') or 30)
+            membership_price = float((program or {}).get('membership_price') or 0)
+            price_text = f'₱{membership_price:,.0f}' if membership_price else 'Membership available'
+            benefit_text = html_lib.escape(str(membership_services[0])) if membership_services else 'Member benefits included'
+            reward_preview_html += (
+                '<div class="reward-preview" style="margin-top:10px">'
+                '<h3>&#9733; Membership + Rewards</h3>'
+                '<p>' + price_text + ' / ' + str(membership_duration_days) + ' days · ' + benefit_text + '</p>'
+                '</div>'
+            )
 
         display_name = card_name if card_name else (biz_name + ' Rewards')
         logo_url = business.get('logo_url')
@@ -14379,6 +14966,17 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
         **card_cycle_signup_fields(program),
     }
 
+    # Hybrid can optionally auto-activate the subscription the moment the
+    # customer joins. Manual is the default/safe mode for paid memberships.
+    if program and program.get('card_type') == 'hybrid' and str(program.get('subscription_enrollment_mode') or 'manual').lower() == 'automatic':
+        duration = int(program.get('membership_duration_days') or 30)
+        today = datetime.now(ZoneInfo('Asia/Manila')).date()
+        customer_data.update({
+            'membership_status': 'active',
+            'membership_start_date': today.isoformat(),
+            'membership_expires_at': (today + timedelta(days=duration)).isoformat(),
+        })
+
     if program and program.get('card_type') == 'multipass':
         session_count = int(program.get('multipass_session_count') or 12)
         validity_days = int(program.get('multipass_validity_days') or 90)
@@ -14395,6 +14993,13 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
             log_multipass_event(
                 business.get('id'), inserted_customer.get('id'), 'issued',
                 inserted_customer.get('multipass_sessions_remaining') or 0,
+            )
+        if (inserted_customer and program and program.get('card_type') == 'hybrid'
+                and str(program.get('subscription_enrollment_mode') or 'manual').lower() == 'automatic'):
+            log_membership_history(
+                business.get('id'), inserted_customer.get('id'), 'auto_activate_on_join',
+                'inactive', 'active', inserted_customer.get('membership_expires_at'),
+                0, 'automatic_enrollment', 'Automatically activated when customer joined',
             )
     except Exception as e:
         error_msg = str(e)
@@ -17753,6 +18358,7 @@ async def customer_wallet_page(customer_public_id: str):
     program = safe_get_loyalty_program(business.get('id')) or {}
     design = wallet_20_design(business, program)
     card_type = program.get('card_type', 'stamp')
+    loyalty_type = effective_loyalty_type(program)
     business_name = business.get('name') or 'LoyaltyTree'
     customer_name = customer.get('name') or 'Member'
     logo_url = program.get('program_logo_url') or business.get('logo_url')
@@ -17766,6 +18372,7 @@ async def customer_wallet_page(customer_public_id: str):
         'membership': 'MEMBERSHIP CARD',
         'multipass': 'MULTIPASS',
         'vip': 'VIP CARD',
+        'hybrid': 'HYBRID CARD',
     }
     card_label = labels.get(card_type, 'LOYALTY CARD')
 
@@ -17774,7 +18381,24 @@ async def customer_wallet_page(customer_public_id: str):
     metric_sub = ''
     details = []
 
-    if card_type == 'points':
+    if card_type == 'hybrid':
+        status = membership_effective_status(customer).upper()
+        expiry = customer.get('membership_expires_at') or ('Lifetime' if status == 'LIFETIME' else '—')
+        if loyalty_type == 'points':
+            points = int(customer.get('points_balance') or 0)
+            metric_label, metric_value, metric_sub = 'POINTS BALANCE', f'{points:,}', 'points'
+        else:
+            goal = int(program.get('stamp_goal') or 8)
+            current = min(int(customer.get('stamp_count') or 0), goal)
+            metric_label, metric_value, metric_sub = 'STAMPS', f'{current} / {goal}', 'stamps'
+        details = [
+            ('Membership', status),
+            ('Active until', expiry),
+        ]
+        services = (program.get('membership_services') or [])
+        if services:
+            details.append(('Next benefit', services[0]))
+    elif card_type == 'points':
         points = int(customer.get('points_balance') or 0)
         metric_label, metric_value, metric_sub = 'POINTS BALANCE', f'{points:,}', 'points'
         details = [('Reward', reward_name)]
@@ -17789,7 +18413,7 @@ async def customer_wallet_page(customer_public_id: str):
         metric_label, metric_value, metric_sub = 'STATUS', status, 'member'
         details = [
             ('Active until', customer.get('membership_expires_at') or ('Lifetime' if status == 'LIFETIME' else '—')),
-            ('Member since', str(customer.get('membership_started_at') or '—')[:10]),
+            ('Member since', str(customer.get('membership_start_date') or '—')[:10]),
             ('Visits', str(int((summary or {}).get('total_visits') or 0))),
         ]
     elif card_type == 'vip':
@@ -18531,8 +19155,23 @@ async def public_business_join_config(public_id: str):
         'business_type': normalize_business_type(business.get('business_type')),
         'category': category,
         'card_type': program.get('card_type', 'stamp'),
+        'hybrid_loyalty_type': hybrid_loyalty_type(program),
         'primary_color': program.get('primary_color') or category['color'],
         'card_name': program.get('card_name'),
+        'description': program.get('description'),
+        'reward_name': program.get('reward_name'),
+        'stamp_goal': program.get('stamp_goal', 8),
+        'stamp_rewards': program.get('stamp_rewards') or [],
+        'points_per_amount': program.get('points_per_amount') or 0,
+        'points_amount_pesos': program.get('points_amount_pesos') or 1,
+        'points_prizes': program.get('points_prizes') or [],
+        'membership_name': program.get('membership_name'),
+        'subscription_enrollment_mode': program.get('subscription_enrollment_mode') or 'manual',
+        'membership_services': program.get('membership_services') or [],
+        'membership_benefits': normalize_membership_benefits(program),
+        'membership_duration_days': program.get('membership_duration_days') or 30,
+        'membership_price': program.get('membership_price') or 0,
+        'membership_terms': program.get('membership_terms'),
     }
 
 @app.get("/api/v1/customer/{customer_public_id}/wallet-pass")
@@ -18551,6 +19190,7 @@ async def get_wallet_pass(customer_public_id: str):
 
     program = safe_get_loyalty_program(business.get('id'))
     card_type = program.get('card_type', 'stamp') if program else 'stamp'
+    loyalty_type = effective_loyalty_type(program)
     stamp_goal = program.get('stamp_goal', 8) if program else 8
     reward_name = program.get('reward_name', 'Free Service') if program else 'Free Service'
     primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
@@ -18563,7 +19203,11 @@ async def get_wallet_pass(customer_public_id: str):
     membership_services = (program.get('membership_services') if program else None) or []
     membership_summary = (
         get_membership_summary(business.get('id'), customer.get('id'))
-        if card_type == 'membership' else None
+        if program_has_membership(program) else None
+    )
+    membership_benefit_statuses = (
+        get_membership_benefit_statuses(business, customer, program)
+        if program_has_membership(program) else []
     )
 
     loyalty_object = build_loyalty_object(customer, business, program)
@@ -18588,7 +19232,7 @@ async def get_wallet_pass(customer_public_id: str):
     print(f"WALLET-PASS: Prepared pass data for customer {customer_public_id}")
 
     contactless_ready = bool(contactless_member_token(customer_public_id))
-    nfc_trial_active = bool(card_type == 'membership' and program and program.get('nfc_trial_enabled'))
+    nfc_trial_active = bool(program_has_membership(program) and program and program.get('nfc_trial_enabled'))
     nfc_status = {
         'trial_enabled': nfc_trial_active,
         'membership_only': True,
@@ -18612,6 +19256,7 @@ async def get_wallet_pass(customer_public_id: str):
             "customer_name": customer.get('name', ''),
             "customer_id": customer_public_id,
             "card_type": card_type,
+            "hybrid_loyalty_type": hybrid_loyalty_type(program),
             "card_name": program.get('card_name') if program else None,
             "description": program.get('description') if program else None,
             "card_expiration_enabled": bool(program.get('card_expiration_enabled')) if program else False,
@@ -18634,10 +19279,14 @@ async def get_wallet_pass(customer_public_id: str):
             "multipass_description": multipass_description,
             "multipass_expires_at": multipass_expires_at,
             "multipass_expired": multipass_expired,
+            "membership_name": (program.get('membership_name') if program else None),
+            "subscription_enrollment_mode": (program.get('subscription_enrollment_mode') if program else 'manual'),
             "membership_services": membership_services,
+            "membership_benefits": normalize_membership_benefits(program),
+            "membership_benefit_statuses": membership_benefit_statuses,
             "membership_status": customer.get('membership_status'),
-            "membership_effective_status": membership_effective_status(customer) if card_type == 'membership' else None,
-            "membership_started_at": customer.get('membership_started_at'),
+            "membership_effective_status": membership_effective_status(customer) if program_has_membership(program) else None,
+            "membership_started_at": customer.get('membership_start_date'),
             "membership_expires_at": customer.get('membership_expires_at'),
             "membership_terms": program.get('membership_terms') if program else None,
             "total_visits": (membership_summary['total_visits'] if membership_summary else 0),
