@@ -21288,64 +21288,99 @@ def _gift_google_object_id(gift: dict) -> str:
     return f"{GOOGLE_WALLET_ISSUER_ID}.{suffix}"
 
 
+_GOOGLE_GIFT_CLASS_READY_CACHE = {}
+_GOOGLE_GIFT_CLASS_READY_TTL_SECONDS = 6 * 60 * 60
+_GOOGLE_GIFT_CLASS_READY_LOCK = Lock()
+
+
 def ensure_google_gift_card_class(business: dict) -> bool:
+    """Ensure the GiftCardClass exists, but keep this network work off the hot path.
+
+    Once a class is confirmed in this Render process, later Add-to-Wallet requests
+    skip OAuth + Google class GET/PATCH calls for six hours. The public gift page
+    also warms this cache in a BackgroundTask before the customer taps Add.
+    """
     if not GOOGLE_WALLET_ISSUER_ID:
         return False
-    access_token = get_google_access_token()
-    if not access_token:
-        return False
+
     class_id = _gift_google_class_id(business)
-    logo_url = business.get('logo_url') or DEFAULT_LOGO_URL
-    body = {
-        'id': class_id,
-        'issuerName': business.get('name') or 'LoyaltyTree',
-        'merchantName': business.get('name') or 'LoyaltyTree',
-        'reviewStatus': 'UNDER_REVIEW',
-        'allowBarcodeRedemption': True,
-        'cardNumberLabel': 'GIFT CARD',
-        # Keep one GiftCardObject tied to the first Google user who saves it.
-        # Google may still sync that pass across that same user's devices.
-        'multipleDevicesAndHoldersAllowedStatus': 'ONE_USER_ALL_DEVICES',
-        'hexBackgroundColor': _gift_brand_color(business),
-    }
-    if logo_url:
-        body['programLogo'] = {
-            'sourceUri': {'uri': logo_url},
-            'contentDescription': {
-                'defaultValue': {'language': 'en-US', 'value': f"{business.get('name') or 'LoyaltyTree'} logo"}
-            },
-        }
-    try:
-        import httpx
-        with httpx.Client(timeout=20) as client:
-            get_res = client.get(
-                f'https://walletobjects.googleapis.com/walletobjects/v1/giftCardClass/{class_id}',
-                headers={'Authorization': f'Bearer {access_token}'},
-            )
-            if get_res.status_code == 200:
-                # Keep branding fresh but don't make a PATCH failure block saving.
-                try:
-                    client.patch(
-                        f'https://walletobjects.googleapis.com/walletobjects/v1/giftCardClass/{class_id}',
-                        headers={'Authorization': f'Bearer {access_token}'}, json=body,
-                    )
-                except Exception:
-                    pass
-                return True
-            if get_res.status_code != 404:
-                print(f"GOOGLE GIFT CLASS GET {get_res.status_code}: {get_res.text[:800]}")
-                return False
-            create = client.post(
-                'https://walletobjects.googleapis.com/walletobjects/v1/giftCardClass',
-                headers={'Authorization': f'Bearer {access_token}'}, json=body,
-            )
-            if create.status_code in (200, 201):
-                return True
-            print(f"GOOGLE GIFT CLASS CREATE {create.status_code}: {create.text[:1200]}")
+    now_mono = time.monotonic()
+    cached_at = _GOOGLE_GIFT_CLASS_READY_CACHE.get(class_id)
+    if cached_at and now_mono - cached_at < _GOOGLE_GIFT_CLASS_READY_TTL_SECONDS:
+        return True
+
+    # Prevent simultaneous scans from causing duplicate Google class checks.
+    with _GOOGLE_GIFT_CLASS_READY_LOCK:
+        now_mono = time.monotonic()
+        cached_at = _GOOGLE_GIFT_CLASS_READY_CACHE.get(class_id)
+        if cached_at and now_mono - cached_at < _GOOGLE_GIFT_CLASS_READY_TTL_SECONDS:
+            return True
+
+        access_token = get_google_access_token()
+        if not access_token:
             return False
-    except Exception as e:
-        print(f"GOOGLE GIFT CLASS error: {e}")
-        return False
+
+        logo_url = business.get('logo_url') or DEFAULT_LOGO_URL
+        body = {
+            'id': class_id,
+            'issuerName': business.get('name') or 'LoyaltyTree',
+            'merchantName': business.get('name') or 'LoyaltyTree',
+            'reviewStatus': 'UNDER_REVIEW',
+            'allowBarcodeRedemption': True,
+            'cardNumberLabel': 'GIFT CARD',
+            # Keep one GiftCardObject tied to the first Google user who saves it.
+            # Google may still sync that pass across that same user's devices.
+            'multipleDevicesAndHoldersAllowedStatus': 'ONE_USER_ALL_DEVICES',
+            'hexBackgroundColor': _gift_brand_color(business),
+        }
+        if logo_url:
+            body['programLogo'] = {
+                'sourceUri': {'uri': logo_url},
+                'contentDescription': {
+                    'defaultValue': {
+                        'language': 'en-US',
+                        'value': f"{business.get('name') or 'LoyaltyTree'} logo",
+                    }
+                },
+            }
+
+        try:
+            import httpx
+            timeout_cfg = httpx.Timeout(8.0, connect=3.0)
+            with httpx.Client(timeout=timeout_cfg) as client:
+                get_res = client.get(
+                    f'https://walletobjects.googleapis.com/walletobjects/v1/giftCardClass/{class_id}',
+                    headers={'Authorization': f'Bearer {access_token}'},
+                )
+                if get_res.status_code == 200:
+                    # Do not PATCH the class during every customer add. Branding
+                    # changes belong to publish/config flows, not the save hot path.
+                    _GOOGLE_GIFT_CLASS_READY_CACHE[class_id] = time.monotonic()
+                    return True
+
+                if get_res.status_code != 404:
+                    print(f"GOOGLE GIFT CLASS GET {get_res.status_code}: {get_res.text[:800]}")
+                    return False
+
+                create = client.post(
+                    'https://walletobjects.googleapis.com/walletobjects/v1/giftCardClass',
+                    headers={'Authorization': f'Bearer {access_token}'},
+                    json=body,
+                )
+                if create.status_code in (200, 201):
+                    _GOOGLE_GIFT_CLASS_READY_CACHE[class_id] = time.monotonic()
+                    return True
+                print(f"GOOGLE GIFT CLASS CREATE {create.status_code}: {create.text[:1200]}")
+                return False
+        except Exception as e:
+            print(f"GOOGLE GIFT CLASS error: {e}")
+            return False
+
+
+def _gift_wallet_cashier_qr_value(gift: dict) -> str:
+    """Wallet QR must be a real URL so external/USB scanners can open Cashier."""
+    gift_id = quote(str(gift.get('public_id') or ''))
+    return f"{BASE_URL.rstrip('/')}/gift-scan/{gift_id}"
 
 
 def build_google_gift_card_object(gift: dict, business: dict) -> dict:
@@ -21353,7 +21388,7 @@ def build_google_gift_card_object(gift: dict, business: dict) -> dict:
     state = 'ACTIVE' if status in GIFT_CARD_ACTIVE_STATUSES else 'INACTIVE'
     # Wallet QR is cashier-only identity data. It must NOT point back to the
     # public claim page. The public/printed QR remains /gift/{public_id}.
-    cashier_qr_value = f"LTGC:{gift.get('public_id')}"
+    cashier_qr_value = _gift_wallet_cashier_qr_value(gift)
     obj = {
         'id': _gift_google_object_id(gift),
         'classId': _gift_google_class_id(business),
@@ -21442,7 +21477,7 @@ def build_gift_card_apple_pass_json(gift: dict, business: dict) -> dict:
     primary_color = _gift_brand_color(business)
     # Same cashier-only token used by Google Wallet. Scanning this QR never
     # claims or redeems by itself; the authenticated CashierApp resolves it.
-    cashier_qr_value = f"LTGC:{gift.get('public_id')}"
+    cashier_qr_value = _gift_wallet_cashier_qr_value(gift)
     if gift.get('gift_type') == 'amount':
         primary_label = 'BALANCE'
         primary_value = f"₱{float(gift.get('remaining_amount') or 0):,.2f}"
@@ -21513,37 +21548,75 @@ def build_gift_card_apple_pass_json(gift: dict, business: dict) -> dict:
     return pass_json
 
 
+_GIFT_APPLE_BRAND_ASSET_CACHE = {}
+_GIFT_APPLE_BRAND_ASSET_CACHE_TTL_SECONDS = 30 * 60
+_GIFT_APPLE_BRAND_ASSET_LOCK = Lock()
+
+
+def _gift_apple_brand_assets(business: dict) -> dict:
+    """Cache expensive logo fetch/resize work shared by every gift pass."""
+    primary = _gift_brand_color(business)
+    logo_url = str(business.get('logo_url') or '')
+    cache_key = (str(business.get('id') or business.get('public_id') or ''), logo_url, primary)
+    now_mono = time.monotonic()
+    cached = _GIFT_APPLE_BRAND_ASSET_CACHE.get(cache_key)
+    if cached and now_mono - cached[0] < _GIFT_APPLE_BRAND_ASSET_CACHE_TTL_SECONDS:
+        return cached[1]
+
+    with _GIFT_APPLE_BRAND_ASSET_LOCK:
+        now_mono = time.monotonic()
+        cached = _GIFT_APPLE_BRAND_ASSET_CACHE.get(cache_key)
+        if cached and now_mono - cached[0] < _GIFT_APPLE_BRAND_ASSET_CACHE_TTL_SECONDS:
+            return cached[1]
+
+        logo_bytes = _fetch_image_bytes(logo_url)
+        icon_87 = apple_icon_from_logo_bytes(logo_bytes, 87) if logo_bytes else None
+        if not icon_87:
+            icon_87 = generate_apple_icon_bytes(primary, business.get('name') or 'Gift', 87)
+        icon_58 = _resize_png_bytes(icon_87, 58, 58)
+        icon_29 = _resize_png_bytes(icon_87, 29, 29)
+
+        logo_480 = apple_logo_from_image_bytes(logo_bytes, 480, 150) if logo_bytes else None
+        if not logo_480:
+            logo_480 = generate_apple_logo_bytes(business.get('name') or 'Gift Card', 480, 150)
+        logo_320 = _resize_png_bytes(logo_480, 320, 100)
+        logo_160 = _resize_png_bytes(logo_480, 160, 50)
+
+        assets = {
+            'icon.png': icon_29,
+            'icon@2x.png': icon_58,
+            'icon@3x.png': icon_87,
+            'logo.png': logo_160,
+            'logo@2x.png': logo_320,
+            'logo@3x.png': logo_480,
+        }
+        _GIFT_APPLE_BRAND_ASSET_CACHE[cache_key] = (time.monotonic(), assets)
+        return assets
+
+
+def _warm_gift_apple_brand_assets(business: dict):
+    try:
+        _gift_apple_brand_assets(dict(business))
+    except Exception as e:
+        print(f"GIFT APPLE WARM warning: {e}")
+
+
 def build_gift_card_pkpass_bytes(gift: dict, business: dict) -> Optional[bytes]:
     if not APPLE_PASS_TYPE_IDENTIFIER or not APPLE_TEAM_IDENTIFIER:
         return None
     if get_apple_pass_credentials() is None:
         return None
-    primary = _gift_brand_color(business)
-    logo_bytes = _fetch_image_bytes(business.get('logo_url'))
-    icon_87 = apple_icon_from_logo_bytes(logo_bytes, 87) if logo_bytes else None
-    if not icon_87:
-        icon_87 = generate_apple_icon_bytes(primary, business.get('name') or 'Gift', 87)
-    icon_58 = _resize_png_bytes(icon_87, 58, 58)
-    icon_29 = _resize_png_bytes(icon_87, 29, 29)
-    logo_480 = apple_logo_from_image_bytes(logo_bytes, 480, 150) if logo_bytes else None
-    if not logo_480:
-        logo_480 = generate_apple_logo_bytes(business.get('name') or 'Gift Card', 480, 150)
-    logo_320 = _resize_png_bytes(logo_480, 320, 100)
-    logo_160 = _resize_png_bytes(logo_480, 160, 50)
+
     files = {
         'pass.json': json.dumps(build_gift_card_apple_pass_json(gift, business)).encode('utf-8'),
-        'icon.png': icon_29,
-        'icon@2x.png': icon_58,
-        'icon@3x.png': icon_87,
-        'logo.png': logo_160,
-        'logo@2x.png': logo_320,
-        'logo@3x.png': logo_480,
+        **_gift_apple_brand_assets(business),
     }
     manifest = {name: hashlib.sha1(content).hexdigest() for name, content in files.items()}
     manifest_bytes = json.dumps(manifest).encode('utf-8')
     signature = sign_pkpass_manifest(manifest_bytes)
     if signature is None:
         return None
+
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_STORED) as zf:
         for name, content in files.items():
@@ -22344,12 +22417,39 @@ def _gift_wallet_error_page(message: str, status_code: int = 400) -> HTMLRespons
     )
 
 
+@app.get('/gift-scan/{gift_public_id}')
+async def gift_wallet_cashier_scan_redirect(gift_public_id: str):
+    """Wallet-only QR entry point.
+
+    It never claims or redeems the card. It only sends the scanner/browser to
+    the authenticated Cashier screen with the correct business + gift queued.
+    """
+    gift = safe_get_gift_card(gift_public_id)
+    if not gift:
+        return _gift_wallet_error_page('Gift Card not found', 404)
+    business = safe_get_business_by_id(gift.get('business_id'))
+    if not business:
+        return _gift_wallet_error_page('Business not found', 404)
+
+    frontend = (FRONTEND_URL or 'https://theloyaltytree.com').rstrip('/')
+    target = (
+        f"{frontend}/scanner"
+        f"?business={quote(str(business.get('public_id') or ''))}"
+        f"&gift={quote(str(gift.get('public_id') or ''))}"
+    )
+    response = RedirectResponse(url=target, status_code=302)
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    return response
+
+
 @app.post('/gift/{gift_public_id}/claim-and-wallet/{platform}')
 async def public_gift_claim_and_wallet(
     gift_public_id: str,
     platform: Literal['google', 'apple'],
     request: Request,
 ):
+    wallet_started_at = time.monotonic()
     gift = safe_get_gift_card(gift_public_id)
     if not gift:
         return _gift_wallet_error_page('Gift Card not found', 404)
@@ -22401,7 +22501,7 @@ async def public_gift_claim_and_wallet(
             response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
             response.headers['Pragma'] = 'no-cache'
             _gift_set_claim_cookie(response, gift_public_id, claim_token)
-            print(f'GIFT CLAIM-WALLET REDIRECT: {gift_public_id} -> Google Wallet')
+            print(f'GIFT CLAIM-WALLET REDIRECT: {gift_public_id} -> Google Wallet {int((time.monotonic()-wallet_started_at)*1000)}ms')
             return response
 
         staged = _gift_staged_wallet_copy(gift, 'apple')
@@ -22421,7 +22521,7 @@ async def public_gift_claim_and_wallet(
             },
         )
         _gift_set_claim_cookie(response, gift_public_id, claim_token)
-        print(f'GIFT CLAIM-WALLET PASS: {gift_public_id} -> Apple Wallet')
+        print(f'GIFT CLAIM-WALLET PASS: {gift_public_id} -> Apple Wallet {int((time.monotonic()-wallet_started_at)*1000)}ms')
         return response
     except HTTPException as e:
         return _gift_wallet_error_page(str(e.detail), e.status_code)
@@ -22431,7 +22531,7 @@ async def public_gift_claim_and_wallet(
 
 
 @app.get('/gift/{gift_public_id}', response_class=HTMLResponse)
-async def public_gift_card_page(gift_public_id: str, request: Request):
+async def public_gift_card_page(gift_public_id: str, request: Request, background_tasks: BackgroundTasks):
     gift = safe_get_gift_card(gift_public_id)
     if not gift:
         return HTMLResponse(
@@ -22454,6 +22554,13 @@ async def public_gift_card_page(gift_public_id: str, request: Request):
     expires = html_lib.escape(str(gift.get('expires_at') or ''))
 
     detected_platform = _gift_platform_from_request(request)
+    # Warm expensive Wallet prerequisites after the HTML response is sent.
+    # This shifts Google class/OAuth and Apple artwork work off the button tap.
+    if detected_platform == 'google':
+        background_tasks.add_task(ensure_google_gift_card_class, dict(business))
+    elif detected_platform == 'apple':
+        background_tasks.add_task(_warm_gift_apple_brand_assets, dict(business))
+
     claim_token = str(request.cookies.get(_gift_claim_cookie_name(gift_public_id)) or '').strip()
     claimant_browser = bool(claim_token and _gift_claim_token_valid(gift, claim_token))
 
@@ -22469,18 +22576,18 @@ async def public_gift_card_page(gift_public_id: str, request: Request):
         if detected_platform:
             label = 'Apple Wallet' if detected_platform == 'apple' else 'Google Wallet'
             btn_class = 'apple' if detected_platform == 'apple' else 'google'
-            action_html = f'''<div class="action"><h3>Claim your Gift Card</h3><p>The first successful claim becomes the only claimant.</p><form method="post" action="/gift/{gift_public_id}/claim-and-wallet/{detected_platform}"><button class="{btn_class}" type="submit">Claim &amp; Add to {label}</button></form><div class="lock">🔒 One Gift Card · one claimant · one Wallet binding</div></div>'''
+            action_html = f'''<div class="action"><h3>Claim your Gift Card</h3><p>The first successful claim becomes the only claimant.</p><form class="wallet-submit-form" method="post" action="/gift/{gift_public_id}/claim-and-wallet/{detected_platform}"><button class="{btn_class}" type="submit">Claim &amp; Add to {label}</button></form><div class="lock">🔒 One Gift Card · one claimant · one Wallet binding</div></div>'''
         else:
-            action_html = f'''<div class="action"><h3>Claim your Gift Card</h3><p>Choose the Wallet for this Gift Card. The first platform selected becomes its Wallet binding.</p><form method="post" action="/gift/{gift_public_id}/claim-and-wallet/apple"><button class="apple" type="submit">Claim &amp; Add to Apple Wallet</button></form><form method="post" action="/gift/{gift_public_id}/claim-and-wallet/google"><button class="google" type="submit">Claim &amp; Add to Google Wallet</button></form><div class="lock">🔒 One Gift Card · one claimant · one Wallet binding</div></div>'''
+            action_html = f'''<div class="action"><h3>Claim your Gift Card</h3><p>Choose the Wallet for this Gift Card. The first platform selected becomes its Wallet binding.</p><form class="wallet-submit-form" method="post" action="/gift/{gift_public_id}/claim-and-wallet/apple"><button class="apple" type="submit">Claim &amp; Add to Apple Wallet</button></form><form class="wallet-submit-form" method="post" action="/gift/{gift_public_id}/claim-and-wallet/google"><button class="google" type="submit">Claim &amp; Add to Google Wallet</button></form><div class="lock">🔒 One Gift Card · one claimant · one Wallet binding</div></div>'''
     elif status in ('claimed_pending_wallet', 'active_claimed', 'partially_redeemed'):
         if claimant_browser:
             bound = str(gift.get('wallet_platform') or detected_platform or '')
             if bound in ('apple', 'google'):
                 label = 'Apple Wallet' if bound == 'apple' else 'Google Wallet'
                 btn_class = 'apple' if bound == 'apple' else 'google'
-                action_html = f'''<div class="action"><h3>Your Gift Card</h3><p>This browser is recognized as the original claimant.</p><form method="post" action="/gift/{gift_public_id}/claim-and-wallet/{bound}"><button class="{btn_class}" type="submit">Open / Re-add to {label}</button></form><div class="lock">🔒 Bound to the original claimant</div></div>'''
+                action_html = f'''<div class="action"><h3>Your Gift Card</h3><p>This browser is recognized as the original claimant.</p><form class="wallet-submit-form" method="post" action="/gift/{gift_public_id}/claim-and-wallet/{bound}"><button class="{btn_class}" type="submit">Open / Re-add to {label}</button></form><div class="lock">🔒 Bound to the original claimant</div></div>'''
             else:
-                action_html = f'''<div class="action"><h3>Finish adding to Wallet</h3><form method="post" action="/gift/{gift_public_id}/claim-and-wallet/apple"><button class="apple" type="submit">Add to Apple Wallet</button></form><form method="post" action="/gift/{gift_public_id}/claim-and-wallet/google"><button class="google" type="submit">Add to Google Wallet</button></form></div>'''
+                action_html = f'''<div class="action"><h3>Finish adding to Wallet</h3><form class="wallet-submit-form" method="post" action="/gift/{gift_public_id}/claim-and-wallet/apple"><button class="apple" type="submit">Add to Apple Wallet</button></form><form class="wallet-submit-form" method="post" action="/gift/{gift_public_id}/claim-and-wallet/google"><button class="google" type="submit">Add to Google Wallet</button></form></div>'''
         else:
             action_html = '''<div class="notice"><strong>Gift Card already claimed</strong><p>This scan is not from the browser that originally claimed the Gift Card, so Wallet access remains locked.</p></div>'''
     else:
@@ -22499,6 +22606,23 @@ async def public_gift_card_page(gift_public_id: str, request: Request):
 <section class="card"><div class="eyebrow">GIFT CARD</div><h1>{name}</h1><div class="label">Remaining</div><div class="balance">{remaining}</div><div class="grid"><div class="tile"><div class="label">Original</div><strong>{original}</strong></div><div class="tile"><div class="label">Status</div><strong>{status_label}</strong></div><div class="tile"><div class="label">Card Number</div><strong>{code}</strong></div><div class="tile"><div class="label">Valid Until</div><strong>{valid_until}</strong></div></div>{message_html}</section>
 {action_html}
 <div class="panel"><strong>How to use</strong><p>Claim the Gift Card, save it to Wallet, then present the Wallet QR to an authorized cashier. The balance remains server-side, so copying the QR never creates a second balance.</p></div>
+<script>
+document.querySelectorAll('.wallet-submit-form').forEach(function(form){{
+  form.addEventListener('submit', function(ev){{
+    if(form.dataset.submitted === '1'){{
+      ev.preventDefault();
+      return false;
+    }}
+    form.dataset.submitted = '1';
+    var btn = form.querySelector('button[type="submit"]');
+    if(btn){{
+      btn.disabled = true;
+      btn.dataset.oldText = btn.textContent;
+      btn.textContent = 'Opening Wallet…';
+    }}
+  }});
+}});
+</script>
 </div></body></html>''')
 
 

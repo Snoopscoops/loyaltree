@@ -20,7 +20,9 @@ function CashierApp({ API_BASE }) {
   const initialQuery = new URLSearchParams(location.search)
   const pendingNfcToken = initialQuery.get('nfc') || ''
   const nfcBusinessSlug = initialQuery.get('business') || ''
+  const pendingGiftId = initialQuery.get('gift') || ''
   const hasPendingNfcTap = !!pendingNfcToken
+  const hasPendingGiftScan = !!pendingGiftId
 
   const [scanResult, setScanResult] = useState(null)
   const [businessSlug, setBusinessSlug] = useState(ownerState?.businessSlug || nfcBusinessSlug || '')
@@ -45,7 +47,7 @@ function CashierApp({ API_BASE }) {
   const [saleAmount, setSaleAmount] = useState('')
   const [vipSaleAmount, setVipSaleAmount] = useState('')
   const [customSessionCount, setCustomSessionCount] = useState('')
-  const [entrySource, setEntrySource] = useState(hasPendingNfcTap ? 'nfc' : 'qr')
+  const [entrySource, setEntrySource] = useState(hasPendingGiftScan ? 'gift_qr' : (hasPendingNfcTap ? 'nfc' : 'qr'))
 
   useEffect(() => {
     if (!businessSlug || !staffName || (!isOwner && !staffPin && !sessionToken)) return
@@ -751,6 +753,103 @@ function CashierApp({ API_BASE }) {
     setLoading(false)
   }
 
+  // Wallet QR URLs open /scanner?business=<slug>&gift=<gift-id>.
+  // If the cashier is already authenticated, load it immediately. If not,
+  // the login form is pre-filled with the correct business and this effect
+  // continues automatically after authentication.
+  useEffect(() => {
+    if (!pendingGiftId || giftCardData || customerData || loading) return
+    if (!businessSlug || !staffName || !sessionToken) return
+
+    const dedupeKey = `gift-route:${pendingGiftId}`
+    if (lastScanRef.current.id === dedupeKey) return
+    lastScanRef.current = { id: dedupeKey, time: Date.now() }
+    setEntrySource('gift_qr')
+
+    fetchGiftCard(pendingGiftId).finally(() => {
+      navigate('/scanner', { replace: true })
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingGiftId, businessSlug, staffName, sessionToken, giftCardData, customerData])
+
+  // USB/2D scanners usually operate as a HID keyboard: they type the QR value
+  // very quickly and finish with Enter. Capture only fast bursts so normal
+  // human typing in the cashier screen is not mistaken for a scan.
+  useEffect(() => {
+    if (!businessSlug || !staffName || !sessionToken || customerData || giftCardData) return
+
+    let buffer = ''
+    let startedAt = 0
+    let lastAt = 0
+
+    const resetBuffer = () => {
+      buffer = ''
+      startedAt = 0
+      lastAt = 0
+    }
+
+    const handleUsbScannerKey = (event) => {
+      const now = Date.now()
+
+      if (event.key === 'Enter') {
+        const raw = buffer.trim()
+        const elapsed = startedAt ? Math.max(1, lastAt - startedAt) : 99999
+        const avgMs = raw.length ? elapsed / raw.length : 99999
+        resetBuffer()
+
+        // A scanner burst is normally much faster than manual typing.
+        if (raw.length < 6 || avgMs > 80) return
+
+        const walletGift = raw.match(/^LTGC:(gc_[A-Z0-9_-]+)$/i)
+        const giftUrl = raw.match(/\/gift(?:-scan)?\/([^/?#]+)/i)
+        const giftCode = raw.match(/^(GC-[A-Z0-9-]+)$/i)
+        const giftIdentifier = walletGift?.[1] || giftUrl?.[1] || giftCode?.[1] || ''
+
+        if (giftIdentifier) {
+          const dedupeKey = `gift:${giftIdentifier}`
+          if (lastScanRef.current.id === dedupeKey && now - lastScanRef.current.time < 3000) return
+          lastScanRef.current = { id: dedupeKey, time: now }
+          setEntrySource('gift_qr')
+          setScanResult(giftIdentifier)
+          fetchGiftCard(giftIdentifier)
+          event.preventDefault()
+          return
+        }
+
+        let customerId = raw
+        try {
+          if (/^https?:\/\//i.test(customerId)) {
+            const u = new URL(customerId)
+            customerId = u.pathname.split('/').filter(Boolean).pop() || ''
+          }
+        } catch (_) {}
+        customerId = customerId.split('?')[0].split('#')[0].trim()
+        if (!customerId) return
+
+        if (lastScanRef.current.id === customerId && now - lastScanRef.current.time < 3000) return
+        lastScanRef.current = { id: customerId, time: now }
+        setEntrySource('qr')
+        setScanResult(customerId)
+        fetchCustomer(customerId)
+        event.preventDefault()
+        return
+      }
+
+      if (event.ctrlKey || event.metaKey || event.altKey || event.key.length !== 1) return
+      if (!startedAt || now - lastAt > 120) {
+        buffer = ''
+        startedAt = now
+      }
+      buffer += event.key
+      lastAt = now
+    }
+
+    window.addEventListener('keydown', handleUsbScannerKey, true)
+    return () => window.removeEventListener('keydown', handleUsbScannerKey, true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [businessSlug, staffName, sessionToken, customerData, giftCardData])
+
+
   const markGiftCardSold = async () => {
     if (!giftCardData || !businessSlug || !sessionToken) return
     setLoading(true); setMessage('Marking Gift Card sold/issued…')
@@ -859,8 +958,8 @@ function CashierApp({ API_BASE }) {
             placeholder="Business ID (from URL)"
             value={businessSlug}
             onChange={e => setBusinessSlug(e.target.value)}
-            readOnly={hasPendingNfcTap}
-            title={hasPendingNfcTap ? 'Business is locked to the NFC terminal that initiated this tap' : undefined}
+            readOnly={hasPendingNfcTap || hasPendingGiftScan}
+            title={hasPendingNfcTap ? 'Business is locked to the NFC terminal that initiated this tap' : hasPendingGiftScan ? 'Business is locked to the Gift Card that was scanned' : undefined}
           />
           <input
             style={styles.input}
@@ -886,10 +985,10 @@ function CashierApp({ API_BASE }) {
             onClick={verifyPinAndStart}
             disabled={!businessSlug || !staffEmail || !staffPin || verifying}
           >
-            {verifying ? 'Checking...' : hasPendingNfcTap ? 'Authenticate NFC Tap 📡' : 'Start Scanning 🍃'}
+            {verifying ? 'Checking...' : hasPendingNfcTap ? 'Authenticate NFC Tap 📡' : hasPendingGiftScan ? 'Open Gift Card 🎁' : 'Start Scanning 🍃'}
           </button>
 
-          <p style={styles.hint}>{hasPendingNfcTap ? 'NFC tap pending. Enter your cashier email and PIN to identify the member. No visit is recorded until you confirm Log NFC Activity.' : 'Ask the business owner for the Business ID, your email, and your PIN — shown on their "Your Team" tab'}</p>
+          <p style={styles.hint}>{hasPendingNfcTap ? 'NFC tap pending. Enter your cashier email and PIN to identify the member. No visit is recorded until you confirm Log NFC Activity.' : hasPendingGiftScan ? 'Gift Card scan pending. Log in to view its live balance and redeem it. Scanning alone never redeems value.' : 'Ask the business owner for the Business ID, your email, and your PIN — shown on their "Your Team" tab'}</p>
         </div>
       </div>
     )
@@ -1062,7 +1161,7 @@ function CashierApp({ API_BASE }) {
           <div style={styles.scanCard}>
             <h3 style={styles.scanTitle}>📷 Scan Customer or Gift Card</h3>
             <div id="reader" style={styles.reader}></div>
-            <p style={styles.scanHint}>Scan any LoyaltyTree loyalty card or Gift Card QR.</p>
+            <p style={styles.scanHint}>Scan any LoyaltyTree loyalty card or Gift Card QR with the camera or a USB 2D scanner.</p>
 
             <button style={styles.manualBtn} onClick={() => setShowManual(true)}>
               ✏️ Enter ID Manually
