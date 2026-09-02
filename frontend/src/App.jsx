@@ -175,6 +175,15 @@ function App() {
                 : <OwnerDashboard API_BASE={API_BASE} user={user} onLogout={handleLogout} />
           ) : <Navigate to="/login" />
         } />
+        <Route
+          path="/cashier"
+          element={
+            <CashierApp
+              key="cashier-public-gift-entry-v1"
+              API_BASE={API_BASE}
+            />
+          }
+        />
         <Route path="/scanner" element={
           ['owner', 'manager', 'cashier', 'partner'].includes(user?.role)
             ? <CashierApp key="cashier-api-security-v1" API_BASE={API_BASE} />

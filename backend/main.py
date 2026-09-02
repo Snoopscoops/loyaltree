@@ -22433,7 +22433,7 @@ async def gift_wallet_cashier_scan_redirect(gift_public_id: str):
 
     frontend = (FRONTEND_URL or 'https://theloyaltytree.com').rstrip('/')
     target = (
-        f"{frontend}/scanner"
+        f"{frontend}/cashier"
         f"?business={quote(str(business.get('public_id') or ''))}"
         f"&gift={quote(str(gift.get('public_id') or ''))}"
     )
