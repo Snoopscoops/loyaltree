@@ -360,6 +360,9 @@ def release_announcement_quota(usage_key: Optional[str]) -> None:
     except Exception as e:
         print(f"ANNOUNCEMENT QUOTA release error: {e}")
 
+SETUP_KIT_PRICE_PER_BRANCH = 150
+
+
 def branch_price_bracket(branch_count: int) -> str:
     """Maps an actual branch count to one of the pricing brackets shown on
     the marketing page. Same bracket used regardless of which plan (feature
@@ -6130,7 +6133,7 @@ async def register(biz: BusinessCreate):
                 'delivery_instructions': (biz.kit_delivery_instructions or '').strip() or None,
                 'logo_url': biz.logo_url,
                 'qr_join_url': f"{frontend_base}/join/{public_id}",
-                'amount': 150,
+                'amount': SETUP_KIT_PRICE_PER_BRANCH * max(1, int(biz.branch_count or 1)),
                 'payment_status': 'unpaid',
                 'fulfillment_status': 'requested',
                 'created_at': datetime.utcnow().isoformat(),
@@ -7910,12 +7913,22 @@ async def create_subscription_checkout(public_id: str):
     plan = business.get('plan') or 'starter'
     subscription_price = get_price_for_plan(plan, branch_count)
     kit_due = bool(business.get('setup_kit_requested')) and not bool(business.get('setup_kit_paid'))
-    setup_kit_price = 150 if kit_due else 0
+    setup_kit_price = (SETUP_KIT_PRICE_PER_BRANCH * branch_count) if kit_due else 0
     price = subscription_price + setup_kit_price
     plan_label = SUBSCRIPTION_PLANS.get(plan, {}).get('label', plan)
     description = f"LoyaltyTree {plan_label} subscription - {business.get('name', '')}"
     if kit_due:
-        description += " + Sintra Board QR / PR Kit"
+        branch_word = 'branch' if branch_count == 1 else 'branches'
+        description += f" + Sintra Board QR / PR Kit ({branch_count} {branch_word})"
+        # Keep the fulfillment order amount aligned with the checkout total even
+        # if the branch count changed after registration but before payment.
+        try:
+            supabase.table('setup_kit_orders').update({
+                'amount': setup_kit_price,
+                'updated_at': datetime.utcnow().isoformat(),
+            }).eq('business_id', business.get('id')).eq('payment_status', 'unpaid').neq('fulfillment_status', 'cancelled').execute()
+        except Exception as e:
+            print(f"SETUP KIT ORDER amount sync warning: {e}")
 
     checkout = create_qrph_checkout(
         amount_php=price,
@@ -7927,6 +7940,9 @@ async def create_subscription_checkout(public_id: str):
             'business_public_id': public_id,
             'plan': plan,
             'setup_kit_included': 'true' if kit_due else 'false',
+            'setup_kit_price_per_branch': str(SETUP_KIT_PRICE_PER_BRANCH),
+            'setup_kit_branch_count': str(branch_count if kit_due else 0),
+            'setup_kit_amount': str(setup_kit_price),
         },
     )
 

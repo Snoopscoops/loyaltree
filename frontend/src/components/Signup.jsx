@@ -39,6 +39,8 @@ const BUSINESS_RECOMMENDATIONS = {
   retail:'Points is usually the strongest choice for spend-based retail rewards.',
 }
 
+const PR_KIT_PRICE_PER_BRANCH = 150
+
 function Signup({ API_BASE }) {
   const navigate = useNavigate()
   const [wizardStep, setWizardStep] = useState(1)
@@ -58,6 +60,7 @@ function Signup({ API_BASE }) {
   useEffect(()=>{ fetch(`${API_BASE}/api/v1/plans`).then(r=>r.json()).then(setPlans).catch(()=>{}) },[API_BASE])
   const handleChange=e=>setForm(f=>({...f,[e.target.name]:e.target.value}))
   const branchCount=Number(form.branch_count)||1
+  const prKitTotal=PR_KIT_PRICE_PER_BRANCH*branchCount
   const selectedPlanData=plans?.[form.plan]
   const selectedExceedsCap=selectedPlanData?.max_branches!=null && branchCount>selectedPlanData.max_branches
 
@@ -129,11 +132,11 @@ function Signup({ API_BASE }) {
       </section>}
       {wizardStep===4&&<section><p style={styles.eyebrow}>4 · PLAN + PR KIT</p><h1 style={styles.title}>Choose how you’ll launch</h1><p style={styles.subtitle}>Select your monthly plan and optionally add a physical LoyaltyTree QR / PR Kit.</p>
         <div className="lt-signup-plans" style={styles.planGrid}>{plans&&Object.entries(plans).map(([key,p])=>{const price=priceFor(p,branchCount),selected=form.plan===key,cap=p.max_branches!=null&&branchCount>p.max_branches;return <button type="button" key={key} onClick={()=>setForm({...form,plan:key})} style={{...styles.planCard,...(selected?styles.planSelected:{})}}><b>{p.label}</b><strong>₱{price?.toLocaleString()}<small>/mo</small></strong>{cap&&<span style={styles.warning}>Up to {p.max_branches} branch(es)</span>}</button>})}</div>
-        <label style={{...styles.kitCard,...(form.setup_kit_requested?styles.kitSelected:{})}}><input type="checkbox" checked={form.setup_kit_requested} onChange={e=>setForm({...form,setup_kit_requested:e.target.checked})}/><div><strong>Add Physical QR / PR Kit · ₱150 one-time</strong><p>Sintra board QR display delivered after payment confirmation.</p></div></label>
+        <label style={{...styles.kitCard,...(form.setup_kit_requested?styles.kitSelected:{})}}><input type="checkbox" checked={form.setup_kit_requested} onChange={e=>setForm({...form,setup_kit_requested:e.target.checked})}/><div><strong>Add Physical QR / PR Kit · ₱150 per branch · ₱{prKitTotal.toLocaleString()} total</strong><p>One Sintra board QR display per branch, delivered after payment confirmation.</p></div></label>
         {form.setup_kit_requested&&<div style={styles.delivery}><div className="lt-signup-two" style={styles.twoCol}><Field label="Recipient"><input name="kit_recipient_name" value={form.kit_recipient_name} onChange={handleChange} style={styles.input}/></Field><Field label="Contact number"><input name="kit_contact_number" value={form.kit_contact_number} onChange={handleChange} style={styles.input}/></Field></div><Field label="Delivery address"><textarea name="kit_delivery_address" value={form.kit_delivery_address} onChange={handleChange} style={{...styles.input,minHeight:70}}/></Field><Field label="Instructions (optional)"><input name="kit_delivery_instructions" value={form.kit_delivery_instructions} onChange={handleChange} style={styles.input}/></Field></div>}
       </section>}
       {wizardStep===5&&<section><p style={styles.eyebrow}>5 · PAYMENT</p><h1 style={styles.title}>Activate your business</h1><p style={styles.subtitle}>Complete your payment. After payment, sign in and LoyaltyTree will guide you through card configuration, cashier setup, dashboard and Join QR.</p>
-        {loading?<div style={styles.loadingBox}>Creating your business account…</div>:businessSlug?<SubscriptionPayment API_BASE={API_BASE} businessSlug={businessSlug} title="Pay & Activate" subtitle={form.setup_kit_requested?'Your total includes your selected plan plus the ₱150 PR Kit.':'Pay your selected monthly plan to activate your business.'} successMessage="🎉 Payment received — your business is active!" onPaid={()=>{localStorage.setItem('loyaltree_continue_onboarding','1');navigate('/login?onboarding=1')}}/>:<button style={styles.primary} onClick={createAccount}>Retry account creation</button>}
+        {loading?<div style={styles.loadingBox}>Creating your business account…</div>:businessSlug?<SubscriptionPayment API_BASE={API_BASE} businessSlug={businessSlug} title="Pay & Activate" subtitle={form.setup_kit_requested?`Your total includes your selected plan plus ₱${prKitTotal.toLocaleString()} for the PR Kit (${branchCount} ${branchCount===1?'branch':'branches'} × ₱150).`:'Pay your selected monthly plan to activate your business.'} successMessage="🎉 Payment received — your business is active!" onPaid={()=>{localStorage.setItem('loyaltree_continue_onboarding','1');navigate('/login?onboarding=1')}}/>:<button style={styles.primary} onClick={createAccount}>Retry account creation</button>}
       </section>}
       {error&&<div style={styles.error}>{error}</div>}
       {wizardStep<5&&<div style={styles.actions}>{wizardStep>1?<button type="button" onClick={back} style={styles.secondary}>← Back</button>:<span/>}<button type="button" onClick={next} disabled={logoUpload.uploading} style={styles.primary}>Continue →</button></div>}
