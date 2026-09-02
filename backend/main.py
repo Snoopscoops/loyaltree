@@ -18653,6 +18653,7 @@ async def cashier_stamp_page(customer_public_id: str):
         'membership_status': membership_effective_status(customer),
         'membership_name': (program.get('membership_name') if program else None) or (program.get('card_name') if program else None) or 'Membership',
         'membership_expires_at': customer.get('membership_expires_at'),
+        'membership_visit_logging_enabled': (program.get('membership_visit_logging_enabled') is not False) if program else True,
         'membership_benefits': get_membership_benefit_statuses(business, customer, program) if program_has_membership(program) else [],
     }
     data_json = json.dumps(data)
@@ -18718,6 +18719,7 @@ async def cashier_stamp_page(customer_public_id: str):
         'let vipTier=DATA.vip_tier;'
         'let vipNextTier=DATA.vip_next_tier;'
         'let membershipStatus=DATA.membership_status;'
+        'const membershipVisitLoggingEnabled=DATA.membership_visit_logging_enabled!==false;'
         'let cachedPin=null;'
         'const app=document.getElementById("app");'
         'const sessionKey="loyaltree_cashier_"+DATA.business_public_id;'
@@ -18837,7 +18839,10 @@ async def cashier_stamp_page(customer_public_id: str):
 
         'function renderMembershipBody(){'
         'if(membershipStatus!=="active"&&membershipStatus!=="lifetime"){'
-        'return "<div class=\'msg msg-err\'>Membership is "+escapeHtml(membershipStatus)+". Activate or renew it from the dashboard before logging a visit.</div>";'
+        'return "<div class=\'msg msg-err\'>Membership is "+escapeHtml(membershipStatus)+". Activate or renew it from the dashboard before using membership access.</div>";'
+        '}'
+        'if(!membershipVisitLoggingEnabled){'
+        'return "<div class=\'msg msg-ok\'><b>Membership "+escapeHtml(String(membershipStatus||"active").toUpperCase())+"</b><br><span style=\'font-size:12px\'>Visit logging is disabled by the business.</span></div>";'
         '}'
         'return "<input id=\'serviceName\' type=\'text\' placeholder=\'Service (e.g. Teeth cleaning)\'>"+'
         '"<input id=\'serviceNote\' type=\'text\' placeholder=\'Note (optional)\'>"+'
@@ -18863,7 +18868,7 @@ async def cashier_stamp_page(customer_public_id: str):
         'const until=membershipStatus==="lifetime"?"Lifetime":(DATA.membership_expires_at||"Not activated");'
         'const membershipHtml="<div class=\'"+(active?"msg msg-ok":"msg msg-err")+"\'><b>"+escapeHtml(DATA.membership_name||"Membership")+": "+escapeHtml(String(membershipStatus||"inactive").toUpperCase())+"</b><br><span style=\'font-size:12px\'>Valid until: "+escapeHtml(until)+"</span></div>";'
         'const loyaltyHtml=hybridLoyaltyType==="points"?renderPointsBody():renderStampBody();'
-        'const visitHtml=active?("<div style=\'margin-top:14px;padding-top:14px;border-top:1px solid #e2e8f0\'><input id=\'serviceName\' type=\'text\' placeholder=\'Visit / service\'><input id=\'serviceNote\' type=\'text\' placeholder=\'Note (optional)\'><button class=\'btn-primary\' id=\'membershipBtn\'>Log Membership Visit</button></div>"):"";'
+        'const visitHtml=(active&&membershipVisitLoggingEnabled)?("<div style=\'margin-top:14px;padding-top:14px;border-top:1px solid #e2e8f0\'><input id=\'serviceName\' type=\'text\' placeholder=\'Visit / service\'><input id=\'serviceNote\' type=\'text\' placeholder=\'Note (optional)\'><button class=\'btn-primary\' id=\'membershipBtn\'>Log Membership Visit</button></div>"):"";'
         'return membershipHtml+loyaltyHtml+visitHtml+renderHybridBenefits();'
         '}'
 
