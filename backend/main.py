@@ -21147,9 +21147,60 @@ def _gift_date_expired(gift: dict) -> bool:
 
 def _gift_effective_status(gift: dict) -> str:
     status = str((gift or {}).get('status') or 'unactivated').lower()
+    # Backward compatibility for Gift Cards created before the V1.1 lifecycle.
+    # V1 used active_unclaimed; V1.1 renamed that state to issued_unclaimed so
+    # the public QR page can perform the one-claim + Wallet-binding flow.
+    if status == 'active_unclaimed':
+        status = 'issued_unclaimed'
     if status in GIFT_CARD_EXPIRABLE_STATUSES and _gift_date_expired(gift):
         return 'expired'
     return status
+
+
+def _gift_prepare_public_claim(gift: dict) -> dict:
+    """Normalize legacy DIGITAL Gift Cards before rendering/claiming.
+
+    Printed/self-printed/LoyaltyTree print stock remains UNACTIVATED until an
+    authenticated cashier marks that exact serial sold/issued. Digital cards
+    created by older Gift Card code may still be active_unclaimed or, in some
+    deployments, unactivated; those are safe to normalize to issued_unclaimed.
+    """
+    if not gift:
+        return gift
+    raw_status = str(gift.get('status') or 'unactivated').lower()
+    batch = None
+    try:
+        if gift.get('batch_id') is not None:
+            rows = (
+                supabase.table('gift_card_batches')
+                .select('id,print_option,activation_mode')
+                .eq('id', gift.get('batch_id'))
+                .limit(1)
+                .execute().data or []
+            )
+            batch = rows[0] if rows else None
+    except Exception:
+        batch = None
+
+    is_digital = (batch or {}).get('print_option') == 'digital'
+    should_normalize = raw_status == 'active_unclaimed' or (raw_status == 'unactivated' and is_digital)
+    if not should_normalize:
+        return gift
+
+    try:
+        now = datetime.utcnow().isoformat()
+        rows = (
+            supabase.table('gift_cards')
+            .update({'status': 'issued_unclaimed', 'activated_at': None, 'updated_at': now})
+            .eq('id', gift.get('id'))
+            .execute().data or []
+        )
+        return rows[0] if rows else {**gift, 'status': 'issued_unclaimed', 'activated_at': None, 'updated_at': now}
+    except Exception as e:
+        # If the V1.1 SQL migration was not applied yet, keep the row intact and
+        # surface a useful status instead of silently activating printed stock.
+        print(f'GIFT CARD public-claim normalization skipped: {e}')
+        return gift
 
 
 def _gift_remaining_label(gift: dict) -> str:
@@ -21950,6 +22001,7 @@ async def public_claim_gift_card(gift_public_id: str, req: GiftCardClaimRequest)
     gift = safe_get_gift_card(gift_public_id)
     if not gift:
         raise HTTPException(status_code=404, detail='Gift Card not found')
+    gift = _gift_prepare_public_claim(gift)
     status = _gift_effective_status(gift)
     if status == 'unactivated':
         raise HTTPException(status_code=400, detail='This printed Gift Card has not been sold/issued by the business yet')
@@ -22076,6 +22128,7 @@ async def public_gift_card_page(gift_public_id: str):
             status_code=404,
         )
 
+    gift = _gift_prepare_public_claim(gift)
     business = safe_get_business_by_id(gift.get('business_id')) or {}
     status = _gift_effective_status(gift)
     brand = _gift_brand_color(business)
@@ -22108,7 +22161,7 @@ async def public_gift_card_page(gift_public_id: str):
           <div class="lock">🔒 One Gift Card · one claimant · one Wallet binding</div>
         </div>'''
     elif status == 'unactivated':
-        claim_form = '<div class="notice"><strong>Not activated yet</strong><p class="muted">This is unsold printed inventory. The cashier must mark this exact card as sold/issued after payment before it can be claimed.</p></div>'
+        claim_form = '<div class="notice"><strong>Wallet locked until this card is sold</strong><p class="muted">This is unactivated printed inventory. Ask the cashier to scan this exact Gift Card and tap <b>Mark Sold / Issue</b>. Then refresh this page and <b>Claim & Add to Wallet</b> will appear.</p><button disabled style="opacity:.5">Add to Wallet · Locked</button></div>'
     elif status == 'claimed_pending_wallet':
         claim_form = '<div id="claim-protected" class="notice"><strong>Gift Card claimed</strong><p class="muted">Wallet access is locked to the original claimant browser.</p></div>'
     elif status in ('active_claimed', 'partially_redeemed'):
