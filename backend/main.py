@@ -22277,9 +22277,156 @@ async def gift_card_apple_wallet_pass(gift_public_id: str, claim_token: str = Qu
     )
 
 
+def _gift_claim_cookie_name(gift_public_id: str) -> str:
+    safe = re.sub(r'[^A-Za-z0-9_\-]+', '_', str(gift_public_id or 'gift'))
+    return f'lt_gc_claim_{safe}'[:120]
+
+
+def _gift_platform_from_request(request: Request) -> str:
+    ua = str(request.headers.get('user-agent') or '')
+    if re.search(r'iPhone|iPad|iPod', ua, re.I):
+        return 'apple'
+    if re.search(r'Android', ua, re.I):
+        return 'google'
+    return ''
+
+
+def _gift_set_claim_cookie(response: Response, gift_public_id: str, claim_token: str):
+    if not claim_token:
+        return
+    response.set_cookie(
+        key=_gift_claim_cookie_name(gift_public_id),
+        value=claim_token,
+        max_age=60 * 60 * 24 * 30,
+        httponly=True,
+        secure=True,
+        samesite='lax',
+        path=f'/gift/{gift_public_id}',
+    )
+
+
+def _gift_claim_without_profile(gift: dict) -> tuple[dict, str]:
+    # Native HTML form flow: no JavaScript/localStorage required.
+    claim_token = secrets.token_urlsafe(32)
+    binding_id = _gift_public_id('gwb')
+    secret_hash = _gift_claim_token_hash(claim_token)
+    try:
+        rpc = supabase.rpc('claim_gift_card_atomic', {
+            'p_gift_card_id': gift.get('id'),
+            'p_wallet_binding_id': binding_id,
+            'p_claim_secret_hash': secret_hash,
+            'p_recipient_name': gift.get('recipient_name'),
+            'p_recipient_phone': gift.get('recipient_phone'),
+            'p_recipient_email': gift.get('recipient_email'),
+            'p_claimed_customer_id': None,
+        }).execute()
+        data = rpc.data
+        if isinstance(data, list):
+            data = data[0] if data else None
+        updated = data or safe_get_gift_card(gift.get('public_id')) or gift
+        return updated, claim_token
+    except Exception as e:
+        raise HTTPException(status_code=409, detail=friendly_db_error(e))
+
+
+def _gift_wallet_error_page(message: str, status_code: int = 400) -> HTMLResponse:
+    safe = html_lib.escape(str(message or 'Gift Card Wallet error'))
+    return HTMLResponse(
+        f'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Gift Card</title>
+        <style>body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f8fafc;color:#0f172a;margin:0;padding:28px}}.box{{max-width:520px;margin:30px auto;background:white;border-radius:20px;padding:24px;box-shadow:0 12px 35px rgba(15,23,42,.08)}}a{{color:#0d9488;font-weight:800}}</style></head>
+        <body><div class="box"><h2>Gift Card</h2><p>{safe}</p><p><a href="javascript:history.back()">Go back</a></p></div></body></html>''',
+        status_code=status_code,
+    )
+
+
+@app.post('/gift/{gift_public_id}/claim-and-wallet/{platform}')
+async def public_gift_claim_and_wallet(
+    gift_public_id: str,
+    platform: Literal['google', 'apple'],
+    request: Request,
+):
+    gift = safe_get_gift_card(gift_public_id)
+    if not gift:
+        return _gift_wallet_error_page('Gift Card not found', 404)
+
+    gift = _gift_prepare_public_claim(gift)
+    status = _gift_effective_status(gift)
+
+    if status == 'unactivated':
+        return _gift_wallet_error_page(
+            'This printed Gift Card is not issued yet. Ask the cashier to mark it Sold / Issued first.',
+            400,
+        )
+    if status in GIFT_CARD_TERMINAL_STATUSES:
+        return _gift_wallet_error_page(f'This Gift Card is {status.replace("_", " ")}.', 409)
+
+    cookie_name = _gift_claim_cookie_name(gift_public_id)
+    claim_token = str(request.cookies.get(cookie_name) or '').strip()
+
+    if status == 'issued_unclaimed':
+        gift, claim_token = _gift_claim_without_profile(gift)
+        status = _gift_effective_status(gift)
+        print(f'GIFT CLAIM-WALLET: {gift_public_id} first claim -> {platform}')
+    else:
+        if not claim_token or not _gift_claim_token_valid(gift, claim_token):
+            print(f'GIFT CLAIM-WALLET BLOCKED: {gift_public_id} no valid claimant cookie status={status}')
+            return _gift_wallet_error_page(
+                'This Gift Card has already been claimed. Open it from the original browser/device that claimed it, or ask the business to reset the claim if this was only a failed test.',
+                403,
+            )
+
+    business = safe_get_business_by_id(gift.get('business_id'))
+    if not business:
+        return _gift_wallet_error_page('Business not found', 404)
+
+    try:
+        _validate_gift_wallet_request(gift, claim_token, platform)
+
+        if platform == 'google':
+            staged = _gift_staged_wallet_copy(gift, 'google')
+            jwt_token = create_google_gift_card_jwt(staged, business)
+            if not jwt_token:
+                return _gift_wallet_error_page(
+                    'Google Wallet could not be prepared. The Gift Card is still reserved to this browser and can be retried.',
+                    503,
+                )
+            _bind_gift_wallet(gift, claim_token, 'google')
+            save_url = f'https://pay.google.com/gp/v/save/{jwt_token}'
+            response = RedirectResponse(url=save_url, status_code=303)
+            response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+            response.headers['Pragma'] = 'no-cache'
+            _gift_set_claim_cookie(response, gift_public_id, claim_token)
+            print(f'GIFT CLAIM-WALLET REDIRECT: {gift_public_id} -> Google Wallet')
+            return response
+
+        staged = _gift_staged_wallet_copy(gift, 'apple')
+        pkpass = build_gift_card_pkpass_bytes(staged, business)
+        if pkpass is None:
+            return _gift_wallet_error_page(
+                'Apple Wallet could not be prepared. The Gift Card is still reserved to this browser and can be retried.',
+                503,
+            )
+        _bind_gift_wallet(gift, claim_token, 'apple')
+        response = Response(
+            content=pkpass,
+            media_type='application/vnd.apple.pkpass',
+            headers={
+                'Content-Disposition': f'attachment; filename="{gift.get("code") or "gift-card"}.pkpass"',
+                'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+            },
+        )
+        _gift_set_claim_cookie(response, gift_public_id, claim_token)
+        print(f'GIFT CLAIM-WALLET PASS: {gift_public_id} -> Apple Wallet')
+        return response
+    except HTTPException as e:
+        return _gift_wallet_error_page(str(e.detail), e.status_code)
+    except Exception as e:
+        print(f'GIFT CLAIM-WALLET ERROR {gift_public_id}: {e}')
+        return _gift_wallet_error_page(friendly_db_error(e), 500)
+
+
 @app.get('/gift/{gift_public_id}', response_class=HTMLResponse)
-async def public_gift_card_page(gift_public_id: str):
-    # Public QR destination. First claim + Wallet handoff happens from one tap.
+async def public_gift_card_page(gift_public_id: str, request: Request):
     gift = safe_get_gift_card(gift_public_id)
     if not gift:
         return HTMLResponse(
@@ -22299,207 +22446,55 @@ async def public_gift_card_page(gift_public_id: str):
     original = html_lib.escape(_gift_original_label(gift))
     status_label = html_lib.escape(status.replace('_', ' ').upper())
     message = html_lib.escape(str(gift.get('gift_message') or ''))
-    recipient = html_lib.escape(str(gift.get('recipient_name') or ''))
     expires = html_lib.escape(str(gift.get('expires_at') or ''))
-    wallet_platform = str(gift.get('wallet_platform') or '')
 
-    claim_form = ''
-    if status == 'issued_unclaimed':
-        claim_form = '''<div class="claim" id="claim-panel">
-          <div class="claim-icon">🎁</div>
-          <h3>Claim your Gift Card</h3>
-          <p class="muted">This Gift Card can be claimed once. The first successful claim becomes the only claimant.</p>
-          <details>
-            <summary>Recipient details <span class="optional">optional</span></summary>
-            <input id="claim-name" autocomplete="name" placeholder="Your name">
-            <input id="claim-phone" autocomplete="tel" placeholder="Phone">
-            <input id="claim-email" autocomplete="email" type="email" placeholder="Email">
-          </details>
-          <button id="claim-wallet-btn" class="wallet-primary" onclick="claimAndAddToWallet()">Claim & Add to Wallet</button>
-          <div id="claim-error" class="error"></div>
-          <div class="lock">🔒 One Gift Card · one claimant · one Wallet binding</div>
-        </div>'''
-    elif status == 'unactivated':
-        claim_form = '<div class="notice"><strong>Wallet locked until this card is sold</strong><p class="muted">This is unactivated printed inventory. Ask the cashier to scan this exact Gift Card and tap <b>Mark Sold / Issue</b>. Then refresh this page and <b>Claim & Add to Wallet</b> will appear.</p><button disabled style="opacity:.5">Add to Wallet · Locked</button></div>'
-    elif status == 'claimed_pending_wallet':
-        claim_form = '<div id="claim-protected" class="notice"><strong>Gift Card claimed</strong><p class="muted">Wallet access is locked to the original claimant browser.</p></div>'
-    elif status in ('active_claimed', 'partially_redeemed'):
-        claim_form = '<div id="claim-protected" class="notice"><strong>Gift Card already claimed</strong><p class="muted">This Gift Card is already bound to one Wallet platform.</p></div>'
-    elif status in GIFT_CARD_TERMINAL_STATUSES:
-        claim_form = f'<div class="notice"><strong>{status_label}</strong><p class="muted">This Gift Card can no longer be added or redeemed.</p></div>'
+    detected_platform = _gift_platform_from_request(request)
+    claim_token = str(request.cookies.get(_gift_claim_cookie_name(gift_public_id)) or '').strip()
+    claimant_browser = bool(claim_token and _gift_claim_token_valid(gift, claim_token))
 
-    wallet_eligible = status in ('claimed_pending_wallet', 'active_claimed', 'partially_redeemed')
+    print(
+        f'GIFT PAGE: {gift_public_id} status={status} '
+        f'platform={detected_platform or "unknown"} claimant_cookie={claimant_browser}'
+    )
+
+    action_html = ''
+    if status == 'unactivated':
+        action_html = '''<div class="notice"><strong>Wallet locked until this card is sold</strong><p>This printed Gift Card is still unactivated. The cashier must mark it <b>Sold / Issued</b> first.</p><button disabled>Add to Wallet · Locked</button></div>'''
+    elif status == 'issued_unclaimed':
+        if detected_platform:
+            label = 'Apple Wallet' if detected_platform == 'apple' else 'Google Wallet'
+            btn_class = 'apple' if detected_platform == 'apple' else 'google'
+            action_html = f'''<div class="action"><h3>Claim your Gift Card</h3><p>The first successful claim becomes the only claimant.</p><form method="post" action="/gift/{gift_public_id}/claim-and-wallet/{detected_platform}"><button class="{btn_class}" type="submit">Claim &amp; Add to {label}</button></form><div class="lock">🔒 One Gift Card · one claimant · one Wallet binding</div></div>'''
+        else:
+            action_html = f'''<div class="action"><h3>Claim your Gift Card</h3><p>Choose the Wallet for this Gift Card. The first platform selected becomes its Wallet binding.</p><form method="post" action="/gift/{gift_public_id}/claim-and-wallet/apple"><button class="apple" type="submit">Claim &amp; Add to Apple Wallet</button></form><form method="post" action="/gift/{gift_public_id}/claim-and-wallet/google"><button class="google" type="submit">Claim &amp; Add to Google Wallet</button></form><div class="lock">🔒 One Gift Card · one claimant · one Wallet binding</div></div>'''
+    elif status in ('claimed_pending_wallet', 'active_claimed', 'partially_redeemed'):
+        if claimant_browser:
+            bound = str(gift.get('wallet_platform') or detected_platform or '')
+            if bound in ('apple', 'google'):
+                label = 'Apple Wallet' if bound == 'apple' else 'Google Wallet'
+                btn_class = 'apple' if bound == 'apple' else 'google'
+                action_html = f'''<div class="action"><h3>Your Gift Card</h3><p>This browser is recognized as the original claimant.</p><form method="post" action="/gift/{gift_public_id}/claim-and-wallet/{bound}"><button class="{btn_class}" type="submit">Open / Re-add to {label}</button></form><div class="lock">🔒 Bound to the original claimant</div></div>'''
+            else:
+                action_html = f'''<div class="action"><h3>Finish adding to Wallet</h3><form method="post" action="/gift/{gift_public_id}/claim-and-wallet/apple"><button class="apple" type="submit">Add to Apple Wallet</button></form><form method="post" action="/gift/{gift_public_id}/claim-and-wallet/google"><button class="google" type="submit">Add to Google Wallet</button></form></div>'''
+        else:
+            action_html = '''<div class="notice"><strong>Gift Card already claimed</strong><p>This scan is not from the browser that originally claimed the Gift Card, so Wallet access remains locked.</p></div>'''
+    else:
+        action_html = f'''<div class="notice"><strong>{status_label}</strong><p>This Gift Card can no longer be added to Wallet.</p></div>'''
+
+    logo_html = f'<img src="{logo}">' if logo else ''
+    message_html = f'<div class="message">“{message}”</div>' if message else ''
+    valid_until = expires or 'No expiry'
 
     return HTMLResponse(f'''<!doctype html>
-<html>
-<head>
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="{brand}">
-<title>{name}</title>
+<html><head><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="{brand}"><title>{name}</title>
 <style>
-*{{box-sizing:border-box}}
-body{{margin:0;background:#f4f7f8;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#0f172a}}
-.wrap{{max-width:620px;margin:0 auto;padding:24px 16px calc(60px + env(safe-area-inset-bottom))}}
-.brand{{display:flex;align-items:center;gap:12px;margin-bottom:18px}}
-.brand img{{width:48px;height:48px;border-radius:50%;object-fit:cover;background:white}}
-.card{{background:{brand};color:white;border-radius:28px;padding:28px;box-shadow:0 24px 60px rgba(15,23,42,.18)}}
-.eyebrow{{font-size:12px;font-weight:900;letter-spacing:1.4px;opacity:.8}}
-h1{{margin:8px 0 20px;font-size:32px}}
-.balance{{font-size:42px;font-weight:900}}
-.label{{font-size:12px;opacity:.8;text-transform:uppercase;letter-spacing:1px}}
-.grid{{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:20px}}
-.tile{{padding:14px;border:1px solid rgba(255,255,255,.25);border-radius:14px;background:rgba(255,255,255,.08)}}
-.message{{margin-top:18px;padding-top:18px;border-top:1px solid rgba(255,255,255,.25);font-style:italic}}
-.panel,.claim,.notice,.wallet-actions{{margin-top:16px;background:white;border-radius:20px;padding:20px;box-shadow:0 12px 30px rgba(15,23,42,.08)}}
-.claim-icon{{font-size:38px;margin-bottom:4px}}
-h3{{margin:4px 0 8px}}
-input{{display:block;width:100%;padding:13px 14px;margin:9px 0;border:1px solid #dbe3e8;border-radius:12px;font-size:15px}}
-button{{display:block;width:100%;padding:15px;border:0;border-radius:13px;background:#0f172a;color:white;text-align:center;text-decoration:none;font-weight:800;font-size:15px;margin-top:10px;cursor:pointer}}
-button:disabled{{opacity:.55;cursor:wait}}
-button.apple{{background:#000}}
-button.google{{background:#1a73e8}}
-button.wallet-primary{{min-height:52px}}
-.muted{{color:#64748b;font-size:13px;line-height:1.55}}
-.lock{{font-size:12px;color:#64748b;margin-top:12px;text-align:center}}
-details{{margin-top:14px}}
-summary{{cursor:pointer;font-size:13px;font-weight:750;color:#475569}}
-.optional{{font-weight:500;color:#94a3b8}}
-.error{{margin-top:10px;padding:10px 12px;background:#fef2f2;color:#b91c1c;border-radius:10px;font-size:13px;display:none}}
-@media(max-width:480px){{.grid{{grid-template-columns:1fr}}.balance{{font-size:36px}}.wrap{{padding-top:16px}}}}
-</style>
-</head>
-<body>
-<div class="wrap">
-  <div class="brand">{f'<img src="{logo}">' if logo else ''}<div><strong>{biz}</strong><div class="muted">Digital Gift Card</div></div></div>
-  <section class="card">
-    <div class="eyebrow">GIFT CARD</div>
-    <h1>{name}</h1>
-    <div class="label">Remaining</div>
-    <div class="balance">{remaining}</div>
-    <div class="grid">
-      <div class="tile"><div class="label">Original</div><strong>{original}</strong></div>
-      <div class="tile"><div class="label">Status</div><strong>{status_label}</strong></div>
-      <div class="tile"><div class="label">Card Number</div><strong>{code}</strong></div>
-      <div class="tile"><div class="label">Valid Until</div><strong>{expires or 'No expiry'}</strong></div>
-    </div>
-    {f'<div class="message">“{message}”</div>' if message else ''}
-  </section>
-
-  {claim_form}
-
-  <div id="wallet-actions" class="wallet-actions" style="display:none">
-    <h3>Add to Wallet</h3>
-    <p class="muted" id="wallet-copy">Only the original claimant can use these Wallet controls.</p>
-    <div id="wallet-buttons"></div>
-    <div id="wallet-error" class="error"></div>
-    <div class="lock">🔒 One Gift Card · one claimant · one Wallet binding</div>
-  </div>
-
-  <div class="panel">
-    <strong>How to use</strong>
-    <p class="muted">Scan this Gift Card to claim it and save it to Wallet. At checkout, present the Wallet QR to an authorized cashier. Every scan resolves to the same secure server-side balance or remaining item quantity.</p>
-    {f'<p class="muted">Claimed by: {recipient}</p>' if recipient else ''}
-  </div>
-</div>
-<script>
-const giftId={json.dumps(gift_public_id)};
-const walletEligible={str(wallet_eligible).lower()};
-const boundPlatform={json.dumps(wallet_platform)};
-const tokenKey='lt_gift_claim_'+giftId;
-
-function getClaimToken(){{try{{return localStorage.getItem(tokenKey)||''}}catch(e){{return ''}}}}
-function saveClaimToken(v){{try{{localStorage.setItem(tokenKey,v)}}catch(e){{}}}}
-function detectWalletPlatform(){{
-  const ua=navigator.userAgent||'';
-  const platform=navigator.platform||'';
-  const touch=Number(navigator.maxTouchPoints||0);
-  const isIOS=/iPhone|iPad|iPod/i.test(ua) || (platform==='MacIntel' && touch>1);
-  const isAndroid=/Android/i.test(ua);
-  if(isIOS)return 'apple';
-  if(isAndroid)return 'google';
-  return '';
-}}
-function platformLabel(p){{return p==='apple'?'Apple Wallet':p==='google'?'Google Wallet':'Wallet'}}
-function showError(message,target='wallet-error'){{
-  const e=document.getElementById(target);
-  if(e){{e.textContent=message||'Something went wrong';e.style.display='block'}}
-  else alert(message||'Something went wrong');
-}}
-function setBusy(button,busy,label){{
-  if(!button)return;
-  if(busy){{button.dataset.oldText=button.textContent;button.textContent=label||'Preparing Wallet…';button.disabled=true}}
-  else{{button.disabled=false;button.textContent=button.dataset.oldText||button.textContent}}
-}}
-async function addToWalletWithToken(platform,token,button){{
-  if(!token){{showError('This Gift Card is already claimed on another browser.');return}}
-  if(platform==='apple'){{
-    setBusy(button,true,'Preparing Apple Wallet…');
-    window.location.href='/api/v1/gift-card/'+giftId+'/apple-wallet-pass?claim_token='+encodeURIComponent(token);
-    return;
-  }}
-  if(platform==='google'){{
-    setBusy(button,true,'Opening Google Wallet…');
-    // Use a top-level same-origin navigation. The backend then responds with
-    // HTTP 302 directly to pay.google.com. This is more reliable than fetch()
-    // + window.location on QR/in-app mobile browsers.
-    const target='/api/v1/gift-card/'+giftId+'/google-wallet-redirect?claim_token='+encodeURIComponent(token);
-    window.location.assign(target);
-    return;
-  }}
-}}
-async function claimAndAddToWallet(){{
-  const btn=document.getElementById('claim-wallet-btn');
-  setBusy(btn,true,'Claiming Gift Card…');
-  try{{
-    const r=await fetch('/api/v1/gift-card/'+giftId+'/claim',{{
-      method:'POST',headers:{{'Content-Type':'application/json'}},
-      body:JSON.stringify({{
-        recipient_name:document.getElementById('claim-name')?.value||'',
-        recipient_phone:document.getElementById('claim-phone')?.value||'',
-        recipient_email:document.getElementById('claim-email')?.value||''
-      }})
-    }});
-    const d=await r.json();
-    if(!r.ok)throw new Error(d.detail||'Could not claim Gift Card');
-    if(!d.claim_token)throw new Error('Claim succeeded but Wallet access token was not returned');
-    saveClaimToken(d.claim_token);
-    const p=detectWalletPlatform();
-    if(p){{await addToWalletWithToken(p,d.claim_token,btn);return}}
-    const panel=document.getElementById('claim-panel');if(panel)panel.style.display='none';
-    renderWallet(true);
-  }}catch(err){{setBusy(btn,false);showError(err.message||'Could not claim Gift Card','claim-error')}}
-}}
-function renderWallet(force=false){{
-  if(!walletEligible&&!force)return;
-  const token=getClaimToken();if(!token)return;
-  const c=document.getElementById('wallet-actions');const b=document.getElementById('wallet-buttons');if(!c||!b)return;
-  c.style.display='block';
-  const detected=boundPlatform||detectWalletPlatform();
-  let html='';
-  if(boundPlatform){{
-    const cls=boundPlatform==='apple'?'apple':'google';
-    html='<button class="'+cls+'" onclick="addToWalletWithToken(\''+boundPlatform+'\',getClaimToken(),this)">Open / Re-add to '+platformLabel(boundPlatform)+'</button>';
-    document.getElementById('wallet-copy').textContent='This Gift Card is locked to '+platformLabel(boundPlatform)+'.';
-  }}else if(detected){{
-    const cls=detected==='apple'?'apple':'google';
-    html='<button class="'+cls+'" onclick="addToWalletWithToken(\''+detected+'\',getClaimToken(),this)">Add to '+platformLabel(detected)+'</button>';
-  }}else{{
-    html='<button class="apple" onclick="addToWalletWithToken(\'apple\',getClaimToken(),this)">Add to Apple Wallet</button><button class="google" onclick="addToWalletWithToken(\'google\',getClaimToken(),this)">Add to Google Wallet</button>';
-  }}
-  b.innerHTML=html;
-  const n=document.getElementById('claim-protected');
-  if(n)n.innerHTML='<strong>Gift Card claimed by this browser</strong><p class="muted">Use the Wallet button below to finish or reopen your saved Gift Card.</p>';
-}}
-function labelPrimaryClaimButton(){{
-  const btn=document.getElementById('claim-wallet-btn');if(!btn)return;
-  const p=detectWalletPlatform();
-  btn.textContent=p?'Claim & Add to '+platformLabel(p):'Claim & Choose Wallet';
-}}
-labelPrimaryClaimButton();
-renderWallet();
-</script>
-</body>
-</html>''')
+*{{box-sizing:border-box}}body{{margin:0;background:#f4f7f8;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#0f172a}}.wrap{{max-width:620px;margin:0 auto;padding:20px 16px 60px}}.brand{{display:flex;align-items:center;gap:12px;margin-bottom:16px}}.brand img{{width:48px;height:48px;border-radius:50%;object-fit:cover;background:white}}.card{{background:{brand};color:white;border-radius:26px;padding:26px;box-shadow:0 22px 55px rgba(15,23,42,.18)}}.eyebrow,.label{{font-size:12px;font-weight:850;letter-spacing:1px;opacity:.82;text-transform:uppercase}}h1{{margin:8px 0 20px;font-size:31px}}.balance{{font-size:40px;font-weight:900}}.grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:18px}}.tile{{padding:13px;border:1px solid rgba(255,255,255,.24);border-radius:13px;background:rgba(255,255,255,.08)}}.message{{margin-top:18px;padding-top:18px;border-top:1px solid rgba(255,255,255,.25);font-style:italic}}.action,.notice,.panel{{margin-top:16px;background:white;border-radius:20px;padding:20px;box-shadow:0 10px 28px rgba(15,23,42,.08)}}.action h3{{margin:0 0 6px}}.action p,.notice p,.panel p{{color:#64748b;font-size:13px;line-height:1.55}}form{{margin:0}}button{{display:block;width:100%;padding:15px;border:0;border-radius:13px;color:white;font-weight:850;font-size:15px;margin-top:10px;cursor:pointer}}button.apple{{background:#000}}button.google{{background:#1a73e8}}button:disabled{{background:#94a3b8;cursor:not-allowed}}.lock{{font-size:12px;color:#64748b;text-align:center;margin-top:12px}}@media(max-width:480px){{.grid{{grid-template-columns:1fr}}.balance{{font-size:35px}}}}
+</style></head><body><div class="wrap">
+<div class="brand">{logo_html}<div><strong>{biz}</strong><div style="color:#64748b;font-size:13px">Digital Gift Card</div></div></div>
+<section class="card"><div class="eyebrow">GIFT CARD</div><h1>{name}</h1><div class="label">Remaining</div><div class="balance">{remaining}</div><div class="grid"><div class="tile"><div class="label">Original</div><strong>{original}</strong></div><div class="tile"><div class="label">Status</div><strong>{status_label}</strong></div><div class="tile"><div class="label">Card Number</div><strong>{code}</strong></div><div class="tile"><div class="label">Valid Until</div><strong>{valid_until}</strong></div></div>{message_html}</section>
+{action_html}
+<div class="panel"><strong>How to use</strong><p>Claim the Gift Card, save it to Wallet, then present the Wallet QR to an authorized cashier. The balance remains server-side, so copying the QR never creates a second balance.</p></div>
+</div></body></html>''')
 
 
 @app.get('/api/v1/admin/gift-card-print-requests')
