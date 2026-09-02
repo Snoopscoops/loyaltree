@@ -60,10 +60,15 @@ function CashierApp({ API_BASE }) {
 
     function onScanSuccess(decodedText) {
       const rawScan = decodedText.trim()
-      const giftUrlMatch = rawScan.match(/\/gift\/([^/?#]+)/i)
+      // Gift Cards have two different QRs:
+      //   public claim QR: /gift/gc_xxx
+      //   Wallet cashier QR: LTGC:gc_xxx
+      // Keep accepting /gift-scan/gc_xxx as a compatibility format too.
+      const giftWalletTokenMatch = rawScan.match(/^LTGC:(gc_[A-Z0-9_-]+)$/i)
+      const giftUrlMatch = rawScan.match(/\/gift(?:-scan)?\/([^/?#]+)/i)
       const giftCodeMatch = rawScan.match(/^(GC-[A-Z0-9-]+)$/i)
-      if (giftUrlMatch || giftCodeMatch) {
-        const giftId = (giftUrlMatch?.[1] || giftCodeMatch?.[1] || '').trim()
+      if (giftWalletTokenMatch || giftUrlMatch || giftCodeMatch) {
+        const giftId = (giftWalletTokenMatch?.[1] || giftUrlMatch?.[1] || giftCodeMatch?.[1] || '').trim()
         const now = Date.now()
         if (lastScanRef.current.id === `gift:${giftId}` && now - lastScanRef.current.time < 3000) return
         lastScanRef.current = { id: `gift:${giftId}`, time: now }
@@ -746,16 +751,16 @@ function CashierApp({ API_BASE }) {
     setLoading(false)
   }
 
-  const activateGiftCard = async () => {
+  const markGiftCardSold = async () => {
     if (!giftCardData || !businessSlug || !sessionToken) return
-    setLoading(true); setMessage('Activating Gift Card…')
+    setLoading(true); setMessage('Marking Gift Card sold/issued…')
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/gift-cards/${giftCardData.public_id}/activate`, { method:'POST', headers:{ Authorization:`Bearer ${sessionToken}` } })
       const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.detail || 'Activation failed')
+      if (!res.ok) throw new Error(data.detail || 'Could not mark Gift Card sold/issued')
       setGiftCardData(data.gift_card || data)
-      setMessage('✅ Gift Card activated and ready to use')
-    } catch (err) { setMessage(`❌ ${err.message || 'Activation failed'}`) }
+      setMessage('✅ Gift Card sold/issued. Recipient can now claim and add it to Wallet.')
+    } catch (err) { setMessage(`❌ ${err.message || 'Issue failed'}`) }
     setLoading(false)
   }
 
@@ -1036,10 +1041,14 @@ function CashierApp({ API_BASE }) {
             <div style={styles.giftBalance}>{giftCardData.gift_type === 'amount' ? `₱${Number(giftCardData.remaining_amount || 0).toLocaleString('en-PH',{maximumFractionDigits:2})}` : `${giftCardData.remaining_quantity || 0} / ${giftCardData.original_quantity || 0}`}</div>
             {giftCardData.gift_type === 'item' && <div style={styles.giftItem}>{giftCardData.item_name}</div>}
           </div>
-          <div style={styles.giftStatusRow}><span>Status</span><b>{String(giftCardData.status || '').replaceAll('_',' ').toUpperCase()}</b></div>
+          <div style={styles.giftStatusRow}><span>Status</span><b>{String(giftCardData.status || '').replaceAll('_',' ').toUpperCase()}</b></div>{giftCardData.wallet_platform&&<div style={styles.giftStatusRow}><span>Wallet</span><b>{String(giftCardData.wallet_platform).toUpperCase()} · BOUND</b></div>}
           {giftCardData.status === 'unactivated' ? (
-            <div style={styles.giftActionBox}><p style={styles.scanHint}>This printed Gift Card has no usable value yet. Activate it only after payment has been received.</p><button style={styles.giftActivateBtn} disabled={loading} onClick={activateGiftCard}>{loading?'Activating…':'Activate Gift Card'}</button></div>
-          ) : ['active_unclaimed','active_claimed','partially_redeemed'].includes(giftCardData.status) ? (
+            <div style={styles.giftActionBox}><p style={styles.scanHint}>This is unsold printed inventory. After receiving payment, mark this exact serial as sold/issued. The recipient must then claim it and bind one Wallet before it becomes spendable.</p><button style={styles.giftActivateBtn} disabled={loading} onClick={markGiftCardSold}>{loading?'Saving…':'Mark Sold / Issue'}</button></div>
+          ) : giftCardData.status === 'issued_unclaimed' ? (
+            <div style={styles.giftActionBox}><p style={styles.scanHint}>This Gift Card has been issued but not claimed yet. Ask the recipient to scan its QR, claim it, and add it to Apple Wallet or Google Wallet.</p></div>
+          ) : giftCardData.status === 'claimed_pending_wallet' ? (
+            <div style={styles.giftActionBox}><p style={styles.scanHint}>The Gift Card has been claimed, but Wallet binding is not complete yet. It cannot be redeemed until the claimant selects and opens their Wallet pass.</p></div>
+          ) : ['active_claimed','partially_redeemed'].includes(giftCardData.status) ? (
             <div style={styles.giftActionBox}>
               {giftCardData.gift_type === 'amount' ? <input style={styles.input} type="number" min="0.01" step="0.01" placeholder="Amount to redeem (₱)" value={giftRedeemAmount} onChange={e=>setGiftRedeemAmount(e.target.value)} /> : <div><div style={{fontWeight:800,marginBottom:7}}>Quantity to redeem</div><input style={styles.input} type="number" min="1" max={giftCardData.remaining_quantity || 1} value={giftRedeemQuantity} onChange={e=>setGiftRedeemQuantity(e.target.value)} /></div>}
               <button style={styles.giftRedeemBtn} disabled={loading} onClick={redeemGiftCard}>{loading?'Processing…':'Redeem Gift Card'}</button>
@@ -1065,12 +1074,17 @@ function CashierApp({ API_BASE }) {
               <h4>Manual Entry</h4>
               <input
                 style={styles.input}
-                placeholder="Customer ID or Gift Card code"
+                placeholder="Customer ID, Gift Card code, or LTGC token"
                 value={manualId}
                 onChange={e => setManualId(e.target.value)}
               />
               <button style={styles.btn} onClick={() => {
-                if (manualId) (/^GC-/i.test(manualId.trim()) ? fetchGiftCard(manualId.trim()) : fetchCustomer(manualId.trim()))
+                if (!manualId) return
+                const raw = manualId.trim()
+                const walletGift = raw.match(/^LTGC:(gc_[A-Z0-9_-]+)$/i)
+                const giftUrl = raw.match(/\/gift(?:-scan)?\/([^/?#]+)/i)
+                const giftIdentifier = walletGift?.[1] || giftUrl?.[1] || (/^GC-/i.test(raw) ? raw : '')
+                giftIdentifier ? fetchGiftCard(giftIdentifier) : fetchCustomer(raw)
               }}>
                 Find Card
               </button>

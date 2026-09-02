@@ -21351,7 +21351,9 @@ def ensure_google_gift_card_class(business: dict) -> bool:
 def build_google_gift_card_object(gift: dict, business: dict) -> dict:
     status = _gift_effective_status(gift)
     state = 'ACTIVE' if status in GIFT_CARD_ACTIVE_STATUSES else 'INACTIVE'
-    claim_url = f"{BASE_URL}/gift/{gift.get('public_id')}"
+    # Wallet QR is cashier-only identity data. It must NOT point back to the
+    # public claim page. The public/printed QR remains /gift/{public_id}.
+    cashier_qr_value = f"LTGC:{gift.get('public_id')}"
     obj = {
         'id': _gift_google_object_id(gift),
         'classId': _gift_google_class_id(business),
@@ -21359,7 +21361,7 @@ def build_google_gift_card_object(gift: dict, business: dict) -> dict:
         'cardNumber': gift.get('code') or gift.get('public_id'),
         'barcode': {
             'type': 'QR_CODE',
-            'value': claim_url,
+            'value': cashier_qr_value,
             'alternateText': gift.get('code') or 'Gift Card',
         },
         'textModulesData': [
@@ -21438,7 +21440,9 @@ def build_gift_card_apple_pass_json(gift: dict, business: dict) -> dict:
     serial = f"gift-{gift.get('public_id')}"
     status = _gift_effective_status(gift)
     primary_color = _gift_brand_color(business)
-    claim_url = f"{BASE_URL}/gift/{gift.get('public_id')}"
+    # Same cashier-only token used by Google Wallet. Scanning this QR never
+    # claims or redeems by itself; the authenticated CashierApp resolves it.
+    cashier_qr_value = f"LTGC:{gift.get('public_id')}"
     if gift.get('gift_type') == 'amount':
         primary_label = 'BALANCE'
         primary_value = f"₱{float(gift.get('remaining_amount') or 0):,.2f}"
@@ -21462,13 +21466,13 @@ def build_gift_card_apple_pass_json(gift: dict, business: dict) -> dict:
         'webServiceURL': APPLE_PASS_WEB_SERVICE_URL,
         'barcodes': [{
             'format': 'PKBarcodeFormatQR',
-            'message': claim_url,
+            'message': cashier_qr_value,
             'messageEncoding': 'iso-8859-1',
             'altText': gift.get('code') or 'Gift Card',
         }],
         'barcode': {
             'format': 'PKBarcodeFormatQR',
-            'message': claim_url,
+            'message': cashier_qr_value,
             'messageEncoding': 'iso-8859-1',
             'altText': gift.get('code') or 'Gift Card',
         },
