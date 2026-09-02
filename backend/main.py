@@ -22117,6 +22117,41 @@ def _bind_gift_wallet(gift: dict, claim_token: str, platform: str) -> dict:
         raise HTTPException(status_code=409, detail=friendly_db_error(e))
 
 
+def _validate_gift_wallet_request(gift: dict, claim_token: str, platform: str):
+    """Validate claimant + platform without mutating the Gift Card.
+
+    Critical ordering rule: Wallet artifacts/links are prepared first. Only after
+    preparation succeeds do we persist the one-platform binding. This prevents a
+    temporary Google/Apple generation error from permanently locking a Gift Card
+    that was never actually issued to Wallet.
+    """
+    if not _gift_claim_token_valid(gift, claim_token):
+        raise HTTPException(
+            status_code=403,
+            detail='This Gift Card is already claimed. Wallet access is locked to the original claimant.'
+        )
+    existing_platform = str(gift.get('wallet_platform') or '').lower()
+    if existing_platform and existing_platform != platform:
+        raise HTTPException(
+            status_code=409,
+            detail=f'This Gift Card is already bound to {existing_platform.title()} Wallet.'
+        )
+
+
+def _gift_staged_wallet_copy(gift: dict, platform: str) -> dict:
+    """Return pass-generation data that looks active without changing the DB."""
+    now = datetime.utcnow().isoformat()
+    staged = dict(gift or {})
+    if _gift_effective_status(staged) == 'claimed_pending_wallet':
+        staged['status'] = 'active_claimed'
+    staged['wallet_platform'] = staged.get('wallet_platform') or platform
+    staged['wallet_bound_at'] = staged.get('wallet_bound_at') or now
+    staged['wallet_issued_at'] = now
+    staged['activated_at'] = staged.get('activated_at') or now
+    staged['updated_at'] = now
+    return staged
+
+
 @app.get('/api/v1/gift-card/{gift_public_id}/wallet')
 async def public_gift_card_wallet(
     gift_public_id: str,
@@ -22133,16 +22168,27 @@ async def public_gift_card_wallet(
     if not business:
         raise HTTPException(status_code=404, detail='Business not found')
 
-    updated = _bind_gift_wallet(gift, claim_token, platform)
+    _validate_gift_wallet_request(gift, claim_token, platform)
+
+    # Apple downloads are prepared by the dedicated .pkpass endpoint. Do not
+    # bind here merely because a URL was requested.
     if platform == 'apple':
         return {
             'apple_pass_url': f"{BASE_URL}/api/v1/gift-card/{gift_public_id}/apple-wallet-pass?claim_token={quote(claim_token)}",
-            'gift_card': serialize_gift_card(updated),
+            'gift_card': serialize_gift_card(gift),
         }
 
-    jwt_token = create_google_gift_card_jwt(updated, business)
+    # Build a valid Google save JWT FIRST. If class/JWT generation fails, keep
+    # the card CLAIMED_PENDING_WALLET so the original claimant can retry.
+    staged = _gift_staged_wallet_copy(gift, 'google')
+    jwt_token = create_google_gift_card_jwt(staged, business)
     if not jwt_token:
-        raise HTTPException(status_code=503, detail='Google Wallet is not configured')
+        raise HTTPException(
+            status_code=503,
+            detail='Google Wallet pass could not be prepared. The Gift Card remains claimed but is not Wallet-bound; you can retry after checking the Google Wallet class/issuer configuration.'
+        )
+
+    updated = _bind_gift_wallet(gift, claim_token, 'google')
     return {
         'save_url': f"https://pay.google.com/gp/v/save/{jwt_token}",
         'gift_card': serialize_gift_card(updated),
@@ -22161,10 +22207,19 @@ async def gift_card_apple_wallet_pass(gift_public_id: str, claim_token: str = Qu
     if not business:
         raise HTTPException(status_code=404, detail='Business not found')
 
-    updated = _bind_gift_wallet(gift, claim_token, 'apple')
-    pkpass = build_gift_card_pkpass_bytes(updated, business)
+    _validate_gift_wallet_request(gift, claim_token, 'apple')
+
+    # Build/sign the pkpass FIRST. A signing/configuration failure must not lock
+    # the Gift Card to Apple before the claimant receives a usable pass.
+    staged = _gift_staged_wallet_copy(gift, 'apple')
+    pkpass = build_gift_card_pkpass_bytes(staged, business)
     if pkpass is None:
-        raise HTTPException(status_code=503, detail='Apple Wallet is not configured')
+        raise HTTPException(
+            status_code=503,
+            detail='Apple Wallet pass could not be prepared. The Gift Card remains claimed but is not Wallet-bound; you can retry after checking the Apple Wallet signing configuration.'
+        )
+
+    _bind_gift_wallet(gift, claim_token, 'apple')
     return Response(
         content=pkpass,
         media_type='application/vnd.apple.pkpass',
