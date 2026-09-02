@@ -21393,10 +21393,16 @@ def ensure_google_gift_card_class(business: dict) -> bool:
             return False
 
 
-def _gift_wallet_cashier_qr_value(gift: dict) -> str:
-    """Wallet QR must be a real URL so external/USB scanners can open Cashier."""
+def _gift_wallet_cashier_qr_value(gift: dict, business: dict) -> str:
+    """Wallet QR opens the cashier flow directly.
+
+    The printed/customer claim QR remains /gift/{gift_id}. The QR inside the
+    Wallet pass is only for cashier redemption and carries no balance/value.
+    """
     gift_id = quote(str(gift.get('public_id') or ''))
-    return f"{BASE_URL.rstrip('/')}/gift-scan/{gift_id}"
+    business_id = quote(str((business or {}).get('public_id') or ''))
+    frontend = (FRONTEND_URL or 'https://theloyaltytree.com').rstrip('/')
+    return f"{frontend}/cashier?business={business_id}&gift={gift_id}"
 
 
 def build_google_gift_card_object(gift: dict, business: dict) -> dict:
@@ -21404,7 +21410,7 @@ def build_google_gift_card_object(gift: dict, business: dict) -> dict:
     state = 'ACTIVE' if status in GIFT_CARD_ACTIVE_STATUSES else 'INACTIVE'
     # Wallet QR is cashier-only identity data. It must NOT point back to the
     # public claim page. The public/printed QR remains /gift/{public_id}.
-    cashier_qr_value = _gift_wallet_cashier_qr_value(gift)
+    cashier_qr_value = _gift_wallet_cashier_qr_value(gift, business)
     obj = {
         'id': _gift_google_object_id(gift),
         'classId': _gift_google_class_id(business),
@@ -21493,7 +21499,7 @@ def build_gift_card_apple_pass_json(gift: dict, business: dict) -> dict:
     primary_color = _gift_brand_color(business)
     # Same cashier-only token used by Google Wallet. Scanning this QR never
     # claims or redeems by itself; the authenticated CashierApp resolves it.
-    cashier_qr_value = _gift_wallet_cashier_qr_value(gift)
+    cashier_qr_value = _gift_wallet_cashier_qr_value(gift, business)
     if gift.get('gift_type') == 'amount':
         primary_label = 'BALANCE'
         primary_value = f"₱{float(gift.get('remaining_amount') or 0):,.2f}"

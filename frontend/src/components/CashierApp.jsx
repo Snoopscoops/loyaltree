@@ -8,6 +8,24 @@ const DEBUG = import.meta.env.DEV
 const CASHIER_BUILD = 'HYBRID-V17-MEMBERSHIP-LOYALTY'
 const BUSINESS_ICONS={spa:'🌿',salon:'✂️',fitness:'🏋️',restaurant:'🍽️',coffee:'☕',retail:'🛍️',clinic:'🩺',laundry:'🧺',gas_station:'⛽',car_wash:'🚿',pharmacy:'💊',bakery:'🥐',hotel:'🏨',other:'🏪',car_lending:'🚗',cockpit:'🏆'}
 
+// Accept both the new direct Cashier URL and older Gift Card QR formats so
+// existing Wallet passes keep working during migration.
+function giftIdentifierFromScan(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  const legacyToken = raw.match(/^LTGC:(gc_[A-Z0-9_-]+)$/i)
+  if (legacyToken) return legacyToken[1]
+  const legacyPath = raw.match(/\/gift(?:-scan)?\/([^/?#]+)/i)
+  if (legacyPath) return legacyPath[1]
+  if (/^GC-[A-Z0-9-]+$/i.test(raw)) return raw
+  try {
+    const url = new URL(raw)
+    const queuedGift = String(url.searchParams.get('gift') || '').trim()
+    if (queuedGift) return queuedGift
+  } catch (_) {}
+  return ''
+}
+
 function CashierApp({ API_BASE }) {
   const location = useLocation()
   const navigate = useNavigate()
@@ -24,13 +42,30 @@ function CashierApp({ API_BASE }) {
   const hasPendingNfcTap = !!pendingNfcToken
   const hasPendingGiftScan = !!pendingGiftId
 
+  // Keep a verified cashier signed in for this browser session only. This lets
+  // the next Gift Card scan go straight to Redeem without asking for the same
+  // credentials again. We never store the cashier PIN.
+  const restoredCashierSession = (() => {
+    if (ownerState) return null
+    try {
+      const raw = sessionStorage.getItem('loyaltree_cashier_session')
+      if (!raw) return null
+      const saved = JSON.parse(raw)
+      if (!saved?.businessSlug || !saved?.sessionToken || !saved?.staffName) return null
+      if (nfcBusinessSlug && saved.businessSlug !== nfcBusinessSlug) return null
+      return saved
+    } catch (_) {
+      return null
+    }
+  })()
+
   const [scanResult, setScanResult] = useState(null)
-  const [businessSlug, setBusinessSlug] = useState(ownerState?.businessSlug || nfcBusinessSlug || '')
+  const [businessSlug, setBusinessSlug] = useState(ownerState?.businessSlug || nfcBusinessSlug || restoredCashierSession?.businessSlug || '')
   const [staffPin, setStaffPin] = useState('')
-  const [staffEmail, setStaffEmail] = useState('')
+  const [staffEmail, setStaffEmail] = useState(restoredCashierSession?.staffEmail || '')
   // Session token from /staff/verify-pin - sent instead of the raw PIN on
   // every scan, so the PIN itself only crosses the wire once per shift.
-  const [sessionToken, setSessionToken] = useState(ownerState?.ownerToken || '')
+  const [sessionToken, setSessionToken] = useState(ownerState?.ownerToken || restoredCashierSession?.sessionToken || '')
   const lastScanRef = useRef({ id: null, time: 0 })
   const lastNfcRef = useRef({ token: null, time: 0 })
   const [customerData, setCustomerData] = useState(null)
@@ -43,7 +78,7 @@ function CashierApp({ API_BASE }) {
   const [manualId, setManualId] = useState('')
   const [debugInfo, setDebugInfo] = useState('')
   const [verifying, setVerifying] = useState(false)
-  const [staffName, setStaffName] = useState(isOwner ? (ownerState?.ownerName || 'Owner') : '')
+  const [staffName, setStaffName] = useState(isOwner ? (ownerState?.ownerName || 'Owner') : (restoredCashierSession?.staffName || ''))
   const [saleAmount, setSaleAmount] = useState('')
   const [vipSaleAmount, setVipSaleAmount] = useState('')
   const [customSessionCount, setCustomSessionCount] = useState('')
@@ -62,15 +97,10 @@ function CashierApp({ API_BASE }) {
 
     function onScanSuccess(decodedText) {
       const rawScan = decodedText.trim()
-      // Gift Cards have two different QRs:
-      //   public claim QR: /gift/gc_xxx
-      //   Wallet cashier QR: LTGC:gc_xxx
-      // Keep accepting /gift-scan/gc_xxx as a compatibility format too.
-      const giftWalletTokenMatch = rawScan.match(/^LTGC:(gc_[A-Z0-9_-]+)$/i)
-      const giftUrlMatch = rawScan.match(/\/gift(?:-scan)?\/([^/?#]+)/i)
-      const giftCodeMatch = rawScan.match(/^(GC-[A-Z0-9-]+)$/i)
-      if (giftWalletTokenMatch || giftUrlMatch || giftCodeMatch) {
-        const giftId = (giftWalletTokenMatch?.[1] || giftUrlMatch?.[1] || giftCodeMatch?.[1] || '').trim()
+      // The QR inside Wallet opens the Cashier flow directly. Older LTGC and
+      // /gift-scan formats remain accepted for already-issued Wallet passes.
+      const giftId = giftIdentifierFromScan(rawScan)
+      if (giftId) {
         const now = Date.now()
         if (lastScanRef.current.id === `gift:${giftId}` && now - lastScanRef.current.time < 3000) return
         lastScanRef.current = { id: `gift:${giftId}`, time: now }
@@ -739,6 +769,12 @@ function CashierApp({ API_BASE }) {
         headers: { Authorization: `Bearer ${sessionToken}` }, cache: 'no-store'
       })
       const data = await res.json().catch(() => ({}))
+      if (res.status === 401 || res.status === 403) {
+        try { sessionStorage.removeItem('loyaltree_cashier_session') } catch (_) {}
+        setSessionToken('')
+        setStaffName('')
+        throw new Error('Cashier session expired. Please log in again.')
+      }
       if (!res.ok || !data.gift_card) throw new Error(data.detail || 'Gift Card not found')
       setCustomerData(null)
     setGiftCardData(null)
@@ -753,7 +789,7 @@ function CashierApp({ API_BASE }) {
     setLoading(false)
   }
 
-  // Wallet QR URLs open /scanner?business=<slug>&gift=<gift-id>.
+  // Wallet QR URLs open /cashier?business=<slug>&gift=<gift-id>.
   // If the cashier is already authenticated, load it immediately. If not,
   // the login form is pre-filled with the correct business and this effect
   // continues automatically after authentication.
@@ -767,7 +803,7 @@ function CashierApp({ API_BASE }) {
     setEntrySource('gift_qr')
 
     fetchGiftCard(pendingGiftId).finally(() => {
-      navigate('/scanner', { replace: true })
+      navigate('/cashier', { replace: true })
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingGiftId, businessSlug, staffName, sessionToken, giftCardData, customerData])
@@ -800,10 +836,7 @@ function CashierApp({ API_BASE }) {
         // A scanner burst is normally much faster than manual typing.
         if (raw.length < 6 || avgMs > 80) return
 
-        const walletGift = raw.match(/^LTGC:(gc_[A-Z0-9_-]+)$/i)
-        const giftUrl = raw.match(/\/gift(?:-scan)?\/([^/?#]+)/i)
-        const giftCode = raw.match(/^(GC-[A-Z0-9-]+)$/i)
-        const giftIdentifier = walletGift?.[1] || giftUrl?.[1] || giftCode?.[1] || ''
+        const giftIdentifier = giftIdentifierFromScan(raw)
 
         if (giftIdentifier) {
           const dedupeKey = `gift:${giftIdentifier}`
@@ -926,13 +959,23 @@ function CashierApp({ API_BASE }) {
         setBusinessSlug(cleanSlug)
         // If the backend issued a session token, keep it and stop holding
         // onto the raw PIN - it's only sent once, right here.
+        const verifiedName = data.name || 'Staff'
         if (data.session_token) {
           setSessionToken(data.session_token)
           setStaffPin('')
+          try {
+            sessionStorage.setItem('loyaltree_cashier_session', JSON.stringify({
+              businessSlug: cleanSlug,
+              staffEmail: cleanEmail,
+              staffName: verifiedName,
+              sessionToken: data.session_token,
+            }))
+          } catch (_) {}
         } else {
+          // Legacy fallback remains supported, but never persist a raw PIN.
           setStaffPin(cleanPin)
         }
-        setStaffName(data.name || 'Staff')
+        setStaffName(verifiedName)
         setMessage('')
       } else {
         setMessage(data.detail || 'Invalid email or PIN for this business')
@@ -985,10 +1028,10 @@ function CashierApp({ API_BASE }) {
             onClick={verifyPinAndStart}
             disabled={!businessSlug || !staffEmail || !staffPin || verifying}
           >
-            {verifying ? 'Checking...' : hasPendingNfcTap ? 'Authenticate NFC Tap 📡' : hasPendingGiftScan ? 'Open Gift Card 🎁' : 'Start Scanning 🍃'}
+            {verifying ? 'Checking...' : hasPendingNfcTap ? 'Authenticate NFC Tap 📡' : hasPendingGiftScan ? 'Login & Redeem Gift Card 🎁' : 'Start Scanning 🍃'}
           </button>
 
-          <p style={styles.hint}>{hasPendingNfcTap ? 'NFC tap pending. Enter your cashier email and PIN to identify the member. No visit is recorded until you confirm Log NFC Activity.' : hasPendingGiftScan ? 'Gift Card scan pending. Log in to view its live balance and redeem it. Scanning alone never redeems value.' : 'Ask the business owner for the Business ID, your email, and your PIN — shown on their "Your Team" tab'}</p>
+          <p style={styles.hint}>{hasPendingNfcTap ? 'NFC tap pending. Enter your cashier email and PIN to identify the member. No visit is recorded until you confirm Log NFC Activity.' : hasPendingGiftScan ? 'Gift Card ready. Log in with the same cashier email and PIN, then enter the amount or quantity and tap Redeem.' : 'Ask the business owner for the Business ID, your email, and your PIN — shown on their "Your Team" tab'}</p>
         </div>
       </div>
     )
@@ -1107,8 +1150,10 @@ function CashierApp({ API_BASE }) {
             navigate('/dashboard')
             return
           }
+          try { sessionStorage.removeItem('loyaltree_cashier_session') } catch (_) {}
           setBusinessSlug('')
           setStaffPin('')
+          setStaffEmail('')
           setSessionToken('')
           setStaffName('')
           resetScan()
@@ -1140,7 +1185,7 @@ function CashierApp({ API_BASE }) {
             <div style={styles.giftBalance}>{giftCardData.gift_type === 'amount' ? `₱${Number(giftCardData.remaining_amount || 0).toLocaleString('en-PH',{maximumFractionDigits:2})}` : `${giftCardData.remaining_quantity || 0} / ${giftCardData.original_quantity || 0}`}</div>
             {giftCardData.gift_type === 'item' && <div style={styles.giftItem}>{giftCardData.item_name}</div>}
           </div>
-          <div style={styles.giftStatusRow}><span>Status</span><b>{String(giftCardData.status || '').replaceAll('_',' ').toUpperCase()}</b></div>{giftCardData.wallet_platform&&<div style={styles.giftStatusRow}><span>Wallet</span><b>{String(giftCardData.wallet_platform).toUpperCase()} · BOUND</b></div>}
+          <div style={styles.giftStatusRow}><span>Status</span><b>{['active_claimed','partially_redeemed'].includes(giftCardData.status) ? 'READY TO REDEEM' : String(giftCardData.status || '').replaceAll('_',' ').toUpperCase()}</b></div>{giftCardData.wallet_platform&&<div style={styles.giftStatusRow}><span>Wallet</span><b>{String(giftCardData.wallet_platform).toUpperCase()} · BOUND</b></div>}
           {giftCardData.status === 'unactivated' ? (
             <div style={styles.giftActionBox}><p style={styles.scanHint}>This is unsold printed inventory. After receiving payment, mark this exact serial as sold/issued. The recipient must then claim it and bind one Wallet before it becomes spendable.</p><button style={styles.giftActivateBtn} disabled={loading} onClick={markGiftCardSold}>{loading?'Saving…':'Mark Sold / Issue'}</button></div>
           ) : giftCardData.status === 'issued_unclaimed' ? (
@@ -1150,7 +1195,7 @@ function CashierApp({ API_BASE }) {
           ) : ['active_claimed','partially_redeemed'].includes(giftCardData.status) ? (
             <div style={styles.giftActionBox}>
               {giftCardData.gift_type === 'amount' ? <input style={styles.input} type="number" min="0.01" step="0.01" placeholder="Amount to redeem (₱)" value={giftRedeemAmount} onChange={e=>setGiftRedeemAmount(e.target.value)} /> : <div><div style={{fontWeight:800,marginBottom:7}}>Quantity to redeem</div><input style={styles.input} type="number" min="1" max={giftCardData.remaining_quantity || 1} value={giftRedeemQuantity} onChange={e=>setGiftRedeemQuantity(e.target.value)} /></div>}
-              <button style={styles.giftRedeemBtn} disabled={loading} onClick={redeemGiftCard}>{loading?'Processing…':'Redeem Gift Card'}</button>
+              <button style={styles.giftRedeemBtn} disabled={loading} onClick={redeemGiftCard}>{loading?'Processing…':'Redeem Now'}</button>
             </div>
           ) : <div style={styles.giftClosed}>This Gift Card can no longer be redeemed.</div>}
           {!!giftCardData.redemptions?.length && <div style={styles.giftHistory}><b>Recent redemptions</b>{giftCardData.redemptions.slice(0,6).map((r,i)=><div key={r.id||i} style={styles.giftHistoryRow}><span>{r.redeemed_at ? new Date(r.redeemed_at).toLocaleString() : 'Redemption'}</span><b>{giftCardData.gift_type==='amount'?`-₱${Number(r.amount||0).toLocaleString()}`:`-${r.quantity||0}`}</b></div>)}</div>}
@@ -1173,16 +1218,14 @@ function CashierApp({ API_BASE }) {
               <h4>Manual Entry</h4>
               <input
                 style={styles.input}
-                placeholder="Customer ID, Gift Card code, or LTGC token"
+                placeholder="Customer ID or Gift Card code"
                 value={manualId}
                 onChange={e => setManualId(e.target.value)}
               />
               <button style={styles.btn} onClick={() => {
                 if (!manualId) return
                 const raw = manualId.trim()
-                const walletGift = raw.match(/^LTGC:(gc_[A-Z0-9_-]+)$/i)
-                const giftUrl = raw.match(/\/gift(?:-scan)?\/([^/?#]+)/i)
-                const giftIdentifier = walletGift?.[1] || giftUrl?.[1] || (/^GC-/i.test(raw) ? raw : '')
+                const giftIdentifier = giftIdentifierFromScan(raw)
                 giftIdentifier ? fetchGiftCard(giftIdentifier) : fetchCustomer(raw)
               }}>
                 Find Card
