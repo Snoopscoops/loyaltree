@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react'
 
 const money = value => `₱${Number(value || 0).toLocaleString('en-PH', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`
 const STATUS_LABELS = {
-  unactivated: 'Unactivated', active_unclaimed: 'Active · Unclaimed', active_claimed: 'Active · Claimed',
+  unactivated: 'Printed stock · Unsold', issued_unclaimed: 'Issued · Unclaimed',
+  claimed_pending_wallet: 'Claimed · Wallet pending', active_claimed: 'Active · Wallet bound',
   partially_redeemed: 'Partially redeemed', redeemed: 'Redeemed', expired: 'Expired', voided: 'Voided'
 }
 
@@ -13,6 +14,7 @@ function GiftCards({ API_BASE, user, enabled = true, plan = '' }) {
   const [printRequests, setPrintRequests] = useState([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [bulkActivating, setBulkActivating] = useState('')
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [showCreate, setShowCreate] = useState(false)
@@ -51,6 +53,8 @@ function GiftCards({ API_BASE, user, enabled = true, plan = '' }) {
 
   const filtered = useMemo(() => cards.filter(c => filter === 'all' || c.status === filter), [cards, filter])
   const canCreate = enabled && overview?.feature_enabled !== false
+  const unactivatedCount = useMemo(() => cards.filter(c => c.status === 'unactivated').length, [cards])
+  const batchUnactivatedCount = batch => cards.filter(c => c.status === 'unactivated' && c.batch_id === batch.id).length
 
   const createBatch = async (e) => {
     e.preventDefault(); if (!canCreate) return
@@ -62,7 +66,7 @@ function GiftCards({ API_BASE, user, enabled = true, plan = '' }) {
       item_quantity: form.gift_type === 'item' ? Number(form.item_quantity || 1) : null,
       quantity: Math.max(1, Number(form.quantity || 1)), expires_at: form.expires_at || null,
       print_option: form.print_option, print_format: form.print_format,
-      activation_mode: form.print_option === 'digital' ? form.activation_mode : 'unactivated',
+      activation_mode: form.print_option === 'digital' ? 'active' : 'unactivated',
       purchaser_name: form.purchaser_name || null, purchaser_email: form.purchaser_email || null,
       recipient_name: form.recipient_name || null, recipient_phone: form.recipient_phone || null,
       gift_message: form.gift_message || null,
@@ -83,12 +87,30 @@ function GiftCards({ API_BASE, user, enabled = true, plan = '' }) {
     finally { setSaving(false) }
   }
 
-  const activate = async card => {
-    if (!window.confirm(`Activate ${card.code}? Once activated, its value can be redeemed.`)) return
+  const markSold = async card => {
+    if (!window.confirm(`Mark ${card.code} as sold/issued? The recipient can then claim it and bind it to one Wallet.`)) return
     const res = await api(`/api/v1/business/${user.business_slug}/gift-cards/${card.public_id}/activate`, { method: 'POST' })
     const data = await res.json().catch(() => ({}))
-    if (!res.ok) return setError(data.detail || 'Activation failed')
-    setMessage(`${card.code} activated.`); load()
+    if (!res.ok) return setError(data.detail || 'Could not mark Gift Card sold/issued')
+    setMessage(`${card.code} marked sold/issued and ready to claim.`); load()
+  }
+
+  const activateAll = async (batch = null) => {
+    const count = batch ? batchUnactivatedCount(batch) : unactivatedCount
+    if (!count) return setMessage('There are no unactivated Gift Cards to activate.')
+    const scope = batch ? `all ${count} unactivated Gift Cards in “${batch.name}”` : `all ${count} unactivated Gift Cards`
+    if (!window.confirm(`Activate ${scope}?\n\nThey will become ISSUED · UNCLAIMED immediately, so anyone holding one of those printed QR cards can claim it and bind it to a Wallet. This cannot be used as unsold stock protection after activation.`)) return
+    const key = batch?.public_id || 'all'
+    setBulkActivating(key); setError(''); setMessage('')
+    try {
+      const qs = batch ? `?batch_public_id=${encodeURIComponent(batch.public_id)}` : ''
+      const res = await api(`/api/v1/business/${user.business_slug}/gift-cards/activate-all${qs}`, { method: 'POST' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not activate Gift Cards')
+      setMessage(data.message || `${data.activated_count || 0} Gift Cards activated and ready to claim.`)
+      await load()
+    } catch (e) { setError(e.message || 'Could not activate Gift Cards') }
+    finally { setBulkActivating('') }
   }
 
   const voidCard = async card => {
@@ -135,11 +157,11 @@ function GiftCards({ API_BASE, user, enabled = true, plan = '' }) {
     {error && <div style={S.error}>{error}</div>}{message && <div style={S.success}>{message}</div>}
 
     <div style={S.stats}>
-      <Stat label="Available / Active" value={overview?.available_cards ?? 0} sub="Usable Gift Cards" />
+      <Stat label="Issued / Available" value={overview?.available_cards ?? 0} sub="Issued, claimed, or active cards" />
       <Stat label="Outstanding Value" value={money(overview?.outstanding_value)} sub="Unused peso balance" />
       <Stat label="Redeemed Value" value={money(overview?.redeemed_value)} sub="Peso value already used" />
       <Stat label="Fully Redeemed" value={overview?.fully_redeemed ?? 0} sub="Cards with nothing left" />
-      <Stat label="Printed Stock" value={overview?.unactivated_stock ?? 0} sub="Unactivated physical inventory" />
+      <Stat label="Printed Stock" value={overview?.unactivated_stock ?? 0} sub="Unsold physical inventory" />
     </div>
 
     {showCreate && canCreate && <form onSubmit={createBatch} style={S.form}>
@@ -155,7 +177,7 @@ function GiftCards({ API_BASE, user, enabled = true, plan = '' }) {
         <Field label="Expiration (optional)"><input style={S.input} type="date" value={form.expires_at} onChange={e=>setForm({...form,expires_at:e.target.value})}/></Field>
         <Field label="Delivery / print option"><select style={S.input} value={form.print_option} onChange={e=>setForm({...form,print_option:e.target.value})}><option value="digital">Digital only</option><option value="self">I will print them myself</option><option value="loyaltytree">Request Loyalty Tree printing</option></select></Field>
         {form.print_option !== 'digital' && <Field label="Print format"><select style={S.input} value={form.print_format} onChange={e=>setForm({...form,print_format:e.target.value})}><option value="business_card">Business-card size</option><option value="a4">A4 sheet</option><option value="letter">Letter sheet</option></select></Field>}
-        {form.print_option === 'digital' && <Field label="Initial status"><select style={S.input} value={form.activation_mode} onChange={e=>setForm({...form,activation_mode:e.target.value})}><option value="active">Active immediately</option><option value="unactivated">Activate later at cashier</option></select></Field>}
+        {form.print_option === 'digital' && <div style={S.infoBox}><b>Digital issue</b><div style={S.small}>Created as <b>ISSUED · UNCLAIMED</b>. It becomes active only when the first recipient claims it and selects Apple Wallet or Google Wallet.</div></div>}
       </div>
       {Number(form.quantity) === 1 && <div style={S.grid2}>
         <Field label="Purchaser name (optional)"><input style={S.input} value={form.purchaser_name} onChange={e=>setForm({...form,purchaser_name:e.target.value})}/></Field>
@@ -168,22 +190,22 @@ function GiftCards({ API_BASE, user, enabled = true, plan = '' }) {
           <Field label="Contact number"><input required style={S.input} value={form.delivery_phone} onChange={e=>setForm({...form,delivery_phone:e.target.value})}/></Field>
           <Field label="Delivery address"><textarea required style={{...S.input,minHeight:82}} value={form.delivery_address} onChange={e=>setForm({...form,delivery_address:e.target.value})}/></Field>
           <Field label="Instructions (optional)"><textarea style={{...S.input,minHeight:82}} value={form.delivery_notes} onChange={e=>setForm({...form,delivery_notes:e.target.value})}/></Field>
-        </div><p style={S.small}>These cards are generated as <b>UNACTIVATED</b> inventory. They carry no usable value until the cashier activates the exact serial after sale.</p>
+        </div><p style={S.small}>These cards are generated as <b>UNACTIVATED</b> inventory. After payment, the cashier marks the exact serial as sold/issued. The recipient then claims it and activates it by binding one Wallet platform.</p>
       </div>}
       <div style={S.actions}><button type="button" style={S.secondary} onClick={()=>setShowCreate(false)}>Cancel</button><button disabled={saving} style={S.primary}>{saving?'Generating…':'Generate Gift Cards'}</button></div>
     </form>}
 
     <section style={S.section}>
-      <div style={S.sectionHead}><div><h3 style={S.h3}>Gift Card inventory</h3><p style={S.muted}>Every QR maps to one server-side balance or item quantity.</p></div><select style={S.filter} value={filter} onChange={e=>setFilter(e.target.value)}><option value="all">All statuses</option>{Object.entries(STATUS_LABELS).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select></div>
+      <div style={S.sectionHead}><div><h3 style={S.h3}>Gift Card inventory</h3><p style={S.muted}>Every QR maps to one server-side balance or item quantity. First claim locks the card to one claimant; first Wallet choice locks Apple or Google for V1.</p></div><div style={S.rowActions}>{unactivatedCount>0&&<button disabled={!!bulkActivating} style={S.activateAll} onClick={()=>activateAll()}>{bulkActivating==='all'?'Activating…':`Activate All (${unactivatedCount})`}</button>}<select style={S.filter} value={filter} onChange={e=>setFilter(e.target.value)}><option value="all">All statuses</option>{Object.entries(STATUS_LABELS).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select></div></div>
       <div style={S.tableWrap}><table style={S.table}><thead><tr><th>Gift Card</th><th>Status</th><th>Original</th><th>Remaining</th><th>Actions</th></tr></thead><tbody>
-        {filtered.map(c => <tr key={c.public_id}><td><b>{c.name}</b><div style={S.code}>{c.code}</div></td><td><span style={S.status}>{STATUS_LABELS[c.status] || c.status}</span></td><td>{c.gift_type==='amount'?money(c.original_amount):`${c.original_quantity} × ${c.item_name}`}</td><td><b>{c.gift_type==='amount'?money(c.remaining_amount):`${c.remaining_quantity} / ${c.original_quantity}`}</b></td><td><div style={S.rowActions}><button onClick={()=>window.open(`${API_BASE}/gift/${c.public_id}`,'_blank')} style={S.tiny}>Open</button><button onClick={()=>copyLink(c)} style={S.tiny}>Copy link</button>{c.status==='unactivated'&&<button onClick={()=>activate(c)} style={S.tinyPrimary}>Activate</button>}{!['redeemed','voided','expired'].includes(c.status)&&<button onClick={()=>voidCard(c)} style={S.tinyDanger}>Void</button>}</div></td></tr>)}
+        {filtered.map(c => <tr key={c.public_id}><td><b>{c.name}</b><div style={S.code}>{c.code}</div></td><td><span style={S.status}>{STATUS_LABELS[c.status] || c.status}</span>{c.wallet_platform&&<div style={S.code}>Wallet: {String(c.wallet_platform).toUpperCase()}</div>}</td><td>{c.gift_type==='amount'?money(c.original_amount):`${c.original_quantity} × ${c.item_name}`}</td><td><b>{c.gift_type==='amount'?money(c.remaining_amount):`${c.remaining_quantity} / ${c.original_quantity}`}</b></td><td><div style={S.rowActions}><button onClick={()=>window.open(`${API_BASE}/gift/${c.public_id}`,'_blank')} style={S.tiny}>Open</button><button onClick={()=>copyLink(c)} style={S.tiny}>Copy link</button>{c.status==='unactivated'&&<button onClick={()=>markSold(c)} style={S.tinyPrimary}>Mark Sold / Issue</button>}{!['redeemed','voided','expired'].includes(c.status)&&<button onClick={()=>voidCard(c)} style={S.tinyDanger}>Void</button>}</div></td></tr>)}
         {!filtered.length && <tr><td colSpan="5" style={S.empty}>No Gift Cards in this view.</td></tr>}
       </tbody></table></div>
     </section>
 
     <section style={S.section}>
       <h3 style={S.h3}>Batches & printing</h3><p style={S.muted}>Printed batches use the exact QR inventory stored in LoyaltyTree.</p>
-      <div style={S.batchGrid}>{batches.map(b => <div key={b.public_id} style={S.batchCard}><div style={S.batchTop}><b>{b.name}</b><span style={S.badge}>{b.quantity} cards</span></div><div style={S.small}>{b.gift_type === 'amount' ? `${money(b.face_value)} each` : `${b.item_quantity} × ${b.item_name}`}</div><div style={S.small}>Print: {b.print_option === 'loyaltytree' ? 'Loyalty Tree requested' : b.print_option === 'self' ? 'Self print' : 'Digital'}</div><div style={S.rowActions}><button style={S.tiny} onClick={()=>download(b,'manifest')}>Manifest</button>{b.print_option !== 'digital'&&<button style={S.tinyPrimary} onClick={()=>download(b,'print')}>Print PDF</button>}</div></div>)}</div>
+      <div style={S.batchGrid}>{batches.map(b => { const inactive=batchUnactivatedCount(b); return <div key={b.public_id} style={S.batchCard}><div style={S.batchTop}><b>{b.name}</b><span style={S.badge}>{b.quantity} cards</span></div><div style={S.small}>{b.gift_type === 'amount' ? `${money(b.face_value)} each` : `${b.item_quantity} × ${b.item_name}`}</div><div style={S.small}>Print: {b.print_option === 'loyaltytree' ? 'Loyalty Tree requested' : b.print_option === 'self' ? 'Self print' : 'Digital'}</div>{inactive>0&&<div style={S.small}><b>{inactive}</b> still unactivated</div>}<div style={S.rowActions}><button style={S.tiny} onClick={()=>download(b,'manifest')}>Manifest</button>{b.print_option !== 'digital'&&<button style={S.tinyPrimary} onClick={()=>download(b,'print')}>Print PDF</button>}{inactive>0&&<button disabled={!!bulkActivating} style={S.activateAllSmall} onClick={()=>activateAll(b)}>{bulkActivating===b.public_id?'Activating…':`Activate All (${inactive})`}</button>}</div></div> })}</div>
       {!!printRequests.length && <div style={{marginTop:18}}><b>Printing requests</b>{printRequests.map(r=><div key={r.public_id} style={S.requestRow}><span>{r.public_id}</span><span>{String(r.status||'requested').replaceAll('_',' ')}</span></div>)}</div>}
     </section>
   </div>
@@ -195,9 +217,10 @@ function Field({label,children}) { return <label style={S.field}><span style={S.
 const S = {
   page:{padding:'4px 0 40px'}, state:{padding:40,textAlign:'center',color:'#64748b'}, locked:{padding:40,textAlign:'center',background:'#fff',border:'1px solid #e2e8f0',borderRadius:20},
   header:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:18,flexWrap:'wrap',marginBottom:18}, eyebrow:{fontSize:11,fontWeight:900,letterSpacing:1.5,color:'#0f766e'}, h2:{margin:'5px 0 6px',fontSize:28,color:'#0f172a'}, h3:{margin:'0 0 5px',fontSize:19,color:'#0f172a'}, muted:{margin:0,color:'#64748b',fontSize:14,lineHeight:1.55},
-  primary:{border:0,borderRadius:12,padding:'12px 17px',background:'#0d9488',color:'#fff',fontWeight:800,cursor:'pointer'}, secondary:{border:'1px solid #d8e1e8',borderRadius:12,padding:'12px 17px',background:'#fff',color:'#334155',fontWeight:750,cursor:'pointer'}, disabled:{border:0,borderRadius:12,padding:'12px 17px',background:'#cbd5e1',color:'#64748b',fontWeight:800,cursor:'not-allowed'},
+  primary:{border:0,borderRadius:12,padding:'12px 17px',background:'#0d9488',color:'#fff',fontWeight:800,cursor:'pointer'}, activateAll:{border:0,borderRadius:10,padding:'9px 12px',background:'#0f766e',color:'#fff',fontWeight:850,cursor:'pointer'}, activateAllSmall:{border:0,background:'#0f766e',color:'#fff',borderRadius:8,padding:'7px 9px',fontSize:11,fontWeight:850,cursor:'pointer'}, secondary:{border:'1px solid #d8e1e8',borderRadius:12,padding:'12px 17px',background:'#fff',color:'#334155',fontWeight:750,cursor:'pointer'}, disabled:{border:0,borderRadius:12,padding:'12px 17px',background:'#cbd5e1',color:'#64748b',fontWeight:800,cursor:'not-allowed'},
   growthBadge:{display:'inline-block',marginTop:10,padding:'7px 10px',borderRadius:999,background:'#ecfdf5',color:'#047857',fontSize:11,fontWeight:900,letterSpacing:1}, warning:{padding:13,borderRadius:12,background:'#fff7ed',border:'1px solid #fed7aa',color:'#9a3412',marginBottom:14}, error:{padding:12,borderRadius:10,background:'#fef2f2',color:'#b91c1c',marginBottom:12}, success:{padding:12,borderRadius:10,background:'#ecfdf5',color:'#047857',marginBottom:12},
   stats:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:12,marginBottom:20}, stat:{background:'#fff',border:'1px solid #dce8e6',borderRadius:16,padding:17,boxShadow:'0 8px 22px rgba(15,23,42,.04)'}, statLabel:{fontSize:12,fontWeight:800,color:'#64748b'}, statValue:{fontSize:27,fontWeight:900,color:'#0f766e',margin:'6px 0 2px'}, statSub:{fontSize:11,color:'#94a3b8'},
+  infoBox:{padding:12,borderRadius:10,background:'#f0fdfa',border:'1px solid #99f6e4',alignSelf:'end'},
   form:{background:'#fff',border:'1px solid #cfe8e3',borderRadius:18,padding:20,marginBottom:20}, formTitle:{fontSize:18,fontWeight:900,color:'#0f172a',marginBottom:16}, grid2:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:13}, field:{display:'flex',flexDirection:'column',gap:6}, label:{fontSize:12,fontWeight:800,color:'#334155'}, input:{boxSizing:'border-box',width:'100%',padding:'11px 12px',border:'1px solid #d7e0e7',borderRadius:10,fontSize:14,fontFamily:'inherit',background:'#fff'}, moneyInput:{display:'flex',alignItems:'center',border:'1px solid #d7e0e7',borderRadius:10,paddingLeft:12}, delivery:{marginTop:16,padding:15,borderRadius:14,background:'#f0fdfa',border:'1px solid #99f6e4'}, small:{fontSize:12,color:'#64748b',lineHeight:1.5,marginTop:5}, actions:{display:'flex',justifyContent:'flex-end',gap:9,marginTop:17},
   section:{background:'#fff',border:'1px solid #dce8e6',borderRadius:18,padding:18,marginTop:16}, sectionHead:{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-end',flexWrap:'wrap'}, filter:{padding:'9px 11px',border:'1px solid #d7e0e7',borderRadius:10,background:'#fff'}, tableWrap:{overflowX:'auto',marginTop:13}, table:{width:'100%',borderCollapse:'collapse',fontSize:13}, code:{fontFamily:'monospace',fontSize:11,color:'#94a3b8',marginTop:3}, status:{display:'inline-block',padding:'5px 8px',borderRadius:999,background:'#f1f5f9',fontSize:11,fontWeight:800,color:'#475569'}, rowActions:{display:'flex',gap:6,flexWrap:'wrap'}, tiny:{border:'1px solid #d8e1e8',background:'#fff',color:'#334155',borderRadius:8,padding:'7px 9px',fontSize:11,fontWeight:750,cursor:'pointer'}, tinyPrimary:{border:0,background:'#0d9488',color:'#fff',borderRadius:8,padding:'7px 9px',fontSize:11,fontWeight:800,cursor:'pointer'}, tinyDanger:{border:'1px solid #fecaca',background:'#fff',color:'#b91c1c',borderRadius:8,padding:'7px 9px',fontSize:11,fontWeight:750,cursor:'pointer'}, empty:{padding:24,textAlign:'center',color:'#94a3b8'},
   batchGrid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:10,marginTop:13}, batchCard:{border:'1px solid #e2e8f0',borderRadius:13,padding:13}, batchTop:{display:'flex',justifyContent:'space-between',gap:8}, badge:{fontSize:10,fontWeight:850,background:'#ecfdf5',color:'#047857',borderRadius:999,padding:'4px 7px'}, requestRow:{display:'flex',justifyContent:'space-between',gap:12,padding:'10px 0',borderBottom:'1px solid #eef2f7',fontSize:12}

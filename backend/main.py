@@ -21913,6 +21913,60 @@ async def cashier_get_gift_card(public_id: str, identifier: str, authorization: 
     return {'business': {'public_id': public_id, 'name': business.get('name')}, 'gift_card': serialize_gift_card(gift, include_history=True)}
 
 
+@app.post('/api/v1/business/{public_id}/gift-cards/activate-all')
+async def owner_activate_all_gift_cards(
+    public_id: str,
+    authorization: str = Header(default=''),
+    batch_public_id: Optional[str] = Query(default=None),
+):
+    """Bulk issue every still-unactivated Gift Card for this business or one batch.
+
+    V1.1 semantics: this changes UNACTIVATED printed inventory into
+    ISSUED_UNCLAIMED. It does not make the cards redeemable by itself; the first
+    recipient must still claim the card and bind the single Wallet platform.
+    Claimed, active, partially redeemed, redeemed, expired and voided cards are
+    never touched by this operation.
+    """
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+
+    batch = None
+    if batch_public_id:
+        batch = safe_get_gift_batch(batch_public_id, business.get('id'))
+        if not batch:
+            raise HTTPException(status_code=404, detail='Gift Card batch not found')
+
+    now = datetime.utcnow().isoformat()
+    try:
+        q = (
+            supabase.table('gift_cards')
+            .update({
+                'status': 'issued_unclaimed',
+                'activated_at': None,
+                'updated_at': now,
+            })
+            .eq('business_id', business.get('id'))
+            .eq('status', 'unactivated')
+        )
+        if batch:
+            q = q.eq('batch_id', batch.get('id'))
+        rows = q.execute().data or []
+        return {
+            'success': True,
+            'activated_count': len(rows),
+            'status': 'issued_unclaimed',
+            'batch_public_id': batch_public_id,
+            'message': (
+                f"{len(rows)} Gift Card{'s' if len(rows) != 1 else ''} activated and ready to claim."
+                if rows else 'No unactivated Gift Cards were found.'
+            ),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=friendly_db_error(e))
+
+
 @app.post('/api/v1/business/{public_id}/gift-cards/{identifier}/activate')
 async def cashier_activate_gift_card(public_id: str, identifier: str, background_tasks: BackgroundTasks, authorization: str = Header(default='')):
     claims = _require_gift_cashier_session(public_id, authorization)
