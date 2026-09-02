@@ -44,6 +44,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
     membership_services: [], // legacy display compatibility
     membership_benefits: [],
     membership_terms: '',
+    membership_visit_logging_enabled: true,
+    membership_quick_checkin: false,
     // VIP card only
     vip_points_per_amount: 10,
     vip_amount_pesos: 100,
@@ -151,6 +153,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                 usage_limit: null, reset_period: 'never', active: true,
               })),
           membership_terms: data.membership_terms || '',
+          membership_visit_logging_enabled: data.membership_visit_logging_enabled !== false,
+          membership_quick_checkin: data.membership_quick_checkin === true,
           vip_points_per_amount: data.vip_points_per_amount ?? 10,
           vip_amount_pesos: data.vip_amount_pesos ?? 100,
           vip_tiers: Array.isArray(data.vip_tiers) && data.vip_tiers.length ? data.vip_tiers : f.vip_tiers,
@@ -271,6 +275,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
     })),
     membership_services: (form.membership_benefits || []).map(b => (b.name || '').trim()).filter(Boolean),
     membership_terms: form.membership_terms || null,
+    membership_visit_logging_enabled: form.membership_visit_logging_enabled !== false,
+    membership_quick_checkin: form.membership_quick_checkin === true,
     vip_points_per_amount: Number(form.vip_points_per_amount) || 0,
     vip_amount_pesos: Number(form.vip_amount_pesos) || 100,
     vip_tiers: form.vip_tiers,
@@ -682,6 +688,11 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                       <button type="button" onClick={addMembershipBenefit} style={{...styles.addPrizeBtn,width:guidedMobile?'100%':'auto'}}>+ Add Benefit</button>
                     </div>
                   </div>
+
+                  <label style={{display:'flex',gap:10,alignItems:'flex-start',marginTop:18,padding:14,border:'1px solid #dbeafe',borderRadius:12,background:'#f8fafc',fontSize:13,fontWeight:700,lineHeight:1.45,cursor:'pointer'}}>
+                    <input type="checkbox" checked={form.membership_visit_logging_enabled !== false} onChange={e=>update('membership_visit_logging_enabled',e.target.checked)} style={{marginTop:3}}/>
+                    <span><strong>Show “Log Membership Visit” in cashier</strong><span style={{display:'block',fontWeight:500,color:'#64748b',marginTop:4}}>Track general member visits/services from the cashier screen. Turn this off if you only need subscription status, benefits, and {effectiveLoyaltyType === 'points' ? 'Points' : 'Stamps'}.</span></span>
+                  </label>
 
                   <label style={{...styles.label,marginTop:18}}>Membership Terms <span style={{fontWeight:500,color:'#94a3b8'}}>(optional)</span></label>
                   <textarea style={{...styles.textarea,width:'100%',boxSizing:'border-box'}} rows={3} value={form.membership_terms} onChange={e=>update('membership_terms',e.target.value)} placeholder="Renewal, usage, or subscription rules."/>
@@ -1306,6 +1317,13 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                   {benefitError && <div style={styles.error}>{benefitError}</div>}
                   <button type="button" onClick={addMembershipBenefit} style={styles.addPrizeBtn}>+ Add Benefit</button>
                 </div>
+              </div>
+
+              <div style={styles.fieldGroup}>
+                <label style={{display:'flex',gap:10,alignItems:'flex-start',padding:14,border:'1px solid #dbeafe',borderRadius:12,background:'#f8fafc',fontSize:13,fontWeight:700,lineHeight:1.45,cursor:'pointer'}}>
+                  <input type="checkbox" checked={form.membership_visit_logging_enabled !== false} onChange={e=>update('membership_visit_logging_enabled',e.target.checked)} style={{marginTop:3}}/>
+                  <span><strong>Show “Log Membership Visit” in cashier</strong><span style={{display:'block',fontWeight:500,color:'#64748b',marginTop:4}}>When disabled, cashiers still see membership status, redeemable benefits, and loyalty actions, but general visit/service logging is hidden.</span></span>
+                </label>
               </div>
 
               <div style={styles.fieldGroup}>

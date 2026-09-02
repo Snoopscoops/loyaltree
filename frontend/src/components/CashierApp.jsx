@@ -252,6 +252,7 @@ function CashierApp({ API_BASE }) {
           membership_services: Array.isArray(program.membership_services) ? program.membership_services : [],
           membership_benefits: Array.isArray(membershipBenefitState.benefits) ? membershipBenefitState.benefits : [],
           membership_description: program.description || '',
+          membership_visit_logging_enabled: program.membership_visit_logging_enabled !== false,
           membership_quick_checkin: !!program.membership_quick_checkin,
           vip_points: c.vip_points || 0,
           vip_tier: c.vip_tier || null,
@@ -437,6 +438,10 @@ function CashierApp({ API_BASE }) {
 
   const logMembershipVisit = async () => {
     if (!customerData || !businessSlug) return
+    if (customerData.membership_visit_logging_enabled === false) {
+      setMessage('Membership visit logging is disabled by the business owner')
+      return
+    }
     const serviceName = customerData.membership_quick_checkin
       ? null
       : window.prompt('Visit or service', customerData.membership_services?.[0] || 'Member check-in')
@@ -832,6 +837,7 @@ function CashierApp({ API_BASE }) {
   const usesPoints = customerData?.card_type === 'points' || (isHybrid && hybridLoyaltyType === 'points')
   const usesStamps = customerData?.card_type === 'stamp' || (isHybrid && hybridLoyaltyType === 'stamp')
   const hasMembership = customerData?.card_type === 'membership' || isHybrid
+  const canLogMembershipVisit = hasMembership && customerData?.membership_visit_logging_enabled !== false
 
   const cardExperience = isHybrid
     ? {
@@ -1337,7 +1343,7 @@ function CashierApp({ API_BASE }) {
                 {loading ? '...' : '🎟️ Add Stamp'}
               </button>
             )}
-            {hasMembership && (
+            {canLogMembershipVisit && (
               <button
                 style={{...styles.actionBtn, background: '#0d9488'}}
                 onClick={logMembershipVisit}
@@ -1346,7 +1352,7 @@ function CashierApp({ API_BASE }) {
                 {loading ? '...' : entrySource === 'nfc' ? '📡 Log NFC Activity' : '🏋️ Check In Member'}
               </button>
             )}
-            {hasMembership && !['active','lifetime'].includes(customerData.membership_status) && (
+            {canLogMembershipVisit && !['active','lifetime'].includes(customerData.membership_status) && (
               <div style={{width: '100%', color: '#991b1b', fontWeight: 700, textAlign: 'center'}}>
                 Access denied — membership is {customerData.membership_status}.
               </div>

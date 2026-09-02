@@ -23,6 +23,27 @@ function formatLastStamped(isoString) {
   return `Stamped ${diffYears} year${diffYears !== 1 ? 's' : ''} ago`
 }
 
+function formatLastPointsActivity(isoString) {
+  if (!isoString) return 'No points activity yet'
+  const then = new Date(isoString)
+  if (isNaN(then.getTime())) return 'No points activity yet'
+  const diffDays = Math.floor((Date.now() - then.getTime()) / 86400000)
+  if (diffDays <= 0) return 'Points activity today'
+  if (diffDays === 1) return 'Points activity yesterday'
+  if (diffDays < 30) return `Points activity ${diffDays} days ago`
+  const diffMonths = Math.floor(diffDays / 30)
+  if (diffMonths < 12) return `Points activity ${diffMonths} month${diffMonths !== 1 ? 's' : ''} ago`
+  const diffYears = Math.floor(diffMonths / 12)
+  return `Points activity ${diffYears} year${diffYears !== 1 ? 's' : ''} ago`
+}
+
+function formatLastVisitActivity(value) {
+  if (!value) return 'No member visits yet'
+  const date = new Date(value)
+  if (isNaN(date.getTime())) return `Last visit ${String(value).slice(0, 10)}`
+  return `Last visit ${date.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'})}`
+}
+
 // Card-cycle dates are DATE values (YYYY-MM-DD), so parse them without the
 // browser's timezone conversion. The backend keeps a card valid THROUGH
 // card_expires_at and resets Stamp/Points/VIP on the following Manila day.
@@ -196,6 +217,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     membership_price: 0,
     membership_services_text: '',
     membership_terms: '',
+    membership_visit_logging_enabled: true,
     membership_quick_checkin: false,
   })
   const [savingMembershipSettings, setSavingMembershipSettings] = useState(false)
@@ -373,6 +395,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           membership_price: progData.membership_price || 0,
           membership_services_text: Array.isArray(progData.membership_services) ? progData.membership_services.join('\n') : '',
           membership_terms: progData.membership_terms || '',
+          membership_visit_logging_enabled: progData.membership_visit_logging_enabled !== false,
           membership_quick_checkin: !!progData.membership_quick_checkin,
         })
       }
@@ -525,6 +548,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       membership_status: c.membership_effective_status || c.membership_status || 'inactive',
       membership_visit_count: c.membership_visit_count || 0,
       membership_last_visit_at: c.membership_last_visit_at || '',
+      last_points_at: c.last_points_at || '',
       membership_start_date: c.membership_start_date || '',
       membership_expires_at: c.membership_expires_at || '',
       vip_points: c.vip_points ?? 0,
@@ -716,6 +740,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           membership_duration_days: Number(membershipSettings.membership_duration_days) || 30,
           membership_price: Number(membershipSettings.membership_price) || 0,
           membership_terms: membershipSettings.membership_terms || null,
+          membership_visit_logging_enabled: membershipSettings.membership_visit_logging_enabled !== false,
           membership_quick_checkin: !!membershipSettings.membership_quick_checkin,
         }),
       })
@@ -1557,7 +1582,15 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                         <p style={styles.stampText}>{c.stamp_count % (program?.stamp_goal || 8)} / {program?.stamp_goal || 8} rings</p>
                       </>
                     )}
-                    <p style={styles.lastStampedText}>{formatLastStamped(c.last_stamp_at)}</p>
+                    {isHybridCard ? (
+                      <p style={styles.lastStampedText}>{hybridUsesPoints ? formatLastPointsActivity(c.last_points_at) : formatLastStamped(c.last_stamp_at)}</p>
+                    ) : isPointsCard ? (
+                      <p style={styles.lastStampedText}>{formatLastPointsActivity(c.last_points_at)}</p>
+                    ) : isMembershipCard ? (
+                      <p style={styles.lastStampedText}>{formatLastVisitActivity(c.membership_last_visit_at)}</p>
+                    ) : (!isMultipassCard && !isVipCard) ? (
+                      <p style={styles.lastStampedText}>{formatLastStamped(c.last_stamp_at)}</p>
+                    ) : null}
                     {program?.card_expiration_enabled && ['stamp', 'points', 'vip', 'hybrid'].includes(program?.card_type) && c.card_expires_at && (
                       <span style={{
                         display: 'inline-flex',
@@ -1836,6 +1869,10 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                   onChange={e => setMembershipSettings({...membershipSettings, membership_services_text: e.target.value})}
                   placeholder={'Unlimited access\nLocker use\nFree assessment'}
                 />
+                <label style={{...styles.label, display:'flex', gap:10, alignItems:'flex-start', cursor:'pointer'}}>
+                  <input type="checkbox" checked={membershipSettings.membership_visit_logging_enabled !== false} onChange={e => setMembershipSettings({...membershipSettings, membership_visit_logging_enabled:e.target.checked})} style={{marginTop:3}}/>
+                  <span><strong>Show “Log Membership Visit” in cashier</strong><br/><small style={{color:'#64748b'}}>Turn this off when cashiers should only handle subscription benefits and loyalty rewards. Existing visit history is kept.</small></span>
+                </label>
                 <label style={{...styles.label, display: 'flex', gap: 10, alignItems: 'flex-start', cursor: 'pointer'}}>
                   <input
                     type="checkbox"
@@ -2131,7 +2168,10 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                         <div style={{fontSize:14, fontWeight:800, color:'#0f766e', marginTop:6}}>
                           {selectedCustomer.membership_last_visit_at
                             ? new Date(selectedCustomer.membership_last_visit_at).toLocaleString()
-                            : 'Never'}
+                            : (() => {
+                                const last = memberHistory.find(item => item.hybrid_source === 'membership' || item.activity_type === 'membership_visit')
+                                return last?.created_at ? new Date(last.created_at).toLocaleString() : 'Never'
+                              })()}
                         </div>
                       </div>
                     </div>

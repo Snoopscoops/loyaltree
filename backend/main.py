@@ -1163,6 +1163,7 @@ class LoyaltyConfig(BaseModel):
     membership_duration_days: Optional[int] = Field(default=30, ge=1, le=3650)
     membership_price: Optional[float] = Field(default=0, ge=0)
     membership_terms: Optional[str] = Field(default=None, max_length=2000)
+    membership_visit_logging_enabled: Optional[bool] = True
     membership_quick_checkin: Optional[bool] = False
     # --- VIP card only ---
     vip_points_per_amount: Optional[float] = Field(default=10, ge=0)
@@ -5481,10 +5482,9 @@ def get_membership_summary(business_id: int, customer_id: int) -> dict:
     try:
         res = (
             supabase.table("membership_events")
-            .select("service_name,service_date")
+            .select("service_name,service_date,created_at")
             .eq("business_id", business_id)
             .eq("customer_id", customer_id)
-            .order("service_date", desc=True)
             .order("created_at", desc=True)
             .execute()
         )
@@ -5492,7 +5492,7 @@ def get_membership_summary(business_id: int, customer_id: int) -> dict:
         summary['total_visits'] = len(rows)
         if rows:
             summary['last_service_name'] = rows[0].get('service_name')
-            summary['last_service_date'] = rows[0].get('service_date')
+            summary['last_service_date'] = rows[0].get('service_date') or rows[0].get('created_at')
     except Exception as e:
         print(f"MEMBERSHIP SUMMARY error: {e}")
     return summary
@@ -8225,6 +8225,23 @@ async def get_customers(public_id: str):
         for c in customers:
             c.setdefault('last_stamp_at', None)
 
+    # Points cards (including Hybrid + Points) have points activity, not stamps.
+    if program and effective_loyalty_type(program) == 'points':
+        try:
+            point_events = (supabase.table('points_events').select('customer_id,created_at')
+                            .eq('business_id', business.get('id')).execute().data or [])
+            last_points_by_customer = {}
+            for ev in point_events:
+                cid = ev.get('customer_id'); ts = _parse_ts(ev.get('created_at'))
+                if ts and (cid not in last_points_by_customer or ts > last_points_by_customer[cid]):
+                    last_points_by_customer[cid] = ts
+            for c in customers:
+                ts = last_points_by_customer.get(c.get('id'))
+                c['last_points_at'] = ts.isoformat() if ts else None
+        except Exception:
+            for c in customers:
+                c.setdefault('last_points_at', None)
+
     if program and program_has_membership(program):
         for c in customers:
             c['membership_effective_status'] = membership_effective_status(c)
@@ -9432,6 +9449,7 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
         data['membership_duration_days'] = config.membership_duration_days or 30
         data['membership_price'] = config.membership_price or 0
         data['membership_terms'] = (config.membership_terms or '').strip() or None
+        data['membership_visit_logging_enabled'] = config.membership_visit_logging_enabled is not False
         data['membership_quick_checkin'] = bool(config.membership_quick_checkin)
     if config.google_review_url is not None:
         features = get_plan_features(business.get('plan'))
@@ -13385,6 +13403,8 @@ async def add_membership_note(public_id: str, req: MembershipNoteRequest, backgr
     program = safe_get_loyalty_program(business.get('id'))
     if not program or not program_has_membership(program):
         raise HTTPException(status_code=400, detail="This business is not on a membership card")
+    if program.get('membership_visit_logging_enabled') is False:
+        raise HTTPException(status_code=400, detail='Membership visit logging is disabled for this program')
     effective_status = membership_effective_status(customer)
     if effective_status not in ('active', 'lifetime'):
         raise HTTPException(
