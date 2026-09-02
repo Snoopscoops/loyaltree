@@ -22195,6 +22195,56 @@ async def public_gift_card_wallet(
     }
 
 
+@app.get('/api/v1/gift-card/{gift_public_id}/google-wallet-redirect')
+async def public_gift_card_google_wallet_redirect(
+    gift_public_id: str,
+    claim_token: str = Query(min_length=20),
+):
+    """Prepare the GiftCardObject, bind the first claimant, then let the
+    browser follow a real HTTP redirect to Google Wallet.
+
+    This route intentionally avoids returning the Google Save URL to browser
+    JavaScript first. Some mobile QR/in-app browsers do not reliably hand off
+    to pay.google.com after an awaited fetch, even though the API returned
+    200 OK. A normal top-level navigation -> HTTP 302 -> Google Wallet is much
+    more reliable and also keeps the Wallet handoff in the navigation chain.
+    """
+    gift = safe_get_gift_card(gift_public_id)
+    if not gift:
+        raise HTTPException(status_code=404, detail='Gift Card not found')
+
+    status = _gift_effective_status(gift)
+    if status not in ('claimed_pending_wallet', 'active_claimed', 'partially_redeemed'):
+        raise HTTPException(status_code=400, detail='Claim this Gift Card before adding it to Google Wallet')
+
+    business = safe_get_business_by_id(gift.get('business_id'))
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+
+    _validate_gift_wallet_request(gift, claim_token, 'google')
+
+    # Build a valid Google Wallet JWT BEFORE permanently binding the card.
+    staged = _gift_staged_wallet_copy(gift, 'google')
+    jwt_token = create_google_gift_card_jwt(staged, business)
+    if not jwt_token:
+        raise HTTPException(
+            status_code=503,
+            detail='Google Wallet pass could not be prepared. The Gift Card remains claimed but is not Wallet-bound; try again after checking Google Wallet configuration.'
+        )
+
+    _bind_gift_wallet(gift, claim_token, 'google')
+    save_url = f"https://pay.google.com/gp/v/save/{jwt_token}"
+    print(f"GIFT GOOGLE REDIRECT: {gift_public_id} -> Google Wallet")
+    return RedirectResponse(
+        url=save_url,
+        status_code=302,
+        headers={
+            'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+            'Pragma': 'no-cache',
+        },
+    )
+
+
 @app.get('/api/v1/gift-card/{gift_public_id}/apple-wallet-pass')
 async def gift_card_apple_wallet_pass(gift_public_id: str, claim_token: str = Query(min_length=20)):
     gift = safe_get_gift_card(gift_public_id)
@@ -22388,14 +22438,13 @@ async function addToWalletWithToken(platform,token,button){{
     return;
   }}
   if(platform==='google'){{
-    setBusy(button,true,'Preparing Google Wallet…');
-    try{{
-      const r=await fetch('/api/v1/gift-card/'+giftId+'/wallet?platform=google&claim_token='+encodeURIComponent(token));
-      const d=await r.json();
-      if(!r.ok)throw new Error(d.detail||'Could not open Google Wallet');
-      if(!d.save_url)throw new Error('Google Wallet link was not created');
-      window.location.href=d.save_url;
-    }}catch(err){{setBusy(button,false);showError(err.message||'Could not open Google Wallet')}}
+    setBusy(button,true,'Opening Google Wallet…');
+    // Use a top-level same-origin navigation. The backend then responds with
+    // HTTP 302 directly to pay.google.com. This is more reliable than fetch()
+    // + window.location on QR/in-app mobile browsers.
+    const target='/api/v1/gift-card/'+giftId+'/google-wallet-redirect?claim_token='+encodeURIComponent(token);
+    window.location.assign(target);
+    return;
   }}
 }}
 async function claimAndAddToWallet(){{
