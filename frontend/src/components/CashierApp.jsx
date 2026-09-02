@@ -187,7 +187,12 @@ function CashierApp({ API_BASE }) {
         // This is the exact source already used successfully by the Points flow.
         const program = data.program || {}
         const allowedCardTypes = ['stamp', 'points', 'membership', 'vip', 'multipass', 'hybrid']
-        const returnedCardType = data.current_card_type || program.card_type
+        // The saved loyalty program is authoritative for Hybrid. This prevents
+        // any stale/legacy current_card_type value from making a Points-based
+        // Hybrid card fall through to the Stamp UI.
+        const returnedCardType = program.card_type === 'hybrid'
+          ? 'hybrid'
+          : (data.current_card_type || program.card_type)
 
         if (!allowedCardTypes.includes(returnedCardType)) {
           throw new Error(

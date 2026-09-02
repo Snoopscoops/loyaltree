@@ -608,6 +608,86 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                 </div>
               )}
 
+              {isHybrid && (
+                <div style={{...styles.pointsSection,border:'1px solid #99f6e4',background:'#f0fdfa',marginBottom:20}}>
+                  <div style={{...styles.wallet20Eyebrow,marginBottom:6}}>Membership / Subscription</div>
+                  <h3 style={{margin:'0 0 6px',fontSize:17,color:'#0f172a'}}>Set up the subscription side</h3>
+                  <p style={{...styles.hint,margin:'0 0 16px'}}>Hybrid keeps membership and {effectiveLoyaltyType === 'points' ? 'Points' : 'Stamps'} together on one customer card. Choose how customers receive subscription access, then define the benefits they can redeem.</p>
+
+                  <label style={styles.label}>How should customers become subscribers?</label>
+                  <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'1fr 1fr',gap:10,marginBottom:14}}>
+                    <button type="button" onClick={()=>update('subscription_enrollment_mode','automatic')} style={{...styles.pickerCard,padding:14,...(form.subscription_enrollment_mode==='automatic'?{borderColor:'#0d9488',background:'#fff'}:{})}}>
+                      <span style={styles.pickerCardIcon}>⚡</span>
+                      <span style={styles.pickerCardLabel}>Automatic Enrollment</span>
+                      <span style={styles.pickerCardDesc}>Everyone who joins immediately receives an active membership for the configured duration. Best for free or included memberships.</span>
+                    </button>
+                    <button type="button" onClick={()=>update('subscription_enrollment_mode','manual')} style={{...styles.pickerCard,padding:14,...(form.subscription_enrollment_mode!=='automatic'?{borderColor:'#0d9488',background:'#fff'}:{})}}>
+                      <span style={styles.pickerCardIcon}>👤</span>
+                      <span style={styles.pickerCardLabel}>Manual Enrollment</span>
+                      <span style={styles.pickerCardDesc}>Customers join the loyalty card first. You choose who receives subscription access. Recommended for paid memberships.</span>
+                    </button>
+                  </div>
+                  {form.subscription_enrollment_mode==='automatic' && Number(form.membership_price||0)>0 && (
+                    <p style={{...styles.hint,color:'#b45309',fontWeight:700,margin:'0 0 14px'}}>Automatic enrollment activates membership before payment is verified. Use Manual for paid subscriptions unless access is intentionally included.</p>
+                  )}
+
+                  <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'minmax(180px,1.4fr) 130px 140px',gap:10}}>
+                    <div>
+                      <label style={styles.label}>Membership Name</label>
+                      <input style={{...styles.input,width:'100%',boxSizing:'border-box'}} value={form.membership_name} onChange={e=>update('membership_name',e.target.value)} placeholder="Coffee Club"/>
+                    </div>
+                    <div>
+                      <label style={styles.label}>Duration</label>
+                      <div style={{display:'flex',alignItems:'center',gap:6}}><input style={{...styles.input,width:'100%'}} type="number" min="1" max="3650" value={form.membership_duration_days} onChange={e=>update('membership_duration_days',e.target.value)}/><span style={styles.unit}>days</span></div>
+                    </div>
+                    <div>
+                      <label style={styles.label}>Price</label>
+                      <div style={{display:'flex',alignItems:'center',gap:6}}><span style={styles.unit}>₱</span><input style={{...styles.input,width:'100%'}} type="number" min="0" step="any" value={form.membership_price} onChange={e=>update('membership_price',e.target.value)}/></div>
+                    </div>
+                  </div>
+
+                  <div style={{marginTop:18}}>
+                    <label style={styles.label}>Redeemable Membership Benefits</label>
+                    <p style={{...styles.hint,margin:'0 0 10px'}}>Examples: 1 free coffee per day, 1 free sandwich per week, or 10% off pastries. LoyaltyTree tracks each redemption and restores availability according to the reset rule.</p>
+                    {(form.membership_benefits || []).map((b,i)=><div key={b.id||i} style={styles.prizeRow}>
+                      <div style={{minWidth:0}}>
+                        <div style={styles.prizeName}>{b.name}</div>
+                        <div style={styles.prizeDesc}>{benefitRuleLabel(b)}{b.benefit_type==='percentage_discount'&&b.value!=null?` · ${b.value}% discount`:b.benefit_type==='fixed_discount'&&b.value!=null?` · ₱${Number(b.value).toLocaleString()} discount`:''}</div>
+                        {b.description && <div style={styles.prizeDesc}>{b.description}</div>}
+                      </div>
+                      <button type="button" style={styles.prizeRemoveBtn} onClick={()=>removeMembershipBenefit(b.id)}>✕</button>
+                    </div>)}
+
+                    <div style={{...styles.prizeForm,marginTop:10}}>
+                      <input style={styles.input} placeholder="Benefit name, e.g. Free Brewed Coffee" value={benefitDraft.name} onChange={e=>setBenefitDraft(d=>({...d,name:e.target.value}))}/>
+                      <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'1fr 160px',gap:8}}>
+                        <select style={styles.input} value={benefitDraft.benefit_type} onChange={e=>setBenefitDraft(d=>({...d,benefit_type:e.target.value,value:''}))}>
+                          <option value="free_item">Free item / service</option>
+                          <option value="percentage_discount">Percentage discount</option>
+                          <option value="fixed_discount">Fixed discount</option>
+                          <option value="custom">Custom benefit</option>
+                        </select>
+                        {['percentage_discount','fixed_discount'].includes(benefitDraft.benefit_type) && <input style={styles.input} type="number" min="0" max={benefitDraft.benefit_type==='percentage_discount'?100:undefined} step="any" placeholder={benefitDraft.benefit_type==='percentage_discount'?'Discount %':'₱ discount'} value={benefitDraft.value} onChange={e=>setBenefitDraft(d=>({...d,value:e.target.value}))}/>} 
+                      </div>
+                      <input style={styles.input} placeholder="Description (optional)" value={benefitDraft.description} onChange={e=>setBenefitDraft(d=>({...d,description:e.target.value}))}/>
+                      <label style={{display:'flex',gap:9,alignItems:'center',fontSize:13,fontWeight:700}}><input type="checkbox" checked={benefitDraft.unlimited} onChange={e=>setBenefitDraft(d=>({...d,unlimited:e.target.checked}))}/> Unlimited uses while membership is active</label>
+                      {!benefitDraft.unlimited && <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'110px auto minmax(150px,1fr)',gap:8,alignItems:'center'}}>
+                        <input style={styles.input} type="number" min="1" value={benefitDraft.usage_limit} onChange={e=>setBenefitDraft(d=>({...d,usage_limit:e.target.value}))}/>
+                        <span style={styles.earnRateText}>use(s) per</span>
+                        <select style={styles.input} value={benefitDraft.reset_period} onChange={e=>setBenefitDraft(d=>({...d,reset_period:e.target.value}))}>
+                          <option value="daily">Day</option><option value="weekly">Week</option><option value="monthly">Month</option><option value="membership_cycle">Membership cycle</option><option value="never">Membership lifetime / never resets</option>
+                        </select>
+                      </div>}
+                      {benefitError && <div style={styles.error}>{benefitError}</div>}
+                      <button type="button" onClick={addMembershipBenefit} style={{...styles.addPrizeBtn,width:guidedMobile?'100%':'auto'}}>+ Add Benefit</button>
+                    </div>
+                  </div>
+
+                  <label style={{...styles.label,marginTop:18}}>Membership Terms <span style={{fontWeight:500,color:'#94a3b8'}}>(optional)</span></label>
+                  <textarea style={{...styles.textarea,width:'100%',boxSizing:'border-box'}} rows={3} value={form.membership_terms} onChange={e=>update('membership_terms',e.target.value)} placeholder="Renewal, usage, or subscription rules."/>
+                </div>
+              )}
+
               {effectiveLoyaltyType==='stamp' && <>
                 <p style={{...styles.hint,margin:'0 0 14px'}}>Set one or more reward milestones. Customers keep progressing after an intermediate reward until they reach the highest milestone.</p>
                 {(form.stamp_rewards || []).map((r,i) => (
@@ -695,7 +775,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                 </div>
               </>}
 
-              {hasMembership && <>
+              {form.card_type==='membership' && <>
                 <label style={styles.label}>Default membership duration</label>
                 <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
                   <input style={{...styles.input,width:guidedMobile?'100%':130}} type="number" min="1" max="3650" value={form.membership_duration_days} onChange={e=>update('membership_duration_days',e.target.value)}/>
@@ -811,6 +891,11 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                 <div style={{padding:13,borderRadius:12,background:'#f8fafc'}}><b>Card type:</b> {guidedCardLabel}</div>
                 <div style={{padding:13,borderRadius:12,background:'#f8fafc'}}><b>Card name:</b> {form.card_name || `${businessName} Rewards`}</div>
                 <div style={{padding:13,borderRadius:12,background:'#f8fafc'}}><b>Description:</b> {form.description || '—'}</div>
+                {isHybrid && <>
+                  <div style={{padding:13,borderRadius:12,background:'#f8fafc'}}><b>Subscription:</b> {form.membership_name || 'Membership'} · ₱{Number(form.membership_price || 0).toLocaleString()} / {Number(form.membership_duration_days || 30)} days · {form.subscription_enrollment_mode === 'automatic' ? 'Automatic enrollment' : 'Manual enrollment'}</div>
+                  <div style={{padding:13,borderRadius:12,background:'#f8fafc'}}><b>Membership benefits:</b> {(form.membership_benefits || []).length ? (form.membership_benefits || []).map(b=>b.name).join(', ') : 'None added yet'}</div>
+                  <div style={{padding:13,borderRadius:12,background:'#f8fafc'}}><b>Loyalty:</b> {effectiveLoyaltyType === 'points' ? `${form.points_per_amount} point(s) per ₱${form.points_amount_pesos}` : `${form.stamp_goal} stamp final goal`}</div>
+                </>}
                 <div style={{padding:13,borderRadius:12,background:'#f8fafc',display:'flex',alignItems:'center',gap:9}}>
                   <b>Color:</b><span style={{width:22,height:22,borderRadius:6,background:form.primary_color,border:'1px solid #cbd5e1'}}/> {form.primary_color}
                 </div>

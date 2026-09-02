@@ -2866,6 +2866,15 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
                 else {'string': loyalty_points_balance}
             )
         },
+        # Google Loyalty passes support a second front-of-card balance. For
+        # Hybrid this keeps loyalty progress on the left and membership status
+        # at the same visual level on the right.
+        **({
+            'secondaryLoyaltyPoints': {
+                'label': 'Member',
+                'balance': {'string': membership_effective_status(customer).upper()},
+            }
+        } if card_type == 'hybrid' else {}),
         'textModulesData': [
             {'header': card_title, 'body': cust_name},
             *[{'header': header, 'body': str(body)} for header, body in details],
@@ -3097,6 +3106,7 @@ def sync_wallet_object(customer: dict, business: dict, program: dict,
 
             member_patch = {
                 'loyaltyPoints': desired.get('loyaltyPoints'),
+                'secondaryLoyaltyPoints': desired.get('secondaryLoyaltyPoints'),
                 'accountId': desired.get('accountId'),
                 'accountName': desired.get('accountName'),
                 'barcode': desired.get('barcode'),
@@ -18590,6 +18600,7 @@ async def cashier_stamp_page(customer_public_id: str):
     active_coupon = safe_get_active_coupon(customer.get('id'))
 
     card_type = program.get('card_type', 'stamp') if program else 'stamp'
+    loyalty_type = effective_loyalty_type(program)
     points_prizes = program.get('points_prizes', []) if program else []
 
     # multipass/vip/membership are only computed when that program type is
@@ -18605,6 +18616,7 @@ async def cashier_stamp_page(customer_public_id: str):
         'business_public_id': business.get('public_id', ''),
         'business_name': business.get('name', ''),
         'card_type': card_type,
+        'hybrid_loyalty_type': loyalty_type if card_type == 'hybrid' else None,
         'stamp_count': customer.get('stamp_count', 0),
         'stamp_goal': stamp_goal,
         'reward_name': reward_name,
@@ -18619,9 +18631,16 @@ async def cashier_stamp_page(customer_public_id: str):
         'vip_tier': vip_tier_data,
         'vip_next_tier': vip_next_tier_data,
         'membership_status': membership_effective_status(customer),
+        'membership_name': (program.get('membership_name') if program else None) or (program.get('card_name') if program else None) or 'Membership',
+        'membership_expires_at': customer.get('membership_expires_at'),
+        'membership_benefits': get_membership_benefit_statuses(business, customer, program) if program_has_membership(program) else [],
     }
     data_json = json.dumps(data)
-    page_title = {'points': 'Add Points', 'multipass': 'Use Session', 'vip': 'Add VIP Sale', 'membership': 'Log Visit'}.get(card_type, 'Add Stamp')
+    page_title = (
+        f"Membership + {'Points' if loyalty_type == 'points' else 'Stamps'}"
+        if card_type == 'hybrid' else
+        {'points': 'Add Points', 'multipass': 'Use Session', 'vip': 'Add VIP Sale', 'membership': 'Log Visit'}.get(card_type, 'Add Stamp')
+    )
 
     head = (
         '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
@@ -18666,6 +18685,8 @@ async def cashier_stamp_page(customer_public_id: str):
         # (STAFF_SESSION_SECRET not set) - kept only in memory, never persisted
         'const DATA=' + data_json + ';'
         'const cardType=DATA.card_type;'
+        'const hybridLoyaltyType=DATA.hybrid_loyalty_type==="stamp"?"stamp":"points";'
+        'let membershipBenefits=DATA.membership_benefits||[];'
         'let stampCount=DATA.stamp_count;'
         'let rewardUnlocked=DATA.reward_unlocked;'
         'let pointsBalance=DATA.points_balance;'
@@ -18803,8 +18824,41 @@ async def cashier_stamp_page(customer_public_id: str):
         '"<button class=\'btn-primary\' id=\'membershipBtn\'>Log Visit</button>";'
         '}'
 
+        'function renderHybridBenefits(){'
+        'if(!membershipBenefits.length)return "";'
+        'let html="<div style=\'margin-top:14px\'><div style=\'font-size:12px;font-weight:800;color:#334155;margin-bottom:8px\'>MEMBER BENEFITS</div>";'
+        'for(let i=0;i<membershipBenefits.length;i++){'
+        'const b=membershipBenefits[i]||{};const available=!!b.available;const remaining=b.remaining_in_window;'
+        'const status=available?(remaining==null?"Available · Unlimited":("Available · "+remaining+" left")):(b.unavailable_reason||"Unavailable");'
+        'html+="<div style=\'padding:10px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;margin-bottom:8px;opacity:"+(available?"1":".58")+"\'>"+'
+        '"<div style=\'font-weight:700;font-size:14px;color:#0f172a\'>"+escapeHtml(b.name||"Benefit")+"</div>"+'
+        '"<div style=\'font-size:12px;color:#64748b;margin:3px 0 8px\'>"+escapeHtml(status)+"</div>"+'
+        '"<button data-benefit-id=\'"+escapeHtml(String(b.id||""))+"\' class=\'benefitRedeemBtn\' style=\'margin:0;padding:9px 12px;background:"+(available?"#0d9488":"#cbd5e1")+";\' "+(available?"":"disabled")+">"+((b.benefit_type||"").includes("discount")?"Apply":"Redeem")+"</button></div>";'
+        '}'
+        'return html+"</div>";'
+        '}'
+
+        'function renderHybridBody(){'
+        'const active=membershipStatus==="active"||membershipStatus==="lifetime";'
+        'const until=membershipStatus==="lifetime"?"Lifetime":(DATA.membership_expires_at||"Not activated");'
+        'const membershipHtml="<div class=\'"+(active?"msg msg-ok":"msg msg-err")+"\'><b>"+escapeHtml(DATA.membership_name||"Membership")+": "+escapeHtml(String(membershipStatus||"inactive").toUpperCase())+"</b><br><span style=\'font-size:12px\'>Valid until: "+escapeHtml(until)+"</span></div>";'
+        'const loyaltyHtml=hybridLoyaltyType==="points"?renderPointsBody():renderStampBody();'
+        'const visitHtml=active?("<div style=\'margin-top:14px;padding-top:14px;border-top:1px solid #e2e8f0\'><input id=\'serviceName\' type=\'text\' placeholder=\'Visit / service\'><input id=\'serviceNote\' type=\'text\' placeholder=\'Note (optional)\'><button class=\'btn-primary\' id=\'membershipBtn\'>Log Membership Visit</button></div>"):"";'
+        'return membershipHtml+loyaltyHtml+visitHtml+renderHybridBenefits();'
+        '}'
+
         'function attachBodyListeners(){'
-        'if(cardType==="points"){'
+        'if(cardType==="hybrid"){'
+        'if(hybridLoyaltyType==="points"){'
+        'const pointsBtn=document.getElementById("pointsBtn");if(pointsBtn)pointsBtn.addEventListener("click",doPoints);'
+        'const prizeBtns=document.querySelectorAll(".prizeRedeemBtn");for(let i=0;i<prizeBtns.length;i++){prizeBtns[i].addEventListener("click",function(e){doRedeemPrize(e.currentTarget.getAttribute("data-prize-id"));});}'
+        '}else{'
+        'const stampBtn=document.getElementById("stampBtn");if(stampBtn)stampBtn.addEventListener("click",doStamp);'
+        'const redeemBtn=document.getElementById("redeemBtn");if(redeemBtn)redeemBtn.addEventListener("click",doRedeem);'
+        '}'
+        'const membershipBtn=document.getElementById("membershipBtn");if(membershipBtn)membershipBtn.addEventListener("click",doMembershipNote);'
+        'const benefitBtns=document.querySelectorAll(".benefitRedeemBtn");for(let i=0;i<benefitBtns.length;i++){benefitBtns[i].addEventListener("click",function(e){doMembershipBenefit(e.currentTarget.getAttribute("data-benefit-id"));});}'
+        '}else if(cardType==="points"){'
         'const pointsBtn=document.getElementById("pointsBtn");'
         'if(pointsBtn)pointsBtn.addEventListener("click",doPoints);'
         'const prizeBtns=document.querySelectorAll(".prizeRedeemBtn");'
@@ -18829,9 +18883,9 @@ async def cashier_stamp_page(customer_public_id: str):
         '}'
 
         'function renderCard(staffName,msg){'
-        'const bodyHtml=cardType==="points"?renderPointsBody():cardType==="multipass"?renderMultipassBody():cardType==="vip"?renderVipBody():cardType==="membership"?renderMembershipBody():renderStampBody();'
+        'const bodyHtml=cardType==="hybrid"?renderHybridBody():cardType==="points"?renderPointsBody():cardType==="multipass"?renderMultipassBody():cardType==="vip"?renderVipBody():cardType==="membership"?renderMembershipBody():renderStampBody();'
         'const couponHtml=couponText?"<div class=\'coupon\'>&#127903; "+escapeHtml(couponText)+"</div>":"";'
-        'const statsHtml=cardType==="points"?(pointsBalance+" points"):cardType==="multipass"?(multipassRemaining+" / "+multipassTotal+" sessions"):cardType==="vip"?(escapeHtml((vipTier&&vipTier.name)||"VIP")+" &bull; "+vipPoints+" pts"):cardType==="membership"?("Membership: "+escapeHtml(membershipStatus)):(stampCount+" / "+DATA.stamp_goal+" stamps");'
+        'const statsHtml=cardType==="hybrid"?((hybridLoyaltyType==="points"?(pointsBalance+" points"):(stampCount+" / "+DATA.stamp_goal+" stamps"))+" &bull; "+escapeHtml(String(membershipStatus||"inactive").toUpperCase())):cardType==="points"?(pointsBalance+" points"):cardType==="multipass"?(multipassRemaining+" / "+multipassTotal+" sessions"):cardType==="vip"?(escapeHtml((vipTier&&vipTier.name)||"VIP")+" &bull; "+vipPoints+" pts"):cardType==="membership"?("Membership: "+escapeHtml(membershipStatus)):(stampCount+" / "+DATA.stamp_goal+" stamps");'
         'app.innerHTML='
         '(msg?"<div class=\'msg "+(msg.ok?"msg-ok":"msg-err")+"\'>"+escapeHtml(msg.text)+"</div>":"")+'
         '"<div class=\'customer-box\'>"+'
@@ -18977,6 +19031,22 @@ async def cashier_stamp_page(customer_public_id: str):
         '}catch(e){'
         'renderCard(s?s.name:"",{ok:false,text:"Network error - visit not logged"});'
         '}'
+        '}'
+
+        'async function doMembershipBenefit(benefitId){'
+        'const benefit=membershipBenefits.find(function(b){return String(b.id)===String(benefitId);});'
+        'if(!benefit||!benefit.available){renderCard(getSession()?getSession().name:"",{ok:false,text:(benefit&&benefit.unavailable_reason)||"Benefit is not available"});return;}'
+        'if(!confirm("Redeem "+(benefit.name||"this benefit")+" for "+DATA.customer_name+"?"))return;'
+        'const s=getSession();'
+        'try{'
+        'const idem=(crypto&&crypto.randomUUID)?crypto.randomUUID():(Date.now()+"-"+Math.random());'
+        'const headers=authHeaders();headers["X-Idempotency-Key"]=idem;'
+        'const res=await fetch("/api/v1/business/"+DATA.business_public_id+"/membership-benefit/redeem",{method:"POST",headers:headers,body:JSON.stringify({customer_public_id:DATA.customer_public_id,benefit_id:benefitId,quantity:1,staff_pin:getSession()?undefined:cachedPin})});'
+        'const d=await res.json();'
+        'if(res.ok){membershipBenefits=d.benefits||membershipBenefits;renderCard(s?s.name:"",{ok:true,text:(benefit.name||"Benefit")+" redeemed"});}'
+        'else if(res.status===401){clearSession();renderLogin(d.detail||"Session expired - log in again");}'
+        'else{renderCard(s?s.name:"",{ok:false,text:d.detail||"Could not redeem benefit"});}'
+        '}catch(e){renderCard(s?s.name:"",{ok:false,text:"Network error - benefit not redeemed"});}'
         '}'
 
         'async function doRedeemPrize(prizeId){'

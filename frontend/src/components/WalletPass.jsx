@@ -31,6 +31,7 @@ function WalletPass({API_BASE}){
     const type=p.card_type||'stamp'
     // metricLabel/metricValue double as the small STATUS pill next to the QR code
     let metricLabel='STAMPS',metricValue=`${p.stamps||0} / ${p.goal||8}`,metricSub=p.reward_name||'Reward'
+    let secondaryMetric=null
     let planTitle=p.card_name||CARD_LABELS[type]||'Loyalty Card',planSub=p.description||''
     const details=[]
     if(type==='hybrid'){
@@ -43,6 +44,7 @@ function WalletPass({API_BASE}){
         metricLabel='STAMPS';metricValue=`${current} / ${goal}`;metricSub='stamps'
       }
       const membershipName=p.membership_name||'Membership'
+      secondaryMetric={label:'MEMBERSHIP',value:status,sub:membershipName}
       planSub=planSub||`${membershipName} ${status} · ${loyaltyType==='points'?'Points':'Stamps'} rewards`
       details.push(
         [membershipName,status],
@@ -96,7 +98,7 @@ function WalletPass({API_BASE}){
     if(details.length<4&&p.business_category?.label)details.push(['Business',`${p.business_category.icon||''} ${p.business_category.label}`])
     return {
       label:CARD_LABELS[type]||'LOYALTY CARD',
-      metricLabel,metricValue,metricSub,
+      metricLabel,metricValue,metricSub,secondaryMetric,
       planIcon:PLAN_ICONS[type]||'🎫',planTitle,planSub,
       details:details.slice(0,4),
     }
@@ -110,6 +112,7 @@ function WalletPass({API_BASE}){
   const bg=vipTierColor || design.background || p.primary_color || '#0d9488'
   const secondary=p.card_type==='vip' ? '#111827' : (design.secondary || '#14b8a6')
   const statusGood=GOOD_STATUS.includes(view.metricValue)
+  const secondaryStatusGood=GOOD_STATUS.includes(view.secondaryMetric?.value)
   const share=async()=>{const payload={title:p.business_name,text:'My LoyaltyTree card',url:location.href};if(navigator.share){try{await navigator.share(payload)}catch{}}else{await navigator.clipboard.writeText(location.href);alert('Card link copied')}}
   return <main style={S.page}>
     <div style={S.top}><b>🌳 LoyaltyTree</b></div>
@@ -127,12 +130,21 @@ function WalletPass({API_BASE}){
           </div>
           <div style={S.headerRight}>
             <div style={S.qrbox}><img src={`https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(p.qr_code)}`} alt="QR" style={S.qr}/></div>
-            <div style={S.statusPill}>
-              <span style={{...S.statusDot,background:statusGood?'#4ade80':'#f59e0b'}}/>
-              <div>
-                <div style={S.statusLabel}>{view.metricLabel}</div>
-                <div style={{...S.statusValue,color:statusGood?'#4ade80':'#fff'}}>{view.metricValue}</div>
+            <div style={S.metricRow}>
+              <div style={S.statusPill}>
+                <span style={{...S.statusDot,background:statusGood?'#4ade80':'#f59e0b'}}/>
+                <div>
+                  <div style={S.statusLabel}>{view.metricLabel}</div>
+                  <div style={{...S.statusValue,color:statusGood?'#4ade80':'#fff'}}>{view.metricValue}</div>
+                </div>
               </div>
+              {view.secondaryMetric&&<div style={S.statusPill}>
+                <span style={{...S.statusDot,background:secondaryStatusGood?'#4ade80':'#f59e0b'}}/>
+                <div>
+                  <div style={S.statusLabel}>{view.secondaryMetric.label}</div>
+                  <div style={{...S.statusValue,color:secondaryStatusGood?'#4ade80':'#fff'}}>{view.secondaryMetric.value}</div>
+                </div>
+              </div>}
             </div>
           </div>
         </div>
@@ -200,6 +212,7 @@ const S={
   type:{fontSize:11,letterSpacing:1.4,fontWeight:800,color:'rgba(255,255,255,.65)',marginTop:6},
 
   headerRight:{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:12},
+  metricRow:{display:'flex',gap:8,alignItems:'stretch',justifyContent:'flex-end',flexWrap:'wrap'},
   qrbox:{width:110,padding:8,background:'#fff',borderRadius:16,boxShadow:'0 14px 35px rgba(0,0,0,.28)'},
   qr:{display:'block',width:'100%',aspectRatio:'1 / 1'},
   statusPill:{display:'flex',alignItems:'center',gap:8,background:'rgba(10,14,24,.45)',border:'1px solid rgba(255,255,255,.14)',borderRadius:12,padding:'8px 12px'},
