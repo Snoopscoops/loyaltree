@@ -19656,7 +19656,17 @@ async def apple_list_updated_serials(device_library_identifier: str, pass_type_i
 
     for serial in serials:
         try:
-            if serial.startswith('cl-'):
+            if serial.startswith('gift-'):
+                gift = safe_get_gift_card(serial[len('gift-'):])
+                if not gift:
+                    continue
+                business = safe_get_business_by_id(gift.get('business_id'))
+                raw_values = [
+                    gift.get('updated_at'),
+                    business.get('updated_at') if business else None,
+                    _apple_pass_dirty_at(serial),
+                ]
+            elif serial.startswith('cl-'):
                 customer = safe_get_cl_customer(serial[len('cl-'):])
                 if not customer:
                     continue
@@ -19712,6 +19722,43 @@ async def apple_list_updated_serials(device_library_identifier: str, pass_type_i
 async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, authorization: Optional[str] = Header(None), if_modified_since: Optional[str] = Header(None, alias="If-Modified-Since")):
     if not apple_auth_ok(serial_number, authorization):
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # Gift-card passes use gift-<gift public id>. They share the same
+    # Pass Type ID and registration table as loyalty passes, but rebuild from
+    # gift_cards so partial redemption updates appear in Apple Wallet.
+    if serial_number.startswith('gift-'):
+        gift_public_id = serial_number[len('gift-'):]
+        gift = safe_get_gift_card(gift_public_id)
+        if not gift:
+            raise HTTPException(status_code=404, detail="Not found")
+        business = safe_get_business_by_id(gift.get('business_id'))
+        if not business:
+            raise HTTPException(status_code=404, detail="Not found")
+
+        gift_ts = _parse_ts(gift.get('updated_at'))
+        business_ts = _parse_ts(business.get('updated_at'))
+        dirty_ts = _apple_pass_dirty_at(serial_number)
+        candidates = [t for t in (gift_ts, business_ts, dirty_ts) if t]
+        last_modified_ts = max(candidates) if candidates else datetime.utcnow()
+        last_modified = last_modified_ts.replace(tzinfo=None).isoformat()
+        since_ts = _parse_ts(if_modified_since)
+        if (last_modified_ts and since_ts and
+                last_modified_ts.replace(microsecond=0) <= since_ts.replace(microsecond=0)):
+            _APPLE_PASS_DIRTY_AT.pop(str(serial_number), None)
+            return Response(status_code=304)
+
+        pkpass_bytes = build_gift_card_pkpass_bytes(gift, business)
+        if pkpass_bytes is None:
+            raise HTTPException(status_code=500, detail="Could not build gift card pass")
+        return Response(
+            content=pkpass_bytes,
+            media_type="application/vnd.apple.pkpass",
+            headers={
+                "Last-Modified": _http_date(last_modified),
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Content-Length": str(len(pkpass_bytes)),
+            },
+        )
 
     # Car-lending passes use a 'cl-' prefixed serial number (see
     # build_cl_apple_pass_json) so this one shared web-service route can
@@ -20945,3 +20992,1056 @@ async def wallet_queue_status(public_id:str, authorization:str=Header(default=''
     rows=(supabase.table('wallet_sync_jobs').select('*').eq('business_id',business.get('id')).order('created_at',desc=True).limit(limit).execute().data or [])
     return {'jobs':rows,'pending':sum(1 for x in rows if x.get('status') in ('pending','processing')),
             'failed':sum(1 for x in rows if x.get('status')=='failed')}
+
+# =====================================================================
+# GIFT CARDS V1 — Growth / Pro module
+# =====================================================================
+# Gift Cards are intentionally independent from loyalty_programs.card_type.
+# Existing issued cards remain viewable/redeemable after a plan downgrade so
+# a business cannot strand a prepaid customer liability; Growth/Pro gating is
+# enforced on NEW issuance and new print requests.
+
+GIFT_CARD_ACTIVE_STATUSES = ('active_unclaimed', 'active_claimed', 'partially_redeemed')
+GIFT_CARD_TERMINAL_STATUSES = ('redeemed', 'expired', 'voided')
+GIFT_CARD_PRINT_STATUSES = (
+    'requested', 'design_confirmed', 'printing', 'ready_to_ship',
+    'shipped', 'completed', 'cancelled'
+)
+
+
+class GiftCardBatchCreate(BaseModel):
+    gift_type: Literal['amount', 'item'] = 'amount'
+    name: str = Field(min_length=1, max_length=120)
+    face_value: Optional[float] = Field(default=None, gt=0)
+    item_name: Optional[str] = Field(default=None, max_length=120)
+    item_quantity: Optional[int] = Field(default=None, ge=1, le=10000)
+    quantity: int = Field(default=1, ge=1, le=500)
+    activation_mode: Literal['unactivated', 'active'] = 'unactivated'
+    expires_at: Optional[str] = None
+    print_option: Literal['digital', 'self', 'loyaltytree'] = 'digital'
+    print_format: Literal['business_card', 'a4', 'letter'] = 'business_card'
+    purchaser_name: Optional[str] = Field(default=None, max_length=120)
+    purchaser_email: Optional[str] = Field(default=None, max_length=255)
+    recipient_name: Optional[str] = Field(default=None, max_length=120)
+    recipient_phone: Optional[str] = Field(default=None, max_length=40)
+    recipient_email: Optional[str] = Field(default=None, max_length=255)
+    gift_message: Optional[str] = Field(default=None, max_length=500)
+    delivery_recipient_name: Optional[str] = Field(default=None, max_length=120)
+    delivery_contact_number: Optional[str] = Field(default=None, max_length=60)
+    delivery_address: Optional[str] = Field(default=None, max_length=1000)
+    delivery_instructions: Optional[str] = Field(default=None, max_length=1000)
+
+
+class GiftCardClaimRequest(BaseModel):
+    recipient_name: Optional[str] = Field(default=None, max_length=120)
+    recipient_phone: Optional[str] = Field(default=None, max_length=40)
+    recipient_email: Optional[str] = Field(default=None, max_length=255)
+
+
+class GiftCardRedeemRequest(BaseModel):
+    amount: Optional[float] = Field(default=None, gt=0)
+    quantity: Optional[int] = Field(default=None, ge=1, le=10000)
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+class GiftCardPrintRequestCreate(BaseModel):
+    recipient_name: Optional[str] = Field(default=None, max_length=120)
+    contact_number: Optional[str] = Field(default=None, max_length=60)
+    delivery_address: Optional[str] = Field(default=None, max_length=1000)
+    delivery_instructions: Optional[str] = Field(default=None, max_length=1000)
+
+
+class GiftCardPrintRequestUpdate(BaseModel):
+    status: Optional[Literal[
+        'requested', 'design_confirmed', 'printing', 'ready_to_ship',
+        'shipped', 'completed', 'cancelled'
+    ]] = None
+    admin_note: Optional[str] = Field(default=None, max_length=1500)
+
+
+def _gift_public_id(prefix: str = 'gc') -> str:
+    return f"{prefix}_{uuid.uuid4().hex[:24]}"
+
+
+def _gift_code() -> str:
+    token = uuid.uuid4().hex.upper()
+    return f"GC-{token[:4]}-{token[4:8]}"
+
+
+def safe_get_gift_card(identifier: str, business_id: Optional[int] = None) -> Optional[dict]:
+    if not supabase or not identifier:
+        return None
+    identifier = str(identifier).strip()
+    try:
+        q = supabase.table('gift_cards').select('*')
+        if business_id is not None:
+            q = q.eq('business_id', business_id)
+        # Human printed code or opaque public id are both accepted by owner/
+        # cashier tools. Public claim URLs use only the opaque public id.
+        if identifier.upper().startswith('GC-'):
+            res = q.eq('code', identifier.upper()).limit(1).execute()
+        else:
+            res = q.eq('public_id', identifier).limit(1).execute()
+        return (res.data or [None])[0]
+    except Exception:
+        return None
+
+
+def safe_get_gift_batch(identifier: str, business_id: Optional[int] = None) -> Optional[dict]:
+    if not supabase or not identifier:
+        return None
+    try:
+        q = supabase.table('gift_card_batches').select('*').eq('public_id', identifier)
+        if business_id is not None:
+            q = q.eq('business_id', business_id)
+        res = q.limit(1).execute()
+        return (res.data or [None])[0]
+    except Exception:
+        return None
+
+
+def _gift_date_expired(gift: dict) -> bool:
+    raw = (gift or {}).get('expires_at')
+    if not raw:
+        return False
+    try:
+        return datetime.fromisoformat(str(raw)[:10]).date() < datetime.now(LOYALTY_TIMEZONE).date()
+    except Exception:
+        return False
+
+
+def _gift_effective_status(gift: dict) -> str:
+    status = str((gift or {}).get('status') or 'unactivated').lower()
+    if status in GIFT_CARD_ACTIVE_STATUSES and _gift_date_expired(gift):
+        return 'expired'
+    return status
+
+
+def _gift_remaining_label(gift: dict) -> str:
+    if (gift or {}).get('gift_type') == 'amount':
+        return f"₱{float((gift or {}).get('remaining_amount') or 0):,.2f}"
+    remaining = int((gift or {}).get('remaining_quantity') or 0)
+    original = int((gift or {}).get('original_quantity') or 0)
+    item = str((gift or {}).get('item_name') or 'item')
+    return f"{remaining} / {original} {item}"
+
+
+def _gift_original_label(gift: dict) -> str:
+    if (gift or {}).get('gift_type') == 'amount':
+        return f"₱{float((gift or {}).get('original_amount') or 0):,.2f}"
+    original = int((gift or {}).get('original_quantity') or 0)
+    item = str((gift or {}).get('item_name') or 'item')
+    return f"{original} × {item}"
+
+
+def _gift_redemptions(gift_card_id: int, limit: int = 25) -> list:
+    if not supabase or not gift_card_id:
+        return []
+    try:
+        return (
+            supabase.table('gift_card_redemptions')
+            .select('*')
+            .eq('gift_card_id', gift_card_id)
+            .order('redeemed_at', desc=True)
+            .limit(limit)
+            .execute()
+        ).data or []
+    except Exception:
+        return []
+
+
+def serialize_gift_card(gift: dict, include_history: bool = False) -> dict:
+    if not gift:
+        return {}
+    status = _gift_effective_status(gift)
+    result = {
+        **gift,
+        'status': status,
+        'is_active': status in GIFT_CARD_ACTIVE_STATUSES,
+        'is_redeemable': status in GIFT_CARD_ACTIVE_STATUSES,
+        'remaining_label': _gift_remaining_label(gift),
+        'original_label': _gift_original_label(gift),
+        'claim_url': f"{BASE_URL}/gift/{gift.get('public_id')}",
+        'apple_pass_url': f"{BASE_URL}/api/v1/gift-card/{gift.get('public_id')}/apple-wallet-pass",
+    }
+    if include_history:
+        result['redemptions'] = _gift_redemptions(gift.get('id'), 50)
+    return result
+
+
+def _require_gift_cashier_session(public_id: str, authorization: str) -> dict:
+    claims = get_staff_session_claims(public_id, authorization)
+    if not claims:
+        raise HTTPException(status_code=401, detail='Cashier login required')
+    if claims.get('role') not in ('owner', 'manager', 'cashier'):
+        raise HTTPException(status_code=403, detail='Cashier or owner access required')
+    return claims
+
+
+def _gift_brand_color(business: dict) -> str:
+    try:
+        program = safe_get_loyalty_program(business.get('id')) or {}
+        return _normalize_hex_color(program.get('primary_color'), '#0d9488')
+    except Exception:
+        return '#0d9488'
+
+
+def _gift_google_class_id(business: dict) -> str:
+    suffix = _google_wallet_safe_fragment(f"{business.get('public_id', 'business')}-giftcards", 'giftcards')
+    return f"{GOOGLE_WALLET_ISSUER_ID}.{suffix}"
+
+
+def _gift_google_object_id(gift: dict) -> str:
+    suffix = _google_wallet_safe_fragment(f"gift-{gift.get('public_id', '')}", 'gift')
+    return f"{GOOGLE_WALLET_ISSUER_ID}.{suffix}"
+
+
+def ensure_google_gift_card_class(business: dict) -> bool:
+    if not GOOGLE_WALLET_ISSUER_ID:
+        return False
+    access_token = get_google_access_token()
+    if not access_token:
+        return False
+    class_id = _gift_google_class_id(business)
+    logo_url = business.get('logo_url') or DEFAULT_LOGO_URL
+    body = {
+        'id': class_id,
+        'issuerName': business.get('name') or 'LoyaltyTree',
+        'merchantName': business.get('name') or 'LoyaltyTree',
+        'reviewStatus': 'UNDER_REVIEW',
+        'allowBarcodeRedemption': True,
+        'cardNumberLabel': 'GIFT CARD',
+        'hexBackgroundColor': _gift_brand_color(business),
+    }
+    if logo_url:
+        body['programLogo'] = {
+            'sourceUri': {'uri': logo_url},
+            'contentDescription': {
+                'defaultValue': {'language': 'en-US', 'value': f"{business.get('name') or 'LoyaltyTree'} logo"}
+            },
+        }
+    try:
+        import httpx
+        with httpx.Client(timeout=20) as client:
+            get_res = client.get(
+                f'https://walletobjects.googleapis.com/walletobjects/v1/giftCardClass/{class_id}',
+                headers={'Authorization': f'Bearer {access_token}'},
+            )
+            if get_res.status_code == 200:
+                # Keep branding fresh but don't make a PATCH failure block saving.
+                try:
+                    client.patch(
+                        f'https://walletobjects.googleapis.com/walletobjects/v1/giftCardClass/{class_id}',
+                        headers={'Authorization': f'Bearer {access_token}'}, json=body,
+                    )
+                except Exception:
+                    pass
+                return True
+            if get_res.status_code != 404:
+                print(f"GOOGLE GIFT CLASS GET {get_res.status_code}: {get_res.text[:800]}")
+                return False
+            create = client.post(
+                'https://walletobjects.googleapis.com/walletobjects/v1/giftCardClass',
+                headers={'Authorization': f'Bearer {access_token}'}, json=body,
+            )
+            if create.status_code in (200, 201):
+                return True
+            print(f"GOOGLE GIFT CLASS CREATE {create.status_code}: {create.text[:1200]}")
+            return False
+    except Exception as e:
+        print(f"GOOGLE GIFT CLASS error: {e}")
+        return False
+
+
+def build_google_gift_card_object(gift: dict, business: dict) -> dict:
+    status = _gift_effective_status(gift)
+    state = 'ACTIVE' if status in GIFT_CARD_ACTIVE_STATUSES else 'INACTIVE'
+    claim_url = f"{BASE_URL}/gift/{gift.get('public_id')}"
+    obj = {
+        'id': _gift_google_object_id(gift),
+        'classId': _gift_google_class_id(business),
+        'state': state,
+        'cardNumber': gift.get('code') or gift.get('public_id'),
+        'barcode': {
+            'type': 'QR_CODE',
+            'value': claim_url,
+            'alternateText': gift.get('code') or 'Gift Card',
+        },
+        'textModulesData': [
+            {'id': 'gift_name', 'header': 'GIFT CARD', 'body': gift.get('name') or 'Gift Card'},
+            {'id': 'gift_status', 'header': 'STATUS', 'body': status.replace('_', ' ').upper()},
+            {'id': 'gift_original', 'header': 'ORIGINAL VALUE', 'body': _gift_original_label(gift)},
+        ],
+    }
+    if gift.get('gift_type') == 'amount':
+        micros = int(round(float(gift.get('remaining_amount') or 0) * 1_000_000))
+        obj['balance'] = {'micros': str(micros), 'currencyCode': 'PHP'}
+    else:
+        obj['textModulesData'].append({
+            'id': 'gift_remaining', 'header': 'REMAINING', 'body': _gift_remaining_label(gift)
+        })
+    if gift.get('expires_at'):
+        obj['textModulesData'].append({
+            'id': 'gift_expiry', 'header': 'VALID UNTIL', 'body': str(gift.get('expires_at'))[:10]
+        })
+    if gift.get('gift_message'):
+        obj['textModulesData'].append({
+            'id': 'gift_message', 'header': 'MESSAGE', 'body': str(gift.get('gift_message'))[:500]
+        })
+    return obj
+
+
+def create_google_gift_card_jwt(gift: dict, business: dict) -> str:
+    creds = get_google_wallet_credentials()
+    if not creds or not ensure_google_gift_card_class(business):
+        return ''
+    try:
+        import jwt as pyjwt
+        now = datetime.utcnow()
+        payload = {
+            'iss': creds.get('client_email', ''),
+            'aud': 'google',
+            'iat': now,
+            'exp': now + timedelta(hours=1),
+            'origins': [BASE_URL, 'https://theloyaltytree.com', 'https://loyaltree-five.vercel.app'],
+            'typ': 'savetowallet',
+            'payload': {'giftCardObjects': [build_google_gift_card_object(gift, business)]},
+        }
+        token = pyjwt.encode(payload, creds.get('private_key', ''), algorithm='RS256')
+        return token if isinstance(token, str) else token.decode('utf-8')
+    except Exception as e:
+        print(f"GOOGLE GIFT JWT error: {e}")
+        return ''
+
+
+def sync_google_gift_card(gift: dict, business: dict) -> bool:
+    """Best-effort update after activation/claim/redemption. A 404 simply means
+    the recipient has not saved this GiftCardObject to Google Wallet yet."""
+    access_token = get_google_access_token()
+    if not access_token or not GOOGLE_WALLET_ISSUER_ID:
+        return False
+    try:
+        import httpx
+        obj = build_google_gift_card_object(gift, business)
+        object_id = obj.pop('id')
+        obj.pop('classId', None)
+        with httpx.Client(timeout=20) as client:
+            res = client.patch(
+                f'https://walletobjects.googleapis.com/walletobjects/v1/giftCardObject/{object_id}',
+                headers={'Authorization': f'Bearer {access_token}'}, json=obj,
+            )
+        if res.status_code in (200, 201):
+            return True
+        if res.status_code != 404:
+            print(f"GOOGLE GIFT PATCH {res.status_code}: {res.text[:1000]}")
+    except Exception as e:
+        print(f"GOOGLE GIFT PATCH error: {e}")
+    return False
+
+
+def build_gift_card_apple_pass_json(gift: dict, business: dict) -> dict:
+    serial = f"gift-{gift.get('public_id')}"
+    status = _gift_effective_status(gift)
+    primary_color = _gift_brand_color(business)
+    claim_url = f"{BASE_URL}/gift/{gift.get('public_id')}"
+    if gift.get('gift_type') == 'amount':
+        primary_label = 'BALANCE'
+        primary_value = f"₱{float(gift.get('remaining_amount') or 0):,.2f}"
+    else:
+        primary_label = 'REMAINING'
+        primary_value = f"{int(gift.get('remaining_quantity') or 0)} / {int(gift.get('original_quantity') or 0)}"
+
+    pass_json = {
+        'formatVersion': 1,
+        'passTypeIdentifier': APPLE_PASS_TYPE_IDENTIFIER,
+        'serialNumber': serial,
+        'teamIdentifier': APPLE_TEAM_IDENTIFIER,
+        'organizationName': business.get('name') or 'LoyaltyTree',
+        'description': gift.get('name') or f"{business.get('name') or 'LoyaltyTree'} Gift Card",
+        'logoText': business.get('name') or 'LoyaltyTree',
+        'foregroundColor': 'rgb(255,255,255)',
+        'backgroundColor': (lambda rgb: f'rgb({rgb[0]},{rgb[1]},{rgb[2]})')(_hex_to_rgb(primary_color)),
+        'labelColor': 'rgb(235,255,250)',
+        'sharingProhibited': False,
+        'authenticationToken': apple_pass_auth_token(serial),
+        'webServiceURL': APPLE_PASS_WEB_SERVICE_URL,
+        'barcodes': [{
+            'format': 'PKBarcodeFormatQR',
+            'message': claim_url,
+            'messageEncoding': 'iso-8859-1',
+            'altText': gift.get('code') or 'Gift Card',
+        }],
+        'barcode': {
+            'format': 'PKBarcodeFormatQR',
+            'message': claim_url,
+            'messageEncoding': 'iso-8859-1',
+            'altText': gift.get('code') or 'Gift Card',
+        },
+        'storeCard': {
+            'primaryFields': [
+                {'key': 'balance', 'label': primary_label, 'value': primary_value},
+            ],
+            'secondaryFields': [
+                {'key': 'status', 'label': 'STATUS', 'value': status.replace('_', ' ').upper()},
+            ],
+            'auxiliaryFields': [
+                {'key': 'gift', 'label': 'GIFT CARD', 'value': gift.get('name') or 'Gift Card'},
+                {'key': 'code', 'label': 'CARD NO.', 'value': gift.get('code') or ''},
+            ],
+            'backFields': [
+                {'key': 'original', 'label': 'ORIGINAL VALUE', 'value': _gift_original_label(gift)},
+                {'key': 'remaining', 'label': 'REMAINING', 'value': _gift_remaining_label(gift)},
+                {'key': 'business', 'label': 'BUSINESS', 'value': business.get('name') or ''},
+                {'key': 'terms', 'label': 'HOW TO USE', 'value': 'Present this Gift Card QR to an authorized cashier. Partial redemptions are supported when applicable.'},
+            ],
+        },
+    }
+    if gift.get('expires_at'):
+        pass_json['expirationDate'] = f"{str(gift.get('expires_at'))[:10]}T23:59:59+08:00"
+        pass_json['storeCard']['backFields'].append({
+            'key': 'expires', 'label': 'VALID UNTIL', 'value': str(gift.get('expires_at'))[:10]
+        })
+    if gift.get('recipient_name'):
+        pass_json['storeCard']['backFields'].append({
+            'key': 'recipient', 'label': 'RECIPIENT', 'value': gift.get('recipient_name')
+        })
+    if gift.get('gift_message'):
+        pass_json['storeCard']['backFields'].append({
+            'key': 'message', 'label': 'MESSAGE', 'value': str(gift.get('gift_message'))[:500]
+        })
+    if status in ('voided', 'expired'):
+        pass_json['voided'] = True
+    return pass_json
+
+
+def build_gift_card_pkpass_bytes(gift: dict, business: dict) -> Optional[bytes]:
+    if not APPLE_PASS_TYPE_IDENTIFIER or not APPLE_TEAM_IDENTIFIER:
+        return None
+    if get_apple_pass_credentials() is None:
+        return None
+    primary = _gift_brand_color(business)
+    logo_bytes = _fetch_image_bytes(business.get('logo_url'))
+    icon_87 = apple_icon_from_logo_bytes(logo_bytes, 87) if logo_bytes else None
+    if not icon_87:
+        icon_87 = generate_apple_icon_bytes(primary, business.get('name') or 'Gift', 87)
+    icon_58 = _resize_png_bytes(icon_87, 58, 58)
+    icon_29 = _resize_png_bytes(icon_87, 29, 29)
+    logo_480 = apple_logo_from_image_bytes(logo_bytes, 480, 150) if logo_bytes else None
+    if not logo_480:
+        logo_480 = generate_apple_logo_bytes(business.get('name') or 'Gift Card', 480, 150)
+    logo_320 = _resize_png_bytes(logo_480, 320, 100)
+    logo_160 = _resize_png_bytes(logo_480, 160, 50)
+    files = {
+        'pass.json': json.dumps(build_gift_card_apple_pass_json(gift, business)).encode('utf-8'),
+        'icon.png': icon_29,
+        'icon@2x.png': icon_58,
+        'icon@3x.png': icon_87,
+        'logo.png': logo_160,
+        'logo@2x.png': logo_320,
+        'logo@3x.png': logo_480,
+    }
+    manifest = {name: hashlib.sha1(content).hexdigest() for name, content in files.items()}
+    manifest_bytes = json.dumps(manifest).encode('utf-8')
+    signature = sign_pkpass_manifest(manifest_bytes)
+    if signature is None:
+        return None
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_STORED) as zf:
+        for name, content in files.items():
+            zf.writestr(name, content)
+        zf.writestr('manifest.json', manifest_bytes)
+        zf.writestr('signature', signature)
+    return buffer.getvalue()
+
+
+def _sync_gift_wallets(gift: dict, business: dict):
+    try:
+        sync_google_gift_card(dict(gift), dict(business))
+    except Exception:
+        pass
+    try:
+        push_apple_wallet_update(f"gift-{gift.get('public_id')}")
+    except Exception:
+        pass
+
+
+def _gift_print_pdf_bytes(batch: dict, business: dict, cards: list) -> bytes:
+    """Create a print-ready multi-page PDF using only Pillow/qrcode, which are
+    already dependencies of this backend. Business-card format is laid out
+    10-up on A4; A4/Letter options use 8 larger cards per sheet."""
+    from PIL import ImageDraw, ImageFont
+
+    fmt = str(batch.get('print_format') or 'business_card')
+    if fmt == 'letter':
+        page_w, page_h = 1275, 1650
+        cols, rows = 2, 4
+    else:
+        page_w, page_h = 1240, 1754
+        cols, rows = (2, 5) if fmt == 'business_card' else (2, 4)
+    margin = 45
+    gap = 24
+    cell_w = int((page_w - margin * 2 - gap * (cols - 1)) / cols)
+    cell_h = int((page_h - margin * 2 - gap * (rows - 1)) / rows)
+
+    try:
+        font_path = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
+        bold_path = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
+        f_small = ImageFont.truetype(font_path, 18)
+        f_med = ImageFont.truetype(bold_path, 24)
+        f_big = ImageFont.truetype(bold_path, 34)
+    except Exception:
+        f_small = f_med = f_big = ImageFont.load_default()
+
+    primary = _hex_to_rgb(_gift_brand_color(business))
+    pages = []
+    per_page = cols * rows
+    for page_start in range(0, len(cards), per_page):
+        page = Image.new('RGB', (page_w, page_h), 'white')
+        draw = ImageDraw.Draw(page)
+        subset = cards[page_start:page_start + per_page]
+        for idx, gift in enumerate(subset):
+            r = idx // cols
+            c = idx % cols
+            x = margin + c * (cell_w + gap)
+            y = margin + r * (cell_h + gap)
+            x2, y2 = x + cell_w, y + cell_h
+            draw.rounded_rectangle([x, y, x2, y2], radius=24, fill=primary, outline=(230,230,230), width=2)
+
+            pad = 24
+            qr_size = min(170, cell_h - 60)
+            qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=6, border=2)
+            qr.add_data(f"{BASE_URL}/gift/{gift.get('public_id')}")
+            qr.make(fit=True)
+            qr_img = qr.make_image(fill_color='black', back_color='white').convert('RGB').resize((qr_size, qr_size))
+            qx = x2 - pad - qr_size
+            qy = y + (cell_h - qr_size)//2
+            page.paste(qr_img, (qx, qy))
+
+            tx = x + pad
+            max_text_w = qx - tx - 18
+            business_name = str(business.get('name') or 'LoyaltyTree')[:34]
+            card_name = str(gift.get('name') or 'Gift Card')[:34]
+            value = _gift_original_label(gift)
+            draw.text((tx, y + 25), business_name, font=f_med, fill='white')
+            draw.text((tx, y + 62), 'GIFT CARD', font=f_small, fill=(230,255,250))
+            draw.text((tx, y + 94), value, font=f_big, fill='white')
+            draw.text((tx, y + 142), card_name, font=f_med, fill='white')
+            draw.text((tx, y2 - 70), str(gift.get('code') or ''), font=f_small, fill='white')
+            draw.text((tx, y2 - 42), 'Scan to claim or present at checkout', font=f_small, fill=(230,255,250))
+        pages.append(page)
+
+    if not pages:
+        pages = [Image.new('RGB', (1240, 1754), 'white')]
+    buf = BytesIO()
+    pages[0].save(buf, format='PDF', save_all=True, append_images=pages[1:], resolution=150.0)
+    return buf.getvalue()
+
+
+def _enrich_gift_print_requests(rows: list) -> list:
+    if not rows:
+        return []
+    business_ids = list({r.get('business_id') for r in rows if r.get('business_id')})
+    batch_ids = list({r.get('batch_id') for r in rows if r.get('batch_id')})
+    businesses = {}
+    batches = {}
+    try:
+        if business_ids:
+            br = supabase.table('businesses').select('id,public_id,name,email,phone,address').in_('id', business_ids).execute().data or []
+            businesses = {x.get('id'): x for x in br}
+        if batch_ids:
+            ba = supabase.table('gift_card_batches').select('*').in_('id', batch_ids).execute().data or []
+            batches = {x.get('id'): x for x in ba}
+    except Exception:
+        pass
+    enriched = []
+    for r in rows:
+        b = businesses.get(r.get('business_id')) or {}
+        batch = batches.get(r.get('batch_id')) or {}
+        enriched.append({
+            **r,
+            'business': b,
+            'batch': batch,
+            'business_name': b.get('name'),
+            'business_public_id': b.get('public_id'),
+            'batch_public_id': batch.get('public_id'),
+            'batch_name': batch.get('name'),
+            'batch_quantity': batch.get('quantity'),
+            'gift_type': batch.get('gift_type'),
+            'face_value': batch.get('face_value'),
+            'item_name': batch.get('item_name'),
+            'item_quantity': batch.get('item_quantity'),
+        })
+    return enriched
+
+
+@app.get('/api/v1/business/{public_id}/gift-cards/overview')
+async def gift_cards_overview(public_id: str, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    try:
+        cards = supabase.table('gift_cards').select('*').eq('business_id', business.get('id')).execute().data or []
+        redemptions = supabase.table('gift_card_redemptions').select('amount,quantity').eq('business_id', business.get('id')).execute().data or []
+        active = [c for c in cards if _gift_effective_status(c) in GIFT_CARD_ACTIVE_STATUSES]
+        unactivated = [c for c in cards if _gift_effective_status(c) == 'unactivated']
+        redeemed = [c for c in cards if _gift_effective_status(c) == 'redeemed']
+        expired = [c for c in cards if _gift_effective_status(c) == 'expired']
+        return {
+            'feature_enabled': business_has_plan_feature(business, 'gift_cards'),
+            'plan': business.get('plan', 'starter'),
+            'total_issued': len(cards),
+            'available_cards': len(active),
+            'unactivated_stock': len(unactivated),
+            'fully_redeemed': len(redeemed),
+            'expired': len(expired),
+            'outstanding_value': round(sum(float(c.get('remaining_amount') or 0) for c in active if c.get('gift_type') == 'amount'), 2),
+            'outstanding_item_uses': sum(int(c.get('remaining_quantity') or 0) for c in active if c.get('gift_type') == 'item'),
+            'redeemed_value': round(sum(float(r.get('amount') or 0) for r in redemptions), 2),
+            'redeemed_item_uses': sum(int(r.get('quantity') or 0) for r in redemptions),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+
+@app.get('/api/v1/business/{public_id}/gift-cards')
+async def list_business_gift_cards(public_id: str, authorization: str = Header(default=''), status: Optional[str] = None, limit: int = Query(default=250, ge=1, le=1000)):
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    try:
+        rows = (supabase.table('gift_cards').select('*').eq('business_id', business.get('id')).order('created_at', desc=True).limit(limit).execute().data or [])
+        items = [serialize_gift_card(x) for x in rows]
+        if status:
+            items = [x for x in items if x.get('status') == status]
+        return {'feature_enabled': business_has_plan_feature(business, 'gift_cards'), 'cards': items}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+
+@app.get('/api/v1/business/{public_id}/gift-card-batches')
+async def list_gift_card_batches(public_id: str, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    try:
+        batches = supabase.table('gift_card_batches').select('*').eq('business_id', business.get('id')).order('created_at', desc=True).limit(100).execute().data or []
+        requests = supabase.table('gift_card_print_requests').select('*').eq('business_id', business.get('id')).order('requested_at', desc=True).limit(100).execute().data or []
+        return {'batches': batches, 'print_requests': requests}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+
+@app.post('/api/v1/business/{public_id}/gift-card-batches')
+async def create_gift_card_batch(public_id: str, req: GiftCardBatchCreate, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    if not business_has_plan_feature(business, 'gift_cards'):
+        raise HTTPException(status_code=403, detail='Gift Cards are available on Growth and Pro plans. Upgrade to create new Gift Cards.')
+
+    if req.gift_type == 'amount' and not req.face_value:
+        raise HTTPException(status_code=400, detail='Enter a peso value for this Gift Card')
+    if req.gift_type == 'item' and (not (req.item_name or '').strip() or not req.item_quantity):
+        raise HTTPException(status_code=400, detail='Enter the item/service and quantity')
+    if req.print_option == 'loyaltytree' and not (req.delivery_address or '').strip():
+        raise HTTPException(status_code=400, detail='Delivery address is required when requesting LoyaltyTree printing')
+
+    # Physical stock is deliberately unactivated until a cashier records the sale.
+    activation_mode = 'unactivated' if req.print_option in ('self', 'loyaltytree') else req.activation_mode
+    now = datetime.utcnow().isoformat()
+    batch_public_id = _gift_public_id('gcb')
+    batch_row = {
+        'public_id': batch_public_id,
+        'business_id': business.get('id'),
+        'gift_type': req.gift_type,
+        'name': req.name.strip(),
+        'face_value': round(float(req.face_value), 2) if req.face_value is not None else None,
+        'item_name': (req.item_name or '').strip() or None,
+        'item_quantity': req.item_quantity,
+        'quantity': req.quantity,
+        'activation_mode': activation_mode,
+        'expires_at': str(req.expires_at)[:10] if req.expires_at else None,
+        'print_option': req.print_option,
+        'print_format': req.print_format,
+        'design': {},
+        'created_at': now,
+        'updated_at': now,
+    }
+    try:
+        inserted_batch = supabase.table('gift_card_batches').insert(batch_row).execute().data or []
+        batch = inserted_batch[0] if inserted_batch else safe_get_gift_batch(batch_public_id, business.get('id'))
+        if not batch:
+            raise Exception('Batch insert failed')
+
+        card_rows = []
+        for _ in range(req.quantity):
+            public_gc = _gift_public_id('gc')
+            card_rows.append({
+                'public_id': public_gc,
+                'code': _gift_code(),
+                'batch_id': batch.get('id'),
+                'business_id': business.get('id'),
+                'gift_type': req.gift_type,
+                'name': req.name.strip(),
+                'original_amount': round(float(req.face_value), 2) if req.gift_type == 'amount' else None,
+                'remaining_amount': round(float(req.face_value), 2) if req.gift_type == 'amount' else None,
+                'item_name': (req.item_name or '').strip() if req.gift_type == 'item' else None,
+                'original_quantity': int(req.item_quantity) if req.gift_type == 'item' else None,
+                'remaining_quantity': int(req.item_quantity) if req.gift_type == 'item' else None,
+                'status': 'active_unclaimed' if activation_mode == 'active' else 'unactivated',
+                'purchaser_name': (req.purchaser_name or '').strip() or None,
+                'purchaser_email': (req.purchaser_email or '').strip() or None,
+                'recipient_name': (req.recipient_name or '').strip() or None,
+                'recipient_phone': (req.recipient_phone or '').strip() or None,
+                'recipient_email': (req.recipient_email or '').strip() or None,
+                'gift_message': (req.gift_message or '').strip() or None,
+                'expires_at': str(req.expires_at)[:10] if req.expires_at else None,
+                'activated_at': now if activation_mode == 'active' else None,
+                'created_at': now,
+                'updated_at': now,
+            })
+        created = supabase.table('gift_cards').insert(card_rows).execute().data or []
+
+        print_request = None
+        if req.print_option == 'loyaltytree':
+            pr = {
+                'public_id': _gift_public_id('gcpr'),
+                'business_id': business.get('id'),
+                'batch_id': batch.get('id'),
+                'quantity': req.quantity,
+                'print_format': req.print_format,
+                'recipient_name': (req.delivery_recipient_name or business.get('owner_name') or business.get('name') or '').strip() or None,
+                'contact_number': (req.delivery_contact_number or business.get('phone') or '').strip() or None,
+                'delivery_address': (req.delivery_address or business.get('address') or '').strip() or None,
+                'delivery_instructions': (req.delivery_instructions or '').strip() or None,
+                'status': 'requested',
+                'requested_at': now,
+                'updated_at': now,
+            }
+            pdata = supabase.table('gift_card_print_requests').insert(pr).execute().data or []
+            print_request = pdata[0] if pdata else pr
+
+        return {
+            'batch': batch,
+            'cards_created': len(created),
+            'cards': [serialize_gift_card(x) for x in created[:25]],
+            'print_request': print_request,
+            'print_pdf_endpoint': f"/api/v1/business/{public_id}/gift-card-batches/{batch_public_id}/print.pdf",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+
+@app.post('/api/v1/business/{public_id}/gift-card-batches/{batch_public_id}/print-request')
+async def request_gift_card_printing(public_id: str, batch_public_id: str, req: GiftCardPrintRequestCreate, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    if not business_has_plan_feature(business, 'gift_cards'):
+        raise HTTPException(status_code=403, detail='Gift Card printing is available on Growth and Pro plans.')
+    batch = safe_get_gift_batch(batch_public_id, business.get('id'))
+    if not batch:
+        raise HTTPException(status_code=404, detail='Gift Card batch not found')
+    if not (req.delivery_address or business.get('address') or '').strip():
+        raise HTTPException(status_code=400, detail='Delivery address is required')
+    # Printed stock must stay unactivated.
+    try:
+        supabase.table('gift_cards').update({'status': 'unactivated', 'activated_at': None, 'updated_at': datetime.utcnow().isoformat()}).eq('batch_id', batch.get('id')).eq('status', 'active_unclaimed').execute()
+        existing = supabase.table('gift_card_print_requests').select('*').eq('batch_id', batch.get('id')).neq('status', 'cancelled').limit(1).execute().data or []
+        if existing:
+            return existing[0]
+        now = datetime.utcnow().isoformat()
+        row = {
+            'public_id': _gift_public_id('gcpr'), 'business_id': business.get('id'), 'batch_id': batch.get('id'),
+            'quantity': batch.get('quantity'), 'print_format': batch.get('print_format') or 'business_card',
+            'recipient_name': (req.recipient_name or business.get('owner_name') or business.get('name') or '').strip() or None,
+            'contact_number': (req.contact_number or business.get('phone') or '').strip() or None,
+            'delivery_address': (req.delivery_address or business.get('address') or '').strip() or None,
+            'delivery_instructions': (req.delivery_instructions or '').strip() or None,
+            'status': 'requested', 'requested_at': now, 'updated_at': now,
+        }
+        data = supabase.table('gift_card_print_requests').insert(row).execute().data or []
+        return data[0] if data else row
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+
+@app.get('/api/v1/business/{public_id}/gift-card-batches/{batch_public_id}/print.pdf')
+async def owner_gift_card_print_pdf(public_id: str, batch_public_id: str, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    batch = safe_get_gift_batch(batch_public_id, business.get('id'))
+    if not batch:
+        raise HTTPException(status_code=404, detail='Gift Card batch not found')
+    cards = supabase.table('gift_cards').select('*').eq('batch_id', batch.get('id')).order('id').execute().data or []
+    pdf = _gift_print_pdf_bytes(batch, business, cards)
+    safe_name = re.sub(r'[^A-Za-z0-9._-]+', '_', f"{business.get('name','Business')}_{batch.get('name','GiftCards')}_{batch_public_id}")
+    return Response(content=pdf, media_type='application/pdf', headers={'Content-Disposition': f'attachment; filename="{safe_name}.pdf"'})
+
+
+@app.get('/api/v1/business/{public_id}/gift-card-batches/{batch_public_id}/manifest')
+async def owner_gift_card_manifest(public_id: str, batch_public_id: str, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    batch = safe_get_gift_batch(batch_public_id, business.get('id'))
+    if not batch:
+        raise HTTPException(status_code=404, detail='Gift Card batch not found')
+    cards = supabase.table('gift_cards').select('public_id,code,status,original_amount,remaining_amount,item_name,original_quantity,remaining_quantity').eq('batch_id', batch.get('id')).order('id').execute().data or []
+    return {'business': {'name': business.get('name'), 'public_id': business.get('public_id')}, 'batch': batch, 'cards': cards}
+
+
+@app.get('/api/v1/business/{public_id}/gift-cards/{identifier}/cashier')
+async def cashier_get_gift_card(public_id: str, identifier: str, authorization: str = Header(default='')):
+    _require_gift_cashier_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    gift = safe_get_gift_card(identifier, business.get('id'))
+    if not gift:
+        raise HTTPException(status_code=404, detail='Gift Card not found for this business')
+    return {'business': {'public_id': public_id, 'name': business.get('name')}, 'gift_card': serialize_gift_card(gift, include_history=True)}
+
+
+@app.post('/api/v1/business/{public_id}/gift-cards/{identifier}/activate')
+async def cashier_activate_gift_card(public_id: str, identifier: str, background_tasks: BackgroundTasks, authorization: str = Header(default='')):
+    claims = _require_gift_cashier_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    gift = safe_get_gift_card(identifier, business.get('id'))
+    if not gift:
+        raise HTTPException(status_code=404, detail='Gift Card not found')
+    try:
+        res = supabase.rpc('activate_gift_card_atomic', {'p_business_id': business.get('id'), 'p_gift_card_id': gift.get('id')}).execute()
+        data = res.data
+        if isinstance(data, list):
+            data = data[0] if data else None
+        updated = data or safe_get_gift_card(gift.get('public_id'), business.get('id'))
+        background_tasks.add_task(_sync_gift_wallets, dict(updated), dict(business))
+        return {'gift_card': serialize_gift_card(updated, include_history=True), 'activated_by': claims.get('name')}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=friendly_db_error(e))
+
+
+@app.post('/api/v1/business/{public_id}/gift-cards/{identifier}/redeem')
+async def cashier_redeem_gift_card(public_id: str, identifier: str, req: GiftCardRedeemRequest, background_tasks: BackgroundTasks, authorization: str = Header(default=''), x_idempotency_key: str = Header(default='', alias='X-Idempotency-Key')):
+    claims = _require_gift_cashier_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    gift = safe_get_gift_card(identifier, business.get('id'))
+    if not gift:
+        raise HTTPException(status_code=404, detail='Gift Card not found')
+    if gift.get('gift_type') == 'amount' and req.amount is None:
+        raise HTTPException(status_code=400, detail='Enter the peso amount to redeem')
+    if gift.get('gift_type') == 'item' and req.quantity is None:
+        raise HTTPException(status_code=400, detail='Enter the quantity to redeem')
+    idem = (x_idempotency_key or f"gift-redeem-{gift.get('id')}-{uuid.uuid4().hex}")[:180]
+    try:
+        rpc = supabase.rpc('redeem_gift_card_atomic', {
+            'p_business_id': business.get('id'),
+            'p_gift_card_id': gift.get('id'),
+            'p_amount': round(float(req.amount), 2) if req.amount is not None else None,
+            'p_quantity': int(req.quantity) if req.quantity is not None else None,
+            'p_staff_id': claims.get('staff_id'),
+            'p_branch_id': claims.get('branch_id'),
+            'p_note': (req.note or '').strip() or None,
+            'p_idempotency_key': idem,
+        }).execute()
+        data = rpc.data
+        if isinstance(data, list):
+            data = data[0] if data else None
+        updated = data or safe_get_gift_card(gift.get('public_id'), business.get('id'))
+        background_tasks.add_task(_sync_gift_wallets, dict(updated), dict(business))
+        return {'gift_card': serialize_gift_card(updated, include_history=True), 'message': 'Gift Card redeemed successfully'}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=friendly_db_error(e))
+
+
+@app.post('/api/v1/business/{public_id}/gift-cards/{identifier}/void')
+async def owner_void_gift_card(public_id: str, identifier: str, background_tasks: BackgroundTasks, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    gift = safe_get_gift_card(identifier, business.get('id'))
+    if not gift:
+        raise HTTPException(status_code=404, detail='Gift Card not found')
+    if _gift_effective_status(gift) == 'redeemed':
+        raise HTTPException(status_code=400, detail='A fully redeemed Gift Card cannot be voided')
+    now = datetime.utcnow().isoformat()
+    data = supabase.table('gift_cards').update({'status': 'voided', 'voided_at': now, 'updated_at': now}).eq('id', gift.get('id')).execute().data or []
+    updated = data[0] if data else safe_get_gift_card(gift.get('public_id'), business.get('id'))
+    background_tasks.add_task(_sync_gift_wallets, dict(updated), dict(business))
+    return {'gift_card': serialize_gift_card(updated)}
+
+
+@app.get('/api/v1/gift-card/{gift_public_id}')
+async def public_gift_card_json(gift_public_id: str):
+    gift = safe_get_gift_card(gift_public_id)
+    if not gift:
+        raise HTTPException(status_code=404, detail='Gift Card not found')
+    business = safe_get_business_by_id(gift.get('business_id'))
+    return {'business': {'name': (business or {}).get('name'), 'logo_url': (business or {}).get('logo_url')}, 'gift_card': serialize_gift_card(gift)}
+
+
+@app.post('/api/v1/gift-card/{gift_public_id}/claim')
+async def public_claim_gift_card(gift_public_id: str, req: GiftCardClaimRequest, background_tasks: BackgroundTasks):
+    gift = safe_get_gift_card(gift_public_id)
+    if not gift:
+        raise HTTPException(status_code=404, detail='Gift Card not found')
+    status = _gift_effective_status(gift)
+    if status == 'unactivated':
+        raise HTTPException(status_code=400, detail='This Gift Card has not been activated by the business yet')
+    if status not in GIFT_CARD_ACTIVE_STATUSES:
+        raise HTTPException(status_code=400, detail=f"This Gift Card is {status.replace('_', ' ')}")
+    business = safe_get_business_by_id(gift.get('business_id'))
+    if status == 'active_unclaimed':
+        now = datetime.utcnow().isoformat()
+        update = {
+            'status': 'active_claimed',
+            'recipient_name': (req.recipient_name or '').strip() or gift.get('recipient_name'),
+            'recipient_phone': (req.recipient_phone or '').strip() or gift.get('recipient_phone'),
+            'recipient_email': (req.recipient_email or '').strip() or gift.get('recipient_email'),
+            'claimed_at': now,
+            'updated_at': now,
+        }
+        rows = supabase.table('gift_cards').update(update).eq('id', gift.get('id')).eq('status', 'active_unclaimed').execute().data or []
+        gift = rows[0] if rows else safe_get_gift_card(gift_public_id)
+        if business:
+            background_tasks.add_task(_sync_gift_wallets, dict(gift), dict(business))
+    return {'gift_card': serialize_gift_card(gift)}
+
+
+@app.get('/api/v1/gift-card/{gift_public_id}/wallet')
+async def public_gift_card_wallet(gift_public_id: str):
+    gift = safe_get_gift_card(gift_public_id)
+    if not gift:
+        raise HTTPException(status_code=404, detail='Gift Card not found')
+    status = _gift_effective_status(gift)
+    if status not in GIFT_CARD_ACTIVE_STATUSES:
+        raise HTTPException(status_code=400, detail='Gift Card must be active before it can be added to Wallet')
+    business = safe_get_business_by_id(gift.get('business_id'))
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    jwt_token = create_google_gift_card_jwt(gift, business)
+    return {
+        'save_url': f"https://pay.google.com/gp/v/save/{jwt_token}" if jwt_token else None,
+        'apple_pass_url': f"{BASE_URL}/api/v1/gift-card/{gift_public_id}/apple-wallet-pass",
+    }
+
+
+@app.get('/api/v1/gift-card/{gift_public_id}/apple-wallet-pass')
+async def gift_card_apple_wallet_pass(gift_public_id: str):
+    gift = safe_get_gift_card(gift_public_id)
+    if not gift:
+        raise HTTPException(status_code=404, detail='Gift Card not found')
+    if _gift_effective_status(gift) not in GIFT_CARD_ACTIVE_STATUSES:
+        raise HTTPException(status_code=400, detail='Gift Card must be active before it can be added to Apple Wallet')
+    business = safe_get_business_by_id(gift.get('business_id'))
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    pkpass = build_gift_card_pkpass_bytes(gift, business)
+    if pkpass is None:
+        raise HTTPException(status_code=503, detail='Apple Wallet is not configured')
+    return Response(content=pkpass, media_type='application/vnd.apple.pkpass', headers={'Content-Disposition': f'attachment; filename="{gift.get("code") or "gift-card"}.pkpass"'})
+
+
+@app.get('/gift/{gift_public_id}', response_class=HTMLResponse)
+async def public_gift_card_page(gift_public_id: str):
+    gift = safe_get_gift_card(gift_public_id)
+    if not gift:
+        return HTMLResponse('<h1 style="font-family:sans-serif;text-align:center;padding:60px">Gift Card not found</h1>', status_code=404)
+    business = safe_get_business_by_id(gift.get('business_id')) or {}
+    status = _gift_effective_status(gift)
+    active = status in GIFT_CARD_ACTIVE_STATUSES
+    claimed = status in ('active_claimed', 'partially_redeemed') or bool(gift.get('claimed_at'))
+    brand = _gift_brand_color(business)
+    logo = html_lib.escape(str(business.get('logo_url') or ''))
+    name = html_lib.escape(str(gift.get('name') or 'Gift Card'))
+    biz = html_lib.escape(str(business.get('name') or 'LoyaltyTree'))
+    code = html_lib.escape(str(gift.get('code') or ''))
+    remaining = html_lib.escape(_gift_remaining_label(gift))
+    original = html_lib.escape(_gift_original_label(gift))
+    status_label = html_lib.escape(status.replace('_', ' ').upper())
+    message = html_lib.escape(str(gift.get('gift_message') or ''))
+    recipient = html_lib.escape(str(gift.get('recipient_name') or ''))
+    expires = html_lib.escape(str(gift.get('expires_at') or ''))
+    claim_form = ''
+    if status == 'active_unclaimed':
+        claim_form = f"""<div class="claim"><h3>Claim this Gift Card</h3><input id="claim-name" placeholder="Your name"><input id="claim-phone" placeholder="Phone (optional)"><input id="claim-email" type="email" placeholder="Email (optional)"><button onclick="claimGift()">Claim Gift Card</button></div>"""
+    elif status == 'unactivated':
+        claim_form = '<div class="notice">This printed Gift Card has not been activated yet. Ask the business to activate it after purchase.</div>'
+    elif not active:
+        claim_form = f'<div class="notice">This Gift Card is {status_label}.</div>'
+
+    wallet_block = '<div id="wallet-actions" class="wallet-actions" style="display:none"></div>' if active else ''
+    return HTMLResponse(f"""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>{name}</title><style>
+    *{{box-sizing:border-box}}body{{margin:0;background:#f4f7f8;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#0f172a}}.wrap{{max-width:620px;margin:0 auto;padding:28px 16px 60px}}.brand{{display:flex;align-items:center;gap:12px;margin-bottom:18px}}.brand img{{width:48px;height:48px;border-radius:50%;object-fit:cover;background:white}}.card{{background:{brand};color:white;border-radius:28px;padding:28px;box-shadow:0 24px 60px rgba(15,23,42,.18)}}.eyebrow{{font-size:12px;font-weight:900;letter-spacing:1.4px;opacity:.8}}h1{{margin:8px 0 20px;font-size:32px}}.balance{{font-size:42px;font-weight:900}}.label{{font-size:12px;opacity:.8;text-transform:uppercase;letter-spacing:1px}}.grid{{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:20px}}.tile{{padding:14px;border:1px solid rgba(255,255,255,.25);border-radius:14px;background:rgba(255,255,255,.08)}}.message{{margin-top:18px;padding-top:18px;border-top:1px solid rgba(255,255,255,.25);font-style:italic}}.panel,.claim,.notice{{margin-top:16px;background:white;border-radius:20px;padding:20px;box-shadow:0 12px 30px rgba(15,23,42,.08)}}input{{display:block;width:100%;padding:13px 14px;margin:9px 0;border:1px solid #dbe3e8;border-radius:12px;font-size:15px}}button,.wallet-actions a{{display:block;width:100%;padding:14px;border:0;border-radius:12px;background:#0f172a;color:white;text-align:center;text-decoration:none;font-weight:800;margin-top:10px;cursor:pointer}}.wallet-actions a.apple{{background:#000}}.wallet-actions a.google{{background:#1a73e8}}.muted{{color:#64748b;font-size:13px;line-height:1.55}}@media(max-width:480px){{.grid{{grid-template-columns:1fr}}.balance{{font-size:36px}}}}
+    </style></head><body><div class="wrap"><div class="brand">{f'<img src="{logo}">' if logo else ''}<div><strong>{biz}</strong><div class="muted">Digital Gift Card</div></div></div><section class="card"><div class="eyebrow">GIFT CARD</div><h1>{name}</h1><div class="label">Remaining</div><div class="balance">{remaining}</div><div class="grid"><div class="tile"><div class="label">Original</div><strong>{original}</strong></div><div class="tile"><div class="label">Status</div><strong>{status_label}</strong></div><div class="tile"><div class="label">Card Number</div><strong>{code}</strong></div><div class="tile"><div class="label">Valid Until</div><strong>{expires or 'No expiry'}</strong></div></div>{f'<div class="message">“{message}”</div>' if message else ''}</section>{claim_form}{wallet_block}<div class="panel"><strong>How to use</strong><p class="muted">Save this card to Apple Wallet or Google Wallet, or keep this link. Present the QR to an authorized cashier. The remaining peso balance or item quantity is stored securely on LoyaltyTree and updates after every redemption.</p>{f'<p class="muted">Claimed by: {recipient}</p>' if recipient else ''}</div></div><script>
+    const giftId={json.dumps(gift_public_id)};
+    async function claimGift(){{const r=await fetch('/api/v1/gift-card/'+giftId+'/claim',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{recipient_name:document.getElementById('claim-name')?.value||'',recipient_phone:document.getElementById('claim-phone')?.value||'',recipient_email:document.getElementById('claim-email')?.value||''}})}});const d=await r.json();if(!r.ok){{alert(d.detail||'Could not claim');return}}location.reload();}}
+    async function loadWallet(){{try{{const r=await fetch('/api/v1/gift-card/'+giftId+'/wallet');const d=await r.json();if(!r.ok)return;const c=document.getElementById('wallet-actions');if(!c)return;c.style.display='block';c.innerHTML='<h3>Add to Wallet</h3>'+(d.apple_pass_url?'<a class="apple" href="'+d.apple_pass_url+'">Apple Wallet</a>':'')+(d.save_url?'<a class="google" href="'+d.save_url+'">Google Wallet</a>':'');}}catch(e){{}}}}
+    {('loadWallet();' if active else '')}
+    </script></body></html>""")
+
+
+@app.get('/api/v1/admin/gift-card-print-requests')
+async def admin_gift_card_print_requests(_: bool = Depends(require_admin)):
+    try:
+        rows = supabase.table('gift_card_print_requests').select('*').order('requested_at', desc=True).limit(300).execute().data or []
+        enriched = _enrich_gift_print_requests(rows)
+        return {
+            'requests': enriched,
+            'summary': {
+                'new': sum(1 for r in rows if r.get('status') == 'requested'),
+                'printing': sum(1 for r in rows if r.get('status') in ('design_confirmed', 'printing')),
+                'ready_to_ship': sum(1 for r in rows if r.get('status') == 'ready_to_ship'),
+                'completed': sum(1 for r in rows if r.get('status') == 'completed'),
+            },
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+
+@app.patch('/api/v1/admin/gift-card-print-requests/{request_public_id}')
+async def admin_update_gift_card_print_request(request_public_id: str, req: GiftCardPrintRequestUpdate, _: bool = Depends(require_admin)):
+    update = {k: v for k, v in req.dict().items() if v is not None}
+    if not update:
+        raise HTTPException(status_code=400, detail='No changes supplied')
+    update['updated_at'] = datetime.utcnow().isoformat()
+    try:
+        data = supabase.table('gift_card_print_requests').update(update).eq('public_id', request_public_id).execute().data or []
+        if not data:
+            raise HTTPException(status_code=404, detail='Print request not found')
+        return data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+
+
+@app.get('/api/v1/admin/gift-card-batches/{batch_public_id}/print.pdf')
+async def admin_gift_card_print_pdf(batch_public_id: str, _: bool = Depends(require_admin)):
+    batch = safe_get_gift_batch(batch_public_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail='Gift Card batch not found')
+    business = safe_get_business_by_id(batch.get('business_id'))
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    cards = supabase.table('gift_cards').select('*').eq('batch_id', batch.get('id')).order('id').execute().data or []
+    pdf = _gift_print_pdf_bytes(batch, business, cards)
+    safe_name = re.sub(r'[^A-Za-z0-9._-]+', '_', f"{business.get('name','Business')}_{batch.get('name','GiftCards')}_{batch_public_id}")
+    return Response(content=pdf, media_type='application/pdf', headers={'Content-Disposition': f'attachment; filename="{safe_name}.pdf"'})
+

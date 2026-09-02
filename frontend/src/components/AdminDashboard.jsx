@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import PlatformAnnouncementsAdmin from './PlatformAnnouncementsAdmin'
+import GiftCardPrintRequestsAdmin from './GiftCardPrintRequestsAdmin'
 
 const STATUS_OPTIONS = ['PENDING', 'ACTIVE', 'SUSPENDED', 'REJECTED']
 
@@ -158,23 +159,6 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
       setMessage(err.message)
     }
     setTimeout(() => setMessage(''), 3000)
-  }
-
-  const updateNfcTrial = async (public_id, enabled) => {
-    try {
-      const res = await authedFetch(`/api/v1/admin/businesses/${public_id}/nfc-trial`, {
-        method: 'PATCH',
-        body: JSON.stringify({ enabled }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.detail || 'NFC trial update failed')
-      setMessage(data.message || (enabled ? 'NFC membership trial enabled' : 'NFC membership trial disabled'))
-      loadData()
-      if (selected?.public_id === public_id) openDetail(selected)
-    } catch (err) {
-      setMessage(err.message)
-    }
-    setTimeout(() => setMessage(''), 3500)
   }
 
   const approveApplication = (public_id) => updateBusiness(public_id, { status: 'ACTIVE' })
@@ -461,23 +445,6 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
             <AnalyticsBreakdown title="Browsers" rows={platformAnalytics?.browsers} />
           </div>
 
-          <div style={styles.analyticsLocationCard}>
-            <div style={styles.analyticsLocationHeader}>
-              <div>
-                <div style={styles.analyticsCardTitle}>📍 Visitor locations</div>
-                <div style={styles.analyticsLocationNote}>
-                  Approximate city / province-region from IP analytics only. No GPS permission and no raw IP addresses are stored.
-                </div>
-              </div>
-              <span style={styles.analyticsCoverageBadge}>{platformAnalytics?.geo_coverage_percent ?? 0}% located</span>
-            </div>
-            <div style={styles.analyticsBreakdownGrid}>
-              <AnalyticsBreakdown title="Top provinces / regions" rows={platformAnalytics?.top_regions} />
-              <AnalyticsBreakdown title="Top cities" rows={platformAnalytics?.top_cities} />
-              <AnalyticsBreakdown title="Top countries" rows={platformAnalytics?.top_countries} />
-            </div>
-          </div>
-
           {!!platformAnalytics?.top_business_join_pages?.length && (
             <div style={styles.analyticsListCard}>
               <div style={styles.analyticsCardTitle}>Top business join pages</div>
@@ -496,7 +463,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
               <div key={`${row.created_at}-${i}`} style={styles.analyticsRecentRow}>
                 <span style={styles.analyticsEventBadge}>{String(row.event_name||'event').replaceAll('_',' ')}</span>
                 <span style={styles.analyticsRecentPath}>{row.path || row.page_name || '—'}</span>
-                <span style={styles.analyticsRecentMeta}>{row.source || 'direct'} · {row.device_type || 'unknown'}{row.location ? ` · ${row.location}` : ''} · {row.created_at ? new Date(row.created_at).toLocaleString() : ''}</span>
+                <span style={styles.analyticsRecentMeta}>{row.source || 'direct'} · {row.device_type || 'unknown'} · {row.created_at ? new Date(row.created_at).toLocaleString() : ''}</span>
               </div>
             )}
             {!platformAnalytics?.recent?.length && <div style={styles.analyticsEmpty}>No tracked public activity yet.</div>}
@@ -741,6 +708,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
         )}
 
         <PlatformAnnouncementsAdmin API_BASE={API_BASE} token={token} />
+        <GiftCardPrintRequestsAdmin API_BASE={API_BASE} token={token} />
 
         {/* Filters */}
         <div style={styles.filterRow}>
@@ -1034,29 +1002,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 )}
                 <DetailRow label="Customers" value={detail.customer_count} />
                 <DetailRow label="Staff" value={detail.staff_count} />
-                <DetailRow label="Card type" value={detail.card_type === 'points' ? '⭐ Points' : detail.card_type === 'multipass' ? '🎫 Multipass' : detail.card_type === 'membership' ? '🪪 Membership' : detail.card_type === 'vip' ? '👑 VIP' : '🎟️ Stamp'} />
-                {detail.card_type === 'membership' && (
-                  <div style={{...styles.detailRow, alignItems:'flex-start'}}>
-                    <span style={styles.detailLabel}>NFC membership trial</span>
-                    <div style={{textAlign:'right', maxWidth:320}}>
-                      <button
-                        type="button"
-                        onClick={() => updateNfcTrial(selected.public_id, !detail.nfc_trial?.enabled)}
-                        style={detail.nfc_trial?.enabled ? styles.rejectBtn : styles.approveBtn}
-                      >
-                        {detail.nfc_trial?.enabled ? 'Disable NFC Trial' : 'Enable NFC Trial'}
-                      </button>
-                      <div style={{fontSize:12, color:'#64748b', marginTop:7, lineHeight:1.45}}>
-                        Super-admin only · membership cards only · QR stays enabled.
-                      </div>
-                      {detail.nfc_trial?.enabled && (
-                        <div style={{fontSize:12, color:'#0f766e', marginTop:5, lineHeight:1.45, fontWeight:700}}>
-                          Trial ON · Token {detail.nfc_trial?.token_secret_configured ? '✓' : '✕'} · Google {detail.nfc_trial?.google_smart_tap_configured ? '✓' : 'pending'} · Apple {detail.nfc_trial?.apple_nfc_configured ? '✓' : 'pending'}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
+                <DetailRow label="Card type" value={detail.card_type === 'points' ? '⭐ Points' : detail.card_type === 'multipass' ? '🎫 Multipass' : '🎟️ Stamp'} />
                 {detail.card_type === 'points' ? (
                   <>
                     <DetailRow label="Points sales (30d)" value={detail.stamps_30d} />
@@ -1466,11 +1412,6 @@ const styles = {
   analyticsControls:{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'},
   analyticsError:{padding:'11px 13px',background:'#fef2f2',border:'1px solid #fecaca',color:'#b91c1c',borderRadius:10,fontSize:12.5,marginBottom:14},
   analyticsMetricGrid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:10,marginBottom:14},
-  analyticsLocationCard:{background:'#f8fafc',border:'1px solid #dbe4ea',borderRadius:15,padding:14,margin:'14px 0'},
-  analyticsLocationHeader:{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start',marginBottom:12,flexWrap:'wrap'},
-  analyticsLocationNote:{fontSize:12,color:'#64748b',lineHeight:1.5,marginTop:4,maxWidth:720},
-  analyticsCoverageBadge:{display:'inline-flex',alignItems:'center',padding:'6px 9px',borderRadius:999,background:'#ecfdf5',color:'#047857',fontSize:11,fontWeight:800,whiteSpace:'nowrap'},
-
   analyticsMetricCard:{border:'1px solid #e2e8f0',borderRadius:13,padding:'14px 15px',background:'#f8fafc'},
   analyticsMetricLabel:{fontSize:10.5,fontWeight:800,color:'#64748b',textTransform:'uppercase',letterSpacing:.55},
   analyticsMetricValue:{fontSize:28,fontWeight:850,color:'#0f172a',marginTop:4,lineHeight:1.1},

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import Announcements from './Announcements'
 import PlatformPromoBanner from './PlatformPromoBanner'
 import LoyaltyCardCustomizer from './LoyaltyCardCustomizer'
+import GiftCards from './GiftCards'
 import SubscriptionPayment from './SubscriptionPayment'
 import logo192 from './logo-192.png'
 import logo64 from './logo-64.png'
@@ -1398,6 +1399,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             { id: 'staff', label: 'Team', icon: '👥' },
             { id: 'satisfaction', label: 'Satisfaction', icon: '⭐' },
             { id: 'program', label: 'Edit Card', icon: '✏️' },
+            { id: 'giftcards', label: 'Gift Cards', icon: '🎁' },
             { id: 'billing', label: needsRenewal ? 'Billing ⚠️' : 'Billing', icon: '💳' },
           ].map(tab => (
             <button
@@ -1902,6 +1904,15 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               </div>
             )}
           </div>
+        )}
+
+        {activeTab === 'giftcards' && (
+          <GiftCards
+            API_BASE={API_BASE}
+            user={user}
+            plan={subscription?.plan || business?.plan || ''}
+            enabled={subscription?.features?.gift_cards ?? ['growth','pro'].includes(String(subscription?.plan || business?.plan || '').toLowerCase())}
+          />
         )}
 
         {activeTab === 'billing' && (

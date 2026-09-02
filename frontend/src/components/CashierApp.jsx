@@ -32,6 +32,9 @@ function CashierApp({ API_BASE }) {
   const lastScanRef = useRef({ id: null, time: 0 })
   const lastNfcRef = useRef({ token: null, time: 0 })
   const [customerData, setCustomerData] = useState(null)
+  const [giftCardData, setGiftCardData] = useState(null)
+  const [giftRedeemAmount, setGiftRedeemAmount] = useState('')
+  const [giftRedeemQuantity, setGiftRedeemQuantity] = useState('1')
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('')
   const [showManual, setShowManual] = useState(false)
@@ -46,7 +49,7 @@ function CashierApp({ API_BASE }) {
 
   useEffect(() => {
     if (!businessSlug || !staffName || (!isOwner && !staffPin && !sessionToken)) return
-    if (customerData) return // #reader isn't mounted while the customer card is showing
+    if (customerData || giftCardData) return // #reader isn't mounted while a customer/gift card is showing
 
     const scanner = new Html5QrcodeScanner('reader', {
       qrbox: { width: 250, height: 250 },
@@ -56,8 +59,22 @@ function CashierApp({ API_BASE }) {
     scanner.render(onScanSuccess, onScanError)
 
     function onScanSuccess(decodedText) {
+      const rawScan = decodedText.trim()
+      const giftUrlMatch = rawScan.match(/\/gift\/([^/?#]+)/i)
+      const giftCodeMatch = rawScan.match(/^(GC-[A-Z0-9-]+)$/i)
+      if (giftUrlMatch || giftCodeMatch) {
+        const giftId = (giftUrlMatch?.[1] || giftCodeMatch?.[1] || '').trim()
+        const now = Date.now()
+        if (lastScanRef.current.id === `gift:${giftId}` && now - lastScanRef.current.time < 3000) return
+        lastScanRef.current = { id: `gift:${giftId}`, time: now }
+        scanner.clear()
+        setScanResult(giftId)
+        fetchGiftCard(giftId)
+        return
+      }
+
       // Extract customer ID from URL if needed
-      let customerId = decodedText.trim()
+      let customerId = rawScan
 
       // If it's a URL, extract the last path segment
       if (customerId.includes('/')) {
@@ -98,7 +115,7 @@ function CashierApp({ API_BASE }) {
     return () => {
       scanner.clear().catch(() => {})
     }
-  }, [businessSlug, staffPin, sessionToken, staffName, customerData, isOwner])
+  }, [businessSlug, staffPin, sessionToken, staffName, customerData, giftCardData, isOwner])
 
   // External NFC reader/native bridge hand-off. If the customer taps before
   // the cashier has logged in, the query stays in the URL; after verify-pin
@@ -704,9 +721,76 @@ function CashierApp({ API_BASE }) {
     setLoading(false)
   }
 
+  const fetchGiftCard = async (identifier) => {
+    if (!identifier || !businessSlug || !sessionToken) {
+      setMessage('Cashier login is required before opening a Gift Card')
+      return
+    }
+    setLoading(true); setMessage('')
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/gift-cards/${encodeURIComponent(identifier)}/cashier`, {
+        headers: { Authorization: `Bearer ${sessionToken}` }, cache: 'no-store'
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.gift_card) throw new Error(data.detail || 'Gift Card not found')
+      setCustomerData(null)
+    setGiftCardData(null)
+    setGiftRedeemAmount('')
+    setGiftRedeemQuantity('1')
+      setGiftCardData(data.gift_card)
+      setMessage(`🎁 ${data.gift_card.name || 'Gift Card'} found`)
+    } catch (err) {
+      setGiftCardData(null)
+      setMessage(`❌ ${err.message || 'Could not load Gift Card'}`)
+    }
+    setLoading(false)
+  }
+
+  const activateGiftCard = async () => {
+    if (!giftCardData || !businessSlug || !sessionToken) return
+    setLoading(true); setMessage('Activating Gift Card…')
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/gift-cards/${giftCardData.public_id}/activate`, { method:'POST', headers:{ Authorization:`Bearer ${sessionToken}` } })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Activation failed')
+      setGiftCardData(data.gift_card || data)
+      setMessage('✅ Gift Card activated and ready to use')
+    } catch (err) { setMessage(`❌ ${err.message || 'Activation failed'}`) }
+    setLoading(false)
+  }
+
+  const redeemGiftCard = async () => {
+    if (!giftCardData || !businessSlug || !sessionToken) return
+    const isAmount = giftCardData.gift_type === 'amount'
+    const amount = Number(giftRedeemAmount || 0)
+    const quantity = Number(giftRedeemQuantity || 0)
+    if (isAmount && amount <= 0) return setMessage('Enter the peso amount to redeem')
+    if (!isAmount && quantity <= 0) return setMessage('Enter the quantity to redeem')
+    const label = isAmount ? `₱${amount.toLocaleString()}` : `${quantity} ${giftCardData.item_name || 'item'}${quantity === 1 ? '' : 's'}`
+    if (!window.confirm(`Redeem ${label} from ${giftCardData.code}?`)) return
+    setLoading(true); setMessage('Redeeming Gift Card…')
+    const idem = `gift-${giftCardData.public_id}-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/gift-cards/${giftCardData.public_id}/redeem`, {
+        method:'POST', headers:{ Authorization:`Bearer ${sessionToken}`, 'Content-Type':'application/json', 'X-Idempotency-Key': idem },
+        body:JSON.stringify(isAmount ? { amount } : { quantity })
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Redemption failed')
+      setGiftCardData(data.gift_card || giftCardData)
+      setGiftRedeemAmount(''); setGiftRedeemQuantity('1')
+      setMessage(`✅ ${label} redeemed successfully`)
+      await fetchGiftCard(giftCardData.public_id)
+    } catch (err) { setMessage(`❌ ${err.message || 'Redemption failed'}`) }
+    setLoading(false)
+  }
+
   const resetScan = () => {
     setScanResult(null)
     setCustomerData(null)
+    setGiftCardData(null)
+    setGiftRedeemAmount('')
+    setGiftRedeemQuantity('1')
     setShowManual(false)
     setManualId('')
     setMessage('')
@@ -942,12 +1026,34 @@ function CashierApp({ API_BASE }) {
       )}
 
       {/* Scanner or Customer Card */}
-      {!customerData ? (
+      {giftCardData ? (
+        <div style={styles.giftCardPanel}>
+          <div style={styles.giftHero}>
+            <div style={styles.giftEyebrow}>🎁 GIFT CARD</div>
+            <h2 style={styles.giftTitle}>{giftCardData.name || 'Gift Card'}</h2>
+            <div style={styles.giftCode}>{giftCardData.code}</div>
+            <div style={styles.giftBalanceLabel}>REMAINING</div>
+            <div style={styles.giftBalance}>{giftCardData.gift_type === 'amount' ? `₱${Number(giftCardData.remaining_amount || 0).toLocaleString('en-PH',{maximumFractionDigits:2})}` : `${giftCardData.remaining_quantity || 0} / ${giftCardData.original_quantity || 0}`}</div>
+            {giftCardData.gift_type === 'item' && <div style={styles.giftItem}>{giftCardData.item_name}</div>}
+          </div>
+          <div style={styles.giftStatusRow}><span>Status</span><b>{String(giftCardData.status || '').replaceAll('_',' ').toUpperCase()}</b></div>
+          {giftCardData.status === 'unactivated' ? (
+            <div style={styles.giftActionBox}><p style={styles.scanHint}>This printed Gift Card has no usable value yet. Activate it only after payment has been received.</p><button style={styles.giftActivateBtn} disabled={loading} onClick={activateGiftCard}>{loading?'Activating…':'Activate Gift Card'}</button></div>
+          ) : ['active_unclaimed','active_claimed','partially_redeemed'].includes(giftCardData.status) ? (
+            <div style={styles.giftActionBox}>
+              {giftCardData.gift_type === 'amount' ? <input style={styles.input} type="number" min="0.01" step="0.01" placeholder="Amount to redeem (₱)" value={giftRedeemAmount} onChange={e=>setGiftRedeemAmount(e.target.value)} /> : <div><div style={{fontWeight:800,marginBottom:7}}>Quantity to redeem</div><input style={styles.input} type="number" min="1" max={giftCardData.remaining_quantity || 1} value={giftRedeemQuantity} onChange={e=>setGiftRedeemQuantity(e.target.value)} /></div>}
+              <button style={styles.giftRedeemBtn} disabled={loading} onClick={redeemGiftCard}>{loading?'Processing…':'Redeem Gift Card'}</button>
+            </div>
+          ) : <div style={styles.giftClosed}>This Gift Card can no longer be redeemed.</div>}
+          {!!giftCardData.redemptions?.length && <div style={styles.giftHistory}><b>Recent redemptions</b>{giftCardData.redemptions.slice(0,6).map((r,i)=><div key={r.id||i} style={styles.giftHistoryRow}><span>{r.redeemed_at ? new Date(r.redeemed_at).toLocaleString() : 'Redemption'}</span><b>{giftCardData.gift_type==='amount'?`-₱${Number(r.amount||0).toLocaleString()}`:`-${r.quantity||0}`}</b></div>)}</div>}
+          <button style={styles.scanAgainBtn} onClick={resetScan}>🔄 Scan Next</button>
+        </div>
+      ) : !customerData ? (
         <div style={styles.scanSection}>
           <div style={styles.scanCard}>
-            <h3 style={styles.scanTitle}>📷 Scan Customer Card</h3>
+            <h3 style={styles.scanTitle}>📷 Scan Customer or Gift Card</h3>
             <div id="reader" style={styles.reader}></div>
-            <p style={styles.scanHint}>Scan any LoyaltyTree card: Stamp, Points, Membership, VIP, Multi-Pass, or Hybrid.</p>
+            <p style={styles.scanHint}>Scan any LoyaltyTree loyalty card or Gift Card QR.</p>
 
             <button style={styles.manualBtn} onClick={() => setShowManual(true)}>
               ✏️ Enter ID Manually
@@ -959,14 +1065,14 @@ function CashierApp({ API_BASE }) {
               <h4>Manual Entry</h4>
               <input
                 style={styles.input}
-                placeholder="Customer ID"
+                placeholder="Customer ID or Gift Card code"
                 value={manualId}
                 onChange={e => setManualId(e.target.value)}
               />
               <button style={styles.btn} onClick={() => {
-                if (manualId) fetchCustomer(manualId)
+                if (manualId) (/^GC-/i.test(manualId.trim()) ? fetchGiftCard(manualId.trim()) : fetchCustomer(manualId.trim()))
               }}>
-                Find Customer
+                Find Card
               </button>
               <button style={styles.backBtn} onClick={() => setShowManual(false)}>
                 Back
@@ -1756,6 +1862,14 @@ const styles = {
     fontWeight: 600,
     cursor: 'pointer',
   },
+  giftCardPanel:{maxWidth:560,margin:'20px auto',padding:'0 16px 28px'},
+  giftHero:{background:'linear-gradient(135deg,#0d9488,#0f766e)',color:'#fff',borderRadius:22,padding:22,boxShadow:'0 18px 45px rgba(15,118,110,.18)'},
+  giftEyebrow:{fontSize:11,fontWeight:900,letterSpacing:1.4,opacity:.8},
+  giftTitle:{margin:'7px 0 2px',fontSize:25},giftCode:{fontFamily:'monospace',fontSize:12,opacity:.75},
+  giftBalanceLabel:{fontSize:10,fontWeight:900,letterSpacing:1.2,marginTop:20,opacity:.75},giftBalance:{fontSize:38,fontWeight:900,marginTop:2},giftItem:{fontSize:13,opacity:.85,marginTop:2},
+  giftStatusRow:{display:'flex',justifyContent:'space-between',alignItems:'center',background:'#fff',border:'1px solid #dbe7e5',borderRadius:13,padding:'13px 14px',marginTop:12,fontSize:12,color:'#475569'},
+  giftActionBox:{background:'#fff',border:'1px solid #dbe7e5',borderRadius:16,padding:16,marginTop:12},giftActivateBtn:{width:'100%',padding:14,border:0,borderRadius:11,background:'#0f172a',color:'#fff',fontSize:15,fontWeight:800,cursor:'pointer'},giftRedeemBtn:{width:'100%',padding:14,border:0,borderRadius:11,background:'#0d9488',color:'#fff',fontSize:15,fontWeight:800,cursor:'pointer',marginTop:10},
+  giftClosed:{padding:15,borderRadius:13,background:'#f1f5f9',color:'#64748b',textAlign:'center',marginTop:12,fontWeight:700},giftHistory:{background:'#fff',border:'1px solid #dbe7e5',borderRadius:14,padding:14,marginTop:12,fontSize:12},giftHistoryRow:{display:'flex',justifyContent:'space-between',gap:12,padding:'8px 0',borderBottom:'1px solid #f1f5f9',color:'#64748b'},
   scanAgainBtn: {
     width: '100%',
     padding: '12px',
