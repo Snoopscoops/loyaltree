@@ -81,6 +81,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
   const [guidedStep, setGuidedStep] = useState(0)
   const [guidedError, setGuidedError] = useState('')
   const [guidedMobile, setGuidedMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth <= 640)
+  const [plan, setPlan] = useState('starter')
+  const [planFeatures, setPlanFeatures] = useState({ hybrid_cards: false, gift_cards: false })
 
   useEffect(() => {
     const onResize = () => setGuidedMobile(window.innerWidth <= 640)
@@ -114,6 +116,11 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
       )
       const data = await res.json()
       if (res.ok) {
+        setPlan(String(data.plan || 'starter').toLowerCase())
+        setPlanFeatures({
+          hybrid_cards: data.plan_features?.hybrid_cards === true,
+          gift_cards: data.plan_features?.gift_cards === true,
+        })
         setForm(f => ({
           ...f,
           card_type: ['stamp', 'points', 'membership', 'multipass', 'vip', 'hybrid'].includes(data.card_type) ? data.card_type : 'stamp',
@@ -346,6 +353,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
   const removeMembershipBenefit = (id) => update('membership_benefits', (form.membership_benefits || []).filter(b => b.id !== id))
 
   const postConfig = async () => {
+    if (form.card_type === 'hybrid' && !hybridAllowed) {
+      throw new Error('Hybrid Card is available on the Growth and Pro plans. Upgrade to Growth to continue.')
+    }
     const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config`, {
       method: 'POST',
       headers: {
@@ -444,6 +454,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
   const multipassSessionCount = Math.min(200, Math.max(2, Number(form.multipass_session_count) || 12))
   const multipassPreviewUsed = Math.ceil(multipassSessionCount / 3)
   const displayName = form.card_name || `${user?.business_name || 'Your Business'} Rewards`
+  const hybridAllowed = planFeatures.hybrid_cards === true
   const isHybrid = form.card_type === 'hybrid'
   const effectiveLoyaltyType = isHybrid ? (form.hybrid_loyalty_type || 'points') : form.card_type
   const hasMembership = form.card_type === 'membership' || isHybrid
@@ -549,12 +560,22 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                   ['vip','👑','VIP Card','Customers build VIP status and automatically move through tiers.'],
                   ['multipass','🎫','Multi-Pass','Customers receive a fixed number of sessions or visits that count down.'],
                 ].map(([type,icon,label,desc])=>(
-                  <button key={type} type="button" onClick={()=>update('card_type',type)}
-                    style={{...styles.pickerCard,padding:guidedMobile?'16px 15px':'28px 24px',...(form.card_type===type?{borderColor:'#0d9488',background:'#f0fdfa',boxShadow:'0 0 0 2px rgba(13,148,136,.08)'}:{})}}>
+                  <button key={type} type="button"
+                    onClick={()=>{
+                      if(type==='hybrid' && !hybridAllowed){
+                        setGuidedError('Hybrid Card is available on the Growth and Pro plans. Upgrade to Growth to unlock it.')
+                        return
+                      }
+                      setGuidedError('')
+                      update('card_type',type)
+                    }}
+                    aria-disabled={type==='hybrid' && !hybridAllowed}
+                    style={{...styles.pickerCard,padding:guidedMobile?'16px 15px':'28px 24px',...(type==='hybrid'&&!hybridAllowed?{opacity:.62,cursor:'not-allowed',background:'#f8fafc'}:{}),...(form.card_type===type?{borderColor:'#0d9488',background:'#f0fdfa',boxShadow:'0 0 0 2px rgba(13,148,136,.08)'}:{})}}>
                     <span style={styles.pickerCardIcon}>{icon}</span>
                     <span style={styles.pickerCardLabel}>{label}</span>
                     <span style={styles.pickerCardDesc}>{desc}</span>
-                    {form.card_type===type && <span style={styles.pickerCardBadge}>Selected</span>}
+                    {type==='hybrid'&&!hybridAllowed && <span style={styles.pickerCardBadge}>Growth</span>}
+                    {(!(type==='hybrid'&&!hybridAllowed) && form.card_type===type) && <span style={styles.pickerCardBadge}>Selected</span>}
                   </button>
                 ))}
               </div>
@@ -992,16 +1013,25 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
 
           <button
             type="button"
-            onClick={() => update('card_type', 'hybrid')}
+            onClick={() => {
+              if (!hybridAllowed) {
+                setError('Hybrid Card is a Growth feature. Upgrade to Growth to unlock it.')
+                return
+              }
+              update('card_type', 'hybrid')
+            }}
+            aria-disabled={!hybridAllowed}
             style={{
               ...styles.pickerCard,
+              ...(!hybridAllowed ? { opacity: .62, cursor: 'not-allowed', background: '#f8fafc' } : {}),
               ...(form.card_type === 'hybrid' ? { borderColor: form.primary_color || '#0d9488', background: '#f0fdfa' } : {}),
             }}
           >
             <span style={styles.pickerCardIcon}>✨</span>
             <span style={styles.pickerCardLabel}>Hybrid Card</span>
             <span style={styles.pickerCardDesc}>One Wallet card combining Membership / Subscription with Points or Stamps.</span>
-            {form.card_type === 'hybrid' && <span style={styles.pickerCardBadge}>Selected</span>}
+            {!hybridAllowed && <span style={styles.pickerCardBadge}>Growth</span>}
+            {hybridAllowed && form.card_type === 'hybrid' && <span style={styles.pickerCardBadge}>Selected</span>}
           </button>
 
           <button type="button" onClick={() => update('card_type','vip')} style={{...styles.pickerCard,...(form.card_type==='vip'?{borderColor:form.primary_color||'#0d9488',background:'#fefce8'}:{})}}><span style={styles.pickerCardIcon}>👑</span><span style={styles.pickerCardLabel}>VIP Card</span><span style={styles.pickerCardDesc}>Customers earn non-spendable VIP points, rise through tiers automatically, and unlock stronger benefits.</span>{form.card_type==='vip'&&<span style={styles.pickerCardBadge}>Selected</span>}</button>
@@ -1021,7 +1051,13 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
           </button>
         </div>
 
-        <button type="button" onClick={() => setStep('form')} style={styles.pickerContinueBtn}>
+        <button type="button" onClick={() => {
+          if(form.card_type==='hybrid' && !hybridAllowed){
+            setError('Hybrid Card is a Growth feature. Upgrade to Growth to unlock it.')
+            return
+          }
+          setStep('form')
+        }} style={styles.pickerContinueBtn}>
           Continue with {form.card_type === 'hybrid' ? 'Hybrid Card' : form.card_type === 'points' ? 'Points Card' : form.card_type === 'membership' ? 'Membership Card' : form.card_type === 'vip' ? 'VIP Card' : form.card_type === 'multipass' ? 'Multi-Pass' : 'Stamp Card'} →
         </button>
       </div>
@@ -1185,6 +1221,11 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
         <form onSubmit={handlePublish} style={{ ...styles.form, gridArea: 'form' }}>
           {error && <div style={styles.error}>{error}</div>}
           {saved && <div style={styles.success}>✓ Card published successfully</div>}
+          {form.card_type === 'hybrid' && !hybridAllowed && (
+            <div style={{...styles.error,background:'#fffbeb',borderColor:'#fde68a',color:'#92400e'}}>
+              🔒 Hybrid Card is a Growth feature. Your existing customer cards remain usable, but editing or republishing is locked until this business upgrades to Growth.
+            </div>
+          )}
 
           <div style={styles.typeSummary}>
             <span style={styles.typeSummaryText}>

@@ -153,6 +153,9 @@ SUBSCRIPTION_PLANS = {
         'win_back': False,
         'max_branches': 5,
         'geofence_notifications': False,
+        # Growth-tier product modules. Starter cannot create/edit these.
+        'hybrid_cards': False,
+        'gift_cards': False,
     },
     'growth': {
         'label': 'Growth',
@@ -169,6 +172,8 @@ SUBSCRIPTION_PLANS = {
         'win_back': True,
         'max_branches': 5,
         'geofence_notifications': False,
+        'hybrid_cards': True,
+        'gift_cards': True,
     },
     'pro': {
         'label': 'Pro',
@@ -186,6 +191,9 @@ SUBSCRIPTION_PLANS = {
         'max_branches': 5,
         # Reserved until geotag/geofence delivery is implemented and enabled.
         'geofence_notifications': False,
+        # Pro inherits Growth product modules.
+        'hybrid_cards': True,
+        'gift_cards': True,
     },
 }
 
@@ -194,6 +202,14 @@ def get_plan_features(plan: Optional[str]) -> dict:
     unrecognized or missing plan so a bad value never silently unlocks
     Pro-only features."""
     return SUBSCRIPTION_PLANS.get(plan or 'starter', SUBSCRIPTION_PLANS['starter'])
+
+def business_has_plan_feature(business: dict, feature: str) -> bool:
+    """Central plan gate for product modules.
+
+    Hybrid and Gift Cards are Growth-tier features. Pro inherits Growth
+    features. Unknown plans fall back to Starter via get_plan_features().
+    """
+    return bool(get_plan_features((business or {}).get('plan')).get(feature, False))
 
 def get_effective_announcement_limit(business: dict) -> Optional[int]:
     """Announcements included in one paid subscription cycle.
@@ -7979,6 +7995,10 @@ async def get_subscription_status(public_id: str):
         "subscription_status": subscription_status,
         "days_left": days_left,
         "latest_payment": latest_payment,
+        "features": {
+            "hybrid_cards": business_has_plan_feature(business, 'hybrid_cards'),
+            "gift_cards": business_has_plan_feature(business, 'gift_cards'),
+        },
     }
 
 @app.get("/api/v1/business/{public_id}/subscription/payments")
@@ -9279,6 +9299,11 @@ async def get_loyalty_config(public_id: str, response: Response):
             "vip_points_per_amount": 10,
             "vip_amount_pesos": 100,
             "vip_tiers": [],
+            "plan": business.get('plan', 'starter'),
+            "plan_features": {
+                "hybrid_cards": business_has_plan_feature(business, 'hybrid_cards'),
+                "gift_cards": business_has_plan_feature(business, 'gift_cards'),
+            },
             # No loyalty_programs row saved yet - this is placeholder defaults,
             # not a real choice the business made. is_configured lets the
             # editor tell "brand new business, nothing chosen yet" apart from
@@ -9287,7 +9312,15 @@ async def get_loyalty_config(public_id: str, response: Response):
             # legitimately be defaults either way.
             "is_configured": False,
         }
-    return {**program, "is_configured": True}
+    return {
+        **program,
+        "is_configured": True,
+        "plan": business.get('plan', 'starter'),
+        "plan_features": {
+            "hybrid_cards": business_has_plan_feature(business, 'hybrid_cards'),
+            "gift_cards": business_has_plan_feature(business, 'gift_cards'),
+        },
+    }
 
 
 @app.get("/api/v1/business/{public_id}/cashier-program")
@@ -9330,6 +9363,14 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
+
+    # Hybrid is a Growth-tier module. Keep existing live Hybrid cards usable
+    # after a downgrade, but Starter owners cannot create/edit/publish Hybrid.
+    if config.card_type == 'hybrid' and not business_has_plan_feature(business, 'hybrid_cards'):
+        raise HTTPException(
+            status_code=403,
+            detail="Hybrid Card is available on the Growth and Pro plans. Upgrade to Growth to create or edit a Hybrid Card.",
+        )
 
     data = {
         'business_id': business.get('id'),
@@ -14239,6 +14280,11 @@ async def create_or_update_wallet_class(public_id: str):
         )
 
     program = safe_get_loyalty_program(business.get('id')) or {}
+    if program.get('card_type') == 'hybrid' and not business_has_plan_feature(business, 'hybrid_cards'):
+        raise HTTPException(
+            status_code=403,
+            detail="Hybrid Card publishing is available on the Growth and Pro plans. Upgrade to Growth to republish this card.",
+        )
     base_class_id = _google_wallet_base_class_id(business, program)
     review_status = 'UNDER_REVIEW'
 
