@@ -30,6 +30,8 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const [sortByAddress, setSortByAddress] = useState(false)
   const [selected, setSelected] = useState(null)
   const [detail, setDetail] = useState(null)
+  const [orderAheadAdmin, setOrderAheadAdmin] = useState(null)
+  const [orderAheadSaving, setOrderAheadSaving] = useState(false)
   const [message, setMessage] = useState('')
   const [confirmDelete, setConfirmDelete] = useState(null)
   const [showCreateModal, setShowCreateModal] = useState(false)
@@ -136,11 +138,39 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const openDetail = async (biz) => {
     setSelected(biz)
     setDetail(null)
+    setOrderAheadAdmin(null)
     try {
-      const res = await authedFetch(`/api/v1/admin/businesses/${biz.public_id}`)
-      setDetail(await res.json())
+      const [res, oaRes] = await Promise.all([
+        authedFetch(`/api/v1/admin/businesses/${biz.public_id}`),
+        authedFetch(`/api/v1/admin/businesses/${biz.public_id}/order-ahead`),
+      ])
+      const detailData = await res.json().catch(() => null)
+      const oaData = await oaRes.json().catch(() => null)
+      setDetail(detailData)
+      if (oaRes.ok) setOrderAheadAdmin(oaData)
     } catch (err) {
       console.error(err)
+    }
+  }
+
+  const saveOrderAheadAdmin = async (enabled, buttonLabel) => {
+    if (!selected?.public_id) return
+    setOrderAheadSaving(true)
+    try {
+      const res = await authedFetch(`/api/v1/admin/businesses/${selected.public_id}/order-ahead`, {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled, button_label: (buttonLabel || 'Order Ahead').trim() || 'Order Ahead' }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not update Order Ahead')
+      setMessage(data.message || 'Order Ahead updated')
+      await openDetail(selected)
+      loadData()
+    } catch (err) {
+      setMessage(err.message || 'Could not update Order Ahead')
+    } finally {
+      setOrderAheadSaving(false)
+      setTimeout(() => setMessage(''), 3500)
     }
   }
 
@@ -843,7 +873,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
 
       {/* Detail modal */}
       {selected && (
-        <div style={styles.modalOverlay} onClick={() => { setSelected(null); setDetail(null) }}>
+        <div style={styles.modalOverlay} onClick={() => { setSelected(null); setDetail(null); setOrderAheadAdmin(null) }}>
           <div style={styles.modal} onClick={e => e.stopPropagation()}>
             <div style={styles.businessDetailHero}>{detail?.logo_url?<img src={detail.logo_url} alt="Business logo" style={styles.businessDetailLogo}/>:<div style={styles.businessDetailLogoFallback}>🏪</div>}<div><h2 style={styles.modalTitle}>{detail?.name || selected.name}</h2><div style={styles.bizEmail}>{detail?.contact_person||'No contact person'} · {detail?.business_type?businessTypeLabel(detail.business_type):''}</div></div></div>
             {!detail ? (
@@ -1020,6 +1050,45 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 )}
                 <DetailRow label="Redemptions (30d)" value={detail.redemptions_30d} />
                 <DetailRow label="Created" value={detail.created_at ? new Date(detail.created_at).toLocaleDateString() : '—'} />
+                <div style={{...styles.detailRow, alignItems:'flex-start'}}>
+                  <span style={styles.detailLabel}>Order Ahead beta</span>
+                  <div style={{width:'100%',maxWidth:390,textAlign:'left'}}>
+                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,marginBottom:10}}>
+                      <div>
+                        <div style={{fontWeight:800,color:orderAheadAdmin?.enabled?'#047857':'#64748b'}}>{orderAheadAdmin?.enabled?'Enabled':'Disabled'}</div>
+                        <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>Super Admin controls access. Enabling republishes member Wallet passes.</div>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={orderAheadSaving || !orderAheadAdmin}
+                        onClick={()=>saveOrderAheadAdmin(!orderAheadAdmin?.enabled, orderAheadAdmin?.button_label)}
+                        style={{...styles.viewBtn,background:orderAheadAdmin?.enabled?'#fef2f2':'#ecfdf5',color:orderAheadAdmin?.enabled?'#b91c1c':'#047857',border:`1px solid ${orderAheadAdmin?.enabled?'#fecaca':'#a7f3d0'}`}}
+                      >
+                        {orderAheadSaving?'Saving…':orderAheadAdmin?.enabled?'Turn Off':'Turn On'}
+                      </button>
+                    </div>
+                    <label style={{display:'block',fontSize:11,fontWeight:750,color:'#64748b',marginBottom:5}}>Wallet action label</label>
+                    <div style={{display:'flex',gap:8}}>
+                      <input
+                        style={{...styles.input,flex:1,minWidth:0}}
+                        value={orderAheadAdmin?.button_label || 'Order Ahead'}
+                        maxLength={30}
+                        onChange={e=>setOrderAheadAdmin(prev=>({...prev,button_label:e.target.value}))}
+                        disabled={!orderAheadAdmin}
+                      />
+                      <button
+                        type="button"
+                        style={styles.viewBtn}
+                        disabled={orderAheadSaving || !orderAheadAdmin}
+                        onClick={()=>saveOrderAheadAdmin(!!orderAheadAdmin?.enabled, orderAheadAdmin?.button_label)}
+                      >Save label</button>
+                    </div>
+                    <div style={{fontSize:11,color:orderAheadAdmin?.token_secret_configured?'#047857':'#b45309',marginTop:7}}>
+                      {orderAheadAdmin?.token_secret_configured?'✓ Secure Wallet link signing configured':'⚠ ORDER_AHEAD_TOKEN_SECRET is not configured'}
+                    </div>
+                    {orderAheadAdmin?.enabled && <div style={{fontSize:11,color:'#0f766e',marginTop:7}}>Owner dashboard will show the Order Ahead setup tab for this business.</div>}
+                  </div>
+                </div>
                 {detail.loyalty_program && detail.card_type === 'points' ? (
                   <>
                     <DetailRow label="Points rate" value={`${detail.loyalty_program.points_per_amount ?? 0} pts per ₱${detail.loyalty_program.points_amount_pesos ?? 0}`} />
@@ -1052,7 +1121,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 )}
               </div>
             )}
-            <button onClick={() => { setSelected(null); setDetail(null) }} style={styles.closeBtn}>Close</button>
+            <button onClick={() => { setSelected(null); setDetail(null); setOrderAheadAdmin(null) }} style={styles.closeBtn}>Close</button>
           </div>
         </div>
       )}

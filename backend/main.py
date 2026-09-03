@@ -48,6 +48,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in ('1', 'true', 'yes', 'on')
 
 NFC_TOKEN_SECRET = os.getenv('NFC_TOKEN_SECRET', '')
+ORDER_AHEAD_TOKEN_SECRET = os.getenv('ORDER_AHEAD_TOKEN_SECRET', '')  # stable HMAC secret for member-specific Order Ahead links
 GOOGLE_SMART_TAP_ENABLED = _env_bool('GOOGLE_SMART_TAP_ENABLED', False)
 GOOGLE_SMART_TAP_REDEMPTION_ISSUER_ID = os.getenv('GOOGLE_SMART_TAP_REDEMPTION_ISSUER_ID', '')
 APPLE_NFC_ENABLED = _env_bool('APPLE_NFC_ENABLED', False)
@@ -1434,6 +1435,21 @@ class AdminNfcTrialUpdate(BaseModel):
     # platform super admin. Business-owner loyalty config cannot set this.
     enabled: bool
 
+class AdminOrderAheadToggleUpdate(BaseModel):
+    # Order Ahead starts as a super-admin controlled beta. Business owners can
+    # manage their menu/settings only after the platform enables the module.
+    enabled: bool
+    button_label: Optional[str] = Field(default='Order Ahead', min_length=1, max_length=30)
+
+class OrderAheadSettingsUpdate(BaseModel):
+    # Owner-editable operating rules. The platform enable/disable switch and
+    # Wallet CTA stay super-admin-only.
+    pickup_mode: Optional[Literal['asap', 'scheduled', 'both']] = None
+    min_prep_minutes: Optional[int] = Field(default=None, ge=0, le=1440)
+    slot_interval_minutes: Optional[int] = Field(default=None, ge=5, le=240)
+    max_advance_days: Optional[int] = Field(default=None, ge=0, le=365)
+    ready_notification_enabled: Optional[bool] = None
+
 class AdminBusinessCreate(BaseModel):
     """Admin-provisioned business account - used for invite-only business
     types (e.g. car_lending) that don't go through the public signup form.
@@ -2100,6 +2116,8 @@ def business_summary(biz: dict) -> dict:
         "onboarding_step": int(biz.get("onboarding_step") or 0),
         "onboarding_completed": bool(biz.get("onboarding_completed")),
         "join_url": f"{(FRONTEND_URL or BASE_URL).rstrip('/')}/join/{biz.get('public_id','')}",
+        "order_ahead_enabled": bool(biz.get("order_ahead_enabled")),
+        "order_ahead_button_label": (biz.get("order_ahead_button_label") or "Order Ahead")[:30],
         "created_at": biz.get("created_at"),
         "last_paid_at": biz.get("last_paid_at"),
         "subscription_expires_at": subscription_expires_at,
@@ -2868,6 +2886,8 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         details.append(('BUSINESS', f"{category['icon']} {biz_name} · {category['label']}"))
     details = details[:4]
 
+    order_ahead_action = order_ahead_wallet_action(customer, business)
+
     loyalty_object = {
         'id': object_id,
         'classId': class_id,
@@ -2902,10 +2922,29 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         ],
         'linksModuleData': {
             'uris': [
+                *([{'uri': order_ahead_action['url'], 'description': f"🛍️ {order_ahead_action['label']}"}] if order_ahead_action else []),
                 {'uri': f'{BASE_URL}/feedback/{cust_public_id}', 'description': '⭐ Rate Your Experience'},
                 {'uri': f'{BASE_URL}/wallet/{cust_public_id}', 'description': 'Open full LoyaltyTree card'}
             ]
-        }
+        },
+        **({
+            'appLinkData': {
+                'webAppLinkInfo': {
+                    'appTarget': {
+                        'targetUri': {
+                            'uri': order_ahead_action['url'],
+                            'description': order_ahead_action['label'],
+                        }
+                    }
+                },
+                'displayText': {
+                    'defaultValue': {
+                        'language': 'en-US',
+                        'value': order_ahead_action['label'],
+                    }
+                },
+            }
+        } if order_ahead_action else {}),
     }
 
     # Object-level heroImage overrides the class-level one for just this
@@ -3133,6 +3172,9 @@ def sync_wallet_object(customer: dict, business: dict, program: dict,
                 'barcode': desired.get('barcode'),
                 'textModulesData': desired.get('textModulesData'),
                 'linksModuleData': desired.get('linksModuleData'),
+                # Explicit None clears a previously-enabled Wallet CTA when the
+                # super admin turns Order Ahead off.
+                'appLinkData': desired.get('appLinkData'),
                 'state': desired.get('state', 'active'),
                 'notifyPreference': 'NOTIFY_ON_UPDATE',
             }
@@ -3388,6 +3430,44 @@ def verify_contactless_member_token(token: str) -> Optional[str]:
     if not hmac.compare_digest(supplied_mac, expected):
         return None
     return public_id
+
+def _order_ahead_signing_secret() -> str:
+    # A Wallet link must remain valid for the life of the pass, so use a stable
+    # server secret. Dedicated env var wins; existing server-side secrets are
+    # safe fallbacks during the beta so deployment is not blocked.
+    return ORDER_AHEAD_TOKEN_SECRET or APPLE_PASS_AUTH_SECRET or STAFF_SESSION_SECRET or NFC_TOKEN_SECRET or ''
+
+
+def order_ahead_member_token(customer_public_id: str, business_public_id: str) -> Optional[str]:
+    secret = _order_ahead_signing_secret()
+    if not secret or not customer_public_id or not business_public_id:
+        return None
+    payload = f'{customer_public_id}|{business_public_id}'
+    return hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def verify_order_ahead_member_token(customer_public_id: str, business_public_id: str, token: str) -> bool:
+    expected = order_ahead_member_token(customer_public_id, business_public_id)
+    return bool(expected and token and hmac.compare_digest(expected, str(token).strip()))
+
+
+def order_ahead_wallet_action(customer: dict, business: dict) -> Optional[dict]:
+    """Build the member-specific Wallet CTA when Order Ahead is enabled."""
+    if not business or not customer or not bool(business.get('order_ahead_enabled')):
+        return None
+    customer_public_id = str(customer.get('public_id') or '').strip()
+    business_public_id = str(business.get('public_id') or '').strip()
+    if not customer_public_id or not business_public_id:
+        return None
+    token = order_ahead_member_token(customer_public_id, business_public_id)
+    if not token:
+        return None
+    label = str(business.get('order_ahead_button_label') or 'Order Ahead').strip()[:30] or 'Order Ahead'
+    return {
+        'label': label,
+        'url': f'{BASE_URL}/order-ahead/{quote(customer_public_id)}?token={quote(token)}',
+    }
+
 
 def sign_pkpass_manifest(manifest_bytes: bytes) -> Optional[bytes]:
     creds = get_apple_pass_credentials()
@@ -3794,6 +3874,8 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
             for i, (when, desc) in enumerate(activity)
         ]
 
+    order_ahead_action = order_ahead_wallet_action(customer, business)
+
     back_fields = [
         {'key': 'card', 'label': 'CARD', 'value': card_title},
         *[{'key': key, 'label': label, 'value': str(value)} for key, label, value in apple_details],
@@ -3818,6 +3900,15 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
             'changeMessage': '%@',
         },
     ]
+    if order_ahead_action:
+        # Older iOS versions that do not render featuredActions still expose
+        # this tappable link in Pass Details.
+        back_fields.insert(-1, {
+            'key': 'order_ahead',
+            'label': 'ORDER AHEAD',
+            'value': order_ahead_action['label'],
+            'attributedValue': f'<a href="{order_ahead_action["url"]}">{order_ahead_action["label"]}</a>',
+        })
     if ann_message.strip() and ann_message.strip() != announcement_value:
         back_fields.append({'key': 'announcement_detail', 'label': ' ', 'value': ann_message.strip()[:400]})
 
@@ -4036,6 +4127,15 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
             }
         ]
     }
+
+    if order_ahead_action:
+        # iOS 27+ featured action; Wallet renders this below the pass. The
+        # Pass Details link above remains the backwards-compatible fallback.
+        pass_dict['featuredActions'] = [{
+            'identifier': 'loyaltree-order-ahead',
+            'type': 'order',
+            'url': order_ahead_action['url'],
+        }]
 
     # Keep the QR fallback exactly as it is. Apple VAS NFC is additionally
     # gated to a super-admin-enabled MEMBERSHIP trial.
@@ -7088,6 +7188,213 @@ async def admin_get_business(public_id: str, _: bool = Depends(require_admin)):
         'apple_nfc_configured': bool(APPLE_NFC_ENABLED and APPLE_NFC_ENCRYPTION_PUBLIC_KEY),
     }
     return summary
+
+@app.get("/api/v1/admin/businesses/{public_id}/order-ahead")
+async def admin_get_order_ahead(public_id: str, _: bool = Depends(require_admin)):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    settings = None
+    try:
+        settings = (
+            supabase.table('order_ahead_settings')
+            .select('*')
+            .eq('business_id', business.get('id'))
+            .maybe_single()
+            .execute()
+            .data
+        )
+    except Exception:
+        settings = None
+    return {
+        'enabled': bool(business.get('order_ahead_enabled')),
+        'button_label': business.get('order_ahead_button_label') or 'Order Ahead',
+        'settings': settings,
+        'token_secret_configured': bool(_order_ahead_signing_secret()),
+    }
+
+
+@app.patch("/api/v1/admin/businesses/{public_id}/order-ahead")
+async def admin_set_order_ahead(
+    public_id: str,
+    update: AdminOrderAheadToggleUpdate,
+    background_tasks: BackgroundTasks,
+    _: bool = Depends(require_admin),
+):
+    """Super-admin-only Order Ahead beta switch."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    if update.enabled and not _order_ahead_signing_secret():
+        raise HTTPException(
+            status_code=503,
+            detail="Configure ORDER_AHEAD_TOKEN_SECRET (recommended) before enabling Order Ahead",
+        )
+
+    label = (update.button_label or business.get('order_ahead_button_label') or 'Order Ahead').strip()[:30] or 'Order Ahead'
+    try:
+        supabase.table('businesses').update({
+            'order_ahead_enabled': bool(update.enabled),
+            'order_ahead_button_label': label,
+        }).eq('id', business.get('id')).execute()
+
+        existing = (
+            supabase.table('order_ahead_settings')
+            .select('id')
+            .eq('business_id', business.get('id'))
+            .maybe_single()
+            .execute()
+            .data
+        )
+        if not existing:
+            supabase.table('order_ahead_settings').insert({
+                'business_id': business.get('id'),
+                'pickup_mode': 'both',
+                'min_prep_minutes': 15,
+                'slot_interval_minutes': 15,
+                'max_advance_days': 7,
+                'payment_mode': 'mock',
+                'ready_notification_enabled': True,
+            }).execute()
+    except Exception as e:
+        msg = str(e)
+        if 'order_ahead_' in msg or 'order_ahead_settings' in msg:
+            raise HTTPException(status_code=503, detail="Order Ahead database migration has not been installed yet")
+        raise HTTPException(status_code=500, detail=f"Could not update Order Ahead: {friendly_db_error(e)}")
+
+    refreshed_business = safe_get_business(public_id) or {**business, 'order_ahead_enabled': bool(update.enabled), 'order_ahead_button_label': label}
+    program = safe_get_loyalty_program(business.get('id'))
+    if program:
+        background_tasks.add_task(republish_wallet_class_and_refresh, dict(refreshed_business), dict(program))
+
+    return {
+        'success': True,
+        'enabled': bool(update.enabled),
+        'button_label': label,
+        'payment_mode': 'mock',
+        'message': 'Order Ahead enabled' if update.enabled else 'Order Ahead disabled',
+    }
+
+
+@app.get("/api/v1/business/{public_id}/order-ahead/setup")
+async def owner_get_order_ahead_setup(public_id: str, authorization: str = Header(default='')):
+    """Owner setup snapshot. The owner may configure only after super admin enables it."""
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    defaults = {
+        'pickup_mode': 'both',
+        'min_prep_minutes': 15,
+        'slot_interval_minutes': 15,
+        'max_advance_days': 7,
+        'payment_mode': 'mock',
+        'ready_notification_enabled': True,
+        'ui_config': {},
+    }
+    settings = None
+    categories_count = 0
+    items_count = 0
+    orders_count = 0
+    try:
+        settings = (
+            supabase.table('order_ahead_settings')
+            .select('*')
+            .eq('business_id', business.get('id'))
+            .maybe_single()
+            .execute()
+            .data
+        )
+        categories_count = (
+            supabase.table('order_ahead_categories')
+            .select('id', count='exact')
+            .eq('business_id', business.get('id'))
+            .eq('is_active', True)
+            .execute()
+            .count or 0
+        )
+        items_count = (
+            supabase.table('order_ahead_items')
+            .select('id', count='exact')
+            .eq('business_id', business.get('id'))
+            .eq('is_active', True)
+            .execute()
+            .count or 0
+        )
+        orders_count = (
+            supabase.table('order_ahead_orders')
+            .select('id', count='exact')
+            .eq('business_id', business.get('id'))
+            .execute()
+            .count or 0
+        )
+    except Exception as e:
+        msg = str(e)
+        if 'order_ahead_' in msg:
+            raise HTTPException(status_code=503, detail="Order Ahead database migration has not been installed yet")
+        raise HTTPException(status_code=500, detail=f"Could not load Order Ahead setup: {friendly_db_error(e)}")
+
+    return {
+        'enabled': bool(business.get('order_ahead_enabled')),
+        'button_label': business.get('order_ahead_button_label') or 'Order Ahead',
+        'settings': {**defaults, **(settings or {})},
+        'menu': {
+            'categories_count': categories_count,
+            'items_count': items_count,
+        },
+        'orders_count': orders_count,
+        'ready_message_preview': f"Your order from {business.get('name') or 'this business'} is ready.",
+    }
+
+
+@app.patch("/api/v1/business/{public_id}/order-ahead/settings")
+async def owner_update_order_ahead_settings(
+    public_id: str,
+    update: OrderAheadSettingsUpdate,
+    authorization: str = Header(default=''),
+):
+    """Owner can tune standardized pickup/notification rules, never enable the module itself."""
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    if not bool(business.get('order_ahead_enabled')):
+        raise HTTPException(status_code=403, detail="Order Ahead must be enabled by LoyaltyTree Admin first")
+
+    patch = {k: v for k, v in update.dict(exclude_unset=True).items() if v is not None}
+    patch['updated_at'] = datetime.utcnow().isoformat()
+    try:
+        existing = (
+            supabase.table('order_ahead_settings')
+            .select('id')
+            .eq('business_id', business.get('id'))
+            .maybe_single()
+            .execute()
+            .data
+        )
+        if existing:
+            res = supabase.table('order_ahead_settings').update(patch).eq('id', existing.get('id')).execute()
+        else:
+            res = supabase.table('order_ahead_settings').insert({
+                'business_id': business.get('id'),
+                'pickup_mode': 'both',
+                'min_prep_minutes': 15,
+                'slot_interval_minutes': 15,
+                'max_advance_days': 7,
+                'payment_mode': 'mock',
+                'ready_notification_enabled': True,
+                **patch,
+            }).execute()
+        settings = (res.data or [None])[0]
+    except Exception as e:
+        msg = str(e)
+        if 'order_ahead_' in msg:
+            raise HTTPException(status_code=503, detail="Order Ahead database migration has not been installed yet")
+        raise HTTPException(status_code=500, detail=f"Could not save Order Ahead settings: {friendly_db_error(e)}")
+
+    return {'success': True, 'settings': settings}
+
 
 @app.patch("/api/v1/admin/businesses/{public_id}/nfc-trial")
 async def admin_set_nfc_trial(public_id: str, update: AdminNfcTrialUpdate, background_tasks: BackgroundTasks, _: bool = Depends(require_admin)):
@@ -18657,6 +18964,78 @@ document.getElementById("google-wallet-choice").onclick=(e)=>{{
 document.getElementById("share").onclick=async()=>{{const p={{title:{json.dumps(business_name)},text:"My LoyaltyTree card",url:location.href}};if(navigator.share){{try{{await navigator.share(p)}}catch(e){{}}}}else{{await navigator.clipboard.writeText(location.href);alert("Card link copied")}}}};
 </script></body></html>'''
     return HTMLResponse(html)
+
+
+# ORDER AHEAD BETA - member-specific Wallet entry point. Phase 1 validates
+# Wallet -> member/business -> branch selection before menu/cart/mock payment.
+@app.get("/order-ahead/{customer_public_id}", response_class=HTMLResponse)
+async def order_ahead_branch_page(customer_public_id: str, token: str = Query(default='')):
+    customer = safe_get_customer(customer_public_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Member not found")
+    business = safe_get_business_by_id(customer.get('business_id'))
+    if not business or not bool(business.get('order_ahead_enabled')):
+        raise HTTPException(status_code=404, detail="Order Ahead is not available for this business")
+    if not verify_order_ahead_member_token(customer_public_id, business.get('public_id', ''), token):
+        raise HTTPException(status_code=403, detail="Invalid Order Ahead link")
+
+    try:
+        branches = (
+            supabase.table('branches')
+            .select('public_id,name,address,is_active')
+            .eq('business_id', business.get('id'))
+            .eq('is_active', True)
+            .order('created_at')
+            .execute()
+            .data or []
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not load branches: {friendly_db_error(e)}")
+
+    biz_name = html_lib.escape(str(business.get('name') or 'Business'))
+    member_name = html_lib.escape(str(customer.get('name') or 'Member'))
+    logo_url = html_lib.escape(str(business.get('logo_url') or DEFAULT_LOGO_URL))
+    branch_cards = ''.join(
+        f"""<a class="branch" href="{BASE_URL}/order-ahead/{quote(customer_public_id)}/branch/{quote(str(b.get('public_id') or ''))}?token={quote(token)}">
+              <div class="branch-name">{html_lib.escape(str(b.get('name') or 'Branch'))}</div>
+              <div class="branch-address">{html_lib.escape(str(b.get('address') or 'Pickup location'))}</div>
+              <div class="branch-cta">Choose branch <span>&rsaquo;</span></div>
+            </a>"""
+        for b in branches
+    ) or '<div class="empty">No active branches have been configured yet.</div>'
+
+    html = f"""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>{biz_name} · Order Ahead</title><style>
+    *{{box-sizing:border-box}}body{{margin:0;background:#f8fafc;color:#0f172a;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}
+    main{{max-width:520px;margin:0 auto;padding:24px 18px 48px}}.top{{display:flex;align-items:center;gap:13px;margin-bottom:26px}}
+    .logo{{width:54px;height:54px;border-radius:16px;object-fit:cover;background:#fff;border:1px solid #e2e8f0}}h1{{font-size:24px;margin:0}}.hello{{color:#64748b;font-size:14px;margin-top:4px}}
+    h2{{font-size:17px;margin:0 0 12px}}.branch{{display:block;text-decoration:none;color:inherit;background:#fff;border:1px solid #e2e8f0;border-radius:18px;padding:17px;margin:12px 0}}
+    .branch-name{{font-size:17px;font-weight:700}}.branch-address{{font-size:13px;color:#64748b;margin-top:5px;line-height:1.4}}.branch-cta{{margin-top:14px;color:#0f766e;font-weight:700;font-size:14px;display:flex;justify-content:space-between}}
+    .empty{{padding:22px;background:#fff;border:1px dashed #cbd5e1;border-radius:18px;color:#64748b;text-align:center}}.test{{margin-top:24px;font-size:12px;color:#94a3b8;text-align:center}}
+    </style></head><body><main><div class="top"><img class="logo" src="{logo_url}" alt=""><div><h1>{biz_name}</h1><div class="hello">Hi, {member_name} · Order Ahead</div></div></div>
+    <h2>Which branch will you pick up from?</h2>{branch_cards}<div class="test">Test mode · No real payment will be collected.</div></main></body></html>"""
+    return HTMLResponse(html, headers={'Cache-Control': 'no-store'})
+
+
+@app.get("/order-ahead/{customer_public_id}/branch/{branch_public_id}", response_class=HTMLResponse)
+async def order_ahead_branch_selected(customer_public_id: str, branch_public_id: str, token: str = Query(default='')):
+    customer = safe_get_customer(customer_public_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Member not found")
+    business = safe_get_business_by_id(customer.get('business_id'))
+    if not business or not bool(business.get('order_ahead_enabled')):
+        raise HTTPException(status_code=404, detail="Order Ahead is not available")
+    if not verify_order_ahead_member_token(customer_public_id, business.get('public_id', ''), token):
+        raise HTTPException(status_code=403, detail="Invalid Order Ahead link")
+    branch = safe_get_branch(branch_public_id)
+    if not branch or branch.get('business_id') != business.get('id') or not branch.get('is_active', True):
+        raise HTTPException(status_code=404, detail="Branch not found")
+
+    biz_name = html_lib.escape(str(business.get('name') or 'Business'))
+    branch_name = html_lib.escape(str(branch.get('name') or 'Branch'))
+    return HTMLResponse(f"""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>{biz_name} · {branch_name}</title>
+    <style>*{{box-sizing:border-box}}body{{margin:0;background:#f8fafc;color:#0f172a;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}main{{max-width:520px;margin:0 auto;padding:28px 18px}}.card{{background:white;border:1px solid #e2e8f0;border-radius:20px;padding:22px}}h1{{font-size:22px;margin:0 0 8px}}p{{color:#64748b;line-height:1.5}}.pill{{display:inline-block;background:#ecfdf5;color:#047857;border-radius:999px;padding:7px 10px;font-weight:700;font-size:12px}}</style></head>
+    <body><main><div class="card"><div class="pill">Wallet link working ✓</div><h1>{branch_name}</h1><p>{biz_name} has identified this member and branch correctly. The menu, item options, pickup time and mock checkout will be attached here next.</p></div></main></body></html>""", headers={'Cache-Control': 'no-store'})
 
 
 # CASHIER STAMP PAGE - opened when a cashier scans a customer's QR with

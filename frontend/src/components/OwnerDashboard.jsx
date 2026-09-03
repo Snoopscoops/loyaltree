@@ -169,6 +169,12 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [customers, setCustomers] = useState([])
   const [staff, setStaff] = useState([])
   const [branches, setBranches] = useState([])
+  const [orderAheadSetup, setOrderAheadSetup] = useState(null)
+  const [orderAheadSaving, setOrderAheadSaving] = useState(false)
+  const [orderAheadForm, setOrderAheadForm] = useState({
+    pickup_mode: 'both', min_prep_minutes: 15, slot_interval_minutes: 15,
+    max_advance_days: 7, ready_notification_enabled: true,
+  })
   const [stats, setStats] = useState(null)
   const [program, setProgram] = useState(null)
   const [subscription, setSubscription] = useState(null)
@@ -361,7 +367,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   const loadData = async () => {
     try {
-      const [bizRes, custRes, staffRes, statsRes, progRes, stampCountRes, branchRes, subRes, kitRes, deviceRes] = await Promise.all([
+      const [bizRes, custRes, staffRes, statsRes, progRes, stampCountRes, branchRes, subRes, kitRes, deviceRes, orderAheadRes] = await Promise.all([
         authFetch(`${API_BASE}/api/v1/business/${user.business_slug}`),
         authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers`),
         authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff`),
@@ -372,6 +378,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/subscription`),
         authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/setup-kit`),
         authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/cashier-devices`),
+        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/order-ahead/setup`),
       ])
 
       const bizData = await bizRes.json().catch(() => null)
@@ -384,6 +391,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       const subData = await subRes.json().catch(() => null)
       const kitData = await kitRes.json().catch(() => null)
       const deviceData = await deviceRes.json().catch(() => [])
+      const orderAheadData = await orderAheadRes.json().catch(() => null)
 
       setBusiness(bizData)
       setCustomers(custData)
@@ -403,6 +411,19 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       setBranches(Array.isArray(branchData) ? branchData : [])
       setSubscription(subData)
       setCashierDevices(Array.isArray(deviceData) ? deviceData : [])
+      if (orderAheadRes.ok && orderAheadData) {
+        setOrderAheadSetup(orderAheadData)
+        const s = orderAheadData.settings || {}
+        setOrderAheadForm({
+          pickup_mode: s.pickup_mode || 'both',
+          min_prep_minutes: Number(s.min_prep_minutes ?? 15),
+          slot_interval_minutes: Number(s.slot_interval_minutes ?? 15),
+          max_advance_days: Number(s.max_advance_days ?? 7),
+          ready_notification_enabled: s.ready_notification_enabled !== false,
+        })
+      } else {
+        setOrderAheadSetup(null)
+      }
       setSetupKit(kitData && !kitData.detail ? kitData : null)
       if (kitData && !kitData.detail) setSetupKitForm({
         recipient_name:kitData.recipient_name||'',contact_number:kitData.contact_number||'',
@@ -419,6 +440,33 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       console.error('Load error:', err)
     }
     setLoading(false)
+  }
+
+  const saveOrderAheadSettings = async () => {
+    if (!user?.business_slug || !business?.order_ahead_enabled) return
+    setOrderAheadSaving(true)
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/order-ahead/settings`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pickup_mode: orderAheadForm.pickup_mode,
+          min_prep_minutes: Number(orderAheadForm.min_prep_minutes),
+          slot_interval_minutes: Number(orderAheadForm.slot_interval_minutes),
+          max_advance_days: Number(orderAheadForm.max_advance_days),
+          ready_notification_enabled: !!orderAheadForm.ready_notification_enabled,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not save Order Ahead settings')
+      setMessage('Order Ahead settings saved')
+      await loadData()
+    } catch (err) {
+      setMessage(err.message || 'Could not save Order Ahead settings')
+    } finally {
+      setOrderAheadSaving(false)
+      setTimeout(() => setMessage(''), 3000)
+    }
   }
 
   const loadSatisfaction = async () => {
@@ -1397,6 +1445,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             { id: 'tree', label: 'Overview', icon: cardExperience.icon },
             { id: 'customers', label: cardExperience.customerLabel, icon: cardExperience.customerIcon },
             { id: 'staff', label: 'Team', icon: '👥' },
+            ...(business?.order_ahead_enabled ? [{ id: 'orderahead', label: 'Order Ahead', icon: '🛍️' }] : []),
             { id: 'satisfaction', label: 'Satisfaction', icon: '⭐' },
             { id: 'program', label: 'Edit Card', icon: '✏️' },
             { id: 'giftcards', label: 'Gift Cards', icon: '🎁' },
@@ -1839,6 +1888,84 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           <div style={styles.section}><div style={styles.sectionHeader}><h2 style={styles.sectionTitle}>📈 Branch / Cashier Analytics</h2><button onClick={loadGrowthSuite} style={styles.addBtn}>↻ Refresh</button></div>
             <h3>Branches — last 30 days</h3>{(opsAnalytics.branches||[]).map(x=><div key={x.id} style={{background:'white',padding:12,border:'1px solid #e2e8f0',borderRadius:10,marginBottom:8}}><b>{x.name}</b> · {x.transactions} transactions · {x.adjustments} adjustments · {x.failed} failed</div>)}
             <h3 style={{marginTop:20}}>Cashiers — last 30 days</h3>{(opsAnalytics.cashiers||[]).map(x=><div key={x.id} style={{background:'white',padding:12,border:'1px solid #e2e8f0',borderRadius:10,marginBottom:8}}><b>{x.name}</b> · {x.transactions} transactions · {x.adjustments} adjustments · {x.failed} failed</div>)}
+          </div>
+        )}
+
+        {activeTab === 'orderahead' && business?.order_ahead_enabled && (
+          <div style={styles.section}>
+            <div style={styles.sectionHeader}>
+              <div>
+                <h2 style={styles.sectionTitle}>🛍️ Order Ahead</h2>
+                <p style={{margin:'5px 0 0',fontSize:13,color:'#64748b'}}>Standardized ordering engine, using your Loyalty Tree branding and branches.</p>
+              </div>
+              <span style={{background:'#ecfdf5',color:'#047857',padding:'7px 11px',borderRadius:999,fontSize:11,fontWeight:800}}>BETA · ENABLED BY LOYALTYTREE</span>
+            </div>
+
+            <div style={{background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:14,padding:14,marginBottom:16,fontSize:12.5,color:'#475569',lineHeight:1.6}}>
+              <strong style={{color:'#0f172a'}}>Current test flow:</strong> Wallet → Choose Branch → Menu → Pickup Time → Mock Payment → Business Order → Ready for Pickup
+            </div>
+
+            <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))',gap:12}}>
+              <div style={styles.card}>
+                <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'flex-start'}}>
+                  <div><div style={{fontSize:11,fontWeight:850,color:'#64748b'}}>1 · WALLET ACTION</div><h3 style={{margin:'5px 0 4px'}}>✓ {orderAheadSetup?.button_label || business?.order_ahead_button_label || 'Order Ahead'}</h3><p style={{margin:0,fontSize:12,color:'#64748b'}}>Already added to member Apple/Google Wallet passes by Loyalty Tree Admin.</p></div>
+                  <span style={{color:'#047857',fontWeight:850}}>Ready</span>
+                </div>
+              </div>
+
+              <div style={styles.card}>
+                <div style={{fontSize:11,fontWeight:850,color:'#64748b'}}>2 · BRANCHES</div>
+                <h3 style={{margin:'5px 0 8px'}}>{branches.length} active location{branches.length===1?'':'s'}</h3>
+                <div style={{display:'grid',gap:6,marginBottom:10}}>{branches.slice(0,4).map(b=><div key={b.public_id} style={{fontSize:12,color:'#475569'}}>🏢 {b.name}</div>)}{branches.length>4&&<div style={{fontSize:11,color:'#94a3b8'}}>+{branches.length-4} more</div>}</div>
+                <button type="button" style={styles.addBtn} onClick={()=>setActiveTab('staff')}>Manage branches</button>
+              </div>
+
+              <div style={styles.card}>
+                <div style={{fontSize:11,fontWeight:850,color:'#64748b'}}>3 · MENU</div>
+                <h3 style={{margin:'5px 0 4px'}}>{orderAheadSetup?.menu?.items_count || 0} menu item{(orderAheadSetup?.menu?.items_count||0)===1?'':'s'}</h3>
+                <p style={{margin:'0 0 10px',fontSize:12,color:'#64748b'}}>{orderAheadSetup?.menu?.categories_count || 0} categories. Product/size/modifier editor is the next build step.</p>
+                <span style={{display:'inline-block',background:'#fff7ed',color:'#9a3412',padding:'6px 9px',borderRadius:999,fontSize:11,fontWeight:800}}>Menu builder next</span>
+              </div>
+
+              <div style={styles.card}>
+                <div style={{fontSize:11,fontWeight:850,color:'#64748b'}}>4 · PAYMENT</div>
+                <h3 style={{margin:'5px 0 4px'}}>🧪 Test Payment</h3>
+                <p style={{margin:0,fontSize:12,color:'#64748b'}}>No real money is collected during the prototype. PayMongo can replace this without changing the order flow.</p>
+              </div>
+            </div>
+
+            <div style={{...styles.card,marginTop:14}}>
+              <h3 style={{margin:'0 0 4px'}}>Pickup settings</h3>
+              <p style={{margin:'0 0 16px',fontSize:12,color:'#64748b'}}>These rules will control the pickup-time choices shown after the customer builds their cart.</p>
+              <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))',gap:12}}>
+                <label style={styles.label}>Pickup options
+                  <select style={{...styles.input,marginTop:6}} value={orderAheadForm.pickup_mode} onChange={e=>setOrderAheadForm({...orderAheadForm,pickup_mode:e.target.value})}>
+                    <option value="both">ASAP + Scheduled</option><option value="asap">ASAP only</option><option value="scheduled">Scheduled only</option>
+                  </select>
+                </label>
+                <label style={styles.label}>Minimum preparation (minutes)
+                  <input style={{...styles.input,marginTop:6}} type="number" min="0" max="1440" value={orderAheadForm.min_prep_minutes} onChange={e=>setOrderAheadForm({...orderAheadForm,min_prep_minutes:e.target.value})}/>
+                </label>
+                <label style={styles.label}>Pickup time interval (minutes)
+                  <input style={{...styles.input,marginTop:6}} type="number" min="5" max="240" value={orderAheadForm.slot_interval_minutes} onChange={e=>setOrderAheadForm({...orderAheadForm,slot_interval_minutes:e.target.value})}/>
+                </label>
+                <label style={styles.label}>How far ahead (days)
+                  <input style={{...styles.input,marginTop:6}} type="number" min="0" max="365" value={orderAheadForm.max_advance_days} onChange={e=>setOrderAheadForm({...orderAheadForm,max_advance_days:e.target.value})}/>
+                </label>
+              </div>
+              <label style={{...styles.label,display:'flex',gap:10,alignItems:'flex-start',cursor:'pointer',marginTop:14}}>
+                <input type="checkbox" checked={!!orderAheadForm.ready_notification_enabled} onChange={e=>setOrderAheadForm({...orderAheadForm,ready_notification_enabled:e.target.checked})} style={{marginTop:3}}/>
+                <span><strong>Send Ready for Pickup notification</strong><br/><small style={{color:'#64748b'}}>Message: “{orderAheadSetup?.ready_message_preview || `Your order from ${business?.name || business?.business_name || user?.business_name || 'this business'} is ready.`}”</small></span>
+              </label>
+              <button type="button" style={{...styles.submitBtn,marginTop:14}} onClick={saveOrderAheadSettings} disabled={orderAheadSaving}>{orderAheadSaving?'Saving…':'Save Order Ahead settings'}</button>
+            </div>
+
+            <div style={{...styles.card,marginTop:14}}>
+              <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}>
+                <div><div style={{fontSize:11,fontWeight:850,color:'#64748b'}}>BUSINESS ORDERS</div><h3 style={{margin:'5px 0 3px'}}>Orders received: {orderAheadSetup?.orders_count || 0}</h3><p style={{margin:0,fontSize:12,color:'#64748b'}}>The New → Preparing → Ready → Completed board will activate when we build the menu and mock checkout.</p></div>
+                <span style={{background:'#f1f5f9',color:'#64748b',padding:'7px 10px',borderRadius:999,fontSize:11,fontWeight:800}}>Next phase</span>
+              </div>
+            </div>
           </div>
         )}
 
