@@ -3952,7 +3952,24 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                         'changeMessage': 'Membership status: %@',
                     },
                 ],
-                'auxiliaryFields': [],
+                # Experimental compatibility test for iOS versions that do
+                # not yet render Wallet featuredActions. PassFieldContent accepts
+                # attributedValue, so expose the member-specific Order Ahead URL
+                # on a FRONT auxiliary field and let the real device tell us
+                # whether this iOS version makes the attributed text interactive.
+                # If Wallet renders it as plain text, the normal Pass Details
+                # Order Ahead link remains available and nothing else breaks.
+                'auxiliaryFields': (
+                    [{
+                        'key': 'order_ahead_front_test',
+                        'label': 'ORDER AHEAD',
+                        'value': 'Tap to Order',
+                        'attributedValue': (
+                            f'<a href="{order_ahead_action["url"]}">Tap to Order</a>'
+                        ),
+                    }]
+                    if order_ahead_action else []
+                ),
                 'backFields': back_fields,
             }
             if card_type == 'hybrid' else
