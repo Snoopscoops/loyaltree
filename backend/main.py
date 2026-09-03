@@ -3926,18 +3926,14 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         'authenticationToken': apple_pass_auth_token(cust_public_id),
         'storeCard': (
             {
-                # HYBRID: Membership status and the selected loyalty balance share one pass.
+                # HYBRID Apple Wallet front: loyalty balance on the LEFT,
+                # membership status on the RIGHT. Keep the face intentionally
+                # clean: ACTIVE UNTIL and NEXT REWARD stay off the front.
                 'headerFields': [
                     {'key': 'card_name', 'label': 'CARD', 'value': card_title[:32]}
                 ],
                 'primaryFields': [],
                 'secondaryFields': [
-                    {
-                        'key': 'membership_status',
-                        'label': 'MEMBERSHIP',
-                        'value': membership_effective_status(customer).upper(),
-                        'changeMessage': 'Membership status: %@',
-                    },
                     {
                         'key': 'hybrid_loyalty',
                         'label': 'POINTS' if loyalty_type == 'points' else 'STAMPS',
@@ -3946,29 +3942,17 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                             if loyalty_type == 'points' else
                             f"{int(stamps or 0)}/{int(full_stamp_goal)}"
                         ),
-                        'textAlignment': 'PKTextAlignmentRight',
                         'changeMessage': ('Points updated: %@' if loyalty_type == 'points' else 'Stamp progress: %@'),
                     },
-                ],
-                'auxiliaryFields': [
                     {
-                        'key': 'active_until',
-                        'label': 'ACTIVE UNTIL',
-                        'value': (
-                            'Lifetime'
-                            if membership_effective_status(customer) == 'lifetime'
-                            else (customer.get('membership_expires_at') or 'Not activated')
-                        ),
-                        'changeMessage': 'Active until: %@',
+                        'key': 'membership_status',
+                        'label': 'MEMBERSHIP',
+                        'value': membership_effective_status(customer).upper(),
+                        'textAlignment': 'PKTextAlignmentRight',
+                        'changeMessage': 'Membership status: %@',
                     },
-                    {
-                        'key': 'next_reward',
-                        'label': 'NEXT REWARD',
-                        'value': points_next_reward_value if loyalty_type == 'points' else stamp_next_reward_value,
-                        'changeMessage': 'Next reward: %@',
-                    },
-                    *cycle_auxiliary_fields,
                 ],
+                'auxiliaryFields': [],
                 'backFields': back_fields,
             }
             if card_type == 'hybrid' else
