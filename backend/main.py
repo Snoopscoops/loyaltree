@@ -7189,6 +7189,37 @@ async def admin_get_business(public_id: str, _: bool = Depends(require_admin)):
     }
     return summary
 
+def _supabase_first_row(response):
+    """Return the first row from a Supabase/PostgREST response safely.
+
+    Some deployed supabase-py/PostgREST combinations return ``None`` for a
+    zero-row ``maybe_single()`` result. Order Ahead uses ordinary list selects
+    instead, then normalizes both response shapes here so an empty table is a
+    normal result rather than a 500 error.
+    """
+    if response is None:
+        return None
+    data = getattr(response, 'data', None)
+    if isinstance(data, list):
+        return data[0] if data else None
+    if isinstance(data, dict):
+        return data
+    return None
+
+
+def _supabase_count(response) -> int:
+    if response is None:
+        return 0
+    count = getattr(response, 'count', None)
+    if count is not None:
+        try:
+            return int(count)
+        except (TypeError, ValueError):
+            pass
+    data = getattr(response, 'data', None)
+    return len(data) if isinstance(data, list) else 0
+
+
 @app.get("/api/v1/admin/businesses/{public_id}/order-ahead")
 async def admin_get_order_ahead(public_id: str, _: bool = Depends(require_admin)):
     business = safe_get_business(public_id)
@@ -7196,13 +7227,12 @@ async def admin_get_order_ahead(public_id: str, _: bool = Depends(require_admin)
         raise HTTPException(status_code=404, detail="Business not found")
     settings = None
     try:
-        settings = (
+        settings = _supabase_first_row(
             supabase.table('order_ahead_settings')
             .select('*')
             .eq('business_id', business.get('id'))
-            .maybe_single()
+            .limit(1)
             .execute()
-            .data
         )
     except Exception:
         settings = None
@@ -7238,13 +7268,12 @@ async def admin_set_order_ahead(
             'order_ahead_button_label': label,
         }).eq('id', business.get('id')).execute()
 
-        existing = (
+        existing = _supabase_first_row(
             supabase.table('order_ahead_settings')
             .select('id')
             .eq('business_id', business.get('id'))
-            .maybe_single()
+            .limit(1)
             .execute()
-            .data
         )
         if not existing:
             supabase.table('order_ahead_settings').insert({
@@ -7298,36 +7327,32 @@ async def owner_get_order_ahead_setup(public_id: str, authorization: str = Heade
     items_count = 0
     orders_count = 0
     try:
-        settings = (
+        settings = _supabase_first_row(
             supabase.table('order_ahead_settings')
             .select('*')
             .eq('business_id', business.get('id'))
-            .maybe_single()
+            .limit(1)
             .execute()
-            .data
         )
-        categories_count = (
+        categories_count = _supabase_count(
             supabase.table('order_ahead_categories')
             .select('id', count='exact')
             .eq('business_id', business.get('id'))
             .eq('is_active', True)
             .execute()
-            .count or 0
         )
-        items_count = (
+        items_count = _supabase_count(
             supabase.table('order_ahead_items')
             .select('id', count='exact')
             .eq('business_id', business.get('id'))
             .eq('is_active', True)
             .execute()
-            .count or 0
         )
-        orders_count = (
+        orders_count = _supabase_count(
             supabase.table('order_ahead_orders')
             .select('id', count='exact')
             .eq('business_id', business.get('id'))
             .execute()
-            .count or 0
         )
     except Exception as e:
         msg = str(e)
@@ -7365,13 +7390,12 @@ async def owner_update_order_ahead_settings(
     patch = {k: v for k, v in update.dict(exclude_unset=True).items() if v is not None}
     patch['updated_at'] = datetime.utcnow().isoformat()
     try:
-        existing = (
+        existing = _supabase_first_row(
             supabase.table('order_ahead_settings')
             .select('id')
             .eq('business_id', business.get('id'))
-            .maybe_single()
+            .limit(1)
             .execute()
-            .data
         )
         if existing:
             res = supabase.table('order_ahead_settings').update(patch).eq('id', existing.get('id')).execute()
@@ -7386,7 +7410,20 @@ async def owner_update_order_ahead_settings(
                 'ready_notification_enabled': True,
                 **patch,
             }).execute()
-        settings = (res.data or [None])[0]
+        settings = _supabase_first_row(res)
+        if settings is None:
+            # Some PostgREST configurations return no representation for writes.
+            # Return a stable merged payload instead of treating that as failure.
+            settings = {
+                'business_id': business.get('id'),
+                'pickup_mode': 'both',
+                'min_prep_minutes': 15,
+                'slot_interval_minutes': 15,
+                'max_advance_days': 7,
+                'payment_mode': 'mock',
+                'ready_notification_enabled': True,
+                **patch,
+            }
     except Exception as e:
         msg = str(e)
         if 'order_ahead_' in msg:
