@@ -1471,6 +1471,46 @@ class AdminOrderAheadDesignUpdate(BaseModel):
     category_style: Optional[Literal['pills', 'tabs', 'plain']] = None
     product_layout: Optional[Literal['image_top', 'image_left', 'compact']] = None
     image_shape: Optional[Literal['rounded', 'square']] = None
+    product_card_style: Optional[Literal['soft', 'outline', 'flat']] = None
+    add_button_style: Optional[Literal['plus', 'text', 'filled']] = None
+    show_product_description: Optional[bool] = None
+    sticky_cart: Optional[bool] = None
+    menu_heading: Optional[str] = Field(default=None, max_length=60)
+
+class OrderAheadCategoryPayload(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    description: Optional[str] = Field(default=None, max_length=240)
+    sort_order: int = Field(default=0, ge=0, le=10000)
+    is_active: bool = True
+
+class OrderAheadModifierOptionInput(BaseModel):
+    public_id: Optional[str] = None
+    name: str = Field(min_length=1, max_length=80)
+    price_delta: float = Field(default=0, ge=-100000, le=100000)
+    sort_order: int = Field(default=0, ge=0, le=10000)
+    is_active: bool = True
+
+class OrderAheadModifierGroupPayload(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    selection_type: Literal['single', 'multiple'] = 'single'
+    is_required: bool = False
+    min_selections: int = Field(default=0, ge=0, le=50)
+    max_selections: Optional[int] = Field(default=None, ge=1, le=50)
+    sort_order: int = Field(default=0, ge=0, le=10000)
+    is_active: bool = True
+    options: list[OrderAheadModifierOptionInput] = Field(default_factory=list)
+
+class OrderAheadItemPayload(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=500)
+    category_public_id: Optional[str] = None
+    base_price: float = Field(default=0, ge=0, le=1000000)
+    image_url: Optional[str] = Field(default=None, max_length=1000)
+    sort_order: int = Field(default=0, ge=0, le=10000)
+    is_active: bool = True
+    is_available: bool = True
+    modifier_group_public_ids: list[str] = Field(default_factory=list)
+    unavailable_branch_public_ids: list[str] = Field(default_factory=list)
 
 class AdminBusinessCreate(BaseModel):
     """Admin-provisioned business account - used for invite-only business
@@ -7323,6 +7363,11 @@ ORDER_AHEAD_UI_DEFAULTS = {
     'category_style': 'pills',
     'product_layout': 'image_top',
     'image_shape': 'rounded',
+    'product_card_style': 'soft',
+    'add_button_style': 'plus',
+    'show_product_description': True,
+    'sticky_cart': True,
+    'menu_heading': 'Menu',
 }
 
 
@@ -7376,38 +7421,42 @@ def _resolve_order_ahead_ui_config(business: dict, settings: Optional[dict] = No
         'category_style': {'pills', 'tabs', 'plain'},
         'product_layout': {'image_top', 'image_left', 'compact'},
         'image_shape': {'rounded', 'square'},
+        'product_card_style': {'soft', 'outline', 'flat'},
+        'add_button_style': {'plus', 'text', 'filled'},
     }
     for key, choices in allowed.items():
         value = raw.get(key)
         if value in choices:
             cfg[key] = value
 
-    for key in ('show_banner', 'show_greeting'):
+    for key in ('show_banner', 'show_greeting', 'show_product_description', 'sticky_cart'):
         if isinstance(raw.get(key), bool):
             cfg[key] = raw[key]
 
     cfg['branch_heading'] = _clean_order_ahead_label(raw.get('branch_heading'), ORDER_AHEAD_UI_DEFAULTS['branch_heading'], 80)
     cfg['branch_cta_label'] = _clean_order_ahead_label(raw.get('branch_cta_label'), ORDER_AHEAD_UI_DEFAULTS['branch_cta_label'], 40)
+    cfg['menu_heading'] = _clean_order_ahead_label(raw.get('menu_heading'), ORDER_AHEAD_UI_DEFAULTS['menu_heading'], 60)
     return cfg
 
 
 def _order_ahead_ui_patch(update: AdminOrderAheadDesignUpdate) -> dict:
-    data = update.model_dump(exclude_unset=True) if hasattr(update, 'model_dump') else update.dict(exclude_unset=True)
-    data.pop('reset', None)
     out = {}
-    for key, value in data.items():
-        if value is None:
-            continue
-        if key.endswith('_color'):
-            if not re.fullmatch(r'#[0-9a-fA-F]{6}', str(value or '')):
-                raise HTTPException(status_code=422, detail=f'{key.replace("_", " ").title()} must be a 6-digit hex color')
-            out[key] = str(value).lower()
-        elif key == 'branch_heading':
-            out[key] = _clean_order_ahead_label(value, ORDER_AHEAD_UI_DEFAULTS['branch_heading'], 80)
-        elif key == 'branch_cta_label':
-            out[key] = _clean_order_ahead_label(value, ORDER_AHEAD_UI_DEFAULTS['branch_cta_label'], 40)
-        else:
-            out[key] = value
+    data = update.dict(exclude_unset=True)
+    for key in ('template','header_style','logo_shape','branch_card_style','button_style','category_style','product_layout','image_shape','product_card_style','add_button_style'):
+        if key in data and data[key] is not None:
+            out[key] = data[key]
+    for key in ('primary_color','background_color','surface_color','text_color','muted_color'):
+        if key in data and data[key] is not None:
+            out[key] = _normalize_hex_color(data[key], ORDER_AHEAD_UI_DEFAULTS[key])
+    for key in ('show_banner','show_greeting','show_product_description','sticky_cart'):
+        if key in data and isinstance(data[key], bool):
+            out[key] = data[key]
+    if data.get('branch_heading') is not None:
+        out['branch_heading'] = _clean_order_ahead_label(data.get('branch_heading'), ORDER_AHEAD_UI_DEFAULTS['branch_heading'], 80)
+    if data.get('branch_cta_label') is not None:
+        out['branch_cta_label'] = _clean_order_ahead_label(data.get('branch_cta_label'), ORDER_AHEAD_UI_DEFAULTS['branch_cta_label'], 40)
+    if data.get('menu_heading') is not None:
+        out['menu_heading'] = _clean_order_ahead_label(data.get('menu_heading'), ORDER_AHEAD_UI_DEFAULTS['menu_heading'], 60)
     return out
 
 
@@ -7687,6 +7736,175 @@ async def owner_update_order_ahead_settings(
 
     return {'success': True, 'settings': settings}
 
+
+
+def _oa_require_owner_business(public_id: str, authorization: str) -> dict:
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    if not bool(business.get('order_ahead_enabled')):
+        raise HTTPException(status_code=403, detail='Order Ahead must be enabled by LoyaltyTree Admin first')
+    return business
+
+
+def _oa_public_row(table: str, public_id: str, business_id: int) -> Optional[dict]:
+    return _supabase_first_row(
+        supabase.table(table).select('*').eq('public_id', public_id).eq('business_id', business_id).limit(1).execute()
+    )
+
+
+def _oa_menu_snapshot(business: dict) -> dict:
+    bid = business.get('id')
+    categories = supabase.table('order_ahead_categories').select('*').eq('business_id', bid).order('sort_order').order('created_at').execute().data or []
+    items = supabase.table('order_ahead_items').select('*').eq('business_id', bid).order('sort_order').order('created_at').execute().data or []
+    groups = supabase.table('order_ahead_modifier_groups').select('*').eq('business_id', bid).order('sort_order').order('created_at').execute().data or []
+    branches = supabase.table('branches').select('id,public_id,name,address,is_active').eq('business_id', bid).eq('is_active', True).order('created_at').execute().data or []
+    group_ids=[g.get('id') for g in groups if g.get('id') is not None]
+    options=[]
+    if group_ids:
+        options=supabase.table('order_ahead_modifier_options').select('*').in_('modifier_group_id',group_ids).order('sort_order').order('created_at').execute().data or []
+    item_ids=[i.get('id') for i in items if i.get('id') is not None]
+    links=[]; availability=[]
+    if item_ids:
+        links=supabase.table('order_ahead_item_modifier_groups').select('*').in_('item_id',item_ids).order('sort_order').execute().data or []
+        availability=supabase.table('order_ahead_item_branch_availability').select('*').in_('item_id',item_ids).execute().data or []
+    g_by_id={g.get('id'):g for g in groups}
+    for g in groups:
+        g['options']=[o for o in options if o.get('modifier_group_id')==g.get('id')]
+    b_pub={b.get('id'):b.get('public_id') for b in branches}
+    g_pub={g.get('id'):g.get('public_id') for g in groups}
+    for item in items:
+        iid=item.get('id')
+        item['modifier_group_public_ids']=[g_pub.get(l.get('modifier_group_id')) for l in links if l.get('item_id')==iid and g_pub.get(l.get('modifier_group_id'))]
+        item['unavailable_branch_public_ids']=[b_pub.get(a.get('branch_id')) for a in availability if a.get('item_id')==iid and a.get('is_available') is False and b_pub.get(a.get('branch_id'))]
+        cat=next((c for c in categories if c.get('id')==item.get('category_id')),None)
+        item['category_public_id']=cat.get('public_id') if cat else None
+    for row in categories+items+groups:
+        row.pop('business_id',None)
+    for b in branches: b.pop('id',None)
+    return {'categories':categories,'items':items,'modifier_groups':groups,'branches':branches}
+
+
+@app.get('/api/v1/business/{public_id}/order-ahead/menu')
+async def owner_get_order_ahead_menu(public_id: str, authorization: str = Header(default='')):
+    business=_oa_require_owner_business(public_id,authorization)
+    try:
+        return _oa_menu_snapshot(business)
+    except Exception as e:
+        if 'order_ahead_' in str(e):
+            raise HTTPException(status_code=503,detail='Order Ahead menu migration has not been installed yet')
+        raise HTTPException(status_code=500,detail=f'Could not load menu: {friendly_db_error(e)}')
+
+
+@app.post('/api/v1/business/{public_id}/order-ahead/categories')
+async def owner_create_oa_category(public_id: str, payload: OrderAheadCategoryPayload, authorization: str = Header(default='')):
+    business=_oa_require_owner_business(public_id,authorization)
+    row={'business_id':business.get('id'),**payload.dict(),'updated_at':datetime.now(timezone.utc).isoformat()}
+    try:
+        res=supabase.table('order_ahead_categories').insert(row).execute()
+        return {'success':True,'category':_supabase_first_row(res)}
+    except Exception as e: raise HTTPException(status_code=500,detail=f'Could not create category: {friendly_db_error(e)}')
+
+
+@app.patch('/api/v1/business/{public_id}/order-ahead/categories/{category_public_id}')
+async def owner_update_oa_category(public_id: str, category_public_id: str, payload: OrderAheadCategoryPayload, authorization: str = Header(default='')):
+    business=_oa_require_owner_business(public_id,authorization)
+    row=_oa_public_row('order_ahead_categories',category_public_id,business.get('id'))
+    if not row: raise HTTPException(status_code=404,detail='Category not found')
+    patch={**payload.dict(),'updated_at':datetime.now(timezone.utc).isoformat()}
+    res=supabase.table('order_ahead_categories').update(patch).eq('id',row.get('id')).execute()
+    return {'success':True,'category':_supabase_first_row(res) or {**row,**patch}}
+
+
+@app.delete('/api/v1/business/{public_id}/order-ahead/categories/{category_public_id}')
+async def owner_delete_oa_category(public_id: str, category_public_id: str, authorization: str = Header(default='')):
+    business=_oa_require_owner_business(public_id,authorization)
+    row=_oa_public_row('order_ahead_categories',category_public_id,business.get('id'))
+    if not row: raise HTTPException(status_code=404,detail='Category not found')
+    supabase.table('order_ahead_categories').delete().eq('id',row.get('id')).execute()
+    return {'success':True}
+
+
+def _oa_save_modifier_options(group_id: int, options: list[OrderAheadModifierOptionInput]):
+    supabase.table('order_ahead_modifier_options').delete().eq('modifier_group_id',group_id).execute()
+    rows=[]
+    for idx,opt in enumerate(options or []):
+        d=opt.dict(exclude={'public_id'}); d['modifier_group_id']=group_id; d['sort_order']=d.get('sort_order',idx); d['updated_at']=datetime.now(timezone.utc).isoformat(); rows.append(d)
+    if rows: supabase.table('order_ahead_modifier_options').insert(rows).execute()
+
+
+@app.post('/api/v1/business/{public_id}/order-ahead/modifier-groups')
+async def owner_create_oa_modifier_group(public_id: str, payload: OrderAheadModifierGroupPayload, authorization: str = Header(default='')):
+    business=_oa_require_owner_business(public_id,authorization)
+    data=payload.dict(exclude={'options'}); data['business_id']=business.get('id'); data['updated_at']=datetime.now(timezone.utc).isoformat()
+    res=supabase.table('order_ahead_modifier_groups').insert(data).execute(); group=_supabase_first_row(res)
+    if not group: raise HTTPException(status_code=500,detail='Could not create option group')
+    _oa_save_modifier_options(group.get('id'),payload.options)
+    return {'success':True,'modifier_group':group}
+
+
+@app.patch('/api/v1/business/{public_id}/order-ahead/modifier-groups/{group_public_id}')
+async def owner_update_oa_modifier_group(public_id: str, group_public_id: str, payload: OrderAheadModifierGroupPayload, authorization: str = Header(default='')):
+    business=_oa_require_owner_business(public_id,authorization)
+    group=_oa_public_row('order_ahead_modifier_groups',group_public_id,business.get('id'))
+    if not group: raise HTTPException(status_code=404,detail='Option group not found')
+    data=payload.dict(exclude={'options'}); data['updated_at']=datetime.now(timezone.utc).isoformat()
+    supabase.table('order_ahead_modifier_groups').update(data).eq('id',group.get('id')).execute(); _oa_save_modifier_options(group.get('id'),payload.options)
+    return {'success':True}
+
+
+@app.delete('/api/v1/business/{public_id}/order-ahead/modifier-groups/{group_public_id}')
+async def owner_delete_oa_modifier_group(public_id: str, group_public_id: str, authorization: str = Header(default='')):
+    business=_oa_require_owner_business(public_id,authorization)
+    group=_oa_public_row('order_ahead_modifier_groups',group_public_id,business.get('id'))
+    if not group: raise HTTPException(status_code=404,detail='Option group not found')
+    supabase.table('order_ahead_modifier_groups').delete().eq('id',group.get('id')).execute(); return {'success':True}
+
+
+def _oa_sync_item_relations(business: dict, item: dict, payload: OrderAheadItemPayload):
+    iid=item.get('id'); bid=business.get('id')
+    supabase.table('order_ahead_item_modifier_groups').delete().eq('item_id',iid).execute()
+    for idx,gpid in enumerate(payload.modifier_group_public_ids or []):
+        g=_oa_public_row('order_ahead_modifier_groups',gpid,bid)
+        if g: supabase.table('order_ahead_item_modifier_groups').insert({'item_id':iid,'modifier_group_id':g.get('id'),'sort_order':idx}).execute()
+    supabase.table('order_ahead_item_branch_availability').delete().eq('item_id',iid).execute()
+    for bpid in payload.unavailable_branch_public_ids or []:
+        b=_supabase_first_row(supabase.table('branches').select('id,public_id,business_id').eq('public_id',bpid).eq('business_id',bid).limit(1).execute())
+        if b: supabase.table('order_ahead_item_branch_availability').insert({'item_id':iid,'branch_id':b.get('id'),'is_available':False}).execute()
+
+
+@app.post('/api/v1/business/{public_id}/order-ahead/items')
+async def owner_create_oa_item(public_id: str, payload: OrderAheadItemPayload, authorization: str = Header(default='')):
+    business=_oa_require_owner_business(public_id,authorization); bid=business.get('id'); category_id=None
+    if payload.category_public_id:
+        cat=_oa_public_row('order_ahead_categories',payload.category_public_id,bid)
+        if not cat: raise HTTPException(status_code=400,detail='Category not found')
+        category_id=cat.get('id')
+    data=payload.dict(exclude={'category_public_id','modifier_group_public_ids','unavailable_branch_public_ids'}); data['category_id']=category_id; data['business_id']=bid; data['updated_at']=datetime.now(timezone.utc).isoformat()
+    res=supabase.table('order_ahead_items').insert(data).execute(); item=_supabase_first_row(res)
+    if not item: raise HTTPException(status_code=500,detail='Could not create menu item')
+    _oa_sync_item_relations(business,item,payload); return {'success':True,'item':item}
+
+
+@app.patch('/api/v1/business/{public_id}/order-ahead/items/{item_public_id}')
+async def owner_update_oa_item(public_id: str, item_public_id: str, payload: OrderAheadItemPayload, authorization: str = Header(default='')):
+    business=_oa_require_owner_business(public_id,authorization); bid=business.get('id'); item=_oa_public_row('order_ahead_items',item_public_id,bid)
+    if not item: raise HTTPException(status_code=404,detail='Menu item not found')
+    category_id=None
+    if payload.category_public_id:
+        cat=_oa_public_row('order_ahead_categories',payload.category_public_id,bid)
+        if not cat: raise HTTPException(status_code=400,detail='Category not found')
+        category_id=cat.get('id')
+    data=payload.dict(exclude={'category_public_id','modifier_group_public_ids','unavailable_branch_public_ids'}); data['category_id']=category_id; data['updated_at']=datetime.now(timezone.utc).isoformat()
+    supabase.table('order_ahead_items').update(data).eq('id',item.get('id')).execute(); _oa_sync_item_relations(business,item,payload); return {'success':True}
+
+
+@app.delete('/api/v1/business/{public_id}/order-ahead/items/{item_public_id}')
+async def owner_delete_oa_item(public_id: str, item_public_id: str, authorization: str = Header(default='')):
+    business=_oa_require_owner_business(public_id,authorization); item=_oa_public_row('order_ahead_items',item_public_id,business.get('id'))
+    if not item: raise HTTPException(status_code=404,detail='Menu item not found')
+    supabase.table('order_ahead_items').delete().eq('id',item.get('id')).execute(); return {'success':True}
 
 @app.patch("/api/v1/admin/businesses/{public_id}/nfc-trial")
 async def admin_set_nfc_trial(public_id: str, update: AdminNfcTrialUpdate, background_tasks: BackgroundTasks, _: bool = Depends(require_admin)):
@@ -10644,6 +10862,8 @@ async def get_cloudinary_signature(public_id: str, purpose: Optional[str] = None
     timestamp = int(datetime.utcnow().timestamp())
     if purpose == 'branding':
         folder = f'branding/{public_id}'
+    elif purpose == 'order_ahead_menu':
+        folder = f'order-ahead-menu/{public_id}'
     elif purpose == 'contract':
         folder = f'contracts/{public_id}'
     elif purpose == 'agent_kyc':
@@ -19353,28 +19573,79 @@ async def order_ahead_branch_page(customer_public_id: str, token: str = Query(de
 async def order_ahead_branch_selected(customer_public_id: str, branch_public_id: str, token: str = Query(default='')):
     customer = safe_get_customer(customer_public_id)
     if not customer:
-        raise HTTPException(status_code=404, detail="Member not found")
+        raise HTTPException(status_code=404, detail='Member not found')
     business = safe_get_business_by_id(customer.get('business_id'))
     if not business or not bool(business.get('order_ahead_enabled')):
-        raise HTTPException(status_code=404, detail="Order Ahead is not available")
+        raise HTTPException(status_code=404, detail='Order Ahead is not available')
     if not verify_order_ahead_member_token(customer_public_id, business.get('public_id', ''), token):
-        raise HTTPException(status_code=403, detail="Invalid Order Ahead link")
+        raise HTTPException(status_code=403, detail='Invalid Order Ahead link')
     branch = safe_get_branch(branch_public_id)
     if not branch or branch.get('business_id') != business.get('id') or not branch.get('is_active', True):
-        raise HTTPException(status_code=404, detail="Branch not found")
+        raise HTTPException(status_code=404, detail='Branch not found')
+
+    try:
+        snap = _oa_menu_snapshot(business)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f'Could not load menu: {friendly_db_error(e)}')
 
     ui = _resolve_order_ahead_ui_config(business)
+    program = safe_get_loyalty_program(business.get('id')) or {}
+    categories = [c for c in snap['categories'] if c.get('is_active')]
+    items = []
+    for original in snap['items']:
+        if not original.get('is_active'):
+            continue
+        item = dict(original)
+        item['branch_available'] = branch_public_id not in (item.get('unavailable_branch_public_ids') or [])
+        item['modifier_groups'] = [
+            g for g in snap['modifier_groups']
+            if g.get('public_id') in (item.get('modifier_group_public_ids') or []) and g.get('is_active')
+        ]
+        for group in item['modifier_groups']:
+            group['options'] = [o for o in (group.get('options') or []) if o.get('is_active')]
+        items.append(item)
+
+    payload = {'categories': categories, 'items': items}
+    data_json = json.dumps(payload).replace('</', '<\\/')
     biz_name = html_lib.escape(str(business.get('name') or 'Business'))
     branch_name = html_lib.escape(str(branch.get('name') or 'Branch'))
-    primary = ui['primary_color']
-    bg = ui['background_color']
-    surface = ui['surface_color']
-    text_color = ui['text_color']
-    muted = ui['muted_color']
-    radius = '22px' if ui['template'] == 'bold' else ('12px' if ui['template'] == 'minimal' else '20px')
-    return HTMLResponse(f"""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>{biz_name} · {branch_name}</title>
-    <style>*{{box-sizing:border-box}}body{{margin:0;background:{bg};color:{text_color};font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}main{{max-width:520px;margin:0 auto;padding:28px 18px}}.card{{background:{surface};border:1px solid #e2e8f0;border-radius:{radius};padding:22px}}h1{{font-size:22px;margin:12px 0 8px}}p{{color:{muted};line-height:1.5}}.pill{{display:inline-block;background:{primary}18;color:{primary};border-radius:999px;padding:7px 10px;font-weight:750;font-size:12px}}</style></head>
-    <body><main><div class="card"><div class="pill">Wallet link working ✓</div><h1>{branch_name}</h1><p>{biz_name} has identified this member and branch correctly. The menu, item options, pickup time and mock checkout will use the same Super Admin design settings.</p></div></main></body></html>""", headers={'Cache-Control': 'no-store'})
+    logo = html_lib.escape(str(business.get('logo_url') or program.get('program_logo_url') or DEFAULT_LOGO_URL))
+    hero = html_lib.escape(str(program.get('hero_image_url') or ''))
+    banner_html = '<img class="banner" src="' + hero + '" alt="">' if ui['show_banner'] and hero else ''
+
+    substitutions = {
+        '__BG__': ui['background_color'], '__TEXT__': ui['text_color'], '__MUTED__': ui['muted_color'],
+        '__SURFACE__': ui['surface_color'], '__PRIMARY__': ui['primary_color'],
+        '__BIZ__': biz_name, '__BRANCH__': branch_name, '__LOGO__': logo,
+        '__BANNER__': banner_html, '__MENU_HEADING__': html_lib.escape(ui['menu_heading']),
+        '__DATA__': data_json, '__UI__': json.dumps(ui),
+        '__CAT_RADIUS__': '999px' if ui['category_style'] == 'pills' else '8px',
+        '__GRID_COLS__': 'repeat(2,minmax(0,1fr))' if ui['product_layout'] == 'image_top' else '1fr',
+        '__ITEM_DISPLAY__': 'block' if ui['product_layout'] == 'image_top' else 'grid',
+        '__ITEM_COLS__': '110px 1fr' if ui['product_layout'] == 'image_left' else ('76px 1fr' if ui['product_layout'] == 'compact' else '1fr'),
+        '__PHOTO_HEIGHT__': '132px' if ui['product_layout'] == 'image_top' else ('110px' if ui['product_layout'] == 'image_left' else '76px'),
+        '__IMG_RADIUS__': '16px' if ui['image_shape'] == 'rounded' else '4px',
+        '__CARD_RADIUS__': '18px' if ui['product_card_style'] == 'soft' else ('12px' if ui['product_card_style'] == 'outline' else '8px'),
+        '__CARD_SHADOW__': '0 8px 24px rgba(15,23,42,.06)' if ui['product_card_style'] == 'soft' else 'none',
+        '__CARD_BORDER__': '1px solid #e2e8f0' if ui['product_card_style'] != 'flat' else '1px solid transparent',
+    }
+    page = r'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>__BIZ__ · Menu</title><style>
+*{box-sizing:border-box}body{margin:0;background:__BG__;color:__TEXT__;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding-bottom:94px}main{max-width:560px;margin:auto;padding:18px}.banner{width:100%;height:142px;object-fit:cover;border-radius:22px;margin-bottom:14px}.head{display:flex;align-items:center;gap:12px;margin-bottom:18px}.logo{width:48px;height:48px;border-radius:14px;object-fit:cover;border:1px solid #e2e8f0}h1{font-size:21px;margin:0}.branch{font-size:12px;color:__MUTED__;margin-top:3px}.cats{display:flex;gap:8px;overflow:auto;padding:2px 0 12px;scrollbar-width:none;position:sticky;top:0;background:__BG__;z-index:5}.cat{white-space:nowrap;border:0;background:__SURFACE__;color:__TEXT__;padding:9px 12px;border-radius:__CAT_RADIUS__;font-weight:750}.cat.on{background:__PRIMARY__;color:#fff}.grid{display:grid;grid-template-columns:__GRID_COLS__;gap:12px}.item{background:__SURFACE__;border:__CARD_BORDER__;border-radius:__CARD_RADIUS__;box-shadow:__CARD_SHADOW__;overflow:hidden;display:__ITEM_DISPLAY__;grid-template-columns:__ITEM_COLS__}.photo{width:100%;height:__PHOTO_HEIGHT__;object-fit:cover;background:#f1f5f9}.info{padding:12px;min-width:0}.name{font-weight:800;font-size:14px}.desc{font-size:11.5px;color:__MUTED__;margin-top:4px;line-height:1.35}.row{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-top:10px}.price{font-weight:850}.add{border:0;background:__PRIMARY__;color:#fff;border-radius:999px;min-width:31px;height:31px;padding:0 11px;font-weight:850}.sold{opacity:.52}.sold .add{background:#94a3b8}.empty{padding:28px;text-align:center;color:__MUTED__;background:__SURFACE__;border-radius:18px}.cartbar{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);width:min(524px,calc(100% - 28px));background:__PRIMARY__;color:#fff;border-radius:18px;padding:14px 16px;display:none;justify-content:space-between;box-shadow:0 14px 35px rgba(15,23,42,.22);font-weight:850;z-index:20}.cartbar.show{display:flex}dialog{border:0;border-radius:22px;padding:0;width:min(500px,calc(100% - 24px));color:__TEXT__}dialog::backdrop{background:rgba(15,23,42,.45)}.modal{padding:18px}.opt{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid #eef2f7}.group{margin-top:16px}.group h3{font-size:13px;margin:0 0 4px}.muted{color:__MUTED__;font-size:11px}.modaladd{width:100%;border:0;border-radius:14px;padding:13px;background:__PRIMARY__;color:#fff;font-weight:850;margin-top:16px}
+</style></head><body><main>__BANNER__<div class="head"><img class="logo" src="__LOGO__"><div><h1>__MENU_HEADING__</h1><div class="branch">__BIZ__ · __BRANCH__</div></div></div><div id="cats" class="cats"></div><div id="grid" class="grid"></div></main><div id="cartbar" class="cartbar"><span id="cartcount">0 items</span><span id="carttotal">₱0.00 · View Cart</span></div><dialog id="dlg"><div id="modal" class="modal"></div></dialog><script>
+const DATA=__DATA__; const UI=__UI__; let active='all',cart=[];
+const peso=n=>'₱'+Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+const esc=s=>String(s||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
+function drawCats(){const arr=[{public_id:'all',name:'All'},...DATA.categories];document.getElementById('cats').innerHTML=arr.map(c=>`<button class="cat ${active===c.public_id?'on':''}" onclick="active='${c.public_id}';drawCats();drawItems()">${esc(c.name)}</button>`).join('')}
+function addLabel(){return UI.add_button_style==='text'?'Add':UI.add_button_style==='filled'?'+ Add':'+'}
+function drawItems(){const xs=DATA.items.filter(i=>active==='all'||i.category_public_id===active);document.getElementById('grid').innerHTML=xs.length?xs.map(i=>{const ok=i.is_available!==false&&i.branch_available!==false;return `<div class="item ${ok?'':'sold'}">${i.image_url?`<img class="photo" src="${esc(i.image_url)}">`:`<div class="photo"></div>`}<div class="info"><div class="name">${esc(i.name)}</div>${UI.show_product_description&&i.description?`<div class="desc">${esc(i.description)}</div>`:''}<div class="row"><span class="price">${peso(i.base_price)}</span><button class="add" ${ok?'':'disabled'} onclick="openItem('${i.public_id}')">${ok?addLabel():'Sold out'}</button></div></div></div>`}).join(''):'<div class="empty">No menu items in this category yet.</div>'}
+function openItem(id){const i=DATA.items.find(x=>x.public_id===id);if(!i)return;const groups=(i.modifier_groups||[]).map(g=>`<div class="group"><h3>${esc(g.name)}${g.is_required?' *':''}</h3><div class="muted">${g.selection_type==='multiple'?'Choose any that apply':'Choose one'}</div>${(g.options||[]).map(o=>`<label class="opt"><span><input type="${g.selection_type==='multiple'?'checkbox':'radio'}" name="g_${g.public_id}" value="${o.public_id}" data-price="${o.price_delta}"> ${esc(o.name)}</span><span>${o.price_delta?'+ '+peso(o.price_delta):''}</span></label>`).join('')}</div>`).join('');document.getElementById('modal').innerHTML=`<h2 style="margin:0">${esc(i.name)}</h2><div class="muted" style="margin-top:4px">${esc(i.description||'')}</div>${groups}<button class="modaladd" onclick="confirmAdd('${id}')">Add to Cart · ${peso(i.base_price)}</button>`;document.getElementById('dlg').showModal()}
+function confirmAdd(id){const i=DATA.items.find(x=>x.public_id===id);let extra=0,mods=[];document.querySelectorAll('#modal input:checked').forEach(el=>{extra+=Number(el.dataset.price||0);mods.push(el.value)});cart.push({id,name:i.name,price:Number(i.base_price)+extra,mods});document.getElementById('dlg').close();updateCart()}
+function updateCart(){const total=cart.reduce((a,x)=>a+x.price,0),bar=document.getElementById('cartbar');document.getElementById('cartcount').textContent=cart.length+' item'+(cart.length===1?'':'s');document.getElementById('carttotal').textContent=peso(total)+' · View Cart';bar.classList.toggle('show',UI.sticky_cart&&cart.length>0)}
+drawCats();drawItems();
+</script></body></html>'''
+    for key, value in substitutions.items():
+        page = page.replace(key, str(value))
+    return HTMLResponse(page, headers={'Cache-Control': 'no-store'})
 
 
 # CASHIER STAMP PAGE - opened when a cashier scans a customer's QR with

@@ -18,6 +18,7 @@ const OA_DESIGN_DEFAULTS = {
   template:'modern', primary_color:'#0f766e', background_color:'#f8fafc', surface_color:'#ffffff', text_color:'#0f172a', muted_color:'#64748b',
   header_style:'logo_name', logo_shape:'rounded', branch_card_style:'soft', button_style:'text', show_banner:true, show_greeting:true,
   branch_heading:'Which branch will you pick up from?', branch_cta_label:'Choose branch', category_style:'pills', product_layout:'image_top', image_shape:'rounded',
+  product_card_style:'soft', add_button_style:'plus', show_product_description:true, sticky_cart:true, menu_heading:'Menu',
 }
 
 
@@ -1214,11 +1215,17 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                   <label style={styles.oaToggleRow}><input type="checkbox" checked={!!orderAheadDesign.show_greeting} onChange={e=>setOrderAheadDesign(d=>({...d,show_greeting:e.target.checked}))}/><span>Show member greeting</span></label>
                 </DesignSection>
 
-                <DesignSection title="Menu defaults (ready for Menu Builder)">
+                <DesignSection title="Menu UI">
+                  <label style={styles.oaDesignLabel}>Menu heading</label>
+                  <input style={{...styles.input,marginBottom:10}} maxLength={60} value={orderAheadDesign.menu_heading || ''} onChange={e=>setOrderAheadDesign(d=>({...d,menu_heading:e.target.value}))}/>
                   <DesignSelect label="Categories" value={orderAheadDesign.category_style} onChange={v=>setOrderAheadDesign(d=>({...d,category_style:v}))} options={[["pills","Pills"],["tabs","Tabs"],["plain","Plain"]]}/>
-                  <DesignSelect label="Product layout" value={orderAheadDesign.product_layout} onChange={v=>setOrderAheadDesign(d=>({...d,product_layout:v}))} options={[["image_top","Image top"],["image_left","Image left"],["compact","Compact"]]}/>
+                  <DesignSelect label="Product layout" value={orderAheadDesign.product_layout} onChange={v=>setOrderAheadDesign(d=>({...d,product_layout:v}))} options={[["image_top","Image grid"],["image_left","Image left list"],["compact","Compact list"]]}/>
+                  <DesignSelect label="Product cards" value={orderAheadDesign.product_card_style} onChange={v=>setOrderAheadDesign(d=>({...d,product_card_style:v}))} options={[["soft","Soft cards"],["outline","Outline"],["flat","Flat"]]}/>
                   <DesignSelect label="Product image" value={orderAheadDesign.image_shape} onChange={v=>setOrderAheadDesign(d=>({...d,image_shape:v}))} options={[["rounded","Rounded"],["square","Square"]]}/>
-                  <div style={{fontSize:11,color:'#94a3b8',lineHeight:1.45}}>These menu settings are saved now and will automatically apply when the customer menu is connected.</div>
+                  <DesignSelect label="Add button" value={orderAheadDesign.add_button_style} onChange={v=>setOrderAheadDesign(d=>({...d,add_button_style:v}))} options={[["plus","+ icon"],["text","Add text"],["filled","+ Add filled"]]}/>
+                  <label style={styles.oaToggleRow}><input type="checkbox" checked={!!orderAheadDesign.show_product_description} onChange={e=>setOrderAheadDesign(d=>({...d,show_product_description:e.target.checked}))}/><span>Show product descriptions</span></label>
+                  <label style={styles.oaToggleRow}><input type="checkbox" checked={!!orderAheadDesign.sticky_cart} onChange={e=>setOrderAheadDesign(d=>({...d,sticky_cart:e.target.checked}))}/><span>Show sticky cart bar after adding an item</span></label>
+                  <div style={{fontSize:11,color:'#94a3b8',lineHeight:1.45}}>Owners edit products, prices and options. Only Super Admin controls this layout.</div>
                 </DesignSection>
 
                 <div style={styles.oaDesignActions}>
@@ -1372,27 +1379,28 @@ function DesignColor({label,value,onChange}) {
   return <label style={styles.oaColorField}><span style={styles.oaDesignLabel}>{label}</span><div style={{display:'flex',alignItems:'center',gap:7}}><input type="color" value={value || '#000000'} onChange={e=>onChange(e.target.value)} style={styles.oaColorPicker}/><input value={value || ''} maxLength={7} onChange={e=>onChange(e.target.value)} style={{...styles.input,padding:'7px 8px',fontSize:11}}/></div></label>
 }
 function OrderAheadPreview({business,design}) {
+  const [screen,setScreen]=useState('menu')
   const d={...OA_DESIGN_DEFAULTS,...(design||{})}
   const logoRadius=d.logo_shape==='circle'?999:d.logo_shape==='square'?4:14
-  const cardRadius=d.branch_card_style==='flat'?9:d.branch_card_style==='outline'?13:18
-  const shadow=d.template==='minimal'||d.branch_card_style!=='soft'?'none':'0 10px 24px rgba(15,23,42,.08)'
-  const button = d.button_style==='filled'
-    ? {background:d.primary_color,color:'#fff',padding:'8px 10px',borderRadius:10}
-    : d.button_style==='outline'
-      ? {border:`1px solid ${d.primary_color}`,color:d.primary_color,padding:'7px 9px',borderRadius:10}
-      : {color:d.primary_color}
+  const branchRadius=d.branch_card_style==='flat'?9:d.branch_card_style==='outline'?13:18
+  const productRadius=d.product_card_style==='flat'?8:d.product_card_style==='outline'?12:16
+  const shadow=d.product_card_style==='soft'?'0 8px 20px rgba(15,23,42,.07)':'none'
   const sampleImage='linear-gradient(135deg,#e2e8f0,#cbd5e1)'
-  return <div style={{...styles.oaPhone,background:d.background_color,color:d.text_color}}>
-    <div style={styles.oaPhoneNotch}></div>
-    <div style={styles.oaPhoneBody}>
-      {d.show_banner && <div style={{height:76,borderRadius:14,background:sampleImage,marginBottom:12,overflow:'hidden'}}>{business?.loyalty_program?.hero_image_url && <img src={business.loyalty_program.hero_image_url} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>}</div>}
-      <div style={{display:'flex',alignItems:'center',gap:d.header_style==='compact'?8:10,marginBottom:16,...(d.header_style==='banner'&&d.show_banner?{marginTop:-32,marginLeft:8,marginRight:8,padding:'8px 9px',background:d.surface_color,border:'1px solid #e2e8f0',borderRadius:14,position:'relative',boxShadow:'0 8px 18px rgba(15,23,42,.08)'}:{})}}>
-        {business?.logo_url?<img src={business.logo_url} alt="" style={{width:d.header_style==='compact'?34:44,height:d.header_style==='compact'?34:44,borderRadius:logoRadius,objectFit:'cover',border:'1px solid #e2e8f0'}}/>:<div style={{width:44,height:44,borderRadius:logoRadius,display:'grid',placeItems:'center',background:'#e2e8f0'}}>🏪</div>}
-        <div><div style={{fontWeight:850,fontSize:d.header_style==='compact'?15:18}}>{business?.name || 'Business Name'}</div>{d.show_greeting&&<div style={{fontSize:10.5,color:d.muted_color,marginTop:2}}>Hi, Member · Order Ahead</div>}</div>
+  const products=[['Iced Latte','₱140'],['Spanish Latte','₱160'],['Croissant','₱95'],['Cold Brew','₱130']]
+  const addLabel=d.add_button_style==='text'?'Add':d.add_button_style==='filled'?'+ Add':'+'
+  return <div>
+    <div style={{display:'flex',justifyContent:'center',gap:6,marginBottom:9}}><button onClick={()=>setScreen('branch')} style={{fontSize:10,padding:'5px 8px',borderRadius:999,border:'1px solid #cbd5e1',background:screen==='branch'?'#0f172a':'#fff',color:screen==='branch'?'#fff':'#475569'}}>Branch</button><button onClick={()=>setScreen('menu')} style={{fontSize:10,padding:'5px 8px',borderRadius:999,border:'1px solid #cbd5e1',background:screen==='menu'?'#0f172a':'#fff',color:screen==='menu'?'#fff':'#475569'}}>Menu</button></div>
+    <div style={{...styles.oaPhone,background:d.background_color,color:d.text_color}}>
+      <div style={styles.oaPhoneNotch}></div><div style={styles.oaPhoneBody}>
+        {d.show_banner && <div style={{height:64,borderRadius:14,background:sampleImage,marginBottom:10,overflow:'hidden'}}>{business?.loyalty_program?.hero_image_url&&<img src={business.loyalty_program.hero_image_url} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>}</div>}
+        <div style={{display:'flex',alignItems:'center',gap:9,marginBottom:13}}>{business?.logo_url?<img src={business.logo_url} alt="" style={{width:38,height:38,borderRadius:logoRadius,objectFit:'cover',border:'1px solid #e2e8f0'}}/>:<div style={{width:38,height:38,borderRadius:logoRadius,display:'grid',placeItems:'center',background:'#e2e8f0'}}>🏪</div>}<div><div style={{fontWeight:850,fontSize:15}}>{business?.name||'Business Name'}</div>{d.show_greeting&&<div style={{fontSize:9.5,color:d.muted_color}}>Hi, Member · Order Ahead</div>}</div></div>
+        {screen==='branch'?<><div style={{fontWeight:800,fontSize:12,marginBottom:7}}>{d.branch_heading}</div>{[['Main Branch','123 Sample Street'],['Mall Branch','Level 2']].map(([n,a])=><div key={n} style={{background:d.surface_color,border:d.branch_card_style==='flat'?'1px solid transparent':'1px solid #e2e8f0',borderRadius:branchRadius,padding:10,marginBottom:7}}><div style={{fontWeight:800,fontSize:12}}>{n}</div><div style={{fontSize:9.5,color:d.muted_color,marginTop:2}}>{a}</div><div style={{color:d.primary_color,fontSize:10,fontWeight:800,marginTop:7}}>{d.branch_cta_label} ›</div></div>)}</>:<>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'end',marginBottom:8}}><div><div style={{fontWeight:900,fontSize:15}}>{d.menu_heading||'Menu'}</div><div style={{fontSize:9.5,color:d.muted_color}}>Main Branch</div></div></div>
+          <div style={{display:'flex',gap:5,overflow:'hidden',marginBottom:9}}>{['All','Coffee','Pastries'].map((c,i)=><span key={c} style={{whiteSpace:'nowrap',fontSize:9.5,fontWeight:800,padding:'6px 8px',borderRadius:d.category_style==='pills'?999:6,background:i===0?d.primary_color:d.surface_color,color:i===0?'#fff':d.text_color,border:'1px solid #e2e8f0'}}>{c}</span>)}</div>
+          <div style={{display:'grid',gridTemplateColumns:d.product_layout==='image_top'?'1fr 1fr':'1fr',gap:7}}>{products.map(([n,p],i)=><div key={n} style={{background:d.surface_color,border:d.product_card_style==='flat'?'1px solid transparent':'1px solid #e2e8f0',borderRadius:productRadius,boxShadow:shadow,overflow:'hidden',display:d.product_layout==='image_top'?'block':'grid',gridTemplateColumns:d.product_layout==='image_left'?'62px 1fr':d.product_layout==='compact'?'48px 1fr':'1fr'}}><div style={{height:d.product_layout==='image_top'?66:d.product_layout==='compact'?48:62,background:sampleImage}}></div><div style={{padding:7,minWidth:0}}><div style={{fontSize:10.5,fontWeight:850}}>{n}</div>{d.show_product_description&&<div style={{fontSize:8.5,color:d.muted_color,marginTop:2}}>Sample product description</div>}<div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:5}}><span style={{fontSize:9.5,fontWeight:850}}>{p}</span><span style={{fontSize:9,fontWeight:900,background:d.primary_color,color:'#fff',borderRadius:999,padding:d.add_button_style==='plus'?'3px 6px':'3px 7px'}}>{addLabel}</span></div></div></div>)}</div>
+          {d.sticky_cart&&<div style={{marginTop:9,background:d.primary_color,color:'#fff',borderRadius:11,padding:'8px 9px',display:'flex',justifyContent:'space-between',fontSize:9.5,fontWeight:850}}><span>2 items</span><span>₱300 · View Cart</span></div>}
+        </>}
       </div>
-      <div style={{fontWeight:800,fontSize:13,marginBottom:8}}>{d.branch_heading}</div>
-      {[['Main Branch','123 Sample Street'],['Mall Branch','Level 2 · Sample Mall']].map(([n,a])=><div key={n} style={{background:d.surface_color,border:d.branch_card_style==='flat'?'1px solid transparent':'1px solid #e2e8f0',borderRadius:cardRadius,padding:12,marginBottom:9,boxShadow:shadow}}><div style={{fontWeight:800,fontSize:13}}>{n}</div><div style={{fontSize:10.5,color:d.muted_color,marginTop:3}}>{a}</div><div style={{...button,display:'flex',justifyContent:'space-between',fontSize:10.5,fontWeight:800,marginTop:9}}><span>{d.branch_cta_label}</span><span>›</span></div></div>)}
-      <div style={{fontSize:9.5,color:d.muted_color,textAlign:'center',marginTop:13,opacity:.8}}>Test mode · No real payment</div>
     </div>
   </div>
 }
