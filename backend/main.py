@@ -100,6 +100,10 @@ SUPER_ADMIN_PASSWORD = os.getenv('SUPER_ADMIN_PASSWORD', '')
 # the API secret key above.
 PAYMONGO_SECRET_KEY = os.getenv('PAYMONGO_SECRET_KEY', '')
 PAYMONGO_WEBHOOK_SECRET = os.getenv('PAYMONGO_WEBHOOK_SECRET', '')
+# Order Ahead uses a dedicated TEST credential so beta checkout can never
+# accidentally collect live money even if subscription billing uses a live key.
+ORDER_AHEAD_PAYMONGO_SECRET_KEY = os.getenv('ORDER_AHEAD_PAYMONGO_SECRET_KEY', '')
+ORDER_AHEAD_PAYMONGO_WEBHOOK_SECRET = os.getenv('ORDER_AHEAD_PAYMONGO_WEBHOOK_SECRET', '')
 PAYMONGO_API_BASE = 'https://api.paymongo.com/v1'
 
 # Cloudinary (vehicle photo uploads from the Inventory / AddVehicleModal).
@@ -505,6 +509,144 @@ def verify_paymongo_signature(raw_body: bytes, signature_header: str) -> bool:
         if candidate and hmac.compare_digest(candidate, computed):
             return True
     return False
+
+def _verify_paymongo_signature_with_secret(raw_body: bytes, signature_header: str, secret: str) -> bool:
+    if not secret or not signature_header:
+        return False
+    parts = {}
+    for chunk in signature_header.split(","):
+        if "=" in chunk:
+            k, v = chunk.split("=", 1)
+            parts[k.strip()] = v.strip()
+    timestamp = parts.get("t")
+    if not timestamp:
+        return False
+    try:
+        signed_payload = f"{timestamp}.{raw_body.decode('utf-8')}"
+    except Exception:
+        return False
+    computed = hmac.new(secret.encode(), signed_payload.encode(), hashlib.sha256).hexdigest()
+    return any(
+        candidate and hmac.compare_digest(candidate, computed)
+        for candidate in (parts.get("te"), parts.get("li"))
+    )
+
+
+def order_ahead_paymongo_test_configured() -> bool:
+    # Hard fail on live keys during this beta phase, and do not let the owner
+    # enable PayMongo until webhook verification is configured too.
+    return bool(
+        ORDER_AHEAD_PAYMONGO_SECRET_KEY
+        and ORDER_AHEAD_PAYMONGO_SECRET_KEY.startswith('sk_test_')
+        and ORDER_AHEAD_PAYMONGO_WEBHOOK_SECRET
+    )
+
+
+def verify_order_ahead_paymongo_signature(raw_body: bytes, signature_header: str) -> bool:
+    return _verify_paymongo_signature_with_secret(
+        raw_body,
+        signature_header,
+        ORDER_AHEAD_PAYMONGO_WEBHOOK_SECRET,
+    )
+
+
+def create_order_ahead_qrph_checkout(
+    amount_php: float,
+    description: str,
+    billing_name: str,
+    billing_email: str,
+    billing_phone: Optional[str],
+    metadata: dict,
+) -> dict:
+    """Create a QR Ph checkout using ONLY the dedicated PayMongo test key."""
+    import httpx
+
+    if not order_ahead_paymongo_test_configured():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Order Ahead PayMongo TEST MODE is not configured. Set "
+                "ORDER_AHEAD_PAYMONGO_SECRET_KEY to a PayMongo sk_test_ key."
+            ),
+        )
+
+    amount_centavos = int(round(float(amount_php) * 100))
+    token = base64.b64encode(f"{ORDER_AHEAD_PAYMONGO_SECRET_KEY}:".encode()).decode()
+    headers = {"Authorization": f"Basic {token}", "Content-Type": "application/json"}
+
+    try:
+        with httpx.Client(timeout=20) as client:
+            intent_res = client.post(
+                f"{PAYMONGO_API_BASE}/payment_intents",
+                headers=headers,
+                json={"data": {"attributes": {
+                    "amount": amount_centavos,
+                    "currency": "PHP",
+                    "payment_method_allowed": ["qrph"],
+                    "capture_type": "automatic",
+                    "description": description[:255],
+                    "metadata": metadata,
+                }}},
+            )
+            if intent_res.status_code >= 400:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"PayMongo TEST error creating payment intent: {intent_res.text}",
+                )
+            intent = intent_res.json()["data"]
+            intent_id = intent["id"]
+            client_key = intent["attributes"]["client_key"]
+
+            pm_res = client.post(
+                f"{PAYMONGO_API_BASE}/payment_methods",
+                headers=headers,
+                json={"data": {"attributes": {
+                    "type": "qrph",
+                    "billing": {
+                        "name": billing_name,
+                        "email": billing_email,
+                        "phone": billing_phone,
+                    },
+                }}},
+            )
+            if pm_res.status_code >= 400:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"PayMongo TEST error creating payment method: {pm_res.text}",
+                )
+            payment_method_id = pm_res.json()["data"]["id"]
+
+            attach_res = client.post(
+                f"{PAYMONGO_API_BASE}/payment_intents/{intent_id}/attach",
+                headers=headers,
+                json={"data": {"attributes": {
+                    "payment_method": payment_method_id,
+                    "client_key": client_key,
+                }}},
+            )
+            if attach_res.status_code >= 400:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"PayMongo TEST error attaching payment method: {attach_res.text}",
+                )
+            attrs = attach_res.json()["data"]["attributes"]
+            next_action = attrs.get("next_action") or {}
+            code = next_action.get("code") or {}
+            qr_image_url = code.get("image_url")
+            if not qr_image_url:
+                raise HTTPException(status_code=502, detail="PayMongo TEST did not return a QR Ph image.")
+
+            return {
+                "intent_id": intent_id,
+                "status": attrs.get("status"),
+                "qr_image_url": qr_image_url,
+                "mode": "test",
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach PayMongo TEST: {e}")
+
 
 # --- Email helper (Resend) --------------------------------------------------
 
@@ -1344,6 +1486,10 @@ class AnnouncementCreate(BaseModel):
     type: Optional[str] = 'info'
     is_active: Optional[bool] = True
     end_date: Optional[str] = None  # 'YYYY-MM-DD'
+    target_scope: Literal['business', 'branch'] = 'business'
+    branch_public_id: Optional[str] = None
+
+
 
 class PlatformAnnouncementCreate(BaseModel):
     """Admin -> business owner promo/announcement (e.g. 'Refer a friend and
@@ -1369,6 +1515,8 @@ class AnnouncementUpdate(BaseModel):
     type: Optional[str] = None
     is_active: Optional[bool] = None
     end_date: Optional[str] = None
+    target_scope: Optional[Literal['business', 'branch']] = None
+    branch_public_id: Optional[str] = None
 
 
 class PartnerCreate(BaseModel):
@@ -1449,6 +1597,7 @@ class OrderAheadSettingsUpdate(BaseModel):
     min_prep_minutes: Optional[int] = Field(default=None, ge=0, le=1440)
     slot_interval_minutes: Optional[int] = Field(default=None, ge=5, le=240)
     max_advance_days: Optional[int] = Field(default=None, ge=0, le=365)
+    payment_mode: Optional[Literal['mock', 'paymongo']] = None
     ready_notification_enabled: Optional[bool] = None
 
 class AdminOrderAheadDesignUpdate(BaseModel):
@@ -3755,35 +3904,362 @@ def generate_apple_logo_bytes(business_name: str, width: int, height: int) -> by
     draw.text((max(0, -bbox[0]), (height - th) / 2 - bbox[1]), text, font=font, fill=(255, 255, 255, 255))
     return _hero_to_png(img)
 
+
+ANNOUNCEMENT_BRANCH_ACTIVITY_TABLES = (
+    'stamp_events',
+    'points_events',
+    'multipass_events',
+    'membership_events',
+    'vip_events',
+    'redemption_events',
+)
+
+
+def _announcement_branch_row(business_id: int, branch_public_id: Optional[str]) -> Optional[dict]:
+    if not branch_public_id:
+        return None
+    try:
+        row = (
+            supabase.table('branches').select('*')
+            .eq('public_id', branch_public_id)
+            .eq('business_id', business_id)
+            .maybe_single().execute().data
+        )
+        return row
+    except Exception:
+        return None
+
+
+def _announcement_branch_by_id(business_id: int, branch_id) -> Optional[dict]:
+    if branch_id is None:
+        return None
+    try:
+        return (
+            supabase.table('branches').select('*')
+            .eq('id', branch_id)
+            .eq('business_id', business_id)
+            .maybe_single().execute().data
+        )
+    except Exception:
+        return None
+
+
+def _branch_activity_customer_ids(business_id: int, branch_id) -> set:
+    """Customers with recorded activity at one branch.
+
+    This intentionally treats branch audience as behavior, not ownership:
+    a member can qualify for more than one branch after visiting multiple
+    locations. Activity includes loyalty events plus confirmed Order Ahead
+    orders. Missing legacy tables are ignored so old deployments remain usable.
+    """
+    ids = set()
+    if not supabase or branch_id is None:
+        return ids
+
+    for table in ANNOUNCEMENT_BRANCH_ACTIVITY_TABLES:
+        try:
+            rows = (
+                supabase.table(table).select('customer_id')
+                .eq('business_id', business_id)
+                .eq('branch_id', branch_id)
+                .execute().data or []
+            )
+            ids.update(r.get('customer_id') for r in rows if r.get('customer_id') is not None)
+        except Exception as e:
+            print(f"ANNOUNCEMENT branch audience {table} lookup warning: {e}")
+
+    # An Order Ahead purchase is also real branch activity. Only include
+    # orders whose payment was confirmed, never abandoned pending checkouts.
+    try:
+        rows = (
+            supabase.table('order_ahead_orders').select('customer_id')
+            .eq('business_id', business_id)
+            .eq('branch_id', branch_id)
+            .in_('payment_status', ['test_paid', 'paid'])
+            .execute().data or []
+        )
+        ids.update(r.get('customer_id') for r in rows if r.get('customer_id') is not None)
+    except Exception as e:
+        print(f"ANNOUNCEMENT branch audience order lookup warning: {e}")
+
+    return ids
+
+
+def _customer_has_branch_activity(business_id: int, customer_id, branch_id) -> bool:
+    if customer_id is None or branch_id is None:
+        return False
+    for table in ANNOUNCEMENT_BRANCH_ACTIVITY_TABLES:
+        try:
+            row = (
+                supabase.table(table).select('id')
+                .eq('business_id', business_id)
+                .eq('branch_id', branch_id)
+                .eq('customer_id', customer_id)
+                .limit(1).execute().data or []
+            )
+            if row:
+                return True
+        except Exception:
+            pass
+    try:
+        row = (
+            supabase.table('order_ahead_orders').select('id')
+            .eq('business_id', business_id)
+            .eq('branch_id', branch_id)
+            .eq('customer_id', customer_id)
+            .in_('payment_status', ['test_paid', 'paid'])
+            .limit(1).execute().data or []
+        )
+        return bool(row)
+    except Exception:
+        return False
+
+
+def _customers_for_branch_audience(business_id: int, branch_id) -> list:
+    customer_ids = list(_branch_activity_customer_ids(business_id, branch_id))
+    if not customer_ids:
+        return []
+    rows = []
+    CHUNK_SIZE = 200
+    for i in range(0, len(customer_ids), CHUNK_SIZE):
+        try:
+            chunk = customer_ids[i:i + CHUNK_SIZE]
+            rows.extend(
+                supabase.table('customers').select('*')
+                .eq('business_id', business_id)
+                .in_('id', chunk)
+                .execute().data or []
+            )
+        except Exception as e:
+            print(f"ANNOUNCEMENT branch customer lookup warning: {e}")
+    return rows
+
+
+def _announcement_notification_header(business: dict, announcement: dict) -> str:
+    biz_name = str((business or {}).get('name') or 'LoyaltyTree')
+    if str((announcement or {}).get('target_scope') or 'business') != 'branch':
+        return biz_name
+    branch_name = str((announcement or {}).get('branch_name') or '').strip()
+    if not branch_name and (announcement or {}).get('branch_id') is not None:
+        branch = _announcement_branch_by_id((business or {}).get('id'), announcement.get('branch_id'))
+        branch_name = str((branch or {}).get('name') or '').strip()
+    return f"{biz_name} — {branch_name}" if branch_name else biz_name
+
+
+def _enrich_announcement_target(business: dict, announcement: dict) -> dict:
+    if not announcement:
+        return announcement
+    enriched = dict(announcement)
+    scope = str(enriched.get('target_scope') or 'business')
+    enriched['target_scope'] = scope if scope in ('business', 'branch') else 'business'
+    if enriched['target_scope'] == 'branch' and enriched.get('branch_id') is not None:
+        branch = _announcement_branch_by_id(business.get('id'), enriched.get('branch_id'))
+        if branch:
+            enriched['branch_public_id'] = branch.get('public_id')
+            enriched['branch_name'] = branch.get('name')
+    enriched['_notification_header'] = _announcement_notification_header(business, enriched)
+    return enriched
+
+
+def _push_apple_wallet_to_customer_public_ids(customer_public_ids: list[str]) -> int:
+    """Target only the selected customers' registered Apple Wallet passes."""
+    if not supabase or not APPLE_PASS_TYPE_IDENTIFIER:
+        return 0
+    serial_numbers = [str(x) for x in customer_public_ids if x]
+    if not serial_numbers:
+        return 0
+    push_tokens = []
+    CHUNK_SIZE = 200
+    try:
+        for i in range(0, len(serial_numbers), CHUNK_SIZE):
+            chunk = serial_numbers[i:i + CHUNK_SIZE]
+            rows = (
+                supabase.table('apple_wallet_registrations').select('push_token')
+                .in_('serial_number', chunk)
+                .eq('pass_type_identifier', APPLE_PASS_TYPE_IDENTIFIER)
+                .execute().data or []
+            )
+            push_tokens.extend(r.get('push_token') for r in rows if r.get('push_token'))
+    except Exception as e:
+        print(f"APPLE WALLET targeted announcement lookup error: {e}")
+        return 0
+    return _send_apple_wallet_pushes(push_tokens)
+
+
+def _send_announcement_notification(business: dict, announcement: dict, resend: bool = False) -> dict:
+    """Send either a whole-business broadcast or a branch-targeted push."""
+    ann = _enrich_announcement_target(business, announcement)
+    scope = ann.get('target_scope') or 'business'
+    header = ann.get('_notification_header') or business.get('name') or 'LoyaltyTree'
+    body = ann.get('message') or ''
+    message_id = f"ann-{ann.get('id')}-{int(datetime.utcnow().timestamp())}" if resend else f"ann-{ann.get('id')}"
+    detail_url = f"{BASE_URL}/a/{business.get('public_id')}/{ann.get('id')}"
+
+    google_sent = 0
+    google_failed = 0
+    apple_sent = 0
+    target_count = None
+
+    if scope == 'branch':
+        branch_id = ann.get('branch_id')
+        customers = _customers_for_branch_audience(business.get('id'), branch_id)
+        target_count = len(customers)
+        if not customers:
+            return {
+                'sent': False,
+                'scope': 'branch',
+                'target_count': 0,
+                'google_sent': 0,
+                'google_failed': 0,
+                'apple_sent': 0,
+                'header': header,
+                'error': f"No customers have recorded activity at {ann.get('branch_name') or 'this branch'} yet.",
+            }
+
+        for customer in customers:
+            public_id = customer.get('public_id')
+            if not public_id:
+                continue
+            object_id = f"{GOOGLE_WALLET_ISSUER_ID}.{public_id}"
+            ok = send_wallet_object_message(
+                object_id,
+                header=header,
+                body=body,
+                message_id=f"{message_id}-{customer.get('id')}",
+                detail_url=detail_url,
+            )
+            if ok:
+                google_sent += 1
+            else:
+                google_failed += 1
+
+        apple_sent = _push_apple_wallet_to_customer_public_ids(
+            [c.get('public_id') for c in customers if c.get('public_id')]
+        )
+        return {
+            'sent': bool(google_sent or apple_sent),
+            'scope': 'branch',
+            'target_count': target_count,
+            'google_sent': google_sent,
+            'google_failed': google_failed,
+            'apple_sent': apple_sent,
+            'header': header,
+            'error': None if (google_sent or apple_sent) else 'No Wallet notification could be delivered to this branch audience.',
+        }
+
+    # Whole-business Google Wallet remains one efficient class-level send.
+    program = safe_get_loyalty_program(business.get('id'))
+    class_id = program.get('google_wallet_class_id') if program else None
+    class_sent = False
+    if class_id:
+        class_sent = send_wallet_class_message(
+            class_id,
+            header=header,
+            body=body,
+            message_id=message_id,
+            detail_url=detail_url,
+        )
+    else:
+        google_failed = 1
+
+    try:
+        apple_sent = push_apple_wallet_announcement(business.get('id'))
+    except Exception as e:
+        print(f"APPLE WALLET announcement push error: {e}")
+        apple_sent = 0
+
+    return {
+        'sent': bool(class_sent or apple_sent),
+        'scope': 'business',
+        'target_count': None,
+        'google_sent': 1 if class_sent else 0,
+        'google_failed': 0 if class_sent else google_failed,
+        'apple_sent': apple_sent,
+        'header': header,
+        'error': None if (class_sent or apple_sent) else (
+            'Publish your card design / verify Wallet credentials before sending notifications.'
+        ),
+    }
+
+
 def get_latest_active_announcement(business_id: int) -> Optional[dict]:
-    """Latest still-active, not-yet-expired announcement for a business, used
-    to surface an 'Announcement' field on the Apple Wallet pass (Google
-    Wallet gets its own copy via send_wallet_class_message's addMessage
-    call, so this is Apple's equivalent data source). Returns None on any
-    error or when there simply isn't one - callers treat that the same as
-    'no announcement configured', not an error."""
+    """Latest whole-business announcement only.
+
+    Branch-targeted announcements must never become the default announcement
+    shown on every customer's Apple pass.
+    """
     if not supabase:
         return None
     try:
-        res = (
+        rows = (
             supabase.table("announcements")
             .select("*")
             .eq("business_id", business_id)
             .eq("is_active", True)
+            .eq("target_scope", "business")
             .order("created_at", desc=True)
-            .limit(1)
-            .execute()
+            .limit(10)
+            .execute().data or []
         )
-        rows = res.data or []
     except Exception:
+        # Backward compatibility before the target_scope migration is installed.
+        try:
+            rows = (
+                supabase.table("announcements")
+                .select("*")
+                .eq("business_id", business_id)
+                .eq("is_active", True)
+                .order("created_at", desc=True)
+                .limit(10)
+                .execute().data or []
+            )
+        except Exception:
+            return None
+
+    today = datetime.utcnow().date().isoformat()
+    business = safe_get_business_by_id(business_id) or {'id': business_id}
+    for ann in rows:
+        end_date = ann.get('end_date')
+        if end_date and str(end_date) < today:
+            continue
+        if str(ann.get('target_scope') or 'business') != 'business':
+            continue
+        return _enrich_announcement_target(business, ann)
+    return None
+
+
+def get_latest_active_announcement_for_customer(business: dict, customer: dict) -> Optional[dict]:
+    """Latest announcement this specific customer is eligible to receive."""
+    if not supabase or not business or not customer:
         return None
-    if not rows:
-        return None
-    ann = rows[0]
-    end_date = ann.get('end_date')
-    if end_date and str(end_date) < datetime.utcnow().date().isoformat():
-        return None
-    return ann
+    try:
+        rows = (
+            supabase.table("announcements")
+            .select("*")
+            .eq("business_id", business.get('id'))
+            .eq("is_active", True)
+            .order("created_at", desc=True)
+            .limit(30)
+            .execute().data or []
+        )
+    except Exception:
+        return get_latest_active_announcement(business.get('id'))
+
+    today = datetime.utcnow().date().isoformat()
+    for ann in rows:
+        end_date = ann.get('end_date')
+        if end_date and str(end_date) < today:
+            continue
+        scope = str(ann.get('target_scope') or 'business')
+        if scope == 'business':
+            return _enrich_announcement_target(business, ann)
+        if scope == 'branch' and _customer_has_branch_activity(
+            business.get('id'),
+            customer.get('id'),
+            ann.get('branch_id'),
+        ):
+            return _enrich_announcement_target(business, ann)
+    return None
 
 def build_apple_pass_json(customer: dict, business: dict, program: dict, announcement: Optional[dict] = None) -> dict:
     cust_public_id = customer.get('public_id', '')
@@ -3910,7 +4386,14 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     # unavoidable) notification - PassKit has no per-field "silent update".
     ann_title = (announcement or {}).get('title', '') or ''
     ann_message = (announcement or {}).get('message', '') or ''
-    announcement_value = ann_title.strip() or ann_message.strip() or 'Check back for updates'
+    ann_notification_header = (
+        (announcement or {}).get('_notification_header')
+        or _announcement_notification_header(business, announcement or {})
+    )
+    # The Wallet notification copy follows the agreed format:
+    # "Business — Branch: message" or "Business: message".
+    announcement_value = ann_message.strip() or ann_title.strip() or 'Check back for updates'
+    announcement_change_message = f"{ann_notification_header}: %@"
 
     card_cycle_reset_on = card_cycle_reset_on_date(customer, program)
     cycle_auxiliary_fields = (
@@ -4041,8 +4524,8 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
             back_fields.append({
                 'key': 'announcement',
                 'label': '📢 ANNOUNCEMENT',
-                'value': (ann_title.strip() or ann_message.strip())[:150],
-                'changeMessage': '%@',
+                'value': announcement_value[:150],
+                'changeMessage': announcement_change_message,
             })
             if ann_message.strip() and ann_message.strip() != ann_title.strip():
                 back_fields.append({
@@ -4087,7 +4570,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                 'key': 'announcement',
                 'label': '📢 ANNOUNCEMENT',
                 'value': announcement_value[:150],
-                'changeMessage': '%@',
+                'changeMessage': announcement_change_message,
             },
         ]
         if order_ahead_action:
@@ -4594,7 +5077,7 @@ def _prewarm_apple_pkpass(customer: dict, business: dict, program: dict):
     try:
         if not customer or not APPLE_PASS_TYPE_IDENTIFIER or not APPLE_TEAM_IDENTIFIER:
             return
-        announcement = get_latest_active_announcement(business.get("id"))
+        announcement = get_latest_active_announcement_for_customer(business, customer)
         pkpass_bytes = build_pkpass_bytes(customer, business, program or {}, announcement)
         if pkpass_bytes:
             _cache_apple_pkpass(customer, business, program or {}, announcement, pkpass_bytes)
@@ -5008,7 +5491,13 @@ def send_wallet_class_message(class_id: str, header: str, body: str, message_id:
         print(f"WALLET PUSH error: {e}")
         return False
 
-def send_wallet_object_message(object_id: str, header: str, body: str, message_id: str) -> bool:
+def send_wallet_object_message(
+    object_id: str,
+    header: str,
+    body: str,
+    message_id: str,
+    detail_url: Optional[str] = None,
+) -> bool:
     """Push a notification to ONE customer's saved loyalty card, unlike
     send_wallet_class_message above which fans out to everyone on the
     business's card at once. Used for personalized messages - birthday
@@ -5020,10 +5509,16 @@ def send_wallet_object_message(object_id: str, header: str, body: str, message_i
         return False
     try:
         import httpx
+        body_text = (body or '').strip()
+        if detail_url:
+            link_html = f' <a href="{detail_url}">View full details</a>'
+            if len(body_text) + len(link_html) > 500:
+                body_text = body_text[:500 - len(link_html)].rstrip() + '…'
+            body_text = (body_text + link_html)[:500]
         payload = {
             'message': {
                 'header': (header or '')[:150],
-                'body': (body or '')[:500],
+                'body': body_text[:500],
                 'id': message_id,
                 'messageType': 'TEXT_AND_NOTIFY',
             }
@@ -7755,6 +8250,11 @@ async def owner_get_order_ahead_setup(public_id: str, authorization: str = Heade
         },
         'orders_count': orders_count,
         'branch_pickup_hours': branch_pickup_hours,
+        'payment': {
+            'mode': str((settings or {}).get('payment_mode') or 'mock'),
+            'paymongo_test_configured': order_ahead_paymongo_test_configured(),
+            'paymongo_test_only': True,
+        },
         'ready_message_preview': f"Your order from {business.get('name') or 'this business'} is ready.",
     }
 
@@ -7774,6 +8274,14 @@ async def owner_update_order_ahead_settings(
         raise HTTPException(status_code=403, detail="Order Ahead must be enabled by LoyaltyTree Admin first")
 
     patch = {k: v for k, v in update.dict(exclude_unset=True).items() if v is not None}
+    if patch.get('payment_mode') == 'paymongo' and not order_ahead_paymongo_test_configured():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "PayMongo TEST MODE is not configured for Order Ahead. "
+                "Add ORDER_AHEAD_PAYMONGO_SECRET_KEY=sk_test_... first."
+            ),
+        )
     patch['updated_at'] = datetime.utcnow().isoformat()
     try:
         existing = _supabase_first_row(
@@ -8561,6 +9069,7 @@ def _oa_order_public_payload(order: dict, customer: Optional[dict] = None, branc
         'status': order.get('status'),
         'payment_status': order.get('payment_status'),
         'payment_mode': order.get('payment_mode'),
+        'payment_reference_created': bool(order.get('paymongo_payment_intent_id')),
         'pickup_type': order.get('pickup_type'),
         'pickup_at': order.get('pickup_at'),
         'customer_note': order.get('customer_note'),
@@ -8627,8 +9136,11 @@ async def customer_create_order_ahead_order(
         settings, hours = _oa_order_settings_and_hours(business, branch)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f'Could not load pickup settings: {friendly_db_error(e)}')
-    if str(settings.get('payment_mode') or 'mock') != 'mock':
-        raise HTTPException(status_code=409, detail='This beta checkout currently accepts Test Payment only')
+    payment_mode = str(settings.get('payment_mode') or 'mock').lower()
+    if payment_mode not in ('mock', 'paymongo'):
+        raise HTTPException(status_code=409, detail='Unsupported Order Ahead payment mode')
+    if payment_mode == 'paymongo' and not order_ahead_paymongo_test_configured():
+        raise HTTPException(status_code=503, detail='PayMongo TEST MODE is not configured for Order Ahead')
 
     pickup_dt = _oa_validate_pickup_for_order(settings, hours, payload.pickup_type, payload.pickup_at)
     lines, subtotal = _oa_price_cart(business, branch, payload.items)
@@ -8641,7 +9153,7 @@ async def customer_create_order_ahead_order(
         'customer_id': customer.get('id'),
         'status': 'new',
         'payment_status': 'pending',
-        'payment_mode': 'mock',
+        'payment_mode': payment_mode,
         'pickup_type': payload.pickup_type,
         'pickup_at': pickup_dt.astimezone(timezone.utc).isoformat(),
         'customer_note': note,
@@ -8673,14 +9185,104 @@ async def customer_create_order_ahead_order(
             pass
         raise HTTPException(status_code=500, detail=f'Could not create order: {friendly_db_error(e)}')
 
+    public_order = _oa_order_public_payload(order, customer, branch, lines)
+    if payment_mode == 'mock':
+        return {
+            'success': True,
+            'order': public_order,
+            'test_payment': {
+                'required': True,
+                'amount': _oa_money_float(subtotal),
+                'label': 'Confirm Test Payment',
+            },
+        }
+
+    # PayMongo beta is intentionally TEST MODE only. Order/items are already
+    # snapshotted before creating the external payment so prices cannot be
+    # changed by the browser between checkout and payment confirmation.
+    try:
+        checkout = create_order_ahead_qrph_checkout(
+            amount_php=_oa_money_float(subtotal),
+            description=f"Order Ahead {order.get('order_number') or order.get('public_id')}",
+            billing_name=customer.get('name') or 'LoyaltyTree Member',
+            billing_email=customer.get('email') or business.get('email') or 'orders@loyaltytree.app',
+            billing_phone=customer.get('phone'),
+            metadata={
+                'payment_context': 'order_ahead',
+                'order_public_id': str(order.get('public_id') or ''),
+                'order_number': str(order.get('order_number') or ''),
+                'customer_public_id': str(customer.get('public_id') or ''),
+                'business_public_id': str(business.get('public_id') or ''),
+            },
+        )
+        update_res = supabase.table('order_ahead_orders').update({
+            'paymongo_payment_intent_id': checkout['intent_id'],
+            'updated_at': datetime.now(timezone.utc).isoformat(),
+        }).eq('id', order.get('id')).eq('payment_status', 'pending').execute()
+        updated = _supabase_first_row(update_res)
+        if updated:
+            order = updated
+            public_order = _oa_order_public_payload(order, customer, branch, lines)
+    except HTTPException:
+        try:
+            supabase.table('order_ahead_orders').update({
+                'payment_status': 'failed',
+                'updated_at': datetime.now(timezone.utc).isoformat(),
+            }).eq('id', order.get('id')).eq('payment_status', 'pending').execute()
+        except Exception:
+            pass
+        raise
+    except Exception as e:
+        try:
+            supabase.table('order_ahead_orders').update({
+                'payment_status': 'failed',
+                'updated_at': datetime.now(timezone.utc).isoformat(),
+            }).eq('id', order.get('id')).eq('payment_status', 'pending').execute()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f'Could not initialize PayMongo TEST payment: {friendly_db_error(e)}')
+
     return {
         'success': True,
-        'order': _oa_order_public_payload(order, customer, branch, lines),
-        'test_payment': {
+        'order': public_order,
+        'paymongo_payment': {
             'required': True,
+            'mode': 'test',
             'amount': _oa_money_float(subtotal),
-            'label': 'Confirm Test Payment',
+            'qr_image_url': checkout['qr_image_url'],
+            'status': checkout.get('status') or 'awaiting_payment_method',
+            'label': 'Pay with QR Ph · PayMongo TEST',
         },
+    }
+
+
+@app.get('/api/v1/order-ahead/{customer_public_id}/orders/{order_public_id}/payment-status')
+async def customer_order_ahead_payment_status(
+    customer_public_id: str,
+    order_public_id: str,
+    token: str = Query(default=''),
+):
+    customer, business = _oa_customer_context(customer_public_id, token)
+    order = _supabase_first_row(
+        supabase.table('order_ahead_orders').select('*')
+        .eq('public_id', order_public_id)
+        .eq('business_id', business.get('id'))
+        .eq('customer_id', customer.get('id'))
+        .limit(1).execute()
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail='Order not found')
+    branch = _supabase_first_row(
+        supabase.table('branches').select('*').eq('id', order.get('branch_id')).limit(1).execute()
+    )
+    items = (
+        supabase.table('order_ahead_order_items').select('*')
+        .eq('order_id', order.get('id')).order('id').execute().data or []
+    )
+    return {
+        'payment_status': order.get('payment_status'),
+        'payment_mode': order.get('payment_mode'),
+        'order': _oa_order_public_payload(order, customer, branch, items),
     }
 
 
@@ -9799,7 +10401,10 @@ async def paymongo_webhook(request: Request):
     raw_body = await request.body()
     signature_header = request.headers.get("paymongo-signature", "")
 
-    if not verify_paymongo_signature(raw_body, signature_header):
+    if not (
+        verify_paymongo_signature(raw_body, signature_header)
+        or verify_order_ahead_paymongo_signature(raw_body, signature_header)
+    ):
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
     try:
@@ -9818,6 +10423,79 @@ async def paymongo_webhook(request: Request):
 
     if not supabase:
         return {"received": True}
+
+    # Order Ahead PayMongo TEST payments are separate from business
+    # subscription payments. Match by the stored intent id first so webhook
+    # confirmation does not trust client-provided metadata.
+    oa_order = None
+    if payment_intent_id:
+        try:
+            oa_order = (
+                supabase.table('order_ahead_orders').select('*')
+                .eq('paymongo_payment_intent_id', payment_intent_id)
+                .maybe_single().execute().data
+            )
+        except Exception:
+            oa_order = None
+    # Metadata is only a fallback locator. We still load the server-side order
+    # and validate payment mode + exact amount before confirming it.
+    if not oa_order and metadata.get('payment_context') == 'order_ahead' and metadata.get('order_public_id'):
+        try:
+            oa_order = (
+                supabase.table('order_ahead_orders').select('*')
+                .eq('public_id', metadata.get('order_public_id'))
+                .maybe_single().execute().data
+            )
+        except Exception:
+            oa_order = None
+
+    if oa_order and str(oa_order.get('payment_mode') or '') == 'paymongo':
+        if event_type == 'payment.paid':
+            if str(oa_order.get('payment_status') or '').lower() == 'paid':
+                return {"received": True, "duplicate": True, "context": "order_ahead"}
+
+            expected_centavos = int(round(float(oa_order.get('total') or 0) * 100))
+            received_centavos = int(resource_attrs.get('amount') or 0)
+            if expected_centavos <= 0 or received_centavos != expected_centavos:
+                print(
+                    f"ORDER AHEAD PAYMONGO amount mismatch intent={payment_intent_id} "
+                    f"expected={expected_centavos} received={received_centavos}"
+                )
+                return {"received": True, "context": "order_ahead", "amount_mismatch": True}
+
+            now_iso = datetime.now(timezone.utc).isoformat()
+            try:
+                supabase.table('order_ahead_orders').update({
+                    'payment_status': 'paid',
+                    'paymongo_payment_id': resource.get('id'),
+                    'updated_at': now_iso,
+                }).eq('id', oa_order.get('id')).eq('payment_status', 'pending').execute()
+            except Exception as e:
+                print(f"ORDER AHEAD PAYMONGO paid update error: {e}")
+                raise HTTPException(status_code=500, detail='Could not confirm Order Ahead payment')
+
+            try:
+                customer = _supabase_first_row(
+                    supabase.table('customers').select('*')
+                    .eq('id', oa_order.get('customer_id')).limit(1).execute()
+                )
+                if customer:
+                    _oa_refresh_apple_order_status(dict(customer))
+            except Exception as e:
+                print(f"ORDER AHEAD wallet refresh warning: {e}")
+            return {"received": True, "context": "order_ahead", "paid": True}
+
+        if event_type in ('payment.failed', 'qrph.expired'):
+            try:
+                supabase.table('order_ahead_orders').update({
+                    'payment_status': 'failed',
+                    'updated_at': datetime.now(timezone.utc).isoformat(),
+                }).eq('id', oa_order.get('id')).eq('payment_status', 'pending').execute()
+            except Exception as e:
+                print(f"ORDER AHEAD PAYMONGO failure update error: {e}")
+            return {"received": True, "context": "order_ahead", "failed": True}
+
+        return {"received": True, "context": "order_ahead"}
 
     business = None
     payment_row = None
@@ -13078,39 +13756,52 @@ async def dismiss_platform_announcement(public_id: str, announcement_id: str):
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
 @app.get("/api/v1/business/{public_id}/announcements")
-async def get_announcements(public_id: str):
+async def get_announcements(public_id: str, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
     try:
-        res = (
+        rows = (
             supabase.table("announcements")
             .select("*")
             .eq("business_id", business.get("id"))
             .order("created_at", desc=True)
-            .execute()
+            .execute().data or []
         )
-        return res.data or []
+        return [_enrich_announcement_target(business, row) for row in rows]
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
+
 @app.post("/api/v1/business/{public_id}/announcements")
-async def create_announcement(public_id: str, ann: AnnouncementCreate):
+async def create_announcement(
+    public_id: str,
+    ann: AnnouncementCreate,
+    authorization: str = Header(default=''),
+):
+    require_owner_session(public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
+    target_scope = ann.target_scope or 'business'
+    target_branch = None
+    if target_scope == 'branch':
+        target_branch = _announcement_branch_row(business.get('id'), ann.branch_public_id)
+        if not target_branch:
+            raise HTTPException(status_code=400, detail='Choose a valid branch for this announcement.')
+
     is_active = ann.is_active if ann.is_active is not None else True
     limit = get_effective_announcement_limit(business)
 
-    # Every NEW announcement consumes one allowance from the current paid
-    # subscription cycle, whether it is posted active immediately or saved
-    # inactive first. Editing/deactivating/deleting that same announcement does
-    # not refund quota, so drafts cannot be used to bypass the plan allowance.
+    # Whole-business and branch-specific posts both consume exactly one
+    # announcement allowance from the current subscription cycle.
     usage_key = None
     if limit is not None:
         usage_key = reserve_announcement_quota(business, limit)
 
+    now_iso = datetime.utcnow().isoformat()
     data = {
         'business_id': business.get('id'),
         'title': ann.title,
@@ -13118,8 +13809,10 @@ async def create_announcement(public_id: str, ann: AnnouncementCreate):
         'type': ann.type or 'info',
         'is_active': is_active,
         'end_date': ann.end_date,
-        'created_at': datetime.utcnow().isoformat(),
-        'updated_at': datetime.utcnow().isoformat(),
+        'target_scope': target_scope,
+        'branch_id': target_branch.get('id') if target_branch else None,
+        'created_at': now_iso,
+        'updated_at': now_iso,
     }
 
     try:
@@ -13127,54 +13820,50 @@ async def create_announcement(public_id: str, ann: AnnouncementCreate):
         created = res.data[0] if res.data else data
     except Exception as e:
         release_announcement_quota(usage_key)
+        if 'target_scope' in str(e) or 'branch_id' in str(e):
+            raise HTTPException(
+                status_code=503,
+                detail='Install branch_targeted_announcements_migration.sql in Supabase first.'
+            )
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
     commit_announcement_quota(usage_key, created.get('id'))
+    created = _enrich_announcement_target(business, created)
 
-    # Auto-push on creation of a new, active announcement. Editing an existing
-    # one later does NOT re-push automatically - use the Notify button for that,
-    # so fixing a typo doesn't re-spam everyone's phone.
-    push_sent = False
-    push_error = None
+    # Auto-push on new active announcements. Editing later remains silent.
     if is_active:
-        program = safe_get_loyalty_program(business.get('id'))
-        class_id = program.get('google_wallet_class_id') if program else None
-        if class_id:
-            message_id = f"ann-{created.get('id')}"
-            detail_url = f"{BASE_URL}/a/{public_id}/{created.get('id')}"
-            push_sent = send_wallet_class_message(class_id, ann.title, ann.message, message_id, detail_url)
-            if push_sent:
-                try:
-                    supabase.table("announcements").update(
-                        {'notified_at': datetime.utcnow().isoformat()}
-                    ).eq("id", created.get("id")).execute()
-                    created['notified_at'] = datetime.utcnow().isoformat()
-                except Exception:
-                    pass
-            else:
-                push_error = "Notification could not be sent. Check Google Wallet credentials."
-        else:
-            push_error = "Publish your card design to Google Wallet (Program tab) first, then customers can be notified."
+        result = _send_announcement_notification(business, created, resend=False)
+        created['_push_sent'] = bool(result.get('sent'))
+        created['_push_scope'] = result.get('scope')
+        created['_push_target_count'] = result.get('target_count')
+        created['_push_google_sent'] = result.get('google_sent', 0)
+        created['_push_apple_sent'] = result.get('apple_sent', 0)
+        created['_notification_header'] = result.get('header')
+        if result.get('error'):
+            created['_push_error'] = result.get('error')
+        if result.get('sent'):
+            try:
+                notified_at = datetime.utcnow().isoformat()
+                supabase.table("announcements").update(
+                    {'notified_at': notified_at}
+                ).eq("id", created.get("id")).execute()
+                created['notified_at'] = notified_at
+            except Exception:
+                pass
+    else:
+        created['_push_sent'] = False
 
-        # Apple Wallet has its own, separate push channel (APNs, not
-        # Google's class-message API) - fire it too so iPhone customers
-        # who added the card via Safari's "Add to Apple Wallet" also get
-        # notified. Independent of the Google push above: this still runs
-        # even if Google Wallet isn't configured for this business, and a
-        # failure here never affects the response or push_error above -
-        # same "never blocks the caller" contract as sync_apple_wallet_pass.
-        try:
-            push_apple_wallet_announcement(business.get('id'))
-        except Exception as e:
-            print(f"APPLE WALLET announcement push error: {e}")
-
-    created['_push_sent'] = push_sent
-    if push_error:
-        created['_push_error'] = push_error
     return created
 
+
 @app.put("/api/v1/business/{public_id}/announcements/{announcement_id}")
-async def update_announcement(public_id: str, announcement_id: str, ann: AnnouncementUpdate):
+async def update_announcement(
+    public_id: str,
+    announcement_id: str,
+    ann: AnnouncementUpdate,
+    authorization: str = Header(default=''),
+):
+    require_owner_session(public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -13193,77 +13882,89 @@ async def update_announcement(public_id: str, announcement_id: str, ann: Announc
     if not existing or not existing.data:
         raise HTTPException(status_code=404, detail="Announcement not found")
 
-    update_data = {k: v for k, v in ann.dict(exclude_unset=True).items() if v is not None}
+    incoming = ann.dict(exclude_unset=True)
+    update_data = {
+        k: v for k, v in incoming.items()
+        if k not in ('branch_public_id',) and v is not None
+    }
+
+    effective_scope = incoming.get('target_scope', existing.data.get('target_scope') or 'business')
+    if effective_scope == 'branch':
+        branch_public_id = incoming.get('branch_public_id')
+        if branch_public_id is None and existing.data.get('branch_id') is not None:
+            existing_branch = _announcement_branch_by_id(business.get('id'), existing.data.get('branch_id'))
+            branch_public_id = (existing_branch or {}).get('public_id')
+        branch = _announcement_branch_row(business.get('id'), branch_public_id)
+        if not branch:
+            raise HTTPException(status_code=400, detail='Choose a valid branch for this announcement.')
+        update_data['target_scope'] = 'branch'
+        update_data['branch_id'] = branch.get('id')
+    else:
+        update_data['target_scope'] = 'business'
+        update_data['branch_id'] = None
+
     if not update_data:
-        return existing.data
+        return _enrich_announcement_target(business, existing.data)
 
-    # Editing an existing announcement never consumes or refunds quota. The
-    # allowance is charged when a new active announcement is first published.
     update_data['updated_at'] = datetime.utcnow().isoformat()
-
     try:
         res = supabase.table("announcements").update(update_data).eq("id", announcement_id).execute()
-        return res.data[0] if res.data else {**existing.data, **update_data}
+        row = res.data[0] if res.data else {**existing.data, **update_data}
+        return _enrich_announcement_target(business, row)
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
+
 @app.delete("/api/v1/business/{public_id}/announcements/{announcement_id}")
-async def delete_announcement(public_id: str, announcement_id: str):
+async def delete_announcement(
+    public_id: str,
+    announcement_id: str,
+    authorization: str = Header(default=''),
+):
+    require_owner_session(public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
     try:
-        supabase.table("announcements").delete().eq("id", announcement_id).eq("business_id", business.get("id")).execute()
+        supabase.table("announcements").delete().eq("id", announcement_id).eq(
+            "business_id", business.get("id")
+        ).execute()
         return {"message": "Announcement deleted"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
+
 @app.post("/api/v1/business/{public_id}/announcements/{announcement_id}/notify")
-async def notify_announcement(public_id: str, announcement_id: str):
+async def notify_announcement(
+    public_id: str,
+    announcement_id: str,
+    authorization: str = Header(default=''),
+):
+    require_owner_session(public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
     try:
-        res = (
+        ann = (
             supabase.table("announcements")
             .select("*")
             .eq("id", announcement_id)
             .eq("business_id", business.get("id"))
-            .maybe_single()
-            .execute()
+            .maybe_single().execute().data
         )
-        ann = res.data
     except Exception:
         ann = None
     if not ann:
         raise HTTPException(status_code=404, detail="Announcement not found")
 
-    # Apple Wallet has its own, separate push channel (APNs, not Google's
-    # class-message API), so it's fired here unconditionally rather than
-    # gated behind the Google Wallet class_id check below - an iPhone
-    # customer who added the card via Safari should still get notified
-    # even for a business that hasn't set up Google Wallet at all. Same
-    # "never blocks the caller" contract as sync_apple_wallet_pass; any
-    # failure here must not affect the Google push or the response below.
-    try:
-        push_apple_wallet_announcement(business.get('id'))
-    except Exception as e:
-        print(f"APPLE WALLET announcement push error: {e}")
-
-    program = safe_get_loyalty_program(business.get('id'))
-    class_id = program.get('google_wallet_class_id') if program else None
-    if not class_id:
+    ann = _enrich_announcement_target(business, ann)
+    result = _send_announcement_notification(business, ann, resend=True)
+    if not result.get('sent'):
         raise HTTPException(
-            status_code=400,
-            detail="Publish your card design to Google Wallet (Program tab) before sending notifications."
+            status_code=400 if result.get('target_count') == 0 else 500,
+            detail=result.get('error') or 'Could not send notification.',
         )
-
-    message_id = f"ann-{ann.get('id')}-{int(datetime.utcnow().timestamp())}"
-    detail_url = f"{BASE_URL}/a/{public_id}/{ann.get('id')}"
-    sent = send_wallet_class_message(class_id, ann.get('title', ''), ann.get('message', ''), message_id, detail_url)
-    if not sent:
-        raise HTTPException(status_code=500, detail="Could not send notification. Check Google Wallet credentials.")
 
     try:
         supabase.table("announcements").update(
@@ -13272,7 +13973,27 @@ async def notify_announcement(public_id: str, announcement_id: str):
     except Exception:
         pass
 
-    return {"message": "Notification sent to everyone who saved this business's card."}
+    if result.get('scope') == 'branch':
+        return {
+            "message": (
+                f"Notification sent to customers with recorded activity at "
+                f"{ann.get('branch_name') or 'the selected branch'}."
+            ),
+            "scope": "branch",
+            "target_count": result.get('target_count', 0),
+            "google_sent": result.get('google_sent', 0),
+            "apple_sent": result.get('apple_sent', 0),
+            "notification_header": result.get('header'),
+        }
+
+    return {
+        "message": "Notification sent to the whole business audience.",
+        "scope": "business",
+        "google_sent": result.get('google_sent', 0),
+        "apple_sent": result.get('apple_sent', 0),
+        "notification_header": result.get('header'),
+    }
+
 
 @app.post("/api/v1/business/{public_id}/staff/invite")
 async def invite_staff(public_id: str, invite: StaffInvite, authorization: str = Header(default='')):
@@ -20494,6 +21215,18 @@ async def order_ahead_branch_page(customer_public_id: str, token: str = Query(de
     greeting_html = f'<div class="hello">Hi, {member_name} · Order Ahead</div>' if ui['show_greeting'] else ''
     compact_class = ' compact' if ui['header_style'] == 'compact' else ''
     banner_mode_class = ' banner-mode' if ui['header_style'] == 'banner' and banner_html else ''
+    try:
+        oa_payment_settings = _supabase_first_row(
+            supabase.table('order_ahead_settings').select('payment_mode')
+            .eq('business_id', business.get('id')).limit(1).execute()
+        ) or {}
+    except Exception:
+        oa_payment_settings = {}
+    payment_footer = (
+        'PayMongo TEST MODE · No live money will be collected.'
+        if str(oa_payment_settings.get('payment_mode') or 'mock') == 'paymongo'
+        else 'Test mode · No real payment will be collected.'
+    )
 
     html = f"""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
     <title>{biz_name} · Order Ahead</title><style>
@@ -20507,7 +21240,7 @@ async def order_ahead_branch_page(customer_public_id: str, token: str = Query(de
     .branch-cta{{margin-top:14px;font-weight:750;font-size:14px;display:flex;justify-content:space-between;align-items:center;{cta_css}}}
     .empty{{padding:22px;background:{surface};border:1px dashed #cbd5e1;border-radius:18px;color:{muted};text-align:center}}.test{{margin-top:24px;font-size:12px;color:{muted};opacity:.75;text-align:center}}
     </style></head><body><main>{banner_html}<div class="top{compact_class}{banner_mode_class}"><img class="logo" src="{logo_url}" alt=""><div><h1>{biz_name}</h1>{greeting_html}</div></div>
-    <h2>{heading}</h2>{branch_cards}<div class="test">Test mode · No real payment will be collected.</div></main></body></html>"""
+    <h2>{heading}</h2>{branch_cards}<div class="test">{payment_footer}</div></main></body></html>"""
     return HTMLResponse(html, headers={'Cache-Control': 'no-store'})
 
 
@@ -20567,6 +21300,10 @@ async def order_ahead_branch_selected(customer_public_id: str, branch_public_id:
         'items': items,
         'branch': {'public_id': branch_public_id, 'name': branch.get('name') or 'Branch', 'address': branch.get('address') or ''},
         'pickup': pickup,
+        'payment': {
+            'mode': str(settings.get('payment_mode') or 'mock'),
+            'paymongo_test': str(settings.get('payment_mode') or 'mock') == 'paymongo',
+        },
         'customer': {'name': customer.get('name') or 'Member'},
     }
     data_json = json.dumps(payload).replace('</', '<\\/')
@@ -20601,9 +21338,9 @@ async def order_ahead_branch_selected(customer_public_id: str, branch_public_id:
 </style></head><body><main>__BANNER__<div class="head"><img class="logo" src="__LOGO__"><div class="headcopy"><h1>__MENU_HEADING__</h1><div class="branchline"><span>__BIZ__ · __BRANCH__</span><a class="changebranch" href="__BRANCH_PICKER_URL__">Change branch</a></div></div></div><div id="cats" class="cats"></div><div id="grid" class="grid"></div></main><button id="cartbar" class="cartbar" type="button" onclick="openCart()"><span id="cartcount">0 items</span><span id="carttotal">₱0.00 · View Cart</span></button>
 <dialog id="itemDlg" class="sheet"><div id="itemModal" class="sheetbox"></div></dialog>
 <dialog id="cartDlg" class="sheet"><div class="sheetbox"><div class="sheethead"><div><h2 style="margin:0">Your cart</h2><div class="muted">__BRANCH__ pickup</div></div><button class="close" onclick="cartDlg.close()">×</button></div><div id="cartRows"></div><div class="cartsummary"><span>Subtotal</span><span id="cartSheetTotal">₱0.00</span></div><button class="primary" onclick="openCheckout()">Choose Pickup Time</button><button class="secondary" onclick="cartDlg.close()">Add more items</button></div></dialog>
-<dialog id="checkoutDlg" class="sheet"><div class="sheetbox"><div id="checkoutFlow"><div class="sheethead"><div><h2 style="margin:0">Pickup & checkout</h2><div class="muted">Review your order before Test Payment.</div></div><button class="close" onclick="checkoutDlg.close()">×</button></div><div id="pickupArea"></div><label style="display:block;font-size:12px;font-weight:800;margin-top:14px">Order note<textarea id="customerNote" class="field" rows="3" maxlength="500" placeholder="Optional note for the business"></textarea></label><div id="checkoutReview" class="review"></div><div id="checkoutError" class="error"></div><button id="continuePaymentBtn" class="primary" onclick="continueToPayment()">Continue to Test Payment →</button><button id="backCartBtn" class="secondary" onclick="checkoutDlg.close();openCart()">Back to cart</button><div id="paymentBox" class="paymentbox"><div class="muted">TEST PAYMENT · No real money will be collected.</div><div id="paymentAmount" class="paymentamount">₱0.00</div><div id="paymentOrderNo" style="font-weight:800"></div><button id="confirmTestPaymentBtn" class="primary" onclick="confirmTestPayment()">Confirm Test Payment</button><button class="secondary" onclick="cancelPendingPaymentView()">Back</button></div></div><div id="orderSuccess" class="successbox"><div class="successicon">✓</div><h2 style="margin:0">Order received</h2><div id="successOrderNo" class="ordercode"></div><div id="successPickup" class="muted" style="font-size:13px"></div><div class="nextnote show" style="margin-top:15px">The business can now move your order through Preparing → Ready → Completed.</div><button class="primary" onclick="checkoutDlg.close()">Done</button></div></div></dialog>
+<dialog id="checkoutDlg" class="sheet"><div class="sheetbox"><div id="checkoutFlow"><div class="sheethead"><div><h2 style="margin:0">Pickup & checkout</h2><div class="muted">Review your order before payment.</div></div><button class="close" onclick="checkoutDlg.close()">×</button></div><div id="pickupArea"></div><label style="display:block;font-size:12px;font-weight:800;margin-top:14px">Order note<textarea id="customerNote" class="field" rows="3" maxlength="500" placeholder="Optional note for the business"></textarea></label><div id="checkoutReview" class="review"></div><div id="checkoutError" class="error"></div><button id="continuePaymentBtn" class="primary" onclick="continueToPayment()">Continue to Payment →</button><button id="backCartBtn" class="secondary" onclick="checkoutDlg.close();openCart()">Back to cart</button><div id="paymentBox" class="paymentbox"><div id="paymentModeLabel" class="muted"></div><div id="paymentAmount" class="paymentamount">₱0.00</div><div id="paymentOrderNo" style="font-weight:800"></div><div id="paymongoArea" style="display:none;text-align:center;margin-top:12px"><img id="paymongoQr" alt="PayMongo QR Ph payment code" style="width:min(280px,86%);border-radius:14px;border:1px solid #e2e8f0;background:#fff;padding:8px"><div id="paymongoStatus" class="muted" style="margin-top:10px;font-weight:750">Waiting for PayMongo TEST payment confirmation…</div><button id="checkPaymentBtn" class="secondary" type="button" onclick="checkPayMongoPaymentStatus()">Check payment status</button></div><button id="confirmTestPaymentBtn" class="primary" onclick="confirmTestPayment()">Confirm Test Payment</button><button id="paymentBackBtn" class="secondary" onclick="cancelPendingPaymentView()">Back</button></div></div><div id="orderSuccess" class="successbox"><div class="successicon">✓</div><h2 style="margin:0">Order received</h2><div id="successOrderNo" class="ordercode"></div><div id="successPickup" class="muted" style="font-size:13px"></div><div class="nextnote show" style="margin-top:15px">The business can now move your order through Preparing → Ready → Completed.</div><button class="primary" onclick="checkoutDlg.close()">Done</button></div></div></dialog>
 <script>
-const DATA=__DATA__; const UI=__UI__; const ORDER_API_BASE=__ORDER_API_BASE__; const ORDER_TOKEN=__ORDER_TOKEN__; let active='all'; let editIndex=null; let itemQty=1; let pickupType=null; let selectedSlot=''; let selectedDate=''; let selectedHour=''; let selectedMinute=''; let pendingOrder=null;
+const DATA=__DATA__; const UI=__UI__; const ORDER_API_BASE=__ORDER_API_BASE__; const ORDER_TOKEN=__ORDER_TOKEN__; let active='all'; let editIndex=null; let itemQty=1; let pickupType=null; let selectedSlot=''; let selectedDate=''; let selectedHour=''; let selectedMinute=''; let pendingOrder=null; let paymentPollTimer=null;
 const cartKey='lt_oa_cart_'+DATA.branch.public_id; let cart=[]; try{cart=JSON.parse(sessionStorage.getItem(cartKey)||'[]');if(!Array.isArray(cart))cart=[]}catch(e){cart=[]}
 const itemDlg=document.getElementById('itemDlg'),cartDlg=document.getElementById('cartDlg'),checkoutDlg=document.getElementById('checkoutDlg');
 const peso=n=>'₱'+Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -20634,12 +21371,15 @@ function ensureScheduledSelection(){const slots=DATA.pickup.slots||[];if(!slots.
 function renderPickup(){pickupType=pickupType||pickDefault();const p=DATA.pickup;let html='';if(!p.hours_configured){html+='<div class="notice"><strong>Pickup hours are not configured for this branch yet.</strong><br>The business needs to set its Order Ahead pickup hours before checkout can continue.</div>'}html+=`<div class="pickupbox"><strong>Pickup at ${esc(DATA.branch.name)}</strong><div class="muted" style="margin-top:3px">Minimum preparation: ${p.min_prep_minutes} min</div>`;if(p.mode==='both')html+=`<div class="picktabs"><button class="picktab ${pickupType==='asap'?'on':''}" ${p.asap_available?'':'disabled'} onclick="pickupType='asap';renderPickup();renderReview()">ASAP</button><button class="picktab ${pickupType==='scheduled'?'on':''}" ${p.slots.length?'':'disabled'} onclick="pickupType='scheduled';renderPickup();renderReview()">Scheduled</button></div>`;else if(p.mode==='asap')html+=`<div class="picktabs" style="grid-template-columns:1fr"><button class="picktab ${pickupType==='asap'?'on':''}" ${p.asap_available?'':'disabled'} onclick="pickupType='asap';renderPickup();renderReview()">ASAP</button></div>`;else html+=`<div class="picktabs" style="grid-template-columns:1fr"><button class="picktab ${pickupType==='scheduled'?'on':''}" ${p.slots.length?'':'disabled'} onclick="pickupType='scheduled';renderPickup();renderReview()">Scheduled</button></div>`;if(pickupType==='asap'&&p.asap_available)html+=`<div class="muted" style="margin-top:10px">Estimated ready around <strong>${esc(p.asap_ready_label)}</strong>.</div>`;if(pickupType==='scheduled'){if(p.slots.length){ensureScheduledSelection();const dates=oaUniqueBy(p.slots,'date_key');const hours=oaUniqueBy(p.slots.filter(s=>s.date_key===selectedDate),'hour_key');const mins=oaUniqueBy(p.slots.filter(s=>s.date_key===selectedDate&&s.hour_key===selectedHour),'minute_key');html+=`<div style="margin-top:11px"><div style="font-size:12px;font-weight:800;margin-bottom:6px">Pickup date & time</div><div style="display:grid;grid-template-columns:1.35fr .85fr .7fr;gap:7px"><select class="field" style="margin-top:0" aria-label="Pickup date" onchange="selectedDate=this.value;selectedHour='';selectedMinute='';ensureScheduledSelection();renderPickup();renderReview()">${dates.map(s=>`<option value="${esc(s.date_key)}" ${s.date_key===selectedDate?'selected':''}>${esc(s.date_label)}</option>`).join('')}</select><select class="field" style="margin-top:0" aria-label="Pickup hour" onchange="selectedHour=this.value;selectedMinute='';ensureScheduledSelection();renderPickup();renderReview()">${hours.map(s=>`<option value="${esc(s.hour_key)}" ${s.hour_key===selectedHour?'selected':''}>${esc(s.hour_label)}</option>`).join('')}</select><select class="field" style="margin-top:0" aria-label="Pickup minute" onchange="selectedMinute=this.value;ensureScheduledSelection();renderReview()">${mins.map(s=>`<option value="${esc(s.minute_key)}" ${s.minute_key===selectedMinute?'selected':''}>${esc(s.minute_key)}</option>`).join('')}</select></div><div class="muted" style="margin-top:7px">Only available pickup times are shown.</div></div>`}else html+='<div class="notice">No scheduled pickup slots are currently available.</div>'}html+='</div>';document.getElementById('pickupArea').innerHTML=html}
 function pickupLabel(){if(pickupType==='asap')return'Direct pickup · ASAP around '+DATA.pickup.asap_ready_label;if(pickupType==='scheduled'){const s=DATA.pickup.slots.find(x=>x.value===selectedSlot);return s?s.label:'Choose a scheduled time'}return'Not selected'}
 function renderReview(){const div=document.getElementById('checkoutReview');div.innerHTML=`<div class="reviewline"><span>Branch</span><strong>${esc(DATA.branch.name)}</strong></div><div class="reviewline"><span>Pickup</span><strong style="text-align:right">${esc(pickupLabel())}</strong></div><div class="reviewline"><span>Items</span><strong>${cart.reduce((s,x)=>s+Number(x.quantity||1),0)}</strong></div><div class="reviewline total"><span>Subtotal</span><span>${peso(cartSubtotal())}</span></div>`}
-function resetCheckoutView(){pendingOrder=null;document.getElementById('checkoutFlow').style.display='block';document.getElementById('orderSuccess').classList.remove('show');document.getElementById('paymentBox').classList.remove('show');document.getElementById('continuePaymentBtn').style.display='block';document.getElementById('backCartBtn').style.display='block';document.getElementById('checkoutError').classList.remove('show')}
+function stopPaymentPolling(){if(paymentPollTimer){clearInterval(paymentPollTimer);paymentPollTimer=null}}
+function resetCheckoutView(){stopPaymentPolling();pendingOrder=null;document.getElementById('checkoutFlow').style.display='block';document.getElementById('orderSuccess').classList.remove('show');document.getElementById('paymentBox').classList.remove('show');document.getElementById('paymongoArea').style.display='none';document.getElementById('confirmTestPaymentBtn').style.display='block';document.getElementById('paymentBackBtn').style.display='block';document.getElementById('continuePaymentBtn').style.display='block';document.getElementById('continuePaymentBtn').disabled=false;document.getElementById('continuePaymentBtn').textContent='Continue to Payment →';document.getElementById('backCartBtn').style.display='block';document.getElementById('checkoutError').classList.remove('show')}
 function openCheckout(){if(!cart.length)return;cartDlg.close();resetCheckoutView();pickupType=pickDefault();selectedSlot='';selectedDate='';selectedHour='';selectedMinute='';renderPickup();renderReview();checkoutDlg.showModal()}
 function checkoutValidation(){if(!DATA.pickup.hours_configured)return'Pickup hours are not configured for this branch.';if(!pickupType)return'No pickup option is currently available.';if(pickupType==='asap'&&!DATA.pickup.asap_available)return'ASAP pickup is not currently available.';if(pickupType==='scheduled'&&!selectedSlot)return'Choose a pickup time.';return''}
-async function continueToPayment(){const err=document.getElementById('checkoutError');const msg=checkoutValidation();if(msg){err.textContent=msg;err.classList.add('show');return}err.classList.remove('show');const btn=document.getElementById('continuePaymentBtn');btn.disabled=true;btn.textContent='Creating order…';try{const payload={branch_public_id:DATA.branch.public_id,pickup_type:pickupType,pickup_at:pickupType==='scheduled'?selectedSlot:null,customer_note:(document.getElementById('customerNote').value||'').trim(),items:cart.map(x=>({item_public_id:x.item_public_id,quantity:Number(x.quantity||1),modifier_option_public_ids:(x.modifiers||[]).map(m=>m.option_public_id)}))};const res=await fetch(ORDER_API_BASE+'?token='+encodeURIComponent(ORDER_TOKEN),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const d=await res.json().catch(()=>({}));if(!res.ok)throw new Error(d.detail||'Could not create order');pendingOrder=d.order;document.getElementById('paymentAmount').textContent=peso(d.test_payment?.amount??pendingOrder.total);document.getElementById('paymentOrderNo').textContent=pendingOrder.order_number;document.getElementById('paymentBox').classList.add('show');btn.style.display='none';document.getElementById('backCartBtn').style.display='none';document.getElementById('pickupArea').style.display='none';document.querySelector('#checkoutFlow label')?.style.setProperty('display','none');document.getElementById('checkoutReview').style.display='none'}catch(e){err.textContent=e.message||'Could not create order';err.classList.add('show');btn.disabled=false;btn.textContent='Continue to Test Payment →'}}
-function cancelPendingPaymentView(){document.getElementById('paymentBox').classList.remove('show');document.getElementById('continuePaymentBtn').style.display='block';document.getElementById('continuePaymentBtn').disabled=false;document.getElementById('continuePaymentBtn').textContent='Continue to Test Payment →';document.getElementById('backCartBtn').style.display='block';document.getElementById('pickupArea').style.display='block';document.querySelector('#checkoutFlow label')?.style.removeProperty('display');document.getElementById('checkoutReview').style.display='block'}
-async function confirmTestPayment(){if(!pendingOrder)return;const btn=document.getElementById('confirmTestPaymentBtn');const err=document.getElementById('checkoutError');btn.disabled=true;btn.textContent='Confirming…';try{const url=ORDER_API_BASE+'/'+encodeURIComponent(pendingOrder.public_id)+'/test-payment?token='+encodeURIComponent(ORDER_TOKEN);const res=await fetch(url,{method:'POST'});const d=await res.json().catch(()=>({}));if(!res.ok)throw new Error(d.detail||'Could not confirm Test Payment');pendingOrder=d.order||pendingOrder;cart=[];sessionStorage.removeItem(cartKey);updateCartBar();document.getElementById('checkoutFlow').style.display='none';document.getElementById('successOrderNo').textContent=pendingOrder.order_number;document.getElementById('successPickup').textContent='Pickup: '+pickupLabel()+' · '+DATA.branch.name;document.getElementById('orderSuccess').classList.add('show')}catch(e){err.textContent=e.message||'Could not confirm Test Payment';err.classList.add('show');btn.disabled=false;btn.textContent='Confirm Test Payment'}}
+function finishOrderSuccess(order){stopPaymentPolling();pendingOrder=order||pendingOrder;cart=[];sessionStorage.removeItem(cartKey);updateCartBar();document.getElementById('checkoutFlow').style.display='none';document.getElementById('successOrderNo').textContent=pendingOrder?.order_number||'';document.getElementById('successPickup').textContent='Pickup: '+pickupLabel()+' · '+DATA.branch.name;document.getElementById('orderSuccess').classList.add('show')}
+async function continueToPayment(){const err=document.getElementById('checkoutError');const msg=checkoutValidation();if(msg){err.textContent=msg;err.classList.add('show');return}err.classList.remove('show');const btn=document.getElementById('continuePaymentBtn');btn.disabled=true;btn.textContent='Creating order…';try{const payload={branch_public_id:DATA.branch.public_id,pickup_type:pickupType,pickup_at:pickupType==='scheduled'?selectedSlot:null,customer_note:(document.getElementById('customerNote').value||'').trim(),items:cart.map(x=>({item_public_id:x.item_public_id,quantity:Number(x.quantity||1),modifier_option_public_ids:(x.modifiers||[]).map(m=>m.option_public_id)}))};const res=await fetch(ORDER_API_BASE+'?token='+encodeURIComponent(ORDER_TOKEN),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const d=await res.json().catch(()=>({}));if(!res.ok)throw new Error(d.detail||'Could not create order');pendingOrder=d.order;document.getElementById('paymentAmount').textContent=peso(d.test_payment?.amount??d.paymongo_payment?.amount??pendingOrder.total);document.getElementById('paymentOrderNo').textContent=pendingOrder.order_number;document.getElementById('paymentBox').classList.add('show');btn.style.display='none';document.getElementById('backCartBtn').style.display='none';document.getElementById('pickupArea').style.display='none';document.querySelector('#checkoutFlow label')?.style.setProperty('display','none');document.getElementById('checkoutReview').style.display='none';if(d.paymongo_payment){document.getElementById('paymentModeLabel').textContent='PAYMONGO TEST · QR Ph · No live money will be collected.';document.getElementById('confirmTestPaymentBtn').style.display='none';document.getElementById('paymentBackBtn').style.display='none';document.getElementById('paymongoArea').style.display='block';document.getElementById('paymongoQr').src=d.paymongo_payment.qr_image_url;document.getElementById('paymongoStatus').textContent='Waiting for PayMongo TEST payment confirmation…';paymentPollTimer=setInterval(checkPayMongoPaymentStatus,2500)}else{document.getElementById('paymentModeLabel').textContent='TEST PAYMENT · No real money will be collected.';document.getElementById('confirmTestPaymentBtn').style.display='block';document.getElementById('paymongoArea').style.display='none';document.getElementById('paymentBackBtn').style.display='block'}}catch(e){err.textContent=e.message||'Could not create order';err.classList.add('show');btn.disabled=false;btn.textContent='Continue to Payment →'}}
+function cancelPendingPaymentView(){stopPaymentPolling();document.getElementById('paymentBox').classList.remove('show');document.getElementById('continuePaymentBtn').style.display='block';document.getElementById('continuePaymentBtn').disabled=false;document.getElementById('continuePaymentBtn').textContent='Continue to Payment →';document.getElementById('backCartBtn').style.display='block';document.getElementById('pickupArea').style.display='block';document.querySelector('#checkoutFlow label')?.style.removeProperty('display');document.getElementById('checkoutReview').style.display='block'}
+async function checkPayMongoPaymentStatus(){if(!pendingOrder||pendingOrder.payment_mode!=='paymongo')return;const statusEl=document.getElementById('paymongoStatus');try{const url=ORDER_API_BASE+'/'+encodeURIComponent(pendingOrder.public_id)+'/payment-status?token='+encodeURIComponent(ORDER_TOKEN);const res=await fetch(url,{cache:'no-store'});const d=await res.json().catch(()=>({}));if(!res.ok)throw new Error(d.detail||'Could not check payment');if(d.payment_status==='paid'){statusEl.textContent='Payment confirmed ✓';finishOrderSuccess(d.order||pendingOrder);return}if(d.payment_status==='failed'){stopPaymentPolling();statusEl.textContent='Payment failed or expired. Please start checkout again.';statusEl.style.color='#b91c1c';document.getElementById('paymentBackBtn').style.display='block';return}statusEl.textContent='Waiting for PayMongo TEST payment confirmation…'}catch(e){statusEl.textContent='Still waiting — tap Check payment status to retry.'}}
+async function confirmTestPayment(){if(!pendingOrder)return;const btn=document.getElementById('confirmTestPaymentBtn');const err=document.getElementById('checkoutError');btn.disabled=true;btn.textContent='Confirming…';try{const url=ORDER_API_BASE+'/'+encodeURIComponent(pendingOrder.public_id)+'/test-payment?token='+encodeURIComponent(ORDER_TOKEN);const res=await fetch(url,{method:'POST'});const d=await res.json().catch(()=>({}));if(!res.ok)throw new Error(d.detail||'Could not confirm Test Payment');finishOrderSuccess(d.order||pendingOrder)}catch(e){err.textContent=e.message||'Could not confirm Test Payment';err.classList.add('show');btn.disabled=false;btn.textContent='Confirm Test Payment'}}
 drawCats();drawItems();updateCartBar();
 </script></body></html>'''
     for key, value in substitutions.items():
@@ -21241,6 +21981,8 @@ async def announcement_detail_page(business_public_id: str, announcement_id: str
     primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
     logo_url = business.get('logo_url')
     biz_name = business.get('name', '')
+    ann = _enrich_announcement_target(business, ann)
+    notification_header = ann.get('_notification_header') or biz_name
 
     type_meta = {
         'info':  {'bg': '#dbeafe', 'text': '#1e40af', 'icon': '&#8505;&#65039;', 'label': 'Info'},
@@ -21267,7 +22009,7 @@ async def announcement_detail_page(business_public_id: str, announcement_id: str
     html_out = (
         '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
-        '<title>' + title + ' - ' + html_lib.escape(biz_name) + '</title>'
+        '<title>' + title + ' - ' + html_lib.escape(notification_header) + '</title>'
         '<style>'
         '*{box-sizing:border-box;margin:0;padding:0}'
         'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;'
@@ -21477,7 +22219,7 @@ async def get_apple_wallet_pass(customer_public_id: str):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
     program = safe_get_loyalty_program(business.get('id'))
-    announcement = get_latest_active_announcement(business.get('id'))
+    announcement = get_latest_active_announcement_for_customer(business, customer)
     t_data = time.perf_counter()
 
     pkpass_bytes = _get_cached_apple_pkpass(customer, business, program or {}, announcement)
@@ -21690,7 +22432,7 @@ async def apple_list_updated_serials(device_library_identifier: str, pass_type_i
                     continue
                 business = safe_get_business_by_id(customer.get('business_id'))
                 program = safe_get_loyalty_program(business.get('id')) if business else None
-                announcement = get_latest_active_announcement(business.get('id')) if business else None
+                announcement = get_latest_active_announcement_for_customer(business, customer) if business else None
                 raw_values = [
                     customer.get('updated_at'),
                     business.get('updated_at') if business else None,
@@ -21828,7 +22570,7 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
     if not business:
         raise HTTPException(status_code=404, detail="Not found")
 
-    announcement = get_latest_active_announcement(business.get('id'))
+    announcement = get_latest_active_announcement_for_customer(business, customer)
     program = safe_get_loyalty_program(business.get('id'))
 
     # IMPORTANT: Last-Modified must represent the *whole generated pass*, not

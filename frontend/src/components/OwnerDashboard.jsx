@@ -230,7 +230,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [orderAheadSaving, setOrderAheadSaving] = useState(false)
   const [orderAheadForm, setOrderAheadForm] = useState({
     pickup_mode: 'both', min_prep_minutes: 15, slot_interval_minutes: 15,
-    max_advance_days: 7, ready_notification_enabled: true,
+    max_advance_days: 7, payment_mode: 'mock', ready_notification_enabled: true,
   })
   const [orderAheadPickupHours, setOrderAheadPickupHours] = useState({})
   const [orderAheadHoursSaving, setOrderAheadHoursSaving] = useState('')
@@ -498,6 +498,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           min_prep_minutes: Number(s.min_prep_minutes ?? 15),
           slot_interval_minutes: Number(s.slot_interval_minutes ?? 15),
           max_advance_days: Number(s.max_advance_days ?? 7),
+          payment_mode: s.payment_mode || 'mock',
           ready_notification_enabled: s.ready_notification_enabled !== false,
         })
         const hoursMap = {}
@@ -590,6 +591,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           min_prep_minutes: Number(orderAheadForm.min_prep_minutes),
           slot_interval_minutes: Number(orderAheadForm.slot_interval_minutes),
           max_advance_days: Number(orderAheadForm.max_advance_days),
+          payment_mode: orderAheadForm.payment_mode || 'mock',
           ready_notification_enabled: !!orderAheadForm.ready_notification_enabled,
         }),
       })
@@ -2098,7 +2100,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             </div>
 
             <div style={{background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:14,padding:14,marginBottom:16,fontSize:12.5,color:'#475569',lineHeight:1.6}}>
-              <strong style={{color:'#0f172a'}}>Current test flow:</strong> Wallet → Choose Branch → Menu → Customize / Cart → Pickup / Checkout → Test Payment → Business Order → Ready for Pickup
+              <strong style={{color:'#0f172a'}}>Current beta flow:</strong> Wallet → Choose Branch → Menu → Customize / Cart → Pickup / Checkout → {orderAheadForm.payment_mode==='paymongo'?'PayMongo TEST QR Ph':'Test Payment'} → Business Order → Ready for Pickup
             </div>
 
             <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))',gap:12}}>
@@ -2125,8 +2127,27 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
               <div style={styles.card}>
                 <div style={{fontSize:11,fontWeight:850,color:'#64748b'}}>4 · PAYMENT</div>
-                <h3 style={{margin:'5px 0 4px'}}>🧪 Test Payment</h3>
-                <p style={{margin:0,fontSize:12,color:'#64748b'}}>No real money is collected during the prototype. PayMongo can replace this without changing the order flow.</p>
+                <h3 style={{margin:'5px 0 4px'}}>{orderAheadForm.payment_mode==='paymongo'?'💳 PayMongo TEST · QR Ph':'🧪 Test Payment'}</h3>
+                <p style={{margin:'0 0 10px',fontSize:12,color:'#64748b'}}>
+                  {orderAheadForm.payment_mode==='paymongo'
+                    ? 'Customer receives a PayMongo TEST QR Ph code. The order appears on the board only after the verified webhook confirms payment.'
+                    : 'Manual beta confirmation. No external payment is processed.'}
+                </p>
+                <label style={{...styles.label,margin:0}}>Payment provider
+                  <select
+                    style={{...styles.input,marginTop:6}}
+                    value={orderAheadForm.payment_mode||'mock'}
+                    onChange={e=>setOrderAheadForm({...orderAheadForm,payment_mode:e.target.value})}
+                  >
+                    <option value="mock">Test Payment</option>
+                    <option value="paymongo" disabled={!orderAheadSetup?.payment?.paymongo_test_configured}>PayMongo TEST · QR Ph</option>
+                  </select>
+                </label>
+                <div style={{fontSize:10.5,marginTop:8,color:orderAheadSetup?.payment?.paymongo_test_configured?'#047857':'#b45309',fontWeight:750}}>
+                  {orderAheadSetup?.payment?.paymongo_test_configured
+                    ? '✓ PayMongo test key + webhook configured'
+                    : 'PayMongo TEST is locked until LoyaltyTree configures both the test key and webhook secret on the backend.'}
+                </div>
               </div>
             </div>
 
@@ -2155,7 +2176,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 <input type="checkbox" checked={!!orderAheadForm.ready_notification_enabled} onChange={e=>setOrderAheadForm({...orderAheadForm,ready_notification_enabled:e.target.checked})} style={{marginTop:3}}/>
                 <span><strong>Send Ready for Pickup notification</strong><br/><small style={{color:'#64748b'}}>Message: “{orderAheadSetup?.ready_message_preview || `Your order from ${business?.name || business?.business_name || user?.business_name || 'this business'} is ready.`}”</small></span>
               </label>
-              <button type="button" style={{...styles.submitBtn,marginTop:14}} onClick={saveOrderAheadSettings} disabled={orderAheadSaving}>{orderAheadSaving?'Saving…':'Save pickup rules'}</button>
+              <button type="button" style={{...styles.submitBtn,marginTop:14}} onClick={saveOrderAheadSettings} disabled={orderAheadSaving}>{orderAheadSaving?'Saving…':'Save Order Ahead settings'}</button>
 
               <div style={{borderTop:'1px solid #e2e8f0',marginTop:18,paddingTop:16}}>
                 <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'flex-start',flexWrap:'wrap'}}>
@@ -2183,7 +2204,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
             <div style={{...styles.card,marginTop:14}}>
               <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}>
-                <div><div style={{fontSize:11,fontWeight:850,color:'#64748b'}}>BUSINESS ORDERS</div><h3 style={{margin:'5px 0 3px'}}>Live Order Board</h3><p style={{margin:0,fontSize:12,color:'#64748b'}}>Confirmed Test Payment orders move through New → Preparing → Ready → Completed.</p></div>
+                <div><div style={{fontSize:11,fontWeight:850,color:'#64748b'}}>BUSINESS ORDERS</div><h3 style={{margin:'5px 0 3px'}}>Live Order Board</h3><p style={{margin:0,fontSize:12,color:'#64748b'}}>Only payment-confirmed orders appear here. Orders move through New → Preparing → Ready → Completed.</p></div>
                 <button type="button" style={styles.addBtn} onClick={loadOrderAheadOrders} disabled={orderAheadOrdersLoading}>{orderAheadOrdersLoading?'Refreshing…':'↻ Refresh'}</button>
               </div>
               <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginTop:12}}>
@@ -2205,7 +2226,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:9}}><strong style={{fontSize:11,color}}>{label}</strong><span style={{fontSize:10.5,fontWeight:850,background:bg,color,padding:'4px 7px',borderRadius:999}}>{rows.length}</span></div>
                     {!rows.length&&<div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:'18px 4px'}}>No {label.toLowerCase()} orders</div>}
                     {rows.map(order=><div key={order.public_id} style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:11,padding:10,marginBottom:8,boxShadow:'0 3px 10px rgba(15,23,42,.03)'}}>
-                      <div style={{display:'flex',justifyContent:'space-between',gap:8,alignItems:'flex-start'}}><strong style={{fontSize:12.5}}>{order.order_number}</strong><strong style={{fontSize:12.5}}>₱{Number(order.total||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</strong></div>
+                      <div style={{display:'flex',justifyContent:'space-between',gap:8,alignItems:'flex-start'}}><div><strong style={{fontSize:12.5}}>{order.order_number}</strong><div style={{fontSize:9.5,fontWeight:850,color:order.payment_mode==='paymongo'?'#7c3aed':'#64748b',marginTop:3}}>{order.payment_mode==='paymongo'?'PAYMONGO · PAID':'TEST PAYMENT'}</div></div><strong style={{fontSize:12.5}}>₱{Number(order.total||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</strong></div>
                       <div style={{fontSize:11.5,color:'#475569',marginTop:5}}>👤 {order.customer?.name||'Member'}</div>
                       {order.customer?.phone&&<a href={`tel:${order.customer.phone}`} style={{display:'inline-block',fontSize:10.5,color:'#0f766e',fontWeight:800,marginTop:4,textDecoration:'none'}}>☎ Call customer · {order.customer.phone}</a>}
                       <div style={{fontSize:11.5,color:'#475569',marginTop:3}}>🏢 {order.branch?.name||'Branch'}</div>
@@ -3119,6 +3140,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         <Announcements
           API_BASE={API_BASE}
           businessSlug={user.business_slug}
+          businessName={user.business_name}
+          ownerToken={user.token}
           onClose={() => setShowAnnouncements(false)}
         />
       )}

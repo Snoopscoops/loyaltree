@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 
-function Announcements({ API_BASE, businessSlug, onClose }) {
+function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClose }) {
   const [announcements, setAnnouncements] = useState([])
   const [editing, setEditing] = useState(null)
   const [form, setForm] = useState({
@@ -9,23 +9,48 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
     type: 'info',
     is_active: true,
     end_date: '',
+    target_scope: 'business',
+    branch_public_id: '',
   })
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [banner, setBanner] = useState(null)
   const [notifyingId, setNotifyingId] = useState(null)
   const [planInfo, setPlanInfo] = useState(null)
+  const [branches, setBranches] = useState([])
+
+  const authHeaders = (extra={}) => ({
+    ...extra,
+    ...(ownerToken ? { Authorization: `Bearer ${ownerToken}` } : {}),
+  })
 
   useEffect(() => {
     fetchAnnouncements()
     fetchPlanInfo()
+    fetchBranches()
   }, [])
 
   const fetchPlanInfo = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/plan`)
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/plan`, {
+        headers: authHeaders(),
+      })
       if (res.ok) {
         setPlanInfo(await res.json())
+      }
+    } catch (err) {
+      console.error(err)
+    }
+  }
+
+  const fetchBranches = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/branches`, {
+        headers: authHeaders(),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setBranches((Array.isArray(data) ? data : []).filter(b => b.is_active !== false))
       }
     } catch (err) {
       console.error(err)
@@ -35,7 +60,9 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
   const fetchAnnouncements = async () => {
     setLoading(true)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/announcements`)
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/announcements`, {
+        headers: authHeaders(),
+      })
       if (res.ok) {
         const data = await res.json()
         setAnnouncements(Array.isArray(data) ? data : [])
@@ -50,6 +77,11 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
     e.preventDefault()
     setSaving(true)
     setBanner(null)
+    if (form.target_scope === 'branch' && !form.branch_public_id) {
+      setBanner({ type: 'warn', text: 'Choose which branch should receive this announcement.' })
+      setSaving(false)
+      return
+    }
     try {
       const url = editing
         ? `${API_BASE}/api/v1/business/${businessSlug}/announcements/${editing}`
@@ -57,7 +89,7 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
 
       const res = await fetch(url, {
         method: editing ? 'PUT' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(form)
       })
 
@@ -65,12 +97,22 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
         const data = await res.json().catch(() => ({}))
         if (!editing) {
           if (data._push_sent) {
-            setBanner({ type: 'success', text: '📣 Posted and pushed to everyone who saved their card.' })
+            if (data._push_scope === 'branch') {
+              setBanner({
+                type: 'success',
+                text: `📣 Posted for ${data.branch_name || 'the selected branch'}${data._push_target_count != null ? ` · ${data._push_target_count} matching customer${data._push_target_count === 1 ? '' : 's'}` : ''}.`
+              })
+            } else {
+              setBanner({ type: 'success', text: '📣 Posted for the whole business audience.' })
+            }
           } else if (data._push_error) {
             setBanner({ type: 'warn', text: `Posted, but not pushed: ${data._push_error}` })
           }
         }
-        setForm({ title: '', message: '', type: 'info', is_active: true, end_date: '' })
+        setForm({
+          title: '', message: '', type: 'info', is_active: true, end_date: '',
+          target_scope: 'business', branch_public_id: '',
+        })
         setEditing(null)
         fetchAnnouncements()
         if (!editing) fetchPlanInfo()
@@ -92,6 +134,8 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
       type: ann.type || 'info',
       is_active: ann.is_active !== false,
       end_date: ann.end_date ? ann.end_date.split('T')[0] : '',
+      target_scope: ann.target_scope === 'branch' ? 'branch' : 'business',
+      branch_public_id: ann.branch_public_id || '',
     })
   }
 
@@ -99,7 +143,8 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
     if (!window.confirm('Delete this announcement?')) return
     try {
       await fetch(`${API_BASE}/api/v1/business/${businessSlug}/announcements/${id}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        headers: authHeaders(),
       })
       fetchAnnouncements()
     } catch (err) {
@@ -112,11 +157,19 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
     setBanner(null)
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/announcements/${id}/notify`, {
-        method: 'POST'
+        method: 'POST',
+        headers: authHeaders(),
       })
       const data = await res.json().catch(() => ({}))
       if (res.ok) {
-        setBanner({ type: 'success', text: '📣 Sent to everyone who saved their card.' })
+        if (data.scope === 'branch') {
+          setBanner({
+            type: 'success',
+            text: `📣 Sent to ${data.target_count || 0} customer${data.target_count === 1 ? '' : 's'} with recorded activity at the selected branch.`
+          })
+        } else {
+          setBanner({ type: 'success', text: '📣 Sent to the whole business audience.' })
+        }
         fetchAnnouncements()
       } else {
         setBanner({ type: 'warn', text: data.detail || 'Could not send notification.' })
@@ -130,7 +183,10 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
 
   const handleNew = () => {
     setEditing(null)
-    setForm({ title: '', message: '', type: 'info', is_active: true, end_date: '' })
+    setForm({
+      title: '', message: '', type: 'info', is_active: true, end_date: '',
+      target_scope: 'business', branch_public_id: '',
+    })
   }
 
   const typeColors = {
@@ -145,6 +201,11 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
     : 0
   const quotaReached = !!(planInfo && planInfo.usage.announcements_limit !== null &&
     announcementsUsed >= planInfo.usage.announcements_limit)
+
+  const selectedBranch = branches.find(b => b.public_id === form.branch_public_id)
+  const notificationHeader = form.target_scope === 'branch' && selectedBranch
+    ? `${businessName || businessSlug} — ${selectedBranch.name}`
+    : (businessName || businessSlug)
 
   return (
     <div style={styles.overlay}>
@@ -185,6 +246,60 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
           <div style={styles.editor}>
             <h3 style={styles.editorTitle}>{editing ? 'Edit Announcement' : 'New Announcement'}</h3>
             <form onSubmit={handleSubmit}>
+              <div style={styles.inputGroup}>
+                <label style={styles.label}>Audience</label>
+                <div style={styles.audienceGrid}>
+                  <button
+                    type="button"
+                    onClick={()=>setForm({...form,target_scope:'business',branch_public_id:''})}
+                    style={{
+                      ...styles.audienceBtn,
+                      ...(form.target_scope==='business' ? styles.audienceBtnActive : {}),
+                    }}
+                  >
+                    <strong>🏪 Whole Business</strong>
+                    <span>Notify the business-wide Wallet audience.</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={()=>setForm({...form,target_scope:'branch'})}
+                    style={{
+                      ...styles.audienceBtn,
+                      ...(form.target_scope==='branch' ? styles.audienceBtnActive : {}),
+                    }}
+                  >
+                    <strong>📍 Specific Branch</strong>
+                    <span>Notify customers with recorded activity at one branch.</span>
+                  </button>
+                </div>
+              </div>
+
+              {form.target_scope === 'branch' && (
+                <div style={styles.inputGroup}>
+                  <label style={styles.label}>Branch</label>
+                  <select
+                    value={form.branch_public_id}
+                    onChange={e=>setForm({...form,branch_public_id:e.target.value})}
+                    style={styles.select}
+                    required
+                  >
+                    <option value="">Choose a branch</option>
+                    {branches.map(branch=>(
+                      <option key={branch.public_id} value={branch.public_id}>{branch.name}</option>
+                    ))}
+                  </select>
+                  <div style={styles.audienceHelp}>
+                    Customers are not permanently assigned to a branch. A customer qualifies after recorded loyalty activity or a confirmed Order Ahead purchase at that branch.
+                  </div>
+                </div>
+              )}
+
+              <div style={styles.notificationPreview}>
+                <div style={styles.previewEyebrow}>NOTIFICATION PREVIEW</div>
+                <div style={styles.previewHeader}>{notificationHeader}</div>
+                <div style={styles.previewMessage}>{form.message || 'Your announcement message will appear here.'}</div>
+              </div>
+
               <div style={styles.inputGroup}>
                 <label style={styles.label}>Title</label>
                 <input
@@ -256,8 +371,13 @@ function Announcements({ API_BASE, businessSlug, onClose }) {
                   const style = typeColors[ann.type] || typeColors.info
                   return (
                     <div key={ann.id} style={styles.annCard}>
-                      <div style={{...styles.annBadge, background: style.bg, color: style.text}}>
-                        {style.icon} {ann.type}
+                      <div style={{display:'flex',gap:7,flexWrap:'wrap',alignItems:'center',marginBottom:10}}>
+                        <div style={{...styles.annBadge, background: style.bg, color: style.text, marginBottom:0}}>
+                          {style.icon} {ann.type}
+                        </div>
+                        <div style={ann.target_scope==='branch' ? styles.branchAudienceBadge : styles.businessAudienceBadge}>
+                          {ann.target_scope==='branch' ? `📍 ${ann.branch_name || 'Specific Branch'}` : '🏪 Whole Business'}
+                        </div>
                       </div>
                       <h4 style={styles.annTitle}>{ann.title}</h4>
                       <p style={styles.annMessage}>{ann.message}</p>
@@ -381,6 +501,79 @@ const styles = {
     textTransform: 'uppercase',
     letterSpacing: '0.5px',
     margin: '0 0 16px',
+  },
+  audienceGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit,minmax(210px,1fr))',
+    gap: 10,
+  },
+  audienceBtn: {
+    border: '1.5px solid #e2e8f0',
+    background: 'white',
+    borderRadius: 12,
+    padding: '12px 13px',
+    textAlign: 'left',
+    cursor: 'pointer',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+    color: '#334155',
+  },
+  audienceBtnActive: {
+    borderColor: '#0d9488',
+    background: '#f0fdfa',
+    color: '#0f766e',
+    boxShadow: '0 0 0 2px rgba(13,148,136,.08)',
+  },
+  audienceHelp: {
+    fontSize: 11.5,
+    color: '#64748b',
+    lineHeight: 1.5,
+    marginTop: 7,
+  },
+  notificationPreview: {
+    border: '1px solid #dbe4ea',
+    background: 'white',
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 16,
+    boxShadow: '0 6px 18px rgba(15,23,42,.04)',
+  },
+  previewEyebrow: {
+    fontSize: 9.5,
+    fontWeight: 850,
+    color: '#94a3b8',
+    letterSpacing: '.08em',
+    marginBottom: 6,
+  },
+  previewHeader: {
+    fontSize: 13.5,
+    fontWeight: 850,
+    color: '#0f172a',
+    marginBottom: 3,
+  },
+  previewMessage: {
+    fontSize: 13,
+    color: '#475569',
+    lineHeight: 1.45,
+  },
+  businessAudienceBadge: {
+    display: 'inline-block',
+    padding: '4px 9px',
+    borderRadius: 20,
+    fontSize: 10.5,
+    fontWeight: 700,
+    background: '#f1f5f9',
+    color: '#475569',
+  },
+  branchAudienceBadge: {
+    display: 'inline-block',
+    padding: '4px 9px',
+    borderRadius: 20,
+    fontSize: 10.5,
+    fontWeight: 700,
+    background: '#ecfdf5',
+    color: '#047857',
   },
   inputGroup: {
     marginBottom: 14,
