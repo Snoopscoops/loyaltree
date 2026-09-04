@@ -550,6 +550,71 @@ def verify_order_ahead_paymongo_signature(raw_body: bytes, signature_header: str
     )
 
 
+def _find_paymongo_test_url(value) -> Optional[str]:
+    """Find PayMongo's QR Ph test_url anywhere in a TEST API response."""
+    if isinstance(value, dict):
+        direct = value.get('test_url')
+        if isinstance(direct, str) and direct.startswith(('http://', 'https://')):
+            return direct
+        for child in value.values():
+            found = _find_paymongo_test_url(child)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _find_paymongo_test_url(child)
+            if found:
+                return found
+    return None
+
+
+def retrieve_order_ahead_paymongo_intent(intent_id: str) -> dict:
+    """Retrieve one Order Ahead Payment Intent from PayMongo TEST MODE.
+
+    Used as a beta/testing fallback while webhook delivery is not yet the
+    only source of truth. The caller still validates intent id, test mode,
+    PHP currency, exact amount, and succeeded status before marking an order
+    paid.
+    """
+    import httpx
+
+    if not order_ahead_paymongo_test_configured():
+        raise HTTPException(status_code=503, detail='PayMongo TEST MODE is not configured.')
+    if not intent_id:
+        raise HTTPException(status_code=400, detail='Missing PayMongo Payment Intent.')
+
+    token = base64.b64encode(f"{ORDER_AHEAD_PAYMONGO_SECRET_KEY}:".encode()).decode()
+    headers = {"Authorization": f"Basic {token}", "Content-Type": "application/json"}
+
+    try:
+        with httpx.Client(timeout=20) as client:
+            res = client.get(
+                f"{PAYMONGO_API_BASE}/payment_intents/{intent_id}",
+                headers=headers,
+            )
+        if res.status_code >= 400:
+            raise HTTPException(
+                status_code=502,
+                detail=f"PayMongo TEST error retrieving payment intent: {res.text}",
+            )
+
+        data = res.json().get('data') or {}
+        attrs = data.get('attributes') or {}
+        return {
+            'id': data.get('id'),
+            'status': attrs.get('status'),
+            'amount': attrs.get('amount'),
+            'currency': attrs.get('currency'),
+            'livemode': attrs.get('livemode'),
+            'payments': attrs.get('payments') or [],
+            'last_payment_error': attrs.get('last_payment_error'),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not check PayMongo TEST payment: {e}")
+
+
 def create_order_ahead_qrph_checkout(
     amount_php: float,
     description: str,
@@ -629,10 +694,12 @@ def create_order_ahead_qrph_checkout(
                     status_code=502,
                     detail=f"PayMongo TEST error attaching payment method: {attach_res.text}",
                 )
-            attrs = attach_res.json()["data"]["attributes"]
+            attach_json = attach_res.json()
+            attrs = attach_json["data"]["attributes"]
             next_action = attrs.get("next_action") or {}
             code = next_action.get("code") or {}
             qr_image_url = code.get("image_url")
+            test_url = _find_paymongo_test_url(attach_json)
             if not qr_image_url:
                 raise HTTPException(status_code=502, detail="PayMongo TEST did not return a QR Ph image.")
 
@@ -640,6 +707,7 @@ def create_order_ahead_qrph_checkout(
                 "intent_id": intent_id,
                 "status": attrs.get("status"),
                 "qr_image_url": qr_image_url,
+                "test_url": test_url,
                 "mode": "test",
             }
     except HTTPException:
@@ -9541,6 +9609,7 @@ async def customer_create_order_ahead_order(
             'mode': 'test',
             'amount': _oa_money_float(subtotal),
             'qr_image_url': checkout['qr_image_url'],
+            'test_url': checkout.get('test_url'),
             'status': checkout.get('status') or 'awaiting_payment_method',
             'label': 'Pay with QR Ph · PayMongo TEST',
         },
@@ -9563,6 +9632,57 @@ async def customer_order_ahead_payment_status(
     )
     if not order:
         raise HTTPException(status_code=404, detail='Order not found')
+
+    # TEST-mode polling fallback. Webhooks remain the preferred production
+    # confirmation path, but this prevents the beta checkout from being stuck
+    # forever while webhook setup is still being completed.
+    if (
+        order.get('payment_mode') == 'paymongo'
+        and order.get('payment_status') == 'pending'
+        and order.get('paymongo_payment_intent_id')
+    ):
+        intent = retrieve_order_ahead_paymongo_intent(
+            order.get('paymongo_payment_intent_id')
+        )
+        expected_centavos = int(round(float(order.get('total') or 0) * 100))
+        received_centavos = int(intent.get('amount') or 0)
+
+        payment_verified = (
+            intent.get('id') == order.get('paymongo_payment_intent_id')
+            and intent.get('livemode') is False
+            and str(intent.get('currency') or '').upper() == 'PHP'
+            and intent.get('status') == 'succeeded'
+            and expected_centavos > 0
+            and received_centavos == expected_centavos
+        )
+
+        if payment_verified:
+            payments = intent.get('payments') or []
+            payment_id = None
+            if payments:
+                first_payment = payments[0]
+                if isinstance(first_payment, dict):
+                    payment_id = first_payment.get('id')
+                elif isinstance(first_payment, str):
+                    payment_id = first_payment
+
+            update_payload = {
+                'payment_status': 'paid',
+                'updated_at': datetime.now(timezone.utc).isoformat(),
+            }
+            if payment_id:
+                update_payload['paymongo_payment_id'] = payment_id
+
+            res = (
+                supabase.table('order_ahead_orders').update(update_payload)
+                .eq('id', order.get('id'))
+                .eq('payment_status', 'pending')
+                .execute()
+            )
+            updated = _supabase_first_row(res)
+            if updated:
+                order = updated
+
     branch = _supabase_first_row(
         supabase.table('branches').select('*').eq('id', order.get('branch_id')).limit(1).execute()
     )
@@ -21652,7 +21772,7 @@ async def order_ahead_branch_selected(customer_public_id: str, branch_public_id:
 </style></head><body><main>__BANNER__<div class="head"><img class="logo" src="__LOGO__"><div class="headcopy"><h1>__MENU_HEADING__</h1><div class="branchline"><span>__BIZ__ · __BRANCH__</span><a class="changebranch" href="__BRANCH_PICKER_URL__">Change branch</a></div></div></div><div id="cats" class="cats"></div><div id="grid" class="grid"></div></main><button id="cartbar" class="cartbar" type="button" onclick="openCart()"><span id="cartcount">0 items</span><span id="carttotal">₱0.00 · View Cart</span></button>
 <dialog id="itemDlg" class="sheet"><div id="itemModal" class="sheetbox"></div></dialog>
 <dialog id="cartDlg" class="sheet"><div class="sheetbox"><div class="sheethead"><div><h2 style="margin:0">Your cart</h2><div class="muted">__BRANCH__ pickup</div></div><button class="close" onclick="cartDlg.close()">×</button></div><div id="cartRows"></div><div class="cartsummary"><span>Subtotal</span><span id="cartSheetTotal">₱0.00</span></div><button class="primary" onclick="openCheckout()">Choose Pickup Time</button><button class="secondary" onclick="cartDlg.close()">Add more items</button></div></dialog>
-<dialog id="checkoutDlg" class="sheet"><div class="sheetbox"><div id="checkoutFlow"><div class="sheethead"><div><h2 style="margin:0">Pickup & checkout</h2><div class="muted">Review your order before payment.</div></div><button class="close" onclick="checkoutDlg.close()">×</button></div><div id="pickupArea"></div><label style="display:block;font-size:12px;font-weight:800;margin-top:14px">Order note<textarea id="customerNote" class="field" rows="3" maxlength="500" placeholder="Optional note for the business"></textarea></label><div id="checkoutReview" class="review"></div><div id="checkoutError" class="error"></div><button id="continuePaymentBtn" class="primary" onclick="continueToPayment()">Continue to Payment →</button><button id="backCartBtn" class="secondary" onclick="checkoutDlg.close();openCart()">Back to cart</button><div id="paymentBox" class="paymentbox"><div id="paymentModeLabel" class="muted"></div><div id="paymentAmount" class="paymentamount">₱0.00</div><div id="paymentOrderNo" style="font-weight:800"></div><div id="paymongoArea" style="display:none;text-align:center;margin-top:12px"><img id="paymongoQr" alt="PayMongo QR Ph payment code" style="width:min(280px,86%);border-radius:14px;border:1px solid #e2e8f0;background:#fff;padding:8px"><div id="paymongoStatus" class="muted" style="margin-top:10px;font-weight:750">Waiting for PayMongo TEST payment confirmation…</div><button id="checkPaymentBtn" class="secondary" type="button" onclick="checkPayMongoPaymentStatus()">Check payment status</button></div><button id="confirmTestPaymentBtn" class="primary" onclick="confirmTestPayment()">Confirm Test Payment</button><button id="paymentBackBtn" class="secondary" onclick="cancelPendingPaymentView()">Back</button></div></div><div id="orderSuccess" class="successbox"><div class="successicon">✓</div><h2 style="margin:0">Order received</h2><div id="successOrderNo" class="ordercode"></div><div id="successPickup" class="muted" style="font-size:13px"></div><div class="nextnote show" style="margin-top:15px">The business can now move your order through Preparing → Ready → Completed.</div><button class="primary" onclick="checkoutDlg.close()">Done</button></div></div></dialog>
+<dialog id="checkoutDlg" class="sheet"><div class="sheetbox"><div id="checkoutFlow"><div class="sheethead"><div><h2 style="margin:0">Pickup & checkout</h2><div class="muted">Review your order before payment.</div></div><button class="close" onclick="checkoutDlg.close()">×</button></div><div id="pickupArea"></div><label style="display:block;font-size:12px;font-weight:800;margin-top:14px">Order note<textarea id="customerNote" class="field" rows="3" maxlength="500" placeholder="Optional note for the business"></textarea></label><div id="checkoutReview" class="review"></div><div id="checkoutError" class="error"></div><button id="continuePaymentBtn" class="primary" onclick="continueToPayment()">Continue to Payment →</button><button id="backCartBtn" class="secondary" onclick="checkoutDlg.close();openCart()">Back to cart</button><div id="paymentBox" class="paymentbox"><div id="paymentModeLabel" class="muted"></div><div id="paymentAmount" class="paymentamount">₱0.00</div><div id="paymentOrderNo" style="font-weight:800"></div><div id="paymongoArea" style="display:none;text-align:center;margin-top:12px"><img id="paymongoQr" alt="PayMongo QR Ph payment code" style="width:min(280px,86%);border-radius:14px;border:1px solid #e2e8f0;background:#fff;padding:8px"><div class="muted" style="margin-top:8px;font-size:11.5px">TEST MODE: Do not scan this QR using a real bank or e-wallet app.</div><a id="paymongoTestLink" class="primary" target="_blank" rel="noopener" style="display:none;text-decoration:none;margin-top:10px">Simulate PayMongo Test Payment</a><div id="paymongoStatus" class="muted" style="margin-top:10px;font-weight:750">Waiting for PayMongo TEST payment confirmation…</div><button id="checkPaymentBtn" class="secondary" type="button" onclick="checkPayMongoPaymentStatus()">Check payment status</button></div><button id="confirmTestPaymentBtn" class="primary" onclick="confirmTestPayment()">Confirm Test Payment</button><button id="paymentBackBtn" class="secondary" onclick="cancelPendingPaymentView()">Back</button></div></div><div id="orderSuccess" class="successbox"><div class="successicon">✓</div><h2 style="margin:0">Order received</h2><div id="successOrderNo" class="ordercode"></div><div id="successPickup" class="muted" style="font-size:13px"></div><div class="nextnote show" style="margin-top:15px">The business can now move your order through Preparing → Ready → Completed.</div><button class="primary" onclick="checkoutDlg.close()">Done</button></div></div></dialog>
 <script>
 const DATA=__DATA__; const UI=__UI__; const ORDER_API_BASE=__ORDER_API_BASE__; const ORDER_TOKEN=__ORDER_TOKEN__; let active='all'; let editIndex=null; let itemQty=1; let pickupType=null; let selectedSlot=''; let selectedDate=''; let selectedHour=''; let selectedMinute=''; let pendingOrder=null; let paymentPollTimer=null;
 const cartKey='lt_oa_cart_'+DATA.branch.public_id; let cart=[]; try{cart=JSON.parse(sessionStorage.getItem(cartKey)||'[]');if(!Array.isArray(cart))cart=[]}catch(e){cart=[]}
@@ -21690,7 +21810,7 @@ function resetCheckoutView(){stopPaymentPolling();pendingOrder=null;document.get
 function openCheckout(){if(!cart.length)return;cartDlg.close();resetCheckoutView();pickupType=pickDefault();selectedSlot='';selectedDate='';selectedHour='';selectedMinute='';renderPickup();renderReview();checkoutDlg.showModal()}
 function checkoutValidation(){if(!DATA.pickup.hours_configured)return'Pickup hours are not configured for this branch.';if(!pickupType)return'No pickup option is currently available.';if(pickupType==='asap'&&!DATA.pickup.asap_available)return'ASAP pickup is not currently available.';if(pickupType==='scheduled'&&!selectedSlot)return'Choose a pickup time.';return''}
 function finishOrderSuccess(order){stopPaymentPolling();pendingOrder=order||pendingOrder;cart=[];sessionStorage.removeItem(cartKey);updateCartBar();document.getElementById('checkoutFlow').style.display='none';document.getElementById('successOrderNo').textContent=pendingOrder?.order_number||'';document.getElementById('successPickup').textContent='Pickup: '+pickupLabel()+' · '+DATA.branch.name;document.getElementById('orderSuccess').classList.add('show')}
-async function continueToPayment(){const err=document.getElementById('checkoutError');const msg=checkoutValidation();if(msg){err.textContent=msg;err.classList.add('show');return}err.classList.remove('show');const btn=document.getElementById('continuePaymentBtn');btn.disabled=true;btn.textContent='Creating order…';try{const payload={branch_public_id:DATA.branch.public_id,pickup_type:pickupType,pickup_at:pickupType==='scheduled'?selectedSlot:null,customer_note:(document.getElementById('customerNote').value||'').trim(),items:cart.map(x=>({item_public_id:x.item_public_id,quantity:Number(x.quantity||1),modifier_option_public_ids:(x.modifiers||[]).map(m=>m.option_public_id)}))};const res=await fetch(ORDER_API_BASE+'?token='+encodeURIComponent(ORDER_TOKEN),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const d=await res.json().catch(()=>({}));if(!res.ok)throw new Error(d.detail||'Could not create order');pendingOrder=d.order;document.getElementById('paymentAmount').textContent=peso(d.test_payment?.amount??d.paymongo_payment?.amount??pendingOrder.total);document.getElementById('paymentOrderNo').textContent=pendingOrder.order_number;document.getElementById('paymentBox').classList.add('show');btn.style.display='none';document.getElementById('backCartBtn').style.display='none';document.getElementById('pickupArea').style.display='none';document.querySelector('#checkoutFlow label')?.style.setProperty('display','none');document.getElementById('checkoutReview').style.display='none';if(d.paymongo_payment){document.getElementById('paymentModeLabel').textContent='PAYMONGO TEST · QR Ph · No live money will be collected.';document.getElementById('confirmTestPaymentBtn').style.display='none';document.getElementById('paymentBackBtn').style.display='none';document.getElementById('paymongoArea').style.display='block';document.getElementById('paymongoQr').src=d.paymongo_payment.qr_image_url;document.getElementById('paymongoStatus').textContent='Waiting for PayMongo TEST payment confirmation…';paymentPollTimer=setInterval(checkPayMongoPaymentStatus,2500)}else{document.getElementById('paymentModeLabel').textContent='TEST PAYMENT · No real money will be collected.';document.getElementById('confirmTestPaymentBtn').style.display='block';document.getElementById('paymongoArea').style.display='none';document.getElementById('paymentBackBtn').style.display='block'}}catch(e){err.textContent=e.message||'Could not create order';err.classList.add('show');btn.disabled=false;btn.textContent='Continue to Payment →'}}
+async function continueToPayment(){const err=document.getElementById('checkoutError');const msg=checkoutValidation();if(msg){err.textContent=msg;err.classList.add('show');return}err.classList.remove('show');const btn=document.getElementById('continuePaymentBtn');btn.disabled=true;btn.textContent='Creating order…';try{const payload={branch_public_id:DATA.branch.public_id,pickup_type:pickupType,pickup_at:pickupType==='scheduled'?selectedSlot:null,customer_note:(document.getElementById('customerNote').value||'').trim(),items:cart.map(x=>({item_public_id:x.item_public_id,quantity:Number(x.quantity||1),modifier_option_public_ids:(x.modifiers||[]).map(m=>m.option_public_id)}))};const res=await fetch(ORDER_API_BASE+'?token='+encodeURIComponent(ORDER_TOKEN),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const d=await res.json().catch(()=>({}));if(!res.ok)throw new Error(d.detail||'Could not create order');pendingOrder=d.order;document.getElementById('paymentAmount').textContent=peso(d.test_payment?.amount??d.paymongo_payment?.amount??pendingOrder.total);document.getElementById('paymentOrderNo').textContent=pendingOrder.order_number;document.getElementById('paymentBox').classList.add('show');btn.style.display='none';document.getElementById('backCartBtn').style.display='none';document.getElementById('pickupArea').style.display='none';document.querySelector('#checkoutFlow label')?.style.setProperty('display','none');document.getElementById('checkoutReview').style.display='none';if(d.paymongo_payment){document.getElementById('paymentModeLabel').textContent='PAYMONGO TEST · QR Ph · No live money will be collected.';document.getElementById('confirmTestPaymentBtn').style.display='none';document.getElementById('paymentBackBtn').style.display='none';document.getElementById('paymongoArea').style.display='block';document.getElementById('paymongoQr').src=d.paymongo_payment.qr_image_url;const testLink=document.getElementById('paymongoTestLink');if(d.paymongo_payment.test_url){testLink.href=d.paymongo_payment.test_url;testLink.style.display='block'}else{testLink.removeAttribute('href');testLink.style.display='none'}document.getElementById('paymongoStatus').textContent=d.paymongo_payment.test_url?'Open “Simulate PayMongo Test Payment”, complete the PayMongo test page, then return here.':'Waiting for PayMongo TEST payment confirmation…';paymentPollTimer=setInterval(checkPayMongoPaymentStatus,2500)}else{document.getElementById('paymentModeLabel').textContent='TEST PAYMENT · No real money will be collected.';document.getElementById('confirmTestPaymentBtn').style.display='block';document.getElementById('paymongoArea').style.display='none';document.getElementById('paymentBackBtn').style.display='block'}}catch(e){err.textContent=e.message||'Could not create order';err.classList.add('show');btn.disabled=false;btn.textContent='Continue to Payment →'}}
 function cancelPendingPaymentView(){stopPaymentPolling();document.getElementById('paymentBox').classList.remove('show');document.getElementById('continuePaymentBtn').style.display='block';document.getElementById('continuePaymentBtn').disabled=false;document.getElementById('continuePaymentBtn').textContent='Continue to Payment →';document.getElementById('backCartBtn').style.display='block';document.getElementById('pickupArea').style.display='block';document.querySelector('#checkoutFlow label')?.style.removeProperty('display');document.getElementById('checkoutReview').style.display='block'}
 async function checkPayMongoPaymentStatus(){if(!pendingOrder||pendingOrder.payment_mode!=='paymongo')return;const statusEl=document.getElementById('paymongoStatus');try{const url=ORDER_API_BASE+'/'+encodeURIComponent(pendingOrder.public_id)+'/payment-status?token='+encodeURIComponent(ORDER_TOKEN);const res=await fetch(url,{cache:'no-store'});const d=await res.json().catch(()=>({}));if(!res.ok)throw new Error(d.detail||'Could not check payment');if(d.payment_status==='paid'){statusEl.textContent='Payment confirmed ✓';finishOrderSuccess(d.order||pendingOrder);return}if(d.payment_status==='failed'){stopPaymentPolling();statusEl.textContent='Payment failed or expired. Please start checkout again.';statusEl.style.color='#b91c1c';document.getElementById('paymentBackBtn').style.display='block';return}statusEl.textContent='Waiting for PayMongo TEST payment confirmation…'}catch(e){statusEl.textContent='Still waiting — tap Check payment status to retry.'}}
 async function confirmTestPayment(){if(!pendingOrder)return;const btn=document.getElementById('confirmTestPaymentBtn');const err=document.getElementById('checkoutError');btn.disabled=true;btn.textContent='Confirming…';try{const url=ORDER_API_BASE+'/'+encodeURIComponent(pendingOrder.public_id)+'/test-payment?token='+encodeURIComponent(ORDER_TOKEN);const res=await fetch(url,{method:'POST'});const d=await res.json().catch(()=>({}));if(!res.ok)throw new Error(d.detail||'Could not confirm Test Payment');finishOrderSuccess(d.order||pendingOrder)}catch(e){err.textContent=e.message||'Could not confirm Test Payment';err.classList.add('show');btn.disabled=false;btn.textContent='Confirm Test Payment'}}
