@@ -240,6 +240,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [orderAheadOrdersLoading, setOrderAheadOrdersLoading] = useState(false)
   const [orderAheadOrderSaving, setOrderAheadOrderSaving] = useState('')
   const [orderAheadBranchFilter, setOrderAheadBranchFilter] = useState('')
+  const [orderAheadOperatorScope, setOrderAheadOperatorScope] = useState(null)
+  const [orderAheadLastUpdated, setOrderAheadLastUpdated] = useState(null)
   const [stats, setStats] = useState(null)
   const [program, setProgram] = useState(null)
   const [subscription, setSubscription] = useState(null)
@@ -361,6 +363,15 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     order_count: orderAheadOrders.filter(o => o?.branch?.public_id === branch.public_id).length,
     active_count: orderAheadOrders.filter(o => o?.branch?.public_id === branch.public_id && ['new','preparing','ready'].includes(o.status)).length,
   }))
+  const orderAheadActiveCount = visibleOrderAheadOrders.filter(o => ['new','preparing','ready'].includes(o.status)).length
+  const orderAheadNewCount = visibleOrderAheadOrders.filter(o => o.status === 'new').length
+  const orderAheadPreparingCount = visibleOrderAheadOrders.filter(o => o.status === 'preparing').length
+  const orderAheadReadyCount = visibleOrderAheadOrders.filter(o => o.status === 'ready').length
+  const orderAheadLateCount = visibleOrderAheadOrders.filter(o => {
+    if (!['new','preparing','ready'].includes(o.status) || !o.pickup_at) return false
+    const pickup = new Date(o.pickup_at).getTime()
+    return Number.isFinite(pickup) && pickup < Date.now() - 5 * 60 * 1000
+  }).length
 
   useEffect(() => {
     const onResize = () => setViewportWidth(window.innerWidth)
@@ -413,7 +424,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   useEffect(() => {
     if (activeTab !== 'orderahead' || !business?.order_ahead_enabled) return
     loadOrderAheadOrders()
-    const interval = setInterval(loadOrderAheadOrders, 12000)
+    const interval = setInterval(loadOrderAheadOrders, 8000)
     return () => clearInterval(interval)
   }, [activeTab, business?.order_ahead_enabled, user?.business_slug])
 
@@ -549,6 +560,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Could not load Order Ahead orders')
       setOrderAheadOrders(Array.isArray(data.orders) ? data.orders : [])
+      setOrderAheadOperatorScope(data.operator_scope || null)
+      setOrderAheadLastUpdated(new Date())
     } catch (err) {
       setMessage(err.message || 'Could not load Order Ahead orders')
     } finally {
@@ -581,6 +594,34 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       return new Date(order.pickup_at).toLocaleString('en-PH', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })
     } catch (_) { return order.pickup_at }
   }
+
+  const orderAheadCreatedLabel = (order) => {
+    if (!order?.created_at) return ''
+    const t = new Date(order.created_at).getTime()
+    if (!Number.isFinite(t)) return ''
+    const mins = Math.max(0, Math.floor((Date.now() - t) / 60000))
+    if (mins < 1) return 'just now'
+    if (mins < 60) return `${mins} min ago`
+    const hrs = Math.floor(mins / 60)
+    if (hrs < 24) return `${hrs} hr${hrs === 1 ? '' : 's'} ago`
+    const days = Math.floor(hrs / 24)
+    return `${days} day${days === 1 ? '' : 's'} ago`
+  }
+
+  const orderAheadPickupUrgency = (order) => {
+    if (!order?.pickup_at || !['new','preparing','ready'].includes(order?.status)) return null
+    const pickupMs = new Date(order.pickup_at).getTime()
+    if (!Number.isFinite(pickupMs)) return null
+    const diffMin = Math.round((pickupMs - Date.now()) / 60000)
+    if (diffMin < -5) return { label:`LATE · ${Math.abs(diffMin)}m`, bg:'#fef2f2', color:'#b91c1c', border:'#fecaca' }
+    if (diffMin <= 0) return { label:'DUE NOW', bg:'#fff7ed', color:'#c2410c', border:'#fed7aa' }
+    if (diffMin <= 15) return { label:`DUE IN ${diffMin}m`, bg:'#fff7ed', color:'#c2410c', border:'#fed7aa' }
+    if (diffMin <= 30) return { label:`${diffMin}m`, bg:'#fffbeb', color:'#a16207', border:'#fde68a' }
+    return null
+  }
+
+  const orderAheadItemCount = (order) =>
+    (order?.items || []).reduce((sum, item) => sum + Number(item?.quantity || 0), 0)
 
   const saveOrderAheadSettings = async () => {
     if (!user?.business_slug || !business?.order_ahead_enabled) return
@@ -2318,43 +2359,154 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
             <div style={{...styles.card,marginTop:14}}>
               <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}>
-                <div><div style={{fontSize:11,fontWeight:850,color:'#64748b'}}>BUSINESS ORDERS</div><h3 style={{margin:'5px 0 3px'}}>Live Order Board</h3><p style={{margin:0,fontSize:12,color:'#64748b'}}>Only payment-confirmed orders appear here. Orders move through New → Preparing → Ready → Completed.</p></div>
-                <button type="button" style={styles.addBtn} onClick={loadOrderAheadOrders} disabled={orderAheadOrdersLoading}>{orderAheadOrdersLoading?'Refreshing…':'↻ Refresh'}</button>
+                <div>
+                  <div style={{fontSize:11,fontWeight:850,color:'#64748b'}}>BUSINESS ORDERS</div>
+                  <h3 style={{margin:'5px 0 3px'}}>Live Order Board</h3>
+                  <p style={{margin:0,fontSize:12,color:'#64748b'}}>
+                    Paid orders are routed by branch. Owner access remains all-branch; branch staff/order receivers are server-locked to their assigned branch.
+                  </p>
+                </div>
+                <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                  <div style={{fontSize:10.5,color:'#64748b',fontWeight:700}}>
+                    Auto-refresh · 8s{orderAheadLastUpdated ? ` · ${orderAheadLastUpdated.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})}` : ''}
+                  </div>
+                  <button type="button" style={styles.addBtn} onClick={loadOrderAheadOrders} disabled={orderAheadOrdersLoading}>
+                    {orderAheadOrdersLoading?'Refreshing…':'↻ Refresh'}
+                  </button>
+                </div>
               </div>
+
+              {orderAheadOperatorScope?.branch_locked && (
+                <div style={{marginTop:12,padding:'10px 12px',borderRadius:11,background:'#eff6ff',border:'1px solid #bfdbfe',fontSize:11.5,color:'#1d4ed8',fontWeight:800}}>
+                  🔒 Branch-locked device · {orderAheadOperatorScope?.branch?.name || 'Assigned branch'}
+                </div>
+              )}
+
+              <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(2,minmax(0,1fr))':'repeat(5,minmax(120px,1fr))',gap:8,marginTop:13}}>
+                {[
+                  ['OPEN',orderAheadActiveCount,'#0f172a','#f8fafc'],
+                  ['NEW',orderAheadNewCount,'#1d4ed8','#eff6ff'],
+                  ['PREPARING',orderAheadPreparingCount,'#b45309','#fffbeb'],
+                  ['READY',orderAheadReadyCount,'#047857','#ecfdf5'],
+                  ['LATE',orderAheadLateCount,'#b91c1c','#fef2f2'],
+                ].map(([label,value,color,bg])=><div key={label} style={{background:bg,border:'1px solid #e2e8f0',borderRadius:11,padding:'9px 10px'}}>
+                  <div style={{fontSize:9.5,fontWeight:850,color:'#64748b'}}>{label}</div>
+                  <div style={{fontSize:20,fontWeight:900,color,marginTop:2}}>{value}</div>
+                </div>)}
+              </div>
+
               <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginTop:12}}>
-                <select value={orderAheadBranchFilter} onChange={e=>setOrderAheadBranchFilter(e.target.value)} style={{...styles.input,width:isMobile?'100%':'auto',minWidth:isMobile?0:190,padding:'9px 10px',fontSize:11.5}}>
+                <select
+                  value={orderAheadBranchFilter}
+                  onChange={e=>setOrderAheadBranchFilter(e.target.value)}
+                  disabled={!!orderAheadOperatorScope?.branch_locked}
+                  style={{...styles.input,width:isMobile?'100%':'auto',minWidth:isMobile?0:210,padding:'9px 10px',fontSize:11.5}}
+                >
                   <option value="">All branches · {orderAheadOrders.length} orders</option>
                   {orderAheadBranchCounts.map(branch=><option key={branch.public_id} value={branch.public_id}>{branch.name} · {branch.order_count} orders</option>)}
                 </select>
-                {!isMobile && orderAheadBranchCounts.map(branch=><button key={branch.public_id} type="button" onClick={()=>setOrderAheadBranchFilter(orderAheadBranchFilter===branch.public_id?'':branch.public_id)} style={{border:'1px solid '+(orderAheadBranchFilter===branch.public_id?'#0f766e':'#e2e8f0'),background:orderAheadBranchFilter===branch.public_id?'#ecfdf5':'#fff',borderRadius:999,padding:'7px 9px',fontSize:10.5,fontWeight:800,color:orderAheadBranchFilter===branch.public_id?'#047857':'#475569'}}>{branch.name} · {branch.active_count} active</button>)}
+                {!isMobile && !orderAheadOperatorScope?.branch_locked && orderAheadBranchCounts.map(branch=><button
+                  key={branch.public_id}
+                  type="button"
+                  onClick={()=>setOrderAheadBranchFilter(orderAheadBranchFilter===branch.public_id?'':branch.public_id)}
+                  style={{
+                    border:'1px solid '+(orderAheadBranchFilter===branch.public_id?'#0f766e':'#e2e8f0'),
+                    background:orderAheadBranchFilter===branch.public_id?'#ecfdf5':'#fff',
+                    borderRadius:999,padding:'7px 9px',fontSize:10.5,fontWeight:800,
+                    color:orderAheadBranchFilter===branch.public_id?'#047857':'#475569'
+                  }}
+                >{branch.name} · {branch.active_count} active</button>)}
               </div>
-              <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(4,minmax(220px,1fr))',gap:10,marginTop:14,overflowX:isMobile?'visible':'auto',paddingBottom:2}}>
+
+              <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(4,minmax(240px,1fr))',gap:10,marginTop:14,overflowX:isMobile?'visible':'auto',paddingBottom:2}}>
                 {[
                   ['new','NEW','#eff6ff','#1d4ed8'],
                   ['preparing','PREPARING','#fffbeb','#b45309'],
                   ['ready','READY','#ecfdf5','#047857'],
                   ['completed','COMPLETED','#f8fafc','#64748b'],
                 ].map(([status,label,bg,color])=>{
-                  const rows=visibleOrderAheadOrders.filter(o=>o.status===status)
+                  const rows=visibleOrderAheadOrders
+                    .filter(o=>o.status===status)
+                    .sort((a,b)=>{
+                      if(status==='completed'){
+                        return new Date(b.completed_at||b.updated_at||b.created_at||0).getTime()-new Date(a.completed_at||a.updated_at||a.created_at||0).getTime()
+                      }
+                      return new Date(a.pickup_at||a.created_at||0).getTime()-new Date(b.pickup_at||b.created_at||0).getTime()
+                    })
                   return <div key={status} style={{minWidth:0,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:13,padding:10,alignSelf:'start'}}>
-                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:9}}><strong style={{fontSize:11,color}}>{label}</strong><span style={{fontSize:10.5,fontWeight:850,background:bg,color,padding:'4px 7px',borderRadius:999}}>{rows.length}</span></div>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:9}}>
+                      <strong style={{fontSize:11,color}}>{label}</strong>
+                      <span style={{fontSize:10.5,fontWeight:850,background:bg,color,padding:'4px 7px',borderRadius:999}}>{rows.length}</span>
+                    </div>
                     {!rows.length&&<div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:'18px 4px'}}>No {label.toLowerCase()} orders</div>}
-                    {rows.map(order=><div key={order.public_id} style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:11,padding:10,marginBottom:8,boxShadow:'0 3px 10px rgba(15,23,42,.03)'}}>
-                      <div style={{display:'flex',justifyContent:'space-between',gap:8,alignItems:'flex-start'}}><div><strong style={{fontSize:12.5}}>{order.order_number}</strong><div style={{fontSize:9.5,fontWeight:850,color:order.payment_mode==='paymongo'?'#7c3aed':'#64748b',marginTop:3}}>{order.payment_mode==='paymongo'?'PAYMONGO · PAID':'TEST PAYMENT'}</div></div><strong style={{fontSize:12.5}}>₱{Number(order.total||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</strong></div>
-                      <div style={{fontSize:11.5,color:'#475569',marginTop:5}}>👤 {order.customer?.name||'Member'}</div>
-                      {order.customer?.phone&&<a href={`tel:${order.customer.phone}`} style={{display:'inline-block',fontSize:10.5,color:'#0f766e',fontWeight:800,marginTop:4,textDecoration:'none'}}>☎ Call customer · {order.customer.phone}</a>}
-                      <div style={{fontSize:11.5,color:'#475569',marginTop:3}}>🏢 {order.branch?.name||'Branch'}</div>
-                      <div style={{fontSize:11.5,color:'#0f172a',fontWeight:800,marginTop:5}}>🕒 {orderAheadPickupLabel(order)}</div>
-                      <div style={{borderTop:'1px solid #eef2f7',marginTop:8,paddingTop:7}}>{(order.items||[]).map((item,i)=><div key={item.id||i} style={{fontSize:11,color:'#475569',marginBottom:4}}><strong>{item.quantity}× {item.item_name}</strong>{Array.isArray(item.modifiers)&&item.modifiers.length?<div style={{fontSize:10,color:'#94a3b8',lineHeight:1.35}}>{item.modifiers.map(m=>m.option_name).filter(Boolean).join(' · ')}</div>:null}</div>)}</div>
-                      {order.customer_note&&<div style={{fontSize:10.5,color:'#7c2d12',background:'#fff7ed',borderRadius:8,padding:7,marginTop:7}}>Note: {order.customer_note}</div>}
-                      {status==='new'&&<button type="button" style={{...styles.submitBtn,width:'100%',marginTop:9,padding:'8px 9px',fontSize:10.5}} disabled={orderAheadOrderSaving===order.public_id} onClick={()=>updateOrderAheadOrderStatus(order,'preparing')}>{orderAheadOrderSaving===order.public_id?'Updating…':'Start Preparing'}</button>}
-                      {status==='preparing'&&<button type="button" style={{...styles.submitBtn,width:'100%',marginTop:9,padding:'8px 9px',fontSize:10.5,background:'#059669'}} disabled={orderAheadOrderSaving===order.public_id} onClick={()=>updateOrderAheadOrderStatus(order,'ready')}>{orderAheadOrderSaving===order.public_id?'Updating…':'Mark Ready'}</button>}
-                      {status==='ready'&&<button type="button" style={{...styles.submitBtn,width:'100%',marginTop:9,padding:'8px 9px',fontSize:10.5,background:'#334155'}} disabled={orderAheadOrderSaving===order.public_id} onClick={()=>updateOrderAheadOrderStatus(order,'completed')}>{orderAheadOrderSaving===order.public_id?'Updating…':'Complete Order'}</button>}
-                    </div>)}
+                    {rows.map(order=>{
+                      const urgency=orderAheadPickupUrgency(order)
+                      const itemCount=orderAheadItemCount(order)
+                      return <div key={order.public_id} style={{
+                        background:'#fff',
+                        border:`1px solid ${urgency?.border || '#e2e8f0'}`,
+                        borderRadius:11,padding:10,marginBottom:8,
+                        boxShadow:urgency ? '0 4px 14px rgba(15,23,42,.06)' : '0 3px 10px rgba(15,23,42,.03)'
+                      }}>
+                        <div style={{display:'flex',justifyContent:'space-between',gap:8,alignItems:'flex-start'}}>
+                          <div>
+                            <strong style={{fontSize:13.5}}>{order.order_number}</strong>
+                            <div style={{fontSize:9.5,fontWeight:850,color:order.payment_mode==='paymongo'?'#7c3aed':'#64748b',marginTop:3}}>
+                              {order.payment_mode==='paymongo'?'PAYMONGO · PAID':'TEST PAYMENT · PAID'}
+                            </div>
+                          </div>
+                          <strong style={{fontSize:13}}>₱{Number(order.total||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</strong>
+                        </div>
+
+                        <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginTop:7}}>
+                          <span style={{fontSize:10,fontWeight:850,color:'#0f766e',background:'#f0fdfa',border:'1px solid #ccfbf1',padding:'4px 7px',borderRadius:999}}>
+                            🏢 {order.branch?.name||'Branch'}
+                          </span>
+                          {urgency&&<span style={{fontSize:10,fontWeight:900,color:urgency.color,background:urgency.bg,border:`1px solid ${urgency.border}`,padding:'4px 7px',borderRadius:999}}>
+                            {urgency.label}
+                          </span>}
+                        </div>
+
+                        <div style={{fontSize:12,color:'#0f172a',fontWeight:850,marginTop:7}}>🕒 {orderAheadPickupLabel(order)}</div>
+                        <div style={{fontSize:10.5,color:'#94a3b8',marginTop:2}}>
+                          Received {orderAheadCreatedLabel(order)} · {itemCount} item{itemCount===1?'':'s'}
+                        </div>
+
+                        <div style={{fontSize:11.5,color:'#475569',marginTop:6}}>👤 {order.customer?.name||'Member'}</div>
+                        {order.customer?.phone&&<a href={`tel:${order.customer.phone}`} style={{display:'inline-block',fontSize:10.5,color:'#0f766e',fontWeight:800,marginTop:4,textDecoration:'none'}}>☎ {order.customer.phone}</a>}
+
+                        <div style={{borderTop:'1px solid #eef2f7',marginTop:8,paddingTop:7}}>
+                          {(order.items||[]).map((item,i)=><div key={item.id||i} style={{fontSize:11,color:'#475569',marginBottom:5}}>
+                            <strong>{item.quantity}× {item.item_name}</strong>
+                            {Array.isArray(item.modifiers)&&item.modifiers.length?<div style={{fontSize:10,color:'#64748b',lineHeight:1.4,marginTop:1}}>
+                              {item.modifiers.map(m=>m.option_name).filter(Boolean).join(' · ')}
+                            </div>:null}
+                          </div>)}
+                        </div>
+
+                        {order.customer_note&&<div style={{fontSize:10.5,color:'#7c2d12',background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:8,padding:7,marginTop:7}}>
+                          <strong>Customer note:</strong> {order.customer_note}
+                        </div>}
+
+                        {status==='new'&&<button type="button" style={{...styles.submitBtn,width:'100%',marginTop:9,padding:'10px 9px',fontSize:11}} disabled={orderAheadOrderSaving===order.public_id} onClick={()=>updateOrderAheadOrderStatus(order,'preparing')}>
+                          {orderAheadOrderSaving===order.public_id?'Updating…':'Start Preparing →'}
+                        </button>}
+                        {status==='preparing'&&<button type="button" style={{...styles.submitBtn,width:'100%',marginTop:9,padding:'10px 9px',fontSize:11,background:'#059669'}} disabled={orderAheadOrderSaving===order.public_id} onClick={()=>updateOrderAheadOrderStatus(order,'ready')}>
+                          {orderAheadOrderSaving===order.public_id?'Updating…':'Mark Ready & Notify →'}
+                        </button>}
+                        {status==='ready'&&<button type="button" style={{...styles.submitBtn,width:'100%',marginTop:9,padding:'10px 9px',fontSize:11,background:'#334155'}} disabled={orderAheadOrderSaving===order.public_id} onClick={()=>updateOrderAheadOrderStatus(order,'completed')}>
+                          {orderAheadOrderSaving===order.public_id?'Updating…':'Complete Pickup ✓'}
+                        </button>}
+                      </div>
+                    })}
                   </div>
                 })}
               </div>
-              <div style={{fontSize:10.5,color:'#94a3b8',marginTop:10}}>Ready notification is the primary customer alert: “{orderAheadSetup?.ready_message_preview || `Your order from ${business?.name || business?.business_name || user?.business_name || 'this business'} is ready.`}” Customer phone is shown only as a backup for order issues or overdue pickup.</div>
+
+              <div style={{fontSize:10.5,color:'#94a3b8',marginTop:10,lineHeight:1.5}}>
+                Ready notification: “{orderAheadSetup?.ready_message_preview || `Your order from ${business?.name || business?.business_name || user?.business_name || 'this business'} is ready.`}”
+                {' '}Customer phone remains a backup for order issues or overdue pickup.
+              </div>
             </div>
           </div>
         )}
