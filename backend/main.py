@@ -85,21 +85,6 @@ APPLE_WWDR_CERTIFICATE = os.getenv('APPLE_WWDR_CERTIFICATE', '')
 APPLE_PASS_AUTH_SECRET = os.getenv('APPLE_PASS_AUTH_SECRET', '')
 APPLE_PASS_WEB_SERVICE_URL = f'{BASE_URL}/api/v1/apple-wallet'
 
-# EXPERIMENT ONLY: Apple documents additionalInfoFields as supported only for
-# poster event tickets. Keep this off by default so a storeCard pass cannot be
-# broken accidentally. Enable temporarily on a test business/device to verify
-# whether the current iOS Wallet renderer ignores, rejects, or exposes it.
-APPLE_ADDITIONAL_INFO_TEST = _env_bool('APPLE_ADDITIONAL_INFO_TEST', False)
-APPLE_ADDITIONAL_INFO_TEST_PUBLIC_ID = os.getenv('APPLE_ADDITIONAL_INFO_TEST_PUBLIC_ID', '').strip()
-
-def apple_additional_info_test_enabled(business: dict) -> bool:
-    if not APPLE_ADDITIONAL_INFO_TEST:
-        return False
-    target = APPLE_ADDITIONAL_INFO_TEST_PUBLIC_ID
-    if not target:
-        return True
-    return str((business or {}).get('public_id') or '') == target
-
 # Platform super-admin credentials (you, the LoyaltyTree operator - not a
 # business owner). Set these in your environment; there is no signup flow
 # for this role on purpose. If unset, the admin routes are disabled.
@@ -3828,18 +3813,17 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     # already on the front (primary/secondary fields below).
     apple_details = []
     if card_type == 'hybrid':
+        # Keep Hybrid Pass Details deliberately compact. The front already shows
+        # the two key states, so Details only repeats useful account information
+        # and omits ACTIVE UNTIL / NEXT REWARD clutter.
         status = membership_effective_status(customer)
-        expiry = customer.get('membership_expires_at')
         services = (program.get('membership_services') if program else None) or []
         apple_details.append(('membership_status', ((program.get('membership_name') if program else None) or 'MEMBERSHIP').upper(), status.upper()))
-        apple_details.append(('active_until', 'ACTIVE UNTIL', 'Lifetime' if status == 'lifetime' else (expiry or 'Not activated')))
         if loyalty_type == 'points':
-            apple_details.append(('points_balance', 'POINTS BALANCE', f'{current_points:,} points'))
-            apple_details.append(('next_reward_detail', 'NEXT REWARD', points_next_reward_value))
+            apple_details.append(('points_balance', 'POINTS', f'{current_points:,}'))
         else:
             apple_details.append(('stamp_progress', 'STAMPS', f'{current_stamps}/{full_stamp_goal}'))
-            apple_details.append(('next_reward_detail', 'NEXT REWARD', stamp_next_reward_value))
-        apple_details.append(('next_benefit', 'NEXT BENEFIT', services[0] if services else 'Membership perks'))
+        apple_details.append(('next_benefit', 'MEMBERSHIP BENEFIT', services[0] if services else 'Membership perks'))
     elif card_type == 'points':
         apple_details.append(('points_balance', 'POINTS BALANCE', f'{current_points:,} points'))
         apple_details.append(('next_reward_detail', 'NEXT REWARD', points_next_reward_value))
@@ -3891,41 +3875,90 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
 
     order_ahead_action = order_ahead_wallet_action(customer, business)
 
-    back_fields = [
-        {'key': 'card', 'label': 'CARD', 'value': card_title},
-        *[{'key': key, 'label': label, 'value': str(value)} for key, label, value in apple_details],
-        *activity_fields,
-        {'key': 'about', 'label': 'ABOUT', 'value': description or f'{biz_name} digital loyalty card powered by LoyaltyTree.'},
-        {
-            'key': 'feedback',
-            'label': '⭐ RATE YOUR EXPERIENCE',
-            'value': 'Share Feedback',
-            'attributedValue': f'<a href="{BASE_URL}/feedback/{cust_public_id}">Share Feedback</a>',
-        },
-        {
-            'key': 'online',
-            'label': 'FULL CARD & HISTORY',
-            'value': 'Open LoyaltyTree Card',
-            'attributedValue': f'<a href="{BASE_URL}/wallet/{cust_public_id}">Open LoyaltyTree Card</a>',
-        },
-        {
-            'key': 'announcement',
-            'label': '📢 ANNOUNCEMENT',
-            'value': announcement_value[:150],
-            'changeMessage': '%@',
-        },
-    ]
-    if order_ahead_action:
-        # Older iOS versions that do not render featuredActions still expose
-        # this tappable link in Pass Details.
-        back_fields.insert(-1, {
-            'key': 'order_ahead',
-            'label': 'ORDER AHEAD',
-            'value': order_ahead_action['label'],
-            'attributedValue': f'<a href="{order_ahead_action["url"]}">{order_ahead_action["label"]}</a>',
-        })
-    if ann_message.strip() and ann_message.strip() != announcement_value:
-        back_fields.append({'key': 'announcement_detail', 'label': ' ', 'value': ann_message.strip()[:400]})
+    if card_type == 'hybrid':
+        # Hybrid Details is a small action/account menu rather than a dump of
+        # every pass field. ORDER AHEAD is intentionally first so the system
+        # ellipsis menu leads immediately to the tappable ordering link.
+        back_fields = []
+        if order_ahead_action:
+            back_fields.append({
+                'key': 'order_ahead',
+                'label': 'ORDER AHEAD',
+                'value': 'Tap to Order ›',
+                'attributedValue': f'<a href="{order_ahead_action["url"]}">Tap to Order ›</a>',
+            })
+
+        back_fields += [
+            {'key': key, 'label': label, 'value': str(value)}
+            for key, label, value in apple_details
+        ]
+        back_fields += activity_fields
+
+        # Do not show a placeholder announcement. Only use space when the
+        # business has something real to say.
+        if ann_title.strip() or ann_message.strip():
+            back_fields.append({
+                'key': 'announcement',
+                'label': '📢 ANNOUNCEMENT',
+                'value': (ann_title.strip() or ann_message.strip())[:150],
+                'changeMessage': '%@',
+            })
+            if ann_message.strip() and ann_message.strip() != ann_title.strip():
+                back_fields.append({
+                    'key': 'announcement_detail',
+                    'label': ' ',
+                    'value': ann_message.strip()[:400],
+                })
+
+        back_fields += [
+            {
+                'key': 'feedback',
+                'label': '⭐ FEEDBACK',
+                'value': 'Share Feedback ›',
+                'attributedValue': f'<a href="{BASE_URL}/feedback/{cust_public_id}">Share Feedback ›</a>',
+            },
+            {
+                'key': 'online',
+                'label': 'CARD & HISTORY',
+                'value': 'Open LoyaltyTree ›',
+                'attributedValue': f'<a href="{BASE_URL}/wallet/{cust_public_id}">Open LoyaltyTree ›</a>',
+            },
+        ]
+    else:
+        back_fields = [
+            {'key': 'card', 'label': 'CARD', 'value': card_title},
+            *[{'key': key, 'label': label, 'value': str(value)} for key, label, value in apple_details],
+            *activity_fields,
+            {'key': 'about', 'label': 'ABOUT', 'value': description or f'{biz_name} digital loyalty card powered by LoyaltyTree.'},
+            {
+                'key': 'feedback',
+                'label': '⭐ RATE YOUR EXPERIENCE',
+                'value': 'Share Feedback',
+                'attributedValue': f'<a href="{BASE_URL}/feedback/{cust_public_id}">Share Feedback</a>',
+            },
+            {
+                'key': 'online',
+                'label': 'FULL CARD & HISTORY',
+                'value': 'Open LoyaltyTree Card',
+                'attributedValue': f'<a href="{BASE_URL}/wallet/{cust_public_id}">Open LoyaltyTree Card</a>',
+            },
+            {
+                'key': 'announcement',
+                'label': '📢 ANNOUNCEMENT',
+                'value': announcement_value[:150],
+                'changeMessage': '%@',
+            },
+        ]
+        if order_ahead_action:
+            # Backwards-compatible tappable Order Ahead link for current iOS.
+            back_fields.insert(-1, {
+                'key': 'order_ahead',
+                'label': 'ORDER AHEAD',
+                'value': order_ahead_action['label'],
+                'attributedValue': f'<a href="{order_ahead_action["url"]}">{order_ahead_action["label"]}</a>',
+            })
+        if ann_message.strip() and ann_message.strip() != announcement_value:
+            back_fields.append({'key': 'announcement_detail', 'label': ' ', 'value': ann_message.strip()[:400]})
 
     pass_dict = {
         'formatVersion': 1,
@@ -3967,29 +4000,18 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                         'changeMessage': 'Membership status: %@',
                     },
                 ],
-                # The prior FRONT attributedValue experiment was not
-                # interactive on the real iPhone, so keep the Hybrid face clean.
-                'auxiliaryFields': [],
-
-                # EXPERIMENT ONLY. Apple currently documents this section as
-                # poster-event-ticket-only, even though additionalInfoFields is
-                # inherited through PassFields. This guarded storeCard injection
-                # lets us test actual Wallet behavior without exposing production
-                # passes by default. The normal Pass Details link remains the
-                # guaranteed fallback.
-                'additionalInfoFields': (
+                # Current iOS Store Cards cannot make arbitrary front fields
+                # open a URL. Use a clean visual cue pointing to Apple's real
+                # system ellipsis button. The first field in Pass Details is the
+                # actual tappable Order Ahead link.
+                'auxiliaryFields': (
                     [{
-                        'key': 'order_ahead_additional_info_test',
+                        'key': 'order_ahead_hint',
                         'label': 'ORDER AHEAD',
-                        'value': 'Tap to Order',
-                        'attributedValue': (
-                            f'<a href="{order_ahead_action["url"]}">Tap to Order</a>'
-                        ),
+                        'value': 'TAP ⋯ ABOVE',
+                        'textAlignment': 'PKTextAlignmentCenter',
                     }]
-                    if (
-                        order_ahead_action
-                        and apple_additional_info_test_enabled(business)
-                    ) else []
+                    if order_ahead_action else []
                 ),
                 'backFields': back_fields,
             }
