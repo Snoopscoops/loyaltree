@@ -8118,6 +8118,113 @@ async def owner_delete_oa_modifier_group(public_id: str, group_public_id: str, a
     supabase.table('order_ahead_modifier_groups').delete().eq('id',group.get('id')).execute(); return {'success':True}
 
 
+@app.post('/api/v1/business/{public_id}/order-ahead/beverage-modifiers/quick-setup')
+async def owner_quick_setup_beverage_modifiers(public_id: str, authorization: str = Header(default='')):
+    """Create reusable Size + Sugar Level groups when missing, then attach
+    them to existing beverage menu items. Existing groups/options are preserved
+    so a merchant's custom sizes or price add-ons are never overwritten.
+    """
+    business = _oa_require_owner_business(public_id, authorization)
+    bid = business.get('id')
+    now = datetime.now(timezone.utc).isoformat()
+
+    groups = (
+        supabase.table('order_ahead_modifier_groups')
+        .select('*').eq('business_id', bid).execute().data or []
+    )
+    by_name = {str(g.get('name') or '').strip().casefold(): g for g in groups}
+    created = []
+
+    def ensure_group(name: str, option_names: list[str]):
+        existing = by_name.get(name.casefold())
+        if existing:
+            return existing
+        row = {
+            'business_id': bid,
+            'name': name,
+            'selection_type': 'single',
+            'is_required': True,
+            'min_selections': 1,
+            'max_selections': 1,
+            'sort_order': 0 if name == 'Size' else 1,
+            'is_active': True,
+            'updated_at': now,
+        }
+        res = supabase.table('order_ahead_modifier_groups').insert(row).execute()
+        group = _supabase_first_row(res)
+        if not group:
+            raise HTTPException(status_code=500, detail=f'Could not create {name} option group')
+        option_rows = [
+            {
+                'modifier_group_id': group.get('id'),
+                'name': option_name,
+                'price_delta': 0,
+                'sort_order': idx,
+                'is_active': True,
+                'updated_at': now,
+            }
+            for idx, option_name in enumerate(option_names)
+        ]
+        if option_rows:
+            supabase.table('order_ahead_modifier_options').insert(option_rows).execute()
+        by_name[name.casefold()] = group
+        created.append(name)
+        return group
+
+    size_group = ensure_group('Size', ['Small', 'Medium', 'Large'])
+    sugar_group = ensure_group('Sugar Level', ['0%', '25%', '50%', '75%', '100%'])
+
+    categories = (
+        supabase.table('order_ahead_categories').select('id,name')
+        .eq('business_id', bid).execute().data or []
+    )
+    beverage_words = ('coffee', 'non-coffee', 'non coffee', 'drink', 'beverage', 'tea')
+    beverage_category_ids = [
+        c.get('id') for c in categories
+        if any(word in str(c.get('name') or '').strip().casefold() for word in beverage_words)
+    ]
+
+    items = []
+    if beverage_category_ids:
+        items = (
+            supabase.table('order_ahead_items').select('id,public_id,name,category_id')
+            .eq('business_id', bid).in_('category_id', beverage_category_ids).execute().data or []
+        )
+
+    item_ids = [i.get('id') for i in items if i.get('id') is not None]
+    existing_links = []
+    if item_ids:
+        existing_links = (
+            supabase.table('order_ahead_item_modifier_groups')
+            .select('item_id,modifier_group_id').in_('item_id', item_ids).execute().data or []
+        )
+    link_keys = {(x.get('item_id'), x.get('modifier_group_id')) for x in existing_links}
+    inserted_links = []
+    for item in items:
+        iid = item.get('id')
+        for order_index, group in enumerate((size_group, sugar_group)):
+            key = (iid, group.get('id'))
+            if key in link_keys:
+                continue
+            inserted_links.append({
+                'item_id': iid,
+                'modifier_group_id': group.get('id'),
+                'sort_order': order_index,
+            })
+            link_keys.add(key)
+    if inserted_links:
+        supabase.table('order_ahead_item_modifier_groups').insert(inserted_links).execute()
+
+    return {
+        'success': True,
+        'created_groups': created,
+        'beverage_items_found': len(items),
+        'links_added': len(inserted_links),
+        'size_group_public_id': size_group.get('public_id'),
+        'sugar_group_public_id': sugar_group.get('public_id'),
+    }
+
+
 def _oa_sync_item_relations(business: dict, item: dict, payload: OrderAheadItemPayload):
     iid=item.get('id'); bid=business.get('id')
     supabase.table('order_ahead_item_modifier_groups').delete().eq('item_id',iid).execute()
@@ -20423,7 +20530,8 @@ function selectedForGroup(groupId){return [...document.querySelectorAll(`[name="
 function itemUnitTotal(item){let extra=0;document.querySelectorAll('#itemModal input:checked').forEach(el=>extra+=Number(el.dataset.price||0));return Number(item.base_price||0)+extra}
 function updateItemPrice(id){const item=DATA.items.find(x=>x.public_id===id);if(!item)return;const el=document.getElementById('itemAddPrice');if(el)el.textContent=(editIndex===null?'Add to Cart':'Save Changes')+' · '+peso(itemUnitTotal(item)*itemQty);const q=document.getElementById('itemQty');if(q)q.textContent=itemQty}
 function changeItemQty(delta,id){itemQty=Math.max(1,Math.min(99,itemQty+delta));updateItemPrice(id)}
-function openItem(id,index=null){const i=DATA.items.find(x=>x.public_id===id);if(!i||i.is_available===false||i.branch_available===false)return;editIndex=index;const existing=index===null?null:cart[index];itemQty=existing?.quantity||1;const selectedIds=new Set((existing?.modifiers||[]).map(m=>m.option_public_id));const groups=(i.modifier_groups||[]).map(g=>{const min=Math.max(Number(g.min_selections||0),g.is_required?1:0);const max=g.selection_type==='single'?1:Number(g.max_selections||0);const guide=g.selection_type==='single'?(min?'Choose one':'Optional'):`Choose ${min?('at least '+min):'any'}${max?' · max '+max:''}`;return `<div class="group" data-group="${g.public_id}" data-min="${min}" data-max="${max||0}" data-type="${g.selection_type}"><h3>${esc(g.name)}${min?' *':''}</h3><div class="muted">${guide}</div>${(g.options||[]).map(o=>`<label class="opt"><span><input type="${g.selection_type==='multiple'?'checkbox':'radio'}" name="g_${g.public_id}" value="${o.public_id}" data-price="${o.price_delta}" data-name="${esc(o.name)}" ${selectedIds.has(o.public_id)?'checked':''} onchange="modifierChanged('${g.public_id}','${id}',this)"> ${esc(o.name)}</span><span>${Number(o.price_delta)?'+ '+peso(o.price_delta):''}</span></label>`).join('')}<div id="err_${g.public_id}" class="error"></div></div>`}).join('');document.getElementById('itemModal').innerHTML=`<div class="sheethead"><div><h2 style="margin:0">${esc(i.name)}</h2><div class="muted" style="margin-top:4px">${esc(i.description||'')}</div></div><button class="close" onclick="itemDlg.close()">×</button></div>${groups}<div class="qty"><strong>Quantity</strong><div class="qtyctrl"><button class="qbtn" onclick="changeItemQty(-1,'${id}')">−</button><strong id="itemQty">${itemQty}</strong><button class="qbtn" onclick="changeItemQty(1,'${id}')">+</button></div></div><button class="primary" id="itemAddPrice" onclick="confirmItem('${id}')"></button>${index!==null?'<button class="secondary" onclick="removeCartItem('+index+');itemDlg.close()">Remove item</button>':''}`;updateItemPrice(id);itemDlg.showModal()}
+function modifierPriority(g){const n=String(g?.name||'').trim().toLowerCase();if(n==='size')return 0;if(n==='sugar level'||n==='sugar')return 1;return 10}
+function openItem(id,index=null){const i=DATA.items.find(x=>x.public_id===id);if(!i||i.is_available===false||i.branch_available===false)return;editIndex=index;const existing=index===null?null:cart[index];itemQty=existing?.quantity||1;const selectedIds=new Set((existing?.modifiers||[]).map(m=>m.option_public_id));const groups=[...(i.modifier_groups||[])].sort((a,b)=>modifierPriority(a)-modifierPriority(b)).map(g=>{const min=Math.max(Number(g.min_selections||0),g.is_required?1:0);const max=g.selection_type==='single'?1:Number(g.max_selections||0);const guide=g.selection_type==='single'?(min?'Choose one':'Optional'):`Choose ${min?('at least '+min):'any'}${max?' · max '+max:''}`;return `<div class="group" data-group="${g.public_id}" data-min="${min}" data-max="${max||0}" data-type="${g.selection_type}"><h3>${esc(g.name)}${min?' *':''}</h3><div class="muted">${guide}</div>${(g.options||[]).map(o=>`<label class="opt"><span><input type="${g.selection_type==='multiple'?'checkbox':'radio'}" name="g_${g.public_id}" value="${o.public_id}" data-price="${o.price_delta}" data-name="${esc(o.name)}" ${selectedIds.has(o.public_id)?'checked':''} onchange="modifierChanged('${g.public_id}','${id}',this)"> ${esc(o.name)}</span><span>${Number(o.price_delta)?'+ '+peso(o.price_delta):''}</span></label>`).join('')}<div id="err_${g.public_id}" class="error"></div></div>`}).join('');document.getElementById('itemModal').innerHTML=`<div class="sheethead"><div><h2 style="margin:0">${esc(i.name)}</h2><div class="muted" style="margin-top:4px">${esc(i.description||'')}</div></div><button class="close" onclick="itemDlg.close()">×</button></div>${groups}<div class="qty"><strong>Quantity</strong><div class="qtyctrl"><button class="qbtn" onclick="changeItemQty(-1,'${id}')">−</button><strong id="itemQty">${itemQty}</strong><button class="qbtn" onclick="changeItemQty(1,'${id}')">+</button></div></div><button class="primary" id="itemAddPrice" onclick="confirmItem('${id}')"></button>${index!==null?'<button class="secondary" onclick="removeCartItem('+index+');itemDlg.close()">Remove item</button>':''}`;updateItemPrice(id);itemDlg.showModal()}
 function modifierChanged(groupId,itemId,el){const group=document.querySelector(`[data-group="${groupId}"]`);if(group&&group.dataset.type==='multiple'){const max=Number(group.dataset.max||0);const selected=selectedForGroup(groupId);if(max&&selected.length>max){el.checked=false;const e=document.getElementById('err_'+groupId);e.textContent='Choose up to '+max+'.';e.classList.add('show');setTimeout(()=>e.classList.remove('show'),1800)}}updateItemPrice(itemId)}
 function validateModifiers(item){let ok=true;for(const g of item.modifier_groups||[]){const count=selectedForGroup(g.public_id).length;const min=Math.max(Number(g.min_selections||0),g.is_required?1:0);const max=g.selection_type==='single'?1:Number(g.max_selections||0);const err=document.getElementById('err_'+g.public_id);let msg='';if(count<min)msg=min===1?'Please choose one.':'Please choose at least '+min+'.';else if(max&&count>max)msg='Choose up to '+max+'.';if(msg){ok=false;err.textContent=msg;err.classList.add('show')}else err?.classList.remove('show')}return ok}
 function confirmItem(id){const item=DATA.items.find(x=>x.public_id===id);if(!item||!validateModifiers(item))return;const modifiers=[];let extra=0;for(const g of item.modifier_groups||[]){for(const el of selectedForGroup(g.public_id)){const price=Number(el.dataset.price||0);extra+=price;modifiers.push({group_public_id:g.public_id,group_name:g.name,option_public_id:el.value,option_name:el.dataset.name||'',price_delta:price})}}const entry={item_public_id:item.public_id,name:item.name,base_price:Number(item.base_price||0),unit_price:Number(item.base_price||0)+extra,quantity:itemQty,modifiers};if(editIndex===null)cart.push(entry);else cart[editIndex]=entry;itemDlg.close();editIndex=null;saveCart()}
