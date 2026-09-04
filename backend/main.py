@@ -85,6 +85,21 @@ APPLE_WWDR_CERTIFICATE = os.getenv('APPLE_WWDR_CERTIFICATE', '')
 APPLE_PASS_AUTH_SECRET = os.getenv('APPLE_PASS_AUTH_SECRET', '')
 APPLE_PASS_WEB_SERVICE_URL = f'{BASE_URL}/api/v1/apple-wallet'
 
+# EXPERIMENT ONLY: Apple documents additionalInfoFields as supported only for
+# poster event tickets. Keep this off by default so a storeCard pass cannot be
+# broken accidentally. Enable temporarily on a test business/device to verify
+# whether the current iOS Wallet renderer ignores, rejects, or exposes it.
+APPLE_ADDITIONAL_INFO_TEST = _env_bool('APPLE_ADDITIONAL_INFO_TEST', False)
+APPLE_ADDITIONAL_INFO_TEST_PUBLIC_ID = os.getenv('APPLE_ADDITIONAL_INFO_TEST_PUBLIC_ID', '').strip()
+
+def apple_additional_info_test_enabled(business: dict) -> bool:
+    if not APPLE_ADDITIONAL_INFO_TEST:
+        return False
+    target = APPLE_ADDITIONAL_INFO_TEST_PUBLIC_ID
+    if not target:
+        return True
+    return str((business or {}).get('public_id') or '') == target
+
 # Platform super-admin credentials (you, the LoyaltyTree operator - not a
 # business owner). Set these in your environment; there is no signup flow
 # for this role on purpose. If unset, the admin routes are disabled.
@@ -3952,23 +3967,29 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                         'changeMessage': 'Membership status: %@',
                     },
                 ],
-                # Experimental compatibility test for iOS versions that do
-                # not yet render Wallet featuredActions. PassFieldContent accepts
-                # attributedValue, so expose the member-specific Order Ahead URL
-                # on a FRONT auxiliary field and let the real device tell us
-                # whether this iOS version makes the attributed text interactive.
-                # If Wallet renders it as plain text, the normal Pass Details
-                # Order Ahead link remains available and nothing else breaks.
-                'auxiliaryFields': (
+                # The prior FRONT attributedValue experiment was not
+                # interactive on the real iPhone, so keep the Hybrid face clean.
+                'auxiliaryFields': [],
+
+                # EXPERIMENT ONLY. Apple currently documents this section as
+                # poster-event-ticket-only, even though additionalInfoFields is
+                # inherited through PassFields. This guarded storeCard injection
+                # lets us test actual Wallet behavior without exposing production
+                # passes by default. The normal Pass Details link remains the
+                # guaranteed fallback.
+                'additionalInfoFields': (
                     [{
-                        'key': 'order_ahead_front_test',
+                        'key': 'order_ahead_additional_info_test',
                         'label': 'ORDER AHEAD',
                         'value': 'Tap to Order',
                         'attributedValue': (
                             f'<a href="{order_ahead_action["url"]}">Tap to Order</a>'
                         ),
                     }]
-                    if order_ahead_action else []
+                    if (
+                        order_ahead_action
+                        and apple_additional_info_test_enabled(business)
+                    ) else []
                 ),
                 'backFields': back_fields,
             }
