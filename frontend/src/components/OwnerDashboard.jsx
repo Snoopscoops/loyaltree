@@ -228,9 +228,11 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [branches, setBranches] = useState([])
   const [orderAheadSetup, setOrderAheadSetup] = useState(null)
   const [orderAheadSaving, setOrderAheadSaving] = useState(false)
+  const [orderAheadPaymentConfig, setOrderAheadPaymentConfig] = useState(null)
+  const [orderAheadPaymentSaving, setOrderAheadPaymentSaving] = useState(false)
   const [orderAheadForm, setOrderAheadForm] = useState({
     pickup_mode: 'both', min_prep_minutes: 15, slot_interval_minutes: 15,
-    max_advance_days: 7, payment_mode: 'mock', ready_notification_enabled: true,
+    max_advance_days: 7, ready_notification_enabled: true,
   })
   const [orderAheadPickupHours, setOrderAheadPickupHours] = useState({})
   const [orderAheadHoursSaving, setOrderAheadHoursSaving] = useState('')
@@ -492,13 +494,13 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       setCashierDevices(Array.isArray(deviceData) ? deviceData : [])
       if (orderAheadRes.ok && orderAheadData) {
         setOrderAheadSetup(orderAheadData)
+        setOrderAheadPaymentConfig(orderAheadData.payment || null)
         const s = orderAheadData.settings || {}
         setOrderAheadForm({
           pickup_mode: s.pickup_mode || 'both',
           min_prep_minutes: Number(s.min_prep_minutes ?? 15),
           slot_interval_minutes: Number(s.slot_interval_minutes ?? 15),
           max_advance_days: Number(s.max_advance_days ?? 7),
-          payment_mode: s.payment_mode || 'mock',
           ready_notification_enabled: s.ready_notification_enabled !== false,
         })
         const hoursMap = {}
@@ -518,6 +520,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         setOrderAheadPickupHours(hoursMap)
       } else {
         setOrderAheadSetup(null)
+        setOrderAheadPaymentConfig(null)
         setOrderAheadPickupHours({})
       }
       setSetupKit(kitData && !kitData.detail ? kitData : null)
@@ -591,7 +594,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           min_prep_minutes: Number(orderAheadForm.min_prep_minutes),
           slot_interval_minutes: Number(orderAheadForm.slot_interval_minutes),
           max_advance_days: Number(orderAheadForm.max_advance_days),
-          payment_mode: orderAheadForm.payment_mode || 'mock',
           ready_notification_enabled: !!orderAheadForm.ready_notification_enabled,
         }),
       })
@@ -604,6 +606,45 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     } finally {
       setOrderAheadSaving(false)
       setTimeout(() => setMessage(''), 3000)
+    }
+  }
+
+  const saveOrderAheadPaymentProvider = async (provider) => {
+    if (!user?.business_slug || !business?.order_ahead_enabled) return
+    setOrderAheadPaymentSaving(true)
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/order-ahead/payment-config`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider, qrph_enabled: true }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not save payment provider')
+      setOrderAheadPaymentConfig(data.payment || null)
+      setMessage(provider === 'paymongo' ? 'PayMongo TEST selected for Order Ahead' : 'Test Payment selected')
+      await loadData()
+    } catch (err) {
+      setMessage(err.message || 'Could not save payment provider')
+    } finally {
+      setOrderAheadPaymentSaving(false)
+      setTimeout(() => setMessage(''), 3500)
+    }
+  }
+
+  const refreshOrderAheadPaymentConfig = async () => {
+    if (!user?.business_slug) return
+    setOrderAheadPaymentSaving(true)
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/order-ahead/payment-config`)
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not refresh payment status')
+      setOrderAheadPaymentConfig(data.payment || null)
+      setMessage('Payment connection status refreshed')
+    } catch (err) {
+      setMessage(err.message || 'Could not refresh payment status')
+    } finally {
+      setOrderAheadPaymentSaving(false)
+      setTimeout(() => setMessage(''), 2500)
     }
   }
 
@@ -2100,7 +2141,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             </div>
 
             <div style={{background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:14,padding:14,marginBottom:16,fontSize:12.5,color:'#475569',lineHeight:1.6}}>
-              <strong style={{color:'#0f172a'}}>Current beta flow:</strong> Wallet → Choose Branch → Menu → Customize / Cart → Pickup / Checkout → {orderAheadForm.payment_mode==='paymongo'?'PayMongo TEST QR Ph':'Test Payment'} → Business Order → Ready for Pickup
+              <strong style={{color:'#0f172a'}}>Current beta flow:</strong> Wallet → Choose Branch → Menu → Customize / Cart → Pickup / Checkout → {orderAheadPaymentConfig?.provider==='paymongo'?'PayMongo TEST QR Ph':'Test Payment'} → Business Order → Ready for Pickup
             </div>
 
             <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))',gap:12}}>
@@ -2126,28 +2167,101 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               </div>
 
               <div style={styles.card}>
-                <div style={{fontSize:11,fontWeight:850,color:'#64748b'}}>4 · PAYMENT</div>
-                <h3 style={{margin:'5px 0 4px'}}>{orderAheadForm.payment_mode==='paymongo'?'💳 PayMongo TEST · QR Ph':'🧪 Test Payment'}</h3>
-                <p style={{margin:'0 0 10px',fontSize:12,color:'#64748b'}}>
-                  {orderAheadForm.payment_mode==='paymongo'
-                    ? 'Customer receives a PayMongo TEST QR Ph code. The order appears on the board only after the verified webhook confirms payment.'
+                <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'flex-start'}}>
+                  <div>
+                    <div style={{fontSize:11,fontWeight:850,color:'#64748b'}}>4 · PAYMENT</div>
+                    <h3 style={{margin:'5px 0 4px'}}>
+                      {orderAheadPaymentConfig?.provider==='paymongo' ? '💳 PayMongo TEST · QR Ph' : '🧪 Test Payment'}
+                    </h3>
+                  </div>
+                  <span style={{
+                    padding:'5px 8px',borderRadius:999,fontSize:9.5,fontWeight:850,
+                    background:orderAheadPaymentConfig?.connection_status==='test_ready'?'#ecfdf5':'#fff7ed',
+                    color:orderAheadPaymentConfig?.connection_status==='test_ready'?'#047857':'#b45309'
+                  }}>
+                    {orderAheadPaymentConfig?.connection_status==='test_ready'
+                      ? 'TEST READY'
+                      : orderAheadPaymentConfig?.paymongo_setup_stage==='webhook_required'
+                      ? 'WEBHOOK NEEDED'
+                      : orderAheadPaymentConfig?.provider==='mock'
+                      ? 'MOCK READY'
+                      : 'KEY NEEDED'}
+                  </span>
+                </div>
+
+                <p style={{margin:'0 0 12px',fontSize:12,color:'#64748b',lineHeight:1.5}}>
+                  {orderAheadPaymentConfig?.provider==='paymongo'
+                    ? 'Customer receives a PayMongo TEST QR Ph code. Payment is confirmed only by a verified PayMongo webhook before the order enters the live board.'
                     : 'Manual beta confirmation. No external payment is processed.'}
                 </p>
+
                 <label style={{...styles.label,margin:0}}>Payment provider
                   <select
                     style={{...styles.input,marginTop:6}}
-                    value={orderAheadForm.payment_mode||'mock'}
-                    onChange={e=>setOrderAheadForm({...orderAheadForm,payment_mode:e.target.value})}
+                    value={orderAheadPaymentConfig?.provider || 'mock'}
+                    disabled={orderAheadPaymentSaving}
+                    onChange={e=>saveOrderAheadPaymentProvider(e.target.value)}
                   >
                     <option value="mock">Test Payment</option>
-                    <option value="paymongo" disabled={!orderAheadSetup?.payment?.paymongo_test_configured}>PayMongo TEST · QR Ph</option>
+                    <option value="paymongo" disabled={!orderAheadPaymentConfig?.can_enable_paymongo}>PayMongo TEST · QR Ph</option>
                   </select>
                 </label>
-                <div style={{fontSize:10.5,marginTop:8,color:orderAheadSetup?.payment?.paymongo_test_configured?'#047857':'#b45309',fontWeight:750}}>
-                  {orderAheadSetup?.payment?.paymongo_test_configured
-                    ? '✓ PayMongo test key + webhook configured'
-                    : 'PayMongo TEST is locked until LoyaltyTree configures both the test key and webhook secret on the backend.'}
+
+                <div style={{display:'grid',gap:7,marginTop:12,fontSize:11.5,color:'#475569'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',gap:10}}>
+                    <span>Mode</span><strong style={{color:'#0f172a'}}>TEST ONLY 🔒</strong>
+                  </div>
+                  <div style={{display:'flex',justifyContent:'space-between',gap:10}}>
+                    <span>Payment method</span><strong style={{color:'#0f172a'}}>QR Ph</strong>
+                  </div>
+                  <div style={{display:'flex',justifyContent:'space-between',gap:10}}>
+                    <span>Account</span><strong style={{color:'#0f172a',textAlign:'right'}}>{orderAheadPaymentConfig?.account_label || 'LoyaltyTree PayMongo TEST'}</strong>
+                  </div>
+                  <div style={{display:'flex',justifyContent:'space-between',gap:10}}>
+                    <span>Test key</span>
+                    <strong style={{color:orderAheadPaymentConfig?.paymongo_test_key_configured?'#047857':'#b45309'}}>
+                      {orderAheadPaymentConfig?.paymongo_test_key_configured?'Configured':'Missing'}
+                    </strong>
+                  </div>
+                  <div style={{display:'flex',justifyContent:'space-between',gap:10}}>
+                    <span>Webhook secret</span>
+                    <strong style={{color:orderAheadPaymentConfig?.paymongo_webhook_secret_configured?'#047857':'#b45309'}}>
+                      {orderAheadPaymentConfig?.paymongo_webhook_secret_configured?'Configured':'Missing'}
+                    </strong>
+                  </div>
+                  <div style={{display:'flex',justifyContent:'space-between',gap:10}}>
+                    <span>Last webhook</span>
+                    <strong style={{color:'#0f172a',textAlign:'right'}}>
+                      {orderAheadPaymentConfig?.last_webhook_at
+                        ? new Date(orderAheadPaymentConfig.last_webhook_at).toLocaleString('en-PH',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})
+                        : 'Waiting'}
+                    </strong>
+                  </div>
+                  <div style={{display:'flex',justifyContent:'space-between',gap:10}}>
+                    <span>Last confirmed payment</span>
+                    <strong style={{color:'#0f172a',textAlign:'right'}}>
+                      {orderAheadPaymentConfig?.last_payment_at
+                        ? new Date(orderAheadPaymentConfig.last_payment_at).toLocaleString('en-PH',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})
+                        : 'None yet'}
+                    </strong>
+                  </div>
                 </div>
+
+                <div style={{
+                  marginTop:12,padding:'9px 10px',borderRadius:10,fontSize:10.5,lineHeight:1.45,
+                  background:'#f8fafc',color:'#64748b',border:'1px solid #e2e8f0'
+                }}>
+                  🔒 Live PayMongo is intentionally locked during beta. Owners never enter or see API secret keys here.
+                </div>
+
+                <button
+                  type="button"
+                  style={{...styles.addBtn,marginTop:10}}
+                  onClick={refreshOrderAheadPaymentConfig}
+                  disabled={orderAheadPaymentSaving}
+                >
+                  {orderAheadPaymentSaving?'Checking…':'Refresh payment status'}
+                </button>
               </div>
             </div>
 

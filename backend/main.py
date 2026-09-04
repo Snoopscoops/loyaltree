@@ -1600,6 +1600,13 @@ class OrderAheadSettingsUpdate(BaseModel):
     payment_mode: Optional[Literal['mock', 'paymongo']] = None
     ready_notification_enabled: Optional[bool] = None
 
+class OrderAheadPaymentConfigUpdate(BaseModel):
+    # Business-level payment selection. PayMongo LIVE stays intentionally
+    # unavailable during beta; no secret/API key is accepted from the owner UI.
+    provider: Literal['mock', 'paymongo']
+    qrph_enabled: Optional[bool] = True
+
+
 class AdminOrderAheadDesignUpdate(BaseModel):
     # Customer-facing Order Ahead appearance is intentionally platform-admin
     # controlled. Owners can change operational content, not layouts/styles.
@@ -8250,11 +8257,10 @@ async def owner_get_order_ahead_setup(public_id: str, authorization: str = Heade
         },
         'orders_count': orders_count,
         'branch_pickup_hours': branch_pickup_hours,
-        'payment': {
-            'mode': str((settings or {}).get('payment_mode') or 'mock'),
-            'paymongo_test_configured': order_ahead_paymongo_test_configured(),
-            'paymongo_test_only': True,
-        },
+        'payment': _oa_payment_config_public(
+            business,
+            _oa_payment_config_row(business, create_if_missing=True),
+        ),
         'ready_message_preview': f"Your order from {business.get('name') or 'this business'} is ready.",
     }
 
@@ -8274,14 +8280,9 @@ async def owner_update_order_ahead_settings(
         raise HTTPException(status_code=403, detail="Order Ahead must be enabled by LoyaltyTree Admin first")
 
     patch = {k: v for k, v in update.dict(exclude_unset=True).items() if v is not None}
-    if patch.get('payment_mode') == 'paymongo' and not order_ahead_paymongo_test_configured():
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "PayMongo TEST MODE is not configured for Order Ahead. "
-                "Add ORDER_AHEAD_PAYMONGO_SECRET_KEY=sk_test_... first."
-            ),
-        )
+    legacy_payment_mode = patch.pop('payment_mode', None)
+    if legacy_payment_mode is not None:
+        _oa_save_payment_provider(business, legacy_payment_mode, True)
     patch['updated_at'] = datetime.utcnow().isoformat()
     try:
         existing = _supabase_first_row(
@@ -8326,6 +8327,272 @@ async def owner_update_order_ahead_settings(
 
     return {'success': True, 'settings': settings}
 
+
+
+
+def _oa_payment_config_defaults(business: dict) -> dict:
+    return {
+        'business_id': business.get('id'),
+        'provider': 'mock',
+        'paymongo_mode': 'test',
+        'connection_type': 'platform_test',
+        'account_label': 'LoyaltyTree PayMongo TEST',
+        'qrph_enabled': True,
+        'last_webhook_at': None,
+        'last_payment_at': None,
+    }
+
+
+def _oa_payment_config_row(business: dict, create_if_missing: bool = False) -> dict:
+    """Load one business-specific payment configuration.
+
+    Secrets are deliberately not stored here. During beta, the selected
+    business uses LoyaltyTree's server-side PayMongo TEST credentials.
+    """
+    defaults = _oa_payment_config_defaults(business)
+    try:
+        row = _supabase_first_row(
+            supabase.table('order_ahead_payment_configs').select('*')
+            .eq('business_id', business.get('id')).limit(1).execute()
+        )
+    except Exception as e:
+        if 'order_ahead_payment_configs' in str(e):
+            raise HTTPException(
+                status_code=503,
+                detail='Install the Order Ahead payment configuration migration first.'
+            )
+        raise
+
+    if row:
+        return {**defaults, **row}
+    if not create_if_missing:
+        return defaults
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    try:
+        inserted = _supabase_first_row(
+            supabase.table('order_ahead_payment_configs').insert({
+                **defaults,
+                'created_at': now_iso,
+                'updated_at': now_iso,
+            }).execute()
+        )
+        return {**defaults, **(inserted or {})}
+    except Exception as e:
+        # Handle a concurrent first-load insert gracefully.
+        try:
+            row = _supabase_first_row(
+                supabase.table('order_ahead_payment_configs').select('*')
+                .eq('business_id', business.get('id')).limit(1).execute()
+            )
+            if row:
+                return {**defaults, **row}
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f'Could not initialize payment configuration: {friendly_db_error(e)}')
+
+
+def _oa_payment_config_public(business: dict, row: Optional[dict] = None) -> dict:
+    cfg = {**_oa_payment_config_defaults(business), **(row or {})}
+    provider = str(cfg.get('provider') or 'mock').lower()
+    mode = str(cfg.get('paymongo_mode') or 'test').lower()
+    test_key_ready = bool(
+        ORDER_AHEAD_PAYMONGO_SECRET_KEY
+        and ORDER_AHEAD_PAYMONGO_SECRET_KEY.startswith('sk_test_')
+    )
+    webhook_secret_ready = bool(ORDER_AHEAD_PAYMONGO_WEBHOOK_SECRET)
+    test_ready = bool(test_key_ready and webhook_secret_ready)
+    live_locked = True
+
+    if not test_key_ready:
+        paymongo_setup_stage = 'test_key_missing'
+    elif not webhook_secret_ready:
+        paymongo_setup_stage = 'webhook_required'
+    else:
+        paymongo_setup_stage = 'test_ready'
+
+    if provider == 'paymongo':
+        if mode != 'test':
+            connection_status = 'live_locked'
+        elif not test_ready:
+            connection_status = paymongo_setup_stage
+        else:
+            connection_status = 'test_ready'
+    else:
+        connection_status = 'mock_ready'
+
+    return {
+        'provider': provider if provider in ('mock', 'paymongo') else 'mock',
+        'paymongo_mode': mode if mode in ('test', 'live') else 'test',
+        'connection_type': cfg.get('connection_type') or 'platform_test',
+        'connection_status': connection_status,
+        'account_label': cfg.get('account_label') or 'LoyaltyTree PayMongo TEST',
+        'qrph_enabled': cfg.get('qrph_enabled') is not False,
+        'paymongo_test_key_configured': test_key_ready,
+        'paymongo_webhook_secret_configured': webhook_secret_ready,
+        'paymongo_setup_stage': paymongo_setup_stage,
+        'paymongo_test_configured': test_ready,
+        'can_enable_paymongo': bool(test_ready and cfg.get('qrph_enabled') is not False),
+        'live_locked': live_locked,
+        'last_webhook_at': cfg.get('last_webhook_at'),
+        'last_payment_at': cfg.get('last_payment_at'),
+        'payments': ['qrph'] if cfg.get('qrph_enabled') is not False else [],
+        'settlement_note': (
+            'Beta uses LoyaltyTree PayMongo TEST only. No live money is collected.'
+            if mode == 'test'
+            else 'Live merchant settlement is not enabled in this beta.'
+        ),
+    }
+
+
+def _oa_save_payment_provider(business: dict, provider: str, qrph_enabled: bool = True) -> dict:
+    provider = str(provider or 'mock').lower()
+    if provider not in ('mock', 'paymongo'):
+        raise HTTPException(status_code=400, detail='Unsupported Order Ahead payment provider')
+    if provider == 'paymongo' and not order_ahead_paymongo_test_configured():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                'PayMongo TEST is not ready. Configure both '
+                'ORDER_AHEAD_PAYMONGO_SECRET_KEY=sk_test_... and '
+                'ORDER_AHEAD_PAYMONGO_WEBHOOK_SECRET first.'
+            ),
+        )
+
+    existing = _oa_payment_config_row(business, create_if_missing=True)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    patch = {
+        'provider': provider,
+        # Never let this owner route turn beta into live mode.
+        'paymongo_mode': 'test',
+        'connection_type': 'platform_test',
+        'account_label': 'LoyaltyTree PayMongo TEST',
+        'qrph_enabled': bool(qrph_enabled),
+        'updated_at': now_iso,
+    }
+    try:
+        res = supabase.table('order_ahead_payment_configs').update(patch).eq(
+            'business_id', business.get('id')
+        ).execute()
+        row = _supabase_first_row(res) or {**existing, **patch}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f'Could not save payment configuration: {friendly_db_error(e)}')
+
+    # Mirror the old settings.payment_mode while older frontend/backend builds
+    # still exist. The dedicated payment config is canonical from now on.
+    try:
+        supabase.table('order_ahead_settings').update({
+            'payment_mode': provider,
+            'updated_at': now_iso,
+        }).eq('business_id', business.get('id')).execute()
+    except Exception:
+        pass
+
+    return _oa_payment_config_public(business, row)
+
+
+def _oa_effective_payment_provider(business: dict) -> tuple[str, dict]:
+    """Canonical payment provider resolver for customer checkout."""
+    try:
+        row = _oa_payment_config_row(business, create_if_missing=False)
+        cfg = _oa_payment_config_public(business, row)
+        provider = cfg.get('provider') or 'mock'
+    except HTTPException:
+        raise
+    except Exception:
+        # Backward-compatible fallback only; new deployments should have
+        # order_ahead_payment_configs installed.
+        settings = _supabase_first_row(
+            supabase.table('order_ahead_settings').select('payment_mode')
+            .eq('business_id', business.get('id')).limit(1).execute()
+        ) or {}
+        provider = str(settings.get('payment_mode') or 'mock').lower()
+        cfg = {
+            **_oa_payment_config_public(business, {'provider': provider}),
+            'legacy_fallback': True,
+        }
+
+    if provider == 'paymongo':
+        if cfg.get('paymongo_mode') != 'test':
+            raise HTTPException(status_code=503, detail='PayMongo LIVE is locked during Order Ahead beta')
+        if not cfg.get('can_enable_paymongo'):
+            raise HTTPException(status_code=503, detail='PayMongo TEST is not fully configured for this Order Ahead business')
+    return provider, cfg
+
+
+def _oa_touch_payment_config(business_id, *, webhook: bool = False, payment: bool = False):
+    if not business_id:
+        return
+    patch = {'updated_at': datetime.now(timezone.utc).isoformat()}
+    if webhook:
+        patch['last_webhook_at'] = patch['updated_at']
+    if payment:
+        patch['last_payment_at'] = patch['updated_at']
+    try:
+        supabase.table('order_ahead_payment_configs').update(patch).eq(
+            'business_id', business_id
+        ).execute()
+    except Exception as e:
+        print(f'ORDER AHEAD payment config timestamp warning: {e}')
+
+
+def _oa_webhook_event_state(event_id: Optional[str]) -> Optional[dict]:
+    if not event_id:
+        return None
+    try:
+        return _supabase_first_row(
+            supabase.table('order_ahead_payment_webhook_events').select('*')
+            .eq('paymongo_event_id', event_id).limit(1).execute()
+        )
+    except Exception:
+        return None
+
+
+def _oa_claim_webhook_event(
+    event_id: Optional[str],
+    event_type: str,
+    business_id,
+    order_id,
+    payment_intent_id: Optional[str],
+) -> bool:
+    """Idempotency claim.
+
+    A processed event returns False. An earlier unprocessed claim is allowed to
+    retry, which avoids losing a payment if processing crashed after receipt.
+    """
+    if not event_id:
+        return True
+    existing = _oa_webhook_event_state(event_id)
+    if existing:
+        return not bool(existing.get('processed_at'))
+
+    try:
+        supabase.table('order_ahead_payment_webhook_events').insert({
+            'paymongo_event_id': event_id,
+            'event_type': event_type or 'unknown',
+            'business_id': business_id,
+            'order_id': order_id,
+            'payment_intent_id': payment_intent_id,
+            'result': 'received',
+            'received_at': datetime.now(timezone.utc).isoformat(),
+        }).execute()
+        return True
+    except Exception:
+        # Unique constraint race: re-read and honor processed_at.
+        existing = _oa_webhook_event_state(event_id)
+        return not bool((existing or {}).get('processed_at'))
+
+
+def _oa_finish_webhook_event(event_id: Optional[str], result: str):
+    if not event_id:
+        return
+    try:
+        supabase.table('order_ahead_payment_webhook_events').update({
+            'result': result,
+            'processed_at': datetime.now(timezone.utc).isoformat(),
+        }).eq('paymongo_event_id', event_id).execute()
+    except Exception as e:
+        print(f'ORDER AHEAD webhook idempotency update warning: {e}')
 
 
 def _oa_require_owner_business(public_id: str, authorization: str) -> dict:
@@ -8621,6 +8888,34 @@ def _oa_branch_pickup_options(settings: dict, hours_days: list[dict]) -> dict:
         'asap_ready_label': ready_label,
         'slots': slots,
     }
+
+
+
+@app.get('/api/v1/business/{public_id}/order-ahead/payment-config')
+async def owner_get_order_ahead_payment_config(
+    public_id: str,
+    authorization: str = Header(default=''),
+):
+    business = _oa_require_owner_business(public_id, authorization)
+    row = _oa_payment_config_row(business, create_if_missing=True)
+    return {'payment': _oa_payment_config_public(business, row)}
+
+
+@app.patch('/api/v1/business/{public_id}/order-ahead/payment-config')
+async def owner_update_order_ahead_payment_config(
+    public_id: str,
+    payload: OrderAheadPaymentConfigUpdate,
+    authorization: str = Header(default=''),
+):
+    business = _oa_require_owner_business(public_id, authorization)
+    if not bool(business.get('order_ahead_enabled')):
+        raise HTTPException(status_code=403, detail='Order Ahead must be enabled by LoyaltyTree Admin first')
+    payment = _oa_save_payment_provider(
+        business,
+        payload.provider,
+        payload.qrph_enabled is not False,
+    )
+    return {'success': True, 'payment': payment}
 
 
 @app.get('/api/v1/business/{public_id}/order-ahead/menu')
@@ -9136,11 +9431,7 @@ async def customer_create_order_ahead_order(
         settings, hours = _oa_order_settings_and_hours(business, branch)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f'Could not load pickup settings: {friendly_db_error(e)}')
-    payment_mode = str(settings.get('payment_mode') or 'mock').lower()
-    if payment_mode not in ('mock', 'paymongo'):
-        raise HTTPException(status_code=409, detail='Unsupported Order Ahead payment mode')
-    if payment_mode == 'paymongo' and not order_ahead_paymongo_test_configured():
-        raise HTTPException(status_code=503, detail='PayMongo TEST MODE is not configured for Order Ahead')
+    payment_mode, payment_config = _oa_effective_payment_provider(business)
 
     pickup_dt = _oa_validate_pickup_for_order(settings, hours, payload.pickup_type, payload.pickup_at)
     lines, subtotal = _oa_price_cart(business, branch, payload.items)
@@ -10412,8 +10703,11 @@ async def paymongo_webhook(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid payload")
 
-    envelope = event.get("data", {}).get("attributes", {})
+    event_data = event.get("data", {}) or {}
+    paymongo_event_id = event_data.get("id")
+    envelope = event_data.get("attributes", {}) or {}
     event_type = envelope.get("type", "")
+    event_livemode = bool(envelope.get("livemode"))
     resource = envelope.get("data", {}) or {}
     resource_attrs = resource.get("attributes", {}) or {}
     metadata = resource_attrs.get("metadata") or {}
@@ -10450,8 +10744,26 @@ async def paymongo_webhook(request: Request):
             oa_order = None
 
     if oa_order and str(oa_order.get('payment_mode') or '') == 'paymongo':
+        # Order Ahead beta accepts TEST webhook events only. A live PayMongo
+        # event must never be able to confirm a beta order.
+        if event_livemode:
+            _oa_touch_payment_config(oa_order.get('business_id'), webhook=True)
+            return {"received": True, "context": "order_ahead", "live_rejected": True}
+
+        if not _oa_claim_webhook_event(
+            paymongo_event_id,
+            event_type,
+            oa_order.get('business_id'),
+            oa_order.get('id'),
+            payment_intent_id,
+        ):
+            return {"received": True, "duplicate": True, "context": "order_ahead"}
+
+        _oa_touch_payment_config(oa_order.get('business_id'), webhook=True)
+
         if event_type == 'payment.paid':
             if str(oa_order.get('payment_status') or '').lower() == 'paid':
+                _oa_finish_webhook_event(paymongo_event_id, 'already_paid')
                 return {"received": True, "duplicate": True, "context": "order_ahead"}
 
             expected_centavos = int(round(float(oa_order.get('total') or 0) * 100))
@@ -10461,6 +10773,7 @@ async def paymongo_webhook(request: Request):
                     f"ORDER AHEAD PAYMONGO amount mismatch intent={payment_intent_id} "
                     f"expected={expected_centavos} received={received_centavos}"
                 )
+                _oa_finish_webhook_event(paymongo_event_id, 'amount_mismatch')
                 return {"received": True, "context": "order_ahead", "amount_mismatch": True}
 
             now_iso = datetime.now(timezone.utc).isoformat()
@@ -10483,6 +10796,8 @@ async def paymongo_webhook(request: Request):
                     _oa_refresh_apple_order_status(dict(customer))
             except Exception as e:
                 print(f"ORDER AHEAD wallet refresh warning: {e}")
+            _oa_touch_payment_config(oa_order.get('business_id'), payment=True)
+            _oa_finish_webhook_event(paymongo_event_id, 'paid')
             return {"received": True, "context": "order_ahead", "paid": True}
 
         if event_type in ('payment.failed', 'qrph.expired'):
@@ -10493,8 +10808,10 @@ async def paymongo_webhook(request: Request):
                 }).eq('id', oa_order.get('id')).eq('payment_status', 'pending').execute()
             except Exception as e:
                 print(f"ORDER AHEAD PAYMONGO failure update error: {e}")
+            _oa_finish_webhook_event(paymongo_event_id, 'failed')
             return {"received": True, "context": "order_ahead", "failed": True}
 
+        _oa_finish_webhook_event(paymongo_event_id, 'ignored')
         return {"received": True, "context": "order_ahead"}
 
     business = None
@@ -21216,15 +21533,12 @@ async def order_ahead_branch_page(customer_public_id: str, token: str = Query(de
     compact_class = ' compact' if ui['header_style'] == 'compact' else ''
     banner_mode_class = ' banner-mode' if ui['header_style'] == 'banner' and banner_html else ''
     try:
-        oa_payment_settings = _supabase_first_row(
-            supabase.table('order_ahead_settings').select('payment_mode')
-            .eq('business_id', business.get('id')).limit(1).execute()
-        ) or {}
+        oa_payment_provider, _oa_payment_cfg = _oa_effective_payment_provider(business)
     except Exception:
-        oa_payment_settings = {}
+        oa_payment_provider = 'mock'
     payment_footer = (
         'PayMongo TEST MODE · No live money will be collected.'
-        if str(oa_payment_settings.get('payment_mode') or 'mock') == 'paymongo'
+        if oa_payment_provider == 'paymongo'
         else 'Test mode · No real payment will be collected.'
     )
 
@@ -21301,8 +21615,8 @@ async def order_ahead_branch_selected(customer_public_id: str, branch_public_id:
         'branch': {'public_id': branch_public_id, 'name': branch.get('name') or 'Branch', 'address': branch.get('address') or ''},
         'pickup': pickup,
         'payment': {
-            'mode': str(settings.get('payment_mode') or 'mock'),
-            'paymongo_test': str(settings.get('payment_mode') or 'mock') == 'paymongo',
+            'mode': _oa_effective_payment_provider(business)[0],
+            'paymongo_test': _oa_effective_payment_provider(business)[0] == 'paymongo',
         },
         'customer': {'name': customer.get('name') or 'Member'},
     }
