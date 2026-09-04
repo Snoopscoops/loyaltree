@@ -231,6 +231,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [orderAheadOrders, setOrderAheadOrders] = useState([])
   const [orderAheadOrdersLoading, setOrderAheadOrdersLoading] = useState(false)
   const [orderAheadOrderSaving, setOrderAheadOrderSaving] = useState('')
+  const [orderAheadBranchFilter, setOrderAheadBranchFilter] = useState('')
   const [stats, setStats] = useState(null)
   const [program, setProgram] = useState(null)
   const [subscription, setSubscription] = useState(null)
@@ -344,6 +345,14 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const isTablet = viewportWidth >= 600 && viewportWidth <= 1100
   const isMobile = viewportWidth < 600
   const activeOrderAheadBranches = branches.filter(b => b?.is_active !== false)
+  const visibleOrderAheadOrders = orderAheadBranchFilter
+    ? orderAheadOrders.filter(o => o?.branch?.public_id === orderAheadBranchFilter)
+    : orderAheadOrders
+  const orderAheadBranchCounts = activeOrderAheadBranches.map(branch => ({
+    ...branch,
+    order_count: orderAheadOrders.filter(o => o?.branch?.public_id === branch.public_id).length,
+    active_count: orderAheadOrders.filter(o => o?.branch?.public_id === branch.public_id && ['new','preparing','ready'].includes(o.status)).length,
+  }))
 
   useEffect(() => {
     const onResize = () => setViewportWidth(window.innerWidth)
@@ -2171,6 +2180,13 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 <div><div style={{fontSize:11,fontWeight:850,color:'#64748b'}}>BUSINESS ORDERS</div><h3 style={{margin:'5px 0 3px'}}>Live Order Board</h3><p style={{margin:0,fontSize:12,color:'#64748b'}}>Confirmed Test Payment orders move through New → Preparing → Ready → Completed.</p></div>
                 <button type="button" style={styles.addBtn} onClick={loadOrderAheadOrders} disabled={orderAheadOrdersLoading}>{orderAheadOrdersLoading?'Refreshing…':'↻ Refresh'}</button>
               </div>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginTop:12}}>
+                <select value={orderAheadBranchFilter} onChange={e=>setOrderAheadBranchFilter(e.target.value)} style={{...styles.input,width:isMobile?'100%':'auto',minWidth:isMobile?0:190,padding:'9px 10px',fontSize:11.5}}>
+                  <option value="">All branches · {orderAheadOrders.length} orders</option>
+                  {orderAheadBranchCounts.map(branch=><option key={branch.public_id} value={branch.public_id}>{branch.name} · {branch.order_count} orders</option>)}
+                </select>
+                {!isMobile && orderAheadBranchCounts.map(branch=><button key={branch.public_id} type="button" onClick={()=>setOrderAheadBranchFilter(orderAheadBranchFilter===branch.public_id?'':branch.public_id)} style={{border:'1px solid '+(orderAheadBranchFilter===branch.public_id?'#0f766e':'#e2e8f0'),background:orderAheadBranchFilter===branch.public_id?'#ecfdf5':'#fff',borderRadius:999,padding:'7px 9px',fontSize:10.5,fontWeight:800,color:orderAheadBranchFilter===branch.public_id?'#047857':'#475569'}}>{branch.name} · {branch.active_count} active</button>)}
+              </div>
               <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(4,minmax(220px,1fr))',gap:10,marginTop:14,overflowX:isMobile?'visible':'auto',paddingBottom:2}}>
                 {[
                   ['new','NEW','#eff6ff','#1d4ed8'],
@@ -2178,13 +2194,14 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                   ['ready','READY','#ecfdf5','#047857'],
                   ['completed','COMPLETED','#f8fafc','#64748b'],
                 ].map(([status,label,bg,color])=>{
-                  const rows=orderAheadOrders.filter(o=>o.status===status)
+                  const rows=visibleOrderAheadOrders.filter(o=>o.status===status)
                   return <div key={status} style={{minWidth:0,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:13,padding:10,alignSelf:'start'}}>
                     <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:9}}><strong style={{fontSize:11,color}}>{label}</strong><span style={{fontSize:10.5,fontWeight:850,background:bg,color,padding:'4px 7px',borderRadius:999}}>{rows.length}</span></div>
                     {!rows.length&&<div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:'18px 4px'}}>No {label.toLowerCase()} orders</div>}
                     {rows.map(order=><div key={order.public_id} style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:11,padding:10,marginBottom:8,boxShadow:'0 3px 10px rgba(15,23,42,.03)'}}>
                       <div style={{display:'flex',justifyContent:'space-between',gap:8,alignItems:'flex-start'}}><strong style={{fontSize:12.5}}>{order.order_number}</strong><strong style={{fontSize:12.5}}>₱{Number(order.total||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</strong></div>
                       <div style={{fontSize:11.5,color:'#475569',marginTop:5}}>👤 {order.customer?.name||'Member'}</div>
+                      {order.customer?.phone&&<a href={`tel:${order.customer.phone}`} style={{display:'inline-block',fontSize:10.5,color:'#0f766e',fontWeight:800,marginTop:4,textDecoration:'none'}}>☎ Call customer · {order.customer.phone}</a>}
                       <div style={{fontSize:11.5,color:'#475569',marginTop:3}}>🏢 {order.branch?.name||'Branch'}</div>
                       <div style={{fontSize:11.5,color:'#0f172a',fontWeight:800,marginTop:5}}>🕒 {orderAheadPickupLabel(order)}</div>
                       <div style={{borderTop:'1px solid #eef2f7',marginTop:8,paddingTop:7}}>{(order.items||[]).map((item,i)=><div key={item.id||i} style={{fontSize:11,color:'#475569',marginBottom:4}}><strong>{item.quantity}× {item.item_name}</strong>{Array.isArray(item.modifiers)&&item.modifiers.length?<div style={{fontSize:10,color:'#94a3b8',lineHeight:1.35}}>{item.modifiers.map(m=>m.option_name).filter(Boolean).join(' · ')}</div>:null}</div>)}</div>
@@ -2196,7 +2213,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                   </div>
                 })}
               </div>
-              <div style={{fontSize:10.5,color:'#94a3b8',marginTop:10}}>Ready notification: “{orderAheadSetup?.ready_message_preview || `Your order from ${business?.name || business?.business_name || user?.business_name || 'this business'} is ready.`}”</div>
+              <div style={{fontSize:10.5,color:'#94a3b8',marginTop:10}}>Ready notification is the primary customer alert: “{orderAheadSetup?.ready_message_preview || `Your order from ${business?.name || business?.business_name || user?.business_name || 'this business'} is ready.`}” Customer phone is shown only as a backup for order issues or overdue pickup.</div>
             </div>
           </div>
         )}
