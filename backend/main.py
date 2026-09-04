@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import html as html_lib
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
 from email.utils import format_datetime, parsedate_to_datetime
 from typing import Optional, List, Literal
@@ -1521,6 +1522,21 @@ class OrderAheadPickupDayInput(BaseModel):
 
 class OrderAheadBranchPickupHoursUpdate(BaseModel):
     days: list[OrderAheadPickupDayInput] = Field(default_factory=list)
+
+class OrderAheadCartItemInput(BaseModel):
+    item_public_id: str = Field(min_length=1, max_length=120)
+    quantity: int = Field(default=1, ge=1, le=99)
+    modifier_option_public_ids: list[str] = Field(default_factory=list)
+
+class OrderAheadCreateOrderRequest(BaseModel):
+    branch_public_id: str = Field(min_length=1, max_length=120)
+    pickup_type: Literal['asap', 'scheduled']
+    pickup_at: Optional[str] = Field(default=None, max_length=80)
+    customer_note: Optional[str] = Field(default=None, max_length=500)
+    items: list[OrderAheadCartItemInput] = Field(min_length=1, max_length=100)
+
+class OrderAheadOrderStatusUpdate(BaseModel):
+    status: Literal['preparing', 'ready', 'completed', 'cancelled']
 
 class AdminBusinessCreate(BaseModel):
     """Admin-provisioned business account - used for invite-only business
@@ -3541,6 +3557,49 @@ def order_ahead_wallet_action(customer: dict, business: dict) -> Optional[dict]:
     }
 
 
+def _oa_latest_wallet_order(customer: dict, business: dict) -> Optional[dict]:
+    """Latest confirmed Order Ahead order shown in Apple Pass Details.
+
+    This is intentionally best-effort. Businesses that do not use Order Ahead,
+    or installations that have not installed the beta tables yet, keep normal
+    Wallet behavior rather than breaking pass generation.
+    """
+    if not supabase or not customer or not business or not bool(business.get('order_ahead_enabled')):
+        return None
+    try:
+        rows = (
+            supabase.table('order_ahead_orders')
+            .select('public_id,order_number,status,payment_status,pickup_at,updated_at,created_at')
+            .eq('business_id', business.get('id'))
+            .eq('customer_id', customer.get('id'))
+            .in_('payment_status', ['test_paid', 'paid'])
+            .in_('status', ['new', 'preparing', 'ready'])
+            .order('created_at', desc=True)
+            .limit(1)
+            .execute().data or []
+        )
+        return rows[0] if rows else None
+    except Exception:
+        return None
+
+
+def _oa_apple_order_status_field(customer: dict, business: dict) -> Optional[dict]:
+    order = _oa_latest_wallet_order(customer, business)
+    if not order:
+        return None
+    status = str(order.get('status') or 'new').lower()
+    labels = {'new': 'RECEIVED', 'preparing': 'PREPARING', 'ready': 'READY'}
+    order_no = str(order.get('order_number') or 'Order')
+    field = {
+        'key': 'order_ahead_status',
+        'label': 'CURRENT ORDER',
+        'value': f"{order_no} · {labels.get(status, status.upper())}",
+    }
+    if status == 'ready':
+        field['changeMessage'] = f"Your order from {business.get('name') or 'this business'} is ready."
+    return field
+
+
 def sign_pkpass_manifest(manifest_bytes: bytes) -> Optional[bytes]:
     creds = get_apple_pass_credentials()
     if not creds:
@@ -3948,6 +4007,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         ]
 
     order_ahead_action = order_ahead_wallet_action(customer, business)
+    order_ahead_status_field = _oa_apple_order_status_field(customer, business)
 
     if card_type == 'hybrid':
         # Hybrid Details is a small action/account menu rather than a dump of
@@ -3961,6 +4021,8 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                 'value': 'Tap to Order ›',
                 'attributedValue': f'<a href="{order_ahead_action["url"]}">Tap to Order ›</a>',
             })
+        if order_ahead_status_field:
+            back_fields.append(order_ahead_status_field)
 
         back_fields += [
             {'key': key, 'label': label, 'value': str(value)}
@@ -4031,6 +4093,8 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                 'value': order_ahead_action['label'],
                 'attributedValue': f'<a href="{order_ahead_action["url"]}">{order_ahead_action["label"]}</a>',
             })
+            if order_ahead_status_field:
+                back_fields.insert(-1, order_ahead_status_field)
         if ann_message.strip() and ann_message.strip() != announcement_value:
             back_fields.append({'key': 'announcement_detail', 'label': ' ', 'value': ann_message.strip()[:400]})
 
@@ -8135,6 +8199,442 @@ async def owner_save_order_ahead_pickup_hours(
         raise HTTPException(status_code=500, detail=f'Could not save pickup hours: {friendly_db_error(e)}')
     snap = _oa_branch_pickup_hours_snapshot(business.get('id'), [branch])
     return {'success': True, 'branch': snap[0] if snap else None}
+
+
+# ---------------------------------------------------------------------------
+# ORDER AHEAD BETA - order creation, Test Payment, and owner kitchen board.
+# Prices, modifiers, availability and pickup windows are recalculated here on
+# the server. Browser-submitted names/prices are never trusted.
+# ---------------------------------------------------------------------------
+_OA_MONEY = Decimal('0.01')
+
+
+def _oa_decimal(value) -> Decimal:
+    try:
+        return Decimal(str(value or 0)).quantize(_OA_MONEY, rounding=ROUND_HALF_UP)
+    except Exception:
+        return Decimal('0.00')
+
+
+def _oa_money_float(value: Decimal) -> float:
+    return float(value.quantize(_OA_MONEY, rounding=ROUND_HALF_UP))
+
+
+def _oa_order_number() -> str:
+    prefix = datetime.now(LOYALTY_TIMEZONE).strftime('OA-%y%m%d')
+    for _ in range(8):
+        candidate = f"{prefix}-{secrets.token_hex(2).upper()}"
+        try:
+            existing = supabase.table('order_ahead_orders').select('id').eq('order_number', candidate).limit(1).execute().data or []
+        except Exception:
+            existing = []
+        if not existing:
+            return candidate
+    return f"{prefix}-{secrets.token_hex(4).upper()}"
+
+
+def _oa_customer_context(customer_public_id: str, token: str) -> tuple[dict, dict]:
+    customer = safe_get_customer(customer_public_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail='Member not found')
+    business = safe_get_business_by_id(customer.get('business_id'))
+    if not business or not bool(business.get('order_ahead_enabled')):
+        raise HTTPException(status_code=404, detail='Order Ahead is not available')
+    if not verify_order_ahead_member_token(customer_public_id, business.get('public_id', ''), token):
+        raise HTTPException(status_code=403, detail='Invalid Order Ahead link')
+    return customer, business
+
+
+def _oa_order_settings_and_hours(business: dict, branch: dict) -> tuple[dict, list[dict]]:
+    settings = _supabase_first_row(
+        supabase.table('order_ahead_settings').select('*').eq('business_id', business.get('id')).limit(1).execute()
+    ) or {
+        'pickup_mode': 'both', 'min_prep_minutes': 15,
+        'slot_interval_minutes': 15, 'max_advance_days': 7,
+        'payment_mode': 'mock', 'ready_notification_enabled': True,
+    }
+    hours = (
+        supabase.table('order_ahead_branch_pickup_hours')
+        .select('*').eq('branch_id', branch.get('id')).order('weekday').execute().data or []
+    )
+    return settings, hours
+
+
+def _oa_validate_pickup_for_order(settings: dict, hours: list[dict], pickup_type: str, pickup_at: Optional[str]) -> datetime:
+    choices = _oa_branch_pickup_options(settings, hours)
+    if not choices.get('hours_configured'):
+        raise HTTPException(status_code=400, detail='Pickup hours are not configured for this branch')
+    mode = str(settings.get('pickup_mode') or 'both')
+    if pickup_type == 'asap':
+        if mode not in ('asap', 'both') or not choices.get('asap_available'):
+            raise HTTPException(status_code=400, detail='ASAP pickup is not currently available')
+        return datetime.fromisoformat(str(choices['asap_ready_at']))
+    if mode not in ('scheduled', 'both'):
+        raise HTTPException(status_code=400, detail='Scheduled pickup is not enabled')
+    requested = str(pickup_at or '').strip()
+    slot = next((s for s in choices.get('slots', []) if s.get('value') == requested), None)
+    if not slot:
+        raise HTTPException(status_code=400, detail='That pickup time is no longer available. Choose another time.')
+    return datetime.fromisoformat(str(slot['value']))
+
+
+def _oa_price_cart(business: dict, branch: dict, request_items: list[OrderAheadCartItemInput]) -> tuple[list[dict], Decimal]:
+    if not request_items:
+        raise HTTPException(status_code=400, detail='Your cart is empty')
+    snap = _oa_menu_snapshot(business)
+    item_by_public = {str(i.get('public_id')): i for i in snap.get('items', [])}
+    group_by_public = {str(g.get('public_id')): g for g in snap.get('modifier_groups', [])}
+    branch_public_id = str(branch.get('public_id') or '')
+    lines = []
+    subtotal = Decimal('0.00')
+
+    for requested in request_items:
+        item = item_by_public.get(str(requested.item_public_id))
+        if not item or not item.get('is_active'):
+            raise HTTPException(status_code=400, detail='A menu item in your cart is no longer available')
+        if item.get('is_available') is False or branch_public_id in (item.get('unavailable_branch_public_ids') or []):
+            raise HTTPException(status_code=400, detail=f"{item.get('name') or 'An item'} is sold out at this branch")
+
+        attached_groups = [
+            group_by_public[gpid] for gpid in (item.get('modifier_group_public_ids') or [])
+            if gpid in group_by_public and group_by_public[gpid].get('is_active')
+        ]
+        option_lookup = {}
+        for group in attached_groups:
+            for option in (group.get('options') or []):
+                if option.get('is_active'):
+                    option_lookup[str(option.get('public_id'))] = (group, option)
+
+        selected_ids = [str(x) for x in (requested.modifier_option_public_ids or []) if str(x)]
+        if len(selected_ids) != len(set(selected_ids)):
+            raise HTTPException(status_code=400, detail=f"Duplicate options were selected for {item.get('name') or 'an item'}")
+        unknown = [oid for oid in selected_ids if oid not in option_lookup]
+        if unknown:
+            raise HTTPException(status_code=400, detail=f"An option for {item.get('name') or 'an item'} is no longer available")
+
+        by_group = defaultdict(list)
+        for oid in selected_ids:
+            group, option = option_lookup[oid]
+            by_group[str(group.get('public_id'))].append(option)
+
+        modifier_snapshot = []
+        extras = Decimal('0.00')
+        for group in attached_groups:
+            gpid = str(group.get('public_id'))
+            selected = by_group.get(gpid, [])
+            min_required = max(int(group.get('min_selections') or 0), 1 if group.get('is_required') else 0)
+            max_allowed = 1 if group.get('selection_type') == 'single' else int(group.get('max_selections') or 0)
+            if len(selected) < min_required:
+                raise HTTPException(status_code=400, detail=f"Choose the required {group.get('name') or 'option'} for {item.get('name') or 'this item'}")
+            if max_allowed and len(selected) > max_allowed:
+                raise HTTPException(status_code=400, detail=f"Too many choices selected for {group.get('name') or 'an option group'}")
+            for option in selected:
+                delta = _oa_decimal(option.get('price_delta'))
+                extras += delta
+                modifier_snapshot.append({
+                    'group_public_id': gpid,
+                    'group_name': group.get('name') or 'Option',
+                    'option_public_id': option.get('public_id'),
+                    'option_name': option.get('name') or 'Option',
+                    'price_delta': _oa_money_float(delta),
+                })
+
+        unit_price = _oa_decimal(item.get('base_price')) + extras
+        if unit_price < Decimal('0.00'):
+            raise HTTPException(status_code=400, detail='Invalid menu pricing configuration')
+        quantity = int(requested.quantity or 1)
+        line_total = (unit_price * quantity).quantize(_OA_MONEY, rounding=ROUND_HALF_UP)
+        subtotal += line_total
+        lines.append({
+            'menu_item_id': item.get('id'),
+            'item_name': item.get('name') or 'Item',
+            'quantity': quantity,
+            'unit_price': _oa_money_float(unit_price),
+            'modifiers': modifier_snapshot,
+            'line_total': _oa_money_float(line_total),
+        })
+
+    return lines, subtotal.quantize(_OA_MONEY, rounding=ROUND_HALF_UP)
+
+
+def _oa_order_public_payload(order: dict, customer: Optional[dict] = None, branch: Optional[dict] = None, items: Optional[list] = None) -> dict:
+    return {
+        'public_id': order.get('public_id'),
+        'order_number': order.get('order_number'),
+        'status': order.get('status'),
+        'payment_status': order.get('payment_status'),
+        'payment_mode': order.get('payment_mode'),
+        'pickup_type': order.get('pickup_type'),
+        'pickup_at': order.get('pickup_at'),
+        'customer_note': order.get('customer_note'),
+        'subtotal': float(order.get('subtotal') or 0),
+        'total': float(order.get('total') or 0),
+        'ready_at': order.get('ready_at'),
+        'completed_at': order.get('completed_at'),
+        'created_at': order.get('created_at'),
+        'updated_at': order.get('updated_at'),
+        'customer': ({'public_id': customer.get('public_id'), 'name': customer.get('name') or 'Member'} if customer else None),
+        'branch': ({'public_id': branch.get('public_id'), 'name': branch.get('name') or 'Branch', 'address': branch.get('address') or ''} if branch else None),
+        'items': items or [],
+    }
+
+
+def _oa_refresh_apple_order_status(customer: dict):
+    if not customer:
+        return
+    try:
+        _APPLE_PKPASS_CACHE.pop(str(customer.get('public_id') or ''), None)
+        push_apple_wallet_update(str(customer.get('public_id') or ''))
+    except Exception as e:
+        print(f"ORDER AHEAD Apple order-status refresh warning: {e}")
+
+
+def _oa_send_ready_notification(customer: dict, business: dict, order: dict):
+    message = f"Your order from {business.get('name') or 'this business'} is ready."
+    google_sent = False
+    try:
+        object_id = f"{GOOGLE_WALLET_ISSUER_ID}.{customer.get('public_id', '')}"
+        google_sent = send_wallet_object_message(
+            object_id,
+            header='Order Ready',
+            body=message,
+            message_id=f"order-ready-{order.get('public_id') or order.get('id')}",
+        )
+    except Exception as e:
+        print(f"ORDER AHEAD Google ready notification warning: {e}")
+    # Apple gets the exact copy from the CURRENT ORDER field's changeMessage.
+    _oa_refresh_apple_order_status(customer)
+    return {'google_sent': bool(google_sent), 'message': message}
+
+
+@app.post('/api/v1/order-ahead/{customer_public_id}/orders')
+async def customer_create_order_ahead_order(
+    customer_public_id: str,
+    payload: OrderAheadCreateOrderRequest,
+    token: str = Query(default=''),
+):
+    customer, business = _oa_customer_context(customer_public_id, token)
+    branch = _supabase_first_row(
+        supabase.table('branches').select('*')
+        .eq('public_id', payload.branch_public_id)
+        .eq('business_id', business.get('id'))
+        .limit(1).execute()
+    )
+    if not branch or not branch.get('is_active', True):
+        raise HTTPException(status_code=404, detail='Branch not found')
+    try:
+        settings, hours = _oa_order_settings_and_hours(business, branch)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f'Could not load pickup settings: {friendly_db_error(e)}')
+    if str(settings.get('payment_mode') or 'mock') != 'mock':
+        raise HTTPException(status_code=409, detail='This beta checkout currently accepts Test Payment only')
+
+    pickup_dt = _oa_validate_pickup_for_order(settings, hours, payload.pickup_type, payload.pickup_at)
+    lines, subtotal = _oa_price_cart(business, branch, payload.items)
+    note = (payload.customer_note or '').strip()[:500] or None
+    now_iso = datetime.now(timezone.utc).isoformat()
+    row = {
+        'order_number': _oa_order_number(),
+        'business_id': business.get('id'),
+        'branch_id': branch.get('id'),
+        'customer_id': customer.get('id'),
+        'status': 'new',
+        'payment_status': 'pending',
+        'payment_mode': 'mock',
+        'pickup_type': payload.pickup_type,
+        'pickup_at': pickup_dt.astimezone(timezone.utc).isoformat(),
+        'customer_note': note,
+        'subtotal': _oa_money_float(subtotal),
+        'total': _oa_money_float(subtotal),
+        'created_at': now_iso,
+        'updated_at': now_iso,
+    }
+    try:
+        res = supabase.table('order_ahead_orders').insert(row).execute()
+        order = _supabase_first_row(res)
+        if not order:
+            order = _supabase_first_row(
+                supabase.table('order_ahead_orders').select('*').eq('order_number', row['order_number']).limit(1).execute()
+            )
+        if not order:
+            raise RuntimeError('Order insert returned no record')
+        item_rows = [{**line, 'order_id': order.get('id')} for line in lines]
+        if item_rows:
+            supabase.table('order_ahead_order_items').insert(item_rows).execute()
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Compensating cleanup if item snapshot insertion fails after the order row.
+        try:
+            if 'order' in locals() and order and order.get('id'):
+                supabase.table('order_ahead_orders').delete().eq('id', order.get('id')).execute()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f'Could not create order: {friendly_db_error(e)}')
+
+    return {
+        'success': True,
+        'order': _oa_order_public_payload(order, customer, branch, lines),
+        'test_payment': {
+            'required': True,
+            'amount': _oa_money_float(subtotal),
+            'label': 'Confirm Test Payment',
+        },
+    }
+
+
+@app.post('/api/v1/order-ahead/{customer_public_id}/orders/{order_public_id}/test-payment')
+async def customer_confirm_order_ahead_test_payment(
+    customer_public_id: str,
+    order_public_id: str,
+    background_tasks: BackgroundTasks,
+    token: str = Query(default=''),
+):
+    customer, business = _oa_customer_context(customer_public_id, token)
+    order = _supabase_first_row(
+        supabase.table('order_ahead_orders').select('*')
+        .eq('public_id', order_public_id)
+        .eq('business_id', business.get('id'))
+        .eq('customer_id', customer.get('id'))
+        .limit(1).execute()
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail='Order not found')
+    if order.get('payment_mode') != 'mock':
+        raise HTTPException(status_code=409, detail='This order is not using Test Payment')
+    if order.get('payment_status') not in ('pending', 'test_paid'):
+        raise HTTPException(status_code=409, detail='This order can no longer use Test Payment')
+    if order.get('payment_status') != 'test_paid':
+        now_iso = datetime.now(timezone.utc).isoformat()
+        res = supabase.table('order_ahead_orders').update({
+            'payment_status': 'test_paid', 'updated_at': now_iso,
+        }).eq('id', order.get('id')).eq('payment_status', 'pending').execute()
+        updated = _supabase_first_row(res)
+        if updated:
+            order = updated
+        else:
+            order = _supabase_first_row(
+                supabase.table('order_ahead_orders').select('*').eq('id', order.get('id')).limit(1).execute()
+            ) or order
+    branch = safe_get_branch_by_id(order.get('branch_id')) if 'safe_get_branch_by_id' in globals() else None
+    if not branch:
+        branch = _supabase_first_row(supabase.table('branches').select('*').eq('id', order.get('branch_id')).limit(1).execute())
+    items = supabase.table('order_ahead_order_items').select('*').eq('order_id', order.get('id')).order('id').execute().data or []
+    background_tasks.add_task(_oa_refresh_apple_order_status, dict(customer))
+    return {
+        'success': True,
+        'order': _oa_order_public_payload(order, customer, branch, items),
+        'message': 'Test Payment confirmed. Your order has been sent to the business.',
+    }
+
+
+@app.get('/api/v1/business/{public_id}/order-ahead/orders')
+async def owner_list_order_ahead_orders(
+    public_id: str,
+    status: Optional[str] = None,
+    limit: int = 100,
+    authorization: str = Header(default=''),
+):
+    business = _oa_require_owner_business(public_id, authorization)
+    limit = max(1, min(int(limit or 100), 300))
+    q = (
+        supabase.table('order_ahead_orders').select('*')
+        .eq('business_id', business.get('id'))
+        .in_('payment_status', ['test_paid', 'paid'])
+    )
+    if status:
+        if status not in ('new', 'preparing', 'ready', 'completed', 'cancelled'):
+            raise HTTPException(status_code=400, detail='Invalid order status')
+        q = q.eq('status', status)
+    orders = q.order('created_at', desc=True).limit(limit).execute().data or []
+    if not orders:
+        return {'orders': [], 'total': 0}
+
+    customer_ids = list({o.get('customer_id') for o in orders if o.get('customer_id') is not None})
+    branch_ids = list({o.get('branch_id') for o in orders if o.get('branch_id') is not None})
+    order_ids = [o.get('id') for o in orders if o.get('id') is not None]
+    customers = supabase.table('customers').select('id,public_id,name').in_('id', customer_ids).execute().data or [] if customer_ids else []
+    branches = supabase.table('branches').select('id,public_id,name,address').in_('id', branch_ids).execute().data or [] if branch_ids else []
+    item_rows = supabase.table('order_ahead_order_items').select('*').in_('order_id', order_ids).order('id').execute().data or [] if order_ids else []
+    customer_map = {r.get('id'): r for r in customers}
+    branch_map = {r.get('id'): r for r in branches}
+    items_by_order = defaultdict(list)
+    for row in item_rows:
+        items_by_order[row.get('order_id')].append(row)
+    payload = [
+        _oa_order_public_payload(
+            order,
+            customer_map.get(order.get('customer_id')),
+            branch_map.get(order.get('branch_id')),
+            items_by_order.get(order.get('id'), []),
+        )
+        for order in orders
+    ]
+    return {'orders': payload, 'total': len(payload)}
+
+
+@app.patch('/api/v1/business/{public_id}/order-ahead/orders/{order_public_id}/status')
+async def owner_update_order_ahead_order_status(
+    public_id: str,
+    order_public_id: str,
+    payload: OrderAheadOrderStatusUpdate,
+    background_tasks: BackgroundTasks,
+    authorization: str = Header(default=''),
+):
+    business = _oa_require_owner_business(public_id, authorization)
+    order = _supabase_first_row(
+        supabase.table('order_ahead_orders').select('*')
+        .eq('public_id', order_public_id)
+        .eq('business_id', business.get('id'))
+        .limit(1).execute()
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail='Order not found')
+    if order.get('payment_status') not in ('test_paid', 'paid'):
+        raise HTTPException(status_code=409, detail='Order payment has not been confirmed')
+
+    current = str(order.get('status') or 'new')
+    target = payload.status
+    allowed = {
+        'new': {'preparing', 'cancelled'},
+        'preparing': {'ready', 'cancelled'},
+        'ready': {'completed'},
+        'completed': set(),
+        'cancelled': set(),
+    }
+    if target == current:
+        return {'success': True, 'order': order}
+    if target not in allowed.get(current, set()):
+        raise HTTPException(status_code=409, detail=f'Order must follow New → Preparing → Ready → Completed. Current status: {current}.')
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    patch = {'status': target, 'updated_at': now_iso}
+    if target == 'ready':
+        patch['ready_at'] = now_iso
+    elif target == 'completed':
+        patch['completed_at'] = now_iso
+    res = supabase.table('order_ahead_orders').update(patch).eq('id', order.get('id')).eq('status', current).execute()
+    updated = _supabase_first_row(res)
+    if not updated:
+        raise HTTPException(status_code=409, detail='Order changed on another device. Refresh and try again.')
+
+    customer = _supabase_first_row(supabase.table('customers').select('*').eq('id', order.get('customer_id')).limit(1).execute())
+    if customer:
+        if target == 'ready':
+            settings = _supabase_first_row(
+                supabase.table('order_ahead_settings').select('ready_notification_enabled').eq('business_id', business.get('id')).limit(1).execute()
+            ) or {}
+            if settings.get('ready_notification_enabled') is not False:
+                background_tasks.add_task(_oa_send_ready_notification, dict(customer), dict(business), dict(updated))
+            else:
+                background_tasks.add_task(_oa_refresh_apple_order_status, dict(customer))
+        else:
+            # Silent pass refresh establishes NEW/PREPARING status before READY,
+            # so Apple's ready changeMessage can fire reliably.
+            background_tasks.add_task(_oa_refresh_apple_order_status, dict(customer))
+
+    return {'success': True, 'order': updated, 'ready_notification_queued': target == 'ready'}
+
 
 @app.patch("/api/v1/admin/businesses/{public_id}/nfc-trial")
 async def admin_set_nfc_trial(public_id: str, update: AdminNfcTrialUpdate, background_tasks: BackgroundTasks, _: bool = Depends(require_admin)):
@@ -19872,6 +20372,8 @@ async def order_ahead_branch_selected(customer_public_id: str, branch_public_id:
         '__BIZ__': biz_name, '__BRANCH__': branch_name, '__LOGO__': logo,
         '__BANNER__': banner_html, '__MENU_HEADING__': html_lib.escape(ui['menu_heading']),
         '__DATA__': data_json, '__UI__': ui_json, '__BRANCH_PICKER_URL__': html_lib.escape(branch_picker_url),
+        '__ORDER_API_BASE__': json.dumps(f"{BASE_URL}/api/v1/order-ahead/{quote(customer_public_id)}/orders"),
+        '__ORDER_TOKEN__': json.dumps(token),
         '__CAT_RADIUS__': '999px' if ui['category_style'] == 'pills' else '8px',
         '__GRID_COLS__': 'repeat(2,minmax(0,1fr))' if ui['product_layout'] == 'image_top' else '1fr',
         '__ITEM_DISPLAY__': 'block' if ui['product_layout'] == 'image_top' else 'grid',
@@ -19883,13 +20385,13 @@ async def order_ahead_branch_selected(customer_public_id: str, branch_public_id:
     }
 
     page = r'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>__BIZ__ · Menu</title><style>
-*{box-sizing:border-box}body{margin:0;background:__BG__;color:__TEXT__;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding-bottom:96px}button,input,select,textarea{font:inherit}button{cursor:pointer}main{max-width:560px;margin:auto;padding:18px}.banner{width:100%;height:142px;object-fit:cover;border-radius:22px;margin-bottom:14px}.head{display:flex;align-items:center;gap:12px;margin-bottom:18px}.logo{width:48px;height:48px;border-radius:14px;object-fit:cover;border:1px solid #e2e8f0}.headcopy{min-width:0;flex:1}h1{font-size:21px;margin:0}.branchline{font-size:12px;color:__MUTED__;margin-top:3px;display:flex;gap:7px;align-items:center;flex-wrap:wrap}.changebranch{color:__PRIMARY__;text-decoration:none;font-weight:800}.cats{display:flex;gap:8px;overflow:auto;padding:2px 0 12px;scrollbar-width:none;position:sticky;top:0;background:__BG__;z-index:5}.cat{white-space:nowrap;border:0;background:__SURFACE__;color:__TEXT__;padding:9px 12px;border-radius:__CAT_RADIUS__;font-weight:750}.cat.on{background:__PRIMARY__;color:#fff}.grid{display:grid;grid-template-columns:__GRID_COLS__;gap:12px}.item{background:__SURFACE__;border:__CARD_BORDER__;border-radius:__CARD_RADIUS__;box-shadow:__CARD_SHADOW__;overflow:hidden;display:__ITEM_DISPLAY__;grid-template-columns:__ITEM_COLS__}.photo{width:100%;height:__PHOTO_HEIGHT__;object-fit:cover;background:#f1f5f9}.info{padding:12px;min-width:0}.name{font-weight:800;font-size:14px}.desc{font-size:11.5px;color:__MUTED__;margin-top:4px;line-height:1.35}.row{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-top:10px}.price{font-weight:850}.add{border:0;background:__PRIMARY__;color:#fff;border-radius:999px;min-width:31px;height:31px;padding:0 11px;font-weight:850}.sold{opacity:.52}.sold .add{background:#94a3b8}.empty{padding:28px;text-align:center;color:__MUTED__;background:__SURFACE__;border-radius:18px}.cartbar{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);width:min(524px,calc(100% - 28px));background:__PRIMARY__;color:#fff;border:0;border-radius:18px;padding:14px 16px;display:none;justify-content:space-between;box-shadow:0 14px 35px rgba(15,23,42,.22);font-weight:850;z-index:20}.cartbar.show{display:flex}.cartbar.inline{position:relative;left:auto;bottom:auto;transform:none;margin:0 auto 18px;width:min(524px,calc(100% - 36px))}.sheet{border:0;border-radius:24px 24px 0 0;padding:0;width:min(560px,100%);max-width:560px;margin:auto 0 0;max-height:92vh;color:__TEXT__;background:__SURFACE__}.sheet::backdrop{background:rgba(15,23,42,.48)}.sheetbox{padding:18px;max-height:92vh;overflow:auto}.sheethead{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.close{border:0;background:#f1f5f9;color:#475569;border-radius:999px;width:32px;height:32px;font-weight:900}.muted{color:__MUTED__;font-size:11.5px;line-height:1.4}.group{margin-top:18px}.group h3{font-size:13px;margin:0 0 4px}.opt{display:flex;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid #eef2f7}.opt input{margin-right:7px}.error{display:none;color:#b91c1c;background:#fef2f2;padding:9px 10px;border-radius:10px;font-size:11px;margin-top:8px}.error.show{display:block}.qty{display:flex;align-items:center;justify-content:space-between;background:#f8fafc;border-radius:14px;padding:10px 12px;margin-top:16px}.qtyctrl{display:flex;align-items:center;gap:12px}.qbtn{border:1px solid #cbd5e1;background:#fff;border-radius:999px;width:32px;height:32px;font-size:18px}.primary{width:100%;border:0;border-radius:14px;padding:13px;background:__PRIMARY__;color:#fff;font-weight:850;margin-top:16px}.secondary{width:100%;border:1px solid #cbd5e1;border-radius:14px;padding:12px;background:#fff;color:#334155;font-weight:800;margin-top:8px}.cartrow{padding:13px 0;border-bottom:1px solid #e2e8f0}.carttop{display:flex;justify-content:space-between;gap:12px}.cartname{font-weight:850}.mods{font-size:11px;color:__MUTED__;margin-top:4px;line-height:1.45}.cartactions{display:flex;gap:8px;align-items:center;margin-top:9px}.mini{border:1px solid #cbd5e1;background:#fff;border-radius:9px;padding:6px 8px;font-size:11px;font-weight:750;color:#475569}.cartsummary{display:flex;justify-content:space-between;font-weight:900;font-size:17px;padding-top:15px}.pickupbox{background:#f8fafc;border:1px solid #e2e8f0;border-radius:16px;padding:13px;margin-top:14px}.picktabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}.picktab{border:1px solid #cbd5e1;background:#fff;color:#475569;border-radius:12px;padding:10px;font-weight:800}.picktab.on{background:__PRIMARY__;border-color:__PRIMARY__;color:#fff}.picktab:disabled{opacity:.45;cursor:not-allowed}.field{width:100%;border:1px solid #cbd5e1;border-radius:12px;background:#fff;color:#0f172a;padding:11px;margin-top:8px}.notice{font-size:11.5px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:10px;margin-top:10px}.review{background:#f8fafc;border-radius:14px;padding:12px;margin-top:14px}.reviewline{display:flex;justify-content:space-between;gap:10px;padding:5px 0;font-size:12px}.reviewline.total{font-size:15px;font-weight:900;border-top:1px solid #e2e8f0;margin-top:5px;padding-top:10px}.nextnote{display:none;text-align:center;background:#ecfdf5;color:#047857;border-radius:12px;padding:11px;margin-top:10px;font-size:12px;font-weight:750}.nextnote.show{display:block}@media(max-width:420px){.grid{grid-template-columns:1fr}.item{display:grid;grid-template-columns:92px 1fr}.photo{height:92px}.picktabs{grid-template-columns:1fr}}
+*{box-sizing:border-box}body{margin:0;background:__BG__;color:__TEXT__;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding-bottom:96px}button,input,select,textarea{font:inherit}button{cursor:pointer}main{max-width:560px;margin:auto;padding:18px}.banner{width:100%;height:142px;object-fit:cover;border-radius:22px;margin-bottom:14px}.head{display:flex;align-items:center;gap:12px;margin-bottom:18px}.logo{width:48px;height:48px;border-radius:14px;object-fit:cover;border:1px solid #e2e8f0}.headcopy{min-width:0;flex:1}h1{font-size:21px;margin:0}.branchline{font-size:12px;color:__MUTED__;margin-top:3px;display:flex;gap:7px;align-items:center;flex-wrap:wrap}.changebranch{color:__PRIMARY__;text-decoration:none;font-weight:800}.cats{display:flex;gap:8px;overflow:auto;padding:2px 0 12px;scrollbar-width:none;position:sticky;top:0;background:__BG__;z-index:5}.cat{white-space:nowrap;border:0;background:__SURFACE__;color:__TEXT__;padding:9px 12px;border-radius:__CAT_RADIUS__;font-weight:750}.cat.on{background:__PRIMARY__;color:#fff}.grid{display:grid;grid-template-columns:__GRID_COLS__;gap:12px}.item{background:__SURFACE__;border:__CARD_BORDER__;border-radius:__CARD_RADIUS__;box-shadow:__CARD_SHADOW__;overflow:hidden;display:__ITEM_DISPLAY__;grid-template-columns:__ITEM_COLS__}.photo{width:100%;height:__PHOTO_HEIGHT__;object-fit:cover;background:#f1f5f9}.info{padding:12px;min-width:0}.name{font-weight:800;font-size:14px}.desc{font-size:11.5px;color:__MUTED__;margin-top:4px;line-height:1.35}.row{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-top:10px}.price{font-weight:850}.add{border:0;background:__PRIMARY__;color:#fff;border-radius:999px;min-width:31px;height:31px;padding:0 11px;font-weight:850}.sold{opacity:.52}.sold .add{background:#94a3b8}.empty{padding:28px;text-align:center;color:__MUTED__;background:__SURFACE__;border-radius:18px}.cartbar{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);width:min(524px,calc(100% - 28px));background:__PRIMARY__;color:#fff;border:0;border-radius:18px;padding:14px 16px;display:none;justify-content:space-between;box-shadow:0 14px 35px rgba(15,23,42,.22);font-weight:850;z-index:20}.cartbar.show{display:flex}.cartbar.inline{position:relative;left:auto;bottom:auto;transform:none;margin:0 auto 18px;width:min(524px,calc(100% - 36px))}.sheet{border:0;border-radius:24px 24px 0 0;padding:0;width:min(560px,100%);max-width:560px;margin:auto 0 0;max-height:92vh;color:__TEXT__;background:__SURFACE__}.sheet::backdrop{background:rgba(15,23,42,.48)}.sheetbox{padding:18px;max-height:92vh;overflow:auto}.sheethead{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.close{border:0;background:#f1f5f9;color:#475569;border-radius:999px;width:32px;height:32px;font-weight:900}.muted{color:__MUTED__;font-size:11.5px;line-height:1.4}.group{margin-top:18px}.group h3{font-size:13px;margin:0 0 4px}.opt{display:flex;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid #eef2f7}.opt input{margin-right:7px}.error{display:none;color:#b91c1c;background:#fef2f2;padding:9px 10px;border-radius:10px;font-size:11px;margin-top:8px}.error.show{display:block}.qty{display:flex;align-items:center;justify-content:space-between;background:#f8fafc;border-radius:14px;padding:10px 12px;margin-top:16px}.qtyctrl{display:flex;align-items:center;gap:12px}.qbtn{border:1px solid #cbd5e1;background:#fff;border-radius:999px;width:32px;height:32px;font-size:18px}.primary{width:100%;border:0;border-radius:14px;padding:13px;background:__PRIMARY__;color:#fff;font-weight:850;margin-top:16px}.secondary{width:100%;border:1px solid #cbd5e1;border-radius:14px;padding:12px;background:#fff;color:#334155;font-weight:800;margin-top:8px}.cartrow{padding:13px 0;border-bottom:1px solid #e2e8f0}.carttop{display:flex;justify-content:space-between;gap:12px}.cartname{font-weight:850}.mods{font-size:11px;color:__MUTED__;margin-top:4px;line-height:1.45}.cartactions{display:flex;gap:8px;align-items:center;margin-top:9px}.mini{border:1px solid #cbd5e1;background:#fff;border-radius:9px;padding:6px 8px;font-size:11px;font-weight:750;color:#475569}.cartsummary{display:flex;justify-content:space-between;font-weight:900;font-size:17px;padding-top:15px}.pickupbox{background:#f8fafc;border:1px solid #e2e8f0;border-radius:16px;padding:13px;margin-top:14px}.picktabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}.picktab{border:1px solid #cbd5e1;background:#fff;color:#475569;border-radius:12px;padding:10px;font-weight:800}.picktab.on{background:__PRIMARY__;border-color:__PRIMARY__;color:#fff}.picktab:disabled{opacity:.45;cursor:not-allowed}.field{width:100%;border:1px solid #cbd5e1;border-radius:12px;background:#fff;color:#0f172a;padding:11px;margin-top:8px}.notice{font-size:11.5px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:10px;margin-top:10px}.review{background:#f8fafc;border-radius:14px;padding:12px;margin-top:14px}.reviewline{display:flex;justify-content:space-between;gap:10px;padding:5px 0;font-size:12px}.reviewline.total{font-size:15px;font-weight:900;border-top:1px solid #e2e8f0;margin-top:5px;padding-top:10px}.nextnote{display:none;text-align:center;background:#ecfdf5;color:#047857;border-radius:12px;padding:11px;margin-top:10px;font-size:12px;font-weight:750}.nextnote.show{display:block}.paymentbox{display:none;background:#f8fafc;border:1px solid #e2e8f0;border-radius:16px;padding:14px;margin-top:14px}.paymentbox.show{display:block}.paymentamount{font-size:24px;font-weight:900;margin:8px 0}.successbox{display:none;text-align:center;padding:22px 10px}.successbox.show{display:block}.successicon{width:54px;height:54px;border-radius:999px;background:#dcfce7;color:#15803d;display:grid;place-items:center;font-size:28px;font-weight:900;margin:0 auto 12px}.ordercode{font-size:20px;font-weight:900;margin:7px 0}.busy{opacity:.6;pointer-events:none}@media(max-width:420px){.grid{grid-template-columns:1fr}.item{display:grid;grid-template-columns:92px 1fr}.photo{height:92px}.picktabs{grid-template-columns:1fr}}
 </style></head><body><main>__BANNER__<div class="head"><img class="logo" src="__LOGO__"><div class="headcopy"><h1>__MENU_HEADING__</h1><div class="branchline"><span>__BIZ__ · __BRANCH__</span><a class="changebranch" href="__BRANCH_PICKER_URL__">Change branch</a></div></div></div><div id="cats" class="cats"></div><div id="grid" class="grid"></div></main><button id="cartbar" class="cartbar" type="button" onclick="openCart()"><span id="cartcount">0 items</span><span id="carttotal">₱0.00 · View Cart</span></button>
 <dialog id="itemDlg" class="sheet"><div id="itemModal" class="sheetbox"></div></dialog>
 <dialog id="cartDlg" class="sheet"><div class="sheetbox"><div class="sheethead"><div><h2 style="margin:0">Your cart</h2><div class="muted">__BRANCH__ pickup</div></div><button class="close" onclick="cartDlg.close()">×</button></div><div id="cartRows"></div><div class="cartsummary"><span>Subtotal</span><span id="cartSheetTotal">₱0.00</span></div><button class="primary" onclick="openCheckout()">Choose Pickup Time</button><button class="secondary" onclick="cartDlg.close()">Add more items</button></div></dialog>
-<dialog id="checkoutDlg" class="sheet"><div class="sheetbox"><div class="sheethead"><div><h2 style="margin:0">Pickup & checkout</h2><div class="muted">Review your order before Test Payment.</div></div><button class="close" onclick="checkoutDlg.close()">×</button></div><div id="pickupArea"></div><label style="display:block;font-size:12px;font-weight:800;margin-top:14px">Order note<textarea id="customerNote" class="field" rows="3" maxlength="500" placeholder="Optional note for the business"></textarea></label><div id="checkoutReview" class="review"></div><div id="checkoutError" class="error"></div><button class="primary" onclick="continueToPayment()">Continue to Test Payment →</button><button class="secondary" onclick="checkoutDlg.close();openCart()">Back to cart</button><div id="nextPhaseNote" class="nextnote">Cart + pickup checkout are ready. Test Payment / order creation is the next phase.</div></div></dialog>
+<dialog id="checkoutDlg" class="sheet"><div class="sheetbox"><div id="checkoutFlow"><div class="sheethead"><div><h2 style="margin:0">Pickup & checkout</h2><div class="muted">Review your order before Test Payment.</div></div><button class="close" onclick="checkoutDlg.close()">×</button></div><div id="pickupArea"></div><label style="display:block;font-size:12px;font-weight:800;margin-top:14px">Order note<textarea id="customerNote" class="field" rows="3" maxlength="500" placeholder="Optional note for the business"></textarea></label><div id="checkoutReview" class="review"></div><div id="checkoutError" class="error"></div><button id="continuePaymentBtn" class="primary" onclick="continueToPayment()">Continue to Test Payment →</button><button id="backCartBtn" class="secondary" onclick="checkoutDlg.close();openCart()">Back to cart</button><div id="paymentBox" class="paymentbox"><div class="muted">TEST PAYMENT · No real money will be collected.</div><div id="paymentAmount" class="paymentamount">₱0.00</div><div id="paymentOrderNo" style="font-weight:800"></div><button id="confirmTestPaymentBtn" class="primary" onclick="confirmTestPayment()">Confirm Test Payment</button><button class="secondary" onclick="cancelPendingPaymentView()">Back</button></div></div><div id="orderSuccess" class="successbox"><div class="successicon">✓</div><h2 style="margin:0">Order received</h2><div id="successOrderNo" class="ordercode"></div><div id="successPickup" class="muted" style="font-size:13px"></div><div class="nextnote show" style="margin-top:15px">The business can now move your order through Preparing → Ready → Completed.</div><button class="primary" onclick="checkoutDlg.close()">Done</button></div></div></dialog>
 <script>
-const DATA=__DATA__; const UI=__UI__; let active='all'; let editIndex=null; let itemQty=1; let pickupType=null; let selectedSlot='';
+const DATA=__DATA__; const UI=__UI__; const ORDER_API_BASE=__ORDER_API_BASE__; const ORDER_TOKEN=__ORDER_TOKEN__; let active='all'; let editIndex=null; let itemQty=1; let pickupType=null; let selectedSlot=''; let pendingOrder=null;
 const cartKey='lt_oa_cart_'+DATA.branch.public_id; let cart=[]; try{cart=JSON.parse(sessionStorage.getItem(cartKey)||'[]');if(!Array.isArray(cart))cart=[]}catch(e){cart=[]}
 const itemDlg=document.getElementById('itemDlg'),cartDlg=document.getElementById('cartDlg'),checkoutDlg=document.getElementById('checkoutDlg');
 const peso=n=>'₱'+Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -19917,8 +20419,12 @@ function pickDefault(){const p=DATA.pickup;if(p.mode==='asap'&&p.asap_available)
 function renderPickup(){pickupType=pickupType||pickDefault();const p=DATA.pickup;let html='';if(!p.hours_configured){html+='<div class="notice"><strong>Pickup hours are not configured for this branch yet.</strong><br>The business needs to set its Order Ahead pickup hours before checkout can continue.</div>'}html+=`<div class="pickupbox"><strong>Pickup at ${esc(DATA.branch.name)}</strong><div class="muted" style="margin-top:3px">Minimum preparation: ${p.min_prep_minutes} min</div>`;if(p.mode==='both')html+=`<div class="picktabs"><button class="picktab ${pickupType==='asap'?'on':''}" ${p.asap_available?'':'disabled'} onclick="pickupType='asap';renderPickup();renderReview()">ASAP</button><button class="picktab ${pickupType==='scheduled'?'on':''}" ${p.slots.length?'':'disabled'} onclick="pickupType='scheduled';renderPickup();renderReview()">Scheduled</button></div>`;else if(p.mode==='asap')html+=`<div class="picktabs" style="grid-template-columns:1fr"><button class="picktab ${pickupType==='asap'?'on':''}" ${p.asap_available?'':'disabled'} onclick="pickupType='asap';renderPickup();renderReview()">ASAP</button></div>`;else html+=`<div class="picktabs" style="grid-template-columns:1fr"><button class="picktab ${pickupType==='scheduled'?'on':''}" ${p.slots.length?'':'disabled'} onclick="pickupType='scheduled';renderPickup();renderReview()">Scheduled</button></div>`;if(pickupType==='asap'&&p.asap_available)html+=`<div class="muted" style="margin-top:10px">Estimated ready around <strong>${esc(p.asap_ready_label)}</strong>.</div>`;if(pickupType==='scheduled'){if(p.slots.length){if(!selectedSlot||!p.slots.some(s=>s.value===selectedSlot))selectedSlot=p.slots[0].value;html+=`<label style="display:block;font-size:12px;font-weight:800;margin-top:11px">Pickup time<select id="pickupSlot" class="field" onchange="selectedSlot=this.value;renderReview()">${p.slots.map(s=>`<option value="${esc(s.value)}" ${s.value===selectedSlot?'selected':''}>${esc(s.label)}</option>`).join('')}</select></label>`}else html+='<div class="notice">No scheduled pickup slots are currently available.</div>'}html+='</div>';document.getElementById('pickupArea').innerHTML=html}
 function pickupLabel(){if(pickupType==='asap')return'Direct pickup · ASAP around '+DATA.pickup.asap_ready_label;if(pickupType==='scheduled'){const s=DATA.pickup.slots.find(x=>x.value===selectedSlot);return s?s.label:'Choose a scheduled time'}return'Not selected'}
 function renderReview(){const div=document.getElementById('checkoutReview');div.innerHTML=`<div class="reviewline"><span>Branch</span><strong>${esc(DATA.branch.name)}</strong></div><div class="reviewline"><span>Pickup</span><strong style="text-align:right">${esc(pickupLabel())}</strong></div><div class="reviewline"><span>Items</span><strong>${cart.reduce((s,x)=>s+Number(x.quantity||1),0)}</strong></div><div class="reviewline total"><span>Subtotal</span><span>${peso(cartSubtotal())}</span></div>`}
-function openCheckout(){if(!cart.length)return;cartDlg.close();pickupType=pickDefault();selectedSlot='';document.getElementById('nextPhaseNote').classList.remove('show');document.getElementById('checkoutError').classList.remove('show');renderPickup();renderReview();checkoutDlg.showModal()}
-function continueToPayment(){const err=document.getElementById('checkoutError');let msg='';if(!DATA.pickup.hours_configured)msg='Pickup hours are not configured for this branch.';else if(!pickupType)msg='No pickup option is currently available.';else if(pickupType==='asap'&&!DATA.pickup.asap_available)msg='ASAP pickup is not currently available.';else if(pickupType==='scheduled'&&!selectedSlot)msg='Choose a pickup time.';if(msg){err.textContent=msg;err.classList.add('show');return}err.classList.remove('show');document.getElementById('nextPhaseNote').classList.add('show')}
+function resetCheckoutView(){pendingOrder=null;document.getElementById('checkoutFlow').style.display='block';document.getElementById('orderSuccess').classList.remove('show');document.getElementById('paymentBox').classList.remove('show');document.getElementById('continuePaymentBtn').style.display='block';document.getElementById('backCartBtn').style.display='block';document.getElementById('checkoutError').classList.remove('show')}
+function openCheckout(){if(!cart.length)return;cartDlg.close();resetCheckoutView();pickupType=pickDefault();selectedSlot='';renderPickup();renderReview();checkoutDlg.showModal()}
+function checkoutValidation(){if(!DATA.pickup.hours_configured)return'Pickup hours are not configured for this branch.';if(!pickupType)return'No pickup option is currently available.';if(pickupType==='asap'&&!DATA.pickup.asap_available)return'ASAP pickup is not currently available.';if(pickupType==='scheduled'&&!selectedSlot)return'Choose a pickup time.';return''}
+async function continueToPayment(){const err=document.getElementById('checkoutError');const msg=checkoutValidation();if(msg){err.textContent=msg;err.classList.add('show');return}err.classList.remove('show');const btn=document.getElementById('continuePaymentBtn');btn.disabled=true;btn.textContent='Creating order…';try{const payload={branch_public_id:DATA.branch.public_id,pickup_type:pickupType,pickup_at:pickupType==='scheduled'?selectedSlot:null,customer_note:(document.getElementById('customerNote').value||'').trim(),items:cart.map(x=>({item_public_id:x.item_public_id,quantity:Number(x.quantity||1),modifier_option_public_ids:(x.modifiers||[]).map(m=>m.option_public_id)}))};const res=await fetch(ORDER_API_BASE+'?token='+encodeURIComponent(ORDER_TOKEN),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const d=await res.json().catch(()=>({}));if(!res.ok)throw new Error(d.detail||'Could not create order');pendingOrder=d.order;document.getElementById('paymentAmount').textContent=peso(d.test_payment?.amount??pendingOrder.total);document.getElementById('paymentOrderNo').textContent=pendingOrder.order_number;document.getElementById('paymentBox').classList.add('show');btn.style.display='none';document.getElementById('backCartBtn').style.display='none';document.getElementById('pickupArea').style.display='none';document.querySelector('#checkoutFlow label')?.style.setProperty('display','none');document.getElementById('checkoutReview').style.display='none'}catch(e){err.textContent=e.message||'Could not create order';err.classList.add('show');btn.disabled=false;btn.textContent='Continue to Test Payment →'}}
+function cancelPendingPaymentView(){document.getElementById('paymentBox').classList.remove('show');document.getElementById('continuePaymentBtn').style.display='block';document.getElementById('continuePaymentBtn').disabled=false;document.getElementById('continuePaymentBtn').textContent='Continue to Test Payment →';document.getElementById('backCartBtn').style.display='block';document.getElementById('pickupArea').style.display='block';document.querySelector('#checkoutFlow label')?.style.removeProperty('display');document.getElementById('checkoutReview').style.display='block'}
+async function confirmTestPayment(){if(!pendingOrder)return;const btn=document.getElementById('confirmTestPaymentBtn');const err=document.getElementById('checkoutError');btn.disabled=true;btn.textContent='Confirming…';try{const url=ORDER_API_BASE+'/'+encodeURIComponent(pendingOrder.public_id)+'/test-payment?token='+encodeURIComponent(ORDER_TOKEN);const res=await fetch(url,{method:'POST'});const d=await res.json().catch(()=>({}));if(!res.ok)throw new Error(d.detail||'Could not confirm Test Payment');pendingOrder=d.order||pendingOrder;cart=[];sessionStorage.removeItem(cartKey);updateCartBar();document.getElementById('checkoutFlow').style.display='none';document.getElementById('successOrderNo').textContent=pendingOrder.order_number;document.getElementById('successPickup').textContent='Pickup: '+pickupLabel()+' · '+DATA.branch.name;document.getElementById('orderSuccess').classList.add('show')}catch(e){err.textContent=e.message||'Could not confirm Test Payment';err.classList.add('show');btn.disabled=false;btn.textContent='Confirm Test Payment'}}
 drawCats();drawItems();updateCartBar();
 </script></body></html>'''
     for key, value in substitutions.items():

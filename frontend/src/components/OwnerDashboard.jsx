@@ -228,6 +228,9 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   })
   const [orderAheadPickupHours, setOrderAheadPickupHours] = useState({})
   const [orderAheadHoursSaving, setOrderAheadHoursSaving] = useState('')
+  const [orderAheadOrders, setOrderAheadOrders] = useState([])
+  const [orderAheadOrdersLoading, setOrderAheadOrdersLoading] = useState(false)
+  const [orderAheadOrderSaving, setOrderAheadOrderSaving] = useState('')
   const [stats, setStats] = useState(null)
   const [program, setProgram] = useState(null)
   const [subscription, setSubscription] = useState(null)
@@ -390,6 +393,13 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     return () => clearInterval(interval)
   }, [user])
 
+  useEffect(() => {
+    if (activeTab !== 'orderahead' || !business?.order_ahead_enabled) return
+    loadOrderAheadOrders()
+    const interval = setInterval(loadOrderAheadOrders, 12000)
+    return () => clearInterval(interval)
+  }, [activeTab, business?.order_ahead_enabled, user?.business_slug])
+
   // Automatically guide a newly signed-up business, and keep prompting on
   // later visits while no card has been selected/published yet. Once a card
   // exists, the guide continues from cashier setup instead of restarting.
@@ -510,6 +520,47 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       console.error('Load error:', err)
     }
     setLoading(false)
+  }
+
+  const loadOrderAheadOrders = async () => {
+    if (!user?.business_slug || !business?.order_ahead_enabled) return
+    setOrderAheadOrdersLoading(true)
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/order-ahead/orders?limit=150`, { cache: 'no-store' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not load Order Ahead orders')
+      setOrderAheadOrders(Array.isArray(data.orders) ? data.orders : [])
+    } catch (err) {
+      setMessage(err.message || 'Could not load Order Ahead orders')
+    } finally {
+      setOrderAheadOrdersLoading(false)
+    }
+  }
+
+  const updateOrderAheadOrderStatus = async (order, status) => {
+    if (!user?.business_slug || !order?.public_id) return
+    setOrderAheadOrderSaving(order.public_id)
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/order-ahead/orders/${order.public_id}/status`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status })
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not update order')
+      setMessage(status === 'ready' ? 'Order marked ready — customer notification queued.' : `Order moved to ${status}.`)
+      await Promise.all([loadOrderAheadOrders(), loadData()])
+    } catch (err) {
+      setMessage(err.message || 'Could not update order')
+    } finally {
+      setOrderAheadOrderSaving('')
+      setTimeout(() => setMessage(''), 3500)
+    }
+  }
+
+  const orderAheadPickupLabel = (order) => {
+    if (!order?.pickup_at) return order?.pickup_type === 'asap' ? 'ASAP' : '—'
+    try {
+      return new Date(order.pickup_at).toLocaleString('en-PH', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })
+    } catch (_) { return order.pickup_at }
   }
 
   const saveOrderAheadSettings = async () => {
@@ -2117,9 +2168,35 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
             <div style={{...styles.card,marginTop:14}}>
               <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}>
-                <div><div style={{fontSize:11,fontWeight:850,color:'#64748b'}}>BUSINESS ORDERS</div><h3 style={{margin:'5px 0 3px'}}>Orders received: {orderAheadSetup?.orders_count || 0}</h3><p style={{margin:0,fontSize:12,color:'#64748b'}}>Cart + pickup checkout are ready. Next we connect Test Payment to real order creation, then activate the New → Preparing → Ready → Completed board.</p></div>
-                <span style={{background:'#f1f5f9',color:'#64748b',padding:'7px 10px',borderRadius:999,fontSize:11,fontWeight:800}}>Order creation next</span>
+                <div><div style={{fontSize:11,fontWeight:850,color:'#64748b'}}>BUSINESS ORDERS</div><h3 style={{margin:'5px 0 3px'}}>Live Order Board</h3><p style={{margin:0,fontSize:12,color:'#64748b'}}>Confirmed Test Payment orders move through New → Preparing → Ready → Completed.</p></div>
+                <button type="button" style={styles.addBtn} onClick={loadOrderAheadOrders} disabled={orderAheadOrdersLoading}>{orderAheadOrdersLoading?'Refreshing…':'↻ Refresh'}</button>
               </div>
+              <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(4,minmax(220px,1fr))',gap:10,marginTop:14,overflowX:isMobile?'visible':'auto',paddingBottom:2}}>
+                {[
+                  ['new','NEW','#eff6ff','#1d4ed8'],
+                  ['preparing','PREPARING','#fffbeb','#b45309'],
+                  ['ready','READY','#ecfdf5','#047857'],
+                  ['completed','COMPLETED','#f8fafc','#64748b'],
+                ].map(([status,label,bg,color])=>{
+                  const rows=orderAheadOrders.filter(o=>o.status===status)
+                  return <div key={status} style={{minWidth:0,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:13,padding:10,alignSelf:'start'}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:9}}><strong style={{fontSize:11,color}}>{label}</strong><span style={{fontSize:10.5,fontWeight:850,background:bg,color,padding:'4px 7px',borderRadius:999}}>{rows.length}</span></div>
+                    {!rows.length&&<div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:'18px 4px'}}>No {label.toLowerCase()} orders</div>}
+                    {rows.map(order=><div key={order.public_id} style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:11,padding:10,marginBottom:8,boxShadow:'0 3px 10px rgba(15,23,42,.03)'}}>
+                      <div style={{display:'flex',justifyContent:'space-between',gap:8,alignItems:'flex-start'}}><strong style={{fontSize:12.5}}>{order.order_number}</strong><strong style={{fontSize:12.5}}>₱{Number(order.total||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</strong></div>
+                      <div style={{fontSize:11.5,color:'#475569',marginTop:5}}>👤 {order.customer?.name||'Member'}</div>
+                      <div style={{fontSize:11.5,color:'#475569',marginTop:3}}>🏢 {order.branch?.name||'Branch'}</div>
+                      <div style={{fontSize:11.5,color:'#0f172a',fontWeight:800,marginTop:5}}>🕒 {orderAheadPickupLabel(order)}</div>
+                      <div style={{borderTop:'1px solid #eef2f7',marginTop:8,paddingTop:7}}>{(order.items||[]).map((item,i)=><div key={item.id||i} style={{fontSize:11,color:'#475569',marginBottom:4}}><strong>{item.quantity}× {item.item_name}</strong>{Array.isArray(item.modifiers)&&item.modifiers.length?<div style={{fontSize:10,color:'#94a3b8',lineHeight:1.35}}>{item.modifiers.map(m=>m.option_name).filter(Boolean).join(' · ')}</div>:null}</div>)}</div>
+                      {order.customer_note&&<div style={{fontSize:10.5,color:'#7c2d12',background:'#fff7ed',borderRadius:8,padding:7,marginTop:7}}>Note: {order.customer_note}</div>}
+                      {status==='new'&&<button type="button" style={{...styles.submitBtn,width:'100%',marginTop:9,padding:'8px 9px',fontSize:10.5}} disabled={orderAheadOrderSaving===order.public_id} onClick={()=>updateOrderAheadOrderStatus(order,'preparing')}>{orderAheadOrderSaving===order.public_id?'Updating…':'Start Preparing'}</button>}
+                      {status==='preparing'&&<button type="button" style={{...styles.submitBtn,width:'100%',marginTop:9,padding:'8px 9px',fontSize:10.5,background:'#059669'}} disabled={orderAheadOrderSaving===order.public_id} onClick={()=>updateOrderAheadOrderStatus(order,'ready')}>{orderAheadOrderSaving===order.public_id?'Updating…':'Mark Ready'}</button>}
+                      {status==='ready'&&<button type="button" style={{...styles.submitBtn,width:'100%',marginTop:9,padding:'8px 9px',fontSize:10.5,background:'#334155'}} disabled={orderAheadOrderSaving===order.public_id} onClick={()=>updateOrderAheadOrderStatus(order,'completed')}>{orderAheadOrderSaving===order.public_id?'Updating…':'Complete Order'}</button>}
+                    </div>)}
+                  </div>
+                })}
+              </div>
+              <div style={{fontSize:10.5,color:'#94a3b8',marginTop:10}}>Ready notification: “{orderAheadSetup?.ready_message_preview || `Your order from ${business?.name || business?.business_name || user?.business_name || 'this business'} is ready.`}”</div>
             </div>
           </div>
         )}
