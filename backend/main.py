@@ -1512,6 +1512,16 @@ class OrderAheadItemPayload(BaseModel):
     modifier_group_public_ids: list[str] = Field(default_factory=list)
     unavailable_branch_public_ids: list[str] = Field(default_factory=list)
 
+class OrderAheadPickupDayInput(BaseModel):
+    # Monday=0 ... Sunday=6, matching Python datetime.weekday().
+    weekday: int = Field(ge=0, le=6)
+    is_open: bool = False
+    opens_at: Optional[str] = Field(default=None, max_length=5)
+    closes_at: Optional[str] = Field(default=None, max_length=5)
+
+class OrderAheadBranchPickupHoursUpdate(BaseModel):
+    days: list[OrderAheadPickupDayInput] = Field(default_factory=list)
+
 class AdminBusinessCreate(BaseModel):
     """Admin-provisioned business account - used for invite-only business
     types (e.g. car_lending) that don't go through the public signup form.
@@ -7630,6 +7640,7 @@ async def owner_get_order_ahead_setup(public_id: str, authorization: str = Heade
     categories_count = 0
     items_count = 0
     orders_count = 0
+    branch_pickup_hours = []
     try:
         settings = _supabase_first_row(
             supabase.table('order_ahead_settings')
@@ -7658,6 +7669,7 @@ async def owner_get_order_ahead_setup(public_id: str, authorization: str = Heade
             .eq('business_id', business.get('id'))
             .execute()
         )
+        branch_pickup_hours = _oa_branch_pickup_hours_snapshot(business.get('id'))
     except Exception as e:
         msg = str(e)
         if 'order_ahead_' in msg:
@@ -7673,6 +7685,7 @@ async def owner_get_order_ahead_setup(public_id: str, authorization: str = Heade
             'items_count': items_count,
         },
         'orders_count': orders_count,
+        'branch_pickup_hours': branch_pickup_hours,
         'ready_message_preview': f"Your order from {business.get('name') or 'this business'} is ready.",
     }
 
@@ -7784,6 +7797,181 @@ def _oa_menu_snapshot(business: dict) -> dict:
         row.pop('business_id',None)
     for b in branches: b.pop('id',None)
     return {'categories':categories,'items':items,'modifier_groups':groups,'branches':branches}
+
+
+_OA_DAY_NAMES = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']
+_OA_HHMM_RE = re.compile(r'^(?:[01]\d|2[0-3]):[0-5]\d$')
+
+
+def _oa_default_pickup_days() -> list[dict]:
+    return [
+        {'weekday': i, 'day_name': _OA_DAY_NAMES[i], 'is_open': False, 'opens_at': None, 'closes_at': None}
+        for i in range(7)
+    ]
+
+
+def _oa_branch_pickup_hours_snapshot(business_id: int, branches: Optional[list[dict]] = None) -> list[dict]:
+    """Return all active branches with normalized seven-day pickup hours.
+
+    No rows means pickup hours have not been configured yet. We deliberately do
+    not invent opening hours: scheduled/ASAP checkout stays unavailable until
+    the owner configures the branch.
+    """
+    branch_rows = branches
+    if branch_rows is None:
+        branch_rows = (
+            supabase.table('branches')
+            .select('id,public_id,name,address,is_active')
+            .eq('business_id', business_id)
+            .eq('is_active', True)
+            .order('created_at')
+            .execute().data or []
+        )
+    ids = [b.get('id') for b in branch_rows if b.get('id') is not None]
+    rows = []
+    if ids:
+        rows = (
+            supabase.table('order_ahead_branch_pickup_hours')
+            .select('*')
+            .in_('branch_id', ids)
+            .order('weekday')
+            .execute().data or []
+        )
+    by_branch = defaultdict(list)
+    for row in rows:
+        by_branch[row.get('branch_id')].append(row)
+    out = []
+    for branch in branch_rows:
+        raw = by_branch.get(branch.get('id'), [])
+        raw_by_day = {int(r.get('weekday')): r for r in raw if r.get('weekday') is not None}
+        days = []
+        for idx in range(7):
+            row = raw_by_day.get(idx) or {}
+            opens_at = str(row.get('opens_at') or '')[:5] or None
+            closes_at = str(row.get('closes_at') or '')[:5] or None
+            days.append({
+                'weekday': idx,
+                'day_name': _OA_DAY_NAMES[idx],
+                'is_open': bool(row.get('is_open')),
+                'opens_at': opens_at,
+                'closes_at': closes_at,
+            })
+        out.append({
+            'branch_public_id': branch.get('public_id'),
+            'branch_name': branch.get('name') or 'Branch',
+            'configured': bool(raw),
+            'days': days,
+        })
+    return out
+
+
+def _oa_validate_pickup_days(days: list[OrderAheadPickupDayInput]) -> list[dict]:
+    seen = set()
+    normalized = {d['weekday']: d for d in _oa_default_pickup_days()}
+    for day in days or []:
+        if day.weekday in seen:
+            raise HTTPException(status_code=400, detail=f'Duplicate pickup hours for {_OA_DAY_NAMES[day.weekday]}')
+        seen.add(day.weekday)
+        if day.is_open:
+            opens_at = (day.opens_at or '').strip()
+            closes_at = (day.closes_at or '').strip()
+            if not _OA_HHMM_RE.match(opens_at) or not _OA_HHMM_RE.match(closes_at):
+                raise HTTPException(status_code=400, detail=f'Use HH:MM pickup hours for {_OA_DAY_NAMES[day.weekday]}')
+            normalized[day.weekday] = {
+                'weekday': day.weekday,
+                'is_open': True,
+                'opens_at': opens_at,
+                'closes_at': closes_at,
+            }
+        else:
+            normalized[day.weekday] = {
+                'weekday': day.weekday,
+                'is_open': False,
+                'opens_at': None,
+                'closes_at': None,
+            }
+    return [normalized[i] for i in range(7)]
+
+
+def _oa_hhmm_to_datetime(service_date, hhmm: str, tz) -> datetime:
+    hour, minute = [int(x) for x in hhmm.split(':', 1)]
+    return datetime(service_date.year, service_date.month, service_date.day, hour, minute, tzinfo=tz)
+
+
+def _oa_branch_pickup_options(settings: dict, hours_days: list[dict]) -> dict:
+    """Create pickup choices for the customer checkout page.
+
+    Hours are interpreted in Loyalty Tree's configured local timezone
+    (Asia/Manila by default). Closing <= opening is treated as overnight, so a
+    café/bar can configure e.g. 18:00 -> 02:00 without a second schema.
+    """
+    mode = str(settings.get('pickup_mode') or 'both')
+    prep = max(0, int(settings.get('min_prep_minutes') or 0))
+    interval = max(5, int(settings.get('slot_interval_minutes') or 15))
+    advance = max(0, min(365, int(settings.get('max_advance_days') or 0)))
+    configured = bool(hours_days)
+    rowmap = {int(r.get('weekday')): r for r in (hours_days or []) if r.get('weekday') is not None}
+    now = datetime.now(LOYALTY_TIMEZONE)
+    earliest = now + timedelta(minutes=prep)
+
+    def interval_for(service_date):
+        row = rowmap.get(service_date.weekday()) or {}
+        if not row.get('is_open') or not row.get('opens_at') or not row.get('closes_at'):
+            return None
+        start = _oa_hhmm_to_datetime(service_date, str(row['opens_at'])[:5], LOYALTY_TIMEZONE)
+        end = _oa_hhmm_to_datetime(service_date, str(row['closes_at'])[:5], LOYALTY_TIMEZONE)
+        if end <= start:
+            end += timedelta(days=1)
+        return start, end
+
+    # ASAP is valid only if the projected ready time lands inside a configured
+    # pickup window. Check today's service day and yesterday's overnight window.
+    asap_available = False
+    if configured and mode in ('asap', 'both'):
+        for delta_days in (0, -1):
+            iv = interval_for((now + timedelta(days=delta_days)).date())
+            if iv and iv[0] <= earliest < iv[1]:
+                asap_available = True
+                break
+
+    slots = []
+    if configured and mode in ('scheduled', 'both'):
+        last_service_date = now.date() + timedelta(days=advance)
+        service_date = now.date()
+        while service_date <= last_service_date and len(slots) < 500:
+            iv = interval_for(service_date)
+            if iv:
+                open_dt, close_dt = iv
+                start = max(open_dt, earliest)
+                # Align to the owner's configured interval relative to opening.
+                mins = max(0, int((start - open_dt).total_seconds() // 60))
+                steps = (mins + interval - 1) // interval
+                slot = open_dt + timedelta(minutes=steps * interval)
+                while slot < close_dt and len(slots) < 500:
+                    if slot >= earliest:
+                        day_label = slot.strftime('%a, %b %d').replace(' 0', ' ')
+                        time_label = slot.strftime('%I:%M %p').lstrip('0')
+                        slots.append({
+                            'value': slot.isoformat(),
+                            'date_label': day_label,
+                            'time_label': time_label,
+                            'label': f'{day_label} · {time_label}',
+                        })
+                    slot += timedelta(minutes=interval)
+            service_date += timedelta(days=1)
+
+    ready_label = earliest.strftime('%I:%M %p').lstrip('0')
+    return {
+        'mode': mode,
+        'min_prep_minutes': prep,
+        'slot_interval_minutes': interval,
+        'max_advance_days': advance,
+        'hours_configured': configured,
+        'asap_available': asap_available,
+        'asap_ready_at': earliest.isoformat(),
+        'asap_ready_label': ready_label,
+        'slots': slots,
+    }
 
 
 @app.get('/api/v1/business/{public_id}/order-ahead/menu')
@@ -7905,6 +8093,48 @@ async def owner_delete_oa_item(public_id: str, item_public_id: str, authorizatio
     business=_oa_require_owner_business(public_id,authorization); item=_oa_public_row('order_ahead_items',item_public_id,business.get('id'))
     if not item: raise HTTPException(status_code=404,detail='Menu item not found')
     supabase.table('order_ahead_items').delete().eq('id',item.get('id')).execute(); return {'success':True}
+
+@app.put('/api/v1/business/{public_id}/order-ahead/pickup-hours/{branch_public_id}')
+async def owner_save_order_ahead_pickup_hours(
+    public_id: str,
+    branch_public_id: str,
+    payload: OrderAheadBranchPickupHoursUpdate,
+    authorization: str = Header(default=''),
+):
+    business = _oa_require_owner_business(public_id, authorization)
+    branch = _supabase_first_row(
+        supabase.table('branches')
+        .select('id,public_id,business_id,name,is_active')
+        .eq('public_id', branch_public_id)
+        .eq('business_id', business.get('id'))
+        .limit(1).execute()
+    )
+    if not branch or not branch.get('is_active', True):
+        raise HTTPException(status_code=404, detail='Branch not found')
+    days = _oa_validate_pickup_days(payload.days)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    rows = [
+        {
+            'business_id': business.get('id'),
+            'branch_id': branch.get('id'),
+            'weekday': d['weekday'],
+            'is_open': d['is_open'],
+            'opens_at': d['opens_at'],
+            'closes_at': d['closes_at'],
+            'updated_at': now_iso,
+        }
+        for d in days
+    ]
+    try:
+        supabase.table('order_ahead_branch_pickup_hours').delete().eq('branch_id', branch.get('id')).execute()
+        if rows:
+            supabase.table('order_ahead_branch_pickup_hours').insert(rows).execute()
+    except Exception as e:
+        if 'order_ahead_branch_pickup_hours' in str(e):
+            raise HTTPException(status_code=503, detail='Install the Order Ahead pickup-hours migration first')
+        raise HTTPException(status_code=500, detail=f'Could not save pickup hours: {friendly_db_error(e)}')
+    snap = _oa_branch_pickup_hours_snapshot(business.get('id'), [branch])
+    return {'success': True, 'branch': snap[0] if snap else None}
 
 @app.patch("/api/v1/admin/businesses/{public_id}/nfc-trial")
 async def admin_set_nfc_trial(public_id: str, update: AdminNfcTrialUpdate, background_tasks: BackgroundTasks, _: bool = Depends(require_admin)):
@@ -19585,10 +19815,24 @@ async def order_ahead_branch_selected(customer_public_id: str, branch_public_id:
 
     try:
         snap = _oa_menu_snapshot(business)
+        settings = _supabase_first_row(
+            supabase.table('order_ahead_settings').select('*').eq('business_id', business.get('id')).limit(1).execute()
+        ) or {
+            'pickup_mode': 'both', 'min_prep_minutes': 15,
+            'slot_interval_minutes': 15, 'max_advance_days': 7,
+            'payment_mode': 'mock', 'ready_notification_enabled': True,
+        }
+        hour_rows = (
+            supabase.table('order_ahead_branch_pickup_hours')
+            .select('*').eq('branch_id', branch.get('id')).order('weekday').execute().data or []
+        )
     except Exception as e:
+        msg = str(e)
+        if 'order_ahead_branch_pickup_hours' in msg:
+            raise HTTPException(status_code=503, detail='Order Ahead pickup-hours migration has not been installed yet')
         raise HTTPException(status_code=500, detail=f'Could not load menu: {friendly_db_error(e)}')
 
-    ui = _resolve_order_ahead_ui_config(business)
+    ui = _resolve_order_ahead_ui_config(business, settings)
     program = safe_get_loyalty_program(business.get('id')) or {}
     categories = [c for c in snap['categories'] if c.get('is_active')]
     items = []
@@ -19598,50 +19842,84 @@ async def order_ahead_branch_selected(customer_public_id: str, branch_public_id:
         item = dict(original)
         item['branch_available'] = branch_public_id not in (item.get('unavailable_branch_public_ids') or [])
         item['modifier_groups'] = [
-            g for g in snap['modifier_groups']
+            dict(g) for g in snap['modifier_groups']
             if g.get('public_id') in (item.get('modifier_group_public_ids') or []) and g.get('is_active')
         ]
         for group in item['modifier_groups']:
-            group['options'] = [o for o in (group.get('options') or []) if o.get('is_active')]
+            group['options'] = [dict(o) for o in (group.get('options') or []) if o.get('is_active')]
         items.append(item)
 
-    payload = {'categories': categories, 'items': items}
+    pickup = _oa_branch_pickup_options(settings, hour_rows)
+    payload = {
+        'categories': categories,
+        'items': items,
+        'branch': {'public_id': branch_public_id, 'name': branch.get('name') or 'Branch', 'address': branch.get('address') or ''},
+        'pickup': pickup,
+        'customer': {'name': customer.get('name') or 'Member'},
+    }
     data_json = json.dumps(payload).replace('</', '<\\/')
+    ui_json = json.dumps(ui).replace('</', '<\\/')
     biz_name = html_lib.escape(str(business.get('name') or 'Business'))
     branch_name = html_lib.escape(str(branch.get('name') or 'Branch'))
     logo = html_lib.escape(str(business.get('logo_url') or program.get('program_logo_url') or DEFAULT_LOGO_URL))
     hero = html_lib.escape(str(program.get('hero_image_url') or ''))
     banner_html = '<img class="banner" src="' + hero + '" alt="">' if ui['show_banner'] and hero else ''
+    branch_picker_url = f"{BASE_URL}/order-ahead/{quote(customer_public_id)}?token={quote(token)}"
 
     substitutions = {
         '__BG__': ui['background_color'], '__TEXT__': ui['text_color'], '__MUTED__': ui['muted_color'],
         '__SURFACE__': ui['surface_color'], '__PRIMARY__': ui['primary_color'],
         '__BIZ__': biz_name, '__BRANCH__': branch_name, '__LOGO__': logo,
         '__BANNER__': banner_html, '__MENU_HEADING__': html_lib.escape(ui['menu_heading']),
-        '__DATA__': data_json, '__UI__': json.dumps(ui),
+        '__DATA__': data_json, '__UI__': ui_json, '__BRANCH_PICKER_URL__': html_lib.escape(branch_picker_url),
         '__CAT_RADIUS__': '999px' if ui['category_style'] == 'pills' else '8px',
         '__GRID_COLS__': 'repeat(2,minmax(0,1fr))' if ui['product_layout'] == 'image_top' else '1fr',
         '__ITEM_DISPLAY__': 'block' if ui['product_layout'] == 'image_top' else 'grid',
         '__ITEM_COLS__': '110px 1fr' if ui['product_layout'] == 'image_left' else ('76px 1fr' if ui['product_layout'] == 'compact' else '1fr'),
         '__PHOTO_HEIGHT__': '132px' if ui['product_layout'] == 'image_top' else ('110px' if ui['product_layout'] == 'image_left' else '76px'),
-        '__IMG_RADIUS__': '16px' if ui['image_shape'] == 'rounded' else '4px',
         '__CARD_RADIUS__': '18px' if ui['product_card_style'] == 'soft' else ('12px' if ui['product_card_style'] == 'outline' else '8px'),
         '__CARD_SHADOW__': '0 8px 24px rgba(15,23,42,.06)' if ui['product_card_style'] == 'soft' else 'none',
         '__CARD_BORDER__': '1px solid #e2e8f0' if ui['product_card_style'] != 'flat' else '1px solid transparent',
     }
+
     page = r'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>__BIZ__ · Menu</title><style>
-*{box-sizing:border-box}body{margin:0;background:__BG__;color:__TEXT__;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding-bottom:94px}main{max-width:560px;margin:auto;padding:18px}.banner{width:100%;height:142px;object-fit:cover;border-radius:22px;margin-bottom:14px}.head{display:flex;align-items:center;gap:12px;margin-bottom:18px}.logo{width:48px;height:48px;border-radius:14px;object-fit:cover;border:1px solid #e2e8f0}h1{font-size:21px;margin:0}.branch{font-size:12px;color:__MUTED__;margin-top:3px}.cats{display:flex;gap:8px;overflow:auto;padding:2px 0 12px;scrollbar-width:none;position:sticky;top:0;background:__BG__;z-index:5}.cat{white-space:nowrap;border:0;background:__SURFACE__;color:__TEXT__;padding:9px 12px;border-radius:__CAT_RADIUS__;font-weight:750}.cat.on{background:__PRIMARY__;color:#fff}.grid{display:grid;grid-template-columns:__GRID_COLS__;gap:12px}.item{background:__SURFACE__;border:__CARD_BORDER__;border-radius:__CARD_RADIUS__;box-shadow:__CARD_SHADOW__;overflow:hidden;display:__ITEM_DISPLAY__;grid-template-columns:__ITEM_COLS__}.photo{width:100%;height:__PHOTO_HEIGHT__;object-fit:cover;background:#f1f5f9}.info{padding:12px;min-width:0}.name{font-weight:800;font-size:14px}.desc{font-size:11.5px;color:__MUTED__;margin-top:4px;line-height:1.35}.row{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-top:10px}.price{font-weight:850}.add{border:0;background:__PRIMARY__;color:#fff;border-radius:999px;min-width:31px;height:31px;padding:0 11px;font-weight:850}.sold{opacity:.52}.sold .add{background:#94a3b8}.empty{padding:28px;text-align:center;color:__MUTED__;background:__SURFACE__;border-radius:18px}.cartbar{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);width:min(524px,calc(100% - 28px));background:__PRIMARY__;color:#fff;border-radius:18px;padding:14px 16px;display:none;justify-content:space-between;box-shadow:0 14px 35px rgba(15,23,42,.22);font-weight:850;z-index:20}.cartbar.show{display:flex}dialog{border:0;border-radius:22px;padding:0;width:min(500px,calc(100% - 24px));color:__TEXT__}dialog::backdrop{background:rgba(15,23,42,.45)}.modal{padding:18px}.opt{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid #eef2f7}.group{margin-top:16px}.group h3{font-size:13px;margin:0 0 4px}.muted{color:__MUTED__;font-size:11px}.modaladd{width:100%;border:0;border-radius:14px;padding:13px;background:__PRIMARY__;color:#fff;font-weight:850;margin-top:16px}
-</style></head><body><main>__BANNER__<div class="head"><img class="logo" src="__LOGO__"><div><h1>__MENU_HEADING__</h1><div class="branch">__BIZ__ · __BRANCH__</div></div></div><div id="cats" class="cats"></div><div id="grid" class="grid"></div></main><div id="cartbar" class="cartbar"><span id="cartcount">0 items</span><span id="carttotal">₱0.00 · View Cart</span></div><dialog id="dlg"><div id="modal" class="modal"></div></dialog><script>
-const DATA=__DATA__; const UI=__UI__; let active='all',cart=[];
+*{box-sizing:border-box}body{margin:0;background:__BG__;color:__TEXT__;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding-bottom:96px}button,input,select,textarea{font:inherit}button{cursor:pointer}main{max-width:560px;margin:auto;padding:18px}.banner{width:100%;height:142px;object-fit:cover;border-radius:22px;margin-bottom:14px}.head{display:flex;align-items:center;gap:12px;margin-bottom:18px}.logo{width:48px;height:48px;border-radius:14px;object-fit:cover;border:1px solid #e2e8f0}.headcopy{min-width:0;flex:1}h1{font-size:21px;margin:0}.branchline{font-size:12px;color:__MUTED__;margin-top:3px;display:flex;gap:7px;align-items:center;flex-wrap:wrap}.changebranch{color:__PRIMARY__;text-decoration:none;font-weight:800}.cats{display:flex;gap:8px;overflow:auto;padding:2px 0 12px;scrollbar-width:none;position:sticky;top:0;background:__BG__;z-index:5}.cat{white-space:nowrap;border:0;background:__SURFACE__;color:__TEXT__;padding:9px 12px;border-radius:__CAT_RADIUS__;font-weight:750}.cat.on{background:__PRIMARY__;color:#fff}.grid{display:grid;grid-template-columns:__GRID_COLS__;gap:12px}.item{background:__SURFACE__;border:__CARD_BORDER__;border-radius:__CARD_RADIUS__;box-shadow:__CARD_SHADOW__;overflow:hidden;display:__ITEM_DISPLAY__;grid-template-columns:__ITEM_COLS__}.photo{width:100%;height:__PHOTO_HEIGHT__;object-fit:cover;background:#f1f5f9}.info{padding:12px;min-width:0}.name{font-weight:800;font-size:14px}.desc{font-size:11.5px;color:__MUTED__;margin-top:4px;line-height:1.35}.row{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-top:10px}.price{font-weight:850}.add{border:0;background:__PRIMARY__;color:#fff;border-radius:999px;min-width:31px;height:31px;padding:0 11px;font-weight:850}.sold{opacity:.52}.sold .add{background:#94a3b8}.empty{padding:28px;text-align:center;color:__MUTED__;background:__SURFACE__;border-radius:18px}.cartbar{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);width:min(524px,calc(100% - 28px));background:__PRIMARY__;color:#fff;border:0;border-radius:18px;padding:14px 16px;display:none;justify-content:space-between;box-shadow:0 14px 35px rgba(15,23,42,.22);font-weight:850;z-index:20}.cartbar.show{display:flex}.cartbar.inline{position:relative;left:auto;bottom:auto;transform:none;margin:0 auto 18px;width:min(524px,calc(100% - 36px))}.sheet{border:0;border-radius:24px 24px 0 0;padding:0;width:min(560px,100%);max-width:560px;margin:auto 0 0;max-height:92vh;color:__TEXT__;background:__SURFACE__}.sheet::backdrop{background:rgba(15,23,42,.48)}.sheetbox{padding:18px;max-height:92vh;overflow:auto}.sheethead{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.close{border:0;background:#f1f5f9;color:#475569;border-radius:999px;width:32px;height:32px;font-weight:900}.muted{color:__MUTED__;font-size:11.5px;line-height:1.4}.group{margin-top:18px}.group h3{font-size:13px;margin:0 0 4px}.opt{display:flex;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid #eef2f7}.opt input{margin-right:7px}.error{display:none;color:#b91c1c;background:#fef2f2;padding:9px 10px;border-radius:10px;font-size:11px;margin-top:8px}.error.show{display:block}.qty{display:flex;align-items:center;justify-content:space-between;background:#f8fafc;border-radius:14px;padding:10px 12px;margin-top:16px}.qtyctrl{display:flex;align-items:center;gap:12px}.qbtn{border:1px solid #cbd5e1;background:#fff;border-radius:999px;width:32px;height:32px;font-size:18px}.primary{width:100%;border:0;border-radius:14px;padding:13px;background:__PRIMARY__;color:#fff;font-weight:850;margin-top:16px}.secondary{width:100%;border:1px solid #cbd5e1;border-radius:14px;padding:12px;background:#fff;color:#334155;font-weight:800;margin-top:8px}.cartrow{padding:13px 0;border-bottom:1px solid #e2e8f0}.carttop{display:flex;justify-content:space-between;gap:12px}.cartname{font-weight:850}.mods{font-size:11px;color:__MUTED__;margin-top:4px;line-height:1.45}.cartactions{display:flex;gap:8px;align-items:center;margin-top:9px}.mini{border:1px solid #cbd5e1;background:#fff;border-radius:9px;padding:6px 8px;font-size:11px;font-weight:750;color:#475569}.cartsummary{display:flex;justify-content:space-between;font-weight:900;font-size:17px;padding-top:15px}.pickupbox{background:#f8fafc;border:1px solid #e2e8f0;border-radius:16px;padding:13px;margin-top:14px}.picktabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}.picktab{border:1px solid #cbd5e1;background:#fff;color:#475569;border-radius:12px;padding:10px;font-weight:800}.picktab.on{background:__PRIMARY__;border-color:__PRIMARY__;color:#fff}.picktab:disabled{opacity:.45;cursor:not-allowed}.field{width:100%;border:1px solid #cbd5e1;border-radius:12px;background:#fff;color:#0f172a;padding:11px;margin-top:8px}.notice{font-size:11.5px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:10px;margin-top:10px}.review{background:#f8fafc;border-radius:14px;padding:12px;margin-top:14px}.reviewline{display:flex;justify-content:space-between;gap:10px;padding:5px 0;font-size:12px}.reviewline.total{font-size:15px;font-weight:900;border-top:1px solid #e2e8f0;margin-top:5px;padding-top:10px}.nextnote{display:none;text-align:center;background:#ecfdf5;color:#047857;border-radius:12px;padding:11px;margin-top:10px;font-size:12px;font-weight:750}.nextnote.show{display:block}@media(max-width:420px){.grid{grid-template-columns:1fr}.item{display:grid;grid-template-columns:92px 1fr}.photo{height:92px}.picktabs{grid-template-columns:1fr}}
+</style></head><body><main>__BANNER__<div class="head"><img class="logo" src="__LOGO__"><div class="headcopy"><h1>__MENU_HEADING__</h1><div class="branchline"><span>__BIZ__ · __BRANCH__</span><a class="changebranch" href="__BRANCH_PICKER_URL__">Change branch</a></div></div></div><div id="cats" class="cats"></div><div id="grid" class="grid"></div></main><button id="cartbar" class="cartbar" type="button" onclick="openCart()"><span id="cartcount">0 items</span><span id="carttotal">₱0.00 · View Cart</span></button>
+<dialog id="itemDlg" class="sheet"><div id="itemModal" class="sheetbox"></div></dialog>
+<dialog id="cartDlg" class="sheet"><div class="sheetbox"><div class="sheethead"><div><h2 style="margin:0">Your cart</h2><div class="muted">__BRANCH__ pickup</div></div><button class="close" onclick="cartDlg.close()">×</button></div><div id="cartRows"></div><div class="cartsummary"><span>Subtotal</span><span id="cartSheetTotal">₱0.00</span></div><button class="primary" onclick="openCheckout()">Choose Pickup Time</button><button class="secondary" onclick="cartDlg.close()">Add more items</button></div></dialog>
+<dialog id="checkoutDlg" class="sheet"><div class="sheetbox"><div class="sheethead"><div><h2 style="margin:0">Pickup & checkout</h2><div class="muted">Review your order before Test Payment.</div></div><button class="close" onclick="checkoutDlg.close()">×</button></div><div id="pickupArea"></div><label style="display:block;font-size:12px;font-weight:800;margin-top:14px">Order note<textarea id="customerNote" class="field" rows="3" maxlength="500" placeholder="Optional note for the business"></textarea></label><div id="checkoutReview" class="review"></div><div id="checkoutError" class="error"></div><button class="primary" onclick="continueToPayment()">Continue to Test Payment →</button><button class="secondary" onclick="checkoutDlg.close();openCart()">Back to cart</button><div id="nextPhaseNote" class="nextnote">Cart + pickup checkout are ready. Test Payment / order creation is the next phase.</div></div></dialog>
+<script>
+const DATA=__DATA__; const UI=__UI__; let active='all'; let editIndex=null; let itemQty=1; let pickupType=null; let selectedSlot='';
+const cartKey='lt_oa_cart_'+DATA.branch.public_id; let cart=[]; try{cart=JSON.parse(sessionStorage.getItem(cartKey)||'[]');if(!Array.isArray(cart))cart=[]}catch(e){cart=[]}
+const itemDlg=document.getElementById('itemDlg'),cartDlg=document.getElementById('cartDlg'),checkoutDlg=document.getElementById('checkoutDlg');
 const peso=n=>'₱'+Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
 const esc=s=>String(s||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
+function saveCart(){sessionStorage.setItem(cartKey,JSON.stringify(cart));updateCartBar()}
 function drawCats(){const arr=[{public_id:'all',name:'All'},...DATA.categories];document.getElementById('cats').innerHTML=arr.map(c=>`<button class="cat ${active===c.public_id?'on':''}" onclick="active='${c.public_id}';drawCats();drawItems()">${esc(c.name)}</button>`).join('')}
 function addLabel(){return UI.add_button_style==='text'?'Add':UI.add_button_style==='filled'?'+ Add':'+'}
-function drawItems(){const xs=DATA.items.filter(i=>active==='all'||i.category_public_id===active);document.getElementById('grid').innerHTML=xs.length?xs.map(i=>{const ok=i.is_available!==false&&i.branch_available!==false;return `<div class="item ${ok?'':'sold'}">${i.image_url?`<img class="photo" src="${esc(i.image_url)}">`:`<div class="photo"></div>`}<div class="info"><div class="name">${esc(i.name)}</div>${UI.show_product_description&&i.description?`<div class="desc">${esc(i.description)}</div>`:''}<div class="row"><span class="price">${peso(i.base_price)}</span><button class="add" ${ok?'':'disabled'} onclick="openItem('${i.public_id}')">${ok?addLabel():'Sold out'}</button></div></div></div>`}).join(''):'<div class="empty">No menu items in this category yet.</div>'}
-function openItem(id){const i=DATA.items.find(x=>x.public_id===id);if(!i)return;const groups=(i.modifier_groups||[]).map(g=>`<div class="group"><h3>${esc(g.name)}${g.is_required?' *':''}</h3><div class="muted">${g.selection_type==='multiple'?'Choose any that apply':'Choose one'}</div>${(g.options||[]).map(o=>`<label class="opt"><span><input type="${g.selection_type==='multiple'?'checkbox':'radio'}" name="g_${g.public_id}" value="${o.public_id}" data-price="${o.price_delta}"> ${esc(o.name)}</span><span>${o.price_delta?'+ '+peso(o.price_delta):''}</span></label>`).join('')}</div>`).join('');document.getElementById('modal').innerHTML=`<h2 style="margin:0">${esc(i.name)}</h2><div class="muted" style="margin-top:4px">${esc(i.description||'')}</div>${groups}<button class="modaladd" onclick="confirmAdd('${id}')">Add to Cart · ${peso(i.base_price)}</button>`;document.getElementById('dlg').showModal()}
-function confirmAdd(id){const i=DATA.items.find(x=>x.public_id===id);let extra=0,mods=[];document.querySelectorAll('#modal input:checked').forEach(el=>{extra+=Number(el.dataset.price||0);mods.push(el.value)});cart.push({id,name:i.name,price:Number(i.base_price)+extra,mods});document.getElementById('dlg').close();updateCart()}
-function updateCart(){const total=cart.reduce((a,x)=>a+x.price,0),bar=document.getElementById('cartbar');document.getElementById('cartcount').textContent=cart.length+' item'+(cart.length===1?'':'s');document.getElementById('carttotal').textContent=peso(total)+' · View Cart';bar.classList.toggle('show',UI.sticky_cart&&cart.length>0)}
-drawCats();drawItems();
+function drawItems(){const xs=DATA.items.filter(i=>active==='all'||i.category_public_id===active);document.getElementById('grid').innerHTML=xs.length?xs.map(i=>{const ok=i.is_available!==false&&i.branch_available!==false;return `<div class="item ${ok?'':'sold'}">${i.image_url?`<img class="photo" src="${esc(i.image_url)}" alt="">`:`<div class="photo"></div>`}<div class="info"><div class="name">${esc(i.name)}</div>${UI.show_product_description&&i.description?`<div class="desc">${esc(i.description)}</div>`:''}<div class="row"><span class="price">${peso(i.base_price)}</span><button class="add" ${ok?'':'disabled'} onclick="openItem('${i.public_id}')">${ok?addLabel():'Sold out'}</button></div></div></div>`}).join(''):'<div class="empty">No menu items in this category yet.</div>'}
+function selectedForGroup(groupId){return [...document.querySelectorAll(`[name="g_${groupId}"]:checked`)]}
+function itemUnitTotal(item){let extra=0;document.querySelectorAll('#itemModal input:checked').forEach(el=>extra+=Number(el.dataset.price||0));return Number(item.base_price||0)+extra}
+function updateItemPrice(id){const item=DATA.items.find(x=>x.public_id===id);if(!item)return;const el=document.getElementById('itemAddPrice');if(el)el.textContent=(editIndex===null?'Add to Cart':'Save Changes')+' · '+peso(itemUnitTotal(item)*itemQty);const q=document.getElementById('itemQty');if(q)q.textContent=itemQty}
+function changeItemQty(delta,id){itemQty=Math.max(1,Math.min(99,itemQty+delta));updateItemPrice(id)}
+function openItem(id,index=null){const i=DATA.items.find(x=>x.public_id===id);if(!i||i.is_available===false||i.branch_available===false)return;editIndex=index;const existing=index===null?null:cart[index];itemQty=existing?.quantity||1;const selectedIds=new Set((existing?.modifiers||[]).map(m=>m.option_public_id));const groups=(i.modifier_groups||[]).map(g=>{const min=Math.max(Number(g.min_selections||0),g.is_required?1:0);const max=g.selection_type==='single'?1:Number(g.max_selections||0);const guide=g.selection_type==='single'?(min?'Choose one':'Optional'):`Choose ${min?('at least '+min):'any'}${max?' · max '+max:''}`;return `<div class="group" data-group="${g.public_id}" data-min="${min}" data-max="${max||0}" data-type="${g.selection_type}"><h3>${esc(g.name)}${min?' *':''}</h3><div class="muted">${guide}</div>${(g.options||[]).map(o=>`<label class="opt"><span><input type="${g.selection_type==='multiple'?'checkbox':'radio'}" name="g_${g.public_id}" value="${o.public_id}" data-price="${o.price_delta}" data-name="${esc(o.name)}" ${selectedIds.has(o.public_id)?'checked':''} onchange="modifierChanged('${g.public_id}','${id}',this)"> ${esc(o.name)}</span><span>${Number(o.price_delta)?'+ '+peso(o.price_delta):''}</span></label>`).join('')}<div id="err_${g.public_id}" class="error"></div></div>`}).join('');document.getElementById('itemModal').innerHTML=`<div class="sheethead"><div><h2 style="margin:0">${esc(i.name)}</h2><div class="muted" style="margin-top:4px">${esc(i.description||'')}</div></div><button class="close" onclick="itemDlg.close()">×</button></div>${groups}<div class="qty"><strong>Quantity</strong><div class="qtyctrl"><button class="qbtn" onclick="changeItemQty(-1,'${id}')">−</button><strong id="itemQty">${itemQty}</strong><button class="qbtn" onclick="changeItemQty(1,'${id}')">+</button></div></div><button class="primary" id="itemAddPrice" onclick="confirmItem('${id}')"></button>${index!==null?'<button class="secondary" onclick="removeCartItem('+index+');itemDlg.close()">Remove item</button>':''}`;updateItemPrice(id);itemDlg.showModal()}
+function modifierChanged(groupId,itemId,el){const group=document.querySelector(`[data-group="${groupId}"]`);if(group&&group.dataset.type==='multiple'){const max=Number(group.dataset.max||0);const selected=selectedForGroup(groupId);if(max&&selected.length>max){el.checked=false;const e=document.getElementById('err_'+groupId);e.textContent='Choose up to '+max+'.';e.classList.add('show');setTimeout(()=>e.classList.remove('show'),1800)}}updateItemPrice(itemId)}
+function validateModifiers(item){let ok=true;for(const g of item.modifier_groups||[]){const count=selectedForGroup(g.public_id).length;const min=Math.max(Number(g.min_selections||0),g.is_required?1:0);const max=g.selection_type==='single'?1:Number(g.max_selections||0);const err=document.getElementById('err_'+g.public_id);let msg='';if(count<min)msg=min===1?'Please choose one.':'Please choose at least '+min+'.';else if(max&&count>max)msg='Choose up to '+max+'.';if(msg){ok=false;err.textContent=msg;err.classList.add('show')}else err?.classList.remove('show')}return ok}
+function confirmItem(id){const item=DATA.items.find(x=>x.public_id===id);if(!item||!validateModifiers(item))return;const modifiers=[];let extra=0;for(const g of item.modifier_groups||[]){for(const el of selectedForGroup(g.public_id)){const price=Number(el.dataset.price||0);extra+=price;modifiers.push({group_public_id:g.public_id,group_name:g.name,option_public_id:el.value,option_name:el.dataset.name||'',price_delta:price})}}const entry={item_public_id:item.public_id,name:item.name,base_price:Number(item.base_price||0),unit_price:Number(item.base_price||0)+extra,quantity:itemQty,modifiers};if(editIndex===null)cart.push(entry);else cart[editIndex]=entry;itemDlg.close();editIndex=null;saveCart()}
+function cartSubtotal(){return cart.reduce((sum,x)=>sum+Number(x.unit_price||0)*Number(x.quantity||1),0)}
+function updateCartBar(){const qty=cart.reduce((sum,x)=>sum+Number(x.quantity||1),0),bar=document.getElementById('cartbar');document.getElementById('cartcount').textContent=qty+' item'+(qty===1?'':'s');document.getElementById('carttotal').textContent=peso(cartSubtotal())+' · View Cart';bar.classList.toggle('show',qty>0);bar.classList.toggle('inline',!UI.sticky_cart)}
+function modifierText(x){return (x.modifiers||[]).map(m=>m.group_name+': '+m.option_name+(Number(m.price_delta)?' (+'+peso(m.price_delta)+')':'')).join(' · ')}
+function drawCart(){const rows=document.getElementById('cartRows');rows.innerHTML=cart.length?cart.map((x,i)=>`<div class="cartrow"><div class="carttop"><div><div class="cartname">${x.quantity}× ${esc(x.name)}</div>${x.modifiers?.length?`<div class="mods">${esc(modifierText(x))}</div>`:''}</div><strong>${peso(Number(x.unit_price)*Number(x.quantity))}</strong></div><div class="cartactions"><button class="mini" onclick="openItem('${x.item_public_id}',${i});cartDlg.close()">Edit</button><button class="mini" onclick="changeCartQty(${i},-1)">−</button><b>${x.quantity}</b><button class="mini" onclick="changeCartQty(${i},1)">+</button><button class="mini" onclick="removeCartItem(${i})">Remove</button></div></div>`).join(''):'<div class="empty" style="margin-top:14px">Your cart is empty.</div>';document.getElementById('cartSheetTotal').textContent=peso(cartSubtotal())}
+function openCart(){if(!cart.length)return;drawCart();cartDlg.showModal()}
+function changeCartQty(index,delta){if(!cart[index])return;cart[index].quantity=Math.max(1,Math.min(99,Number(cart[index].quantity||1)+delta));saveCart();drawCart()}
+function removeCartItem(index){cart.splice(index,1);saveCart();drawCart();if(!cart.length&&cartDlg.open)cartDlg.close()}
+function pickDefault(){const p=DATA.pickup;if(p.mode==='asap'&&p.asap_available)return'asap';if(p.mode==='scheduled'&&p.slots.length)return'scheduled';if(p.mode==='both'){if(p.asap_available)return'asap';if(p.slots.length)return'scheduled'}return null}
+function renderPickup(){pickupType=pickupType||pickDefault();const p=DATA.pickup;let html='';if(!p.hours_configured){html+='<div class="notice"><strong>Pickup hours are not configured for this branch yet.</strong><br>The business needs to set its Order Ahead pickup hours before checkout can continue.</div>'}html+=`<div class="pickupbox"><strong>Pickup at ${esc(DATA.branch.name)}</strong><div class="muted" style="margin-top:3px">Minimum preparation: ${p.min_prep_minutes} min</div>`;if(p.mode==='both')html+=`<div class="picktabs"><button class="picktab ${pickupType==='asap'?'on':''}" ${p.asap_available?'':'disabled'} onclick="pickupType='asap';renderPickup();renderReview()">ASAP</button><button class="picktab ${pickupType==='scheduled'?'on':''}" ${p.slots.length?'':'disabled'} onclick="pickupType='scheduled';renderPickup();renderReview()">Scheduled</button></div>`;else if(p.mode==='asap')html+=`<div class="picktabs" style="grid-template-columns:1fr"><button class="picktab ${pickupType==='asap'?'on':''}" ${p.asap_available?'':'disabled'} onclick="pickupType='asap';renderPickup();renderReview()">ASAP</button></div>`;else html+=`<div class="picktabs" style="grid-template-columns:1fr"><button class="picktab ${pickupType==='scheduled'?'on':''}" ${p.slots.length?'':'disabled'} onclick="pickupType='scheduled';renderPickup();renderReview()">Scheduled</button></div>`;if(pickupType==='asap'&&p.asap_available)html+=`<div class="muted" style="margin-top:10px">Estimated ready around <strong>${esc(p.asap_ready_label)}</strong>.</div>`;if(pickupType==='scheduled'){if(p.slots.length){if(!selectedSlot||!p.slots.some(s=>s.value===selectedSlot))selectedSlot=p.slots[0].value;html+=`<label style="display:block;font-size:12px;font-weight:800;margin-top:11px">Pickup time<select id="pickupSlot" class="field" onchange="selectedSlot=this.value;renderReview()">${p.slots.map(s=>`<option value="${esc(s.value)}" ${s.value===selectedSlot?'selected':''}>${esc(s.label)}</option>`).join('')}</select></label>`}else html+='<div class="notice">No scheduled pickup slots are currently available.</div>'}html+='</div>';document.getElementById('pickupArea').innerHTML=html}
+function pickupLabel(){if(pickupType==='asap')return'Direct pickup · ASAP around '+DATA.pickup.asap_ready_label;if(pickupType==='scheduled'){const s=DATA.pickup.slots.find(x=>x.value===selectedSlot);return s?s.label:'Choose a scheduled time'}return'Not selected'}
+function renderReview(){const div=document.getElementById('checkoutReview');div.innerHTML=`<div class="reviewline"><span>Branch</span><strong>${esc(DATA.branch.name)}</strong></div><div class="reviewline"><span>Pickup</span><strong style="text-align:right">${esc(pickupLabel())}</strong></div><div class="reviewline"><span>Items</span><strong>${cart.reduce((s,x)=>s+Number(x.quantity||1),0)}</strong></div><div class="reviewline total"><span>Subtotal</span><span>${peso(cartSubtotal())}</span></div>`}
+function openCheckout(){if(!cart.length)return;cartDlg.close();pickupType=pickDefault();selectedSlot='';document.getElementById('nextPhaseNote').classList.remove('show');document.getElementById('checkoutError').classList.remove('show');renderPickup();renderReview();checkoutDlg.showModal()}
+function continueToPayment(){const err=document.getElementById('checkoutError');let msg='';if(!DATA.pickup.hours_configured)msg='Pickup hours are not configured for this branch.';else if(!pickupType)msg='No pickup option is currently available.';else if(pickupType==='asap'&&!DATA.pickup.asap_available)msg='ASAP pickup is not currently available.';else if(pickupType==='scheduled'&&!selectedSlot)msg='Choose a pickup time.';if(msg){err.textContent=msg;err.classList.add('show');return}err.classList.remove('show');document.getElementById('nextPhaseNote').classList.add('show')}
+drawCats();drawItems();updateCartBar();
 </script></body></html>'''
     for key, value in substitutions.items():
         page = page.replace(key, str(value))

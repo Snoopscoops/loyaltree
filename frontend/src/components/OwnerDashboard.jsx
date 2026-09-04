@@ -88,6 +88,9 @@ const INDUSTRY_META = {
   other:{icon:'🏪',label:'Business',recommend:'Choose the card that matches repeat behavior',focus:'customer activity and retention'},
 }
 
+const OA_PICKUP_DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']
+const emptyOAPickupDays = () => OA_PICKUP_DAYS.map((day_name,weekday)=>({weekday,day_name,is_open:false,opens_at:'09:00',closes_at:'18:00'}))
+
 
 function OrderAheadMenuBuilder({ API_BASE, user, business, branches, authFetch, onChanged, setMessage }) {
   const [tab,setTab]=useState('items')
@@ -223,6 +226,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     pickup_mode: 'both', min_prep_minutes: 15, slot_interval_minutes: 15,
     max_advance_days: 7, ready_notification_enabled: true,
   })
+  const [orderAheadPickupHours, setOrderAheadPickupHours] = useState({})
+  const [orderAheadHoursSaving, setOrderAheadHoursSaving] = useState('')
   const [stats, setStats] = useState(null)
   const [program, setProgram] = useState(null)
   const [subscription, setSubscription] = useState(null)
@@ -335,6 +340,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   const isTablet = viewportWidth >= 600 && viewportWidth <= 1100
   const isMobile = viewportWidth < 600
+  const activeOrderAheadBranches = branches.filter(b => b?.is_active !== false)
 
   useEffect(() => {
     const onResize = () => setViewportWidth(window.innerWidth)
@@ -469,8 +475,24 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           max_advance_days: Number(s.max_advance_days ?? 7),
           ready_notification_enabled: s.ready_notification_enabled !== false,
         })
+        const hoursMap = {}
+        ;(orderAheadData.branch_pickup_hours || []).forEach(row => {
+          hoursMap[row.branch_public_id] = {
+            branch_name: row.branch_name || 'Branch',
+            configured: !!row.configured,
+            days: Array.isArray(row.days) && row.days.length ? row.days.map((d,i)=>({
+              weekday: Number(d.weekday ?? i),
+              day_name: d.day_name || OA_PICKUP_DAYS[Number(d.weekday ?? i)] || `Day ${i+1}`,
+              is_open: !!d.is_open,
+              opens_at: d.opens_at || '09:00',
+              closes_at: d.closes_at || '18:00',
+            })) : emptyOAPickupDays(),
+          }
+        })
+        setOrderAheadPickupHours(hoursMap)
       } else {
         setOrderAheadSetup(null)
+        setOrderAheadPickupHours({})
       }
       setSetupKit(kitData && !kitData.detail ? kitData : null)
       if (kitData && !kitData.detail) setSetupKitForm({
@@ -513,6 +535,66 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       setMessage(err.message || 'Could not save Order Ahead settings')
     } finally {
       setOrderAheadSaving(false)
+      setTimeout(() => setMessage(''), 3000)
+    }
+  }
+
+  const getPickupDaysForBranch = (branch) => {
+    const existing = orderAheadPickupHours[branch.public_id]
+    return existing?.days?.length ? existing.days : emptyOAPickupDays()
+  }
+
+  const updatePickupDay = (branch, weekday, patch) => {
+    setOrderAheadPickupHours(prev => {
+      const current = prev[branch.public_id] || { branch_name: branch.name, configured: false, days: emptyOAPickupDays() }
+      const days = (current.days?.length ? current.days : emptyOAPickupDays()).map((d,i) =>
+        Number(d.weekday ?? i) === weekday ? { ...d, ...patch } : d
+      )
+      return { ...prev, [branch.public_id]: { ...current, branch_name: branch.name, days } }
+    })
+  }
+
+  const copyPickupHoursToAllBranches = (sourceBranch) => {
+    const sourceDays = getPickupDaysForBranch(sourceBranch).map(d => ({ ...d }))
+    setOrderAheadPickupHours(prev => {
+      const next = { ...prev }
+      activeOrderAheadBranches.forEach(b => {
+        next[b.public_id] = { branch_name: b.name, configured: prev[b.public_id]?.configured || false, days: sourceDays.map(d=>({ ...d })) }
+      })
+      return next
+    })
+    setMessage(`Copied ${sourceBranch.name} pickup hours to all branches. Save each branch to publish them.`)
+    setTimeout(() => setMessage(''), 3500)
+  }
+
+  const savePickupHours = async (branch) => {
+    if (!user?.business_slug || !branch?.public_id) return
+    setOrderAheadHoursSaving(branch.public_id)
+    try {
+      const days = getPickupDaysForBranch(branch).map(d => ({
+        weekday: Number(d.weekday),
+        is_open: !!d.is_open,
+        opens_at: d.is_open ? (d.opens_at || '09:00') : null,
+        closes_at: d.is_open ? (d.closes_at || '18:00') : null,
+      }))
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/order-ahead/pickup-hours/${branch.public_id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not save pickup hours')
+      if (data.branch) {
+        setOrderAheadPickupHours(prev => ({ ...prev, [branch.public_id]: {
+          branch_name: data.branch.branch_name || branch.name,
+          configured: true,
+          days: (data.branch.days || days).map((d,i)=>({ ...d, day_name:d.day_name || OA_PICKUP_DAYS[i], opens_at:d.opens_at || '09:00', closes_at:d.closes_at || '18:00' })),
+        }}))
+      }
+      setMessage(`${branch.name} pickup hours saved`)
+      await loadData()
+    } catch (err) {
+      setMessage(err.message || 'Could not save pickup hours')
+    } finally {
+      setOrderAheadHoursSaving('')
       setTimeout(() => setMessage(''), 3000)
     }
   }
@@ -1950,7 +2032,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             </div>
 
             <div style={{background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:14,padding:14,marginBottom:16,fontSize:12.5,color:'#475569',lineHeight:1.6}}>
-              <strong style={{color:'#0f172a'}}>Current test flow:</strong> Wallet → Choose Branch → Menu → Pickup Time → Mock Payment → Business Order → Ready for Pickup
+              <strong style={{color:'#0f172a'}}>Current test flow:</strong> Wallet → Choose Branch → Menu → Customize / Cart → Pickup / Checkout → Test Payment → Business Order → Ready for Pickup
             </div>
 
             <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))',gap:12}}>
@@ -1986,7 +2068,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
             <div style={{...styles.card,marginTop:14}}>
               <h3 style={{margin:'0 0 4px'}}>Pickup settings</h3>
-              <p style={{margin:'0 0 16px',fontSize:12,color:'#64748b'}}>These rules will control the pickup-time choices shown after the customer builds their cart.</p>
+              <p style={{margin:'0 0 16px',fontSize:12,color:'#64748b'}}>These rules control ASAP and scheduled pickup. Each branch also needs pickup hours before customers can continue from cart to checkout.</p>
               <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))',gap:12}}>
                 <label style={styles.label}>Pickup options
                   <select style={{...styles.input,marginTop:6}} value={orderAheadForm.pickup_mode} onChange={e=>setOrderAheadForm({...orderAheadForm,pickup_mode:e.target.value})}>
@@ -2007,13 +2089,36 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 <input type="checkbox" checked={!!orderAheadForm.ready_notification_enabled} onChange={e=>setOrderAheadForm({...orderAheadForm,ready_notification_enabled:e.target.checked})} style={{marginTop:3}}/>
                 <span><strong>Send Ready for Pickup notification</strong><br/><small style={{color:'#64748b'}}>Message: “{orderAheadSetup?.ready_message_preview || `Your order from ${business?.name || business?.business_name || user?.business_name || 'this business'} is ready.`}”</small></span>
               </label>
-              <button type="button" style={{...styles.submitBtn,marginTop:14}} onClick={saveOrderAheadSettings} disabled={orderAheadSaving}>{orderAheadSaving?'Saving…':'Save Order Ahead settings'}</button>
+              <button type="button" style={{...styles.submitBtn,marginTop:14}} onClick={saveOrderAheadSettings} disabled={orderAheadSaving}>{orderAheadSaving?'Saving…':'Save pickup rules'}</button>
+
+              <div style={{borderTop:'1px solid #e2e8f0',marginTop:18,paddingTop:16}}>
+                <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'flex-start',flexWrap:'wrap'}}>
+                  <div><h4 style={{margin:'0 0 4px'}}>Branch pickup hours</h4><p style={{margin:0,fontSize:11.5,color:'#64748b'}}>Set the actual hours customers may choose. Closing time may be earlier than opening time for overnight service (example: 6:00 PM → 2:00 AM).</p></div>
+                  <span style={{background:'#f8fafc',color:'#64748b',padding:'6px 9px',borderRadius:999,fontSize:10.5,fontWeight:800}}>Philippine local time</span>
+                </div>
+                {!activeOrderAheadBranches.length && <div style={{marginTop:12,padding:12,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:10,fontSize:12,color:'#92400e'}}>Create an active branch first.</div>}
+                {activeOrderAheadBranches.map((branch,branchIndex)=>{
+                  const cfg=orderAheadPickupHours[branch.public_id]
+                  const days=getPickupDaysForBranch(branch)
+                  return <div key={branch.public_id} style={{marginTop:13,border:'1px solid #e2e8f0',borderRadius:13,padding:12,background:'#f8fafc'}}>
+                    <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'center',flexWrap:'wrap'}}>
+                      <div><strong>🏢 {branch.name}</strong><div style={{fontSize:10.5,color:cfg?.configured?'#047857':'#b45309',marginTop:2,fontWeight:750}}>{cfg?.configured?'Pickup hours configured':'Pickup hours not published yet'}</div></div>
+                      <div style={{display:'flex',gap:7}}>{branchIndex===0&&activeOrderAheadBranches.length>1&&<button type="button" style={{...styles.addBtn,fontSize:10.5,padding:'7px 9px'}} onClick={()=>copyPickupHoursToAllBranches(branch)}>Copy to all</button>}<button type="button" style={{...styles.submitBtn,fontSize:10.5,padding:'8px 10px',margin:0}} onClick={()=>savePickupHours(branch)} disabled={orderAheadHoursSaving===branch.public_id}>{orderAheadHoursSaving===branch.public_id?'Saving…':'Save hours'}</button></div>
+                    </div>
+                    <div style={{display:'grid',gap:7,marginTop:11}}>{days.map((d,i)=><div key={d.weekday} style={{display:'grid',gridTemplateColumns:isMobile?'88px minmax(0,1fr)':'110px 78px minmax(0,1fr)',gap:8,alignItems:'center',background:'#fff',padding:'8px 9px',borderRadius:9,border:'1px solid #eef2f7'}}>
+                      <label style={{fontSize:11.5,fontWeight:800,display:'flex',alignItems:'center',gap:6}}><input type="checkbox" checked={!!d.is_open} onChange={e=>updatePickupDay(branch,Number(d.weekday),{is_open:e.target.checked})}/>{d.day_name||OA_PICKUP_DAYS[i]}</label>
+                      {!isMobile&&<span style={{fontSize:10.5,color:d.is_open?'#047857':'#94a3b8',fontWeight:800}}>{d.is_open?'OPEN':'CLOSED'}</span>}
+                      {d.is_open?<div style={{display:'flex',gap:6,alignItems:'center',minWidth:0}}><input type="time" value={d.opens_at||'09:00'} onChange={e=>updatePickupDay(branch,Number(d.weekday),{opens_at:e.target.value})} style={{...styles.input,padding:'8px 7px',fontSize:11.5,minWidth:0}}/><span style={{color:'#94a3b8',flex:'0 0 auto'}}>→</span><input type="time" value={d.closes_at||'18:00'} onChange={e=>updatePickupDay(branch,Number(d.weekday),{closes_at:e.target.value})} style={{...styles.input,padding:'8px 7px',fontSize:11.5,minWidth:0}}/></div>:<div style={{fontSize:11,color:'#94a3b8'}}>No pickup</div>}
+                    </div>)}</div>
+                  </div>
+                })}
+              </div>
             </div>
 
             <div style={{...styles.card,marginTop:14}}>
               <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}>
-                <div><div style={{fontSize:11,fontWeight:850,color:'#64748b'}}>BUSINESS ORDERS</div><h3 style={{margin:'5px 0 3px'}}>Orders received: {orderAheadSetup?.orders_count || 0}</h3><p style={{margin:0,fontSize:12,color:'#64748b'}}>The New → Preparing → Ready → Completed board will activate when we build the menu and mock checkout.</p></div>
-                <span style={{background:'#f1f5f9',color:'#64748b',padding:'7px 10px',borderRadius:999,fontSize:11,fontWeight:800}}>Next phase</span>
+                <div><div style={{fontSize:11,fontWeight:850,color:'#64748b'}}>BUSINESS ORDERS</div><h3 style={{margin:'5px 0 3px'}}>Orders received: {orderAheadSetup?.orders_count || 0}</h3><p style={{margin:0,fontSize:12,color:'#64748b'}}>Cart + pickup checkout are ready. Next we connect Test Payment to real order creation, then activate the New → Preparing → Ready → Completed board.</p></div>
+                <span style={{background:'#f1f5f9',color:'#64748b',padding:'7px 10px',borderRadius:999,fontSize:11,fontWeight:800}}>Order creation next</span>
               </div>
             </div>
           </div>
