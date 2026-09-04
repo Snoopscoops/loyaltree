@@ -139,11 +139,12 @@ const CARD_TYPES = [
   { key: 'stamps', icon: '🎟️', title: 'Stamps', available: true },
   { key: 'coupons', icon: '✂️', title: 'Coupons', available: true },
   { key: 'points', icon: '⭐', title: 'Points', available: true },
+  { key: 'hybrid', icon: '🌳', title: 'Hybrid Card', available: true, growthFeature: true },
+  { key: 'giftcard', icon: '🎁', title: 'Gift Card', available: true, growthFeature: true },
   { key: 'cashback', icon: '💵', title: 'Cashback', available: false },
   { key: 'discount', icon: '🏷️', title: 'Discount', available: false },
   { key: 'multipass', icon: '🎫', title: 'Multipass', available: true },
   { key: 'membership', icon: '🪪', title: 'Membership', available: true },
-  { key: 'giftcard', icon: '🎁', title: 'Gift Card', available: false },
   { key: 'vip', icon: '👑', title: 'VIP Cards', available: true },
 ]
 
@@ -204,6 +205,47 @@ const CARD_SAMPLES = {
       </div>
     ),
   },
+  hybrid: {
+    name: 'Hybrid Card',
+    intro: 'Combine loyalty points with membership status in one Apple Wallet or Google Wallet card. Available on Growth and Pro.',
+    render: (styles) => (
+      <div style={styles.heroCard}>
+        <div style={styles.heroCardHeader}>
+          <span>Hybrid Rewards</span>
+          <span style={{ fontSize: 12, opacity: 0.85 }}>Corner Cafe</span>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,padding:'20px 22px'}}>
+          <div>
+            <div style={{fontSize:10,fontWeight:900,letterSpacing:'.08em',color:'#64748b'}}>POINTS</div>
+            <div style={{fontSize:30,fontWeight:900,color:'#0f172a'}}>1,240</div>
+          </div>
+          <div style={{textAlign:'right'}}>
+            <div style={{fontSize:10,fontWeight:900,letterSpacing:'.08em',color:'#64748b'}}>MEMBERSHIP</div>
+            <div style={{fontSize:25,fontWeight:900,color:'#0f766e'}}>✓</div>
+          </div>
+        </div>
+        <div style={styles.heroCardFoot}>Points + membership in one wallet card</div>
+      </div>
+    ),
+  },
+  giftcard: {
+    name: 'Gift Card',
+    intro: 'Issue digital or printable gift value that customers can save, give, and redeem. Available on Growth and Pro.',
+    render: (styles) => (
+      <div style={styles.heroCard}>
+        <div style={styles.heroCardHeader}>
+          <span>Gift Card</span>
+          <span style={{ fontSize: 12, opacity: 0.85 }}>Corner Cafe</span>
+        </div>
+        <div style={styles.pointsBody}>
+          <div style={styles.pointsValue}>₱1,000</div>
+          <div style={styles.pointsToNext}>Available balance</div>
+        </div>
+        <div style={styles.heroCardFoot}>Digital wallet + printable gift card</div>
+      </div>
+    ),
+  },
+
   multipass: {
     name: 'Multipass',
     intro: 'Customers pay upfront for a set number of visits or sessions, then check in each time until the pass runs out.',
@@ -263,7 +305,7 @@ const CARD_SAMPLES = {
 
 const BRANCH_TIERS = [
   { key: '1', label: '1 branch' },
-  { key: '3', label: '3 branches' },
+  { key: '2-3', label: '2\u20133 branches' },
   { key: '5', label: 'Up to 5 branches' },
 ]
 
@@ -271,10 +313,10 @@ const PLANS = [
   {
     key: 'starter',
     name: 'Starter',
-    prices: { '1': 350, '3': 1000, '5': 1600 },
+    prices: { '1': 350, '2-3': 650, '5': 1300 },
     features: [
       'Google Wallet & Apple Wallet',
-      '2 announcements per subscription cycle',
+      '2 active announcements',
       'Full digital system',
       'Full loyalty card customization',
       'Analytics',
@@ -286,16 +328,18 @@ const PLANS = [
     key: 'growth',
     name: 'Growth',
     highlight: true,
-    prices: { '1': 550, '3': 1600, '5': 2600 },
+    prices: { '1': 550, '2-3': 1050, '5': 2100 },
     features: [
       'Google Wallet & Apple Wallet',
-      'Up to 5 announcements per subscription cycle',
+      'Up to 5 active announcements',
       'Full digital system',
       'Full loyalty card customization',
       'Analytics',
       'Google review prompt',
       'Birthday automated greetings',
       "Win-back system (message if 30 days pass without a stamp)",
+      'Hybrid Cards',
+      'Gift Cards',
       'Customer service',
     ],
   },
@@ -303,16 +347,18 @@ const PLANS = [
     key: 'pro',
     name: 'Pro',
     comingSoon: true,
-    prices: { '1': 750, '3': 2100, '5': 3600 },
+    prices: { '1': 750, '2-3': 1450, '5': 2900 },
     features: [
       'Google Wallet & Apple Wallet',
-      'Up to 7 announcements per subscription cycle',
+      'Up to 7 active announcements',
       'Full digital system',
       'Full loyalty card customization',
       'Analytics',
       'Google review prompt',
       'Birthday automated greetings',
       'Up to 3 different loyalty cards in circulation',
+      'Hybrid Cards',
+      'Gift Cards',
       "Win-back system (message if 30 days pass without a stamp)",
       'Geo tagging',
       'Advance ordering',
@@ -326,7 +372,7 @@ const PLANS = [
       'Specialized system for your business',
       'NFC & contactless integration — available for Specialized Businesses',
       'Google Wallet & Apple Wallet',
-      'Up to 5 announcements per subscription cycle',
+      'Up to 5 active announcements',
       'Full digital system',
       'Full loyalty card customization',
       'Analytics',
@@ -1122,7 +1168,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
             <span style={styles.homePricePopular}>MOST POPULAR</span>
             <span style={styles.homePriceLabel}>Growth</span>
             <div style={styles.homePrice}>₱550<span style={styles.homePriceUnit}>/mo</span></div>
-            <p style={styles.homePriceText}>Adds review prompts, more announcements, and automated win-back tools for customer retention.</p>
+            <p style={styles.homePriceText}>Includes Hybrid Cards and Gift Cards, plus review prompts, more announcements, and automated win-back tools.</p>
           </div>
           <div style={styles.homePriceCard}>
             <span style={styles.homePriceLabel}>Specialized</span>

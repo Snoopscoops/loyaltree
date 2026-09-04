@@ -1499,6 +1499,8 @@ class OrderAheadModifierGroupPayload(BaseModel):
     max_selections: Optional[int] = Field(default=None, ge=1, le=50)
     sort_order: int = Field(default=0, ge=0, le=10000)
     is_active: bool = True
+    applies_to_all: bool = False
+    category_public_ids: list[str] = Field(default_factory=list)
     options: list[OrderAheadModifierOptionInput] = Field(default_factory=list)
 
 class OrderAheadItemPayload(BaseModel):
@@ -1510,7 +1512,10 @@ class OrderAheadItemPayload(BaseModel):
     sort_order: int = Field(default=0, ge=0, le=10000)
     is_active: bool = True
     is_available: bool = True
+    # Direct item-specific option groups. Category-level groups are inherited automatically.
     modifier_group_public_ids: list[str] = Field(default_factory=list)
+    # Lets one item opt out of a group inherited from its category or from an all-items group.
+    excluded_inherited_modifier_group_public_ids: list[str] = Field(default_factory=list)
     unavailable_branch_public_ids: list[str] = Field(default_factory=list)
 
 class OrderAheadPickupDayInput(BaseModel):
@@ -7832,35 +7837,103 @@ def _oa_public_row(table: str, public_id: str, business_id: int) -> Optional[dic
 
 
 def _oa_menu_snapshot(business: dict) -> dict:
+    """Return one normalized menu snapshot with effective option-group inheritance.
+
+    Option groups can be attached directly to an item, assigned to categories, or
+    configured for all menu items. Item-level exclusions can suppress inherited
+    groups for product-specific exceptions. The legacy modifier_group_public_ids
+    field remains the EFFECTIVE list so existing customer/menu code stays compatible.
+    """
     bid = business.get('id')
     categories = supabase.table('order_ahead_categories').select('*').eq('business_id', bid).order('sort_order').order('created_at').execute().data or []
     items = supabase.table('order_ahead_items').select('*').eq('business_id', bid).order('sort_order').order('created_at').execute().data or []
     groups = supabase.table('order_ahead_modifier_groups').select('*').eq('business_id', bid).order('sort_order').order('created_at').execute().data or []
     branches = supabase.table('branches').select('id,public_id,name,address,is_active').eq('business_id', bid).eq('is_active', True).order('created_at').execute().data or []
-    group_ids=[g.get('id') for g in groups if g.get('id') is not None]
-    options=[]
+
+    group_ids = [g.get('id') for g in groups if g.get('id') is not None]
+    category_ids = [c.get('id') for c in categories if c.get('id') is not None]
+    item_ids = [i.get('id') for i in items if i.get('id') is not None]
+
+    options = []
+    category_links = []
+    direct_links = []
+    exclusions = []
+    availability = []
     if group_ids:
-        options=supabase.table('order_ahead_modifier_options').select('*').in_('modifier_group_id',group_ids).order('sort_order').order('created_at').execute().data or []
-    item_ids=[i.get('id') for i in items if i.get('id') is not None]
-    links=[]; availability=[]
+        options = supabase.table('order_ahead_modifier_options').select('*').in_('modifier_group_id', group_ids).order('sort_order').order('created_at').execute().data or []
+        if category_ids:
+            category_links = supabase.table('order_ahead_category_modifier_groups').select('*').in_('modifier_group_id', group_ids).in_('category_id', category_ids).order('sort_order').execute().data or []
     if item_ids:
-        links=supabase.table('order_ahead_item_modifier_groups').select('*').in_('item_id',item_ids).order('sort_order').execute().data or []
-        availability=supabase.table('order_ahead_item_branch_availability').select('*').in_('item_id',item_ids).execute().data or []
-    g_by_id={g.get('id'):g for g in groups}
+        direct_links = supabase.table('order_ahead_item_modifier_groups').select('*').in_('item_id', item_ids).order('sort_order').execute().data or []
+        exclusions = supabase.table('order_ahead_item_modifier_group_exclusions').select('*').in_('item_id', item_ids).execute().data or []
+        availability = supabase.table('order_ahead_item_branch_availability').select('*').in_('item_id', item_ids).execute().data or []
+
+    b_pub = {b.get('id'): b.get('public_id') for b in branches}
+    c_pub = {c.get('id'): c.get('public_id') for c in categories}
+    g_pub = {g.get('id'): g.get('public_id') for g in groups}
+    group_order = [str(g.get('public_id')) for g in groups if g.get('public_id')]
+
+    category_groups_by_category = defaultdict(list)
+    categories_by_group = defaultdict(list)
+    for link in category_links:
+        cid = link.get('category_id')
+        gid = link.get('modifier_group_id')
+        gpid = g_pub.get(gid)
+        cpid = c_pub.get(cid)
+        if gpid and cid is not None:
+            category_groups_by_category[cid].append(gpid)
+        if cpid and gid is not None:
+            categories_by_group[gid].append(cpid)
+
     for g in groups:
-        g['options']=[o for o in options if o.get('modifier_group_id')==g.get('id')]
-    b_pub={b.get('id'):b.get('public_id') for b in branches}
-    g_pub={g.get('id'):g.get('public_id') for g in groups}
+        g['options'] = [o for o in options if o.get('modifier_group_id') == g.get('id')]
+        g['category_public_ids'] = categories_by_group.get(g.get('id'), [])
+        g['applies_to_all'] = bool(g.get('applies_to_all'))
+
+    direct_by_item = defaultdict(list)
+    for link in direct_links:
+        gpid = g_pub.get(link.get('modifier_group_id'))
+        if gpid:
+            direct_by_item[link.get('item_id')].append(gpid)
+
+    excluded_by_item = defaultdict(set)
+    for row in exclusions:
+        gpid = g_pub.get(row.get('modifier_group_id'))
+        if gpid:
+            excluded_by_item[row.get('item_id')].add(gpid)
+
+    all_item_group_ids = [str(g.get('public_id')) for g in groups if g.get('public_id') and bool(g.get('applies_to_all'))]
+
+    def ordered_unique(ids):
+        wanted = {str(x) for x in ids if x}
+        return [gpid for gpid in group_order if gpid in wanted]
+
     for item in items:
-        iid=item.get('id')
-        item['modifier_group_public_ids']=[g_pub.get(l.get('modifier_group_id')) for l in links if l.get('item_id')==iid and g_pub.get(l.get('modifier_group_id'))]
-        item['unavailable_branch_public_ids']=[b_pub.get(a.get('branch_id')) for a in availability if a.get('item_id')==iid and a.get('is_available') is False and b_pub.get(a.get('branch_id'))]
-        cat=next((c for c in categories if c.get('id')==item.get('category_id')),None)
-        item['category_public_id']=cat.get('public_id') if cat else None
-    for row in categories+items+groups:
-        row.pop('business_id',None)
-    for b in branches: b.pop('id',None)
-    return {'categories':categories,'items':items,'modifier_groups':groups,'branches':branches}
+        iid = item.get('id')
+        category_id = item.get('category_id')
+        direct = ordered_unique(direct_by_item.get(iid, []))
+        excluded = excluded_by_item.get(iid, set())
+        inherited_candidates = ordered_unique(all_item_group_ids + category_groups_by_category.get(category_id, []))
+        inherited = [gpid for gpid in inherited_candidates if gpid not in excluded and gpid not in direct]
+        effective = ordered_unique(direct + inherited)
+
+        # Keep backward-compatible field as the effective list used by customer pricing/rendering.
+        item['modifier_group_public_ids'] = effective
+        item['effective_modifier_group_public_ids'] = effective
+        item['direct_modifier_group_public_ids'] = direct
+        item['inherited_modifier_group_public_ids'] = inherited
+        item['excluded_inherited_modifier_group_public_ids'] = ordered_unique(excluded)
+        item['unavailable_branch_public_ids'] = [
+            b_pub.get(a.get('branch_id')) for a in availability
+            if a.get('item_id') == iid and a.get('is_available') is False and b_pub.get(a.get('branch_id'))
+        ]
+        item['category_public_id'] = c_pub.get(category_id)
+
+    for row in categories + items + groups:
+        row.pop('business_id', None)
+    for branch in branches:
+        branch.pop('id', None)
+    return {'categories': categories, 'items': items, 'modifier_groups': groups, 'branches': branches}
 
 
 _OA_DAY_NAMES = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']
@@ -8090,13 +8163,37 @@ def _oa_save_modifier_options(group_id: int, options: list[OrderAheadModifierOpt
     if rows: supabase.table('order_ahead_modifier_options').insert(rows).execute()
 
 
+def _oa_sync_modifier_group_categories(business: dict, group: dict, category_public_ids: list[str]):
+    """Persist explicit category assignments for one reusable option group."""
+    gid = group.get('id')
+    bid = business.get('id')
+    if gid is None:
+        return
+    supabase.table('order_ahead_category_modifier_groups').delete().eq('modifier_group_id', gid).execute()
+    if bool(group.get('applies_to_all')):
+        return
+    rows = []
+    seen = set()
+    for idx, cpid in enumerate(category_public_ids or []):
+        cpid = str(cpid or '').strip()
+        if not cpid or cpid in seen:
+            continue
+        seen.add(cpid)
+        cat = _oa_public_row('order_ahead_categories', cpid, bid)
+        if cat:
+            rows.append({'category_id': cat.get('id'), 'modifier_group_id': gid, 'sort_order': idx})
+    if rows:
+        supabase.table('order_ahead_category_modifier_groups').insert(rows).execute()
+
+
 @app.post('/api/v1/business/{public_id}/order-ahead/modifier-groups')
 async def owner_create_oa_modifier_group(public_id: str, payload: OrderAheadModifierGroupPayload, authorization: str = Header(default='')):
     business=_oa_require_owner_business(public_id,authorization)
-    data=payload.dict(exclude={'options'}); data['business_id']=business.get('id'); data['updated_at']=datetime.now(timezone.utc).isoformat()
+    data=payload.dict(exclude={'options','category_public_ids'}); data['business_id']=business.get('id'); data['updated_at']=datetime.now(timezone.utc).isoformat()
     res=supabase.table('order_ahead_modifier_groups').insert(data).execute(); group=_supabase_first_row(res)
     if not group: raise HTTPException(status_code=500,detail='Could not create option group')
     _oa_save_modifier_options(group.get('id'),payload.options)
+    _oa_sync_modifier_group_categories(business, group, payload.category_public_ids)
     return {'success':True,'modifier_group':group}
 
 
@@ -8105,8 +8202,11 @@ async def owner_update_oa_modifier_group(public_id: str, group_public_id: str, p
     business=_oa_require_owner_business(public_id,authorization)
     group=_oa_public_row('order_ahead_modifier_groups',group_public_id,business.get('id'))
     if not group: raise HTTPException(status_code=404,detail='Option group not found')
-    data=payload.dict(exclude={'options'}); data['updated_at']=datetime.now(timezone.utc).isoformat()
-    supabase.table('order_ahead_modifier_groups').update(data).eq('id',group.get('id')).execute(); _oa_save_modifier_options(group.get('id'),payload.options)
+    data=payload.dict(exclude={'options','category_public_ids'}); data['updated_at']=datetime.now(timezone.utc).isoformat()
+    supabase.table('order_ahead_modifier_groups').update(data).eq('id',group.get('id')).execute()
+    group = {**group, **data}
+    _oa_save_modifier_options(group.get('id'),payload.options)
+    _oa_sync_modifier_group_categories(business, group, payload.category_public_ids)
     return {'success':True}
 
 
@@ -8120,18 +8220,14 @@ async def owner_delete_oa_modifier_group(public_id: str, group_public_id: str, a
 
 @app.post('/api/v1/business/{public_id}/order-ahead/beverage-modifiers/quick-setup')
 async def owner_quick_setup_beverage_modifiers(public_id: str, authorization: str = Header(default='')):
-    """Create reusable Size + Sugar Level groups when missing, then attach
-    them to existing beverage menu items. Existing groups/options are preserved
-    so a merchant's custom sizes or price add-ons are never overwritten.
+    """Convenience only: create Size + Sugar Level and assign them to obvious
+    beverage categories. The core engine no longer depends on category-name
+    guessing; owners can explicitly assign ANY option group to ANY categories.
     """
     business = _oa_require_owner_business(public_id, authorization)
     bid = business.get('id')
     now = datetime.now(timezone.utc).isoformat()
-
-    groups = (
-        supabase.table('order_ahead_modifier_groups')
-        .select('*').eq('business_id', bid).execute().data or []
-    )
+    groups = supabase.table('order_ahead_modifier_groups').select('*').eq('business_id', bid).execute().data or []
     by_name = {str(g.get('name') or '').strip().casefold(): g for g in groups}
     created = []
 
@@ -8140,29 +8236,18 @@ async def owner_quick_setup_beverage_modifiers(public_id: str, authorization: st
         if existing:
             return existing
         row = {
-            'business_id': bid,
-            'name': name,
-            'selection_type': 'single',
-            'is_required': True,
-            'min_selections': 1,
-            'max_selections': 1,
-            'sort_order': 0 if name == 'Size' else 1,
-            'is_active': True,
-            'updated_at': now,
+            'business_id': bid, 'name': name, 'selection_type': 'single',
+            'is_required': True, 'min_selections': 1, 'max_selections': 1,
+            'sort_order': 0 if name == 'Size' else 1, 'is_active': True,
+            'applies_to_all': False, 'updated_at': now,
         }
         res = supabase.table('order_ahead_modifier_groups').insert(row).execute()
         group = _supabase_first_row(res)
         if not group:
             raise HTTPException(status_code=500, detail=f'Could not create {name} option group')
         option_rows = [
-            {
-                'modifier_group_id': group.get('id'),
-                'name': option_name,
-                'price_delta': 0,
-                'sort_order': idx,
-                'is_active': True,
-                'updated_at': now,
-            }
+            {'modifier_group_id': group.get('id'), 'name': option_name, 'price_delta': 0,
+             'sort_order': idx, 'is_active': True, 'updated_at': now}
             for idx, option_name in enumerate(option_names)
         ]
         if option_rows:
@@ -8174,67 +8259,68 @@ async def owner_quick_setup_beverage_modifiers(public_id: str, authorization: st
     size_group = ensure_group('Size', ['Small', 'Medium', 'Large'])
     sugar_group = ensure_group('Sugar Level', ['0%', '25%', '50%', '75%', '100%'])
 
-    categories = (
-        supabase.table('order_ahead_categories').select('id,name')
-        .eq('business_id', bid).execute().data or []
-    )
+    categories = supabase.table('order_ahead_categories').select('id,public_id,name').eq('business_id', bid).execute().data or []
     beverage_words = ('coffee', 'non-coffee', 'non coffee', 'drink', 'beverage', 'tea')
-    beverage_category_ids = [
-        c.get('id') for c in categories
+    beverage_categories = [
+        c for c in categories
         if any(word in str(c.get('name') or '').strip().casefold() for word in beverage_words)
     ]
+    category_public_ids = [str(c.get('public_id')) for c in beverage_categories if c.get('public_id')]
+    for group in (size_group, sugar_group):
+        # Preserve applies_to_all if merchant already set it; otherwise map categories.
+        if not bool(group.get('applies_to_all')):
+            _oa_sync_modifier_group_categories(business, group, category_public_ids)
 
-    items = []
+    item_count = 0
+    beverage_category_ids = [c.get('id') for c in beverage_categories if c.get('id') is not None]
     if beverage_category_ids:
-        items = (
-            supabase.table('order_ahead_items').select('id,public_id,name,category_id')
-            .eq('business_id', bid).in_('category_id', beverage_category_ids).execute().data or []
-        )
-
-    item_ids = [i.get('id') for i in items if i.get('id') is not None]
-    existing_links = []
-    if item_ids:
-        existing_links = (
-            supabase.table('order_ahead_item_modifier_groups')
-            .select('item_id,modifier_group_id').in_('item_id', item_ids).execute().data or []
-        )
-    link_keys = {(x.get('item_id'), x.get('modifier_group_id')) for x in existing_links}
-    inserted_links = []
-    for item in items:
-        iid = item.get('id')
-        for order_index, group in enumerate((size_group, sugar_group)):
-            key = (iid, group.get('id'))
-            if key in link_keys:
-                continue
-            inserted_links.append({
-                'item_id': iid,
-                'modifier_group_id': group.get('id'),
-                'sort_order': order_index,
-            })
-            link_keys.add(key)
-    if inserted_links:
-        supabase.table('order_ahead_item_modifier_groups').insert(inserted_links).execute()
+        item_count = len(supabase.table('order_ahead_items').select('id').eq('business_id', bid).in_('category_id', beverage_category_ids).execute().data or [])
 
     return {
         'success': True,
         'created_groups': created,
-        'beverage_items_found': len(items),
-        'links_added': len(inserted_links),
+        'beverage_categories_found': len(beverage_categories),
+        'beverage_items_found': item_count,
+        'category_links_added': len(beverage_categories) * 2,
         'size_group_public_id': size_group.get('public_id'),
         'sugar_group_public_id': sugar_group.get('public_id'),
     }
 
 
 def _oa_sync_item_relations(business: dict, item: dict, payload: OrderAheadItemPayload):
-    iid=item.get('id'); bid=business.get('id')
-    supabase.table('order_ahead_item_modifier_groups').delete().eq('item_id',iid).execute()
-    for idx,gpid in enumerate(payload.modifier_group_public_ids or []):
-        g=_oa_public_row('order_ahead_modifier_groups',gpid,bid)
-        if g: supabase.table('order_ahead_item_modifier_groups').insert({'item_id':iid,'modifier_group_id':g.get('id'),'sort_order':idx}).execute()
-    supabase.table('order_ahead_item_branch_availability').delete().eq('item_id',iid).execute()
+    iid = item.get('id')
+    bid = business.get('id')
+    supabase.table('order_ahead_item_modifier_groups').delete().eq('item_id', iid).execute()
+    for idx, gpid in enumerate(payload.modifier_group_public_ids or []):
+        g = _oa_public_row('order_ahead_modifier_groups', gpid, bid)
+        if g:
+            supabase.table('order_ahead_item_modifier_groups').insert({
+                'item_id': iid, 'modifier_group_id': g.get('id'), 'sort_order': idx
+            }).execute()
+
+    supabase.table('order_ahead_item_modifier_group_exclusions').delete().eq('item_id', iid).execute()
+    seen = set()
+    for gpid in payload.excluded_inherited_modifier_group_public_ids or []:
+        gpid = str(gpid or '').strip()
+        if not gpid or gpid in seen:
+            continue
+        seen.add(gpid)
+        g = _oa_public_row('order_ahead_modifier_groups', gpid, bid)
+        if g:
+            supabase.table('order_ahead_item_modifier_group_exclusions').insert({
+                'item_id': iid, 'modifier_group_id': g.get('id')
+            }).execute()
+
+    supabase.table('order_ahead_item_branch_availability').delete().eq('item_id', iid).execute()
     for bpid in payload.unavailable_branch_public_ids or []:
-        b=_supabase_first_row(supabase.table('branches').select('id,public_id,business_id').eq('public_id',bpid).eq('business_id',bid).limit(1).execute())
-        if b: supabase.table('order_ahead_item_branch_availability').insert({'item_id':iid,'branch_id':b.get('id'),'is_available':False}).execute()
+        branch = _supabase_first_row(
+            supabase.table('branches').select('id,public_id,business_id')
+            .eq('public_id', bpid).eq('business_id', bid).limit(1).execute()
+        )
+        if branch:
+            supabase.table('order_ahead_item_branch_availability').insert({
+                'item_id': iid, 'branch_id': branch.get('id'), 'is_available': False
+            }).execute()
 
 
 @app.post('/api/v1/business/{public_id}/order-ahead/items')
@@ -8244,7 +8330,7 @@ async def owner_create_oa_item(public_id: str, payload: OrderAheadItemPayload, a
         cat=_oa_public_row('order_ahead_categories',payload.category_public_id,bid)
         if not cat: raise HTTPException(status_code=400,detail='Category not found')
         category_id=cat.get('id')
-    data=payload.dict(exclude={'category_public_id','modifier_group_public_ids','unavailable_branch_public_ids'}); data['category_id']=category_id; data['business_id']=bid; data['updated_at']=datetime.now(timezone.utc).isoformat()
+    data=payload.dict(exclude={'category_public_id','modifier_group_public_ids','excluded_inherited_modifier_group_public_ids','unavailable_branch_public_ids'}); data['category_id']=category_id; data['business_id']=bid; data['updated_at']=datetime.now(timezone.utc).isoformat()
     res=supabase.table('order_ahead_items').insert(data).execute(); item=_supabase_first_row(res)
     if not item: raise HTTPException(status_code=500,detail='Could not create menu item')
     _oa_sync_item_relations(business,item,payload); return {'success':True,'item':item}
@@ -8259,7 +8345,7 @@ async def owner_update_oa_item(public_id: str, item_public_id: str, payload: Ord
         cat=_oa_public_row('order_ahead_categories',payload.category_public_id,bid)
         if not cat: raise HTTPException(status_code=400,detail='Category not found')
         category_id=cat.get('id')
-    data=payload.dict(exclude={'category_public_id','modifier_group_public_ids','unavailable_branch_public_ids'}); data['category_id']=category_id; data['updated_at']=datetime.now(timezone.utc).isoformat()
+    data=payload.dict(exclude={'category_public_id','modifier_group_public_ids','excluded_inherited_modifier_group_public_ids','unavailable_branch_public_ids'}); data['category_id']=category_id; data['updated_at']=datetime.now(timezone.utc).isoformat()
     supabase.table('order_ahead_items').update(data).eq('id',item.get('id')).execute(); _oa_sync_item_relations(business,item,payload); return {'success':True}
 
 
