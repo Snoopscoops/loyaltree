@@ -8673,6 +8673,71 @@ def _oa_require_owner_business(public_id: str, authorization: str) -> dict:
     return business
 
 
+def _oa_require_order_operator(public_id: str, authorization: str) -> tuple[dict, dict, Optional[int]]:
+    """Authorize an Order Ahead order-board operator.
+
+    Owners can operate every branch under their business.
+    Signed staff sessions are hard-locked to the branch currently assigned in
+    the staff table. The database assignment is re-read on every request so a
+    reassignment/deactivation takes effect immediately even if an older token
+    still exists.
+    """
+    if not authorization or not authorization.startswith('Bearer '):
+        raise HTTPException(status_code=401, detail='Order operator authentication required')
+
+    claims = verify_staff_session_token(authorization.split(' ', 1)[1])
+    if not claims:
+        raise HTTPException(status_code=401, detail='Order operator session expired - please log in again')
+    if claims.get('business_public_id') != public_id:
+        raise HTTPException(status_code=403, detail='Session does not match this business')
+
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    if not bool(business.get('order_ahead_enabled')):
+        raise HTTPException(status_code=403, detail='Order Ahead must be enabled by LoyaltyTree Admin first')
+
+    if claims.get('role') == 'owner':
+        return business, claims, None
+
+    staff_id = claims.get('staff_id')
+    if staff_id is None:
+        raise HTTPException(status_code=403, detail='A branch-assigned staff account is required for Business Orders')
+
+    staff = _supabase_first_row(
+        supabase.table('staff').select('id,business_id,branch_id,is_active,role,name')
+        .eq('id', staff_id)
+        .eq('business_id', business.get('id'))
+        .limit(1).execute()
+    )
+    if not staff or staff.get('is_active') is False:
+        raise HTTPException(status_code=403, detail='This staff account is inactive or no longer belongs to this business')
+    if staff.get('branch_id') is None:
+        raise HTTPException(
+            status_code=403,
+            detail='This staff account is not assigned to a branch. Assign a branch before using Business Orders.'
+        )
+
+    claims = {
+        **claims,
+        'branch_id': staff.get('branch_id'),
+        'role': staff.get('role') or claims.get('role'),
+        'name': staff.get('name') or claims.get('name'),
+    }
+    return business, claims, staff.get('branch_id')
+
+
+def _oa_operator_branch_payload(business_id: int, branch_id: Optional[int]) -> Optional[dict]:
+    if branch_id is None:
+        return None
+    return _supabase_first_row(
+        supabase.table('branches').select('id,public_id,name,address,is_active')
+        .eq('id', branch_id)
+        .eq('business_id', business_id)
+        .limit(1).execute()
+    )
+
+
 def _oa_public_row(table: str, public_id: str, business_id: int) -> Optional[dict]:
     return _supabase_first_row(
         supabase.table(table).select('*').eq('public_id', public_id).eq('business_id', business_id).limit(1).execute()
@@ -9750,16 +9815,27 @@ async def owner_list_order_ahead_orders(
     limit: int = 100,
     authorization: str = Header(default=''),
 ):
-    business = _oa_require_owner_business(public_id, authorization)
+    business, operator_claims, locked_branch_id = _oa_require_order_operator(public_id, authorization)
     limit = max(1, min(int(limit or 100), 300))
     q = (
         supabase.table('order_ahead_orders').select('*')
         .eq('business_id', business.get('id'))
         .in_('payment_status', ['test_paid', 'paid'])
     )
-    if branch_public_id:
+
+    operator_branch = _oa_operator_branch_payload(business.get('id'), locked_branch_id)
+
+    if locked_branch_id is not None:
+        # Staff cannot widen their scope by changing the query string.
+        if branch_public_id and (
+            not operator_branch or branch_public_id != operator_branch.get('public_id')
+        ):
+            raise HTTPException(status_code=403, detail='This order device is locked to another branch')
+        q = q.eq('branch_id', locked_branch_id)
+    elif branch_public_id:
+        # Owner may intentionally filter to any branch under the same business.
         branch_filter = _supabase_first_row(
-            supabase.table('branches').select('id,public_id')
+            supabase.table('branches').select('id,public_id,name,address,is_active')
             .eq('business_id', business.get('id'))
             .eq('public_id', branch_public_id)
             .limit(1).execute()
@@ -9773,7 +9849,15 @@ async def owner_list_order_ahead_orders(
         q = q.eq('status', status)
     orders = q.order('created_at', desc=True).limit(limit).execute().data or []
     if not orders:
-        return {'orders': [], 'total': 0}
+        return {
+            'orders': [],
+            'total': 0,
+            'operator_scope': {
+                'role': operator_claims.get('role'),
+                'branch_locked': locked_branch_id is not None,
+                'branch': operator_branch,
+            },
+        }
 
     customer_ids = list({o.get('customer_id') for o in orders if o.get('customer_id') is not None})
     branch_ids = list({o.get('branch_id') for o in orders if o.get('branch_id') is not None})
@@ -9795,7 +9879,15 @@ async def owner_list_order_ahead_orders(
         )
         for order in orders
     ]
-    return {'orders': payload, 'total': len(payload)}
+    return {
+        'orders': payload,
+        'total': len(payload),
+        'operator_scope': {
+            'role': operator_claims.get('role'),
+            'branch_locked': locked_branch_id is not None,
+            'branch': operator_branch,
+        },
+    }
 
 
 @app.patch('/api/v1/business/{public_id}/order-ahead/orders/{order_public_id}/status')
@@ -9806,7 +9898,7 @@ async def owner_update_order_ahead_order_status(
     background_tasks: BackgroundTasks,
     authorization: str = Header(default=''),
 ):
-    business = _oa_require_owner_business(public_id, authorization)
+    business, operator_claims, locked_branch_id = _oa_require_order_operator(public_id, authorization)
     order = _supabase_first_row(
         supabase.table('order_ahead_orders').select('*')
         .eq('public_id', order_public_id)
@@ -9815,6 +9907,19 @@ async def owner_update_order_ahead_order_status(
     )
     if not order:
         raise HTTPException(status_code=404, detail='Order not found')
+
+    if locked_branch_id is not None and order.get('branch_id') != locked_branch_id:
+        raise HTTPException(status_code=403, detail='This order belongs to another branch')
+
+    order_branch = _supabase_first_row(
+        supabase.table('branches').select('id,public_id,name,address,is_active')
+        .eq('id', order.get('branch_id'))
+        .eq('business_id', business.get('id'))
+        .limit(1).execute()
+    )
+    if not order_branch:
+        raise HTTPException(status_code=409, detail='Order branch is no longer valid for this business')
+
     if order.get('payment_status') not in ('test_paid', 'paid'):
         raise HTTPException(status_code=409, detail='Order payment has not been confirmed')
 
@@ -9828,7 +9933,23 @@ async def owner_update_order_ahead_order_status(
         'cancelled': set(),
     }
     if target == current:
-        return {'success': True, 'order': order}
+        customer = _supabase_first_row(
+            supabase.table('customers').select('id,public_id,name,phone')
+            .eq('id', order.get('customer_id')).limit(1).execute()
+        )
+        items = (
+            supabase.table('order_ahead_order_items').select('*')
+            .eq('order_id', order.get('id')).order('id').execute().data or []
+        )
+        return {
+            'success': True,
+            'order': _oa_order_public_payload(order, customer, order_branch, items),
+            'operator_scope': {
+                'role': operator_claims.get('role'),
+                'branch_locked': locked_branch_id is not None,
+                'branch': _oa_operator_branch_payload(business.get('id'), locked_branch_id),
+            },
+        }
     if target not in allowed.get(current, set()):
         raise HTTPException(status_code=409, detail=f'Order must follow New → Preparing → Ready → Completed. Current status: {current}.')
 
@@ -9858,7 +9979,20 @@ async def owner_update_order_ahead_order_status(
             # so Apple's ready changeMessage can fire reliably.
             background_tasks.add_task(_oa_refresh_apple_order_status, dict(customer))
 
-    return {'success': True, 'order': updated, 'ready_notification_queued': target == 'ready'}
+    items = (
+        supabase.table('order_ahead_order_items').select('*')
+        .eq('order_id', updated.get('id')).order('id').execute().data or []
+    )
+    return {
+        'success': True,
+        'order': _oa_order_public_payload(updated, customer, order_branch, items),
+        'ready_notification_queued': target == 'ready',
+        'operator_scope': {
+            'role': operator_claims.get('role'),
+            'branch_locked': locked_branch_id is not None,
+            'branch': _oa_operator_branch_payload(business.get('id'), locked_branch_id),
+        },
+    }
 
 
 @app.patch("/api/v1/admin/businesses/{public_id}/nfc-trial")
