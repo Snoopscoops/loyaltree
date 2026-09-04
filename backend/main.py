@@ -143,7 +143,7 @@ SUBSCRIPTION_PLANS = {
     'starter': {
         'label': 'Starter',
         'price_month': 350,
-        'price_tiers': {'1': 350, '2-3': 650, '5': 1300},
+        'price_tiers': {'1': 350, '2-3': 1000, '5': 1600},
         'customer_limit': None,  # unlimited customers
         'google_wallet': True,
         'apple_wallet': True,
@@ -163,7 +163,7 @@ SUBSCRIPTION_PLANS = {
     'growth': {
         'label': 'Growth',
         'price_month': 550,
-        'price_tiers': {'1': 550, '2-3': 1050, '5': 2100},
+        'price_tiers': {'1': 550, '2-3': 1600, '5': 2600},
         'customer_limit': None,  # unlimited customers
         'google_wallet': True,
         'apple_wallet': True,
@@ -181,7 +181,7 @@ SUBSCRIPTION_PLANS = {
     'pro': {
         'label': 'Pro',
         'price_month': 750,
-        'price_tiers': {'1': 750, '2-3': 1450, '5': 2900},
+        'price_tiers': {'1': 750, '2-3': 2100, '5': 3600},
         'customer_limit': None,  # unlimited customers
         'google_wallet': True,
         'apple_wallet': True,
