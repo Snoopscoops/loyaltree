@@ -3813,17 +3813,19 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     # already on the front (primary/secondary fields below).
     apple_details = []
     if card_type == 'hybrid':
-        # Keep Hybrid Pass Details deliberately compact. The front already shows
-        # the two key states, so Details only repeats useful account information
-        # and omits ACTIVE UNTIL / NEXT REWARD clutter.
+        # Keep Hybrid Pass Details deliberately compact. Only show membership
+        # information once the member actually has an active/lifetime membership.
+        # Inactive/suspended/cancelled membership stays hidden to avoid clutter.
         status = membership_effective_status(customer)
+        membership_is_live = str(status or '').lower() in ('active', 'lifetime')
         services = (program.get('membership_services') if program else None) or []
-        apple_details.append(('membership_status', ((program.get('membership_name') if program else None) or 'MEMBERSHIP').upper(), status.upper()))
         if loyalty_type == 'points':
             apple_details.append(('points_balance', 'POINTS', f'{current_points:,}'))
         else:
             apple_details.append(('stamp_progress', 'STAMPS', f'{current_stamps}/{full_stamp_goal}'))
-        apple_details.append(('next_benefit', 'MEMBERSHIP BENEFIT', services[0] if services else 'Membership perks'))
+        if membership_is_live:
+            apple_details.append(('membership_status', ((program.get('membership_name') if program else None) or 'MEMBERSHIP').upper(), '✓'))
+            apple_details.append(('next_benefit', 'MEMBERSHIP BENEFIT', services[0] if services else 'Membership perks'))
     elif card_type == 'points':
         apple_details.append(('points_balance', 'POINTS BALANCE', f'{current_points:,} points'))
         apple_details.append(('next_reward_detail', 'NEXT REWARD', points_next_reward_value))
@@ -3981,8 +3983,8 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                     {'key': 'card_name', 'label': 'CARD', 'value': card_title[:32]}
                 ],
                 'primaryFields': [],
-                'secondaryFields': [
-                    {
+                'secondaryFields': (
+                    [{
                         'key': 'hybrid_loyalty',
                         'label': 'POINTS' if loyalty_type == 'points' else 'STAMPS',
                         'value': (
@@ -3991,15 +3993,17 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                             f"{int(stamps or 0)}/{int(full_stamp_goal)}"
                         ),
                         'changeMessage': ('Points updated: %@' if loyalty_type == 'points' else 'Stamp progress: %@'),
-                    },
-                    {
+                    }]
+                    + ([{
                         'key': 'membership_status',
+                        # Keep the front clean: show the membership label
+                        # only for live memberships, with a checkmark as the value.
                         'label': 'MEMBERSHIP',
-                        'value': membership_effective_status(customer).upper(),
+                        'value': '✓',
                         'textAlignment': 'PKTextAlignmentRight',
-                        'changeMessage': 'Membership status: %@',
-                    },
-                ],
+                        'changeMessage': 'Membership status updated.',
+                    }] if membership_effective_status(customer).lower() in ('active', 'lifetime') else [])
+                ),
                 # Current iOS Store Cards cannot make arbitrary front fields
                 # open a URL. Use a clean visual cue pointing to Apple's real
                 # system ellipsis button. The first field in Pass Details is the
