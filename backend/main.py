@@ -4002,7 +4002,17 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                         'value': '✓',
                         'textAlignment': 'PKTextAlignmentRight',
                         'changeMessage': 'Membership status updated.',
-                    }] if membership_effective_status(customer).lower() in ('active', 'lifetime') else [])
+                    }] if membership_effective_status(customer).lower() in ('active', 'lifetime') else [{
+                        # Apple Wallet does not expose a font-size property for
+                        # pass fields. Reserve the second column invisibly when
+                        # membership is inactive so the points/stamps field keeps
+                        # the compact two-column secondary-field sizing instead
+                        # of expanding across the full card.
+                        'key': 'membership_spacer',
+                        'label': '\u00a0',
+                        'value': '\u00a0',
+                        'textAlignment': 'PKTextAlignmentRight',
+                    }])
                 ),
                 # Current iOS Store Cards cannot make arbitrary front fields
                 # open a URL. Use a clean visual cue pointing to Apple's real
@@ -4012,7 +4022,10 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                     [{
                         'key': 'order_ahead_hint',
                         'label': 'ORDER AHEAD',
-                        'value': 'TAP ⋯ ABOVE',
+                        # Apple Wallet does not expose an exact font-size control.
+                        # Use Unicode small-cap glyphs so the all-caps instruction
+                        # stays visually smaller while preserving the intended wording.
+                        'value': 'ᴛᴀᴘ ⋯ ᴀʙᴏᴠᴇ',
                         'textAlignment': 'PKTextAlignmentCenter',
                     }]
                     if order_ahead_action else []
