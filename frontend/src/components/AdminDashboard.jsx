@@ -14,6 +14,12 @@ const businessTypeLabel=v=>BUSINESS_TYPE_OPTIONS.find(([k])=>k===v)?.[1]||'🏪 
 const kitStatusLabel=s=>({requested:'Requested',paid:'Paid',preparing:'Preparing',ready_to_ship:'Ready to ship',shipped:'Shipped',delivered:'Delivered',cancelled:'Cancelled'})[String(s||'').toLowerCase()]||'Not requested'
 const kitStatusStyle=s=>({requested:{background:'#fff7ed',color:'#9a3412'},paid:{background:'#ecfdf5',color:'#166534'},preparing:{background:'#fefce8',color:'#854d0e'},ready_to_ship:{background:'#eff6ff',color:'#1d4ed8'},shipped:{background:'#eef2ff',color:'#4338ca'},delivered:{background:'#dcfce7',color:'#166534'},cancelled:{background:'#fef2f2',color:'#b91c1c'}}[String(s||'').toLowerCase()]||{background:'#f1f5f9',color:'#64748b'})
 
+const OA_DESIGN_DEFAULTS = {
+  template:'modern', primary_color:'#0f766e', background_color:'#f8fafc', surface_color:'#ffffff', text_color:'#0f172a', muted_color:'#64748b',
+  header_style:'logo_name', logo_shape:'rounded', branch_card_style:'soft', button_style:'text', show_banner:true, show_greeting:true,
+  branch_heading:'Which branch will you pick up from?', branch_cta_label:'Choose branch', category_style:'pills', product_layout:'image_top', image_shape:'rounded',
+}
+
 
 function AdminDashboard({ API_BASE, user, onLogout }) {
   const token = user?.token
@@ -32,6 +38,9 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const [detail, setDetail] = useState(null)
   const [orderAheadAdmin, setOrderAheadAdmin] = useState(null)
   const [orderAheadSaving, setOrderAheadSaving] = useState(false)
+  const [orderAheadDesign, setOrderAheadDesign] = useState({...OA_DESIGN_DEFAULTS})
+  const [showOrderAheadDesign, setShowOrderAheadDesign] = useState(false)
+  const [orderAheadDesignSaving, setOrderAheadDesignSaving] = useState(false)
   const [message, setMessage] = useState('')
   const [confirmDelete, setConfirmDelete] = useState(null)
   const [showCreateModal, setShowCreateModal] = useState(false)
@@ -139,6 +148,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
     setSelected(biz)
     setDetail(null)
     setOrderAheadAdmin(null)
+    setOrderAheadDesign({...OA_DESIGN_DEFAULTS})
     try {
       const [res, oaRes] = await Promise.all([
         authedFetch(`/api/v1/admin/businesses/${biz.public_id}`),
@@ -147,7 +157,10 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
       const detailData = await res.json().catch(() => null)
       const oaData = await oaRes.json().catch(() => null)
       setDetail(detailData)
-      if (oaRes.ok) setOrderAheadAdmin(oaData)
+      if (oaRes.ok) {
+        setOrderAheadAdmin(oaData)
+        setOrderAheadDesign({...OA_DESIGN_DEFAULTS, ...(oaData?.design || {})})
+      }
     } catch (err) {
       console.error(err)
     }
@@ -172,6 +185,32 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
       setOrderAheadSaving(false)
       setTimeout(() => setMessage(''), 3500)
     }
+  }
+
+  const saveOrderAheadDesign = async (patch = null) => {
+    if (!selected?.public_id) return
+    const payload = patch || orderAheadDesign
+    setOrderAheadDesignSaving(true)
+    try {
+      const res = await authedFetch(`/api/v1/admin/businesses/${selected.public_id}/order-ahead/design`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not save Order Ahead UI')
+      setOrderAheadDesign({...OA_DESIGN_DEFAULTS, ...(data.design || {})})
+      setOrderAheadAdmin(prev => prev ? ({...prev, design:data.design}) : prev)
+      setMessage(data.message || 'Order Ahead UI saved')
+    } catch (err) {
+      setMessage(err.message || 'Could not save Order Ahead UI')
+    } finally {
+      setOrderAheadDesignSaving(false)
+      setTimeout(() => setMessage(''), 3500)
+    }
+  }
+
+  const resetOrderAheadDesign = async () => {
+    await saveOrderAheadDesign({ reset:true })
   }
 
   const updateBusiness = async (public_id, patch) => {
@@ -873,7 +912,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
 
       {/* Detail modal */}
       {selected && (
-        <div style={styles.modalOverlay} onClick={() => { setSelected(null); setDetail(null); setOrderAheadAdmin(null) }}>
+        <div style={styles.modalOverlay} onClick={() => { setShowOrderAheadDesign(false); setSelected(null); setDetail(null); setOrderAheadAdmin(null) }}>
           <div style={styles.modal} onClick={e => e.stopPropagation()}>
             <div style={styles.businessDetailHero}>{detail?.logo_url?<img src={detail.logo_url} alt="Business logo" style={styles.businessDetailLogo}/>:<div style={styles.businessDetailLogoFallback}>🏪</div>}<div><h2 style={styles.modalTitle}>{detail?.name || selected.name}</h2><div style={styles.bizEmail}>{detail?.contact_person||'No contact person'} · {detail?.business_type?businessTypeLabel(detail.business_type):''}</div></div></div>
             {!detail ? (
@@ -1087,6 +1126,13 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                       {orderAheadAdmin?.token_secret_configured?'✓ Secure Wallet link signing configured':'⚠ ORDER_AHEAD_TOKEN_SECRET is not configured'}
                     </div>
                     {orderAheadAdmin?.enabled && <div style={{fontSize:11,color:'#0f766e',marginTop:7}}>Owner dashboard will show the Order Ahead setup tab for this business.</div>}
+                    {orderAheadAdmin?.enabled && (
+                      <button
+                        type="button"
+                        onClick={()=>setShowOrderAheadDesign(true)}
+                        style={{...styles.viewBtn,width:'100%',marginTop:10,padding:'9px 12px',fontWeight:800,background:'#f0fdfa'}}
+                      >Edit Order Ahead UI</button>
+                    )}
                   </div>
                 </div>
                 {detail.loyalty_program && detail.card_type === 'points' ? (
@@ -1121,7 +1167,74 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 )}
               </div>
             )}
-            <button onClick={() => { setSelected(null); setDetail(null); setOrderAheadAdmin(null) }} style={styles.closeBtn}>Close</button>
+            <button onClick={() => { setShowOrderAheadDesign(false); setSelected(null); setDetail(null); setOrderAheadAdmin(null) }} style={styles.closeBtn}>Close</button>
+          </div>
+        </div>
+      )}
+
+      {/* Super Admin Order Ahead Design Studio */}
+      {showOrderAheadDesign && selected && (
+        <div style={{...styles.modalOverlay,zIndex:450}} onClick={()=>setShowOrderAheadDesign(false)}>
+          <div style={styles.orderAheadDesignModal} onClick={e=>e.stopPropagation()}>
+            <div style={styles.oaDesignHeader}>
+              <div>
+                <div style={styles.oaDesignEyebrow}>SUPER ADMIN ONLY</div>
+                <h2 style={{...styles.modalTitle,marginBottom:4}}>Order Ahead Design Studio</h2>
+                <div style={{fontSize:12,color:'#64748b'}}>{detail?.name || selected?.name} · owners cannot edit these controls</div>
+              </div>
+              <button style={styles.closeBtn} onClick={()=>setShowOrderAheadDesign(false)}>Close</button>
+            </div>
+
+            <div style={styles.oaDesignGrid}>
+              <div style={styles.oaDesignControls}>
+                <DesignSection title="Layout">
+                  <DesignSelect label="Template" value={orderAheadDesign.template} onChange={v=>setOrderAheadDesign(d=>({...d,template:v}))} options={[["modern","Modern"],["minimal","Minimal"],["bold","Bold"]]}/>
+                  <DesignSelect label="Header" value={orderAheadDesign.header_style} onChange={v=>setOrderAheadDesign(d=>({...d,header_style:v}))} options={[["logo_name","Logo + business name"],["banner","Banner + logo"],["compact","Compact"]]}/>
+                  <DesignSelect label="Logo shape" value={orderAheadDesign.logo_shape} onChange={v=>setOrderAheadDesign(d=>({...d,logo_shape:v}))} options={[["rounded","Rounded"],["circle","Circle"],["square","Square"]]}/>
+                  <DesignSelect label="Branch cards" value={orderAheadDesign.branch_card_style} onChange={v=>setOrderAheadDesign(d=>({...d,branch_card_style:v}))} options={[["soft","Soft cards"],["outline","Outline"],["flat","Flat"]]}/>
+                  <DesignSelect label="Action style" value={orderAheadDesign.button_style} onChange={v=>setOrderAheadDesign(d=>({...d,button_style:v}))} options={[["text","Text + arrow"],["filled","Filled button"],["outline","Outline button"]]}/>
+                </DesignSection>
+
+                <DesignSection title="Brand colors">
+                  <div style={styles.oaColorGrid}>
+                    <DesignColor label="Primary" value={orderAheadDesign.primary_color} onChange={v=>setOrderAheadDesign(d=>({...d,primary_color:v}))}/>
+                    <DesignColor label="Background" value={orderAheadDesign.background_color} onChange={v=>setOrderAheadDesign(d=>({...d,background_color:v}))}/>
+                    <DesignColor label="Cards" value={orderAheadDesign.surface_color} onChange={v=>setOrderAheadDesign(d=>({...d,surface_color:v}))}/>
+                    <DesignColor label="Text" value={orderAheadDesign.text_color} onChange={v=>setOrderAheadDesign(d=>({...d,text_color:v}))}/>
+                    <DesignColor label="Muted text" value={orderAheadDesign.muted_color} onChange={v=>setOrderAheadDesign(d=>({...d,muted_color:v}))}/>
+                  </div>
+                </DesignSection>
+
+                <DesignSection title="Customer copy">
+                  <label style={styles.oaDesignLabel}>Branch heading</label>
+                  <input style={styles.input} maxLength={80} value={orderAheadDesign.branch_heading || ''} onChange={e=>setOrderAheadDesign(d=>({...d,branch_heading:e.target.value}))}/>
+                  <label style={{...styles.oaDesignLabel,marginTop:10}}>Branch action</label>
+                  <input style={styles.input} maxLength={40} value={orderAheadDesign.branch_cta_label || ''} onChange={e=>setOrderAheadDesign(d=>({...d,branch_cta_label:e.target.value}))}/>
+                  <label style={styles.oaToggleRow}><input type="checkbox" checked={!!orderAheadDesign.show_banner} onChange={e=>setOrderAheadDesign(d=>({...d,show_banner:e.target.checked}))}/><span>Show business banner when available</span></label>
+                  <label style={styles.oaToggleRow}><input type="checkbox" checked={!!orderAheadDesign.show_greeting} onChange={e=>setOrderAheadDesign(d=>({...d,show_greeting:e.target.checked}))}/><span>Show member greeting</span></label>
+                </DesignSection>
+
+                <DesignSection title="Menu defaults (ready for Menu Builder)">
+                  <DesignSelect label="Categories" value={orderAheadDesign.category_style} onChange={v=>setOrderAheadDesign(d=>({...d,category_style:v}))} options={[["pills","Pills"],["tabs","Tabs"],["plain","Plain"]]}/>
+                  <DesignSelect label="Product layout" value={orderAheadDesign.product_layout} onChange={v=>setOrderAheadDesign(d=>({...d,product_layout:v}))} options={[["image_top","Image top"],["image_left","Image left"],["compact","Compact"]]}/>
+                  <DesignSelect label="Product image" value={orderAheadDesign.image_shape} onChange={v=>setOrderAheadDesign(d=>({...d,image_shape:v}))} options={[["rounded","Rounded"],["square","Square"]]}/>
+                  <div style={{fontSize:11,color:'#94a3b8',lineHeight:1.45}}>These menu settings are saved now and will automatically apply when the customer menu is connected.</div>
+                </DesignSection>
+
+                <div style={styles.oaDesignActions}>
+                  <button disabled={orderAheadDesignSaving} style={styles.oaPrimaryBtn} onClick={()=>saveOrderAheadDesign()}>{orderAheadDesignSaving?'Saving…':'Save UI'}</button>
+                  <button disabled={orderAheadDesignSaving} style={styles.closeBtn} onClick={resetOrderAheadDesign}>Reset to LoyaltyTree default</button>
+                </div>
+              </div>
+
+              <div style={styles.oaPreviewPane}>
+                <div style={styles.oaPreviewSticky}>
+                  <div style={styles.oaPreviewTitle}>LIVE MOBILE PREVIEW</div>
+                  <OrderAheadPreview business={detail || selected} design={orderAheadDesign}/>
+                  <div style={{fontSize:10.5,color:'#94a3b8',textAlign:'center',marginTop:10,lineHeight:1.45}}>Preview uses sample branch/menu content. The real customer page uses the business's live branches and branding.</div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -1247,6 +1360,41 @@ function subscriptionStatusLabel(status) {
   if (status === 'expiring_soon') return 'Expiring soon'
   if (status === 'active') return 'Active'
   return 'No expiry set'
+}
+
+function DesignSection({title,children}) {
+  return <div style={styles.oaDesignSection}><div style={styles.oaDesignSectionTitle}>{title}</div>{children}</div>
+}
+function DesignSelect({label,value,onChange,options}) {
+  return <label style={{display:'block',marginBottom:10}}><span style={styles.oaDesignLabel}>{label}</span><select style={{...styles.select,width:'100%'}} value={value || ''} onChange={e=>onChange(e.target.value)}>{options.map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label>
+}
+function DesignColor({label,value,onChange}) {
+  return <label style={styles.oaColorField}><span style={styles.oaDesignLabel}>{label}</span><div style={{display:'flex',alignItems:'center',gap:7}}><input type="color" value={value || '#000000'} onChange={e=>onChange(e.target.value)} style={styles.oaColorPicker}/><input value={value || ''} maxLength={7} onChange={e=>onChange(e.target.value)} style={{...styles.input,padding:'7px 8px',fontSize:11}}/></div></label>
+}
+function OrderAheadPreview({business,design}) {
+  const d={...OA_DESIGN_DEFAULTS,...(design||{})}
+  const logoRadius=d.logo_shape==='circle'?999:d.logo_shape==='square'?4:14
+  const cardRadius=d.branch_card_style==='flat'?9:d.branch_card_style==='outline'?13:18
+  const shadow=d.template==='minimal'||d.branch_card_style!=='soft'?'none':'0 10px 24px rgba(15,23,42,.08)'
+  const button = d.button_style==='filled'
+    ? {background:d.primary_color,color:'#fff',padding:'8px 10px',borderRadius:10}
+    : d.button_style==='outline'
+      ? {border:`1px solid ${d.primary_color}`,color:d.primary_color,padding:'7px 9px',borderRadius:10}
+      : {color:d.primary_color}
+  const sampleImage='linear-gradient(135deg,#e2e8f0,#cbd5e1)'
+  return <div style={{...styles.oaPhone,background:d.background_color,color:d.text_color}}>
+    <div style={styles.oaPhoneNotch}></div>
+    <div style={styles.oaPhoneBody}>
+      {d.show_banner && <div style={{height:76,borderRadius:14,background:sampleImage,marginBottom:12,overflow:'hidden'}}>{business?.loyalty_program?.hero_image_url && <img src={business.loyalty_program.hero_image_url} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>}</div>}
+      <div style={{display:'flex',alignItems:'center',gap:d.header_style==='compact'?8:10,marginBottom:16,...(d.header_style==='banner'&&d.show_banner?{marginTop:-32,marginLeft:8,marginRight:8,padding:'8px 9px',background:d.surface_color,border:'1px solid #e2e8f0',borderRadius:14,position:'relative',boxShadow:'0 8px 18px rgba(15,23,42,.08)'}:{})}}>
+        {business?.logo_url?<img src={business.logo_url} alt="" style={{width:d.header_style==='compact'?34:44,height:d.header_style==='compact'?34:44,borderRadius:logoRadius,objectFit:'cover',border:'1px solid #e2e8f0'}}/>:<div style={{width:44,height:44,borderRadius:logoRadius,display:'grid',placeItems:'center',background:'#e2e8f0'}}>🏪</div>}
+        <div><div style={{fontWeight:850,fontSize:d.header_style==='compact'?15:18}}>{business?.name || 'Business Name'}</div>{d.show_greeting&&<div style={{fontSize:10.5,color:d.muted_color,marginTop:2}}>Hi, Member · Order Ahead</div>}</div>
+      </div>
+      <div style={{fontWeight:800,fontSize:13,marginBottom:8}}>{d.branch_heading}</div>
+      {[['Main Branch','123 Sample Street'],['Mall Branch','Level 2 · Sample Mall']].map(([n,a])=><div key={n} style={{background:d.surface_color,border:d.branch_card_style==='flat'?'1px solid transparent':'1px solid #e2e8f0',borderRadius:cardRadius,padding:12,marginBottom:9,boxShadow:shadow}}><div style={{fontWeight:800,fontSize:13}}>{n}</div><div style={{fontSize:10.5,color:d.muted_color,marginTop:3}}>{a}</div><div style={{...button,display:'flex',justifyContent:'space-between',fontSize:10.5,fontWeight:800,marginTop:9}}><span>{d.branch_cta_label}</span><span>›</span></div></div>)}
+      <div style={{fontSize:9.5,color:d.muted_color,textAlign:'center',marginTop:13,opacity:.8}}>Test mode · No real payment</div>
+    </div>
+  </div>
 }
 
 const styles = {
@@ -1511,6 +1659,26 @@ const styles = {
   analyticsRecentMeta:{color:'#94a3b8',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'},
   analyticsEmpty:{fontSize:12,color:'#94a3b8',padding:'12px 0'},
 
+  orderAheadDesignModal:{background:'#fff',borderRadius:20,width:'min(1080px,96vw)',maxHeight:'92vh',overflow:'auto',boxShadow:'0 30px 80px rgba(15,23,42,.25)'},
+  oaDesignHeader:{display:'flex',justifyContent:'space-between',gap:16,alignItems:'flex-start',padding:'22px 24px 16px',borderBottom:'1px solid #e2e8f0',position:'sticky',top:0,background:'#fff',zIndex:2},
+  oaDesignEyebrow:{fontSize:9.5,fontWeight:900,letterSpacing:1.3,color:'#0f766e',marginBottom:5},
+  oaDesignGrid:{display:'grid',gridTemplateColumns:'minmax(0,1fr) minmax(320px,420px)',minHeight:560},
+  oaDesignControls:{padding:22,background:'#f8fafc'},
+  oaDesignSection:{background:'#fff',border:'1px solid #e2e8f0',borderRadius:14,padding:15,marginBottom:12},
+  oaDesignSectionTitle:{fontSize:12.5,fontWeight:850,color:'#0f172a',marginBottom:12},
+  oaDesignLabel:{display:'block',fontSize:10.5,fontWeight:800,color:'#64748b',marginBottom:5,textTransform:'uppercase',letterSpacing:.35},
+  oaColorGrid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(145px,1fr))',gap:10},
+  oaColorField:{display:'block'},
+  oaColorPicker:{width:36,height:34,padding:0,border:'1px solid #e2e8f0',borderRadius:8,background:'#fff',cursor:'pointer'},
+  oaToggleRow:{display:'flex',alignItems:'center',gap:8,fontSize:12,color:'#334155',marginTop:11,cursor:'pointer'},
+  oaDesignActions:{display:'flex',gap:9,flexWrap:'wrap',paddingTop:4},
+  oaPrimaryBtn:{padding:'10px 16px',background:'#0f766e',color:'#fff',border:'none',borderRadius:9,fontSize:12.5,fontWeight:850,cursor:'pointer'},
+  oaPreviewPane:{padding:22,background:'#fff',borderLeft:'1px solid #e2e8f0'},
+  oaPreviewSticky:{position:'sticky',top:84},
+  oaPreviewTitle:{fontSize:9.5,fontWeight:900,letterSpacing:1.1,color:'#64748b',textAlign:'center',marginBottom:10},
+  oaPhone:{width:300,maxWidth:'100%',margin:'0 auto',border:'8px solid #0f172a',borderRadius:34,minHeight:520,boxShadow:'0 20px 45px rgba(15,23,42,.18)',overflow:'hidden',position:'relative'},
+  oaPhoneNotch:{width:88,height:18,borderRadius:'0 0 12px 12px',background:'#0f172a',position:'absolute',top:0,left:'50%',transform:'translateX(-50%)',zIndex:2},
+  oaPhoneBody:{padding:'30px 15px 20px'},
   onboardingBadge:{display:'inline-block',padding:'5px 8px',borderRadius:999,background:'#ecfdf5',color:'#0f766e',fontSize:10.5,fontWeight:800,whiteSpace:'nowrap'},
   businessDetailHero:{display:'flex',alignItems:'center',gap:14,marginBottom:18},
   businessDetailLogo:{width:64,height:64,borderRadius:14,objectFit:'contain',border:'1px solid #e2e8f0',background:'#fff'},

@@ -1450,6 +1450,28 @@ class OrderAheadSettingsUpdate(BaseModel):
     max_advance_days: Optional[int] = Field(default=None, ge=0, le=365)
     ready_notification_enabled: Optional[bool] = None
 
+class AdminOrderAheadDesignUpdate(BaseModel):
+    # Customer-facing Order Ahead appearance is intentionally platform-admin
+    # controlled. Owners can change operational content, not layouts/styles.
+    reset: bool = False
+    template: Optional[Literal['modern', 'minimal', 'bold']] = None
+    primary_color: Optional[str] = Field(default=None, max_length=7)
+    background_color: Optional[str] = Field(default=None, max_length=7)
+    surface_color: Optional[str] = Field(default=None, max_length=7)
+    text_color: Optional[str] = Field(default=None, max_length=7)
+    muted_color: Optional[str] = Field(default=None, max_length=7)
+    header_style: Optional[Literal['logo_name', 'banner', 'compact']] = None
+    logo_shape: Optional[Literal['rounded', 'circle', 'square']] = None
+    branch_card_style: Optional[Literal['soft', 'outline', 'flat']] = None
+    button_style: Optional[Literal['text', 'filled', 'outline']] = None
+    show_banner: Optional[bool] = None
+    show_greeting: Optional[bool] = None
+    branch_heading: Optional[str] = Field(default=None, max_length=80)
+    branch_cta_label: Optional[str] = Field(default=None, max_length=40)
+    category_style: Optional[Literal['pills', 'tabs', 'plain']] = None
+    product_layout: Optional[Literal['image_top', 'image_left', 'compact']] = None
+    image_shape: Optional[Literal['rounded', 'square']] = None
+
 class AdminBusinessCreate(BaseModel):
     """Admin-provisioned business account - used for invite-only business
     types (e.g. car_lending) that don't go through the public signup form.
@@ -7281,6 +7303,114 @@ def _supabase_count(response) -> int:
     return len(data) if isinstance(data, list) else 0
 
 
+ORDER_AHEAD_UI_DEFAULTS = {
+    'template': 'modern',
+    'primary_color': '#0f766e',
+    'background_color': '#f8fafc',
+    'surface_color': '#ffffff',
+    'text_color': '#0f172a',
+    'muted_color': '#64748b',
+    'header_style': 'logo_name',
+    'logo_shape': 'rounded',
+    'branch_card_style': 'soft',
+    'button_style': 'text',
+    'show_banner': True,
+    'show_greeting': True,
+    'branch_heading': 'Which branch will you pick up from?',
+    'branch_cta_label': 'Choose branch',
+    # Stored now so the same Design Studio controls the menu once Menu Builder
+    # is connected. They do not change owner permissions.
+    'category_style': 'pills',
+    'product_layout': 'image_top',
+    'image_shape': 'rounded',
+}
+
+
+def _clean_order_ahead_label(value, fallback: str, max_len: int) -> str:
+    value = re.sub(r'\s+', ' ', str(value or '').strip())
+    return (value[:max_len] or fallback)
+
+
+def _resolve_order_ahead_ui_config(business: dict, settings: Optional[dict] = None) -> dict:
+    """Return a safe, complete UI config.
+
+    ui_config already exists in the Phase 1 migration. The owner settings
+    endpoint never accepts it, while the admin-only Design Studio does.
+    """
+    program = safe_get_loyalty_program(business.get('id')) if business else None
+    try:
+        brand = wallet_20_design(business or {}, program or {})
+        brand_primary = brand.get('primary') or ORDER_AHEAD_UI_DEFAULTS['primary_color']
+    except Exception:
+        brand_primary = ORDER_AHEAD_UI_DEFAULTS['primary_color']
+
+    if settings is None and business:
+        try:
+            settings = _supabase_first_row(
+                supabase.table('order_ahead_settings')
+                .select('ui_config')
+                .eq('business_id', business.get('id'))
+                .limit(1)
+                .execute()
+            )
+        except Exception:
+            settings = None
+
+    raw = (settings or {}).get('ui_config') or {}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    cfg = dict(ORDER_AHEAD_UI_DEFAULTS)
+    cfg['primary_color'] = _normalize_hex_color(raw.get('primary_color'), brand_primary)
+    cfg['background_color'] = _normalize_hex_color(raw.get('background_color'), ORDER_AHEAD_UI_DEFAULTS['background_color'])
+    cfg['surface_color'] = _normalize_hex_color(raw.get('surface_color'), ORDER_AHEAD_UI_DEFAULTS['surface_color'])
+    cfg['text_color'] = _normalize_hex_color(raw.get('text_color'), ORDER_AHEAD_UI_DEFAULTS['text_color'])
+    cfg['muted_color'] = _normalize_hex_color(raw.get('muted_color'), ORDER_AHEAD_UI_DEFAULTS['muted_color'])
+
+    allowed = {
+        'template': {'modern', 'minimal', 'bold'},
+        'header_style': {'logo_name', 'banner', 'compact'},
+        'logo_shape': {'rounded', 'circle', 'square'},
+        'branch_card_style': {'soft', 'outline', 'flat'},
+        'button_style': {'text', 'filled', 'outline'},
+        'category_style': {'pills', 'tabs', 'plain'},
+        'product_layout': {'image_top', 'image_left', 'compact'},
+        'image_shape': {'rounded', 'square'},
+    }
+    for key, choices in allowed.items():
+        value = raw.get(key)
+        if value in choices:
+            cfg[key] = value
+
+    for key in ('show_banner', 'show_greeting'):
+        if isinstance(raw.get(key), bool):
+            cfg[key] = raw[key]
+
+    cfg['branch_heading'] = _clean_order_ahead_label(raw.get('branch_heading'), ORDER_AHEAD_UI_DEFAULTS['branch_heading'], 80)
+    cfg['branch_cta_label'] = _clean_order_ahead_label(raw.get('branch_cta_label'), ORDER_AHEAD_UI_DEFAULTS['branch_cta_label'], 40)
+    return cfg
+
+
+def _order_ahead_ui_patch(update: AdminOrderAheadDesignUpdate) -> dict:
+    data = update.model_dump(exclude_unset=True) if hasattr(update, 'model_dump') else update.dict(exclude_unset=True)
+    data.pop('reset', None)
+    out = {}
+    for key, value in data.items():
+        if value is None:
+            continue
+        if key.endswith('_color'):
+            if not re.fullmatch(r'#[0-9a-fA-F]{6}', str(value or '')):
+                raise HTTPException(status_code=422, detail=f'{key.replace("_", " ").title()} must be a 6-digit hex color')
+            out[key] = str(value).lower()
+        elif key == 'branch_heading':
+            out[key] = _clean_order_ahead_label(value, ORDER_AHEAD_UI_DEFAULTS['branch_heading'], 80)
+        elif key == 'branch_cta_label':
+            out[key] = _clean_order_ahead_label(value, ORDER_AHEAD_UI_DEFAULTS['branch_cta_label'], 40)
+        else:
+            out[key] = value
+    return out
+
+
 @app.get("/api/v1/admin/businesses/{public_id}/order-ahead")
 async def admin_get_order_ahead(public_id: str, _: bool = Depends(require_admin)):
     business = safe_get_business(public_id)
@@ -7301,6 +7431,7 @@ async def admin_get_order_ahead(public_id: str, _: bool = Depends(require_admin)
         'enabled': bool(business.get('order_ahead_enabled')),
         'button_label': business.get('order_ahead_button_label') or 'Order Ahead',
         'settings': settings,
+        'design': _resolve_order_ahead_ui_config(business, settings),
         'token_secret_configured': bool(_order_ahead_signing_secret()),
     }
 
@@ -7363,6 +7494,69 @@ async def admin_set_order_ahead(
         'button_label': label,
         'payment_mode': 'mock',
         'message': 'Order Ahead enabled' if update.enabled else 'Order Ahead disabled',
+    }
+
+
+@app.patch("/api/v1/admin/businesses/{public_id}/order-ahead/design")
+async def admin_update_order_ahead_design(
+    public_id: str,
+    update: AdminOrderAheadDesignUpdate,
+    _: bool = Depends(require_admin),
+):
+    """Super-admin-only customer UI editor.
+
+    The Phase 1 schema already includes order_ahead_settings.ui_config, so no
+    additional migration is required for the Design Studio.
+    """
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+
+    try:
+        existing = _supabase_first_row(
+            supabase.table('order_ahead_settings')
+            .select('id,ui_config')
+            .eq('business_id', business.get('id'))
+            .limit(1)
+            .execute()
+        )
+        if not existing:
+            inserted = supabase.table('order_ahead_settings').insert({
+                'business_id': business.get('id'),
+                'pickup_mode': 'both',
+                'min_prep_minutes': 15,
+                'slot_interval_minutes': 15,
+                'max_advance_days': 7,
+                'payment_mode': 'mock',
+                'ready_notification_enabled': True,
+                'ui_config': {},
+            }).execute()
+            existing = _supabase_first_row(inserted) or {}
+
+        if update.reset:
+            raw = {}
+        else:
+            current = existing.get('ui_config') or {}
+            if not isinstance(current, dict):
+                current = {}
+            raw = {**current, **_order_ahead_ui_patch(update)}
+
+        supabase.table('order_ahead_settings').update({
+            'ui_config': raw,
+            'updated_at': datetime.now(timezone.utc).isoformat(),
+        }).eq('business_id', business.get('id')).execute()
+    except HTTPException:
+        raise
+    except Exception as e:
+        msg = str(e)
+        if 'order_ahead_' in msg or 'ui_config' in msg:
+            raise HTTPException(status_code=503, detail='Order Ahead database migration has not been installed yet')
+        raise HTTPException(status_code=500, detail=f'Could not save Order Ahead design: {friendly_db_error(e)}')
+
+    return {
+        'success': True,
+        'design': _resolve_order_ahead_ui_config(business, {'ui_config': raw}),
+        'message': 'Order Ahead UI reset to LoyaltyTree default' if update.reset else 'Order Ahead UI saved',
     }
 
 
@@ -19090,28 +19284,68 @@ async def order_ahead_branch_page(customer_public_id: str, token: str = Query(de
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not load branches: {friendly_db_error(e)}")
 
+    program = safe_get_loyalty_program(business.get('id')) or {}
+    ui = _resolve_order_ahead_ui_config(business)
     biz_name = html_lib.escape(str(business.get('name') or 'Business'))
     member_name = html_lib.escape(str(customer.get('name') or 'Member'))
-    logo_url = html_lib.escape(str(business.get('logo_url') or DEFAULT_LOGO_URL))
+    logo_url = html_lib.escape(str(business.get('logo_url') or program.get('program_logo_url') or DEFAULT_LOGO_URL))
+    hero_url = html_lib.escape(str(program.get('hero_image_url') or ''))
+    primary = ui['primary_color']
+    bg = ui['background_color']
+    surface = ui['surface_color']
+    text_color = ui['text_color']
+    muted = ui['muted_color']
+    heading = html_lib.escape(ui['branch_heading'])
+    cta_label = html_lib.escape(ui['branch_cta_label'])
+
+    logo_radius = {'rounded': '16px', 'circle': '999px', 'square': '4px'}[ui['logo_shape']]
+    card_radius = {'soft': '18px', 'outline': '14px', 'flat': '10px'}[ui['branch_card_style']]
+    card_shadow = '0 12px 30px rgba(15,23,42,.07)' if ui['branch_card_style'] == 'soft' else 'none'
+    card_border = '1px solid #e2e8f0' if ui['branch_card_style'] != 'flat' else '1px solid transparent'
+    if ui['template'] == 'minimal':
+        card_shadow = 'none'
+        card_radius = '12px'
+    elif ui['template'] == 'bold':
+        card_radius = '22px'
+        card_shadow = '0 16px 36px rgba(15,23,42,.10)'
+
+    if ui['button_style'] == 'filled':
+        cta_css = f'background:{primary};color:#fff;padding:10px 12px;border-radius:12px;'
+    elif ui['button_style'] == 'outline':
+        cta_css = f'border:1px solid {primary};color:{primary};padding:9px 11px;border-radius:12px;'
+    else:
+        cta_css = f'color:{primary};padding-top:2px;'
+
     branch_cards = ''.join(
         f"""<a class="branch" href="{BASE_URL}/order-ahead/{quote(customer_public_id)}/branch/{quote(str(b.get('public_id') or ''))}?token={quote(token)}">
               <div class="branch-name">{html_lib.escape(str(b.get('name') or 'Branch'))}</div>
               <div class="branch-address">{html_lib.escape(str(b.get('address') or 'Pickup location'))}</div>
-              <div class="branch-cta">Choose branch <span>&rsaquo;</span></div>
+              <div class="branch-cta"><span>{cta_label}</span><span>&rsaquo;</span></div>
             </a>"""
         for b in branches
     ) or '<div class="empty">No active branches have been configured yet.</div>'
 
+    banner_html = (
+        f'<img class="banner" src="{hero_url}" alt="">'
+        if ui['show_banner'] and hero_url else ''
+    )
+    greeting_html = f'<div class="hello">Hi, {member_name} · Order Ahead</div>' if ui['show_greeting'] else ''
+    compact_class = ' compact' if ui['header_style'] == 'compact' else ''
+    banner_mode_class = ' banner-mode' if ui['header_style'] == 'banner' and banner_html else ''
+
     html = f"""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
     <title>{biz_name} · Order Ahead</title><style>
-    *{{box-sizing:border-box}}body{{margin:0;background:#f8fafc;color:#0f172a;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}
-    main{{max-width:520px;margin:0 auto;padding:24px 18px 48px}}.top{{display:flex;align-items:center;gap:13px;margin-bottom:26px}}
-    .logo{{width:54px;height:54px;border-radius:16px;object-fit:cover;background:#fff;border:1px solid #e2e8f0}}h1{{font-size:24px;margin:0}}.hello{{color:#64748b;font-size:14px;margin-top:4px}}
-    h2{{font-size:17px;margin:0 0 12px}}.branch{{display:block;text-decoration:none;color:inherit;background:#fff;border:1px solid #e2e8f0;border-radius:18px;padding:17px;margin:12px 0}}
-    .branch-name{{font-size:17px;font-weight:700}}.branch-address{{font-size:13px;color:#64748b;margin-top:5px;line-height:1.4}}.branch-cta{{margin-top:14px;color:#0f766e;font-weight:700;font-size:14px;display:flex;justify-content:space-between}}
-    .empty{{padding:22px;background:#fff;border:1px dashed #cbd5e1;border-radius:18px;color:#64748b;text-align:center}}.test{{margin-top:24px;font-size:12px;color:#94a3b8;text-align:center}}
-    </style></head><body><main><div class="top"><img class="logo" src="{logo_url}" alt=""><div><h1>{biz_name}</h1><div class="hello">Hi, {member_name} · Order Ahead</div></div></div>
-    <h2>Which branch will you pick up from?</h2>{branch_cards}<div class="test">Test mode · No real payment will be collected.</div></main></body></html>"""
+    *{{box-sizing:border-box}}body{{margin:0;background:{bg};color:{text_color};font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}
+    main{{max-width:520px;margin:0 auto;padding:22px 18px 48px}}.banner{{width:100%;height:148px;object-fit:cover;border-radius:22px;margin-bottom:16px;display:block}}
+    .top{{display:flex;align-items:center;gap:13px;margin-bottom:26px}}.top.compact{{margin-bottom:18px;gap:10px}}.top.banner-mode{{margin-top:-42px;margin-left:12px;margin-right:12px;padding:10px 12px;background:{surface};border:1px solid #e2e8f0;border-radius:18px;position:relative;box-shadow:0 10px 24px rgba(15,23,42,.08)}}
+    .logo{{width:54px;height:54px;border-radius:{logo_radius};object-fit:cover;background:{surface};border:1px solid #e2e8f0}}.compact .logo{{width:42px;height:42px}}
+    h1{{font-size:24px;margin:0;letter-spacing:-.35px}}.compact h1{{font-size:20px}}.hello{{color:{muted};font-size:14px;margin-top:4px}}
+    h2{{font-size:17px;margin:0 0 12px}}.branch{{display:block;text-decoration:none;color:inherit;background:{surface};border:{card_border};border-radius:{card_radius};padding:17px;margin:12px 0;box-shadow:{card_shadow}}}
+    .branch:active{{transform:scale(.995)}}.branch-name{{font-size:17px;font-weight:750}}.branch-address{{font-size:13px;color:{muted};margin-top:5px;line-height:1.45}}
+    .branch-cta{{margin-top:14px;font-weight:750;font-size:14px;display:flex;justify-content:space-between;align-items:center;{cta_css}}}
+    .empty{{padding:22px;background:{surface};border:1px dashed #cbd5e1;border-radius:18px;color:{muted};text-align:center}}.test{{margin-top:24px;font-size:12px;color:{muted};opacity:.75;text-align:center}}
+    </style></head><body><main>{banner_html}<div class="top{compact_class}{banner_mode_class}"><img class="logo" src="{logo_url}" alt=""><div><h1>{biz_name}</h1>{greeting_html}</div></div>
+    <h2>{heading}</h2>{branch_cards}<div class="test">Test mode · No real payment will be collected.</div></main></body></html>"""
     return HTMLResponse(html, headers={'Cache-Control': 'no-store'})
 
 
@@ -19129,11 +19363,18 @@ async def order_ahead_branch_selected(customer_public_id: str, branch_public_id:
     if not branch or branch.get('business_id') != business.get('id') or not branch.get('is_active', True):
         raise HTTPException(status_code=404, detail="Branch not found")
 
+    ui = _resolve_order_ahead_ui_config(business)
     biz_name = html_lib.escape(str(business.get('name') or 'Business'))
     branch_name = html_lib.escape(str(branch.get('name') or 'Branch'))
+    primary = ui['primary_color']
+    bg = ui['background_color']
+    surface = ui['surface_color']
+    text_color = ui['text_color']
+    muted = ui['muted_color']
+    radius = '22px' if ui['template'] == 'bold' else ('12px' if ui['template'] == 'minimal' else '20px')
     return HTMLResponse(f"""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>{biz_name} · {branch_name}</title>
-    <style>*{{box-sizing:border-box}}body{{margin:0;background:#f8fafc;color:#0f172a;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}main{{max-width:520px;margin:0 auto;padding:28px 18px}}.card{{background:white;border:1px solid #e2e8f0;border-radius:20px;padding:22px}}h1{{font-size:22px;margin:0 0 8px}}p{{color:#64748b;line-height:1.5}}.pill{{display:inline-block;background:#ecfdf5;color:#047857;border-radius:999px;padding:7px 10px;font-weight:700;font-size:12px}}</style></head>
-    <body><main><div class="card"><div class="pill">Wallet link working ✓</div><h1>{branch_name}</h1><p>{biz_name} has identified this member and branch correctly. The menu, item options, pickup time and mock checkout will be attached here next.</p></div></main></body></html>""", headers={'Cache-Control': 'no-store'})
+    <style>*{{box-sizing:border-box}}body{{margin:0;background:{bg};color:{text_color};font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}main{{max-width:520px;margin:0 auto;padding:28px 18px}}.card{{background:{surface};border:1px solid #e2e8f0;border-radius:{radius};padding:22px}}h1{{font-size:22px;margin:12px 0 8px}}p{{color:{muted};line-height:1.5}}.pill{{display:inline-block;background:{primary}18;color:{primary};border-radius:999px;padding:7px 10px;font-weight:750;font-size:12px}}</style></head>
+    <body><main><div class="card"><div class="pill">Wallet link working ✓</div><h1>{branch_name}</h1><p>{biz_name} has identified this member and branch correctly. The menu, item options, pickup time and mock checkout will use the same Super Admin design settings.</p></div></main></body></html>""", headers={'Cache-Control': 'no-store'})
 
 
 # CASHIER STAMP PAGE - opened when a cashier scans a customer's QR with
