@@ -72,19 +72,19 @@ function cardResetDate(value) {
 }
 
 const INDUSTRY_META = {
-  spa:{icon:'🌿',label:'Spa',recommend:'Membership or VIP',focus:'repeat visits and membership activity'},
-  salon:{icon:'✂️',label:'Salon / Barber',recommend:'VIP, Stamps or Points',focus:'repeat appointments and reward activity'},
-  fitness:{icon:'🏋️',label:'Gym / Fitness',recommend:'Membership or Multipass',focus:'check-ins, visit frequency and expiring memberships'},
+  spa:{icon:'🌿',label:'Spa',recommend:'Subscription Card or Tier Card',focus:'repeat visits and subscription activity'},
+  salon:{icon:'✂️',label:'Salon / Barber',recommend:'Tier Card, Stamps or Points',focus:'repeat appointments and reward activity'},
+  fitness:{icon:'🏋️',label:'Gym / Fitness',recommend:'Subscription Card or Multi-Pass',focus:'check-ins, visit frequency and expiring subscriptions'},
   restaurant:{icon:'🍽️',label:'Restaurant / Food',recommend:'Stamps or Points',focus:'repeat visits and reward claims'},
   coffee:{icon:'☕',label:'Coffee Shop / Café',recommend:'Stamps or Points',focus:'visit frequency and reward progress'},
-  retail:{icon:'🛍️',label:'Retail / Store',recommend:'Points or VIP',focus:'points activity and repeat customers'},
-  clinic:{icon:'🩺',label:'Clinic / Wellness',recommend:'Membership or Multipass',focus:'visit history, services and active memberships'},
+  retail:{icon:'🛍️',label:'Retail / Store',recommend:'Points or Tier Card',focus:'points activity and repeat customers'},
+  clinic:{icon:'🩺',label:'Clinic / Wellness',recommend:'Subscription Card or Multi-Pass',focus:'visit history, services and active subscriptions'},
   laundry:{icon:'🧺',label:'Laundry Shop',recommend:'Stamps or Points',focus:'repeat visits, service frequency and redemptions'},
-  gas_station:{icon:'⛽',label:'Gasoline Station',recommend:'Points or VIP',focus:'repeat motorists, points earned and redemptions'},
+  gas_station:{icon:'⛽',label:'Gasoline Station',recommend:'Points or Tier Card',focus:'repeat motorists, points earned and redemptions'},
   car_wash:{icon:'🚿',label:'Car Wash',recommend:'Stamps or Multipass',focus:'repeat washes and session usage'},
-  pharmacy:{icon:'💊',label:'Pharmacy',recommend:'Points or VIP',focus:'repeat customers and points activity'},
+  pharmacy:{icon:'💊',label:'Pharmacy',recommend:'Points or Tier Card',focus:'repeat customers and points activity'},
   bakery:{icon:'🥐',label:'Bakery',recommend:'Stamps or Points',focus:'repeat visits and reward progress'},
-  hotel:{icon:'🏨',label:'Hotel / Resort',recommend:'VIP or Membership',focus:'VIP activity and repeat guests'},
+  hotel:{icon:'🏨',label:'Hotel / Resort',recommend:'Tier Card or Subscription Card',focus:'tier activity and repeat guests'},
   other:{icon:'🏪',label:'Business',recommend:'Choose the card that matches repeat behavior',focus:'customer activity and retention'},
 }
 
@@ -1063,7 +1063,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           reward_expiry_days: program?.reward_expiry_days || 30,
           program_logo_url: program?.program_logo_url || null,
           hero_image_url: program?.hero_image_url || null,
-          card_name: program?.card_name || 'Membership Card',
+          card_name: program?.card_name || 'Subscription Card',
           description: program?.description || '',
           membership_services: Array.isArray(program?.membership_benefits) && program.membership_benefits.length ? undefined : services,
           membership_duration_days: Number(membershipSettings.membership_duration_days) || 30,
@@ -1075,7 +1075,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Could not save membership settings')
-      setMessage('Membership settings saved')
+      setMessage('Subscription settings saved')
       loadData()
     } catch (err) {
       setMessage(err.message)
@@ -1109,7 +1109,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         }),
       })
       const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.detail || 'Membership update failed')
+      if (!res.ok) throw new Error(data.detail || 'Subscription update failed')
       setEditForm(prev => ({
         ...prev,
         membership_status: data.effective_status,
@@ -1385,10 +1385,10 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const cardExperience = isHybridCard
     ? {
         key:'hybrid', accent:'#0d9488', soft:'#f0fdfa', border:'#99f6e4', icon:'✨',
-        title:`Hybrid · Membership + ${hybridLoyaltyType === 'points' ? 'Points' : 'Stamps'}`,
-        customerLabel:'Members', customerIcon:'✨', dashboardLabel:'Hybrid Dashboard',
-        scanTitle:'Scan Hybrid Card', scanDescription:'Verify membership and record loyalty activity',
-        recentTitle:'Recent Hybrid Activity', editDescription:'Configure membership plus points or stamp rewards',
+        title:`2-in-1 · Subscription + ${hybridLoyaltyType === 'points' ? 'Points' : 'Stamps'}`,
+        customerLabel:'Members', customerIcon:'✨', dashboardLabel:'2-in-1 Dashboard',
+        scanTitle:'Scan 2-in-1 Card', scanDescription:'Verify subscription and record loyalty activity',
+        recentTitle:'Recent 2-in-1 Activity', editDescription:'Configure subscription plus points or stamp rewards',
       }
     : isPointsCard
     ? {
@@ -1407,7 +1407,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         editDescription: 'Configure earning rules and reward prizes',
       }
     : isVipCard
-    ? { key:'vip',accent:'#ca8a04',soft:'#fefce8',border:'#fde68a',icon:'👑',title:'VIP Program',customerLabel:'VIP Customers',customerIcon:'👑',dashboardLabel:'VIP Dashboard',scanTitle:'Record VIP Purchase',scanDescription:'Award VIP points and check tier benefits',recentTitle:'Recent VIP Activity',editDescription:'Configure tier thresholds and increasing benefits' }
+    ? { key:'vip',accent:'#ca8a04',soft:'#fefce8',border:'#fde68a',icon:'👑',title:'Tier Program',customerLabel:'Tier Customers',customerIcon:'👑',dashboardLabel:'Tier Dashboard',scanTitle:'Record Tier Purchase',scanDescription:'Award tier points and check tier benefits',recentTitle:'Recent Tier Activity',editDescription:'Configure tier thresholds and increasing benefits' }
     : isMembershipCard
     ? {
         key: 'membership',
@@ -1415,12 +1415,12 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         soft: '#f0fdfa',
         border: '#99f6e4',
         icon: '🏋️',
-        title: 'Membership',
+        title: 'Subscription',
         customerLabel: 'Members',
         customerIcon: '👤',
-        dashboardLabel: 'Membership Dashboard',
+        dashboardLabel: 'Subscription Dashboard',
         scanTitle: 'Check In Member',
-        scanDescription: 'Verify access and log a member visit',
+        scanDescription: 'Verify subscription access and log a member visit',
         recentTitle: 'Recent Members',
         editDescription: 'Configure subscription duration, price, perks, and terms',
       }
@@ -1679,7 +1679,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
         <div style={{...styles.metricsGrid,...(isTablet?styles.metricsGridTablet:{}),...(isMobile?styles.metricsGridMobile:{})}}>
           {(isVipCard
-            ? [{value:customers.length,label:'VIP Customers',hint:'Enrolled in your VIP program'},{value:totalVipPoints,label:'VIP Points',hint:'Current points across customers'},{value:customers.filter(c=>c.vip_tier?.name).length,label:'Tiered Customers',hint:'Customers with an assigned tier'}]
+            ? [{value:customers.length,label:'Tier Customers',hint:'Enrolled in your tier program'},{value:totalVipPoints,label:'Tier Points',hint:'Current points across customers'},{value:customers.filter(c=>c.vip_tier?.name).length,label:'Tiered Customers',hint:'Customers with an assigned tier'}]
             : isHybridCard
             ? [
                 { value: membershipActive, label: 'Active Members', hint: 'Currently active subscriptions' },
@@ -1813,7 +1813,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                   <span style={styles.activityLeaf}>🍃</span>
                   <span style={styles.activityName}>{c.name}</span>
                   <span style={styles.activityStamps}>
-                    {isPointsCard ? `${c.points_balance || 0} points` : isMultipassCard ? `${c.multipass_sessions_remaining || 0}/${c.multipass_total_sessions || 0} sessions` : isVipCard ? `${c.vip_tier?.name || 'VIP'} · ${c.vip_points || 0} pts` : isMembershipCard ? `${(c.membership_effective_status || c.membership_status || 'inactive').toUpperCase()}` : `${c.stamp_count} rings`}
+                    {isPointsCard ? `${c.points_balance || 0} points` : isMultipassCard ? `${c.multipass_sessions_remaining || 0}/${c.multipass_total_sessions || 0} sessions` : isVipCard ? `${c.vip_tier?.name || 'Tier'} · ${c.vip_points || 0} pts` : isMembershipCard ? `${(c.membership_effective_status || c.membership_status || 'inactive').toUpperCase()}` : `${c.stamp_count} rings`}
                   </span>
                   {c.reward_unlocked && <span style={styles.activityFruit}>🍎</span>}
                 </div>
@@ -1863,7 +1863,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     {isHybridCard ? (
                       <>
                         <p style={{...styles.stampText,fontWeight:800}}>✨ {(c.membership_effective_status || c.membership_status || 'inactive').toUpperCase()} · {hybridUsesPoints ? `${c.points_balance || 0} points` : `${c.stamp_count || 0}/${program?.stamp_goal || 8} stamps`}</p>
-                        <p style={styles.lastStampedText}>{(c.membership_effective_status || c.membership_status) === 'lifetime' ? 'Lifetime membership' : c.membership_expires_at ? `Active until ${c.membership_expires_at}` : 'Membership not yet activated'}</p>
+                        <p style={styles.lastStampedText}>{(c.membership_effective_status || c.membership_status) === 'lifetime' ? 'Lifetime subscription' : c.membership_expires_at ? `Active until ${c.membership_expires_at}` : 'Subscription not yet activated'}</p>
                       </>
                     ) : isPointsCard ? (
                       <p style={styles.stampText}>💎 {c.points_balance || 0} points</p>
@@ -1884,7 +1884,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                       </>
                     ) : isVipCard ? (
                       <>
-                        <p style={{...styles.stampText,fontWeight:900,color:c.vip_tier?.color||'#ca8a04'}}>👑 {c.vip_tier?.name||'VIP'}</p>
+                        <p style={{...styles.stampText,fontWeight:900,color:c.vip_tier?.color||'#ca8a04'}}>👑 {c.vip_tier?.name||'Tier'}</p>
                         <p style={styles.lastStampedText}>{c.vip_points||0} VIP points{c.vip_next_tier?` · ${Math.max(0,c.vip_next_tier.threshold-(c.vip_points||0))} to ${c.vip_next_tier.name}`:' · Highest tier'}</p>
                       </>
                     ) : isMembershipCard ? (
@@ -1894,7 +1894,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                         </p>
                         <p style={styles.lastStampedText}>
                           {(c.membership_effective_status || c.membership_status) === 'lifetime'
-                            ? 'Lifetime membership'
+                            ? 'Lifetime subscription'
                             : c.membership_expires_at
                             ? `Active until ${c.membership_expires_at}`
                             : 'Not yet activated'}
@@ -2647,7 +2647,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 {isHybridCard ? (
                   <div style={styles.cardProgress}>
                     <p style={{fontSize:26,fontWeight:900,color:'white',margin:'8px 0 2px'}}>✨ {(selectedCustomer.membership_effective_status || selectedCustomer.membership_status || 'inactive').toUpperCase()}</p>
-                    <p style={{fontSize:12.5,color:'rgba(255,255,255,.85)',margin:'2px 0 10px'}}>{(selectedCustomer.membership_effective_status || selectedCustomer.membership_status) === 'lifetime' ? 'Lifetime membership' : selectedCustomer.membership_expires_at ? `Membership until ${selectedCustomer.membership_expires_at}` : 'Membership not yet activated'}</p>
+                    <p style={{fontSize:12.5,color:'rgba(255,255,255,.85)',margin:'2px 0 10px'}}>{(selectedCustomer.membership_effective_status || selectedCustomer.membership_status) === 'lifetime' ? 'Lifetime subscription' : selectedCustomer.membership_expires_at ? `Membership until ${selectedCustomer.membership_expires_at}` : 'Subscription not yet activated'}</p>
                     {hybridUsesPoints ? (
                       <>
                         <p style={{fontSize:32,fontWeight:800,color:'white',margin:'8px 0 0'}}>{selectedCustomer.points_balance || 0}</p>
@@ -2701,7 +2701,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     )}
                   </div>
                 ) : isVipCard ? (
-                  <div style={styles.cardProgress}><p style={{fontSize:30,fontWeight:900,color:'white',margin:'8px 0 2px'}}>👑 {selectedCustomer.vip_tier?.name||'VIP'}</p><p style={{fontSize:14,color:'white',fontWeight:800}}>VIP Points: {selectedCustomer.vip_points||0}</p>{selectedCustomer.vip_next_tier&&<p style={{fontSize:12,color:'rgba(255,255,255,.8)'}}>{Math.max(0,selectedCustomer.vip_next_tier.threshold-(selectedCustomer.vip_points||0))} points to {selectedCustomer.vip_next_tier.name}</p>}{(selectedCustomer.vip_tier?.benefits||[]).map((b,i)=><p key={i} style={{fontSize:12,color:'white',margin:'4px 0',textAlign:'left'}}>✓ {b}</p>)}</div>
+                  <div style={styles.cardProgress}><p style={{fontSize:30,fontWeight:900,color:'white',margin:'8px 0 2px'}}>👑 {selectedCustomer.vip_tier?.name||'Tier'}</p><p style={{fontSize:14,color:'white',fontWeight:800}}>Tier Points: {selectedCustomer.vip_points||0}</p>{selectedCustomer.vip_next_tier&&<p style={{fontSize:12,color:'rgba(255,255,255,.8)'}}>{Math.max(0,selectedCustomer.vip_next_tier.threshold-(selectedCustomer.vip_points||0))} points to {selectedCustomer.vip_next_tier.name}</p>}{(selectedCustomer.vip_tier?.benefits||[]).map((b,i)=><p key={i} style={{fontSize:12,color:'white',margin:'4px 0',textAlign:'left'}}>✓ {b}</p>)}</div>
                 ) : isMembershipCard ? (
                   <div style={styles.cardProgress}>
                     <p style={{
@@ -2720,10 +2720,10 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                       margin: '4px 0 0',
                     }}>
                       {(selectedCustomer.membership_effective_status || selectedCustomer.membership_status) === 'lifetime'
-                        ? 'Lifetime membership'
+                        ? 'Lifetime subscription'
                         : selectedCustomer.membership_expires_at
                         ? `Active until ${selectedCustomer.membership_expires_at}`
-                        : 'Membership not yet activated'}
+                        : 'Subscription not yet activated'}
                     </p>
 
                     {selectedCustomer.membership_start_date && (
@@ -2902,7 +2902,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:12, marginBottom:12}}>
                   <div>
                     <strong style={{fontSize:15,color:'#115e59'}}>
-                      {isHybridCard ? 'Hybrid membership & loyalty activity' : isMultipassCard ? 'Multi-Pass activity' : isMembershipCard ? 'Member visit analytics' : isPointsCard ? 'Points activity' : isVipCard ? 'VIP activity' : 'Loyalty activity'}
+                      {isHybridCard ? '2-in-1 subscription & loyalty activity' : isMultipassCard ? 'Multi-Pass activity' : isMembershipCard ? 'Member visit analytics' : isPointsCard ? 'Points activity' : isVipCard ? 'Tier activity' : 'Loyalty activity'}
                     </strong>
                     <div style={{fontSize:12,color:'#64748b',marginTop:3}}>
                       {isHybridCard
@@ -2956,9 +2956,9 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                         ? 'cancelled'
                         : 'issued'
                       const title = isHybridCard && item.hybrid_source === 'benefit'
-                        ? `🎁 ${item.benefit_name || 'Membership benefit'} redeemed`
+                        ? `🎁 ${item.benefit_name || 'Subscription benefit'} redeemed`
                         : isHybridCard && item.hybrid_source === 'membership'
-                        ? `🏋️ ${item.service_name || 'Membership visit'}`
+                        ? `🏋️ ${item.service_name || 'Subscription visit'}`
                         : isHybridCard && item.hybrid_source === 'loyalty' && hybridUsesPoints
                         ? item.activity_type === 'adjustment'
                           ? `${Number(item.points_delta || 0) >= 0 ? '+' : ''}${Number(item.points_delta || 0)} pts · Owner adjustment`
@@ -3137,7 +3137,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               {isHybridCard ? (
                 <>
                   <div style={{padding:12,border:'1px solid #99f6e4',background:'#f0fdfa',borderRadius:12,marginBottom:14}}>
-                    <strong style={{color:'#115e59'}}>✨ Hybrid Card</strong>
+                    <strong style={{color:'#115e59'}}>✨ 2-in-1 Loyalty Card</strong>
                     <div style={{fontSize:12,color:'#64748b',marginTop:3}}>Membership + {hybridLoyaltyType === 'points' ? 'Points' : 'Stamps'}</div>
                   </div>
                   {hybridUsesPoints ? (<>

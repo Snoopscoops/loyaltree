@@ -880,7 +880,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                   <td style={styles.td}>{b.staff_count}</td>
                   <td style={styles.td}>
                     <span style={cardTypeBadgeStyle(b.card_type)}>
-                      {b.card_type === 'points' ? '⭐ Points' : b.card_type === 'membership' ? '🪪 Membership' : b.card_type === 'vip' ? '👑 VIP' : b.card_type === 'multipass' ? '🎫 Multipass' : '🎟️ Stamp'}
+                      {b.card_type === 'points' ? '⭐ Points' : b.card_type === 'membership' ? '🪪 Subscription' : b.card_type === 'vip' ? '👑 Tier' : b.card_type === 'hybrid' ? '✨ 2-in-1' : b.card_type === 'multipass' ? '🎫 Multi-Pass' : '🎟️ Stamp'}
                     </span>
                   </td>
                   <td style={styles.td}><span style={{...styles.kitTableBadge,...kitStatusStyle(businessKitStatus(b))}}>{businessKitStatus(b)==='delivered'?'✓ ':''}{kitStatusLabel(businessKitStatus(b))}</span></td>

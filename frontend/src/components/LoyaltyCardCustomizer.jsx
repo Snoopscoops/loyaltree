@@ -12,7 +12,7 @@ const DESCRIPTION_LIMIT = 140
 // `program` used for the customer card preview modal.
 function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
   const [form, setForm] = useState({
-    card_type: 'stamp', // includes 'hybrid' = Membership + Points/Stamp on one card
+    card_type: 'stamp', // includes 'hybrid' = Subscription + Points/Stamp on one card
     hybrid_loyalty_type: 'points',
     subscription_enrollment_mode: 'manual',
     card_name: '',
@@ -319,12 +319,12 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
   }
 
   const benefitRuleLabel = (benefit) => {
-    if (benefit.usage_limit == null) return 'Unlimited while membership is active'
+    if (benefit.usage_limit == null) return 'Unlimited while subscription is active'
     const unit = benefit.reset_period === 'daily' ? 'day'
       : benefit.reset_period === 'weekly' ? 'week'
       : benefit.reset_period === 'monthly' ? 'month'
-      : benefit.reset_period === 'membership_cycle' ? 'membership cycle'
-      : 'membership'
+      : benefit.reset_period === 'membership_cycle' ? 'subscription cycle'
+      : 'subscription'
     return `${benefit.usage_limit} use${Number(benefit.usage_limit) === 1 ? '' : 's'} per ${unit}`
   }
 
@@ -354,7 +354,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
 
   const postConfig = async () => {
     if (form.card_type === 'hybrid' && !hybridAllowed) {
-      throw new Error('Hybrid Card is available on the Growth and Pro plans. Upgrade to Growth to continue.')
+      throw new Error('2-in-1 Loyalty Card is available on the Growth and Pro plans. Upgrade to Growth to continue.')
     }
     const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config`, {
       method: 'POST',
@@ -478,13 +478,13 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
   })()
 
   const guidedCardLabel = form.card_type === 'hybrid'
-    ? `Hybrid Card · ${effectiveLoyaltyType === 'points' ? 'Membership + Points' : 'Membership + Stamps'}`
+    ? `2-in-1 Loyalty Card · ${effectiveLoyaltyType === 'points' ? 'Subscription + Points' : 'Subscription + Stamps'}`
     : form.card_type === 'points'
     ? 'Points Card'
     : form.card_type === 'membership'
-    ? 'Membership Card'
+    ? 'Subscription Card'
     : form.card_type === 'vip'
-    ? 'VIP Card'
+    ? 'Tier Card'
     : form.card_type === 'multipass'
     ? 'Multi-Pass'
     : 'Stamp Card'
@@ -555,15 +555,15 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                 {[
                   ['stamp','🎟️','Stamp Card','Customers collect stamps and unlock rewards at milestones.'],
                   ['points','💎','Points Card','Customers earn points from spending and redeem them for prizes.'],
-                  ['membership','🏋️','Membership Card','For active memberships, subscriptions, access and benefits.'],
-                  ['hybrid','✨','Hybrid Card','Combine a membership/subscription with either Points or Stamps on one Wallet card.'],
-                  ['vip','👑','VIP Card','Customers build VIP status and automatically move through tiers.'],
+                  ['membership','🏋️','Subscription Card','For recurring subscriptions, access plans, and included benefits.'],
+                  ['hybrid','✨','2-in-1 Loyalty Card','Combine a subscription with either Points or Stamps on one Wallet card.'],
+                  ['vip','👑','Tier Card','Customers build tier progress and automatically move through reward levels.'],
                   ['multipass','🎫','Multi-Pass','Customers receive a fixed number of sessions or visits that count down.'],
                 ].map(([type,icon,label,desc])=>(
                   <button key={type} type="button"
                     onClick={()=>{
                       if(type==='hybrid' && !hybridAllowed){
-                        setGuidedError('Hybrid Card is available on the Growth and Pro plans. Upgrade to Growth to unlock it.')
+                        setGuidedError('2-in-1 Loyalty Card is available on the Growth and Pro plans. Upgrade to Growth to unlock it.')
                         return
                       }
                       setGuidedError('')
@@ -606,7 +606,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                 value={form.description} maxLength={DESCRIPTION_LIMIT}
                 onChange={e=>update('description',e.target.value)}
                 placeholder={hasMembership
-                  ? 'Membership benefits plus rewards every time customers visit.'
+                  ? 'Subscription benefits plus rewards every time customers visit.'
                   : form.card_type==='multipass'
                   ? 'Use your sessions whenever you visit.'
                   : 'Earn rewards every time you visit.'}/>
@@ -622,45 +622,45 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
 
               {isHybrid && (
                 <div style={{...styles.fieldGroup,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:12,padding:14,marginBottom:18}}>
-                  <label style={styles.label}>Loyalty side of this Hybrid Card</label>
+                  <label style={styles.label}>Reward side of this 2-in-1 Loyalty Card</label>
                   <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'1fr 1fr',gap:10}}>
                     <button type="button" onClick={()=>update('hybrid_loyalty_type','points')} style={{...styles.pickerCard,padding:14,...(effectiveLoyaltyType==='points'?{borderColor:'#0d9488',background:'#f0fdfa'}:{})}}>
-                      <span style={styles.pickerCardIcon}>💎</span><span style={styles.pickerCardLabel}>Membership + Points</span>
+                      <span style={styles.pickerCardIcon}>💎</span><span style={styles.pickerCardLabel}>Subscription + Points</span>
                     </button>
                     <button type="button" onClick={()=>update('hybrid_loyalty_type','stamp')} style={{...styles.pickerCard,padding:14,...(effectiveLoyaltyType==='stamp'?{borderColor:'#0d9488',background:'#f0fdfa'}:{})}}>
-                      <span style={styles.pickerCardIcon}>🎟️</span><span style={styles.pickerCardLabel}>Membership + Stamps</span>
+                      <span style={styles.pickerCardIcon}>🎟️</span><span style={styles.pickerCardLabel}>Subscription + Stamps</span>
                     </button>
                   </div>
-                  <p style={{...styles.hint,margin:'8px 0 0'}}>Customers keep one card. Membership status and the selected loyalty balance appear together.</p>
+                  <p style={{...styles.hint,margin:'8px 0 0'}}>Customers keep one card. Subscription status and the selected loyalty balance appear together.</p>
                 </div>
               )}
 
               {isHybrid && (
                 <div style={{...styles.pointsSection,border:'1px solid #99f6e4',background:'#f0fdfa',marginBottom:20}}>
-                  <div style={{...styles.wallet20Eyebrow,marginBottom:6}}>Membership / Subscription</div>
+                  <div style={{...styles.wallet20Eyebrow,marginBottom:6}}>Subscription</div>
                   <h3 style={{margin:'0 0 6px',fontSize:17,color:'#0f172a'}}>Set up the subscription side</h3>
-                  <p style={{...styles.hint,margin:'0 0 16px'}}>Hybrid keeps membership and {effectiveLoyaltyType === 'points' ? 'Points' : 'Stamps'} together on one customer card. Choose how customers receive subscription access, then define the benefits they can redeem.</p>
+                  <p style={{...styles.hint,margin:'0 0 16px'}}>The 2-in-1 Loyalty Card keeps subscription access and {effectiveLoyaltyType === 'points' ? 'Points' : 'Stamps'} together on one customer card. Choose how customers receive subscription access, then define the benefits they can redeem.</p>
 
                   <label style={styles.label}>How should customers become subscribers?</label>
                   <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'1fr 1fr',gap:10,marginBottom:14}}>
                     <button type="button" onClick={()=>update('subscription_enrollment_mode','automatic')} style={{...styles.pickerCard,padding:14,...(form.subscription_enrollment_mode==='automatic'?{borderColor:'#0d9488',background:'#fff'}:{})}}>
                       <span style={styles.pickerCardIcon}>⚡</span>
                       <span style={styles.pickerCardLabel}>Automatic Enrollment</span>
-                      <span style={styles.pickerCardDesc}>Everyone who joins immediately receives an active membership for the configured duration. Best for free or included memberships.</span>
+                      <span style={styles.pickerCardDesc}>Everyone who joins immediately receives active subscription access for the configured duration. Best for free or included subscriptions.</span>
                     </button>
                     <button type="button" onClick={()=>update('subscription_enrollment_mode','manual')} style={{...styles.pickerCard,padding:14,...(form.subscription_enrollment_mode!=='automatic'?{borderColor:'#0d9488',background:'#fff'}:{})}}>
                       <span style={styles.pickerCardIcon}>👤</span>
                       <span style={styles.pickerCardLabel}>Manual Enrollment</span>
-                      <span style={styles.pickerCardDesc}>Customers join the loyalty card first. You choose who receives subscription access. Recommended for paid memberships.</span>
+                      <span style={styles.pickerCardDesc}>Customers join the loyalty card first. You choose who receives subscription access. Recommended for paid subscriptions.</span>
                     </button>
                   </div>
                   {form.subscription_enrollment_mode==='automatic' && Number(form.membership_price||0)>0 && (
-                    <p style={{...styles.hint,color:'#b45309',fontWeight:700,margin:'0 0 14px'}}>Automatic enrollment activates membership before payment is verified. Use Manual for paid subscriptions unless access is intentionally included.</p>
+                    <p style={{...styles.hint,color:'#b45309',fontWeight:700,margin:'0 0 14px'}}>Automatic enrollment activates subscription access before payment is verified. Use Manual for paid subscriptions unless access is intentionally included.</p>
                   )}
 
                   <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'minmax(180px,1.4fr) 130px 140px',gap:10}}>
                     <div>
-                      <label style={styles.label}>Membership Name</label>
+                      <label style={styles.label}>Subscription Name</label>
                       <input style={{...styles.input,width:'100%',boxSizing:'border-box'}} value={form.membership_name} onChange={e=>update('membership_name',e.target.value)} placeholder="Coffee Club"/>
                     </div>
                     <div>
@@ -674,7 +674,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                   </div>
 
                   <div style={{marginTop:18}}>
-                    <label style={styles.label}>Redeemable Membership Benefits</label>
+                    <label style={styles.label}>Redeemable Subscription Benefits</label>
                     <p style={{...styles.hint,margin:'0 0 10px'}}>Examples: 1 free coffee per day, 1 free sandwich per week, or 10% off pastries. LoyaltyTree tracks each redemption and restores availability according to the reset rule.</p>
                     {(form.membership_benefits || []).map((b,i)=><div key={b.id||i} style={styles.prizeRow}>
                       <div style={{minWidth:0}}>
@@ -697,12 +697,12 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                         {['percentage_discount','fixed_discount'].includes(benefitDraft.benefit_type) && <input style={styles.input} type="number" min="0" max={benefitDraft.benefit_type==='percentage_discount'?100:undefined} step="any" placeholder={benefitDraft.benefit_type==='percentage_discount'?'Discount %':'₱ discount'} value={benefitDraft.value} onChange={e=>setBenefitDraft(d=>({...d,value:e.target.value}))}/>} 
                       </div>
                       <input style={styles.input} placeholder="Description (optional)" value={benefitDraft.description} onChange={e=>setBenefitDraft(d=>({...d,description:e.target.value}))}/>
-                      <label style={{display:'flex',gap:9,alignItems:'center',fontSize:13,fontWeight:700}}><input type="checkbox" checked={benefitDraft.unlimited} onChange={e=>setBenefitDraft(d=>({...d,unlimited:e.target.checked}))}/> Unlimited uses while membership is active</label>
+                      <label style={{display:'flex',gap:9,alignItems:'center',fontSize:13,fontWeight:700}}><input type="checkbox" checked={benefitDraft.unlimited} onChange={e=>setBenefitDraft(d=>({...d,unlimited:e.target.checked}))}/> Unlimited uses while subscription is active</label>
                       {!benefitDraft.unlimited && <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'110px auto minmax(150px,1fr)',gap:8,alignItems:'center'}}>
                         <input style={styles.input} type="number" min="1" value={benefitDraft.usage_limit} onChange={e=>setBenefitDraft(d=>({...d,usage_limit:e.target.value}))}/>
                         <span style={styles.earnRateText}>use(s) per</span>
                         <select style={styles.input} value={benefitDraft.reset_period} onChange={e=>setBenefitDraft(d=>({...d,reset_period:e.target.value}))}>
-                          <option value="daily">Day</option><option value="weekly">Week</option><option value="monthly">Month</option><option value="membership_cycle">Membership cycle</option><option value="never">Membership lifetime / never resets</option>
+                          <option value="daily">Day</option><option value="weekly">Week</option><option value="monthly">Month</option><option value="membership_cycle">Subscription cycle</option><option value="never">Subscription lifetime / never resets</option>
                         </select>
                       </div>}
                       {benefitError && <div style={styles.error}>{benefitError}</div>}
@@ -712,10 +712,10 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
 
                   <label style={{display:'flex',gap:10,alignItems:'flex-start',marginTop:18,padding:14,border:'1px solid #dbeafe',borderRadius:12,background:'#f8fafc',fontSize:13,fontWeight:700,lineHeight:1.45,cursor:'pointer'}}>
                     <input type="checkbox" checked={form.membership_visit_logging_enabled !== false} onChange={e=>update('membership_visit_logging_enabled',e.target.checked)} style={{marginTop:3}}/>
-                    <span><strong>Show “Log Membership Visit” in cashier</strong><span style={{display:'block',fontWeight:500,color:'#64748b',marginTop:4}}>Track general member visits/services from the cashier screen. Turn this off if you only need subscription status, benefits, and {effectiveLoyaltyType === 'points' ? 'Points' : 'Stamps'}.</span></span>
+                    <span><strong>Show “Log Subscriber Visit” in cashier</strong><span style={{display:'block',fontWeight:500,color:'#64748b',marginTop:4}}>Track general subscriber visits/services from the cashier screen. Turn this off if you only need subscription status, benefits, and {effectiveLoyaltyType === 'points' ? 'Points' : 'Stamps'}.</span></span>
                   </label>
 
-                  <label style={{...styles.label,marginTop:18}}>Membership Terms <span style={{fontWeight:500,color:'#94a3b8'}}>(optional)</span></label>
+                  <label style={{...styles.label,marginTop:18}}>Subscription Terms <span style={{fontWeight:500,color:'#94a3b8'}}>(optional)</span></label>
                   <textarea style={{...styles.textarea,width:'100%',boxSizing:'border-box'}} rows={3} value={form.membership_terms} onChange={e=>update('membership_terms',e.target.value)} placeholder="Renewal, usage, or subscription rules."/>
                 </div>
               )}
@@ -808,18 +808,18 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
               </>}
 
               {form.card_type==='membership' && <>
-                <label style={styles.label}>Default membership duration</label>
+                <label style={styles.label}>Default subscription duration</label>
                 <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
                   <input style={{...styles.input,width:guidedMobile?'100%':130}} type="number" min="1" max="3650" value={form.membership_duration_days} onChange={e=>update('membership_duration_days',e.target.value)}/>
                   <span>days</span>
                 </div>
-                <label style={{...styles.label,marginTop:14}}>Default membership price</label>
+                <label style={{...styles.label,marginTop:14}}>Default subscription price</label>
                 <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
                   <span>₱</span>
                   <input style={{...styles.input,width:guidedMobile?'100%':160}} type="number" min="0" step="any" value={form.membership_price} onChange={e=>update('membership_price',e.target.value)}/>
                 </div>
 
-                <label style={{...styles.label,marginTop:18}}>Member rewards / benefits</label>
+                <label style={{...styles.label,marginTop:18}}>Subscriber rewards / benefits</label>
                 <p style={{...styles.hint,margin:'0 0 10px'}}>Enter one included perk or reward per line.</p>
                 <textarea style={{...styles.textarea,width:'100%',boxSizing:'border-box'}} rows={guidedMobile?5:4}
                   value={(form.membership_services || []).join('\n')}
@@ -828,18 +828,18 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
               </>}
 
               {form.card_type==='vip' && <>
-                <label style={styles.label}>VIP earning rule</label>
+                <label style={styles.label}>Tier earning rule</label>
                 <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
                   <span>Earn</span>
                   <input style={{...styles.input,width:guidedMobile?'100%':95}} type="number" min="1" value={form.vip_points_per_amount} onChange={e=>update('vip_points_per_amount',e.target.value)}/>
-                  <span>VIP points for every ₱</span>
+                  <span>Tier points for every ₱</span>
                   <input style={{...styles.input,width:guidedMobile?'100%':110}} type="number" min="1" value={form.vip_amount_pesos} onChange={e=>update('vip_amount_pesos',e.target.value)}/>
                   <span>spent</span>
                 </div>
 
                 <div style={{marginTop:20}}>
-                  <label style={styles.label}>VIP tier rewards</label>
-                  <p style={{...styles.hint,margin:'0 0 12px'}}>Set what customers unlock when they reach each VIP tier.</p>
+                  <label style={styles.label}>Tier rewards</label>
+                  <p style={{...styles.hint,margin:'0 0 12px'}}>Set what customers unlock when they reach each tier.</p>
                   {(form.vip_tiers || []).map((tier,i)=>(
                     <div key={tier.id || i} style={{padding:'12px',marginBottom:10,border:'1px solid #e2e8f0',borderRadius:12,background:'#f8fafc'}}>
                       <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'1fr 130px 120px',gap:8}}>
@@ -860,7 +860,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                   ))}
                   <button type="button" style={{...styles.addPrizeBtn,width:guidedMobile?'100%':'auto'}}
                     onClick={()=>update('vip_tiers',[...(form.vip_tiers||[]),{id:Math.random().toString(16).slice(2,14),name:'New Tier',threshold:0,color:'#64748b',discount_percent:0,benefits:[],active:true}])}>
-                    + Add VIP Tier
+                    + Add Tier
                   </button>
                 </div>
               </>}
@@ -924,8 +924,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                 <div style={{padding:13,borderRadius:12,background:'#f8fafc'}}><b>Card name:</b> {form.card_name || `${businessName} Rewards`}</div>
                 <div style={{padding:13,borderRadius:12,background:'#f8fafc'}}><b>Description:</b> {form.description || '—'}</div>
                 {isHybrid && <>
-                  <div style={{padding:13,borderRadius:12,background:'#f8fafc'}}><b>Subscription:</b> {form.membership_name || 'Membership'} · ₱{Number(form.membership_price || 0).toLocaleString()} / {Number(form.membership_duration_days || 30)} days · {form.subscription_enrollment_mode === 'automatic' ? 'Automatic enrollment' : 'Manual enrollment'}</div>
-                  <div style={{padding:13,borderRadius:12,background:'#f8fafc'}}><b>Membership benefits:</b> {(form.membership_benefits || []).length ? (form.membership_benefits || []).map(b=>b.name).join(', ') : 'None added yet'}</div>
+                  <div style={{padding:13,borderRadius:12,background:'#f8fafc'}}><b>Subscription:</b> {form.membership_name || 'Subscription'} · ₱{Number(form.membership_price || 0).toLocaleString()} / {Number(form.membership_duration_days || 30)} days · {form.subscription_enrollment_mode === 'automatic' ? 'Automatic enrollment' : 'Manual enrollment'}</div>
+                  <div style={{padding:13,borderRadius:12,background:'#f8fafc'}}><b>Subscription benefits:</b> {(form.membership_benefits || []).length ? (form.membership_benefits || []).map(b=>b.name).join(', ') : 'None added yet'}</div>
                   <div style={{padding:13,borderRadius:12,background:'#f8fafc'}}><b>Loyalty:</b> {effectiveLoyaltyType === 'points' ? `${form.points_per_amount} point(s) per ₱${form.points_amount_pesos}` : `${form.stamp_goal} stamp final goal`}</div>
                 </>}
                 <div style={{padding:13,borderRadius:12,background:'#f8fafc',display:'flex',alignItems:'center',gap:9}}>
@@ -1006,7 +1006,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
             }}
           >
             <span style={styles.pickerCardIcon}>🏋️</span>
-            <span style={styles.pickerCardLabel}>Membership Card</span>
+            <span style={styles.pickerCardLabel}>Subscription Card</span>
             <span style={styles.pickerCardDesc}>For subscriptions and access-based businesses such as gyms, clubs, coworking spaces, clinics, and monthly service plans.</span>
             {form.card_type === 'membership' && <span style={styles.pickerCardBadge}>Selected</span>}
           </button>
@@ -1015,7 +1015,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
             type="button"
             onClick={() => {
               if (!hybridAllowed) {
-                setError('Hybrid Card is a Growth feature. Upgrade to Growth to unlock it.')
+                setError('2-in-1 Loyalty Card is a Growth feature. Upgrade to Growth to unlock it.')
                 return
               }
               update('card_type', 'hybrid')
@@ -1028,13 +1028,13 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
             }}
           >
             <span style={styles.pickerCardIcon}>✨</span>
-            <span style={styles.pickerCardLabel}>Hybrid Card</span>
-            <span style={styles.pickerCardDesc}>One Wallet card combining Membership / Subscription with Points or Stamps.</span>
+            <span style={styles.pickerCardLabel}>2-in-1 Loyalty Card</span>
+            <span style={styles.pickerCardDesc}>One Wallet card combining a Subscription with Points or Stamps.</span>
             {!hybridAllowed && <span style={styles.pickerCardBadge}>Growth</span>}
             {hybridAllowed && form.card_type === 'hybrid' && <span style={styles.pickerCardBadge}>Selected</span>}
           </button>
 
-          <button type="button" onClick={() => update('card_type','vip')} style={{...styles.pickerCard,...(form.card_type==='vip'?{borderColor:form.primary_color||'#0d9488',background:'#fefce8'}:{})}}><span style={styles.pickerCardIcon}>👑</span><span style={styles.pickerCardLabel}>VIP Card</span><span style={styles.pickerCardDesc}>Customers earn non-spendable VIP points, rise through tiers automatically, and unlock stronger benefits.</span>{form.card_type==='vip'&&<span style={styles.pickerCardBadge}>Selected</span>}</button>
+          <button type="button" onClick={() => update('card_type','vip')} style={{...styles.pickerCard,...(form.card_type==='vip'?{borderColor:form.primary_color||'#0d9488',background:'#fefce8'}:{})}}><span style={styles.pickerCardIcon}>👑</span><span style={styles.pickerCardLabel}>Tier Card</span><span style={styles.pickerCardDesc}>Customers earn non-spendable tier points, progress through levels automatically, and unlock stronger benefits.</span>{form.card_type==='vip'&&<span style={styles.pickerCardBadge}>Selected</span>}</button>
 
           <button
             type="button"
@@ -1053,12 +1053,12 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
 
         <button type="button" onClick={() => {
           if(form.card_type==='hybrid' && !hybridAllowed){
-            setError('Hybrid Card is a Growth feature. Upgrade to Growth to unlock it.')
+            setError('2-in-1 Loyalty Card is a Growth feature. Upgrade to Growth to unlock it.')
             return
           }
           setStep('form')
         }} style={styles.pickerContinueBtn}>
-          Continue with {form.card_type === 'hybrid' ? 'Hybrid Card' : form.card_type === 'points' ? 'Points Card' : form.card_type === 'membership' ? 'Membership Card' : form.card_type === 'vip' ? 'VIP Card' : form.card_type === 'multipass' ? 'Multi-Pass' : 'Stamp Card'} →
+          Continue with {form.card_type === 'hybrid' ? '2-in-1 Loyalty Card' : form.card_type === 'points' ? 'Points Card' : form.card_type === 'membership' ? 'Subscription Card' : form.card_type === 'vip' ? 'Tier Card' : form.card_type === 'multipass' ? 'Multi-Pass' : 'Stamp Card'} →
         </button>
       </div>
     )
@@ -1087,13 +1087,13 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
               <div style={{ ...styles.cardHeader, background: form.card_type === 'vip' ? ((form.vip_tiers||[]).find(t=>String(t.name||'').toLowerCase()==='gold')?.color || (form.vip_tiers||[])[0]?.color || '#111827') : (form.primary_color || '#0d9488') }}>
                 <span style={styles.cardHeaderTitle}>
                   {form.card_type === 'hybrid'
-                    ? `Membership + ${effectiveLoyaltyType === 'points' ? 'Points' : 'Stamps'}`
+                    ? `Subscription + ${effectiveLoyaltyType === 'points' ? 'Points' : 'Stamps'}`
                     : form.card_type === 'points'
                     ? 'Points Rewards'
                     : form.card_type === 'membership'
-                    ? 'Membership'
+                    ? 'Subscription'
                     : form.card_type === 'vip'
-                    ? 'VIP Status'
+                    ? 'Tier Status'
                     : form.card_type === 'multipass'
                     ? `${Number(form.multipass_session_count) || 12}-Session Pass`
                     : (form.reward_name || 'Free Service')}
@@ -1110,7 +1110,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                 {form.card_type === 'hybrid' ? (
                   <>
                     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:12}}>
-                      <div style={{...styles.previewPrizeRow,display:'block',textAlign:'center'}}><small style={{display:'block',color:'#64748b'}}>MEMBERSHIP</small><b style={{color:form.primary_color||'#0d9488'}}>ACTIVE</b></div>
+                      <div style={{...styles.previewPrizeRow,display:'block',textAlign:'center'}}><small style={{display:'block',color:'#64748b'}}>SUBSCRIPTION</small><b style={{color:form.primary_color||'#0d9488'}}>ACTIVE</b></div>
                       <div style={{...styles.previewPrizeRow,display:'block',textAlign:'center'}}><small style={{display:'block',color:'#64748b'}}>{effectiveLoyaltyType==='points'?'POINTS':'STAMPS'}</small><b style={{color:form.primary_color||'#0d9488'}}>{effectiveLoyaltyType==='points'?'240':`5 / ${stampGoal}`}</b></div>
                     </div>
                     <div style={styles.cardFoot}>
@@ -1168,7 +1168,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                 ) : form.card_type === 'vip' ? (
                   <>
                     <div style={styles.previewPointsBalance}><span style={{color:(form.vip_tiers||[]).find(t=>String(t.name||'').toLowerCase()==='gold')?.color || (form.vip_tiers||[])[0]?.color || '#111827'}}>GOLD VIP</span></div>
-                    <div style={styles.cardFoot}>3,450 VIP points · progressing automatically</div>
+                    <div style={styles.cardFoot}>3,450 Tier points · progressing automatically</div>
                     <div style={styles.previewPrizeList}>{(form.vip_tiers||[]).slice(0,4).map((t,i)=><div key={t.id||i} style={styles.previewPrizeRow}><span>{t.name}</span><span>{t.threshold} pts</span></div>)}</div>
                   </>
                 ) : form.card_type === 'multipass' ? (
@@ -1223,13 +1223,13 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
           {saved && <div style={styles.success}>✓ Card published successfully</div>}
           {form.card_type === 'hybrid' && !hybridAllowed && (
             <div style={{...styles.error,background:'#fffbeb',borderColor:'#fde68a',color:'#92400e'}}>
-              🔒 Hybrid Card is a Growth feature. Your existing customer cards remain usable, but editing or republishing is locked until this business upgrades to Growth.
+              🔒 2-in-1 Loyalty Card is a Growth feature. Your existing customer cards remain usable, but editing or republishing is locked until this business upgrades to Growth.
             </div>
           )}
 
           <div style={styles.typeSummary}>
             <span style={styles.typeSummaryText}>
-              {form.card_type === 'hybrid' ? `✨ Hybrid Card · Membership + ${effectiveLoyaltyType === 'points' ? 'Points' : 'Stamps'}` : form.card_type === 'points' ? '💎 Points Card' : form.card_type === 'membership' ? '🏋️ Membership Card' : form.card_type === 'vip' ? '👑 VIP Card' : form.card_type === 'multipass' ? '🎫 Multi-Pass' : '🎟️ Stamp Card'}
+              {form.card_type === 'hybrid' ? `✨ 2-in-1 Loyalty Card · Subscription + ${effectiveLoyaltyType === 'points' ? 'Points' : 'Stamps'}` : form.card_type === 'points' ? '💎 Points Card' : form.card_type === 'membership' ? '🏋️ Subscription Card' : form.card_type === 'vip' ? '👑 Tier Card' : form.card_type === 'multipass' ? '🎫 Multi-Pass' : '🎟️ Stamp Card'}
             </span>
             <button type="button" onClick={() => setStep('picker')} style={styles.typeChangeBtn}>
               Change card type
@@ -1253,7 +1253,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
               style={styles.textarea}
               placeholder={
                 hasMembership
-                  ? 'e.g. Monthly membership benefits plus loyalty rewards.'
+                  ? 'e.g. Monthly subscription benefits plus loyalty rewards.'
                   : 'e.g. Collect a stamp on every visit and get a free coffee on us!'
               }
               value={form.description}
@@ -1272,17 +1272,17 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
           {isHybrid && (
             <div style={{...styles.pointsSection,border:'1px solid #cbd5e1',background:'#f8fafc'}}>
               <div style={styles.fieldGroup}>
-                <label style={styles.label}>Hybrid loyalty type</label>
-                <p style={styles.hint}>Membership is always included. Choose the rewards balance customers will also see on the same card.</p>
+                <label style={styles.label}>2-in-1 reward type</label>
+                <p style={styles.hint}>Subscription access is always included. Choose the rewards balance customers will also see on the same card.</p>
                 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:10}}>
                   <button type="button" onClick={()=>update('hybrid_loyalty_type','points')} style={{...styles.pickerCard,padding:16,...(effectiveLoyaltyType==='points'?{borderColor:'#0d9488',background:'#f0fdfa'}:{})}}>
                     <span style={styles.pickerCardIcon}>💎</span>
-                    <span style={styles.pickerCardLabel}>Membership + Points</span>
+                    <span style={styles.pickerCardLabel}>Subscription + Points</span>
                     <span style={styles.pickerCardDesc}>Earn from spending and redeem configured prizes.</span>
                   </button>
                   <button type="button" onClick={()=>update('hybrid_loyalty_type','stamp')} style={{...styles.pickerCard,padding:16,...(effectiveLoyaltyType==='stamp'?{borderColor:'#0d9488',background:'#f0fdfa'}:{})}}>
                     <span style={styles.pickerCardIcon}>🎟️</span>
-                    <span style={styles.pickerCardLabel}>Membership + Stamps</span>
+                    <span style={styles.pickerCardLabel}>Subscription + Stamps</span>
                     <span style={styles.pickerCardDesc}>Track visit/purchase stamps beside subscription status.</span>
                   </button>
                 </div>
@@ -1292,28 +1292,28 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
 
           {isHybrid && (
             <div style={{...styles.pointsSection,border:'1px solid #99f6e4',background:'#f0fdfa'}}>
-              <div style={{...styles.wallet20Eyebrow,marginBottom:6}}>1 · Membership / Subscription</div>
+              <div style={{...styles.wallet20Eyebrow,marginBottom:6}}>1 · Subscription</div>
               <h3 style={{margin:'0 0 6px',fontSize:18,color:'#0f172a'}}>Set up the subscription side</h3>
-              <p style={{...styles.hint,margin:'0 0 18px'}}>Hybrid keeps this membership and the loyalty rewards below on one customer card. Membership benefits are recurring entitlements, separate from promotional coupons.</p>
+              <p style={{...styles.hint,margin:'0 0 18px'}}>The 2-in-1 Loyalty Card keeps the subscription and loyalty rewards below on one customer card. Subscription benefits are recurring entitlements, separate from promotional coupons.</p>
 
               <div style={styles.fieldGroup}>
                 <label style={styles.label}>How should customers become subscribers?</label>
                 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(210px,1fr))',gap:10}}>
                   <button type="button" onClick={()=>update('subscription_enrollment_mode','automatic')} style={{...styles.pickerCard,padding:15,...(form.subscription_enrollment_mode==='automatic'?{borderColor:'#0d9488',background:'#fff'}:{})}}>
                     <span style={styles.pickerCardIcon}>⚡</span><span style={styles.pickerCardLabel}>Automatic Enrollment</span>
-                    <span style={styles.pickerCardDesc}>Everyone who joins immediately receives an active membership for the configured duration. Best for free/included memberships.</span>
+                    <span style={styles.pickerCardDesc}>Everyone who joins immediately receives active subscription access for the configured duration. Best for free/included subscriptions.</span>
                   </button>
                   <button type="button" onClick={()=>update('subscription_enrollment_mode','manual')} style={{...styles.pickerCard,padding:15,...(form.subscription_enrollment_mode!=='automatic'?{borderColor:'#0d9488',background:'#fff'}:{})}}>
                     <span style={styles.pickerCardIcon}>👤</span><span style={styles.pickerCardLabel}>Manual Enrollment</span>
                     <span style={styles.pickerCardDesc}>Customers join the loyalty card first. You choose who gets subscription access. Recommended for paid plans.</span>
                   </button>
                 </div>
-                {form.subscription_enrollment_mode==='automatic' && Number(form.membership_price||0)>0 && <p style={{...styles.hint,color:'#b45309',fontWeight:700}}>Automatic enrollment will activate the membership even before payment is verified. Use Manual for paid subscriptions unless membership is intentionally included/free.</p>}
+                {form.subscription_enrollment_mode==='automatic' && Number(form.membership_price||0)>0 && <p style={{...styles.hint,color:'#b45309',fontWeight:700}}>Automatic enrollment will activate the subscription even before payment is verified. Use Manual for paid subscriptions unless access is intentionally included/free.</p>}
               </div>
 
               <div style={styles.row}>
                 <div style={{...styles.fieldGroup,flex:1}}>
-                  <label style={styles.label}>Membership Name</label>
+                  <label style={styles.label}>Subscription Name</label>
                   <input style={styles.input} value={form.membership_name} onChange={e=>update('membership_name',e.target.value)} placeholder="Coffee Club"/>
                 </div>
                 <div style={{...styles.fieldGroup,flex:1}}>
@@ -1347,12 +1347,12 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                     {['percentage_discount','fixed_discount'].includes(benefitDraft.benefit_type) && <input style={{...styles.input,width:150}} type="number" min="0" max={benefitDraft.benefit_type==='percentage_discount'?100:undefined} step="any" placeholder={benefitDraft.benefit_type==='percentage_discount'?'Discount %':'₱ discount'} value={benefitDraft.value} onChange={e=>setBenefitDraft(d=>({...d,value:e.target.value}))}/>} 
                   </div>
                   <input style={styles.input} placeholder="Description (optional)" value={benefitDraft.description} onChange={e=>setBenefitDraft(d=>({...d,description:e.target.value}))}/>
-                  <label style={{display:'flex',gap:9,alignItems:'center',fontSize:13,fontWeight:700}}><input type="checkbox" checked={benefitDraft.unlimited} onChange={e=>setBenefitDraft(d=>({...d,unlimited:e.target.checked}))}/> Unlimited uses while membership is active</label>
+                  <label style={{display:'flex',gap:9,alignItems:'center',fontSize:13,fontWeight:700}}><input type="checkbox" checked={benefitDraft.unlimited} onChange={e=>setBenefitDraft(d=>({...d,unlimited:e.target.checked}))}/> Unlimited uses while subscription is active</label>
                   {!benefitDraft.unlimited && <div style={styles.row}>
                     <input style={{...styles.input,width:120}} type="number" min="1" value={benefitDraft.usage_limit} onChange={e=>setBenefitDraft(d=>({...d,usage_limit:e.target.value}))}/>
                     <span style={styles.earnRateText}>use(s) per</span>
                     <select style={{...styles.input,flex:1}} value={benefitDraft.reset_period} onChange={e=>setBenefitDraft(d=>({...d,reset_period:e.target.value}))}>
-                      <option value="daily">Day</option><option value="weekly">Week</option><option value="monthly">Month</option><option value="membership_cycle">Membership cycle</option><option value="never">Membership lifetime / never resets</option>
+                      <option value="daily">Day</option><option value="weekly">Week</option><option value="monthly">Month</option><option value="membership_cycle">Subscription cycle</option><option value="never">Subscription lifetime / never resets</option>
                     </select>
                   </div>}
                   {benefitError && <div style={styles.error}>{benefitError}</div>}
@@ -1363,12 +1363,12 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
               <div style={styles.fieldGroup}>
                 <label style={{display:'flex',gap:10,alignItems:'flex-start',padding:14,border:'1px solid #dbeafe',borderRadius:12,background:'#f8fafc',fontSize:13,fontWeight:700,lineHeight:1.45,cursor:'pointer'}}>
                   <input type="checkbox" checked={form.membership_visit_logging_enabled !== false} onChange={e=>update('membership_visit_logging_enabled',e.target.checked)} style={{marginTop:3}}/>
-                  <span><strong>Show “Log Membership Visit” in cashier</strong><span style={{display:'block',fontWeight:500,color:'#64748b',marginTop:4}}>When disabled, cashiers still see membership status, redeemable benefits, and loyalty actions, but general visit/service logging is hidden.</span></span>
+                  <span><strong>Show “Log Subscriber Visit” in cashier</strong><span style={{display:'block',fontWeight:500,color:'#64748b',marginTop:4}}>When disabled, cashiers still see subscription status, redeemable benefits, and loyalty actions, but general visit/service logging is hidden.</span></span>
                 </label>
               </div>
 
               <div style={styles.fieldGroup}>
-                <label style={styles.label}>Membership terms</label>
+                <label style={styles.label}>Subscription terms</label>
                 <textarea style={styles.textarea} rows={4} value={form.membership_terms} onChange={e=>update('membership_terms',e.target.value)} placeholder="Optional renewal, usage, or subscription rules."/>
               </div>
             </div>
@@ -1436,7 +1436,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
             <div style={styles.pointsSection}>
               <div style={styles.row}>
                 <div style={{ ...styles.fieldGroup, flex: 1 }}>
-                  <label style={styles.label}>Default membership duration</label>
+                  <label style={styles.label}>Default subscription duration</label>
                   <div style={styles.colorRow}>
                     <input
                       style={styles.input}
@@ -1478,11 +1478,11 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                   )}
                   placeholder={'Unlimited gym access\nLocker use\nFree fitness assessment'}
                 />
-                <p style={styles.hint}>Enter one perk per line. These appear on the membership card and cashier screen.</p>
+                <p style={styles.hint}>Enter one perk per line. These appear on the Subscription Card and cashier screen.</p>
               </div>
 
               <div style={styles.fieldGroup}>
-                <label style={styles.label}>Membership terms</label>
+                <label style={styles.label}>Subscription terms</label>
                 <textarea
                   style={styles.textarea}
                   rows={4}
@@ -1495,7 +1495,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
           ) : form.card_type === 'vip' ? (
             <div style={styles.pointsSection}>
               <div style={styles.fieldGroup}>
-                <label style={styles.label}>VIP points earning rule</label>
+                <label style={styles.label}>Tier points earning rule</label>
                 <div style={styles.earnRateRow}>
                   <span style={styles.earnRateText}>Earn</span>
                   <input
@@ -1506,7 +1506,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                     value={form.vip_points_per_amount}
                     onChange={e => update('vip_points_per_amount', e.target.value)}
                   />
-                  <span style={styles.earnRateText}>VIP points for every ₱</span>
+                  <span style={styles.earnRateText}>Tier points for every ₱</span>
                   <input
                     style={styles.earnRateInput}
                     type="number"
@@ -1518,10 +1518,10 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                   <span style={styles.earnRateText}>spent</span>
                 </div>
                 <p style={styles.hint}>
-                  Cashiers enter the customer’s purchase amount. VIP points are calculated automatically and are used only for tier progression.
+                  Cashiers enter the customer’s purchase amount. Tier points are calculated automatically and are used only for tier progression.
                 </p>
               </div>
-              <div style={styles.fieldGroup}><label style={styles.label}>VIP tiers</label>{(form.vip_tiers||[]).map((tier,i)=><div key={tier.id||i} style={{...styles.prizeForm,marginBottom:10}}><div style={styles.row}><input style={{...styles.input,flex:1}} value={tier.name} onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,name:e.target.value}:t))} placeholder="Tier name"/><input style={{...styles.input,width:130}} type="number" min={0} value={tier.threshold} onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,threshold:Number(e.target.value)}:t))} placeholder="Points"/><input type="color" style={styles.colorSwatch} value={tier.color||'#64748b'} onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,color:e.target.value}:t))}/></div><div style={styles.row}><input style={{...styles.input,width:150}} type="number" min={0} max={100} value={tier.discount_percent||0} onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,discount_percent:Number(e.target.value)}:t))} placeholder="Discount %"/><textarea style={{...styles.textarea,flex:1}} rows={3} value={(tier.benefits||[]).join('\n')} onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,benefits:e.target.value.split('\n').filter(Boolean)}:t))} placeholder="One benefit per line"/><button type="button" onClick={()=>update('vip_tiers',form.vip_tiers.filter((_,j)=>j!==i))} style={styles.prizeRemoveBtn}>✕</button></div></div>)}<button type="button" style={styles.addPrizeBtn} onClick={()=>update('vip_tiers',[...(form.vip_tiers||[]),{id:Math.random().toString(16).slice(2),name:'New Tier',threshold:0,color:'#64748b',discount_percent:0,benefits:[],active:true}])}>+ Add Tier</button><p style={styles.hint}>Thresholds must increase from lowest to highest. VIP points are not spent.</p></div>
+              <div style={styles.fieldGroup}><label style={styles.label}>Tier levels</label>{(form.vip_tiers||[]).map((tier,i)=><div key={tier.id||i} style={{...styles.prizeForm,marginBottom:10}}><div style={styles.row}><input style={{...styles.input,flex:1}} value={tier.name} onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,name:e.target.value}:t))} placeholder="Tier name"/><input style={{...styles.input,width:130}} type="number" min={0} value={tier.threshold} onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,threshold:Number(e.target.value)}:t))} placeholder="Points"/><input type="color" style={styles.colorSwatch} value={tier.color||'#64748b'} onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,color:e.target.value}:t))}/></div><div style={styles.row}><input style={{...styles.input,width:150}} type="number" min={0} max={100} value={tier.discount_percent||0} onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,discount_percent:Number(e.target.value)}:t))} placeholder="Discount %"/><textarea style={{...styles.textarea,flex:1}} rows={3} value={(tier.benefits||[]).join('\n')} onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,benefits:e.target.value.split('\n').filter(Boolean)}:t))} placeholder="One benefit per line"/><button type="button" onClick={()=>update('vip_tiers',form.vip_tiers.filter((_,j)=>j!==i))} style={styles.prizeRemoveBtn}>✕</button></div></div>)}<button type="button" style={styles.addPrizeBtn} onClick={()=>update('vip_tiers',[...(form.vip_tiers||[]),{id:Math.random().toString(16).slice(2),name:'New Tier',threshold:0,color:'#64748b',discount_percent:0,benefits:[],active:true}])}>+ Add Tier</button><p style={styles.hint}>Thresholds must increase from lowest to highest. Tier points are not spent.</p></div>
             </div>
           ) : form.card_type === 'multipass' ? (
             <div style={styles.pointsSection}>
@@ -1714,14 +1714,14 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                 </div>
                 <p style={styles.hint}>
                   {effectiveLoyaltyType === 'stamp'
-                    ? (isHybrid ? 'At expiry, the Hybrid card’s stamp balance resets to 0. Membership expiry remains controlled by the membership subscription dates.' : 'At expiry, stamps reset to 0 and reward milestones become available again in the new cycle.')
+                    ? (isHybrid ? 'At expiry, the 2-in-1 Loyalty Card’s stamp balance resets to 0. Subscription expiry remains controlled by the subscription dates.' : 'At expiry, stamps reset to 0 and reward milestones become available again in the new cycle.')
                     : effectiveLoyaltyType === 'points'
-                    ? (isHybrid ? 'At expiry, the Hybrid card’s points balance resets to 0. Membership expiry remains controlled by the membership subscription dates.' : 'At expiry, the current points balance resets to 0. Purchase/redemption history is kept.')
+                    ? (isHybrid ? 'At expiry, the 2-in-1 Loyalty Card’s points balance resets to 0. Subscription expiry remains controlled by the subscription dates.' : 'At expiry, the current points balance resets to 0. Purchase/redemption history is kept.')
                     : form.card_type === 'vip'
-                    ? 'At expiry, VIP points reset to 0 and the member returns to the starting tier. VIP history is kept.'
+                    ? 'At expiry, tier points reset to 0 and the member returns to the starting tier. Tier history is kept.'
                     : form.card_type === 'multipass'
                     ? 'At expiry, the current multi-pass becomes unusable even if sessions remain. A new pass must be issued.'
-                    : 'At expiry, the membership becomes EXPIRED and must be renewed or reactivated.'}
+                    : 'At expiry, the subscription becomes EXPIRED and must be renewed or reactivated.'}
                 </p>
                 <p style={styles.hint}>Changing the number of days affects new/next cycles; it does not wipe current balances when you save.</p>
               </div>
@@ -1795,7 +1795,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
               </div>
             ) : (
               <div style={styles.vipColorNotice}>
-                <strong>VIP colors follow the member's tier.</strong><br/>
+                <strong>Tier Card colors follow the member's tier.</strong><br/>
                 Bronze, Silver, Gold and your custom tiers keep their own main colors. The accent color below gives every tier the same branded two-tone finish.
                 {walletPreset === 'gradient' && (
                   <div style={{...styles.colorRow,marginTop:10}}>
@@ -1856,7 +1856,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                 <div style={styles.wallet20PreviewInfo}>
                   <div><small>MEMBER</small><strong>John Customer</strong></div>
                   <div style={styles.wallet20PreviewMetric}>
-                    <small>{form.card_type==='hybrid'?(effectiveLoyaltyType==='points'?'POINTS':'STAMPS'):form.card_type==='points'?'POINTS':form.card_type==='multipass'?'SESSIONS LEFT':form.card_type==='membership'?'STATUS':form.card_type==='vip'?'VIP TIER':'STAMPS'}</small>
+                    <small>{form.card_type==='hybrid'?(effectiveLoyaltyType==='points'?'POINTS':'STAMPS'):form.card_type==='points'?'POINTS':form.card_type==='multipass'?'SESSIONS LEFT':form.card_type==='membership'?'STATUS':form.card_type==='vip'?'TIER':'STAMPS'}</small>
                     <strong>{form.card_type==='hybrid'?(effectiveLoyaltyType==='points'?'2,850':'5 / 8'):form.card_type==='points'?'2,850':form.card_type==='multipass'?'5 / 10':form.card_type==='membership'?'ACTIVE':form.card_type==='vip'?'GOLD':'5 / 8'}</strong>
                   </div>
                 </div>
@@ -1866,7 +1866,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
               </div>
               {isHybrid && (
                 <div style={{...styles.wallet20ResetPreview,marginBottom:8}}>
-                  <span>☕ MEMBERSHIP</span><strong>ACTIVE · {Number(form.membership_duration_days)||30} DAYS</strong>
+                  <span>☕ SUBSCRIPTION</span><strong>ACTIVE · {Number(form.membership_duration_days)||30} DAYS</strong>
                 </div>
               )}
               {previewResetDate && (
