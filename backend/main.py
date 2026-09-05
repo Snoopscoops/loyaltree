@@ -147,7 +147,7 @@ SUBSCRIPTION_PLANS = {
     'starter': {
         'label': 'Starter',
         'price_month': 350,
-        'price_tiers': {'1': 350, '2-3': 1000, '5': 1600},
+        'price_tiers': {'1': 350, '2': 700, '3': 1000, '5': 1600},
         'customer_limit': None,  # unlimited customers
         'google_wallet': True,
         'apple_wallet': True,
@@ -167,7 +167,7 @@ SUBSCRIPTION_PLANS = {
     'growth': {
         'label': 'Growth',
         'price_month': 550,
-        'price_tiers': {'1': 550, '2-3': 1600, '5': 2600},
+        'price_tiers': {'1': 550, '2': 1100, '3': 1600, '5': 2600},
         'customer_limit': None,  # unlimited customers
         'google_wallet': True,
         'apple_wallet': True,
@@ -185,7 +185,7 @@ SUBSCRIPTION_PLANS = {
     'pro': {
         'label': 'Pro',
         'price_month': 750,
-        'price_tiers': {'1': 750, '2-3': 2100, '5': 3600},
+        'price_tiers': {'1': 750, '2': 1500, '3': 2100, '5': 3600},
         'customer_limit': None,  # unlimited customers
         'google_wallet': True,
         'apple_wallet': True,
@@ -367,16 +367,22 @@ def release_announcement_quota(usage_key: Optional[str]) -> None:
         print(f"ANNOUNCEMENT QUOTA release error: {e}")
 
 SETUP_KIT_PRICE_PER_BRANCH = 150
+SUBSCRIPTION_QR_EXPIRES_SECONDS = 15 * 60
 
 
 def branch_price_bracket(branch_count: int) -> str:
-    """Maps an actual branch count to one of the pricing brackets shown on
-    the marketing page. Same bracket used regardless of which plan (feature
-    tier) is chosen - price scales with branch count independently of plan."""
+    """Maps an actual branch count to the correct subscription price tier.
+
+    Two branches stay on per-branch pricing (2 x the single-branch rate).
+    The 3-branch package activates only at exactly 3 branches. Existing
+    4-5 branch behavior continues to use the up-to-5-branches package.
+    """
     if branch_count <= 1:
         return '1'
-    if branch_count <= 3:
-        return '2-3'
+    if branch_count == 2:
+        return '2'
+    if branch_count == 3:
+        return '3'
     return '5'
 
 def get_price_for_plan(plan: Optional[str], branch_count: int) -> int:
@@ -10874,7 +10880,7 @@ async def create_subscription_checkout(public_id: str):
         "amount": price,
         "plan": plan,
         "plan_label": plan_label,
-        "expires_in_seconds": 600,  # PayMongo QR Ph codes expire ~10 minutes after generation
+        "expires_in_seconds": SUBSCRIPTION_QR_EXPIRES_SECONDS,  # LoyaltyTree payment window: 15 minutes
     }
 
 @app.get("/api/v1/business/{public_id}/subscription")

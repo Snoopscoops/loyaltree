@@ -3,12 +3,13 @@ import { useNavigate, Link } from 'react-router-dom'
 import SubscriptionPayment from './SubscriptionPayment'
 import logo128 from './logo-128.png'
 
-// Mirrors the backend's branch_price_bracket() - price scales with branch
-// count independently of which plan (feature tier) is chosen.
+// Mirrors the backend's branch_price_bracket(). Two branches stay on
+// per-branch pricing; the 3-branch package starts only at exactly 3 branches.
 function branchBracket(branchCount) {
   const n = Number(branchCount) || 1
   if (n <= 1) return '1'
-  if (n <= 3) return '2-3'
+  if (n === 2) return '2'
+  if (n === 3) return '3'
   return '5'
 }
 
