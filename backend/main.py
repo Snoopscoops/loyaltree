@@ -2958,41 +2958,23 @@ def build_loyalty_class(
     background_color_override: Optional[str] = None,
     vip_tier_name: Optional[str] = None,
 ) -> dict:
+    """Build the shared Google Wallet class with only brand-level data.
+
+    Customer-specific details belong on the LoyaltyObject. Keeping class-level
+    text modules empty prevents every pass from showing duplicate CARD /
+    BUSINESS TYPE / BENEFIT / ABOUT blocks in Google Wallet Details.
+    """
     biz_public_id = business.get('public_id', '')
     class_id = class_id_override or _google_wallet_base_class_id(business, program)
 
     design = wallet_20_design(business, program)
     biz_name = business.get('name', 'Loyalty')
-    card_title = str(
-        (program or {}).get('card_name')
-        or design['card_label']
-        or f'{biz_name} Rewards'
-    ).strip()
-    category = design['category']
     primary_color = background_color_override or design['background']
-    reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
     card_type = program.get('card_type', 'stamp') if program else 'stamp'
-    loyalty_type = effective_loyalty_type(program)
-    card_name = program.get('card_name') if program else None
-    description = program.get('description') if program else None
     program_name = wallet_20_program_name(business, program)
 
-    if card_type == 'hybrid':
-        services = (program.get('membership_services') if program else None) or []
-        membership_name = ((program.get('membership_name') if program else None) or (services[0] if services else 'Membership'))
-        reward_module_body = f"{membership_name} + {'Points rewards' if loyalty_type == 'points' else 'Stamp rewards'}"
-    elif card_type == 'multipass':
-        session_count = program.get('multipass_session_count', 12) if program else 12
-        reward_module_body = f'{session_count}-session pass'
-    elif card_type == 'membership':
-        services = (program.get('membership_services') if program else None) or []
-        reward_module_body = ', '.join(services) if services else 'Membership'
-    elif card_type == 'vip':
-        reward_module_body = f'{vip_tier_name or "VIP"} tier'
-        if vip_tier_name:
-            program_name = f'{program_name} · {vip_tier_name}'
-    else:
-        reward_module_body = reward_name
+    if card_type == 'vip' and vip_tier_name:
+        program_name = f'{program_name} · {vip_tier_name}'
 
     loyalty_class = {
         'id': class_id,
@@ -3000,13 +2982,16 @@ def build_loyalty_class(
         'programName': program_name,
         'reviewStatus': review_status,
         'hexBackgroundColor': primary_color if primary_color.startswith('#') else f'#{primary_color}',
-        'textModulesData': [
-            {'header': 'CARD', 'body': card_title},
-            {'header': 'BUSINESS TYPE', 'body': f"{category['icon']} {category['label']}"},
-            {'header': 'BENEFIT / REWARD', 'body': reward_module_body},
-            {'header': 'ABOUT', 'body': description if description else f"{biz_name} digital loyalty card powered by LoyaltyTree"}
-        ],
+        # Native Google field label. accountId is intentionally omitted from
+        # objects so the long internal member UUID never appears as MEMBER ID.
+        'accountNameLabel': 'MEMBER',
     }
+
+    # VIP already uses one class per tier, so use Google's native tier field
+    # instead of another custom text module.
+    if card_type == 'vip':
+        loyalty_class['rewardsTierLabel'] = 'VIP TIER'
+        loyalty_class['rewardsTier'] = vip_tier_name or 'VIP'
 
     logo_url = business.get('logo_url')
     if not logo_url and program:
@@ -3041,7 +3026,14 @@ def build_loyalty_class(
 
     return loyalty_class
 
+
 def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
+    """Build a clean, customer-facing Google Wallet loyalty object.
+
+    Google Wallet's default loyalty template already renders accountName and
+    loyaltyPoints. We therefore keep custom text modules intentionally small:
+    only information that helps the customer use the card is shown.
+    """
     cust_public_id = customer.get('public_id', '')
     class_id = google_wallet_class_id_for_customer(customer, business, program or {})
     object_id = f'{GOOGLE_WALLET_ISSUER_ID}.{cust_public_id}'
@@ -3049,12 +3041,9 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     loyalty_type = effective_loyalty_type(program)
     stamp_goal = program.get('stamp_goal', 8) if program else 8
     reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
-    stamps = customer.get('stamp_count', 0)
-    points_balance = customer.get('points_balance', 0)
+    stamps = int(customer.get('stamp_count', 0) or 0)
+    points_balance = int(customer.get('points_balance', 0) or 0)
 
-    # Points-card front layout: identify the nearest configured prize at or
-    # above the member's current balance so Apple Wallet can show a clean
-    # "NEXT REWARD" summary above the full-width banner.
     points_prizes = []
     if loyalty_type == 'points':
         for prize in ((program or {}).get('points_prizes') or []):
@@ -3071,15 +3060,11 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
 
     next_points_prize = None
     if points_prizes:
-        current_points = int(points_balance or 0)
         next_points_prize = next(
-            (p for p in points_prizes if p['points_cost'] >= current_points),
+            (p for p in points_prizes if p['points_cost'] >= points_balance),
             points_prizes[-1],
         )
 
-    # Shared "reference-style" Apple Wallet front layout for every LoyaltyTree
-    # card type: main status/reward above the full-width banner, then two
-    # important customer fields below it, with the barcode at the bottom.
     stamp_rewards = []
     if loyalty_type == 'stamp':
         for reward in ((program or {}).get('stamp_rewards') or []):
@@ -3100,40 +3085,57 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
 
     next_stamp_reward = None
     if stamp_rewards:
-        current_stamps = int(stamps or 0)
         next_stamp_reward = next(
-            (r for r in stamp_rewards if r['stamps'] >= current_stamps),
+            (r for r in stamp_rewards if r['stamps'] >= stamps),
             stamp_rewards[-1],
         )
 
-    # The visible stamp progress always uses the FULL/final goal.
-    # Example: milestones at 4 / 8 / 10 show 0/10, while NEXT REWARD can
-    # still point to the 4-stamp milestone.
     configured_stamp_goals = [int(stamp_goal or 0)]
     configured_stamp_goals += [int(r.get('stamps') or 0) for r in stamp_rewards]
     full_stamp_goal = max([g for g in configured_stamp_goals if g > 0] or [8])
 
-    sessions_remaining = customer.get('multipass_sessions_remaining', 0) or 0
-    sessions_total = customer.get('multipass_total_sessions', 0) or (program.get('multipass_session_count', 12) if program else 12)
+    sessions_remaining = int(customer.get('multipass_sessions_remaining', 0) or 0)
+    sessions_total = int(
+        customer.get('multipass_total_sessions', 0)
+        or (program.get('multipass_session_count', 12) if program else 12)
+        or 0
+    )
     cust_name = customer.get('name', 'Member')
-    biz_name = business.get('name', '')
     design = wallet_20_design(business, program)
-    card_title = str((program or {}).get('card_name') or f'{biz_name} Rewards').strip()
-    category = design['category']
     membership_summary = (
         get_membership_summary(business.get('id'), customer.get('id'))
         if program_has_membership(program) else None
     )
-
-    details = []  # [(header, body), ...] - mirrors WalletPass.jsx's `view.details`
     card_cycle_reset_on = card_cycle_reset_on_date(customer, program)
 
+    def _fmt_number(value):
+        try:
+            number = float(value)
+            return str(int(number)) if number.is_integer() else f'{number:g}'
+        except (TypeError, ValueError):
+            return str(value or '0')
+
+    def _points_earning_rule():
+        earned = float((program or {}).get('points_per_amount') or 0)
+        pesos = float((program or {}).get('points_amount_pesos') or 0)
+        if earned <= 0 or pesos <= 0:
+            return 'Ask in-store how to earn points'
+        point_word = 'point' if earned == 1 else 'points'
+        return f'₱{_fmt_number(pesos)} = {_fmt_number(earned)} {point_word}'
+
+    def _vip_earning_rule():
+        earned = float((program or {}).get('vip_points_per_amount') or 0)
+        pesos = float((program or {}).get('vip_amount_pesos') or 0)
+        if earned <= 0 or pesos <= 0:
+            return 'Ask in-store how to earn VIP points'
+        point_word = 'point' if earned == 1 else 'points'
+        return f'₱{_fmt_number(pesos)} = {_fmt_number(earned)} VIP {point_word}'
+
     def _points_next_reward_value():
-        current_points = int(points_balance or 0)
         if next_points_prize:
             prize_cost = int(next_points_prize.get('points_cost') or 0)
             prize_name = str(next_points_prize.get('name') or 'Reward')
-            points_to_go = max(prize_cost - current_points, 0)
+            points_to_go = max(prize_cost - points_balance, 0)
             return (
                 f'{prize_name} · Ready to redeem'
                 if points_to_go == 0 else
@@ -3142,72 +3144,95 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         return 'Ask in-store for rewards'
 
     def _stamp_next_reward_value():
-        current_stamps = int(stamps or 0)
         if next_stamp_reward:
             required = int(next_stamp_reward.get('stamps') or full_stamp_goal)
             name = str(next_stamp_reward.get('reward_name') or reward_name)
-            remaining = max(required - current_stamps, 0)
+            remaining = max(required - stamps, 0)
             return f'{name} · Ready to redeem' if remaining == 0 else f'{name} · {remaining} stamps to go'
-        remaining = max(full_stamp_goal - current_stamps, 0)
+        remaining = max(full_stamp_goal - stamps, 0)
         return reward_name if remaining == 0 else f'{reward_name} · {remaining} stamps to go'
+
+    # Each tuple is (stable id, customer-facing label, value). Google shows
+    # these after its native member/balance fields, in the order supplied.
+    details = []
+    secondary_points = None
 
     if card_type == 'hybrid':
         status = membership_effective_status(customer)
         expiry = customer.get('membership_expires_at')
         services = (program.get('membership_services') if program else None) or []
         if loyalty_type == 'points':
-            loyalty_points_label = 'Points'
-            loyalty_points_balance = str(int(points_balance or 0))
+            loyalty_points_label = 'POINTS'
+            loyalty_points_balance = str(points_balance)
             next_reward_value = _points_next_reward_value()
         else:
-            loyalty_points_label = 'Stamps'
-            loyalty_points_balance = f'{int(stamps or 0)}/{int(full_stamp_goal)}'
+            loyalty_points_label = 'STAMPS'
+            loyalty_points_balance = f'{stamps}/{full_stamp_goal}'
             next_reward_value = _stamp_next_reward_value()
-        details.append((((program.get('membership_name') if program else None) or 'MEMBERSHIP').upper(), status.upper()))
-        details.append(('ACTIVE UNTIL', 'Lifetime' if status == 'lifetime' else (expiry or 'Not activated')))
-        details.append(('NEXT REWARD', next_reward_value))
-        details.append(('NEXT BENEFIT', services[0] if services else 'Membership perks'))
+        secondary_points = {
+            'label': 'STATUS',
+            'balance': {'string': status.upper()},
+        }
+        details.append(('next_reward', 'NEXT REWARD', next_reward_value))
+        details.append(('active_until', 'ACTIVE UNTIL', 'Lifetime' if status == 'lifetime' else (expiry or 'Not activated')))
+        if services:
+            details.append(('benefit', 'BENEFIT', str(services[0])))
+
     elif card_type == 'points':
-        loyalty_points_label = 'Points'
-        loyalty_points_balance = str(int(points_balance or 0))
-        details.append(('NEXT REWARD', _points_next_reward_value()))
+        loyalty_points_label = 'POINTS'
+        loyalty_points_balance = str(points_balance)
+        details.append(('next_reward', 'NEXT REWARD', _points_next_reward_value()))
+        details.append(('how_to_earn', 'HOW TO EARN', _points_earning_rule()))
         if card_cycle_reset_on:
-            details.append(('RESET ON', card_cycle_reset_on))
+            details.append(('reset_on', 'RESET ON', card_cycle_reset_on))
+
     elif card_type == 'multipass':
-        loyalty_points_label = 'Sessions'
+        loyalty_points_label = 'SESSIONS'
         loyalty_points_balance = f'{sessions_remaining}/{sessions_total}'
-        multipass_expires_at = customer.get('multipass_expires_at')
-        details.append(('VALID UNTIL', multipass_expires_at or 'No expiry set'))
+        details.append(('valid_until', 'VALID UNTIL', customer.get('multipass_expires_at') or 'No expiry set'))
+
     elif card_type == 'vip':
-        tier = get_vip_tier(customer, program or {})
+        vip_points = int(customer.get('vip_points') or 0)
         next_tier = get_next_vip_tier(customer, program or {})
-        loyalty_points_label = 'VIP Points'
-        loyalty_points_balance = str(int(customer.get('vip_points') or 0))
-        details.append(('NEXT TIER', next_tier.get('name') if next_tier else 'Top tier'))
+        loyalty_points_label = 'VIP PTS'
+        loyalty_points_balance = vip_points
+        if next_tier:
+            threshold = int(next_tier.get('threshold') or 0)
+            points_to_go = max(threshold - vip_points, 0)
+            next_tier_value = (
+                f"{next_tier.get('name') or 'Next tier'} · {points_to_go} points to go"
+                if points_to_go > 0 else
+                str(next_tier.get('name') or 'Next tier')
+            )
+        else:
+            next_tier_value = 'Top tier'
+        details.append(('next_tier', 'NEXT TIER', next_tier_value))
+        details.append(('how_to_earn', 'HOW TO EARN', _vip_earning_rule()))
         if card_cycle_reset_on:
-            details.append(('RESET ON', card_cycle_reset_on))
+            details.append(('reset_on', 'RESET ON', card_cycle_reset_on))
+
     elif card_type == 'membership':
         status = membership_effective_status(customer)
         expiry = customer.get('membership_expires_at')
-        loyalty_points_label = 'Status'
-        loyalty_points_balance = status.upper()
         services = (program.get('membership_services') if program else None) or []
-        details.append(('ACTIVE UNTIL', 'Lifetime' if status == 'lifetime' else (expiry or 'Not activated')))
-        details.append(('MEMBER SINCE', customer.get('membership_start_date') or '—'))
-        details.append(('MEMBERSHIP TYPE', (program.get('membership_name') if program else None) or (program.get('card_name') if program else None) or design['card_label']))
-        details.append(('NEXT BENEFIT', services[0] if services else 'Rewards'))
+        loyalty_points_label = 'STATUS'
+        loyalty_points_balance = status.upper()
+        details.append(('active_until', 'ACTIVE UNTIL', 'Lifetime' if status == 'lifetime' else (expiry or 'Not activated')))
+        if customer.get('membership_start_date'):
+            details.append(('member_since', 'MEMBER SINCE', customer.get('membership_start_date')))
+        if services:
+            details.append(('benefit', 'BENEFIT', str(services[0])))
+
     else:
-        loyalty_points_label = 'Stamps'
+        loyalty_points_label = 'STAMPS'
         loyalty_points_balance = f'{stamps}/{full_stamp_goal}'
-        details.append(('NEXT REWARD', _stamp_next_reward_value()))
+        details.append(('next_reward', 'NEXT REWARD', _stamp_next_reward_value()))
+        how_to_earn = '1 stamp per qualifying visit'
+        if bool((program or {}).get('stamp_once_per_day')):
+            how_to_earn += ' · max 1/day'
+        details.append(('how_to_earn', 'HOW TO EARN', how_to_earn))
         if card_cycle_reset_on:
-            details.append(('RESET ON', card_cycle_reset_on))
-    description = program.get('description') if program else None
-    if len(details) < 4 and description:
-        details.append(('ABOUT', description))
-    if len(details) < 4:
-        details.append(('BUSINESS', f"{category['icon']} {biz_name} · {category['label']}"))
-    details = details[:4]
+            details.append(('reset_on', 'RESET ON', card_cycle_reset_on))
 
     order_ahead_action = order_ahead_wallet_action(customer, business)
 
@@ -3218,36 +3243,30 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         'barcode': {
             'type': 'QR_CODE',
             'value': f'{BASE_URL}/stamp/{cust_public_id}',
-            'alternateText': cust_name
+            'alternateText': cust_name,
         },
-        'accountId': cust_public_id,
+        # accountName is customer-facing. accountId is intentionally NOT sent:
+        # Google otherwise renders the internal UUID as a MEMBER ID block.
         'accountName': cust_name,
         'loyaltyPoints': {
             'label': loyalty_points_label,
             'balance': (
-                {'int': int(customer.get('vip_points') or 0)}
+                {'int': int(loyalty_points_balance)}
                 if card_type == 'vip'
-                else {'string': loyalty_points_balance}
-            )
+                else {'string': str(loyalty_points_balance)}
+            ),
         },
-        # Google Loyalty passes support a second front-of-card balance. For
-        # Hybrid this keeps loyalty progress on the left and membership status
-        # at the same visual level on the right.
-        **({
-            'secondaryLoyaltyPoints': {
-                'label': 'Member',
-                'balance': {'string': membership_effective_status(customer).upper()},
-            }
-        } if card_type == 'hybrid' else {}),
+        **({'secondaryLoyaltyPoints': secondary_points} if secondary_points else {}),
         'textModulesData': [
-            {'header': card_title, 'body': cust_name},
-            *[{'header': header, 'body': str(body)} for header, body in details],
+            {'id': module_id, 'header': header, 'body': str(body)}
+            for module_id, header, body in details
+            if body not in (None, '')
         ],
         'linksModuleData': {
             'uris': [
                 *([{'uri': order_ahead_action['url'], 'description': f"🛍️ {order_ahead_action['label']}"}] if order_ahead_action else []),
                 {'uri': f'{BASE_URL}/feedback/{cust_public_id}', 'description': '⭐ Rate Your Experience'},
-                {'uri': f'{BASE_URL}/wallet/{cust_public_id}', 'description': 'Open full LoyaltyTree card'}
+                {'uri': f'{BASE_URL}/wallet/{cust_public_id}', 'description': 'View Rewards / Account'},
             ]
         },
         **({
@@ -3271,17 +3290,15 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     }
 
     # Object-level heroImage overrides the class-level one for just this
-    # customer - used to burn their live reward/progress/description onto
-    # the gradient banner. Skipped when the business uploaded their own
-    # hero photo, since baking text onto someone else's image would look
-    # wrong; that photo is left to show as-is (inherited from the class).
+    # customer - used to burn live progress onto the generated gradient.
+    # When the business uploads a custom hero photo, keep that photo clean and
+    # inherit it from the class instead.
     if design['show_background'] and not (program and program.get('hero_image_url')):
         primary_color = (
             get_vip_tier(customer, program or {}).get('color') or '#111827'
             if card_type == 'vip'
             else design['background']
         )
-        description = program.get('description') if program else None
         color_key = primary_color.lstrip('#')
         if loyalty_type == 'points':
             progress_key = points_balance
@@ -3298,7 +3315,6 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
             f'?s={progress_key}&g={stamp_goal}&c={color_key}'
         )
         loyalty_object['heroImage'] = {'sourceUri': {'uri': hero_url}}
-
 
     contactless_token = contactless_member_token(cust_public_id)
     nfc_trial_active = bool(program_has_membership(program) and program and program.get('nfc_trial_enabled'))
@@ -3444,6 +3460,59 @@ async def republish_wallet_class_and_refresh(business: dict, program: dict):
             print(f"WALLET SYNC: class PUT error: {e}")
     await refresh_existing_member_wallets(business, program)
 
+_GOOGLE_WALLET_ROUTINE_MESSAGE_PREFIXES = (
+    'points-',
+    'points-redeem-',
+    'vip-',
+    'multipass-',
+    'membership-benefit-',
+    'membership-action-',
+    'membership-visit-',
+    'stamp-adjust-',
+    'reward-redeem-',
+)
+_GOOGLE_WALLET_ROUTINE_MESSAGE_HEADERS = {
+    'points added ⭐',
+    'vip status updated',
+    'stamp balance corrected',
+    'prize redeemed 🎁',
+    'new pass activated 🎟️',
+    'session used ✅',
+    'pass complete 🎉',
+    'membership benefit used',
+    'membership updated',
+    'membership visit recorded',
+    'reward redeemed 🎁',
+}
+
+
+def _google_wallet_preserved_messages(messages) -> list:
+    """Keep real announcements, but remove old transaction-generated messages.
+
+    Google TEXT_AND_NOTIFY messages stay visible in Pass Details. Routine loyalty
+    movements now use native field-update notifications instead, so legacy
+    transaction messages are stripped on the next object refresh.
+    """
+    cleaned = []
+    for message in (messages or []):
+        if not isinstance(message, dict):
+            continue
+        message_id = str(message.get('id') or '').lower()
+        header = str(message.get('header') or '').strip().lower()
+        if any(message_id.startswith(prefix) for prefix in _GOOGLE_WALLET_ROUTINE_MESSAGE_PREFIXES):
+            continue
+        if header in _GOOGLE_WALLET_ROUTINE_MESSAGE_HEADERS:
+            continue
+        normalized = {
+            key: message.get(key)
+            for key in ('header', 'body', 'id', 'messageType', 'localizedHeader', 'localizedBody', 'displayInterval')
+            if message.get(key) is not None
+        }
+        if normalized:
+            cleaned.append(normalized)
+    return cleaned[-10:]
+
+
 def sync_wallet_object(customer: dict, business: dict, program: dict,
                         notify_header: str = None, notify_body: str = None,
                         notify_message_id: str = None):
@@ -3490,7 +3559,9 @@ def sync_wallet_object(customer: dict, business: dict, program: dict,
             member_patch = {
                 'loyaltyPoints': desired.get('loyaltyPoints'),
                 'secondaryLoyaltyPoints': desired.get('secondaryLoyaltyPoints'),
-                'accountId': desired.get('accountId'),
+                # Clear legacy accountId so Google Wallet no longer renders the
+                # internal UUID as a customer-facing MEMBER ID block.
+                'accountId': None,
                 'accountName': desired.get('accountName'),
                 'barcode': desired.get('barcode'),
                 'textModulesData': desired.get('textModulesData'),
@@ -3499,8 +3570,14 @@ def sync_wallet_object(customer: dict, business: dict, program: dict,
                 # super admin turns Order Ahead off.
                 'appLinkData': desired.get('appLinkData'),
                 'state': desired.get('state', 'active'),
+                # Native field updates can notify without leaving a permanent
+                # transaction Message in Google Wallet Details.
                 'notifyPreference': 'NOTIFY_ON_UPDATE',
             }
+            current_messages = current.get('messages') or []
+            preserved_messages = _google_wallet_preserved_messages(current_messages)
+            if preserved_messages != current_messages:
+                member_patch['messages'] = preserved_messages
             # Keep object-level hero artwork in sync with the desired object.
             # Important: Google Wallet PATCH leaves omitted fields unchanged.
             # When a business uploads a custom hero image, build_loyalty_object()
@@ -3541,6 +3618,8 @@ def sync_wallet_object(customer: dict, business: dict, program: dict,
                 print(f"WALLET SYNC: member PATCH failed {resp.status_code} - {detail}")
                 return {"status": "error", "stage": "patch", "http_status": resp.status_code, "detail": detail}
 
+            if preserved_messages:
+                desired['messages'] = preserved_messages
             resp = client.put(
                 f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyObject/{object_id}',
                 headers=headers,
@@ -15058,13 +15137,26 @@ def sync_loyalty_wallets_background(
     program_snapshot = dict(program or {})
 
     try:
+        # Routine loyalty movements should not use Google's TEXT_AND_NOTIFY
+        # addMessage flow because those messages remain visible in Pass Details.
+        # The object PATCH already sets NOTIFY_ON_UPDATE, so supported balance /
+        # status changes can still notify without creating another permanent row.
+        routine_google_update_reasons = {
+            'stamp_add', 'stamp_reward', 'stamp_adjust', 'stamp_reward_redeem',
+            'points_sale', 'points_redeem', 'vip_sale', 'vip_adjust',
+            'multipass_issue', 'multipass_use',
+            'membership_benefit_redeemed', 'membership_action', 'membership_visit',
+        }
+        use_custom_google_message = bool(
+            notify_header and notify_message_id and reason not in routine_google_update_reasons
+        )
         google_result = sync_wallet_object(
             customer_snapshot,
             business_snapshot,
             program_snapshot,
-            notify_header=notify_header,
-            notify_body=notify_body,
-            notify_message_id=notify_message_id,
+            notify_header=notify_header if use_custom_google_message else None,
+            notify_body=notify_body if use_custom_google_message else None,
+            notify_message_id=notify_message_id if use_custom_google_message else None,
         )
         apple_result = sync_apple_wallet_pass(customer_snapshot)
 
