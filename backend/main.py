@@ -1757,6 +1757,13 @@ class OrderAheadPickupDayInput(BaseModel):
 
 class OrderAheadBranchPickupHoursUpdate(BaseModel):
     days: list[OrderAheadPickupDayInput] = Field(default_factory=list)
+    # Per-branch maximum orders allowed at the same pickup time. None = unlimited.
+    # Existing clients that omit this field keep the branch's current capacity.
+    slot_capacity: Optional[int] = Field(default=None, ge=5, le=50)
+
+class OrderAheadBranchCapacityUpdate(BaseModel):
+    # Explicit null means Unlimited; 5-50 sets a hard per-slot branch limit.
+    slot_capacity: Optional[int] = Field(..., ge=5, le=50)
 
 class OrderAheadCartItemInput(BaseModel):
     item_public_id: str = Field(min_length=1, max_length=120)
@@ -8940,12 +8947,117 @@ def _oa_default_pickup_days() -> list[dict]:
     ]
 
 
-def _oa_branch_pickup_hours_snapshot(business_id: int, branches: Optional[list[dict]] = None) -> list[dict]:
-    """Return all active branches with normalized seven-day pickup hours.
+def _oa_parse_aware_datetime(value) -> Optional[datetime]:
+    if value in (None, ''):
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    except Exception:
+        return None
 
-    No rows means pickup hours have not been configured yet. We deliberately do
-    not invent opening hours: scheduled/ASAP checkout stays unavailable until
-    the owner configures the branch.
+
+def _oa_slot_key(value: datetime) -> str:
+    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _oa_branch_capacity_map(business_id: int, branch_ids: list[int]) -> dict[int, Optional[int]]:
+    """Return configured capacities; missing row intentionally means default 5."""
+    if not branch_ids:
+        return {}
+    rows = (
+        supabase.table('order_ahead_branch_capacity')
+        .select('branch_id,slot_capacity')
+        .eq('business_id', business_id)
+        .in_('branch_id', branch_ids)
+        .execute().data or []
+    )
+    return {int(r.get('branch_id')): r.get('slot_capacity') for r in rows if r.get('branch_id') is not None}
+
+
+def _oa_branch_slot_capacity(business_id: int, branch_id: int) -> Optional[int]:
+    """Default is 5 orders/slot. NULL in the config table means Unlimited."""
+    rows = (
+        supabase.table('order_ahead_branch_capacity')
+        .select('slot_capacity')
+        .eq('business_id', business_id)
+        .eq('branch_id', branch_id)
+        .limit(1).execute().data or []
+    )
+    if not rows:
+        return 5
+    return rows[0].get('slot_capacity')
+
+
+def _oa_save_branch_slot_capacity(business_id: int, branch_id: int, slot_capacity: Optional[int]) -> Optional[int]:
+    """Persist branch capacity. None is a deliberate Unlimited setting."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    existing = _supabase_first_row(
+        supabase.table('order_ahead_branch_capacity').select('id')
+        .eq('business_id', business_id).eq('branch_id', branch_id).limit(1).execute()
+    )
+    payload = {
+        'business_id': business_id,
+        'branch_id': branch_id,
+        'slot_capacity': slot_capacity,
+        'updated_at': now_iso,
+    }
+    if existing:
+        supabase.table('order_ahead_branch_capacity').update(payload).eq('id', existing.get('id')).execute()
+    else:
+        supabase.table('order_ahead_branch_capacity').insert(payload).execute()
+    return slot_capacity
+
+
+def _oa_slot_occupancy(branch_id: int, slot_datetimes: list[datetime]) -> dict[str, int]:
+    """Count live reservations/paid orders for candidate pickup slots.
+
+    Pending orders reserve a slot only while their 15-minute checkout hold is
+    alive. Paid/test-paid orders reserve it until the order is completed or
+    cancelled. Expired holds are ignored here and are cleaned atomically by the
+    order-creation RPC before it admits another order.
+    """
+    if not slot_datetimes:
+        return {}
+    now_utc = datetime.now(timezone.utc)
+    start_utc = min(slot_datetimes).astimezone(timezone.utc) - timedelta(minutes=1)
+    end_utc = max(slot_datetimes).astimezone(timezone.utc) + timedelta(minutes=1)
+    rows = (
+        supabase.table('order_ahead_orders')
+        .select('pickup_at,payment_status,status,slot_hold_expires_at,created_at')
+        .eq('branch_id', branch_id)
+        .gte('pickup_at', start_utc.isoformat())
+        .lte('pickup_at', end_utc.isoformat())
+        .execute().data or []
+    )
+    counts = defaultdict(int)
+    for row in rows:
+        if str(row.get('status') or 'new').lower() not in ('new', 'preparing', 'ready'):
+            continue
+        payment_status = str(row.get('payment_status') or '').lower()
+        occupied = payment_status in ('test_paid', 'paid')
+        if payment_status == 'pending':
+            hold_until = _oa_parse_aware_datetime(row.get('slot_hold_expires_at'))
+            if hold_until is None:
+                created = _oa_parse_aware_datetime(row.get('created_at'))
+                hold_until = created + timedelta(minutes=15) if created else None
+            occupied = bool(hold_until and hold_until.astimezone(timezone.utc) > now_utc)
+        if not occupied:
+            continue
+        pickup_dt = _oa_parse_aware_datetime(row.get('pickup_at'))
+        if pickup_dt:
+            counts[_oa_slot_key(pickup_dt)] += 1
+    return dict(counts)
+
+
+def _oa_branch_pickup_hours_snapshot(business_id: int, branches: Optional[list[dict]] = None) -> list[dict]:
+    """Return all active branches with normalized pickup hours + slot capacity.
+
+    No pickup-hour rows means checkout remains unavailable until the owner sets
+    hours. Capacity is independent: a branch with no explicit capacity row uses
+    LoyaltyTree's safe default of 5 orders per slot; NULL means Unlimited.
     """
     branch_rows = branches
     if branch_rows is None:
@@ -8967,6 +9079,7 @@ def _oa_branch_pickup_hours_snapshot(business_id: int, branches: Optional[list[d
             .order('weekday')
             .execute().data or []
         )
+    capacity_by_branch = _oa_branch_capacity_map(business_id, ids)
     by_branch = defaultdict(list)
     for row in rows:
         by_branch[row.get('branch_id')].append(row)
@@ -8986,10 +9099,13 @@ def _oa_branch_pickup_hours_snapshot(business_id: int, branches: Optional[list[d
                 'opens_at': opens_at,
                 'closes_at': closes_at,
             })
+        slot_capacity = capacity_by_branch.get(branch.get('id'), 5)
         out.append({
             'branch_public_id': branch.get('public_id'),
             'branch_name': branch.get('name') or 'Branch',
             'configured': bool(raw),
+            'slot_capacity': slot_capacity,
+            'slot_capacity_unlimited': slot_capacity is None,
             'days': days,
         })
     return out
@@ -9028,12 +9144,17 @@ def _oa_hhmm_to_datetime(service_date, hhmm: str, tz) -> datetime:
     return datetime(service_date.year, service_date.month, service_date.day, hour, minute, tzinfo=tz)
 
 
-def _oa_branch_pickup_options(settings: dict, hours_days: list[dict]) -> dict:
-    """Create pickup choices for the customer checkout page.
+def _oa_branch_pickup_options(
+    settings: dict,
+    hours_days: list[dict],
+    business_id: Optional[int] = None,
+    branch_id: Optional[int] = None,
+) -> dict:
+    """Create capacity-aware pickup choices for checkout.
 
-    Hours are interpreted in Loyalty Tree's configured local timezone
-    (Asia/Manila by default). Closing <= opening is treated as overnight, so a
-    café/bar can configure e.g. 18:00 -> 02:00 without a second schema.
+    Full scheduled slots disappear. ASAP rolls forward to the first available
+    interval inside the currently open pickup window instead of failing merely
+    because the earliest interval is full.
     """
     mode = str(settings.get('pickup_mode') or 'both')
     prep = max(0, int(settings.get('min_prep_minutes') or 0))
@@ -9054,59 +9175,96 @@ def _oa_branch_pickup_options(settings: dict, hours_days: list[dict]) -> dict:
             end += timedelta(days=1)
         return start, end
 
-    # ASAP is valid only if the projected ready time lands inside a configured
-    # pickup window. Check today's service day and yesterday's overnight window.
-    asap_available = False
+    def aligned_slots(open_dt: datetime, close_dt: datetime, start_dt: datetime):
+        start = max(open_dt, start_dt)
+        mins = max(0, int((start - open_dt).total_seconds() // 60))
+        steps = (mins + interval - 1) // interval
+        slot = open_dt + timedelta(minutes=steps * interval)
+        result = []
+        while slot < close_dt and len(result) < 500:
+            if slot >= start_dt:
+                result.append(slot)
+            slot += timedelta(minutes=interval)
+        return result
+
+    # Candidate ASAP intervals are restricted to the currently-open service
+    # window (including yesterday's overnight window). It never silently turns
+    # "ASAP" into a next-day reservation.
+    asap_candidates = []
     if configured and mode in ('asap', 'both'):
         for delta_days in (0, -1):
             iv = interval_for((now + timedelta(days=delta_days)).date())
             if iv and iv[0] <= earliest < iv[1]:
-                asap_available = True
+                asap_candidates = aligned_slots(iv[0], iv[1], earliest)
                 break
 
-    slots = []
+    scheduled_candidates = []
     if configured and mode in ('scheduled', 'both'):
         last_service_date = now.date() + timedelta(days=advance)
         service_date = now.date()
-        while service_date <= last_service_date and len(slots) < 500:
+        while service_date <= last_service_date and len(scheduled_candidates) < 500:
             iv = interval_for(service_date)
             if iv:
-                open_dt, close_dt = iv
-                start = max(open_dt, earliest)
-                # Align to the owner's configured interval relative to opening.
-                mins = max(0, int((start - open_dt).total_seconds() // 60))
-                steps = (mins + interval - 1) // interval
-                slot = open_dt + timedelta(minutes=steps * interval)
-                while slot < close_dt and len(slots) < 500:
-                    if slot >= earliest:
-                        day_label = slot.strftime('%a, %b %d').replace(' 0', ' ')
-                        time_label = slot.strftime('%I:%M %p').lstrip('0')
-                        slots.append({
-                            'value': slot.isoformat(),
-                            'date_key': slot.strftime('%Y-%m-%d'),
-                            'date_label': day_label,
-                            'hour_key': slot.strftime('%H'),
-                            'hour_label': slot.strftime('%I %p').lstrip('0'),
-                            'minute_key': slot.strftime('%M'),
-                            'time_label': time_label,
-                            'label': f'{day_label} · {time_label}',
-                        })
-                    slot += timedelta(minutes=interval)
+                for slot in aligned_slots(iv[0], iv[1], earliest):
+                    if len(scheduled_candidates) >= 500:
+                        break
+                    scheduled_candidates.append(slot)
             service_date += timedelta(days=1)
 
-    ready_label = earliest.strftime('%I:%M %p').lstrip('0')
+    # Capacity is branch-specific. No explicit row = 5; NULL = Unlimited.
+    slot_capacity = 5
+    if business_id is not None and branch_id is not None:
+        slot_capacity = _oa_branch_slot_capacity(int(business_id), int(branch_id))
+
+    all_candidates = []
+    seen_keys = set()
+    for slot in asap_candidates + scheduled_candidates:
+        key = _oa_slot_key(slot)
+        if key not in seen_keys:
+            seen_keys.add(key)
+            all_candidates.append(slot)
+
+    occupancy = {}
+    if slot_capacity is not None and branch_id is not None and all_candidates:
+        occupancy = _oa_slot_occupancy(int(branch_id), all_candidates)
+
+    def available(slot: datetime) -> bool:
+        if slot_capacity is None:
+            return True
+        return int(occupancy.get(_oa_slot_key(slot), 0)) < int(slot_capacity)
+
+    asap_dt = next((slot for slot in asap_candidates if available(slot)), None)
+    available_scheduled = [slot for slot in scheduled_candidates if available(slot)]
+
+    slots = []
+    for slot in available_scheduled:
+        day_label = slot.strftime('%a, %b %d').replace(' 0', ' ')
+        time_label = slot.strftime('%I:%M %p').lstrip('0')
+        slots.append({
+            'value': slot.isoformat(),
+            'date_key': slot.strftime('%Y-%m-%d'),
+            'date_label': day_label,
+            'hour_key': slot.strftime('%H'),
+            'hour_label': slot.strftime('%I %p').lstrip('0'),
+            'minute_key': slot.strftime('%M'),
+            'time_label': time_label,
+            'label': f'{day_label} · {time_label}',
+        })
+
     return {
         'mode': mode,
         'min_prep_minutes': prep,
         'slot_interval_minutes': interval,
         'max_advance_days': advance,
+        'slot_capacity': slot_capacity,
+        'slot_capacity_unlimited': slot_capacity is None,
         'hours_configured': configured,
-        'asap_available': asap_available,
-        'asap_ready_at': earliest.isoformat(),
-        'asap_ready_label': ready_label,
+        'asap_available': asap_dt is not None,
+        'asap_ready_at': asap_dt.isoformat() if asap_dt else None,
+        'asap_ready_label': asap_dt.strftime('%I:%M %p').lstrip('0') if asap_dt else None,
         'slots': slots,
+        'full_slots_hidden': max(0, len(scheduled_candidates) - len(available_scheduled)),
     }
-
 
 
 @app.get('/api/v1/business/{public_id}/order-ahead/payment-config')
@@ -9411,12 +9569,43 @@ async def owner_save_order_ahead_pickup_hours(
         supabase.table('order_ahead_branch_pickup_hours').delete().eq('branch_id', branch.get('id')).execute()
         if rows:
             supabase.table('order_ahead_branch_pickup_hours').insert(rows).execute()
+        # Backward compatible: old owner frontends omit slot_capacity and keep
+        # the current branch value. New UI may send an integer 5-50 or null
+        # (Unlimited) in the same save request.
+        fields_set = getattr(payload, '__fields_set__', set()) or getattr(payload, 'model_fields_set', set())
+        if 'slot_capacity' in fields_set:
+            _oa_save_branch_slot_capacity(business.get('id'), branch.get('id'), payload.slot_capacity)
     except Exception as e:
-        if 'order_ahead_branch_pickup_hours' in str(e):
-            raise HTTPException(status_code=503, detail='Install the Order Ahead pickup-hours migration first')
+        if 'order_ahead_' in str(e):
+            raise HTTPException(status_code=503, detail='Install the Order Ahead pickup-capacity migration first')
         raise HTTPException(status_code=500, detail=f'Could not save pickup hours: {friendly_db_error(e)}')
     snap = _oa_branch_pickup_hours_snapshot(business.get('id'), [branch])
     return {'success': True, 'branch': snap[0] if snap else None}
+
+
+@app.patch('/api/v1/business/{public_id}/order-ahead/pickup-capacity/{branch_public_id}')
+async def owner_save_order_ahead_pickup_capacity(
+    public_id: str,
+    branch_public_id: str,
+    payload: OrderAheadBranchCapacityUpdate,
+    authorization: str = Header(default=''),
+):
+    """Owner-managed per-branch slot capacity. null = Unlimited; default/minimum is 5."""
+    business = _oa_require_owner_business(public_id, authorization)
+    branch = _supabase_first_row(
+        supabase.table('branches').select('id,public_id,business_id,name,is_active')
+        .eq('public_id', branch_public_id).eq('business_id', business.get('id')).limit(1).execute()
+    )
+    if not branch or not branch.get('is_active', True):
+        raise HTTPException(status_code=404, detail='Branch not found')
+    try:
+        _oa_save_branch_slot_capacity(business.get('id'), branch.get('id'), payload.slot_capacity)
+        snap = _oa_branch_pickup_hours_snapshot(business.get('id'), [branch])
+        return {'success': True, 'branch': snap[0] if snap else None}
+    except Exception as e:
+        if 'order_ahead_' in str(e):
+            raise HTTPException(status_code=503, detail='Install the Order Ahead pickup-capacity migration first')
+        raise HTTPException(status_code=500, detail=f'Could not save pickup capacity: {friendly_db_error(e)}')
 
 
 # ---------------------------------------------------------------------------
@@ -9451,6 +9640,59 @@ def _oa_order_number() -> str:
     return f"{prefix}-{secrets.token_hex(4).upper()}"
 
 
+def _oa_create_order_with_capacity(row: dict) -> dict:
+    """Atomically reserve one pickup slot and create the pending order row."""
+    params = {
+        'p_order_number': row.get('order_number'),
+        'p_business_id': row.get('business_id'),
+        'p_branch_id': row.get('branch_id'),
+        'p_customer_id': row.get('customer_id'),
+        'p_payment_mode': row.get('payment_mode'),
+        'p_pickup_type': row.get('pickup_type'),
+        'p_pickup_at': row.get('pickup_at'),
+        'p_customer_note': row.get('customer_note'),
+        'p_subtotal': row.get('subtotal'),
+        'p_total': row.get('total'),
+        'p_hold_minutes': 15,
+    }
+    try:
+        res = supabase.rpc('create_order_ahead_order_with_capacity', params).execute()
+        order = _supabase_first_row(res)
+        if not order:
+            raise RuntimeError('Capacity reservation returned no order')
+        return order
+    except HTTPException:
+        raise
+    except Exception as e:
+        msg = str(e)
+        if 'ORDER_AHEAD_SLOT_FULL' in msg:
+            raise HTTPException(status_code=409, detail='That pickup time just filled up. Please choose another time.')
+        if 'create_order_ahead_order_with_capacity' in msg or 'PGRST202' in msg or '42883' in msg:
+            raise HTTPException(status_code=503, detail='Install the Order Ahead pickup-capacity migration first')
+        raise
+
+
+def _oa_confirm_order_payment_with_capacity(order_id: int, payment_status: str, paymongo_payment_id: Optional[str] = None) -> Optional[dict]:
+    """Confirm payment without allowing an expired hold to overbook a slot."""
+    try:
+        res = supabase.rpc('confirm_order_ahead_payment_with_capacity', {
+            'p_order_id': order_id,
+            'p_payment_status': payment_status,
+            'p_paymongo_payment_id': paymongo_payment_id,
+        }).execute()
+        return _supabase_first_row(res)
+    except Exception as e:
+        msg = str(e)
+        if 'ORDER_AHEAD_SLOT_FULL' in msg:
+            raise HTTPException(
+                status_code=409,
+                detail='Your pickup hold expired and that time is now full. Please place the order again and choose another time.',
+            )
+        if 'create_order_ahead_order_with_capacity' in msg or 'confirm_order_ahead_payment_with_capacity' in msg or 'PGRST202' in msg or '42883' in msg:
+            raise HTTPException(status_code=503, detail='Install the Order Ahead pickup-capacity migration first')
+        raise
+
+
 def _oa_customer_context(customer_public_id: str, token: str) -> tuple[dict, dict]:
     customer = safe_get_customer(customer_public_id)
     if not customer:
@@ -9478,8 +9720,15 @@ def _oa_order_settings_and_hours(business: dict, branch: dict) -> tuple[dict, li
     return settings, hours
 
 
-def _oa_validate_pickup_for_order(settings: dict, hours: list[dict], pickup_type: str, pickup_at: Optional[str]) -> datetime:
-    choices = _oa_branch_pickup_options(settings, hours)
+def _oa_validate_pickup_for_order(
+    settings: dict,
+    hours: list[dict],
+    pickup_type: str,
+    pickup_at: Optional[str],
+    business_id: int,
+    branch_id: int,
+) -> datetime:
+    choices = _oa_branch_pickup_options(settings, hours, business_id, branch_id)
     if not choices.get('hours_configured'):
         raise HTTPException(status_code=400, detail='Pickup hours are not configured for this branch')
     mode = str(settings.get('pickup_mode') or 'both')
@@ -9492,7 +9741,7 @@ def _oa_validate_pickup_for_order(settings: dict, hours: list[dict], pickup_type
     requested = str(pickup_at or '').strip()
     slot = next((s for s in choices.get('slots', []) if s.get('value') == requested), None)
     if not slot:
-        raise HTTPException(status_code=400, detail='That pickup time is no longer available. Choose another time.')
+        raise HTTPException(status_code=409, detail='That pickup time is full or no longer available. Choose another time.')
     return datetime.fromisoformat(str(slot['value']))
 
 
@@ -9651,7 +9900,7 @@ async def customer_create_order_ahead_order(
         raise HTTPException(status_code=500, detail=f'Could not load pickup settings: {friendly_db_error(e)}')
     payment_mode, payment_config = _oa_effective_payment_provider(business)
 
-    pickup_dt = _oa_validate_pickup_for_order(settings, hours, payload.pickup_type, payload.pickup_at)
+    pickup_dt = _oa_validate_pickup_for_order(settings, hours, payload.pickup_type, payload.pickup_at, business.get('id'), branch.get('id'))
     lines, subtotal = _oa_price_cart(business, branch, payload.items)
     note = (payload.customer_note or '').strip()[:500] or None
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -9672,14 +9921,9 @@ async def customer_create_order_ahead_order(
         'updated_at': now_iso,
     }
     try:
-        res = supabase.table('order_ahead_orders').insert(row).execute()
-        order = _supabase_first_row(res)
-        if not order:
-            order = _supabase_first_row(
-                supabase.table('order_ahead_orders').select('*').eq('order_number', row['order_number']).limit(1).execute()
-            )
-        if not order:
-            raise RuntimeError('Order insert returned no record')
+        # Atomic DB reservation prevents two simultaneous checkouts from taking
+        # the final spot in the same branch/time slot.
+        order = _oa_create_order_with_capacity(row)
         item_rows = [{**line, 'order_id': order.get('id')} for line in lines]
         if item_rows:
             supabase.table('order_ahead_order_items').insert(item_rows).execute()
@@ -9736,6 +9980,7 @@ async def customer_create_order_ahead_order(
         try:
             supabase.table('order_ahead_orders').update({
                 'payment_status': 'failed',
+                'slot_hold_expires_at': None,
                 'updated_at': datetime.now(timezone.utc).isoformat(),
             }).eq('id', order.get('id')).eq('payment_status', 'pending').execute()
         except Exception:
@@ -9745,6 +9990,7 @@ async def customer_create_order_ahead_order(
         try:
             supabase.table('order_ahead_orders').update({
                 'payment_status': 'failed',
+                'slot_hold_expires_at': None,
                 'updated_at': datetime.now(timezone.utc).isoformat(),
             }).eq('id', order.get('id')).eq('payment_status', 'pending').execute()
         except Exception:
@@ -9816,20 +10062,9 @@ async def customer_order_ahead_payment_status(
                 elif isinstance(first_payment, str):
                     payment_id = first_payment
 
-            update_payload = {
-                'payment_status': 'paid',
-                'updated_at': datetime.now(timezone.utc).isoformat(),
-            }
-            if payment_id:
-                update_payload['paymongo_payment_id'] = payment_id
-
-            res = (
-                supabase.table('order_ahead_orders').update(update_payload)
-                .eq('id', order.get('id'))
-                .eq('payment_status', 'pending')
-                .execute()
+            updated = _oa_confirm_order_payment_with_capacity(
+                order.get('id'), 'paid', payment_id
             )
-            updated = _supabase_first_row(res)
             if updated:
                 order = updated
 
@@ -9869,11 +10104,7 @@ async def customer_confirm_order_ahead_test_payment(
     if order.get('payment_status') not in ('pending', 'test_paid'):
         raise HTTPException(status_code=409, detail='This order can no longer use Test Payment')
     if order.get('payment_status') != 'test_paid':
-        now_iso = datetime.now(timezone.utc).isoformat()
-        res = supabase.table('order_ahead_orders').update({
-            'payment_status': 'test_paid', 'updated_at': now_iso,
-        }).eq('id', order.get('id')).eq('payment_status', 'pending').execute()
-        updated = _supabase_first_row(res)
+        updated = _oa_confirm_order_payment_with_capacity(order.get('id'), 'test_paid')
         if updated:
             order = updated
         else:
@@ -11115,13 +11346,25 @@ async def paymongo_webhook(request: Request):
                 _oa_finish_webhook_event(paymongo_event_id, 'amount_mismatch')
                 return {"received": True, "context": "order_ahead", "amount_mismatch": True}
 
-            now_iso = datetime.now(timezone.utc).isoformat()
             try:
-                supabase.table('order_ahead_orders').update({
-                    'payment_status': 'paid',
-                    'paymongo_payment_id': resource.get('id'),
-                    'updated_at': now_iso,
-                }).eq('id', oa_order.get('id')).eq('payment_status', 'pending').execute()
+                confirmed = _oa_confirm_order_payment_with_capacity(
+                    oa_order.get('id'), 'paid', resource.get('id')
+                )
+                if confirmed:
+                    oa_order = confirmed
+            except HTTPException as e:
+                if e.status_code == 409:
+                    try:
+                        supabase.table('order_ahead_orders').update({
+                            'payment_status': 'failed',
+                            'slot_hold_expires_at': None,
+                            'updated_at': datetime.now(timezone.utc).isoformat(),
+                        }).eq('id', oa_order.get('id')).eq('payment_status', 'pending').execute()
+                    except Exception:
+                        pass
+                    _oa_finish_webhook_event(paymongo_event_id, 'ignored')
+                    return {"received": True, "context": "order_ahead", "slot_full": True}
+                raise
             except Exception as e:
                 print(f"ORDER AHEAD PAYMONGO paid update error: {e}")
                 raise HTTPException(status_code=500, detail='Could not confirm Order Ahead payment')
@@ -11143,6 +11386,7 @@ async def paymongo_webhook(request: Request):
             try:
                 supabase.table('order_ahead_orders').update({
                     'payment_status': 'failed',
+                    'slot_hold_expires_at': None,
                     'updated_at': datetime.now(timezone.utc).isoformat(),
                 }).eq('id', oa_order.get('id')).eq('payment_status', 'pending').execute()
             except Exception as e:
@@ -21960,7 +22204,7 @@ async def order_ahead_branch_selected(customer_public_id: str, branch_public_id:
             group['options'] = [dict(o) for o in (group.get('options') or []) if o.get('is_active')]
         items.append(item)
 
-    pickup = _oa_branch_pickup_options(settings, hour_rows)
+    pickup = _oa_branch_pickup_options(settings, hour_rows, business.get('id'), branch.get('id'))
     payload = {
         'categories': categories,
         'items': items,

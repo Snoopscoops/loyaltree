@@ -519,6 +519,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           hoursMap[row.branch_public_id] = {
             branch_name: row.branch_name || 'Branch',
             configured: !!row.configured,
+            slot_capacity: row.slot_capacity === null ? null : Number(row.slot_capacity ?? 5),
+            slot_capacity_unlimited: row.slot_capacity === null || row.slot_capacity_unlimited === true,
             days: Array.isArray(row.days) && row.days.length ? row.days.map((d,i)=>({
               weekday: Number(d.weekday ?? i),
               day_name: d.day_name || OA_PICKUP_DAYS[Number(d.weekday ?? i)] || `Day ${i+1}`,
@@ -696,7 +698,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   const updatePickupDay = (branch, weekday, patch) => {
     setOrderAheadPickupHours(prev => {
-      const current = prev[branch.public_id] || { branch_name: branch.name, configured: false, days: emptyOAPickupDays() }
+      const current = prev[branch.public_id] || { branch_name: branch.name, configured: false, slot_capacity: 5, slot_capacity_unlimited: false, days: emptyOAPickupDays() }
       const days = (current.days?.length ? current.days : emptyOAPickupDays()).map((d,i) =>
         Number(d.weekday ?? i) === weekday ? { ...d, ...patch } : d
       )
@@ -704,16 +706,33 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     })
   }
 
+  const updatePickupCapacity = (branch, patch) => {
+    setOrderAheadPickupHours(prev => {
+      const current = prev[branch.public_id] || { branch_name: branch.name, configured: false, slot_capacity: 5, slot_capacity_unlimited: false, days: emptyOAPickupDays() }
+      return { ...prev, [branch.public_id]: { ...current, branch_name: branch.name, ...patch } }
+    })
+  }
+
   const copyPickupHoursToAllBranches = (sourceBranch) => {
     const sourceDays = getPickupDaysForBranch(sourceBranch).map(d => ({ ...d }))
     setOrderAheadPickupHours(prev => {
       const next = { ...prev }
+      const sourceCfg = prev[sourceBranch.public_id] || {}
+      const sourceUnlimited = sourceCfg.slot_capacity_unlimited === true || sourceCfg.slot_capacity === null
+      const sourceCapacity = sourceUnlimited ? null : Math.min(50, Math.max(5, Number(sourceCfg.slot_capacity ?? 5)))
       activeOrderAheadBranches.forEach(b => {
-        next[b.public_id] = { branch_name: b.name, configured: prev[b.public_id]?.configured || false, days: sourceDays.map(d=>({ ...d })) }
+        next[b.public_id] = {
+          ...prev[b.public_id],
+          branch_name: b.name,
+          configured: prev[b.public_id]?.configured || false,
+          slot_capacity: sourceCapacity,
+          slot_capacity_unlimited: sourceUnlimited,
+          days: sourceDays.map(d=>({ ...d })),
+        }
       })
       return next
     })
-    setMessage(`Copied ${sourceBranch.name} pickup hours to all branches. Save each branch to publish them.`)
+    setMessage(`Copied ${sourceBranch.name} pickup hours and slot capacity to all branches. Save each branch to publish them.`)
     setTimeout(() => setMessage(''), 3500)
   }
 
@@ -727,8 +746,11 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         opens_at: d.is_open ? (d.opens_at || '09:00') : null,
         closes_at: d.is_open ? (d.closes_at || '18:00') : null,
       }))
+      const cfg = orderAheadPickupHours[branch.public_id] || {}
+      const unlimited = cfg.slot_capacity_unlimited === true || cfg.slot_capacity === null
+      const slotCapacity = unlimited ? null : Math.min(50, Math.max(5, Number(cfg.slot_capacity ?? 5)))
       const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/order-ahead/pickup-hours/${branch.public_id}`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days }),
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days, slot_capacity: slotCapacity }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Could not save pickup hours')
@@ -736,10 +758,12 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         setOrderAheadPickupHours(prev => ({ ...prev, [branch.public_id]: {
           branch_name: data.branch.branch_name || branch.name,
           configured: true,
+          slot_capacity: data.branch.slot_capacity === null ? null : Number(data.branch.slot_capacity ?? 5),
+          slot_capacity_unlimited: data.branch.slot_capacity === null || data.branch.slot_capacity_unlimited === true,
           days: (data.branch.days || days).map((d,i)=>({ ...d, day_name:d.day_name || OA_PICKUP_DAYS[i], opens_at:d.opens_at || '09:00', closes_at:d.closes_at || '18:00' })),
         }}))
       }
-      setMessage(`${branch.name} pickup hours saved`)
+      setMessage(`${branch.name} pickup hours and capacity saved`)
       await loadData()
     } catch (err) {
       setMessage(err.message || 'Could not save pickup hours')
@@ -2335,7 +2359,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
               <div style={{borderTop:'1px solid #e2e8f0',marginTop:18,paddingTop:16}}>
                 <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'flex-start',flexWrap:'wrap'}}>
-                  <div><h4 style={{margin:'0 0 4px'}}>Branch pickup hours</h4><p style={{margin:0,fontSize:11.5,color:'#64748b'}}>Set the actual hours customers may choose. Closing time may be earlier than opening time for overnight service (example: 6:00 PM → 2:00 AM).</p></div>
+                  <div><h4 style={{margin:'0 0 4px'}}>Branch pickup hours & capacity</h4><p style={{margin:0,fontSize:11.5,color:'#64748b'}}>Set the actual pickup hours and how many Order Ahead orders each branch can accept for the same pickup time. Default capacity is 5 orders per 15-minute slot.</p></div>
                   <span style={{background:'#f8fafc',color:'#64748b',padding:'6px 9px',borderRadius:999,fontSize:10.5,fontWeight:800}}>Philippine local time</span>
                 </div>
                 {!activeOrderAheadBranches.length && <div style={{marginTop:12,padding:12,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:10,fontSize:12,color:'#92400e'}}>Create an active branch first.</div>}
@@ -2345,7 +2369,36 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                   return <div key={branch.public_id} style={{marginTop:13,border:'1px solid #e2e8f0',borderRadius:13,padding:12,background:'#f8fafc'}}>
                     <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'center',flexWrap:'wrap'}}>
                       <div><strong>🏢 {branch.name}</strong><div style={{fontSize:10.5,color:cfg?.configured?'#047857':'#b45309',marginTop:2,fontWeight:750}}>{cfg?.configured?'Pickup hours configured':'Pickup hours not published yet'}</div></div>
-                      <div style={{display:'flex',gap:7}}>{branchIndex===0&&activeOrderAheadBranches.length>1&&<button type="button" style={{...styles.addBtn,fontSize:10.5,padding:'7px 9px'}} onClick={()=>copyPickupHoursToAllBranches(branch)}>Copy to all</button>}<button type="button" style={{...styles.submitBtn,fontSize:10.5,padding:'8px 10px',margin:0}} onClick={()=>savePickupHours(branch)} disabled={orderAheadHoursSaving===branch.public_id}>{orderAheadHoursSaving===branch.public_id?'Saving…':'Save hours'}</button></div>
+                      <div style={{display:'flex',gap:7}}>{branchIndex===0&&activeOrderAheadBranches.length>1&&<button type="button" style={{...styles.addBtn,fontSize:10.5,padding:'7px 9px'}} onClick={()=>copyPickupHoursToAllBranches(branch)}>Copy to all</button>}<button type="button" style={{...styles.submitBtn,fontSize:10.5,padding:'8px 10px',margin:0}} onClick={()=>savePickupHours(branch)} disabled={orderAheadHoursSaving===branch.public_id}>{orderAheadHoursSaving===branch.public_id?'Saving…':'Save hours & capacity'}</button></div>
+                    </div>
+                    <div style={{marginTop:11,background:'#fff',padding:'10px',borderRadius:9,border:'1px solid #eef2f7'}}>
+                      <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}>
+                        <div>
+                          <div style={{fontSize:11.5,fontWeight:850,color:'#0f172a'}}>Orders per pickup slot</div>
+                          <div style={{fontSize:10.5,color:'#64748b',marginTop:2}}>Maximum Order Ahead orders customers can schedule for the same pickup time.</div>
+                        </div>
+                        <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                          <input
+                            type="number"
+                            min="5"
+                            max="50"
+                            disabled={cfg?.slot_capacity_unlimited === true || cfg?.slot_capacity === null}
+                            value={(cfg?.slot_capacity_unlimited === true || cfg?.slot_capacity === null) ? '' : Number(cfg?.slot_capacity ?? 5)}
+                            onChange={e=>updatePickupCapacity(branch,{slot_capacity:Math.min(50,Math.max(5,Number(e.target.value||5))),slot_capacity_unlimited:false})}
+                            style={{...styles.input,width:88,padding:'8px 9px',margin:0}}
+                            aria-label={`${branch.name} orders per pickup slot`}
+                          />
+                          <label style={{display:'flex',alignItems:'center',gap:6,fontSize:11,fontWeight:800,color:'#475569',cursor:'pointer'}}>
+                            <input
+                              type="checkbox"
+                              checked={cfg?.slot_capacity_unlimited === true || cfg?.slot_capacity === null}
+                              onChange={e=>updatePickupCapacity(branch,e.target.checked?{slot_capacity:null,slot_capacity_unlimited:true}:{slot_capacity:5,slot_capacity_unlimited:false})}
+                            />
+                            Unlimited
+                          </label>
+                        </div>
+                      </div>
+                      <div style={{fontSize:10,color:'#94a3b8',marginTop:7}}>{(cfg?.slot_capacity_unlimited === true || cfg?.slot_capacity === null)?'No booking limit for this branch.':`Current limit: ${Number(cfg?.slot_capacity ?? 5)} order${Number(cfg?.slot_capacity ?? 5)===1?'':'s'} every ${Number(orderAheadForm.slot_interval_minutes||15)} minutes.`}</div>
                     </div>
                     <div style={{display:'grid',gap:7,marginTop:11}}>{days.map((d,i)=><div key={d.weekday} style={{display:'grid',gridTemplateColumns:isMobile?'88px minmax(0,1fr)':'110px 78px minmax(0,1fr)',gap:8,alignItems:'center',background:'#fff',padding:'8px 9px',borderRadius:9,border:'1px solid #eef2f7'}}>
                       <label style={{fontSize:11.5,fontWeight:800,display:'flex',alignItems:'center',gap:6}}><input type="checkbox" checked={!!d.is_open} onChange={e=>updatePickupDay(branch,Number(d.weekday),{is_open:e.target.checked})}/>{d.day_name||OA_PICKUP_DAYS[i]}</label>
