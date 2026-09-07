@@ -50,9 +50,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
     vip_points_per_amount: 10,
     vip_amount_pesos: 100,
     vip_tiers: [
-      { id: 'bronze', name: 'Bronze', threshold: 0, color: '#92400e', discount_percent: 0, benefits: ['Member-only offers'], active: true },
-      { id: 'silver', name: 'Silver', threshold: 1000, color: '#64748b', discount_percent: 5, benefits: ['5% discount'], active: true },
-      { id: 'gold', name: 'Gold', threshold: 3000, color: '#ca8a04', discount_percent: 10, benefits: ['10% discount', 'Priority service'], active: true },
+      { id: 'bronze', name: 'Bronze', threshold: 0, color: '#92400e', discount_percent: 0, benefits: ['Member-only offers'], coupon_enabled: false, coupon_reward_text: '', coupon_validity_days: 30, active: true },
+      { id: 'silver', name: 'Silver', threshold: 1000, color: '#64748b', discount_percent: 5, benefits: ['5% discount'], coupon_enabled: false, coupon_reward_text: '', coupon_validity_days: 30, active: true },
+      { id: 'gold', name: 'Gold', threshold: 3000, color: '#ca8a04', discount_percent: 10, benefits: ['10% discount', 'Priority service'], coupon_enabled: false, coupon_reward_text: '', coupon_validity_days: 30, active: true },
     ],
     // Multipass card only
     multipass_session_count: 12,
@@ -164,7 +164,14 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
           membership_quick_checkin: data.membership_quick_checkin === true,
           vip_points_per_amount: data.vip_points_per_amount ?? 10,
           vip_amount_pesos: data.vip_amount_pesos ?? 100,
-          vip_tiers: Array.isArray(data.vip_tiers) && data.vip_tiers.length ? data.vip_tiers : f.vip_tiers,
+          vip_tiers: Array.isArray(data.vip_tiers) && data.vip_tiers.length
+            ? data.vip_tiers.map(t => ({
+                ...t,
+                coupon_enabled: t.coupon_enabled === true,
+                coupon_reward_text: t.coupon_reward_text || '',
+                coupon_validity_days: t.coupon_validity_days ?? 30,
+              }))
+            : f.vip_tiers,
           multipass_session_count: data.multipass_session_count ?? 12,
           multipass_validity_days: data.multipass_validity_days ?? 90,
         }))
@@ -185,6 +192,97 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
     setForm(f => ({ ...f, [key]: value }))
     setSaved(false)
   }
+
+  const updateVipTier = (index, patch) => {
+    update('vip_tiers', (form.vip_tiers || []).map((tier, i) => i === index ? { ...tier, ...patch } : tier))
+  }
+
+  const addVipTier = () => update('vip_tiers', [
+    ...(form.vip_tiers || []),
+    {
+      id: Math.random().toString(16).slice(2, 14),
+      name: 'New Tier', threshold: 0, color: '#64748b', discount_percent: 0,
+      benefits: [], coupon_enabled: false, coupon_reward_text: '', coupon_validity_days: 30, active: true,
+    },
+  ])
+
+  const renderVipTierEditor = (tier, i, compact = false) => (
+    <div key={tier.id || i} style={{
+      padding: compact ? 12 : 14,
+      marginBottom: 12,
+      border: '1px solid #e2e8f0',
+      borderRadius: 14,
+      background: '#f8fafc',
+    }}>
+      <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',marginBottom:10,flexWrap:'wrap'}}>
+        <div>
+          <div style={{fontSize:12,fontWeight:900,color:'#64748b',textTransform:'uppercase',letterSpacing:.5}}>Tier {i + 1}</div>
+          <div style={{fontSize:14,fontWeight:850,color:'#0f172a',marginTop:2}}>{tier.name || 'Unnamed tier'}</div>
+        </div>
+        <button type="button" style={styles.prizeRemoveBtn} onClick={() => update('vip_tiers', (form.vip_tiers || []).filter((_, j) => j !== i))}>Remove</button>
+      </div>
+
+      <div style={{display:'grid',gridTemplateColumns:guidedMobile || compact ? '1fr' : 'minmax(160px,1fr) 145px 100px',gap:8}}>
+        <div>
+          <label style={{...styles.label,fontSize:12}}>Tier name</label>
+          <input style={styles.input} value={tier.name || ''} placeholder="Gold" onChange={e => updateVipTier(i,{name:e.target.value})}/>
+        </div>
+        <div>
+          <label style={{...styles.label,fontSize:12}}>Starts at</label>
+          <input style={styles.input} type="number" min="0" value={tier.threshold || 0} placeholder="3000" onChange={e => updateVipTier(i,{threshold:Number(e.target.value)})}/>
+        </div>
+        <div>
+          <label style={{...styles.label,fontSize:12}}>Color</label>
+          <input type="color" style={{...styles.colorSwatch,width:'100%',height:42}} value={tier.color || '#64748b'} onChange={e => updateVipTier(i,{color:e.target.value})}/>
+        </div>
+      </div>
+
+      <div style={{display:'grid',gridTemplateColumns:guidedMobile || compact ? '1fr' : '150px 1fr',gap:8,marginTop:10}}>
+        <div>
+          <label style={{...styles.label,fontSize:12}}>Ongoing discount</label>
+          <div style={{display:'flex',alignItems:'center',gap:6}}>
+            <input style={styles.input} type="number" min="0" max="100" value={tier.discount_percent || 0} onChange={e => updateVipTier(i,{discount_percent:Number(e.target.value)})}/>
+            <span style={{fontWeight:800,color:'#64748b'}}>%</span>
+          </div>
+        </div>
+        <div>
+          <label style={{...styles.label,fontSize:12}}>Ongoing benefits</label>
+          <textarea style={{...styles.textarea,width:'100%',boxSizing:'border-box'}} rows={compact?3:4}
+            value={(tier.benefits || []).join('\n')}
+            onChange={e => updateVipTier(i,{benefits:e.target.value.split('\n').map(v=>v.trim()).filter(Boolean)})}
+            placeholder={'Priority service\nMember-only offers'}/>
+        </div>
+      </div>
+
+      <div style={{marginTop:12,padding:12,border:'1px solid #dbeafe',borderRadius:12,background:'#eff6ff'}}>
+        <label style={{display:'flex',gap:9,alignItems:'flex-start',fontSize:13,fontWeight:850,color:'#1e3a8a',cursor:'pointer'}}>
+          <input type="checkbox" checked={tier.coupon_enabled === true} onChange={e => updateVipTier(i,{coupon_enabled:e.target.checked})} style={{marginTop:2}}/>
+          <span>
+            Issue a one-time coupon when the customer reaches this tier
+            <span style={{display:'block',fontWeight:500,color:'#475569',marginTop:3}}>This is separate from the tier's ongoing benefits and can be redeemed once.</span>
+          </span>
+        </label>
+        {tier.coupon_enabled && (
+          <div style={{display:'grid',gridTemplateColumns:guidedMobile || compact ? '1fr' : '1fr 150px',gap:8,marginTop:10}}>
+            <div>
+              <label style={{...styles.label,fontSize:12}}>Tier-up coupon</label>
+              <input style={styles.input} maxLength={200} value={tier.coupon_reward_text || ''}
+                onChange={e => updateVipTier(i,{coupon_reward_text:e.target.value})}
+                placeholder="e.g. Free drink on your next visit"/>
+            </div>
+            <div>
+              <label style={{...styles.label,fontSize:12}}>Valid for</label>
+              <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                <input style={styles.input} type="number" min="1" max="3650" value={tier.coupon_validity_days || 30}
+                  onChange={e => updateVipTier(i,{coupon_validity_days:Number(e.target.value)})}/>
+                <span style={{fontSize:12,fontWeight:800,color:'#64748b'}}>days</span>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
 
   const IMAGE_UPLOAD_MAX_MB = 8
 
@@ -286,7 +384,17 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
     membership_quick_checkin: form.membership_quick_checkin === true,
     vip_points_per_amount: Number(form.vip_points_per_amount) || 0,
     vip_amount_pesos: Number(form.vip_amount_pesos) || 100,
-    vip_tiers: form.vip_tiers,
+    vip_tiers: (form.vip_tiers || []).map(t => ({
+      ...t,
+      name: (t.name || 'Tier').trim(),
+      threshold: Math.max(0, Number(t.threshold) || 0),
+      discount_percent: Math.max(0, Math.min(100, Number(t.discount_percent) || 0)),
+      benefits: (t.benefits || []).map(v => String(v).trim()).filter(Boolean),
+      coupon_enabled: t.coupon_enabled === true,
+      coupon_reward_text: (t.coupon_reward_text || '').trim(),
+      coupon_validity_days: Math.max(1, Math.min(3650, Number(t.coupon_validity_days) || 30)),
+      active: t.active !== false,
+    })),
     multipass_session_count: Number(form.multipass_session_count) || 12,
     multipass_validity_days: Number(form.multipass_validity_days) || 90,
   })
@@ -355,6 +463,10 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
   const postConfig = async () => {
     if (form.card_type === 'hybrid' && !hybridAllowed) {
       throw new Error('2-in-1 Loyalty Card is available on the Growth and Pro plans. Upgrade to Growth to continue.')
+    }
+    if (form.card_type === 'vip') {
+      const badCouponTier = (form.vip_tiers || []).find(t => t.coupon_enabled === true && !String(t.coupon_reward_text || '').trim())
+      if (badCouponTier) throw new Error(`Add the one-time coupon reward for ${badCouponTier.name || 'this tier'}.`)
     }
     const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config`, {
       method: 'POST',
@@ -838,30 +950,10 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                 </div>
 
                 <div style={{marginTop:20}}>
-                  <label style={styles.label}>Tier rewards</label>
-                  <p style={{...styles.hint,margin:'0 0 12px'}}>Set what customers unlock when they reach each tier.</p>
-                  {(form.vip_tiers || []).map((tier,i)=>(
-                    <div key={tier.id || i} style={{padding:'12px',marginBottom:10,border:'1px solid #e2e8f0',borderRadius:12,background:'#f8fafc'}}>
-                      <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'1fr 130px 120px',gap:8}}>
-                        <input style={styles.input} value={tier.name || ''} placeholder="Tier name"
-                          onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,name:e.target.value}:t))}/>
-                        <input style={styles.input} type="number" min="0" value={tier.threshold || 0} placeholder="Points"
-                          onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,threshold:Number(e.target.value)}:t))}/>
-                        <input style={styles.input} type="number" min="0" max="100" value={tier.discount_percent || 0} placeholder="Discount %"
-                          onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,discount_percent:Number(e.target.value)}:t))}/>
-                      </div>
-                      <textarea style={{...styles.textarea,width:'100%',boxSizing:'border-box',marginTop:8}} rows={3}
-                        value={(tier.benefits || []).join('\n')}
-                        onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,benefits:e.target.value.split('\n').map(v=>v.trim()).filter(Boolean)}:t))}
-                        placeholder={'One reward per line\nFree upgrade\nPriority service'}/>
-                      <button type="button" style={{...styles.prizeRemoveBtn,marginTop:8}}
-                        onClick={()=>update('vip_tiers',form.vip_tiers.filter((_,j)=>j!==i))}>Remove tier</button>
-                    </div>
-                  ))}
-                  <button type="button" style={{...styles.addPrizeBtn,width:guidedMobile?'100%':'auto'}}
-                    onClick={()=>update('vip_tiers',[...(form.vip_tiers||[]),{id:Math.random().toString(16).slice(2,14),name:'New Tier',threshold:0,color:'#64748b',discount_percent:0,benefits:[],active:true}])}>
-                    + Add Tier
-                  </button>
+                  <label style={styles.label}>Tier levels, perks & upgrade coupons</label>
+                  <p style={{...styles.hint,margin:'0 0 12px'}}>Ongoing benefits stay active while the customer is in the tier. The optional tier-up coupon is issued once when the customer moves into that tier.</p>
+                  {(form.vip_tiers || []).map((tier,i)=>renderVipTierEditor(tier,i,true))}
+                  <button type="button" style={{...styles.addPrizeBtn,width:guidedMobile?'100%':'auto'}} onClick={addVipTier}>+ Add Tier</button>
                 </div>
               </>}
 
@@ -1167,9 +1259,15 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                   </>
                 ) : form.card_type === 'vip' ? (
                   <>
-                    <div style={styles.previewPointsBalance}><span style={{color:(form.vip_tiers||[]).find(t=>String(t.name||'').toLowerCase()==='gold')?.color || (form.vip_tiers||[])[0]?.color || '#111827'}}>GOLD VIP</span></div>
+                    <div style={styles.previewPointsBalance}><span style={{color:previewVipTier.color || '#111827'}}>{String(previewVipTier.name || 'VIP').toUpperCase()} VIP</span></div>
                     <div style={styles.cardFoot}>3,450 Tier points · progressing automatically</div>
-                    <div style={styles.previewPrizeList}>{(form.vip_tiers||[]).slice(0,4).map((t,i)=><div key={t.id||i} style={styles.previewPrizeRow}><span>{t.name}</span><span>{t.threshold} pts</span></div>)}</div>
+                    {(previewVipTier.benefits || []).slice(0,2).map((benefit,i)=><div key={i} style={styles.previewPrizeRow}><span>✓ {benefit}</span></div>)}
+                    {previewVipTier.coupon_enabled && previewVipTier.coupon_reward_text && (
+                      <div style={{...styles.previewPrizeRow,marginTop:8,background:'#eff6ff',border:'1px solid #bfdbfe'}}>
+                        <span>🎟️ Tier-up coupon</span><span>{previewVipTier.coupon_reward_text}</span>
+                      </div>
+                    )}
+                    <div style={{...styles.previewPrizeList,marginTop:10}}>{(form.vip_tiers||[]).slice(0,4).map((t,i)=><div key={t.id||i} style={styles.previewPrizeRow}><span>{t.name}</span><span>{t.threshold} pts</span></div>)}</div>
                   </>
                 ) : form.card_type === 'multipass' ? (
                   <>
@@ -1521,7 +1619,13 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                   Cashiers enter the customer’s purchase amount. Tier points are calculated automatically and are used only for tier progression.
                 </p>
               </div>
-              <div style={styles.fieldGroup}><label style={styles.label}>Tier levels</label>{(form.vip_tiers||[]).map((tier,i)=><div key={tier.id||i} style={{...styles.prizeForm,marginBottom:10}}><div style={styles.row}><input style={{...styles.input,flex:1}} value={tier.name} onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,name:e.target.value}:t))} placeholder="Tier name"/><input style={{...styles.input,width:130}} type="number" min={0} value={tier.threshold} onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,threshold:Number(e.target.value)}:t))} placeholder="Points"/><input type="color" style={styles.colorSwatch} value={tier.color||'#64748b'} onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,color:e.target.value}:t))}/></div><div style={styles.row}><input style={{...styles.input,width:150}} type="number" min={0} max={100} value={tier.discount_percent||0} onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,discount_percent:Number(e.target.value)}:t))} placeholder="Discount %"/><textarea style={{...styles.textarea,flex:1}} rows={3} value={(tier.benefits||[]).join('\n')} onChange={e=>update('vip_tiers',form.vip_tiers.map((t,j)=>j===i?{...t,benefits:e.target.value.split('\n').filter(Boolean)}:t))} placeholder="One benefit per line"/><button type="button" onClick={()=>update('vip_tiers',form.vip_tiers.filter((_,j)=>j!==i))} style={styles.prizeRemoveBtn}>✕</button></div></div>)}<button type="button" style={styles.addPrizeBtn} onClick={()=>update('vip_tiers',[...(form.vip_tiers||[]),{id:Math.random().toString(16).slice(2),name:'New Tier',threshold:0,color:'#64748b',discount_percent:0,benefits:[],active:true}])}>+ Add Tier</button><p style={styles.hint}>Thresholds must increase from lowest to highest. Tier points are not spent.</p></div>
+              <div style={styles.fieldGroup}>
+                <label style={styles.label}>Tier levels, ongoing perks & tier-up coupons</label>
+                <p style={{...styles.hint,margin:'0 0 12px'}}>Keep permanent tier benefits separate from the one-time reward the customer receives when moving up.</p>
+                {(form.vip_tiers||[]).map((tier,i)=>renderVipTierEditor(tier,i,false))}
+                <button type="button" style={styles.addPrizeBtn} onClick={addVipTier}>+ Add Tier</button>
+                <p style={styles.hint}>Thresholds must increase from lowest to highest. Tier points are not spent. If one purchase crosses more than one tier, each crossed tier's enabled coupon is queued.</p>
+              </div>
             </div>
           ) : form.card_type === 'multipass' ? (
             <div style={styles.pointsSection}>

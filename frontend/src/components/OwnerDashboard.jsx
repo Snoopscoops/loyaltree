@@ -1144,7 +1144,11 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       if (res.ok) {
         const coupons = await res.json()
         const today = new Date().toISOString().slice(0, 10)
-        const active = coupons.find(c => c.status === 'active' && (!c.expires_at || c.expires_at >= today))
+        // Tier-up coupons can queue behind an existing coupon. Match the backend's
+        // FIFO rule so the owner sees the same coupon the cashier will redeem next.
+        const active = coupons
+          .filter(c => c.status === 'active' && (!c.expires_at || c.expires_at >= today))
+          .sort((a,b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))[0]
         setActiveCoupon(active || null)
       }
     } catch (err) {

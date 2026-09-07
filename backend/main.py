@@ -2202,11 +2202,16 @@ def apply_card_cycle_expiration_if_needed(customer: dict, business: Optional[dic
 
 
 def safe_get_active_coupon(customer_id: int):
-    """The customer's current active, non-expired coupon (there's only ever
-    one at a time - creation is blocked while one is already active). If an
-    'active' row has passed its expires_at date, it's treated as expired
-    here and never returned - a background/cron sweep isn't required for
-    correctness, only for tidying up the stored status eventually."""
+    """Return the customer's next usable coupon.
+
+    Manual owner-issued coupons still behave exactly as before (the create
+    endpoint blocks while any usable coupon exists). VIP tier-up rewards are
+    allowed to queue as additional ``active`` rows so a customer never loses a
+    reward when one purchase jumps across multiple tiers or when another coupon
+    is already waiting. The oldest non-expired coupon is therefore the current
+    one; once it is redeemed/cancelled, the next queued coupon automatically
+    becomes current without a new database status or migration.
+    """
     if not supabase:
         return None
     try:
@@ -2215,22 +2220,24 @@ def safe_get_active_coupon(customer_id: int):
             .select("*")
             .eq("customer_id", customer_id)
             .eq("status", "active")
-            .order("created_at", desc=True)
-            .limit(1)
+            .order("created_at", desc=False)
+            .limit(100)
             .execute()
         )
         rows = res.data or []
         if not rows:
             return None
-        coupon = rows[0]
-        expires_at = coupon.get('expires_at')
-        if expires_at:
-            try:
-                if datetime.fromisoformat(str(expires_at)).date() < datetime.utcnow().date():
-                    return None
-            except Exception:
-                pass
-        return coupon
+        today = _loyalty_today()
+        for coupon in rows:
+            expires_at = coupon.get('expires_at')
+            if expires_at:
+                try:
+                    if datetime.fromisoformat(str(expires_at)).date() < today:
+                        continue
+                except Exception:
+                    pass
+            return coupon
+        return None
     except Exception:
         return None
 
@@ -6163,6 +6170,11 @@ def normalize_vip_tiers(program: dict) -> list:
             threshold = max(0, int(t.get('threshold') or 0))
         except Exception:
             threshold = 0
+        try:
+            coupon_validity_days = max(1, min(3650, int(t.get('coupon_validity_days') or 30)))
+        except Exception:
+            coupon_validity_days = 30
+        coupon_reward_text = str(t.get('coupon_reward_text') or '').strip()[:200]
         tiers.append({
             'id': str(t.get('id') or f'tier-{i+1}'),
             'name': str(t.get('name') or f'Tier {i+1}'),
@@ -6170,6 +6182,9 @@ def normalize_vip_tiers(program: dict) -> list:
             'color': str(t.get('color') or '#64748b'),
             'discount_percent': max(0, min(100, float(t.get('discount_percent') or 0))),
             'benefits': [str(x).strip() for x in (t.get('benefits') or []) if str(x).strip()],
+            'coupon_enabled': bool(t.get('coupon_enabled')),
+            'coupon_reward_text': coupon_reward_text,
+            'coupon_validity_days': coupon_validity_days,
             'active': t.get('active') is not False,
         })
     tiers = [t for t in tiers if t['active']]
@@ -6179,7 +6194,11 @@ def normalize_vip_tiers(program: dict) -> list:
 def get_vip_tier(customer: dict, program: dict) -> dict:
     tiers = normalize_vip_tiers(program)
     if not tiers:
-        return {'id':'vip','name':'VIP','threshold':0,'color':'#111827','discount_percent':0,'benefits':[]}
+        return {
+            'id':'vip','name':'VIP','threshold':0,'color':'#111827',
+            'discount_percent':0,'benefits':[],
+            'coupon_enabled':False,'coupon_reward_text':'','coupon_validity_days':30,
+        }
     manual = customer.get('vip_manual_tier_id')
     if manual:
         found = next((t for t in tiers if t['id'] == manual), None)
@@ -6202,6 +6221,69 @@ def get_next_vip_tier(customer: dict, program: dict):
         if tier['threshold'] > points and tier['threshold'] > current['threshold']:
             return tier
     return None
+
+
+def _vip_tiers_crossed_on_upgrade(old_tier: dict, new_tier: dict, program: dict) -> list:
+    """Return every configured tier crossed in an upward tier transition."""
+    tiers = normalize_vip_tiers(program or {})
+    if not tiers or not old_tier or not new_tier:
+        return []
+    old_id = str(old_tier.get('id') or '')
+    new_id = str(new_tier.get('id') or '')
+    old_index = next((i for i, t in enumerate(tiers) if str(t.get('id')) == old_id), None)
+    new_index = next((i for i, t in enumerate(tiers) if str(t.get('id')) == new_id), None)
+    if old_index is None or new_index is None or new_index <= old_index:
+        return []
+    return tiers[old_index + 1:new_index + 1]
+
+
+def issue_vip_tier_upgrade_coupons(business: dict, customer: dict, program: dict, old_tier: dict, new_tier: dict) -> list:
+    """Issue owner-configured one-time coupons for every newly crossed VIP tier.
+
+    The existing coupons table is reused intentionally. Tier-up rewards may queue
+    behind an older active coupon; ``safe_get_active_coupon`` serves the oldest
+    usable row first, so no reward is overwritten or lost and no schema migration
+    is required.
+    """
+    if not supabase or not business or not customer or not program or program.get('card_type') != 'vip':
+        return []
+    crossed = _vip_tiers_crossed_on_upgrade(old_tier, new_tier, program)
+    issued = []
+    for offset, tier in enumerate(crossed):
+        if not tier.get('coupon_enabled'):
+            continue
+        reward_text = str(tier.get('coupon_reward_text') or '').strip()
+        if not reward_text:
+            continue
+        validity_days = max(1, min(3650, int(tier.get('coupon_validity_days') or 30)))
+        expires_at = (_loyalty_today() + timedelta(days=validity_days)).isoformat()
+        created_at = (datetime.utcnow() + timedelta(microseconds=offset)).isoformat()
+        coupon = {
+            'public_id': generate_public_id(),
+            'business_id': business.get('id'),
+            'customer_id': customer.get('id'),
+            'reward_text': reward_text[:200],
+            'status': 'active',
+            'expires_at': expires_at,
+            'created_at': created_at,
+        }
+        try:
+            result = supabase.table('coupons').insert(coupon).execute()
+            created = result.data[0] if getattr(result, 'data', None) else coupon
+            issued.append({
+                **created,
+                'tier_id': tier.get('id'),
+                'tier_name': tier.get('name'),
+            })
+        except Exception as exc:
+            # VIP points/tier progression is the primary transaction. A coupon
+            # write failure must not roll it back; make the failure visible in logs.
+            print(
+                f"VIP TIER COUPON warning customer={customer.get('public_id')} "
+                f"tier={tier.get('name')}: {exc}"
+            )
+    return issued
+
 
 def log_vip_event(business_id, customer_id, action, points_delta, points_balance, amount_spent=None, old_tier=None, new_tier=None, staff_id=None, branch_id=None, note=None):
     try:
@@ -12022,8 +12104,9 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
     # (no reward_unlocked equivalent for points), but still need `program`
     # loaded below so the wallet push has it.
     program = None
-    if 'stamp_count' in update_data or 'points_balance' in update_data or 'multipass_sessions_remaining' in update_data:
+    if any(k in update_data for k in ('stamp_count', 'points_balance', 'multipass_sessions_remaining', 'vip_points', 'vip_manual_tier_id')):
         program = safe_get_loyalty_program(business.get('id'))
+    old_vip_tier = get_vip_tier(customer, program) if program and program.get('card_type') == 'vip' else None
     if 'stamp_count' in update_data:
         update_data['reward_unlocked'] = bool(
             get_available_stamp_rewards({**customer, 'stamp_count': update_data['stamp_count']}, program)
@@ -12070,6 +12153,17 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
     # Owner-dashboard stamp edits use this generic customer PATCH endpoint.
     # Keep those manual corrections in the same Stamp Activity audit trail as
     # /stamp/adjust so removals (and manual additions) never disappear from history.
+    tier_coupons_issued = []
+    if program and program.get('card_type') == 'vip' and any(k in update_data for k in ('vip_points', 'vip_manual_tier_id')):
+        new_vip_tier = get_vip_tier(updated_customer, program)
+        tier_coupons_issued = issue_vip_tier_upgrade_coupons(
+            business, updated_customer, program, old_vip_tier, new_vip_tier
+        )
+        updated_customer['vip_tier'] = new_vip_tier
+        updated_customer['vip_next_tier'] = get_next_vip_tier(updated_customer, program)
+        updated_customer['tier_coupons_issued'] = tier_coupons_issued
+        updated_customer['active_coupon'] = safe_get_active_coupon(updated_customer.get('id'))
+
     if 'stamp_count' in update_data:
         old_count = int(customer.get('stamp_count') or 0)
         new_count = int(updated_customer.get('stamp_count') or 0)
@@ -12122,7 +12216,7 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
                 },
             )
 
-    if 'stamp_count' in update_data or 'points_balance' in update_data or 'multipass_sessions_remaining' in update_data:
+    if any(k in update_data for k in ('stamp_count', 'points_balance', 'multipass_sessions_remaining', 'vip_points', 'vip_manual_tier_id')):
         try:
             sync_wallet_object(updated_customer, business, program)
         except Exception:
@@ -13082,6 +13176,16 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
             if threshold < last:
                 raise HTTPException(status_code=400, detail='VIP tier thresholds must increase in order')
             last=threshold
+            coupon_enabled = bool(t.get('coupon_enabled'))
+            coupon_reward_text = str(t.get('coupon_reward_text') or '').strip()
+            if coupon_enabled and not coupon_reward_text:
+                raise HTTPException(status_code=400, detail=f"Add a tier-up coupon reward for {str(t.get('name') or f'Tier {i+1}').strip()}")
+            if len(coupon_reward_text) > 200:
+                raise HTTPException(status_code=400, detail='Keep tier-up coupon descriptions under 200 characters')
+            try:
+                coupon_validity_days = max(1, min(3650, int(t.get('coupon_validity_days') or 30)))
+            except Exception:
+                coupon_validity_days = 30
             tiers.append({
                 'id': str(t.get('id') or uuid.uuid4().hex[:12]),
                 'name': str(t.get('name') or f'Tier {i+1}').strip(),
@@ -13089,6 +13193,9 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
                 'color': str(t.get('color') or '#64748b'),
                 'discount_percent': max(0,min(100,float(t.get('discount_percent') or 0))),
                 'benefits': [str(x).strip() for x in (t.get('benefits') or []) if str(x).strip()],
+                'coupon_enabled': coupon_enabled,
+                'coupon_reward_text': coupon_reward_text[:200],
+                'coupon_validity_days': coupon_validity_days,
                 'active': t.get('active') is not False,
             })
         data['vip_tiers'] = tiers
@@ -16017,13 +16124,20 @@ async def add_vip_sale(public_id: str, req: VIPSaleRequest, background_tasks: Ba
     supabase.table('customers').update({'vip_points':balance,'updated_at':datetime.utcnow().isoformat()}).eq('id',customer.get('id')).execute()
     customer['vip_points']=balance
     new_tier=get_vip_tier(customer, program); next_tier=get_next_vip_tier(customer, program)
+    tier_coupons_issued = issue_vip_tier_upgrade_coupons(business, customer, program, old_tier, new_tier)
     log_vip_event(business.get('id'),customer.get('id'),'sale',earned,balance,req.amount_spent,old_tier.get('name'),new_tier.get('name'),staff_id,branch_id)
+    vip_wallet_body = f"You earned {earned} VIP points. You are now {new_tier.get('name')} VIP."
+    if tier_coupons_issued:
+        if len(tier_coupons_issued) == 1:
+            vip_wallet_body += f" Tier reward unlocked: {tier_coupons_issued[0].get('reward_text')}."
+        else:
+            vip_wallet_body += f" You unlocked {len(tier_coupons_issued)} tier reward coupons."
     background_tasks.add_task(
         sync_loyalty_wallets_background,
         dict(customer), dict(business), dict(program),
         'vip_sale',
         'VIP status updated',
-        f"You earned {earned} VIP points. You are now {new_tier.get('name')} VIP.",
+        vip_wallet_body,
         f"vip-{customer.get('id')}-{balance}-{int(datetime.utcnow().timestamp())}",
     )
     response_payload = {
@@ -16034,6 +16148,7 @@ async def add_vip_sale(public_id: str, req: VIPSaleRequest, background_tasks: Ba
         'tier': new_tier,
         'next_tier': next_tier,
         'upgraded': old_tier.get('id') != new_tier.get('id'),
+        'tier_coupons_issued': tier_coupons_issued,
         'earning_rule': {
             'vip_points': rate,
             'per_pesos': base,
@@ -16054,13 +16169,15 @@ async def adjust_vip_points(public_id: str, req: VIPAdjustRequest, background_ta
     old=get_vip_tier(customer,program); old_balance=int(customer.get('vip_points') or 0); balance=max(0,old_balance+req.points_delta)
     audit_row=start_transaction_audit(business_id=business.get('id'),customer_id=customer.get('id'),actor_type='owner',action='vip_adjust',delta=balance-old_balance,balance_before=old_balance,reason=req.note,metadata={'card_type':'vip'})
     supabase.table('customers').update({'vip_points':balance,'updated_at':datetime.utcnow().isoformat()}).eq('id',customer.get('id')).execute(); customer['vip_points']=balance
-    new=get_vip_tier(customer,program); log_vip_event(business.get('id'),customer.get('id'),'adjustment',req.points_delta,balance,old_tier=old.get('name'),new_tier=new.get('name'),note=req.note)
+    new=get_vip_tier(customer,program)
+    tier_coupons_issued = issue_vip_tier_upgrade_coupons(business, customer, program, old, new)
+    log_vip_event(business.get('id'),customer.get('id'),'adjustment',req.points_delta,balance,old_tier=old.get('name'),new_tier=new.get('name'),note=req.note)
     background_tasks.add_task(
         sync_loyalty_wallets_background,
         dict(customer), dict(business), dict(program),
         'vip_adjust',
     )
-    response_payload={'vip_points':balance,'tier':new,'next_tier':get_next_vip_tier(customer,program)}
+    response_payload={'vip_points':balance,'tier':new,'next_tier':get_next_vip_tier(customer,program),'tier_coupons_issued':tier_coupons_issued,'active_coupon':safe_get_active_coupon(customer.get('id'))}
     if audit_row and audit_row.get('transaction_id'): response_payload['transaction_id']=str(audit_row.get('transaction_id'))
     complete_transaction_audit(audit_row,balance_after=balance,response_json=response_payload)
     return response_payload
