@@ -2863,7 +2863,21 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     )}
                   </div>
                 ) : isVipCard ? (
-                  <div style={styles.cardProgress}><p style={{fontSize:30,fontWeight:900,color:'white',margin:'8px 0 2px'}}>👑 {selectedCustomer.vip_tier?.name||'Tier'}</p><p style={{fontSize:14,color:'white',fontWeight:800}}>Tier Points: {selectedCustomer.vip_points||0}</p>{selectedCustomer.vip_next_tier&&<p style={{fontSize:12,color:'rgba(255,255,255,.8)'}}>{Math.max(0,selectedCustomer.vip_next_tier.threshold-(selectedCustomer.vip_points||0))} points to {selectedCustomer.vip_next_tier.name}</p>}{(selectedCustomer.vip_tier?.benefits||[]).map((b,i)=><p key={i} style={{fontSize:12,color:'white',margin:'4px 0',textAlign:'left'}}>✓ {b}</p>)}</div>
+                  <div style={styles.cardProgress}>
+                    <p style={{fontSize:30,fontWeight:900,color:'white',margin:'8px 0 2px'}}>👑 {selectedCustomer.vip_tier?.name||'Tier'}</p>
+                    <p style={{fontSize:14,color:'white',fontWeight:800}}>Tier Points: {selectedCustomer.vip_points||0}</p>
+                    {selectedCustomer.vip_next_tier&&<p style={{fontSize:12,color:'rgba(255,255,255,.8)'}}>{Math.max(0,selectedCustomer.vip_next_tier.threshold-(selectedCustomer.vip_points||0))} points to {selectedCustomer.vip_next_tier.name}</p>}
+                    {(selectedCustomer.vip_tier?.benefits||[]).map((b,i)=><p key={i} style={{fontSize:12,color:'white',margin:'4px 0',textAlign:'left'}}>✓ {b}</p>)}
+                    {selectedCustomer.vip_next_tier && (
+                      <div style={{marginTop:12,paddingTop:10,borderTop:'1px solid rgba(255,255,255,.24)',textAlign:'left'}}>
+                        <p style={{fontSize:10,fontWeight:900,letterSpacing:.8,color:'rgba(255,255,255,.7)',margin:'0 0 6px'}}>WHEN YOU REACH {String(selectedCustomer.vip_next_tier.name||'NEXT TIER').toUpperCase()}</p>
+                        {Number(selectedCustomer.vip_next_tier.discount_percent||0)>0 && <p style={{fontSize:12,color:'white',margin:'4px 0'}}>✓ {selectedCustomer.vip_next_tier.discount_percent}% discount</p>}
+                        {(selectedCustomer.vip_next_tier.benefits||[]).map((b,i)=><p key={`next-benefit-${i}`} style={{fontSize:12,color:'white',margin:'4px 0'}}>✓ {b}</p>)}
+                        {(selectedCustomer.vip_next_tier.coupons||[]).map((c,i)=><p key={c.id||`next-coupon-${i}`} style={{fontSize:12,color:'#fef3c7',margin:'4px 0'}}>🎟️ {c.reward_text}</p>)}
+                        {(!selectedCustomer.vip_next_tier.coupons || selectedCustomer.vip_next_tier.coupons.length===0) && <p style={{fontSize:11,color:'rgba(255,255,255,.65)',margin:'5px 0 0'}}>No one-time coupons configured for this tier.</p>}
+                      </div>
+                    )}
+                  </div>
                 ) : isMembershipCard ? (
                   <div style={styles.cardProgress}>
                     <p style={{

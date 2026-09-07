@@ -3238,6 +3238,14 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         else:
             next_tier_value = 'Top tier'
         details.append(('next_tier', 'NEXT TIER', next_tier_value))
+        if next_tier:
+            next_benefits = []
+            if float(next_tier.get('discount_percent') or 0) > 0:
+                next_benefits.append(f"{_fmt_number(next_tier.get('discount_percent'))}% discount")
+            next_benefits.extend([str(x) for x in (next_tier.get('benefits') or []) if str(x).strip()])
+            next_coupons = [str(c.get('reward_text') or '').strip() for c in (next_tier.get('coupons') or []) if str(c.get('reward_text') or '').strip()]
+            details.append(('next_tier_benefits', 'BENEFITS YOU UNLOCK', ' · '.join(next_benefits) if next_benefits else 'Tier benefits'))
+            details.append(('next_tier_coupons', 'COUPONS YOU RECEIVE', ' · '.join(next_coupons) if next_coupons else 'No one-time coupons for this tier'))
         details.append(('how_to_earn', 'HOW TO EARN', _vip_earning_rule()))
         if card_cycle_reset_on:
             details.append(('reset_on', 'RESET ON', card_cycle_reset_on))
@@ -4645,7 +4653,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         current_vip_points = int(customer.get('vip_points') or 0)
         apple_details.append(('current_tier', 'CURRENT TIER', (vip_tier or {}).get('name') or 'VIP'))
         if vip_next_tier:
-            next_threshold = int(vip_next_tier.get('min_points') or vip_next_tier.get('points') or 0)
+            next_threshold = int(vip_next_tier.get('threshold') or vip_next_tier.get('min_points') or vip_next_tier.get('points') or 0)
             points_to_next = max(next_threshold - current_vip_points, 0) if next_threshold > 0 else None
             next_value = (
                 f"{vip_next_tier.get('name')} · {points_to_next} points to go"
@@ -4655,6 +4663,14 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         else:
             next_value = 'Top tier'
         apple_details.append(('next_tier', 'NEXT TIER', next_value))
+        if vip_next_tier:
+            unlock_benefits = []
+            if float(vip_next_tier.get('discount_percent') or 0) > 0:
+                unlock_benefits.append(f"{_fmt_number(vip_next_tier.get('discount_percent'))}% discount")
+            unlock_benefits.extend([str(x) for x in (vip_next_tier.get('benefits') or []) if str(x).strip()])
+            unlock_coupons = [str(c.get('reward_text') or '').strip() for c in (vip_next_tier.get('coupons') or []) if str(c.get('reward_text') or '').strip()]
+            apple_details.append(('next_tier_benefits', 'BENEFITS YOU UNLOCK', ' · '.join(unlock_benefits) if unlock_benefits else 'Tier benefits'))
+            apple_details.append(('next_tier_coupons', 'COUPONS YOU RECEIVE', ' · '.join(unlock_coupons) if unlock_coupons else 'No one-time coupons for this tier'))
     elif card_type == 'membership':
         status = membership_effective_status(customer)
         expiry = customer.get('membership_expires_at')
@@ -6160,6 +6176,39 @@ def log_multipass_event(business_id: int, customer_id: int, action: str, session
 
 
 
+def _normalize_vip_tier_coupons(tier: dict) -> list:
+    """Return a clean coupon list while accepting the previous single-coupon shape."""
+    raw = tier.get('coupons')
+    if not isinstance(raw, list):
+        # Backward compatibility with the first VIP tier-coupon implementation.
+        raw = []
+        if tier.get('coupon_enabled') and str(tier.get('coupon_reward_text') or '').strip():
+            raw = [{
+                'id': f"legacy-{tier.get('id') or 'tier'}",
+                'reward_text': tier.get('coupon_reward_text'),
+                'validity_days': tier.get('coupon_validity_days') or 30,
+                'active': True,
+            }]
+    coupons = []
+    for i, coupon in enumerate(raw[:20]):
+        if not isinstance(coupon, dict):
+            continue
+        reward_text = str(coupon.get('reward_text') or '').strip()[:200]
+        if not reward_text:
+            continue
+        try:
+            validity_days = max(1, min(3650, int(coupon.get('validity_days') or 30)))
+        except Exception:
+            validity_days = 30
+        coupons.append({
+            'id': str(coupon.get('id') or f'coupon-{i+1}'),
+            'reward_text': reward_text,
+            'validity_days': validity_days,
+            'active': coupon.get('active') is not False,
+        })
+    return [c for c in coupons if c['active']]
+
+
 def normalize_vip_tiers(program: dict) -> list:
     raw = program.get('vip_tiers') or []
     tiers = []
@@ -6170,11 +6219,7 @@ def normalize_vip_tiers(program: dict) -> list:
             threshold = max(0, int(t.get('threshold') or 0))
         except Exception:
             threshold = 0
-        try:
-            coupon_validity_days = max(1, min(3650, int(t.get('coupon_validity_days') or 30)))
-        except Exception:
-            coupon_validity_days = 30
-        coupon_reward_text = str(t.get('coupon_reward_text') or '').strip()[:200]
+        coupons = _normalize_vip_tier_coupons(t)
         tiers.append({
             'id': str(t.get('id') or f'tier-{i+1}'),
             'name': str(t.get('name') or f'Tier {i+1}'),
@@ -6182,21 +6227,24 @@ def normalize_vip_tiers(program: dict) -> list:
             'color': str(t.get('color') or '#64748b'),
             'discount_percent': max(0, min(100, float(t.get('discount_percent') or 0))),
             'benefits': [str(x).strip() for x in (t.get('benefits') or []) if str(x).strip()],
-            'coupon_enabled': bool(t.get('coupon_enabled')),
-            'coupon_reward_text': coupon_reward_text,
-            'coupon_validity_days': coupon_validity_days,
+            'coupons': coupons,
+            # Legacy mirrors make a rollback to the single-coupon client harmless.
+            'coupon_enabled': bool(coupons),
+            'coupon_reward_text': coupons[0]['reward_text'] if coupons else '',
+            'coupon_validity_days': coupons[0]['validity_days'] if coupons else 30,
             'active': t.get('active') is not False,
         })
     tiers = [t for t in tiers if t['active']]
     tiers.sort(key=lambda t: t['threshold'])
     return tiers
 
+
 def get_vip_tier(customer: dict, program: dict) -> dict:
     tiers = normalize_vip_tiers(program)
     if not tiers:
         return {
             'id':'vip','name':'VIP','threshold':0,'color':'#111827',
-            'discount_percent':0,'benefits':[],
+            'discount_percent':0,'benefits':[],'coupons':[],
             'coupon_enabled':False,'coupon_reward_text':'','coupon_validity_days':30,
         }
     manual = customer.get('vip_manual_tier_id')
@@ -6212,6 +6260,7 @@ def get_vip_tier(customer: dict, program: dict) -> dict:
         else:
             break
     return current
+
 
 def get_next_vip_tier(customer: dict, program: dict):
     points = int(customer.get('vip_points') or 0)
@@ -6238,50 +6287,50 @@ def _vip_tiers_crossed_on_upgrade(old_tier: dict, new_tier: dict, program: dict)
 
 
 def issue_vip_tier_upgrade_coupons(business: dict, customer: dict, program: dict, old_tier: dict, new_tier: dict) -> list:
-    """Issue owner-configured one-time coupons for every newly crossed VIP tier.
+    """Issue every owner-configured coupon from each newly crossed VIP tier.
 
-    The existing coupons table is reused intentionally. Tier-up rewards may queue
-    behind an older active coupon; ``safe_get_active_coupon`` serves the oldest
-    usable row first, so no reward is overwritten or lost and no schema migration
-    is required.
+    Coupons queue in the existing coupons table. safe_get_active_coupon() exposes
+    the oldest usable reward first, so a customer can receive several tier rewards
+    at once without one overwriting another.
     """
     if not supabase or not business or not customer or not program or program.get('card_type') != 'vip':
         return []
     crossed = _vip_tiers_crossed_on_upgrade(old_tier, new_tier, program)
     issued = []
-    for offset, tier in enumerate(crossed):
-        if not tier.get('coupon_enabled'):
-            continue
-        reward_text = str(tier.get('coupon_reward_text') or '').strip()
-        if not reward_text:
-            continue
-        validity_days = max(1, min(3650, int(tier.get('coupon_validity_days') or 30)))
-        expires_at = (_loyalty_today() + timedelta(days=validity_days)).isoformat()
-        created_at = (datetime.utcnow() + timedelta(microseconds=offset)).isoformat()
-        coupon = {
-            'public_id': generate_public_id(),
-            'business_id': business.get('id'),
-            'customer_id': customer.get('id'),
-            'reward_text': reward_text[:200],
-            'status': 'active',
-            'expires_at': expires_at,
-            'created_at': created_at,
-        }
-        try:
-            result = supabase.table('coupons').insert(coupon).execute()
-            created = result.data[0] if getattr(result, 'data', None) else coupon
-            issued.append({
-                **created,
-                'tier_id': tier.get('id'),
-                'tier_name': tier.get('name'),
-            })
-        except Exception as exc:
-            # VIP points/tier progression is the primary transaction. A coupon
-            # write failure must not roll it back; make the failure visible in logs.
-            print(
-                f"VIP TIER COUPON warning customer={customer.get('public_id')} "
-                f"tier={tier.get('name')}: {exc}"
-            )
+    order = 0
+    for tier in crossed:
+        for coupon_config in (tier.get('coupons') or []):
+            reward_text = str(coupon_config.get('reward_text') or '').strip()
+            if not reward_text:
+                continue
+            validity_days = max(1, min(3650, int(coupon_config.get('validity_days') or 30)))
+            expires_at = (_loyalty_today() + timedelta(days=validity_days)).isoformat()
+            created_at = (datetime.utcnow() + timedelta(microseconds=order)).isoformat()
+            order += 1
+            coupon = {
+                'public_id': generate_public_id(),
+                'business_id': business.get('id'),
+                'customer_id': customer.get('id'),
+                'reward_text': reward_text[:200],
+                'status': 'active',
+                'expires_at': expires_at,
+                'created_at': created_at,
+            }
+            try:
+                result = supabase.table('coupons').insert(coupon).execute()
+                created = result.data[0] if getattr(result, 'data', None) else coupon
+                issued.append({
+                    **created,
+                    'tier_id': tier.get('id'),
+                    'tier_name': tier.get('name'),
+                    'tier_coupon_id': coupon_config.get('id'),
+                })
+            except Exception as exc:
+                # VIP progression is primary; a coupon write failure must not roll it back.
+                print(
+                    f"VIP TIER COUPON warning customer={customer.get('public_id')} "
+                    f"tier={tier.get('name')} coupon={reward_text[:60]}: {exc}"
+                )
     return issued
 
 
@@ -13176,16 +13225,41 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
             if threshold < last:
                 raise HTTPException(status_code=400, detail='VIP tier thresholds must increase in order')
             last=threshold
-            coupon_enabled = bool(t.get('coupon_enabled'))
-            coupon_reward_text = str(t.get('coupon_reward_text') or '').strip()
-            if coupon_enabled and not coupon_reward_text:
-                raise HTTPException(status_code=400, detail=f"Add a tier-up coupon reward for {str(t.get('name') or f'Tier {i+1}').strip()}")
-            if len(coupon_reward_text) > 200:
-                raise HTTPException(status_code=400, detail='Keep tier-up coupon descriptions under 200 characters')
-            try:
-                coupon_validity_days = max(1, min(3650, int(t.get('coupon_validity_days') or 30)))
-            except Exception:
-                coupon_validity_days = 30
+            raw_coupons = t.get('coupons')
+            if raw_coupons is None:
+                # Accept the first single-coupon client during rolling deploys.
+                raw_coupons = []
+                if bool(t.get('coupon_enabled')):
+                    raw_coupons = [{
+                        'id': f"legacy-{t.get('id') or i+1}",
+                        'reward_text': t.get('coupon_reward_text') or '',
+                        'validity_days': t.get('coupon_validity_days') or 30,
+                        'active': True,
+                    }]
+            if not isinstance(raw_coupons, list):
+                raise HTTPException(status_code=400, detail='VIP tier coupons must be a list')
+            if len(raw_coupons) > 20:
+                raise HTTPException(status_code=400, detail='A VIP tier can have up to 20 coupons')
+            coupons = []
+            for ci, coupon in enumerate(raw_coupons):
+                if not isinstance(coupon, dict):
+                    raise HTTPException(status_code=400, detail='Invalid VIP tier coupon')
+                reward_text = str(coupon.get('reward_text') or '').strip()
+                if not reward_text:
+                    raise HTTPException(status_code=400, detail=f"Coupon {ci+1} in {str(t.get('name') or f'Tier {i+1}').strip()} needs a reward")
+                if len(reward_text) > 200:
+                    raise HTTPException(status_code=400, detail='Keep VIP coupon descriptions under 200 characters')
+                try:
+                    validity_days = max(1, min(3650, int(coupon.get('validity_days') or 30)))
+                except Exception:
+                    validity_days = 30
+                coupons.append({
+                    'id': str(coupon.get('id') or uuid.uuid4().hex[:12]),
+                    'reward_text': reward_text,
+                    'validity_days': validity_days,
+                    'active': coupon.get('active') is not False,
+                })
+            active_coupons = [c for c in coupons if c['active']]
             tiers.append({
                 'id': str(t.get('id') or uuid.uuid4().hex[:12]),
                 'name': str(t.get('name') or f'Tier {i+1}').strip(),
@@ -13193,9 +13267,11 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
                 'color': str(t.get('color') or '#64748b'),
                 'discount_percent': max(0,min(100,float(t.get('discount_percent') or 0))),
                 'benefits': [str(x).strip() for x in (t.get('benefits') or []) if str(x).strip()],
-                'coupon_enabled': coupon_enabled,
-                'coupon_reward_text': coupon_reward_text[:200],
-                'coupon_validity_days': coupon_validity_days,
+                'coupons': coupons,
+                # Legacy mirrors keep older clients/rollback compatible with coupon #1.
+                'coupon_enabled': bool(active_coupons),
+                'coupon_reward_text': active_coupons[0]['reward_text'] if active_coupons else '',
+                'coupon_validity_days': active_coupons[0]['validity_days'] if active_coupons else 30,
                 'active': t.get('active') is not False,
             })
         data['vip_tiers'] = tiers
