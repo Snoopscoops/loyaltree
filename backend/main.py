@@ -1406,6 +1406,10 @@ class LoyaltyConfig(BaseModel):
     # --- VIP card only ---
     vip_points_per_amount: Optional[float] = Field(default=10, ge=0)
     vip_amount_pesos: Optional[float] = Field(default=100, ge=1)
+    # Phase 1 modular VIP: optionally run Stamp rewards in parallel with Tier progression.
+    # stamp_count remains on the existing customer row; this flag only enables the
+    # stamp engine/UI for VIP cards, so no second customer identity/card is needed.
+    vip_stamps_enabled: bool = False
     vip_tiers: Optional[List[dict]] = None
 
 class CustomerSignup(BaseModel):
@@ -2015,6 +2019,24 @@ def program_has_membership(program: Optional[dict]) -> bool:
     return str((program or {}).get('card_type') or '').lower() in ('membership', 'hybrid')
 
 
+def vip_stamps_enabled(program: Optional[dict]) -> bool:
+    """True only for a VIP/Tier card whose optional Stamp engine is enabled."""
+    return (
+        str((program or {}).get('card_type') or '').lower() == 'vip'
+        and bool((program or {}).get('vip_stamps_enabled'))
+    )
+
+
+def program_uses_stamps(program: Optional[dict]) -> bool:
+    """Whether this program accepts Stamp transactions/rewards.
+
+    Stamp cards and Stamp-based Hybrid cards already use effective_loyalty_type().
+    VIP + Stamps is additive: VIP remains the primary tier engine while stamps run
+    in parallel, gated by vip_stamps_enabled.
+    """
+    return effective_loyalty_type(program) == 'stamp' or vip_stamps_enabled(program)
+
+
 def _loyalty_today():
     """Business-facing loyalty dates use Asia/Manila (or LOYALTY_TIMEZONE env)."""
     return datetime.now(LOYALTY_TIMEZONE).date()
@@ -2137,6 +2159,8 @@ def apply_card_cycle_expiration_if_needed(customer: dict, business: Optional[dic
         update_data['points_balance'] = 0
     elif loyalty_type == 'vip':
         update_data.update({'vip_points': 0, 'vip_manual_tier_id': None})
+        if vip_stamps_enabled(program):
+            update_data.update({'stamp_count': 0, 'reward_unlocked': False})
     elif card_type == 'multipass':
         # Keep the unused-session history/balance visible, but make it unusable.
         update_data['multipass_expires_at'] = expires.isoformat()
@@ -2583,6 +2607,7 @@ def generate_personalized_hero_image_bytes(
     last_service_name: Optional[str] = None,
     vip_points: int = 0,
     vip_tier_name: Optional[str] = None,
+    vip_has_stamps: bool = False,
     membership_status: Optional[str] = None,
     membership_expires_at: Optional[str] = None,
     secondary_color: Optional[str] = None,
@@ -2682,7 +2707,11 @@ def generate_personalized_hero_image_bytes(
                          else 'All sessions used')
     elif card_type == 'vip':
         reward_line = str(vip_tier_name or 'VIP')
-        progress_line = f'{vip_points} VIP points'
+        progress_line = (
+            f'{stamps} of {stamp_goal} stamps'
+            if vip_has_stamps else
+            f'{vip_points} VIP points'
+        )
     elif card_type == 'membership':
         reward_line = f'Membership · {membership_status.upper() if membership_status else "INACTIVE"}'
         progress_line = (
@@ -3098,7 +3127,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         )
 
     stamp_rewards = []
-    if loyalty_type == 'stamp':
+    if program_uses_stamps(program):
         for reward in ((program or {}).get('stamp_rewards') or []):
             if not isinstance(reward, dict):
                 continue
@@ -3225,9 +3254,22 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
 
     elif card_type == 'vip':
         vip_points = int(customer.get('vip_points') or 0)
+        current_tier = get_vip_tier(customer, program or {})
         next_tier = get_next_vip_tier(customer, program or {})
-        loyalty_points_label = 'VIP PTS'
-        loyalty_points_balance = vip_points
+        if vip_stamps_enabled(program):
+            # Tier + Stamps: the face prioritizes the customer-facing repeat-visit
+            # progress while the secondary metric keeps their current Tier visible.
+            loyalty_points_label = 'STAMPS'
+            loyalty_points_balance = f'{stamps}/{full_stamp_goal}'
+            secondary_points = {
+                'label': 'VIP TIER',
+                'balance': {'string': str(current_tier.get('name') or 'VIP')},
+            }
+            details.append(('stamp_next_reward', 'STAMP REWARD', _stamp_next_reward_value()))
+            details.append(('vip_points', 'VIP POINTS', f'{vip_points:,}'))
+        else:
+            loyalty_points_label = 'VIP PTS'
+            loyalty_points_balance = vip_points
         if next_tier:
             threshold = int(next_tier.get('threshold') or 0)
             points_to_go = max(threshold - vip_points, 0)
@@ -3248,6 +3290,11 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
             details.append(('next_tier_benefits', 'BENEFITS YOU UNLOCK', ' · '.join(next_benefits) if next_benefits else 'Tier benefits'))
             details.append(('next_tier_coupons', 'COUPONS YOU RECEIVE', ' · '.join(next_coupons) if next_coupons else 'No one-time coupons for this tier'))
         details.append(('how_to_earn', 'HOW TO EARN', _vip_earning_rule()))
+        if vip_stamps_enabled(program):
+            stamp_rule = '1 stamp per qualifying visit'
+            if bool((program or {}).get('stamp_once_per_day')):
+                stamp_rule += ' · max 1/day'
+            details.append(('stamp_rule', 'STAMP RULE', stamp_rule))
         if card_cycle_reset_on:
             details.append(('reset_on', 'RESET ON', card_cycle_reset_on))
 
@@ -3292,7 +3339,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
             'label': loyalty_points_label,
             'balance': (
                 {'int': int(loyalty_points_balance)}
-                if card_type == 'vip'
+                if card_type == 'vip' and not vip_stamps_enabled(program)
                 else {'string': str(loyalty_points_balance)}
             ),
         },
@@ -3347,7 +3394,11 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         elif card_type == 'membership':
             progress_key = (membership_summary or {}).get('total_visits', 0)
         elif card_type == 'vip':
-            progress_key = int(customer.get('vip_points') or 0)
+            progress_key = (
+                f"{int(customer.get('vip_points') or 0)}-{int(stamps or 0)}"
+                if vip_stamps_enabled(program) else
+                int(customer.get('vip_points') or 0)
+            )
         else:
             progress_key = stamps
         hero_url = (
@@ -4499,7 +4550,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         )
 
     stamp_rewards = []
-    if loyalty_type == 'stamp':
+    if program_uses_stamps(program):
         for reward in ((program or {}).get('stamp_rewards') or []):
             if not isinstance(reward, dict):
                 continue
@@ -4653,6 +4704,10 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     elif card_type == 'vip':
         current_vip_points = int(customer.get('vip_points') or 0)
         apple_details.append(('current_tier', 'CURRENT TIER', (vip_tier or {}).get('name') or 'VIP'))
+        if vip_stamps_enabled(program):
+            apple_details.append(('stamp_progress', 'STAMPS', f'{current_stamps}/{full_stamp_goal}'))
+            apple_details.append(('stamp_next_reward', 'STAMP REWARD', stamp_next_reward_value))
+            apple_details.append(('vip_points', 'VIP POINTS', f'{current_vip_points:,}'))
         if vip_next_tier:
             next_threshold = int(vip_next_tier.get('threshold') or vip_next_tier.get('min_points') or vip_next_tier.get('points') or 0)
             points_to_next = max(next_threshold - current_vip_points, 0) if next_threshold > 0 else None
@@ -4987,7 +5042,9 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
             }
             if card_type == 'membership' else
             {
-                # VIP: tier left, VIP points right; tier colors remain dynamic.
+                # VIP normally shows Tier + VIP points. When Stamp rewards are
+                # enabled, keep Tier on the left and show Stamp progress on the
+                # right; VIP points remain available in Pass Details.
                 'headerFields': [
                     {'key': 'card_name', 'label': 'CARD', 'value': card_title[:32]}
                 ],
@@ -4999,13 +5056,23 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                         'value': (vip_tier or {}).get('name', 'VIP'),
                         'changeMessage': 'VIP tier updated: %@',
                     },
-                    {
-                        'key': 'vip_points',
-                        'label': 'VIP POINTS',
-                        'value': str(int(customer.get('vip_points') or 0)),
-                        'textAlignment': 'PKTextAlignmentRight',
-                        'changeMessage': 'VIP points updated: %@',
-                    },
+                    (
+                        {
+                            'key': 'stamps',
+                            'label': 'STAMPS',
+                            'value': f"{int(stamps or 0)}/{int(full_stamp_goal)}",
+                            'textAlignment': 'PKTextAlignmentRight',
+                            'changeMessage': 'Stamp progress: %@',
+                        }
+                        if vip_stamps_enabled(program) else
+                        {
+                            'key': 'vip_points',
+                            'label': 'VIP POINTS',
+                            'value': str(int(customer.get('vip_points') or 0)),
+                            'textAlignment': 'PKTextAlignmentRight',
+                            'changeMessage': 'VIP points updated: %@',
+                        }
+                    ),
                 ],
                 'auxiliaryFields': cycle_auxiliary_fields,
                 'backFields': back_fields,
@@ -5077,6 +5144,7 @@ def generate_apple_strip_bytes(customer: dict, business: dict, program: dict, wi
         last_service_name=(membership_summary or {}).get('last_service_name'),
         vip_points=int(customer.get('vip_points') or 0),
         vip_tier_name=(vip_tier or {}).get('name'),
+        vip_has_stamps=vip_stamps_enabled(program),
         membership_status=membership_effective_status(customer) if program_has_membership(program) else None,
         membership_expires_at=customer.get('membership_expires_at'),
         secondary_color=(
@@ -5411,7 +5479,7 @@ def push_apple_wallet_update(serial_number: str):
     return {"status": status, "registrations": len(tokens), "pushes_sent": sent}
 
 
-APPLE_PASS_LAYOUT_RELEASE = "wallet-layout-2026-09-07-v5-points-next-reward-details"
+APPLE_PASS_LAYOUT_RELEASE = "wallet-layout-2026-09-08-v6-vip-tier-stamps"
 
 
 def refresh_business_apple_wallet_passes(business_id: int, reason: str = "card_config_change"):
@@ -6759,6 +6827,10 @@ def get_recent_activity(business_id: int, customer_id: int, card_type: str, limi
                 else:
                     desc = action.replace('_', ' ').capitalize() or 'Update'
                 entries.append((r.get('created_at'), desc))
+            if vip_stamps_enabled(program):
+                entries.extend(get_recent_activity(
+                    business_id, customer_id, 'stamp', limit=limit, program=program
+                ))
 
         else:  # membership
             rows = (supabase.table('membership_events').select('service_date,service_name,note')
@@ -13108,6 +13180,7 @@ async def get_loyalty_config(public_id: str, response: Response):
             "membership_quick_checkin": False,
             "vip_points_per_amount": 10,
             "vip_amount_pesos": 100,
+            "vip_stamps_enabled": False,
             "vip_tiers": [],
             "plan": business.get('plan', 'starter'),
             "plan_features": {
@@ -13202,7 +13275,11 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
         'updated_at': datetime.utcnow().isoformat(),
     }
 
-    if config.card_type == 'stamp' or (config.card_type == 'hybrid' and config.hybrid_loyalty_type == 'stamp'):
+    if (
+        config.card_type == 'stamp'
+        or (config.card_type == 'hybrid' and config.hybrid_loyalty_type == 'stamp')
+        or (config.card_type == 'vip' and config.vip_stamps_enabled)
+    ):
         milestones = []
         seen = set()
         for item in (config.stamp_rewards or []):
@@ -13251,6 +13328,7 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
             })
         data['points_prizes'] = prizes
     if config.card_type == 'vip':
+        data['vip_stamps_enabled'] = bool(config.vip_stamps_enabled)
         data['vip_points_per_amount'] = config.vip_points_per_amount or 0
         data['vip_amount_pesos'] = config.vip_amount_pesos or 100
         tiers=[]
@@ -15968,7 +16046,7 @@ async def add_stamp(public_id: str, req: StampRequest, background_tasks: Backgro
             raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
 
     program = safe_get_loyalty_program(business.get('id'))
-    if program and effective_loyalty_type(program) != 'stamp':
+    if program and not program_uses_stamps(program):
         raise HTTPException(status_code=400, detail="This card does not use stamps. Use its configured loyalty action instead.")
 
     rewards = get_stamp_rewards(program)
@@ -16130,8 +16208,8 @@ async def adjust_stamp(public_id: str, req: StampAdjustRequest, background_tasks
         branch_id = staff_res.data[0].get('branch_id')
 
     program = safe_get_loyalty_program(business.get('id'))
-    if program and effective_loyalty_type(program) != 'stamp':
-        raise HTTPException(status_code=400, detail="Stamp adjustments are only available for Stamp Cards")
+    if program and not program_uses_stamps(program):
+        raise HTTPException(status_code=400, detail="Stamp adjustments are only available when Stamp rewards are enabled")
 
     old_count = int(customer.get('stamp_count') or 0)
     new_count = max(0, old_count + int(req.delta))
@@ -17809,8 +17887,8 @@ async def redeem_reward(public_id: str, req: RedeemRequest, authorization: str =
             raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
 
     program = safe_get_loyalty_program(business.get('id'))
-    if not program or effective_loyalty_type(program) != 'stamp':
-        raise HTTPException(status_code=400, detail="Stamp reward redemption is only available for Stamp cards and Hybrid cards using Stamps")
+    if not program or not program_uses_stamps(program):
+        raise HTTPException(status_code=400, detail="Stamp reward redemption is only available when Stamp rewards are enabled")
     rewards = get_stamp_rewards(program)
     available = get_available_stamp_rewards(customer, program)
     if not available:
@@ -22492,6 +22570,22 @@ async def customer_wallet_page(customer_public_id: str):
         metric_value = str(tier.get('name') or 'VIP').upper()
         metric_sub = f'{points:,} VIP points'
         details = [('Next tier', str((next_tier or {}).get('name') or 'Top tier'))]
+        if vip_stamps_enabled(program):
+            rewards = get_stamp_rewards(program)
+            goal = int(rewards[-1].get('stamps') or program.get('stamp_goal') or 8)
+            current = min(int(customer.get('stamp_count') or 0), goal)
+            next_reward = next((r for r in rewards if int(r.get('stamps') or 0) >= current), rewards[-1] if rewards else None)
+            if next_reward:
+                left = max(int(next_reward.get('stamps') or goal) - current, 0)
+                reward_text = (
+                    f"{next_reward.get('reward_name') or 'Reward'} · Ready to redeem"
+                    if left == 0 else
+                    f"{next_reward.get('reward_name') or 'Reward'} · {left} stamps to go"
+                )
+            else:
+                reward_text = 'Ask in-store for rewards'
+            details.insert(0, ('Stamps', f'{current} / {goal}'))
+            details.insert(1, ('Stamp reward', reward_text))
     else:
         goal = int(program.get('stamp_goal') or 8)
         current = min(int(customer.get('stamp_count') or 0), goal)
@@ -23605,6 +23699,7 @@ async def public_business_join_config(public_id: str):
         'category': category,
         'card_type': program.get('card_type', 'stamp'),
         'hybrid_loyalty_type': hybrid_loyalty_type(program),
+        'vip_stamps_enabled': vip_stamps_enabled(program),
         'primary_color': program.get('primary_color') or category['color'],
         'card_name': program.get('card_name'),
         'description': program.get('description'),

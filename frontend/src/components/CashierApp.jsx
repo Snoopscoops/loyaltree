@@ -337,6 +337,8 @@ function CashierApp({ API_BASE }) {
           vip_next_tier: c.vip_next_tier || null,
           vip_points_per_amount: program.vip_points_per_amount || 0,
           vip_amount_pesos: program.vip_amount_pesos || 1,
+          vip_stamps_enabled: program.vip_stamps_enabled === true,
+          stamp_rewards: Array.isArray(program.stamp_rewards) ? program.stamp_rewards : [],
         })
         setMessage(`Found: ${c.name}`)
       } else {
@@ -1092,7 +1094,8 @@ function CashierApp({ API_BASE }) {
   const isHybrid = customerData?.card_type === 'hybrid'
   const hybridLoyaltyType = customerData?.hybrid_loyalty_type === 'stamp' ? 'stamp' : 'points'
   const usesPoints = customerData?.card_type === 'points' || (isHybrid && hybridLoyaltyType === 'points')
-  const usesStamps = customerData?.card_type === 'stamp' || (isHybrid && hybridLoyaltyType === 'stamp')
+  const vipUsesStamps = customerData?.card_type === 'vip' && customerData?.vip_stamps_enabled === true
+  const usesStamps = customerData?.card_type === 'stamp' || (isHybrid && hybridLoyaltyType === 'stamp') || vipUsesStamps
   const hasMembership = customerData?.card_type === 'membership' || isHybrid
   const canLogMembershipVisit = hasMembership && customerData?.membership_visit_logging_enabled !== false
 
@@ -1443,6 +1446,12 @@ function CashierApp({ API_BASE }) {
                 <span style={{...styles.pointsBalanceNumber,fontSize:28}}>👑 {customerData.vip_tier?.name||'VIP'}</span>
                 <span style={styles.pointsBalanceLabel}>{customerData.vip_points||0} VIP points</span>
               </div>
+              {vipUsesStamps && (
+                <div style={{...styles.pointsBalanceBox,marginTop:10,background:'#f0fdfa'}}>
+                  <span style={{...styles.pointsBalanceNumber,fontSize:24}}>🎟️ {customerData.stamp_count || 0} / {customerData.reward_threshold || 8}</span>
+                  <span style={styles.pointsBalanceLabel}>Stamp progress · separate from VIP points</span>
+                </div>
+              )}
               {vipTierPerks(customerData.vip_tier).length > 0 && (
                 <div style={{marginTop:10,padding:'10px 12px',borderRadius:12,background:'#fff',border:'1px solid #f1f5f9'}}>
                   <div style={{fontSize:10,fontWeight:900,color:'#64748b',letterSpacing:.6,marginBottom:6}}>CURRENT BENEFITS</div>

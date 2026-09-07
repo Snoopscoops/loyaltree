@@ -74,6 +74,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
     // VIP card only
     vip_points_per_amount: 10,
     vip_amount_pesos: 100,
+    vip_stamps_enabled: false,
     vip_tiers: [
       { id: 'bronze', name: 'Bronze', threshold: 0, color: '#92400e', discount_percent: 0, benefits: ['Member-only offers'], coupons: [], active: true },
       { id: 'silver', name: 'Silver', threshold: 1000, color: '#64748b', discount_percent: 5, benefits: [], coupons: [], active: true },
@@ -189,6 +190,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
           membership_quick_checkin: data.membership_quick_checkin === true,
           vip_points_per_amount: data.vip_points_per_amount ?? 10,
           vip_amount_pesos: data.vip_amount_pesos ?? 100,
+          vip_stamps_enabled: data.vip_stamps_enabled === true,
           vip_tiers: Array.isArray(data.vip_tiers) && data.vip_tiers.length
             ? data.vip_tiers.map(t => ({
                 ...t,
@@ -454,6 +456,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
     membership_quick_checkin: form.membership_quick_checkin === true,
     vip_points_per_amount: Number(form.vip_points_per_amount) || 0,
     vip_amount_pesos: Number(form.vip_amount_pesos) || 100,
+    vip_stamps_enabled: form.card_type === 'vip' && form.vip_stamps_enabled === true,
     vip_tiers: (form.vip_tiers || []).map(t => ({
       ...t,
       name: (t.name || 'Tier').trim(),
@@ -1024,6 +1027,27 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                   <span>spent</span>
                 </div>
 
+                <div style={{marginTop:18,padding:14,border:'1px solid #dbeafe',borderRadius:12,background:'#f8fafc'}}>
+                  <label style={{display:'flex',gap:10,alignItems:'flex-start',fontSize:13,fontWeight:800,cursor:'pointer'}}>
+                    <input type="checkbox" checked={form.vip_stamps_enabled === true} onChange={e=>update('vip_stamps_enabled',e.target.checked)} style={{marginTop:3}}/>
+                    <span>Enable Stamp Rewards on this Tier Card<span style={{display:'block',fontWeight:500,color:'#64748b',marginTop:4}}>Customers keep their VIP tier progression and also collect stamps on the same card.</span></span>
+                  </label>
+                  {form.vip_stamps_enabled && <div style={{marginTop:14}}>
+                    <label style={styles.label}>Stamp milestones</label>
+                    {(form.stamp_rewards || []).map((r,i) => <div key={r.id||i} style={{...styles.prizeRow,marginBottom:8}}>
+                      <span style={{fontWeight:800}}>{r.stamps} stamps → {r.reward_name}</span>
+                      <button type="button" style={styles.prizeRemoveBtn} onClick={()=>{
+                        const next=(form.stamp_rewards||[]).filter((_,j)=>j!==i); update('stamp_rewards',next)
+                        if(next.length){ const final=[...next].sort((a,b)=>Number(a.stamps)-Number(b.stamps)).slice(-1)[0]; update('stamp_goal',Number(final.stamps)||8); update('reward_name',final.reward_name||'Reward') }
+                      }}>✕</button>
+                    </div>)}
+                    <button type="button" style={{...styles.addPrizeBtn,width:guidedMobile?'100%':'auto'}} onClick={()=>{
+                      const current=[...(form.stamp_rewards||[])].sort((a,b)=>Number(a.stamps)-Number(b.stamps)); const max=Number(current[current.length-1]?.stamps||0)
+                      update('stamp_rewards',[...current,{id:Math.random().toString(16).slice(2,14),stamps:max+5,reward_name:'Reward'}]); update('stamp_goal',max+5); update('reward_name','Reward')
+                    }}>+ Add Stamp Milestone</button>
+                  </div>}
+                </div>
+
                 <div style={{marginTop:20}}>
                   <label style={styles.label}>Tier levels, benefits & coupons</label>
                   <p style={{...styles.hint,margin:'0 0 12px'}}>Set each tier's threshold and ongoing benefits, then use + Add coupon for every one-time reward customers should receive when they reach that tier.</p>
@@ -1336,6 +1360,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                   <>
                     <div style={styles.previewPointsBalance}><span style={{color:previewVipTier.color || '#111827'}}>{String(previewVipTier.name || 'VIP').toUpperCase()} VIP</span></div>
                     <div style={styles.cardFoot}>3,450 Tier points · progressing automatically</div>
+                    {form.vip_stamps_enabled && <div style={{...styles.cardFoot,fontWeight:800}}>🎟️ 5 / {form.stamp_goal || 8} stamps · same card</div>}
                     {vipTierPerks(previewVipTier).slice(0,2).map((benefit,i)=><div key={i} style={styles.previewPrizeRow}><span>✓ {benefit}</span></div>)}
                     {(previewVipTier.coupons || []).slice(0,2).map((coupon,i)=>(
                       <div key={coupon.id||i} style={{...styles.previewPrizeRow,marginTop:6,background:'#eff6ff',border:'1px solid #bfdbfe',padding:'7px 9px',borderRadius:8}}>
@@ -1678,6 +1703,62 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                   Cashiers enter the customer’s purchase amount. Tier points are calculated automatically and are used only for tier progression.
                 </p>
               </div>
+              <div style={styles.fieldGroup}>
+                <label style={{display:'flex',gap:10,alignItems:'flex-start',padding:14,border:'1px solid #dbeafe',borderRadius:12,background:'#f8fafc',fontSize:13,fontWeight:800,lineHeight:1.45,cursor:'pointer'}}>
+                  <input type="checkbox" checked={form.vip_stamps_enabled === true} onChange={e=>update('vip_stamps_enabled',e.target.checked)} style={{marginTop:3}}/>
+                  <span><strong>Enable Stamp Rewards on Tier Card</strong><span style={{display:'block',fontWeight:500,color:'#64748b',marginTop:4}}>The same customer card will track both VIP/Tier progress and Stamp rewards.</span></span>
+                </label>
+              </div>
+
+              {form.vip_stamps_enabled && <div style={{...styles.fieldGroup,padding:16,border:'1px solid #ccfbf1',borderRadius:14,background:'#f0fdfa'}}>
+                <label style={styles.label}>Stamp rewards</label>
+                <p style={styles.hint}>Stamps are independent from Tier points. Reaching/redeeming a stamp reward does not change the customer’s VIP tier.</p>
+                {(form.stamp_rewards || []).map((r, i) => (
+                  <div key={r.id || i} style={styles.prizeRow}>
+                    <div>
+                      <div style={styles.prizeName}>{r.stamps} stamps → {r.reward_name}</div>
+                      <div style={styles.prizeDesc}>{i === (form.stamp_rewards || []).length - 1 ? 'Final milestone' : 'Intermediate reward · stamp count continues'}</div>
+                    </div>
+                    <button type="button" style={styles.prizeRemoveBtn} onClick={() => {
+                      const next = form.stamp_rewards.filter((_, j) => j !== i)
+                      update('stamp_rewards', next)
+                      if (next.length) {
+                        const final = [...next].sort((a,b)=>Number(a.stamps)-Number(b.stamps)).slice(-1)[0]
+                        update('stamp_goal', final.stamps); update('reward_name', final.reward_name)
+                      }
+                    }}>✕</button>
+                  </div>
+                ))}
+                <div style={styles.prizeForm}>
+                  <div style={styles.row}>
+                    <input style={{...styles.input,width:130}} type="number" min="1" max="500" placeholder="Stamps" value={stampRewardDraft.stamps} onChange={e=>setStampRewardDraft(d=>({...d,stamps:e.target.value}))}/>
+                    <input style={{...styles.input,flex:1}} placeholder="Reward, e.g. Free Wheel Balancing" value={stampRewardDraft.reward_name} onChange={e=>setStampRewardDraft(d=>({...d,reward_name:e.target.value}))}/>
+                  </div>
+                  {stampRewardError && <div style={styles.error}>{stampRewardError}</div>}
+                  <button type="button" style={styles.addPrizeBtn} onClick={() => {
+                    setStampRewardError('')
+                    const stamps = Number(stampRewardDraft.stamps)
+                    const name = stampRewardDraft.reward_name.trim()
+                    if (!stamps || stamps < 1) return setStampRewardError('Enter a valid stamp milestone')
+                    if (!name) return setStampRewardError('Enter the reward name')
+                    if ((form.stamp_rewards || []).some(r => Number(r.stamps) === stamps)) return setStampRewardError('That stamp milestone already has a reward')
+                    const next = [...(form.stamp_rewards || []), {id:Math.random().toString(16).slice(2,14),stamps,reward_name:name}].sort((a,b)=>Number(a.stamps)-Number(b.stamps))
+                    update('stamp_rewards', next)
+                    const final = next[next.length-1]
+                    update('stamp_goal', final.stamps); update('reward_name', final.reward_name)
+                    setStampRewardDraft({stamps:'',reward_name:''})
+                  }}>+ Add Stamp Reward</button>
+                </div>
+                <div style={{marginTop:14,display:'grid',gap:10}}>
+                  <label style={{display:'flex',gap:10,alignItems:'center',fontSize:13,fontWeight:700}}>
+                    <input type="checkbox" checked={form.stamp_once_per_day === true} onChange={e=>update('stamp_once_per_day',e.target.checked)}/> Maximum 1 stamp per customer per day
+                  </label>
+                  <label style={{display:'flex',gap:10,alignItems:'center',fontSize:13,fontWeight:700}}>
+                    <input type="checkbox" checked={form.stamp_reset_after_final !== false} onChange={e=>update('stamp_reset_after_final',e.target.checked)}/> Reset stamps after the final reward is redeemed
+                  </label>
+                </div>
+              </div>}
+
               <div style={styles.fieldGroup}>
                 <label style={styles.label}>Tier levels, benefits & coupons</label>
                 <p style={{...styles.hint,margin:'0 0 12px'}}>Keep permanent tier benefits separate from the one-time reward the customer receives when moving up.</p>
