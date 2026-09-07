@@ -2,6 +2,31 @@ import React, { useState, useEffect } from 'react'
 
 const DESCRIPTION_LIMIT = 140
 
+function cleanVipBenefits(benefits, discountPercent = 0) {
+  const discount = Number(discountPercent || 0)
+  const out = []
+  const seen = new Set()
+  ;(benefits || []).forEach(value => {
+    const text = String(value || '').trim()
+    if (!text) return
+    const match = text.match(/^(\d+(?:\.\d+)?)\s*%\s*(?:discount|off)$/i)
+    if (match && discount > 0 && Math.abs(Number(match[1]) - discount) < 0.000001) return
+    const key = text.replace(/\s+/g, ' ').toLowerCase()
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push(text)
+  })
+  return out
+}
+
+function vipTierPerks(tier) {
+  if (!tier) return []
+  const discount = Number(tier.discount_percent || 0)
+  const items = []
+  if (discount > 0) items.push(`${Number.isInteger(discount) ? discount : Number(discount.toFixed(2))}% discount`)
+  return [...items, ...cleanVipBenefits(tier.benefits || [], discount)]
+}
+
 // Drop this into OwnerDashboard, e.g.:
 //   import LoyaltyCardCustomizer from './LoyaltyCardCustomizer'
 //   <LoyaltyCardCustomizer API_BASE={API_BASE} user={user} onSaved={loadData} />
@@ -51,8 +76,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
     vip_amount_pesos: 100,
     vip_tiers: [
       { id: 'bronze', name: 'Bronze', threshold: 0, color: '#92400e', discount_percent: 0, benefits: ['Member-only offers'], coupons: [], active: true },
-      { id: 'silver', name: 'Silver', threshold: 1000, color: '#64748b', discount_percent: 5, benefits: ['5% discount'], coupons: [], active: true },
-      { id: 'gold', name: 'Gold', threshold: 3000, color: '#ca8a04', discount_percent: 10, benefits: ['10% discount', 'Priority service'], coupons: [], active: true },
+      { id: 'silver', name: 'Silver', threshold: 1000, color: '#64748b', discount_percent: 5, benefits: [], coupons: [], active: true },
+      { id: 'gold', name: 'Gold', threshold: 3000, color: '#ca8a04', discount_percent: 10, benefits: ['Priority service'], coupons: [], active: true },
     ],
     // Multipass card only
     multipass_session_count: 12,
@@ -434,7 +459,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
       name: (t.name || 'Tier').trim(),
       threshold: Math.max(0, Number(t.threshold) || 0),
       discount_percent: Math.max(0, Math.min(100, Number(t.discount_percent) || 0)),
-      benefits: (t.benefits || []).map(v => String(v).trim()).filter(Boolean),
+      benefits: cleanVipBenefits(t.benefits || [], t.discount_percent || 0),
       coupons: (Array.isArray(t.coupons) ? t.coupons : []).map(c => ({
         id: c.id || Math.random().toString(16).slice(2, 14),
         reward_text: (c.reward_text || '').trim(),
@@ -1311,7 +1336,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                   <>
                     <div style={styles.previewPointsBalance}><span style={{color:previewVipTier.color || '#111827'}}>{String(previewVipTier.name || 'VIP').toUpperCase()} VIP</span></div>
                     <div style={styles.cardFoot}>3,450 Tier points · progressing automatically</div>
-                    {(previewVipTier.benefits || []).slice(0,2).map((benefit,i)=><div key={i} style={styles.previewPrizeRow}><span>✓ {benefit}</span></div>)}
+                    {vipTierPerks(previewVipTier).slice(0,2).map((benefit,i)=><div key={i} style={styles.previewPrizeRow}><span>✓ {benefit}</span></div>)}
                     {(previewVipTier.coupons || []).slice(0,2).map((coupon,i)=>(
                       <div key={coupon.id||i} style={{...styles.previewPrizeRow,marginTop:6,background:'#eff6ff',border:'1px solid #bfdbfe',padding:'7px 9px',borderRadius:8}}>
                         <span>🎟️ Coupon</span><span>{coupon.reward_text}</span>

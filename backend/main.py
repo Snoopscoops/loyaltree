@@ -3243,7 +3243,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
             next_benefits = []
             if float(next_tier.get('discount_percent') or 0) > 0:
                 next_benefits.append(f"{_fmt_number(next_tier.get('discount_percent'))}% discount")
-            next_benefits.extend([str(x) for x in (next_tier.get('benefits') or []) if str(x).strip()])
+            next_benefits.extend(_clean_vip_benefits(next_tier.get('benefits') or [], next_tier.get('discount_percent') or 0))
             next_coupons = [str(c.get('reward_text') or '').strip() for c in (next_tier.get('coupons') or []) if str(c.get('reward_text') or '').strip()]
             details.append(('next_tier_benefits', 'BENEFITS YOU UNLOCK', ' · '.join(next_benefits) if next_benefits else 'Tier benefits'))
             details.append(('next_tier_coupons', 'COUPONS YOU RECEIVE', ' · '.join(next_coupons) if next_coupons else 'No one-time coupons for this tier'))
@@ -4668,7 +4668,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
             unlock_benefits = []
             if float(vip_next_tier.get('discount_percent') or 0) > 0:
                 unlock_benefits.append(f"{_fmt_number(vip_next_tier.get('discount_percent'))}% discount")
-            unlock_benefits.extend([str(x) for x in (vip_next_tier.get('benefits') or []) if str(x).strip()])
+            unlock_benefits.extend(_clean_vip_benefits(vip_next_tier.get('benefits') or [], vip_next_tier.get('discount_percent') or 0))
             unlock_coupons = [str(c.get('reward_text') or '').strip() for c in (vip_next_tier.get('coupons') or []) if str(c.get('reward_text') or '').strip()]
             apple_details.append(('next_tier_benefits', 'BENEFITS YOU UNLOCK', ' · '.join(unlock_benefits) if unlock_benefits else 'Tier benefits'))
             apple_details.append(('next_tier_coupons', 'COUPONS YOU RECEIVE', ' · '.join(unlock_coupons) if unlock_coupons else 'No one-time coupons for this tier'))
@@ -6210,6 +6210,40 @@ def _normalize_vip_tier_coupons(tier: dict) -> list:
     return [c for c in coupons if c['active']]
 
 
+def _clean_vip_benefits(raw_benefits, discount_percent=0) -> list:
+    """Return unique non-discount VIP benefits.
+
+    `discount_percent` already has its own dedicated tier field, so legacy text
+    such as "10% discount" / "10% off" is removed when it repeats the same
+    percentage. Other duplicate benefit lines are collapsed case-insensitively.
+    """
+    try:
+        discount_value = max(0.0, min(100.0, float(discount_percent or 0)))
+    except Exception:
+        discount_value = 0.0
+
+    cleaned = []
+    seen = set()
+    for item in (raw_benefits or []):
+        text = str(item or '').strip()
+        if not text:
+            continue
+        normalized = re.sub(r'\s+', ' ', text).strip().lower()
+        # Do not show/store the dedicated percentage discount twice.
+        match = re.fullmatch(r'(\d+(?:\.\d+)?)\s*%\s*(?:discount|off)', normalized)
+        if match and discount_value > 0:
+            try:
+                if abs(float(match.group(1)) - discount_value) < 1e-9:
+                    continue
+            except Exception:
+                pass
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        cleaned.append(text)
+    return cleaned
+
+
 def normalize_vip_tiers(program: dict) -> list:
     raw = program.get('vip_tiers') or []
     tiers = []
@@ -6227,7 +6261,7 @@ def normalize_vip_tiers(program: dict) -> list:
             'threshold': threshold,
             'color': str(t.get('color') or '#64748b'),
             'discount_percent': max(0, min(100, float(t.get('discount_percent') or 0))),
-            'benefits': [str(x).strip() for x in (t.get('benefits') or []) if str(x).strip()],
+            'benefits': _clean_vip_benefits(t.get('benefits') or [], t.get('discount_percent') or 0),
             'coupons': coupons,
             # Legacy mirrors make a rollback to the single-coupon client harmless.
             'coupon_enabled': bool(coupons),
@@ -13267,7 +13301,7 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
                 'threshold': threshold,
                 'color': str(t.get('color') or '#64748b'),
                 'discount_percent': max(0,min(100,float(t.get('discount_percent') or 0))),
-                'benefits': [str(x).strip() for x in (t.get('benefits') or []) if str(x).strip()],
+                'benefits': _clean_vip_benefits(t.get('benefits') or [], t.get('discount_percent') or 0),
                 'coupons': coupons,
                 # Legacy mirrors keep older clients/rollback compatible with coupon #1.
                 'coupon_enabled': bool(active_coupons),

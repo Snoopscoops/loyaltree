@@ -10,6 +10,29 @@ const BUSINESS_ICONS={spa:'🌿',salon:'✂️',fitness:'🏋️',restaurant:'�
 
 // Accept both the new direct Cashier URL and older Gift Card QR formats so
 // existing Wallet passes keep working during migration.
+function vipTierPerks(tier) {
+  if (!tier) return []
+  const out = []
+  const seen = new Set()
+  const add = (value) => {
+    const text = String(value || '').trim()
+    if (!text) return
+    const key = text.replace(/\s+/g, ' ').toLowerCase()
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push(text)
+  }
+  const discount = Number(tier.discount_percent || 0)
+  if (discount > 0) add(`${Number.isInteger(discount) ? discount : Number(discount.toFixed(2))}% discount`)
+  ;(tier.benefits || []).forEach(value => {
+    const text = String(value || '').trim()
+    const match = text.match(/^(\d+(?:\.\d+)?)\s*%\s*(?:discount|off)$/i)
+    if (match && discount > 0 && Math.abs(Number(match[1]) - discount) < 0.000001) return
+    add(text)
+  })
+  return out
+}
+
 function giftIdentifierFromScan(value) {
   const raw = String(value || '').trim()
   if (!raw) return ''
@@ -290,6 +313,7 @@ function CashierApp({ API_BASE }) {
           points_amount_pesos: program.points_amount_pesos || 1,
           points_cap_limit: program.points_cap_limit || null,
           active_coupon: data.active_coupon || null,
+          active_coupons: Array.isArray(data.active_coupons) ? data.active_coupons : (data.active_coupon ? [data.active_coupon] : []),
           // Multipass fields - sessions_remaining/total come off the customer
           // row, session_count/validity_days are the program's defaults for
           // when a fresh pack is issued.
@@ -476,6 +500,7 @@ function CashierApp({ API_BASE }) {
         vip_tier: data.tier,
         vip_next_tier: data.next_tier,
         active_coupon: data.active_coupon !== undefined ? data.active_coupon : prev.active_coupon,
+        active_coupons: Array.isArray(data.active_coupons) ? data.active_coupons : prev.active_coupons,
       } : prev)
       setVipSaleAmount('')
 
@@ -725,7 +750,7 @@ function CashierApp({ API_BASE }) {
     setLoading(false)
   }
 
-  const redeemCoupon = async () => {
+  const redeemCoupon = async (coupon = null) => {
     if (!customerData || !businessSlug || (!isOwner && !staffPin && !sessionToken)) return
     setLoading(true)
     setMessage('Redeeming coupon...')
@@ -739,6 +764,7 @@ function CashierApp({ API_BASE }) {
         },
         body: JSON.stringify({
           customer_public_id: customerData.public_id,
+          ...(coupon?.public_id ? { coupon_public_id: coupon.public_id } : {}),
           ...(sessionToken ? {} : { staff_pin: staffPin }),
           as_owner: isOwner,
         })
@@ -1412,7 +1438,18 @@ function CashierApp({ API_BASE }) {
               )}
             </>
           ) : customerData.card_type === 'vip' ? (
-            <><div style={styles.pointsBalanceBox}><span style={{...styles.pointsBalanceNumber,fontSize:28}}>👑 {customerData.vip_tier?.name||'VIP'}</span><span style={styles.pointsBalanceLabel}>{customerData.vip_points||0} VIP points</span></div>{(customerData.vip_tier?.benefits||[]).map((b,i)=><div key={i} style={{fontSize:13,color:'#475569'}}>✓ {b}</div>)}</>
+            <>
+              <div style={styles.pointsBalanceBox}>
+                <span style={{...styles.pointsBalanceNumber,fontSize:28}}>👑 {customerData.vip_tier?.name||'VIP'}</span>
+                <span style={styles.pointsBalanceLabel}>{customerData.vip_points||0} VIP points</span>
+              </div>
+              {vipTierPerks(customerData.vip_tier).length > 0 && (
+                <div style={{marginTop:10,padding:'10px 12px',borderRadius:12,background:'#fff',border:'1px solid #f1f5f9'}}>
+                  <div style={{fontSize:10,fontWeight:900,color:'#64748b',letterSpacing:.6,marginBottom:6}}>CURRENT BENEFITS</div>
+                  {vipTierPerks(customerData.vip_tier).map((b,i)=><div key={i} style={{fontSize:13,color:'#475569',margin:'4px 0'}}>✓ {b}</div>)}
+                </div>
+              )}
+            </>
           ) : customerData.card_type === 'membership' ? (
             <>
               <div style={{
@@ -1476,13 +1513,21 @@ function CashierApp({ API_BASE }) {
             </div>
           )}
 
-          {/* Coupon Banner */}
-          {customerData.active_coupon && (
-            <div style={{...styles.rewardBanner, background: '#f0fdfa', border: '1.5px dashed #0d9488'}}>
-              <span style={styles.rewardEmoji}>🎟️</span>
-              <span style={{...styles.rewardText, color: '#0f766e'}}>{customerData.active_coupon.reward_text}</span>
+          {/* Active coupons */}
+          {(customerData.active_coupons?.length || customerData.active_coupon) ? (
+            <div style={{margin:'12px 0',display:'grid',gap:8}}>
+              <div style={{fontSize:10,fontWeight:900,color:'#0f766e',letterSpacing:.65}}>AVAILABLE COUPONS</div>
+              {(customerData.active_coupons?.length ? customerData.active_coupons : [customerData.active_coupon]).filter(Boolean).map((coupon,i)=>(
+                <div key={coupon.public_id || coupon.id || i} style={{padding:'11px 12px',borderRadius:12,background:'#f0fdfa',border:'1px dashed #5eead4',display:'flex',alignItems:'center',justifyContent:'space-between',gap:10}}>
+                  <div style={{minWidth:0}}>
+                    <div style={{fontSize:13,fontWeight:850,color:'#0f766e'}}>🎟️ {coupon.reward_text}</div>
+                    {coupon.expires_at && <div style={{fontSize:10.5,color:'#64748b',marginTop:3}}>Valid until {coupon.expires_at}</div>}
+                  </div>
+                  <button type="button" style={{...styles.actionBtn,background:'#0d9488',flex:'0 0 auto',padding:'9px 12px',fontSize:11}} onClick={()=>redeemCoupon(coupon)} disabled={loading}>Redeem</button>
+                </div>
+              ))}
             </div>
-          )}
+          ) : null}
 
           {/* Card-specific transaction */}
           <div style={{
@@ -1566,9 +1611,24 @@ function CashierApp({ API_BASE }) {
                 Earning rule: {customerData.vip_points_per_amount} VIP points for every ₱{customerData.vip_amount_pesos} spent
               </p>
               {customerData.vip_next_tier && (
-                <p style={styles.pointsPreview}>
-                  Next tier: {customerData.vip_next_tier.name} at {customerData.vip_next_tier.threshold} VIP points
-                </p>
+                <div style={{marginTop:12,padding:'12px 13px',borderRadius:12,background:'#fff',border:'1px solid #fde68a'}}>
+                  <div style={{fontSize:10,fontWeight:900,letterSpacing:.65,color:'#92400e'}}>WHEN CUSTOMER REACHES {String(customerData.vip_next_tier.name||'NEXT TIER').toUpperCase()}</div>
+                  <div style={{fontSize:11,color:'#78716c',marginTop:3}}>
+                    {Math.max(0, Number(customerData.vip_next_tier.threshold||0) - Number(customerData.vip_points||0)).toLocaleString()} VIP points to go
+                  </div>
+                  {vipTierPerks(customerData.vip_next_tier).length > 0 && (
+                    <div style={{marginTop:9}}>
+                      <div style={{fontSize:9.5,fontWeight:900,color:'#64748b',letterSpacing:.55,marginBottom:4}}>BENEFITS YOU WILL RECEIVE</div>
+                      {vipTierPerks(customerData.vip_next_tier).map((b,i)=><div key={`vip-next-benefit-${i}`} style={{fontSize:12,color:'#475569',margin:'3px 0'}}>✓ {b}</div>)}
+                    </div>
+                  )}
+                  <div style={{marginTop:9}}>
+                    <div style={{fontSize:9.5,fontWeight:900,color:'#64748b',letterSpacing:.55,marginBottom:4}}>COUPONS YOU WILL RECEIVE</div>
+                    {(customerData.vip_next_tier.coupons||[]).length ? (customerData.vip_next_tier.coupons||[]).map((coupon,i)=>(
+                      <div key={coupon.id||i} style={{fontSize:12,color:'#92400e',margin:'3px 0'}}>🎟️ {coupon.reward_text}{coupon.validity_days?` · valid ${coupon.validity_days} days`:''}</div>
+                    )) : <div style={{fontSize:11,color:'#94a3b8'}}>No tier-up coupons.</div>}
+                  </div>
+                </div>
               )}
             </div>
           ) : null}
@@ -1635,15 +1695,6 @@ function CashierApp({ API_BASE }) {
                 disabled={loading}
               >
                 {loading ? '...' : '🍎 Harvest'}
-              </button>
-            )}
-            {customerData.active_coupon && (
-              <button
-                style={{...styles.actionBtn, background: '#0d9488'}}
-                onClick={redeemCoupon}
-                disabled={loading}
-              >
-                {loading ? '...' : '🎟️ Redeem'}
               </button>
             )}
           </div>
