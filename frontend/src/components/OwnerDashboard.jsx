@@ -1616,7 +1616,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         editDescription: 'Configure earning rules and reward prizes',
       }
     : isVipCard
-    ? { key:'vip',accent:'#ca8a04',soft:'#fefce8',border:'#fde68a',icon:'👑',title:vipUsesStamps?'Tier + Stamp Program':'Tier Program',customerLabel:'Tier Customers',customerIcon:'👑',dashboardLabel:vipUsesStamps?'Tier + Stamp Dashboard':'Tier Dashboard',scanTitle:'Record Tier Purchase',scanDescription:vipUsesStamps?'Award tier points, add stamps, and check benefits':'Award tier points and check tier benefits',recentTitle:vipUsesStamps?'Recent Tier + Stamp Activity':'Recent Tier Activity',editDescription:vipUsesStamps?'Configure tiers plus stamp rewards':'Configure tier thresholds and increasing benefits' }
+    ? { key:'vip',accent:'#ca8a04',soft:'#fefce8',border:'#fde68a',icon:'👑',title:vipUsesStamps?'Tier by Stamps':'Tier by Points',customerLabel:'Tier Customers',customerIcon:'👑',dashboardLabel:'Tier Dashboard',scanTitle:vipUsesStamps?'Add Tier Stamp':'Record Tier Purchase',scanDescription:vipUsesStamps?'Add cumulative Tier stamps and check benefits':'Award tier points and check tier benefits',recentTitle:'Recent Tier Activity',editDescription:vipUsesStamps?'Configure stamp thresholds and increasing benefits':'Configure point thresholds and increasing benefits' }
     : isMembershipCard
     ? {
         key: 'membership',
@@ -1890,8 +1890,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           {(isVipCard
             ? [
                 {value:customers.length,label:'Tier Customers',hint:'Enrolled in your tier program'},
-                {value:totalVipPoints,label:'Tier Points',hint:'Current points across customers'},
-                ...(vipUsesStamps ? [{value:confirmedStamps,label:'Stamps Issued',hint:'Stamp progress running alongside tiers'}] : []),
+                {value:vipUsesStamps ? confirmedStamps : totalVipPoints,label:vipUsesStamps?'Tier Stamps':'Tier Points',hint:vipUsesStamps?'Cumulative Tier stamps across customers':'Current Tier points across customers'},
                 {value:customers.filter(c=>c.vip_tier?.name).length,label:'Tiered Customers',hint:'Customers with an assigned tier'},
               ]
             : isHybridCard
@@ -2027,7 +2026,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                   <span style={styles.activityLeaf}>🍃</span>
                   <span style={styles.activityName}>{c.name}</span>
                   <span style={styles.activityStamps}>
-                    {isPointsCard ? `${c.points_balance || 0} points` : isMultipassCard ? `${c.multipass_sessions_remaining || 0}/${c.multipass_total_sessions || 0} sessions` : isVipCard ? `${c.vip_tier?.name || 'Tier'} · ${c.vip_points || 0} pts` : isMembershipCard ? `${(c.membership_effective_status || c.membership_status || 'inactive').toUpperCase()}` : `${c.stamp_count} rings`}
+                    {isPointsCard ? `${c.points_balance || 0} points` : isMultipassCard ? `${c.multipass_sessions_remaining || 0}/${c.multipass_total_sessions || 0} sessions` : isVipCard ? `${c.vip_tier?.name || 'Tier'} · ${vipUsesStamps ? `${c.stamp_count || 0} stamps` : `${c.vip_points || 0} pts`}` : isMembershipCard ? `${(c.membership_effective_status || c.membership_status || 'inactive').toUpperCase()}` : `${c.stamp_count} rings`}
                   </span>
                   {c.reward_unlocked && <span style={styles.activityFruit}>🍎</span>}
                 </div>
@@ -2099,8 +2098,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     ) : isVipCard ? (
                       <>
                         <p style={{...styles.stampText,fontWeight:900,color:c.vip_tier?.color||'#ca8a04'}}>👑 {c.vip_tier?.name||'Tier'}</p>
-                        <p style={styles.lastStampedText}>{c.vip_points||0} VIP points{c.vip_next_tier?` · ${Math.max(0,c.vip_next_tier.threshold-(c.vip_points||0))} to ${c.vip_next_tier.name}`:' · Highest tier'}</p>
-                        {vipUsesStamps && <p style={{...styles.lastStampedText,fontWeight:800,color:'#0f766e'}}>🎟️ {c.stamp_count||0}/{program?.stamp_goal||8} stamps</p>}
+                        <p style={styles.lastStampedText}>{vipUsesStamps ? `${c.stamp_count||0} Tier stamps` : `${c.vip_points||0} VIP points`}{c.vip_next_tier?` · ${Math.max(0,c.vip_next_tier.threshold-(vipUsesStamps?(c.stamp_count||0):(c.vip_points||0)))} ${vipUsesStamps?'stamps':'points'} to ${c.vip_next_tier.name}`:' · Highest tier'}</p>
                       </>
                     ) : isMembershipCard ? (
                       <>
@@ -2908,14 +2906,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 ) : isVipCard ? (
                   <div style={styles.cardProgress}>
                     <p style={{fontSize:30,fontWeight:900,color:'white',margin:'8px 0 2px'}}>👑 {selectedCustomer.vip_tier?.name||'Tier'}</p>
-                    <p style={{fontSize:14,color:'white',fontWeight:800}}>Tier Points: {selectedCustomer.vip_points||0}</p>
-                    {vipUsesStamps && <div style={{margin:'8px 0 4px'}}>
-                      <p style={{fontSize:13,color:'white',fontWeight:900,margin:'0 0 5px'}}>🎟️ STAMPS · {selectedCustomer.stamp_count||0}/{program?.stamp_goal||8}</p>
-                      <div style={{height:7,borderRadius:999,background:'rgba(255,255,255,.25)',overflow:'hidden'}}>
-                        <div style={{height:'100%',width:`${Math.min(100,((selectedCustomer.stamp_count||0)/(program?.stamp_goal||8))*100)}%`,background:'white'}}/>
-                      </div>
-                    </div>}
-                    {selectedCustomer.vip_next_tier&&<p style={{fontSize:12,color:'rgba(255,255,255,.8)'}}>{Math.max(0,selectedCustomer.vip_next_tier.threshold-(selectedCustomer.vip_points||0))} points to {selectedCustomer.vip_next_tier.name}</p>}
+                    <p style={{fontSize:14,color:'white',fontWeight:800}}>{vipUsesStamps ? `Tier Stamps: ${selectedCustomer.stamp_count||0}` : `Tier Points: ${selectedCustomer.vip_points||0}`}</p>
+                    {selectedCustomer.vip_next_tier&&<p style={{fontSize:12,color:'rgba(255,255,255,.8)'}}>{Math.max(0,selectedCustomer.vip_next_tier.threshold-(vipUsesStamps?(selectedCustomer.stamp_count||0):(selectedCustomer.vip_points||0)))} {vipUsesStamps?'stamps':'points'} to {selectedCustomer.vip_next_tier.name}</p>}
                     {vipTierPerks(selectedCustomer.vip_tier).length>0 && (
                       <div style={{marginTop:8,textAlign:'left'}}>
                         <p style={{fontSize:9.5,fontWeight:900,letterSpacing:.75,color:'rgba(255,255,255,.62)',margin:'0 0 5px'}}>CURRENT BENEFITS</p>
@@ -3147,7 +3139,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                         : isPointsCard
                         ? 'Every points movement — purchases, redemptions, and owner adjustments'
                         : isVipCard
-                        ? 'Every VIP points award and tier change'
+                        ? (vipUsesStamps ? 'Every Tier stamp and tier change' : 'Every VIP points award and tier change')
                         : 'Stamps, coupon issuance, redemptions, cancellations, cashier, branch, and date'}
                     </div>
                   </div>
@@ -3434,12 +3426,12 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 </>
               ) : isVipCard ? (
                 <>
-                  <label style={styles.label}>VIP points</label><input style={styles.input} type='number' min='0' value={editForm.vip_points||0} onChange={e=>setEditForm({...editForm,vip_points:e.target.value})}/>
-                  {vipUsesStamps && <>
-                    <label style={styles.label}>Stamps {program?.stamp_goal ? `(of ${program.stamp_goal} for final reward)` : ''}</label>
-                    <input style={styles.input} type='number' min='0' value={editForm.stamp_count||0} onChange={e=>setEditForm({...editForm,stamp_count:e.target.value})}/>
+                  {vipUsesStamps ? <>
+                    <label style={styles.label}>Tier stamps</label><input style={styles.input} type='number' min='0' value={editForm.stamp_count||0} onChange={e=>setEditForm({...editForm,stamp_count:e.target.value})}/>
+                  </> : <>
+                    <label style={styles.label}>VIP points</label><input style={styles.input} type='number' min='0' value={editForm.vip_points||0} onChange={e=>setEditForm({...editForm,vip_points:e.target.value})}/>
                   </>}
-                  <label style={styles.label}>Manual tier override</label><select style={styles.input} value={editForm.vip_manual_tier_id||''} onChange={e=>setEditForm({...editForm,vip_manual_tier_id:e.target.value})}><option value=''>Automatic from points</option>{(program?.vip_tiers||[]).map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select>
+                  <label style={styles.label}>Manual tier override</label><select style={styles.input} value={editForm.vip_manual_tier_id||''} onChange={e=>setEditForm({...editForm,vip_manual_tier_id:e.target.value})}><option value=''>Automatic from {vipUsesStamps?'stamps':'points'}</option>{(program?.vip_tiers||[]).map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select>
                 </>
               ) : isMembershipCard ? (
                 <>
