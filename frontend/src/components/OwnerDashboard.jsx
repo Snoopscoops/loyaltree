@@ -242,6 +242,16 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [orderAheadBranchFilter, setOrderAheadBranchFilter] = useState('')
   const [orderAheadOperatorScope, setOrderAheadOperatorScope] = useState(null)
   const [orderAheadLastUpdated, setOrderAheadLastUpdated] = useState(null)
+  const [orderAheadWorkspaceTab, setOrderAheadWorkspaceTab] = useState('orders')
+  const [orderAheadOrderView, setOrderAheadOrderView] = useState('new')
+  const [orderAheadOrderSearch, setOrderAheadOrderSearch] = useState('')
+  const [orderAheadOpsSaving, setOrderAheadOpsSaving] = useState('')
+  const [orderAheadOpsBranchFilter, setOrderAheadOpsBranchFilter] = useState('')
+  const [orderAheadQuickMenu, setOrderAheadQuickMenu] = useState({categories:[],items:[]})
+  const [orderAheadQuickMenuLoading, setOrderAheadQuickMenuLoading] = useState(false)
+  const [orderAheadAvailabilitySaving, setOrderAheadAvailabilitySaving] = useState('')
+  const [orderAheadStockBranchFilter, setOrderAheadStockBranchFilter] = useState('')
+  const [orderAheadStockSearch, setOrderAheadStockSearch] = useState('')
   const [stats, setStats] = useState(null)
   const [program, setProgram] = useState(null)
   const [subscription, setSubscription] = useState(null)
@@ -372,12 +382,48 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     const pickup = new Date(o.pickup_at).getTime()
     return Number.isFinite(pickup) && pickup < Date.now() - 5 * 60 * 1000
   }).length
+  const orderAheadOrderSearchNeedle = orderAheadOrderSearch.trim().toLowerCase()
+  const orderAheadDisplayedOrders = visibleOrderAheadOrders
+    .filter(order => orderAheadOrderView === 'history'
+      ? ['completed','cancelled'].includes(order.status)
+      : order.status === orderAheadOrderView)
+    .filter(order => {
+      if (!orderAheadOrderSearchNeedle) return true
+      const haystack = [
+        order.order_number, order.customer?.name, order.customer?.phone,
+        order.branch?.name, order.customer_note,
+        ...(order.items || []).map(item => item.item_name),
+        ...(order.items || []).flatMap(item => (item.modifiers || []).map(m => m.option_name)),
+      ].filter(Boolean).join(' ').toLowerCase()
+      return haystack.includes(orderAheadOrderSearchNeedle)
+    })
+    .sort((a,b) => {
+      if (orderAheadOrderView === 'history') {
+        return new Date(b.completed_at || b.updated_at || b.created_at || 0).getTime() - new Date(a.completed_at || a.updated_at || a.created_at || 0).getTime()
+      }
+      return new Date(a.pickup_at || a.created_at || 0).getTime() - new Date(b.pickup_at || b.created_at || 0).getTime()
+    })
+  const orderAheadSelectedOpsBranch = activeOrderAheadBranches.find(b => b.public_id === orderAheadOpsBranchFilter) || activeOrderAheadBranches[0] || null
+  const orderAheadSelectedOpsConfig = orderAheadSelectedOpsBranch ? (orderAheadPickupHours[orderAheadSelectedOpsBranch.public_id] || {}) : {}
+  const orderAheadStockScopeBranch = activeOrderAheadBranches.find(b => b.public_id === orderAheadStockBranchFilter) || null
+  const orderAheadFilteredStockItems = (orderAheadQuickMenu.items || []).filter(item => {
+    if (!orderAheadStockSearch.trim()) return true
+    const needle = orderAheadStockSearch.trim().toLowerCase()
+    const category = (orderAheadQuickMenu.categories || []).find(c => c.public_id === item.category_public_id)?.name || ''
+    return `${item.name || ''} ${category}`.toLowerCase().includes(needle)
+  })
 
   useEffect(() => {
     const onResize = () => setViewportWidth(window.innerWidth)
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
   }, [])
+
+  useEffect(() => {
+    if (!orderAheadOpsBranchFilter && activeOrderAheadBranches.length) {
+      setOrderAheadOpsBranchFilter(activeOrderAheadBranches[0].public_id)
+    }
+  }, [branches, business?.order_ahead_enabled])
 
   useEffect(() => {
     if (!showOnboarding || !isMobile) return
@@ -521,6 +567,10 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             configured: !!row.configured,
             slot_capacity: row.slot_capacity === null ? null : Number(row.slot_capacity ?? 5),
             slot_capacity_unlimited: row.slot_capacity === null || row.slot_capacity_unlimited === true,
+            is_paused: !!row.is_paused,
+            asap_enabled: row.asap_enabled !== false,
+            scheduled_enabled: row.scheduled_enabled !== false,
+            prep_override_minutes: row.prep_override_minutes === null || row.prep_override_minutes === undefined ? null : Number(row.prep_override_minutes),
             days: Array.isArray(row.days) && row.days.length ? row.days.map((d,i)=>({
               weekday: Number(d.weekday ?? i),
               day_name: d.day_name || OA_PICKUP_DAYS[Number(d.weekday ?? i)] || `Day ${i+1}`,
@@ -558,7 +608,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     if (!user?.business_slug || !business?.order_ahead_enabled) return
     setOrderAheadOrdersLoading(true)
     try {
-      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/order-ahead/orders?limit=150`, { cache: 'no-store' })
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/order-ahead/orders?limit=300`, { cache: 'no-store' })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Could not load Order Ahead orders')
       setOrderAheadOrders(Array.isArray(data.orders) ? data.orders : [])
@@ -624,6 +674,99 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   const orderAheadItemCount = (order) =>
     (order?.items || []).reduce((sum, item) => sum + Number(item?.quantity || 0), 0)
+
+  const cancelOrderAheadOrder = async (order) => {
+    if (!order?.public_id) return
+    if (!window.confirm(`Cancel ${order.order_number}? The customer will no longer see this as an active pickup order.`)) return
+    await updateOrderAheadOrderStatus(order, 'cancelled')
+  }
+
+  const loadOrderAheadQuickMenu = async () => {
+    if (!user?.business_slug || !business?.order_ahead_enabled) return
+    setOrderAheadQuickMenuLoading(true)
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/order-ahead/menu`, { cache:'no-store' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not load quick stock controls')
+      setOrderAheadQuickMenu({categories:data.categories||[],items:data.items||[]})
+    } catch (err) {
+      setMessage(err.message || 'Could not load quick stock controls')
+    } finally {
+      setOrderAheadQuickMenuLoading(false)
+    }
+  }
+
+  const updateOrderAheadOpsLocal = (branch, patch) => {
+    if (!branch?.public_id) return
+    setOrderAheadPickupHours(prev => {
+      const current = prev[branch.public_id] || {
+        branch_name: branch.name, configured:false, slot_capacity:5, slot_capacity_unlimited:false,
+        is_paused:false, asap_enabled:true, scheduled_enabled:true, prep_override_minutes:null, days:emptyOAPickupDays(),
+      }
+      return { ...prev, [branch.public_id]: { ...current, ...patch, branch_name:branch.name } }
+    })
+  }
+
+  const saveOrderAheadOperations = async (branch) => {
+    if (!user?.business_slug || !branch?.public_id) return
+    const cfg = orderAheadPickupHours[branch.public_id] || {}
+    const unlimited = cfg.slot_capacity_unlimited === true || cfg.slot_capacity === null
+    setOrderAheadOpsSaving(branch.public_id)
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/order-ahead/operations/${branch.public_id}`, {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          is_paused: !!cfg.is_paused,
+          asap_enabled: cfg.asap_enabled !== false,
+          scheduled_enabled: cfg.scheduled_enabled !== false,
+          prep_override_minutes: cfg.prep_override_minutes === null || cfg.prep_override_minutes === undefined ? null : Math.max(0, Math.min(1440, Number(cfg.prep_override_minutes || 0))),
+          slot_capacity: unlimited ? null : Math.max(5, Math.min(50, Number(cfg.slot_capacity ?? 5))),
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not save branch controls')
+      if (data.branch) {
+        setOrderAheadPickupHours(prev => ({ ...prev, [branch.public_id]: {
+          ...(prev[branch.public_id] || {}), ...data.branch,
+          slot_capacity: data.branch.slot_capacity === null ? null : Number(data.branch.slot_capacity ?? 5),
+          slot_capacity_unlimited: data.branch.slot_capacity === null || data.branch.slot_capacity_unlimited === true,
+          prep_override_minutes: data.branch.prep_override_minutes === null || data.branch.prep_override_minutes === undefined ? null : Number(data.branch.prep_override_minutes),
+        }}))
+      }
+      setMessage(`${branch.name} Order Ahead controls are live`)
+    } catch (err) {
+      setMessage(err.message || 'Could not save branch controls')
+    } finally {
+      setOrderAheadOpsSaving('')
+      setTimeout(() => setMessage(''), 3000)
+    }
+  }
+
+  const toggleOrderAheadItemAvailability = async (item) => {
+    if (!user?.business_slug || !item?.public_id) return
+    const branchId = orderAheadStockBranchFilter || null
+    const globallyAvailable = item.is_available !== false
+    const branchUnavailable = branchId ? (item.unavailable_branch_public_ids || []).includes(branchId) : false
+    const currentlyAvailable = branchId ? (globallyAvailable && !branchUnavailable) : globallyAvailable
+    const effectiveBranchId = branchId && globallyAvailable ? branchId : null
+    const nextAvailable = !currentlyAvailable
+    setOrderAheadAvailabilitySaving(item.public_id)
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/order-ahead/items/${item.public_id}/availability`, {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({ is_available: nextAvailable, branch_public_id: effectiveBranchId }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not update item availability')
+      await loadOrderAheadQuickMenu()
+      setMessage(nextAvailable ? `${item.name} reopened` : `${item.name} marked sold out`)
+    } catch (err) {
+      setMessage(err.message || 'Could not update item availability')
+    } finally {
+      setOrderAheadAvailabilitySaving('')
+      setTimeout(() => setMessage(''), 2500)
+    }
+  }
 
   const saveOrderAheadSettings = async () => {
     if (!user?.business_slug || !business?.order_ahead_enabled) return
@@ -698,7 +841,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   const updatePickupDay = (branch, weekday, patch) => {
     setOrderAheadPickupHours(prev => {
-      const current = prev[branch.public_id] || { branch_name: branch.name, configured: false, slot_capacity: 5, slot_capacity_unlimited: false, days: emptyOAPickupDays() }
+      const current = prev[branch.public_id] || { branch_name: branch.name, configured: false, slot_capacity: 5, slot_capacity_unlimited: false, is_paused:false, asap_enabled:true, scheduled_enabled:true, prep_override_minutes:null, days: emptyOAPickupDays() }
       const days = (current.days?.length ? current.days : emptyOAPickupDays()).map((d,i) =>
         Number(d.weekday ?? i) === weekday ? { ...d, ...patch } : d
       )
@@ -708,7 +851,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   const updatePickupCapacity = (branch, patch) => {
     setOrderAheadPickupHours(prev => {
-      const current = prev[branch.public_id] || { branch_name: branch.name, configured: false, slot_capacity: 5, slot_capacity_unlimited: false, days: emptyOAPickupDays() }
+      const current = prev[branch.public_id] || { branch_name: branch.name, configured: false, slot_capacity: 5, slot_capacity_unlimited: false, is_paused:false, asap_enabled:true, scheduled_enabled:true, prep_override_minutes:null, days: emptyOAPickupDays() }
       return { ...prev, [branch.public_id]: { ...current, branch_name: branch.name, ...patch } }
     })
   }
@@ -756,6 +899,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       if (!res.ok) throw new Error(data.detail || 'Could not save pickup hours')
       if (data.branch) {
         setOrderAheadPickupHours(prev => ({ ...prev, [branch.public_id]: {
+          ...(prev[branch.public_id] || {}),
           branch_name: data.branch.branch_name || branch.name,
           configured: true,
           slot_capacity: data.branch.slot_capacity === null ? null : Number(data.branch.slot_capacity ?? 5),
@@ -2205,6 +2349,19 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               <span style={{background:'#ecfdf5',color:'#047857',padding:'7px 11px',borderRadius:999,fontSize:11,fontWeight:800}}>BETA · ENABLED BY LOYALTYTREE</span>
             </div>
 
+            <div style={{display:'flex',gap:7,flexWrap:'wrap',margin:'14px 0 16px'}}>
+              {[
+                ['orders','Orders'],
+                ['operations','Operations'],
+                ['setup','Menu & Setup'],
+              ].map(([key,label]) => <button key={key} type="button" onClick={()=>{setOrderAheadWorkspaceTab(key);if(key==='operations')loadOrderAheadQuickMenu()}} style={{
+                border:'1px solid '+(orderAheadWorkspaceTab===key?'#0f766e':'#cbd5e1'),
+                background:orderAheadWorkspaceTab===key?'#0f766e':'#fff', color:orderAheadWorkspaceTab===key?'#fff':'#475569',
+                borderRadius:999,padding:'9px 13px',fontSize:11.5,fontWeight:850,cursor:'pointer'
+              }}>{label}</button>)}
+            </div>
+
+            {orderAheadWorkspaceTab === 'setup' && <>
             <div style={{background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:14,padding:14,marginBottom:16,fontSize:12.5,color:'#475569',lineHeight:1.6}}>
               <strong style={{color:'#0f172a'}}>Current beta flow:</strong> Wallet → Choose Branch → Menu → Customize / Cart → Pickup / Checkout → {orderAheadPaymentConfig?.provider==='paymongo'?'PayMongo TEST QR Ph':'Test Payment'} → Business Order → Ready for Pickup
             </div>
@@ -2410,157 +2567,105 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               </div>
             </div>
 
-            <div style={{...styles.card,marginTop:14}}>
+            </>}
+
+            {orderAheadWorkspaceTab === 'orders' && (
+            <div style={{...styles.card,marginTop:0}}>
               <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}>
                 <div>
-                  <div style={{fontSize:11,fontWeight:850,color:'#64748b'}}>BUSINESS ORDERS</div>
-                  <h3 style={{margin:'5px 0 3px'}}>Live Order Board</h3>
-                  <p style={{margin:0,fontSize:12,color:'#64748b'}}>
-                    Paid orders are routed by branch. Owner access remains all-branch; branch staff/order receivers are server-locked to their assigned branch.
-                  </p>
+                  <div style={{fontSize:11,fontWeight:900,color:'#0f766e'}}>BUSINESS ORDERS WORKSPACE</div>
+                  <h3 style={{margin:'5px 0 3px'}}>Live Order Queue</h3>
+                  <p style={{margin:0,fontSize:12,color:'#64748b'}}>Work one queue at a time. Active orders are sorted by pickup time; History shows newest completed/cancelled orders first.</p>
                 </div>
                 <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
-                  <div style={{fontSize:10.5,color:'#64748b',fontWeight:700}}>
-                    Auto-refresh · 8s{orderAheadLastUpdated ? ` · ${orderAheadLastUpdated.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})}` : ''}
-                  </div>
-                  <button type="button" style={styles.addBtn} onClick={loadOrderAheadOrders} disabled={orderAheadOrdersLoading}>
-                    {orderAheadOrdersLoading?'Refreshing…':'↻ Refresh'}
-                  </button>
+                  <div style={{fontSize:10.5,color:'#64748b',fontWeight:700}}>Auto-refresh · 8s{orderAheadLastUpdated ? ` · ${orderAheadLastUpdated.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})}` : ''}</div>
+                  <button type="button" style={styles.addBtn} onClick={loadOrderAheadOrders} disabled={orderAheadOrdersLoading}>{orderAheadOrdersLoading?'Refreshing…':'↻ Refresh'}</button>
                 </div>
               </div>
 
-              {orderAheadOperatorScope?.branch_locked && (
-                <div style={{marginTop:12,padding:'10px 12px',borderRadius:11,background:'#eff6ff',border:'1px solid #bfdbfe',fontSize:11.5,color:'#1d4ed8',fontWeight:800}}>
-                  🔒 Branch-locked device · {orderAheadOperatorScope?.branch?.name || 'Assigned branch'}
-                </div>
-              )}
+              {orderAheadOperatorScope?.branch_locked && <div style={{marginTop:12,padding:'10px 12px',borderRadius:11,background:'#eff6ff',border:'1px solid #bfdbfe',fontSize:11.5,color:'#1d4ed8',fontWeight:800}}>🔒 Branch-locked device · {orderAheadOperatorScope?.branch?.name || 'Assigned branch'}</div>}
 
               <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(2,minmax(0,1fr))':'repeat(5,minmax(120px,1fr))',gap:8,marginTop:13}}>
                 {[
-                  ['OPEN',orderAheadActiveCount,'#0f172a','#f8fafc'],
-                  ['NEW',orderAheadNewCount,'#1d4ed8','#eff6ff'],
-                  ['PREPARING',orderAheadPreparingCount,'#b45309','#fffbeb'],
-                  ['READY',orderAheadReadyCount,'#047857','#ecfdf5'],
-                  ['LATE',orderAheadLateCount,'#b91c1c','#fef2f2'],
-                ].map(([label,value,color,bg])=><div key={label} style={{background:bg,border:'1px solid #e2e8f0',borderRadius:11,padding:'9px 10px'}}>
-                  <div style={{fontSize:9.5,fontWeight:850,color:'#64748b'}}>{label}</div>
-                  <div style={{fontSize:20,fontWeight:900,color,marginTop:2}}>{value}</div>
-                </div>)}
+                  ['OPEN',orderAheadActiveCount,'#0f172a','#f8fafc'],['NEW',orderAheadNewCount,'#1d4ed8','#eff6ff'],['PREPARING',orderAheadPreparingCount,'#b45309','#fffbeb'],['READY',orderAheadReadyCount,'#047857','#ecfdf5'],['LATE',orderAheadLateCount,'#b91c1c','#fef2f2'],
+                ].map(([label,value,color,bg])=><div key={label} style={{background:bg,border:'1px solid #e2e8f0',borderRadius:11,padding:'9px 10px'}}><div style={{fontSize:9.5,fontWeight:850,color:'#64748b'}}>{label}</div><div style={{fontSize:20,fontWeight:900,color,marginTop:2}}>{value}</div></div>)}
               </div>
 
-              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginTop:12}}>
-                <select
-                  value={orderAheadBranchFilter}
-                  onChange={e=>setOrderAheadBranchFilter(e.target.value)}
-                  disabled={!!orderAheadOperatorScope?.branch_locked}
-                  style={{...styles.input,width:isMobile?'100%':'auto',minWidth:isMobile?0:210,padding:'9px 10px',fontSize:11.5}}
-                >
+              <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'minmax(190px,.7fr) minmax(220px,1fr)',gap:8,marginTop:12}}>
+                <select value={orderAheadBranchFilter} onChange={e=>setOrderAheadBranchFilter(e.target.value)} disabled={!!orderAheadOperatorScope?.branch_locked} style={{...styles.input,padding:'10px',fontSize:11.5,margin:0}}>
                   <option value="">All branches · {orderAheadOrders.length} orders</option>
                   {orderAheadBranchCounts.map(branch=><option key={branch.public_id} value={branch.public_id}>{branch.name} · {branch.order_count} orders</option>)}
                 </select>
-                {!isMobile && !orderAheadOperatorScope?.branch_locked && orderAheadBranchCounts.map(branch=><button
-                  key={branch.public_id}
-                  type="button"
-                  onClick={()=>setOrderAheadBranchFilter(orderAheadBranchFilter===branch.public_id?'':branch.public_id)}
-                  style={{
-                    border:'1px solid '+(orderAheadBranchFilter===branch.public_id?'#0f766e':'#e2e8f0'),
-                    background:orderAheadBranchFilter===branch.public_id?'#ecfdf5':'#fff',
-                    borderRadius:999,padding:'7px 9px',fontSize:10.5,fontWeight:800,
-                    color:orderAheadBranchFilter===branch.public_id?'#047857':'#475569'
-                  }}
-                >{branch.name} · {branch.active_count} active</button>)}
+                <input value={orderAheadOrderSearch} onChange={e=>setOrderAheadOrderSearch(e.target.value)} placeholder="Search order #, customer, phone, item…" style={{...styles.input,padding:'10px',fontSize:11.5,margin:0}} />
               </div>
 
-              <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(4,minmax(240px,1fr))',gap:10,marginTop:14,overflowX:isMobile?'visible':'auto',paddingBottom:2}}>
+              <div style={{display:'flex',gap:7,overflowX:'auto',padding:'2px 0',marginTop:12}}>
                 {[
-                  ['new','NEW','#eff6ff','#1d4ed8'],
-                  ['preparing','PREPARING','#fffbeb','#b45309'],
-                  ['ready','READY','#ecfdf5','#047857'],
-                  ['completed','COMPLETED','#f8fafc','#64748b'],
-                ].map(([status,label,bg,color])=>{
-                  const rows=visibleOrderAheadOrders
-                    .filter(o=>o.status===status)
-                    .sort((a,b)=>{
-                      if(status==='completed'){
-                        return new Date(b.completed_at||b.updated_at||b.created_at||0).getTime()-new Date(a.completed_at||a.updated_at||a.created_at||0).getTime()
-                      }
-                      return new Date(a.pickup_at||a.created_at||0).getTime()-new Date(b.pickup_at||b.created_at||0).getTime()
-                    })
-                  return <div key={status} style={{minWidth:0,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:13,padding:10,alignSelf:'start'}}>
-                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:9}}>
-                      <strong style={{fontSize:11,color}}>{label}</strong>
-                      <span style={{fontSize:10.5,fontWeight:850,background:bg,color,padding:'4px 7px',borderRadius:999}}>{rows.length}</span>
+                  ['new',`New (${orderAheadNewCount})`],['preparing',`Preparing (${orderAheadPreparingCount})`],['ready',`Ready (${orderAheadReadyCount})`],['history','History'],
+                ].map(([key,label])=><button key={key} type="button" onClick={()=>setOrderAheadOrderView(key)} style={{border:'1px solid '+(orderAheadOrderView===key?'#0f766e':'#cbd5e1'),background:orderAheadOrderView===key?'#ecfdf5':'#fff',color:orderAheadOrderView===key?'#047857':'#475569',borderRadius:999,padding:'8px 11px',fontSize:10.5,fontWeight:850,whiteSpace:'nowrap'}}>{label}</button>)}
+              </div>
+
+              {!orderAheadDisplayedOrders.length && <div style={{marginTop:14,padding:'28px 12px',textAlign:'center',background:'#f8fafc',border:'1px dashed #cbd5e1',borderRadius:12,color:'#94a3b8',fontSize:12}}>No matching {orderAheadOrderView === 'history' ? 'history' : orderAheadOrderView} orders.</div>}
+              <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))',gap:10,marginTop:14}}>
+                {orderAheadDisplayedOrders.map(order=>{
+                  const urgency=orderAheadPickupUrgency(order)
+                  const itemCount=orderAheadItemCount(order)
+                  const history=orderAheadOrderView==='history'
+                  const statusMeta={new:['NEW','#1d4ed8','#eff6ff'],preparing:['PREPARING','#b45309','#fffbeb'],ready:['READY','#047857','#ecfdf5'],completed:['COMPLETED','#475569','#f8fafc'],cancelled:['CANCELLED','#b91c1c','#fef2f2']}[order.status]||[String(order.status||'').toUpperCase(),'#475569','#f8fafc']
+                  return <div key={order.public_id} style={{background:'#fff',border:`1px solid ${urgency?.border || '#e2e8f0'}`,borderRadius:13,padding:12,boxShadow:urgency?'0 6px 18px rgba(15,23,42,.07)':'0 3px 10px rgba(15,23,42,.03)'}}>
+                    <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'flex-start'}}>
+                      <div><div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}><strong style={{fontSize:15}}>{order.order_number}</strong><span style={{fontSize:9.5,fontWeight:900,color:statusMeta[1],background:statusMeta[2],padding:'4px 6px',borderRadius:999}}>{statusMeta[0]}</span></div><div style={{fontSize:9.5,fontWeight:850,color:order.payment_mode==='paymongo'?'#7c3aed':'#64748b',marginTop:4}}>{order.payment_mode==='paymongo'?'PAYMONGO · PAID':'TEST PAYMENT · PAID'}</div></div>
+                      <strong style={{fontSize:14}}>₱{Number(order.total||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</strong>
                     </div>
-                    {!rows.length&&<div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:'18px 4px'}}>No {label.toLowerCase()} orders</div>}
-                    {rows.map(order=>{
-                      const urgency=orderAheadPickupUrgency(order)
-                      const itemCount=orderAheadItemCount(order)
-                      return <div key={order.public_id} style={{
-                        background:'#fff',
-                        border:`1px solid ${urgency?.border || '#e2e8f0'}`,
-                        borderRadius:11,padding:10,marginBottom:8,
-                        boxShadow:urgency ? '0 4px 14px rgba(15,23,42,.06)' : '0 3px 10px rgba(15,23,42,.03)'
-                      }}>
-                        <div style={{display:'flex',justifyContent:'space-between',gap:8,alignItems:'flex-start'}}>
-                          <div>
-                            <strong style={{fontSize:13.5}}>{order.order_number}</strong>
-                            <div style={{fontSize:9.5,fontWeight:850,color:order.payment_mode==='paymongo'?'#7c3aed':'#64748b',marginTop:3}}>
-                              {order.payment_mode==='paymongo'?'PAYMONGO · PAID':'TEST PAYMENT · PAID'}
-                            </div>
-                          </div>
-                          <strong style={{fontSize:13}}>₱{Number(order.total||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</strong>
-                        </div>
-
-                        <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginTop:7}}>
-                          <span style={{fontSize:10,fontWeight:850,color:'#0f766e',background:'#f0fdfa',border:'1px solid #ccfbf1',padding:'4px 7px',borderRadius:999}}>
-                            🏢 {order.branch?.name||'Branch'}
-                          </span>
-                          {urgency&&<span style={{fontSize:10,fontWeight:900,color:urgency.color,background:urgency.bg,border:`1px solid ${urgency.border}`,padding:'4px 7px',borderRadius:999}}>
-                            {urgency.label}
-                          </span>}
-                        </div>
-
-                        <div style={{fontSize:12,color:'#0f172a',fontWeight:850,marginTop:7}}>🕒 {orderAheadPickupLabel(order)}</div>
-                        <div style={{fontSize:10.5,color:'#94a3b8',marginTop:2}}>
-                          Received {orderAheadCreatedLabel(order)} · {itemCount} item{itemCount===1?'':'s'}
-                        </div>
-
-                        <div style={{fontSize:11.5,color:'#475569',marginTop:6}}>👤 {order.customer?.name||'Member'}</div>
-                        {order.customer?.phone&&<a href={`tel:${order.customer.phone}`} style={{display:'inline-block',fontSize:10.5,color:'#0f766e',fontWeight:800,marginTop:4,textDecoration:'none'}}>☎ {order.customer.phone}</a>}
-
-                        <div style={{borderTop:'1px solid #eef2f7',marginTop:8,paddingTop:7}}>
-                          {(order.items||[]).map((item,i)=><div key={item.id||i} style={{fontSize:11,color:'#475569',marginBottom:5}}>
-                            <strong>{item.quantity}× {item.item_name}</strong>
-                            {Array.isArray(item.modifiers)&&item.modifiers.length?<div style={{fontSize:10,color:'#64748b',lineHeight:1.4,marginTop:1}}>
-                              {item.modifiers.map(m=>m.option_name).filter(Boolean).join(' · ')}
-                            </div>:null}
-                          </div>)}
-                        </div>
-
-                        {order.customer_note&&<div style={{fontSize:10.5,color:'#7c2d12',background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:8,padding:7,marginTop:7}}>
-                          <strong>Customer note:</strong> {order.customer_note}
-                        </div>}
-
-                        {status==='new'&&<button type="button" style={{...styles.submitBtn,width:'100%',marginTop:9,padding:'10px 9px',fontSize:11}} disabled={orderAheadOrderSaving===order.public_id} onClick={()=>updateOrderAheadOrderStatus(order,'preparing')}>
-                          {orderAheadOrderSaving===order.public_id?'Updating…':'Start Preparing →'}
-                        </button>}
-                        {status==='preparing'&&<button type="button" style={{...styles.submitBtn,width:'100%',marginTop:9,padding:'10px 9px',fontSize:11,background:'#059669'}} disabled={orderAheadOrderSaving===order.public_id} onClick={()=>updateOrderAheadOrderStatus(order,'ready')}>
-                          {orderAheadOrderSaving===order.public_id?'Updating…':'Mark Ready & Notify →'}
-                        </button>}
-                        {status==='ready'&&<button type="button" style={{...styles.submitBtn,width:'100%',marginTop:9,padding:'10px 9px',fontSize:11,background:'#334155'}} disabled={orderAheadOrderSaving===order.public_id} onClick={()=>updateOrderAheadOrderStatus(order,'completed')}>
-                          {orderAheadOrderSaving===order.public_id?'Updating…':'Complete Pickup ✓'}
-                        </button>}
-                      </div>
-                    })}
+                    <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginTop:8}}><span style={{fontSize:10,fontWeight:850,color:'#0f766e',background:'#f0fdfa',border:'1px solid #ccfbf1',padding:'4px 7px',borderRadius:999}}>🏢 {order.branch?.name||'Branch'}</span>{urgency&&<span style={{fontSize:10,fontWeight:900,color:urgency.color,background:urgency.bg,border:`1px solid ${urgency.border}`,padding:'4px 7px',borderRadius:999}}>{urgency.label}</span>}</div>
+                    <div style={{fontSize:12.5,color:'#0f172a',fontWeight:900,marginTop:8}}>🕒 {orderAheadPickupLabel(order)}</div>
+                    <div style={{fontSize:10.5,color:'#94a3b8',marginTop:2}}>Received {orderAheadCreatedLabel(order)} · {itemCount} item{itemCount===1?'':'s'}</div>
+                    <div style={{marginTop:8,padding:'8px 9px',borderRadius:9,background:'#f8fafc'}}><div style={{fontSize:11.5,fontWeight:850}}>👤 {order.customer?.name||'Member'}</div>{order.customer?.phone&&<a href={`tel:${order.customer.phone}`} style={{display:'inline-block',fontSize:10.5,color:'#0f766e',fontWeight:800,marginTop:3,textDecoration:'none'}}>☎ {order.customer.phone}</a>}</div>
+                    <div style={{borderTop:'1px solid #eef2f7',marginTop:8,paddingTop:8}}>{(order.items||[]).map((item,i)=><div key={item.id||i} style={{fontSize:11.5,color:'#334155',marginBottom:6}}><strong>{item.quantity}× {item.item_name}</strong>{Array.isArray(item.modifiers)&&item.modifiers.length?<div style={{fontSize:10,color:'#64748b',lineHeight:1.45,marginTop:2}}>{item.modifiers.map(m=>`${m.group_name?m.group_name+': ':''}${m.option_name}`).filter(Boolean).join(' · ')}</div>:null}</div>)}</div>
+                    {order.customer_note&&<div style={{fontSize:10.5,color:'#7c2d12',background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:8,padding:8,marginTop:7}}><strong>Customer note:</strong> {order.customer_note}</div>}
+                    {!history&&order.status==='new'&&<div style={{display:'grid',gridTemplateColumns:'1fr auto',gap:7,marginTop:10}}><button type="button" style={{...styles.submitBtn,margin:0,padding:'10px 9px',fontSize:11}} disabled={orderAheadOrderSaving===order.public_id} onClick={()=>updateOrderAheadOrderStatus(order,'preparing')}>{orderAheadOrderSaving===order.public_id?'Updating…':'Start Preparing →'}</button><button type="button" style={{...styles.addBtn,padding:'9px 10px',fontSize:10.5,color:'#b91c1c'}} disabled={orderAheadOrderSaving===order.public_id} onClick={()=>cancelOrderAheadOrder(order)}>Cancel</button></div>}
+                    {!history&&order.status==='preparing'&&<div style={{display:'grid',gridTemplateColumns:'1fr auto',gap:7,marginTop:10}}><button type="button" style={{...styles.submitBtn,margin:0,padding:'10px 9px',fontSize:11,background:'#059669'}} disabled={orderAheadOrderSaving===order.public_id} onClick={()=>updateOrderAheadOrderStatus(order,'ready')}>{orderAheadOrderSaving===order.public_id?'Updating…':'Mark Ready & Notify →'}</button><button type="button" style={{...styles.addBtn,padding:'9px 10px',fontSize:10.5,color:'#b91c1c'}} disabled={orderAheadOrderSaving===order.public_id} onClick={()=>cancelOrderAheadOrder(order)}>Cancel</button></div>}
+                    {!history&&order.status==='ready'&&<button type="button" style={{...styles.submitBtn,width:'100%',marginTop:10,padding:'10px 9px',fontSize:11,background:'#334155'}} disabled={orderAheadOrderSaving===order.public_id} onClick={()=>updateOrderAheadOrderStatus(order,'completed')}>{orderAheadOrderSaving===order.public_id?'Updating…':'Complete Pickup ✓'}</button>}
                   </div>
                 })}
               </div>
+              <div style={{fontSize:10.5,color:'#94a3b8',marginTop:11,lineHeight:1.5}}>Ready notification: “{orderAheadSetup?.ready_message_preview || `Your order from ${business?.name || business?.business_name || user?.business_name || 'this business'} is ready.`}”</div>
+            </div>
+            )}
 
-              <div style={{fontSize:10.5,color:'#94a3b8',marginTop:10,lineHeight:1.5}}>
-                Ready notification: “{orderAheadSetup?.ready_message_preview || `Your order from ${business?.name || business?.business_name || user?.business_name || 'this business'} is ready.`}”
-                {' '}Customer phone remains a backup for order issues or overdue pickup.
+            {orderAheadWorkspaceTab === 'operations' && (
+            <div style={{display:'grid',gap:14}}>
+              <div style={styles.card}>
+                <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'flex-start',flexWrap:'wrap'}}><div><div style={{fontSize:11,fontWeight:900,color:'#0f766e'}}>LIVE OPERATIONS</div><h3 style={{margin:'5px 0 3px'}}>Branch Rush Controls</h3><p style={{margin:0,fontSize:12,color:'#64748b'}}>Temporary controls take effect immediately after Save without changing the permanent weekly pickup hours.</p></div><button type="button" style={styles.addBtn} onClick={loadOrderAheadQuickMenu} disabled={orderAheadQuickMenuLoading}>{orderAheadQuickMenuLoading?'Loading…':'↻ Refresh stock'}</button></div>
+
+                {!activeOrderAheadBranches.length ? <div style={{marginTop:12,padding:14,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:10,color:'#92400e',fontSize:12}}>Create an active branch first.</div> : <>
+                  <label style={{...styles.label,marginTop:14}}>Branch
+                    <select style={{...styles.input,marginTop:6}} value={orderAheadSelectedOpsBranch?.public_id || ''} onChange={e=>setOrderAheadOpsBranchFilter(e.target.value)}>{activeOrderAheadBranches.map(branch=><option key={branch.public_id} value={branch.public_id}>{branch.name}</option>)}</select>
+                  </label>
+                  {orderAheadSelectedOpsBranch && <div style={{marginTop:12,border:'1px solid '+(orderAheadSelectedOpsConfig.is_paused?'#fecaca':'#e2e8f0'),background:orderAheadSelectedOpsConfig.is_paused?'#fef2f2':'#f8fafc',borderRadius:13,padding:12}}>
+                    <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'center',flexWrap:'wrap'}}><div><strong>🏢 {orderAheadSelectedOpsBranch.name}</strong><div style={{fontSize:10.5,color:orderAheadSelectedOpsConfig.is_paused?'#b91c1c':'#047857',fontWeight:800,marginTop:2}}>{orderAheadSelectedOpsConfig.is_paused?'ORDERING PAUSED':'ACCEPTING ORDERS'}</div></div><label style={{display:'flex',alignItems:'center',gap:7,fontSize:11.5,fontWeight:850,color:orderAheadSelectedOpsConfig.is_paused?'#b91c1c':'#475569'}}><input type="checkbox" checked={!!orderAheadSelectedOpsConfig.is_paused} onChange={e=>updateOrderAheadOpsLocal(orderAheadSelectedOpsBranch,{is_paused:e.target.checked})}/> Pause this branch</label></div>
+                    <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))',gap:10,marginTop:12}}>
+                      <label style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:10,padding:10,fontSize:11.5,fontWeight:800,display:'flex',gap:8,alignItems:'center'}}><input type="checkbox" checked={orderAheadSelectedOpsConfig.asap_enabled !== false} onChange={e=>updateOrderAheadOpsLocal(orderAheadSelectedOpsBranch,{asap_enabled:e.target.checked})}/> Accept ASAP orders</label>
+                      <label style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:10,padding:10,fontSize:11.5,fontWeight:800,display:'flex',gap:8,alignItems:'center'}}><input type="checkbox" checked={orderAheadSelectedOpsConfig.scheduled_enabled !== false} onChange={e=>updateOrderAheadOpsLocal(orderAheadSelectedOpsBranch,{scheduled_enabled:e.target.checked})}/> Accept scheduled orders</label>
+                    </div>
+                    <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))',gap:10,marginTop:10}}>
+                      <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:10,padding:10}}><div style={{fontSize:11.5,fontWeight:850}}>Rush preparation time</div><div style={{fontSize:10.5,color:'#64748b',marginTop:2}}>Override the normal {Number(orderAheadForm.min_prep_minutes||15)} minute prep time for this branch.</div><div style={{display:'flex',gap:8,alignItems:'center',marginTop:8}}><input type="number" min="0" max="1440" disabled={orderAheadSelectedOpsConfig.prep_override_minutes===null || orderAheadSelectedOpsConfig.prep_override_minutes===undefined} value={orderAheadSelectedOpsConfig.prep_override_minutes===null || orderAheadSelectedOpsConfig.prep_override_minutes===undefined?'':orderAheadSelectedOpsConfig.prep_override_minutes} onChange={e=>updateOrderAheadOpsLocal(orderAheadSelectedOpsBranch,{prep_override_minutes:Math.max(0,Math.min(1440,Number(e.target.value||0)))})} style={{...styles.input,width:92,padding:'8px',margin:0}}/><span style={{fontSize:10.5,color:'#64748b'}}>minutes</span></div><label style={{display:'flex',gap:6,alignItems:'center',fontSize:10.5,fontWeight:800,marginTop:8}}><input type="checkbox" checked={orderAheadSelectedOpsConfig.prep_override_minutes===null || orderAheadSelectedOpsConfig.prep_override_minutes===undefined} onChange={e=>updateOrderAheadOpsLocal(orderAheadSelectedOpsBranch,{prep_override_minutes:e.target.checked?null:Number(orderAheadForm.min_prep_minutes||15)})}/> Use normal prep time</label></div>
+                      <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:10,padding:10}}><div style={{fontSize:11.5,fontWeight:850}}>Orders per pickup slot</div><div style={{fontSize:10.5,color:'#64748b',marginTop:2}}>Current interval: every {Number(orderAheadForm.slot_interval_minutes||15)} minutes.</div><div style={{display:'flex',gap:8,alignItems:'center',marginTop:8}}><input type="number" min="5" max="50" disabled={orderAheadSelectedOpsConfig.slot_capacity_unlimited===true || orderAheadSelectedOpsConfig.slot_capacity===null} value={(orderAheadSelectedOpsConfig.slot_capacity_unlimited===true || orderAheadSelectedOpsConfig.slot_capacity===null)?'':Number(orderAheadSelectedOpsConfig.slot_capacity??5)} onChange={e=>updateOrderAheadOpsLocal(orderAheadSelectedOpsBranch,{slot_capacity:Math.max(5,Math.min(50,Number(e.target.value||5))),slot_capacity_unlimited:false})} style={{...styles.input,width:92,padding:'8px',margin:0}}/><span style={{fontSize:10.5,color:'#64748b'}}>orders</span></div><label style={{display:'flex',gap:6,alignItems:'center',fontSize:10.5,fontWeight:800,marginTop:8}}><input type="checkbox" checked={orderAheadSelectedOpsConfig.slot_capacity_unlimited===true || orderAheadSelectedOpsConfig.slot_capacity===null} onChange={e=>updateOrderAheadOpsLocal(orderAheadSelectedOpsBranch,e.target.checked?{slot_capacity:null,slot_capacity_unlimited:true}:{slot_capacity:5,slot_capacity_unlimited:false})}/> Unlimited</label></div>
+                    </div>
+                    <button type="button" onClick={()=>saveOrderAheadOperations(orderAheadSelectedOpsBranch)} disabled={orderAheadOpsSaving===orderAheadSelectedOpsBranch.public_id} style={{...styles.submitBtn,marginTop:12}}>{orderAheadOpsSaving===orderAheadSelectedOpsBranch.public_id?'Saving…':'Save branch controls'}</button>
+                  </div>}
+                </>}
+              </div>
+
+              <div style={styles.card}>
+                <div><div style={{fontSize:11,fontWeight:900,color:'#0f766e'}}>QUICK STOCK CONTROL</div><h3 style={{margin:'5px 0 3px'}}>Sold Out / Reopen Items</h3><p style={{margin:0,fontSize:12,color:'#64748b'}}>Use this during service instead of opening the full Menu Builder.</p></div>
+                <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'minmax(180px,.7fr) minmax(220px,1fr)',gap:8,marginTop:12}}><select value={orderAheadStockBranchFilter} onChange={e=>setOrderAheadStockBranchFilter(e.target.value)} style={{...styles.input,margin:0,padding:'9px'}}><option value="">All branches</option>{activeOrderAheadBranches.map(branch=><option key={branch.public_id} value={branch.public_id}>{branch.name}</option>)}</select><input value={orderAheadStockSearch} onChange={e=>setOrderAheadStockSearch(e.target.value)} placeholder="Search menu item…" style={{...styles.input,margin:0,padding:'9px'}}/></div>
+                {orderAheadQuickMenuLoading&&<div style={{padding:18,textAlign:'center',color:'#94a3b8'}}>Loading menu…</div>}
+                {!orderAheadQuickMenuLoading && !orderAheadFilteredStockItems.length && <div style={{padding:18,textAlign:'center',color:'#94a3b8'}}>No menu items found.</div>}
+                <div style={{display:'grid',gap:7,marginTop:10}}>{orderAheadFilteredStockItems.map(item=>{const globalAvailable=item.is_available!==false;const branchUnavailable=orderAheadStockBranchFilter?(item.unavailable_branch_public_ids||[]).includes(orderAheadStockBranchFilter):false;const available=orderAheadStockBranchFilter?(globalAvailable&&!branchUnavailable):globalAvailable;const category=(orderAheadQuickMenu.categories||[]).find(c=>c.public_id===item.category_public_id)?.name||'Uncategorized';const globalOverride=orderAheadStockBranchFilter&& !globalAvailable;return <div key={item.public_id} style={{display:'grid',gridTemplateColumns:'minmax(0,1fr) auto',gap:10,alignItems:'center',padding:'9px 10px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:10}}><div style={{minWidth:0}}><strong style={{fontSize:12}}>{item.name}</strong><div style={{fontSize:10,color:'#64748b',marginTop:2}}>{category} · ₱{Number(item.base_price||0).toFixed(2)}</div><div style={{fontSize:10,fontWeight:850,color:available?'#047857':'#b91c1c',marginTop:3}}>{available?'AVAILABLE':globalOverride?'SOLD OUT · ALL BRANCHES':orderAheadStockBranchFilter?'SOLD OUT · THIS BRANCH':'SOLD OUT · ALL BRANCHES'}</div></div><button type="button" disabled={orderAheadAvailabilitySaving===item.public_id} onClick={()=>toggleOrderAheadItemAvailability(item)} style={{...styles.addBtn,fontSize:10.5,padding:'8px 10px',color:available?'#b91c1c':'#047857'}}>{orderAheadAvailabilitySaving===item.public_id?'Saving…':available?'Mark sold out':globalOverride?'Reopen all':'Reopen'}</button></div>})}</div>
               </div>
             </div>
+            )}
           </div>
         )}
 

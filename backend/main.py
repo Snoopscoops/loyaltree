@@ -1765,6 +1765,23 @@ class OrderAheadBranchCapacityUpdate(BaseModel):
     # Explicit null means Unlimited; 5-50 sets a hard per-slot branch limit.
     slot_capacity: Optional[int] = Field(..., ge=5, le=50)
 
+class OrderAheadBranchOperationsUpdate(BaseModel):
+    # Fast day-to-day controls for one branch. Omitted fields are preserved.
+    # prep_override_minutes=None explicitly clears the rush-time override.
+    is_paused: Optional[bool] = None
+    asap_enabled: Optional[bool] = None
+    scheduled_enabled: Optional[bool] = None
+    prep_override_minutes: Optional[int] = Field(default=None, ge=0, le=1440)
+    # Optional here so the same operational save can also change capacity.
+    # Explicit null = Unlimited; omitted = preserve current capacity.
+    slot_capacity: Optional[int] = Field(default=None, ge=5, le=50)
+
+class OrderAheadItemAvailabilityUpdate(BaseModel):
+    # With branch_public_id this changes only that branch. Without it, this is
+    # the global item availability switch used for an all-branch sold-out.
+    is_available: bool
+    branch_public_id: Optional[str] = Field(default=None, max_length=120)
+
 class OrderAheadCartItemInput(BaseModel):
     item_public_id: str = Field(min_length=1, max_length=120)
     quantity: int = Field(default=1, ge=1, le=99)
@@ -8963,6 +8980,85 @@ def _oa_slot_key(value: datetime) -> str:
     return value.astimezone(timezone.utc).replace(microsecond=0).isoformat()
 
 
+_OA_BRANCH_OPERATION_DEFAULTS = {
+    'is_paused': False,
+    'asap_enabled': True,
+    'scheduled_enabled': True,
+    'prep_override_minutes': None,
+}
+
+
+def _oa_branch_operations_map(business_id: int, branch_ids: list[int]) -> dict[int, dict]:
+    """Return per-branch operational overrides. Missing rows use safe defaults.
+
+    During a rolling deploy, an older database may not have the new table yet;
+    customer ordering keeps the pre-upgrade behavior until the migration is run.
+    Operational writes themselves still fail clearly if the table is missing.
+    """
+    if not branch_ids:
+        return {}
+    try:
+        rows = (
+            supabase.table('order_ahead_branch_operations')
+            .select('branch_id,is_paused,asap_enabled,scheduled_enabled,prep_override_minutes')
+            .eq('business_id', business_id)
+            .in_('branch_id', branch_ids)
+            .execute().data or []
+        )
+    except Exception as e:
+        if 'order_ahead_branch_operations' in str(e):
+            return {}
+        raise
+    out = {}
+    for row in rows:
+        branch_id = row.get('branch_id')
+        if branch_id is None:
+            continue
+        out[int(branch_id)] = {
+            **_OA_BRANCH_OPERATION_DEFAULTS,
+            'is_paused': bool(row.get('is_paused')),
+            'asap_enabled': row.get('asap_enabled') is not False,
+            'scheduled_enabled': row.get('scheduled_enabled') is not False,
+            'prep_override_minutes': row.get('prep_override_minutes'),
+        }
+    return out
+
+
+def _oa_branch_operation(business_id: int, branch_id: int) -> dict:
+    return {
+        **_OA_BRANCH_OPERATION_DEFAULTS,
+        **_oa_branch_operations_map(business_id, [branch_id]).get(int(branch_id), {}),
+    }
+
+
+def _oa_save_branch_operation(business_id: int, branch_id: int, patch: dict) -> dict:
+    allowed = {'is_paused', 'asap_enabled', 'scheduled_enabled', 'prep_override_minutes'}
+    clean = {k: v for k, v in (patch or {}).items() if k in allowed}
+    if not clean:
+        return _oa_branch_operation(business_id, branch_id)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    try:
+        existing = _supabase_first_row(
+            supabase.table('order_ahead_branch_operations').select('id')
+            .eq('business_id', business_id).eq('branch_id', branch_id).limit(1).execute()
+        )
+        payload = {
+            'business_id': business_id,
+            'branch_id': branch_id,
+            **clean,
+            'updated_at': now_iso,
+        }
+        if existing:
+            supabase.table('order_ahead_branch_operations').update(payload).eq('id', existing.get('id')).execute()
+        else:
+            supabase.table('order_ahead_branch_operations').insert(payload).execute()
+    except Exception as e:
+        if 'order_ahead_branch_operations' in str(e):
+            raise HTTPException(status_code=503, detail='Install the Order Ahead business-operations migration first')
+        raise
+    return _oa_branch_operation(business_id, branch_id)
+
+
 def _oa_branch_capacity_map(business_id: int, branch_ids: list[int]) -> dict[int, Optional[int]]:
     """Return configured capacities; missing row intentionally means default 5."""
     if not branch_ids:
@@ -9080,6 +9176,7 @@ def _oa_branch_pickup_hours_snapshot(business_id: int, branches: Optional[list[d
             .execute().data or []
         )
     capacity_by_branch = _oa_branch_capacity_map(business_id, ids)
+    operations_by_branch = _oa_branch_operations_map(business_id, ids)
     by_branch = defaultdict(list)
     for row in rows:
         by_branch[row.get('branch_id')].append(row)
@@ -9100,12 +9197,20 @@ def _oa_branch_pickup_hours_snapshot(business_id: int, branches: Optional[list[d
                 'closes_at': closes_at,
             })
         slot_capacity = capacity_by_branch.get(branch.get('id'), 5)
+        operations = {
+            **_OA_BRANCH_OPERATION_DEFAULTS,
+            **operations_by_branch.get(branch.get('id'), {}),
+        }
         out.append({
             'branch_public_id': branch.get('public_id'),
             'branch_name': branch.get('name') or 'Branch',
             'configured': bool(raw),
             'slot_capacity': slot_capacity,
             'slot_capacity_unlimited': slot_capacity is None,
+            'is_paused': bool(operations.get('is_paused')),
+            'asap_enabled': operations.get('asap_enabled') is not False,
+            'scheduled_enabled': operations.get('scheduled_enabled') is not False,
+            'prep_override_minutes': operations.get('prep_override_minutes'),
             'days': days,
         })
     return out
@@ -9157,7 +9262,14 @@ def _oa_branch_pickup_options(
     because the earliest interval is full.
     """
     mode = str(settings.get('pickup_mode') or 'both')
-    prep = max(0, int(settings.get('min_prep_minutes') or 0))
+    operations = _OA_BRANCH_OPERATION_DEFAULTS.copy()
+    if business_id is not None and branch_id is not None:
+        operations.update(_oa_branch_operation(int(business_id), int(branch_id)))
+    branch_paused = bool(operations.get('is_paused'))
+    asap_enabled = operations.get('asap_enabled') is not False
+    scheduled_enabled = operations.get('scheduled_enabled') is not False
+    prep_override = operations.get('prep_override_minutes')
+    prep = max(0, int(prep_override if prep_override is not None else (settings.get('min_prep_minutes') or 0)))
     interval = max(5, int(settings.get('slot_interval_minutes') or 15))
     advance = max(0, min(365, int(settings.get('max_advance_days') or 0)))
     configured = bool(hours_days)
@@ -9191,7 +9303,7 @@ def _oa_branch_pickup_options(
     # window (including yesterday's overnight window). It never silently turns
     # "ASAP" into a next-day reservation.
     asap_candidates = []
-    if configured and mode in ('asap', 'both'):
+    if configured and not branch_paused and asap_enabled and mode in ('asap', 'both'):
         for delta_days in (0, -1):
             iv = interval_for((now + timedelta(days=delta_days)).date())
             if iv and iv[0] <= earliest < iv[1]:
@@ -9199,7 +9311,7 @@ def _oa_branch_pickup_options(
                 break
 
     scheduled_candidates = []
-    if configured and mode in ('scheduled', 'both'):
+    if configured and not branch_paused and scheduled_enabled and mode in ('scheduled', 'both'):
         last_service_date = now.date() + timedelta(days=advance)
         service_date = now.date()
         while service_date <= last_service_date and len(scheduled_candidates) < 500:
@@ -9254,6 +9366,11 @@ def _oa_branch_pickup_options(
     return {
         'mode': mode,
         'min_prep_minutes': prep,
+        'base_min_prep_minutes': max(0, int(settings.get('min_prep_minutes') or 0)),
+        'prep_override_minutes': prep_override,
+        'branch_paused': branch_paused,
+        'asap_enabled': asap_enabled,
+        'scheduled_enabled': scheduled_enabled,
         'slot_interval_minutes': interval,
         'max_advance_days': advance,
         'slot_capacity': slot_capacity,
@@ -9731,13 +9848,15 @@ def _oa_validate_pickup_for_order(
     choices = _oa_branch_pickup_options(settings, hours, business_id, branch_id)
     if not choices.get('hours_configured'):
         raise HTTPException(status_code=400, detail='Pickup hours are not configured for this branch')
+    if choices.get('branch_paused'):
+        raise HTTPException(status_code=409, detail='Order Ahead is temporarily paused for this branch')
     mode = str(settings.get('pickup_mode') or 'both')
     if pickup_type == 'asap':
-        if mode not in ('asap', 'both') or not choices.get('asap_available'):
+        if not choices.get('asap_enabled') or mode not in ('asap', 'both') or not choices.get('asap_available'):
             raise HTTPException(status_code=400, detail='ASAP pickup is not currently available')
         return datetime.fromisoformat(str(choices['asap_ready_at']))
-    if mode not in ('scheduled', 'both'):
-        raise HTTPException(status_code=400, detail='Scheduled pickup is not enabled')
+    if not choices.get('scheduled_enabled') or mode not in ('scheduled', 'both'):
+        raise HTTPException(status_code=400, detail='Scheduled pickup is not currently available')
     requested = str(pickup_at or '').strip()
     slot = next((s for s in choices.get('slots', []) if s.get('value') == requested), None)
     if not slot:
@@ -10169,6 +10288,116 @@ async def customer_abandon_order_ahead_checkout(
         'success': True,
         'released': bool(updated),
         'reason': 'released' if updated else 'already_released',
+    }
+
+
+@app.patch('/api/v1/business/{public_id}/order-ahead/operations/{branch_public_id}')
+async def owner_update_order_ahead_branch_operations(
+    public_id: str,
+    branch_public_id: str,
+    payload: OrderAheadBranchOperationsUpdate,
+    authorization: str = Header(default=''),
+):
+    """Owner-only rush controls for one branch.
+
+    These are temporary operational overrides, not the permanent weekly pickup
+    schedule. They affect customer availability immediately.
+    """
+    business = _oa_require_owner_business(public_id, authorization)
+    branch = _supabase_first_row(
+        supabase.table('branches').select('id,public_id,name,address,is_active')
+        .eq('business_id', business.get('id')).eq('public_id', branch_public_id)
+        .limit(1).execute()
+    )
+    if not branch or not branch.get('is_active', True):
+        raise HTTPException(status_code=404, detail='Branch not found')
+
+    fields_set = set(getattr(payload, '__fields_set__', set()) or getattr(payload, 'model_fields_set', set()) or set())
+    op_patch = {}
+    for key in ('is_paused', 'asap_enabled', 'scheduled_enabled', 'prep_override_minutes'):
+        if key in fields_set:
+            op_patch[key] = getattr(payload, key)
+    operations = _oa_save_branch_operation(business.get('id'), branch.get('id'), op_patch) if op_patch else _oa_branch_operation(business.get('id'), branch.get('id'))
+
+    if 'slot_capacity' in fields_set:
+        try:
+            _oa_save_branch_slot_capacity(business.get('id'), branch.get('id'), payload.slot_capacity)
+        except HTTPException:
+            raise
+        except Exception as e:
+            if 'order_ahead_branch_capacity' in str(e):
+                raise HTTPException(status_code=503, detail='Install the Order Ahead pickup-capacity migration first')
+            raise
+
+    snapshot = _oa_branch_pickup_hours_snapshot(business.get('id'), [branch])
+    return {
+        'success': True,
+        'branch': snapshot[0] if snapshot else {
+            'branch_public_id': branch_public_id,
+            'branch_name': branch.get('name') or 'Branch',
+            **operations,
+        },
+    }
+
+
+@app.patch('/api/v1/business/{public_id}/order-ahead/items/{item_public_id}/availability')
+async def owner_update_order_ahead_item_availability(
+    public_id: str,
+    item_public_id: str,
+    payload: OrderAheadItemAvailabilityUpdate,
+    authorization: str = Header(default=''),
+):
+    """Fast sold-out/reopen switch without rewriting the menu item.
+
+    branch_public_id=None toggles the item globally. With a branch id, only
+    that branch is changed; deleting the override restores normal availability.
+    """
+    business = _oa_require_owner_business(public_id, authorization)
+    item = _oa_public_row('order_ahead_items', item_public_id, business.get('id'))
+    if not item:
+        raise HTTPException(status_code=404, detail='Menu item not found')
+
+    if not payload.branch_public_id:
+        supabase.table('order_ahead_items').update({
+            'is_available': bool(payload.is_available),
+            'updated_at': datetime.now(timezone.utc).isoformat(),
+        }).eq('id', item.get('id')).execute()
+        return {'success': True, 'scope': 'all_branches', 'is_available': bool(payload.is_available)}
+
+    branch = _supabase_first_row(
+        supabase.table('branches').select('id,public_id,name,is_active')
+        .eq('business_id', business.get('id')).eq('public_id', payload.branch_public_id)
+        .limit(1).execute()
+    )
+    if not branch or not branch.get('is_active', True):
+        raise HTTPException(status_code=404, detail='Branch not found')
+
+    existing = _supabase_first_row(
+        supabase.table('order_ahead_item_branch_availability').select('item_id,branch_id,is_available')
+        .eq('item_id', item.get('id')).eq('branch_id', branch.get('id')).limit(1).execute()
+    )
+    if payload.is_available:
+        # No override = available, unless the global item itself is sold out.
+        if existing:
+            (
+                supabase.table('order_ahead_item_branch_availability').delete()
+                .eq('item_id', item.get('id')).eq('branch_id', branch.get('id')).execute()
+            )
+    else:
+        row = {'item_id': item.get('id'), 'branch_id': branch.get('id'), 'is_available': False}
+        if existing:
+            (
+                supabase.table('order_ahead_item_branch_availability').update({'is_available': False})
+                .eq('item_id', item.get('id')).eq('branch_id', branch.get('id')).execute()
+            )
+        else:
+            supabase.table('order_ahead_item_branch_availability').insert(row).execute()
+    return {
+        'success': True,
+        'scope': 'branch',
+        'branch_public_id': branch.get('public_id'),
+        'is_available': bool(payload.is_available and item.get('is_available') is not False),
+        'global_is_available': item.get('is_available') is not False,
     }
 
 
@@ -22119,7 +22348,7 @@ async def order_ahead_branch_page(customer_public_id: str, token: str = Query(de
     try:
         branches = (
             supabase.table('branches')
-            .select('public_id,name,address,is_active')
+            .select('id,public_id,name,address,is_active')
             .eq('business_id', business.get('id'))
             .eq('is_active', True)
             .order('created_at')
@@ -22161,14 +22390,31 @@ async def order_ahead_branch_page(customer_public_id: str, token: str = Query(de
     else:
         cta_css = f'color:{primary};padding-top:2px;'
 
-    branch_cards = ''.join(
-        f"""<a class="branch" href="{BASE_URL}/order-ahead/{quote(customer_public_id)}/branch/{quote(str(b.get('public_id') or ''))}?token={quote(token)}">
-              <div class="branch-name">{html_lib.escape(str(b.get('name') or 'Branch'))}</div>
-              <div class="branch-address">{html_lib.escape(str(b.get('address') or 'Pickup location'))}</div>
-              <div class="branch-cta"><span>{cta_label}</span><span>&rsaquo;</span></div>
-            </a>"""
-        for b in branches
-    ) or '<div class="empty">No active branches have been configured yet.</div>'
+    operations_by_branch = _oa_branch_operations_map(
+        business.get('id'), [b.get('id') for b in branches if b.get('id') is not None]
+    )
+    branch_card_parts = []
+    for b in branches:
+        op = {**_OA_BRANCH_OPERATION_DEFAULTS, **operations_by_branch.get(b.get('id'), {})}
+        name = html_lib.escape(str(b.get('name') or 'Branch'))
+        address = html_lib.escape(str(b.get('address') or 'Pickup location'))
+        if op.get('is_paused'):
+            branch_card_parts.append(
+                f"""<div class="branch paused">
+                  <div class="branch-name">{name}</div>
+                  <div class="branch-address">{address}</div>
+                  <div class="paused-note">Ordering temporarily paused</div>
+                </div>"""
+            )
+        else:
+            branch_card_parts.append(
+                f"""<a class="branch" href="{BASE_URL}/order-ahead/{quote(customer_public_id)}/branch/{quote(str(b.get('public_id') or ''))}?token={quote(token)}">
+                  <div class="branch-name">{name}</div>
+                  <div class="branch-address">{address}</div>
+                  <div class="branch-cta"><span>{cta_label}</span><span>&rsaquo;</span></div>
+                </a>"""
+            )
+    branch_cards = ''.join(branch_card_parts) or '<div class="empty">No active branches have been configured yet.</div>'
 
     banner_html = (
         f'<img class="banner" src="{hero_url}" alt="">'
@@ -22195,8 +22441,8 @@ async def order_ahead_branch_page(customer_public_id: str, token: str = Query(de
     .logo{{width:54px;height:54px;border-radius:{logo_radius};object-fit:cover;background:{surface};border:1px solid #e2e8f0}}.compact .logo{{width:42px;height:42px}}
     h1{{font-size:24px;margin:0;letter-spacing:-.35px}}.compact h1{{font-size:20px}}.hello{{color:{muted};font-size:14px;margin-top:4px}}
     h2{{font-size:17px;margin:0 0 12px}}.branch{{display:block;text-decoration:none;color:inherit;background:{surface};border:{card_border};border-radius:{card_radius};padding:17px;margin:12px 0;box-shadow:{card_shadow}}}
-    .branch:active{{transform:scale(.995)}}.branch-name{{font-size:17px;font-weight:750}}.branch-address{{font-size:13px;color:{muted};margin-top:5px;line-height:1.45}}
-    .branch-cta{{margin-top:14px;font-weight:750;font-size:14px;display:flex;justify-content:space-between;align-items:center;{cta_css}}}
+    .branch:active{{transform:scale(.995)}}.branch.paused{{opacity:.68;cursor:not-allowed}}.branch-name{{font-size:17px;font-weight:750}}.branch-address{{font-size:13px;color:{muted};margin-top:5px;line-height:1.45}}
+    .branch-cta{{margin-top:14px;font-weight:750;font-size:14px;display:flex;justify-content:space-between;align-items:center;{cta_css}}}.paused-note{{margin-top:13px;font-size:12px;font-weight:800;color:#b45309;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:8px 10px}}
     .empty{{padding:22px;background:{surface};border:1px dashed #cbd5e1;border-radius:18px;color:{muted};text-align:center}}.test{{margin-top:24px;font-size:12px;color:{muted};opacity:.75;text-align:center}}
     </style></head><body><main>{banner_html}<div class="top{compact_class}{banner_mode_class}"><img class="logo" src="{logo_url}" alt=""><div><h1>{biz_name}</h1>{greeting_html}</div></div>
     <h2>{heading}</h2>{branch_cards}<div class="test">{payment_footer}</div></main></body></html>"""
@@ -22333,7 +22579,7 @@ function removeCartItem(index){cart.splice(index,1);saveCart();drawCart();if(!ca
 function pickDefault(){const p=DATA.pickup;if(p.mode==='asap'&&p.asap_available)return'asap';if(p.mode==='scheduled'&&p.slots.length)return'scheduled';if(p.mode==='both'){if(p.asap_available)return'asap';if(p.slots.length)return'scheduled'}return null}
 function oaUniqueBy(arr,key){const seen=new Set();return arr.filter(x=>{const v=x?.[key];if(seen.has(v))return false;seen.add(v);return true})}
 function ensureScheduledSelection(){const slots=DATA.pickup.slots||[];if(!slots.length){selectedDate='';selectedHour='';selectedMinute='';selectedSlot='';return}const dates=oaUniqueBy(slots,'date_key');if(!selectedDate||!dates.some(s=>s.date_key===selectedDate))selectedDate=dates[0].date_key;const hours=oaUniqueBy(slots.filter(s=>s.date_key===selectedDate),'hour_key');if(!selectedHour||!hours.some(s=>s.hour_key===selectedHour))selectedHour=hours[0]?.hour_key||'';const mins=oaUniqueBy(slots.filter(s=>s.date_key===selectedDate&&s.hour_key===selectedHour),'minute_key');if(!selectedMinute||!mins.some(s=>s.minute_key===selectedMinute))selectedMinute=mins[0]?.minute_key||'';const match=slots.find(s=>s.date_key===selectedDate&&s.hour_key===selectedHour&&s.minute_key===selectedMinute);selectedSlot=match?.value||''}
-function renderPickup(){pickupType=pickupType||pickDefault();const p=DATA.pickup;let html='';if(!p.hours_configured){html+='<div class="notice"><strong>Pickup hours are not configured for this branch yet.</strong><br>The business needs to set its Order Ahead pickup hours before checkout can continue.</div>'}html+=`<div class="pickupbox"><strong>Pickup at ${esc(DATA.branch.name)}</strong><div class="muted" style="margin-top:3px">Minimum preparation: ${p.min_prep_minutes} min</div>`;if(p.mode==='both')html+=`<div class="picktabs"><button class="picktab ${pickupType==='asap'?'on':''}" ${p.asap_available?'':'disabled'} onclick="pickupType='asap';renderPickup();renderReview()">ASAP</button><button class="picktab ${pickupType==='scheduled'?'on':''}" ${p.slots.length?'':'disabled'} onclick="pickupType='scheduled';renderPickup();renderReview()">Scheduled</button></div>`;else if(p.mode==='asap')html+=`<div class="picktabs" style="grid-template-columns:1fr"><button class="picktab ${pickupType==='asap'?'on':''}" ${p.asap_available?'':'disabled'} onclick="pickupType='asap';renderPickup();renderReview()">ASAP</button></div>`;else html+=`<div class="picktabs" style="grid-template-columns:1fr"><button class="picktab ${pickupType==='scheduled'?'on':''}" ${p.slots.length?'':'disabled'} onclick="pickupType='scheduled';renderPickup();renderReview()">Scheduled</button></div>`;if(pickupType==='asap'&&p.asap_available)html+=`<div class="muted" style="margin-top:10px">Estimated ready around <strong>${esc(p.asap_ready_label)}</strong>.</div>`;if(pickupType==='scheduled'){if(p.slots.length){ensureScheduledSelection();const dates=oaUniqueBy(p.slots,'date_key');const hours=oaUniqueBy(p.slots.filter(s=>s.date_key===selectedDate),'hour_key');const mins=oaUniqueBy(p.slots.filter(s=>s.date_key===selectedDate&&s.hour_key===selectedHour),'minute_key');html+=`<div style="margin-top:11px"><div style="font-size:12px;font-weight:800;margin-bottom:6px">Pickup date & time</div><div style="display:grid;grid-template-columns:1.35fr .85fr .7fr;gap:7px"><select class="field" style="margin-top:0" aria-label="Pickup date" onchange="selectedDate=this.value;selectedHour='';selectedMinute='';ensureScheduledSelection();renderPickup();renderReview()">${dates.map(s=>`<option value="${esc(s.date_key)}" ${s.date_key===selectedDate?'selected':''}>${esc(s.date_label)}</option>`).join('')}</select><select class="field" style="margin-top:0" aria-label="Pickup hour" onchange="selectedHour=this.value;selectedMinute='';ensureScheduledSelection();renderPickup();renderReview()">${hours.map(s=>`<option value="${esc(s.hour_key)}" ${s.hour_key===selectedHour?'selected':''}>${esc(s.hour_label)}</option>`).join('')}</select><select class="field" style="margin-top:0" aria-label="Pickup minute" onchange="selectedMinute=this.value;ensureScheduledSelection();renderReview()">${mins.map(s=>`<option value="${esc(s.minute_key)}" ${s.minute_key===selectedMinute?'selected':''}>${esc(s.minute_key)}</option>`).join('')}</select></div><div class="muted" style="margin-top:7px">Only available pickup times are shown.</div></div>`}else html+='<div class="notice">No scheduled pickup slots are currently available.</div>'}html+='</div>';document.getElementById('pickupArea').innerHTML=html}
+function renderPickup(){pickupType=pickupType||pickDefault();const p=DATA.pickup;let html='';if(p.branch_paused){html+='<div class="notice"><strong>Ordering is temporarily paused for this branch.</strong><br>Your cart stays saved. Please check again later or choose another branch.</div>'}else if(!p.hours_configured){html+='<div class="notice"><strong>Pickup hours are not configured for this branch yet.</strong><br>The business needs to set its Order Ahead pickup hours before checkout can continue.</div>'}else if(!p.asap_enabled&& !p.scheduled_enabled){html+='<div class="notice"><strong>Pickup ordering is temporarily unavailable.</strong><br>Please check again later or choose another branch.</div>'}html+=`<div class="pickupbox"><strong>Pickup at ${esc(DATA.branch.name)}</strong><div class="muted" style="margin-top:3px">Minimum preparation: ${p.min_prep_minutes} min${p.prep_override_minutes!==null&&p.prep_override_minutes!==undefined?' · temporary rush setting':''}</div>`;if(p.mode==='both')html+=`<div class="picktabs"><button class="picktab ${pickupType==='asap'?'on':''}" ${p.asap_available?'':'disabled'} onclick="pickupType='asap';renderPickup();renderReview()">ASAP</button><button class="picktab ${pickupType==='scheduled'?'on':''}" ${p.slots.length?'':'disabled'} onclick="pickupType='scheduled';renderPickup();renderReview()">Scheduled</button></div>`;else if(p.mode==='asap')html+=`<div class="picktabs" style="grid-template-columns:1fr"><button class="picktab ${pickupType==='asap'?'on':''}" ${p.asap_available?'':'disabled'} onclick="pickupType='asap';renderPickup();renderReview()">ASAP</button></div>`;else html+=`<div class="picktabs" style="grid-template-columns:1fr"><button class="picktab ${pickupType==='scheduled'?'on':''}" ${p.slots.length?'':'disabled'} onclick="pickupType='scheduled';renderPickup();renderReview()">Scheduled</button></div>`;if(pickupType==='asap'&&p.asap_available)html+=`<div class="muted" style="margin-top:10px">Estimated ready around <strong>${esc(p.asap_ready_label)}</strong>.</div>`;if(pickupType==='scheduled'){if(p.slots.length){ensureScheduledSelection();const dates=oaUniqueBy(p.slots,'date_key');const hours=oaUniqueBy(p.slots.filter(s=>s.date_key===selectedDate),'hour_key');const mins=oaUniqueBy(p.slots.filter(s=>s.date_key===selectedDate&&s.hour_key===selectedHour),'minute_key');html+=`<div style="margin-top:11px"><div style="font-size:12px;font-weight:800;margin-bottom:6px">Pickup date & time</div><div style="display:grid;grid-template-columns:1.35fr .85fr .7fr;gap:7px"><select class="field" style="margin-top:0" aria-label="Pickup date" onchange="selectedDate=this.value;selectedHour='';selectedMinute='';ensureScheduledSelection();renderPickup();renderReview()">${dates.map(s=>`<option value="${esc(s.date_key)}" ${s.date_key===selectedDate?'selected':''}>${esc(s.date_label)}</option>`).join('')}</select><select class="field" style="margin-top:0" aria-label="Pickup hour" onchange="selectedHour=this.value;selectedMinute='';ensureScheduledSelection();renderPickup();renderReview()">${hours.map(s=>`<option value="${esc(s.hour_key)}" ${s.hour_key===selectedHour?'selected':''}>${esc(s.hour_label)}</option>`).join('')}</select><select class="field" style="margin-top:0" aria-label="Pickup minute" onchange="selectedMinute=this.value;ensureScheduledSelection();renderReview()">${mins.map(s=>`<option value="${esc(s.minute_key)}" ${s.minute_key===selectedMinute?'selected':''}>${esc(s.minute_key)}</option>`).join('')}</select></div><div class="muted" style="margin-top:7px">Only available pickup times are shown.</div></div>`}else html+='<div class="notice">No scheduled pickup slots are currently available.</div>'}html+='</div>';document.getElementById('pickupArea').innerHTML=html}
 function pickupLabel(){if(pickupType==='asap')return'Direct pickup · ASAP around '+DATA.pickup.asap_ready_label;if(pickupType==='scheduled'){const s=DATA.pickup.slots.find(x=>x.value===selectedSlot);return s?s.label:'Choose a scheduled time'}return'Not selected'}
 function renderReview(){const div=document.getElementById('checkoutReview');div.innerHTML=`<div class="reviewline"><span>Branch</span><strong>${esc(DATA.branch.name)}</strong></div><div class="reviewline"><span>Pickup</span><strong style="text-align:right">${esc(pickupLabel())}</strong></div><div class="reviewline"><span>Items</span><strong>${cart.reduce((s,x)=>s+Number(x.quantity||1),0)}</strong></div><div class="reviewline total"><span>Subtotal</span><span>${peso(cartSubtotal())}</span></div>`}
 function stopPaymentPolling(){if(paymentPollTimer){clearInterval(paymentPollTimer);paymentPollTimer=null}}
@@ -22351,7 +22597,7 @@ async function openCheckout(){if(!cart.length)return;cartDlg.close();if(readStor
 function pickupRefreshMessage(message){clearPendingCheckout();const err=document.getElementById('checkoutError');err.textContent=(message||'That pickup time is no longer available.')+' Refreshing available pickup times…';err.classList.add('show');setTimeout(()=>window.location.reload(),1200)}
 async function abandonPendingMockOrder(order=pendingOrder){if(!order||order.payment_mode!=='mock'||order.payment_status!=='pending')return;try{await fetch(ORDER_API_BASE+'/'+encodeURIComponent(order.public_id)+'/abandon?token='+encodeURIComponent(ORDER_TOKEN),{method:'POST'})}catch(e){}clearPendingCheckout()}
 async function closeCheckoutSafe(){if(pendingOrder?.payment_mode==='mock'&&pendingOrder?.payment_status==='pending')await abandonPendingMockOrder();stopPaymentPolling();pendingOrder=null;checkoutDlg.close()}
-function checkoutValidation(){if(!DATA.pickup.hours_configured)return'Pickup hours are not configured for this branch.';if(!pickupType)return'No pickup option is currently available.';if(pickupType==='asap'&&!DATA.pickup.asap_available)return'ASAP pickup is not currently available.';if(pickupType==='scheduled'&&!selectedSlot)return'Choose a pickup time.';return''}
+function checkoutValidation(){if(DATA.pickup.branch_paused)return'Order Ahead is temporarily paused for this branch.';if(!DATA.pickup.hours_configured)return'Pickup hours are not configured for this branch.';if(!pickupType)return'No pickup option is currently available.';if(pickupType==='asap'&&(!DATA.pickup.asap_enabled||!DATA.pickup.asap_available))return'ASAP pickup is not currently available.';if(pickupType==='scheduled'&&(!DATA.pickup.scheduled_enabled||!selectedSlot))return DATA.pickup.scheduled_enabled?'Choose a pickup time.':'Scheduled pickup is not currently available.';return''}
 function finishOrderSuccess(order){stopPaymentPolling();pendingOrder=order||pendingOrder;clearPendingCheckout();saveRecentOrder(pendingOrder);cart=[];sessionStorage.removeItem(cartKey);updateCartBar();document.getElementById('checkoutFlow').style.display='none';document.getElementById('successOrderNo').textContent=pendingOrder?.order_number||'';document.getElementById('successPickup').textContent='Pickup: '+orderPickupLabel(pendingOrder)+' · '+(pendingOrder?.branch?.name||DATA.branch.name);document.getElementById('orderSuccess').classList.add('show')}
 async function continueToPayment(){if(readStored(pendingKey)&&await restorePendingCheckout(true))return;const err=document.getElementById('checkoutError');const msg=checkoutValidation();if(msg){err.textContent=msg;err.classList.add('show');return}err.classList.remove('show');const btn=document.getElementById('continuePaymentBtn');btn.disabled=true;btn.textContent='Creating order…';try{const payload={branch_public_id:DATA.branch.public_id,pickup_type:pickupType,pickup_at:pickupType==='scheduled'?selectedSlot:null,customer_note:(document.getElementById('customerNote').value||'').trim(),items:cart.map(x=>({item_public_id:x.item_public_id,quantity:Number(x.quantity||1),modifier_option_public_ids:(x.modifiers||[]).map(m=>m.option_public_id)}))};const res=await fetch(ORDER_API_BASE+'?token='+encodeURIComponent(ORDER_TOKEN),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const d=await res.json().catch(()=>({}));if(!res.ok){if(res.status===409){pickupRefreshMessage(d.detail);return}throw new Error(d.detail||'Could not create order')}pendingOrder=d.order;const payment=d.paymongo_payment||d.test_payment||{};savePendingCheckout(pendingOrder,payment);showPaymentView(pendingOrder,payment)}catch(e){err.textContent=e.message||'Could not create order';err.classList.add('show');btn.disabled=false;btn.textContent='Continue to Payment →'}}
 async function cancelPendingPaymentView(){stopPaymentPolling();if(pendingOrder?.payment_mode==='mock'&&pendingOrder?.payment_status==='pending')await abandonPendingMockOrder();clearPendingCheckout();pendingOrder=null;document.getElementById('paymentBox').classList.remove('show');document.getElementById('continuePaymentBtn').style.display='block';document.getElementById('continuePaymentBtn').disabled=false;document.getElementById('continuePaymentBtn').textContent='Continue to Payment →';document.getElementById('backCartBtn').style.display='block';document.getElementById('pickupArea').style.display='block';document.querySelector('#checkoutFlow label')?.style.removeProperty('display');document.getElementById('checkoutReview').style.display='block';document.getElementById('paymentHoldNote').textContent=''}
