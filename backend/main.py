@@ -5411,7 +5411,7 @@ def push_apple_wallet_update(serial_number: str):
     return {"status": status, "registrations": len(tokens), "pushes_sent": sent}
 
 
-APPLE_PASS_LAYOUT_RELEASE = "wallet-layout-2026-08-23-v4-reward-left-metric-right"
+APPLE_PASS_LAYOUT_RELEASE = "wallet-layout-2026-09-07-v5-points-next-reward-details"
 
 
 def refresh_business_apple_wallet_passes(business_id: int, reason: str = "card_config_change"):
@@ -22428,7 +22428,48 @@ async def customer_wallet_page(customer_public_id: str):
     elif card_type == 'points':
         points = int(customer.get('points_balance') or 0)
         metric_label, metric_value, metric_sub = 'POINTS BALANCE', f'{points:,}', 'points'
-        details = [('Reward', reward_name)]
+
+        # Points cards must never fall back to the legacy Stamp-card
+        # reward_name/stamp_goal fields. Show the next configured points prize
+        # and the actual points earning rule instead.
+        point_prizes = []
+        for prize in (program.get('points_prizes') or []):
+            if not isinstance(prize, dict):
+                continue
+            try:
+                cost = int(float(prize.get('points_cost') or 0))
+            except (TypeError, ValueError):
+                cost = 0
+            name = str(prize.get('name') or '').strip()
+            if cost > 0 and name:
+                point_prizes.append({**prize, 'points_cost': cost, 'name': name})
+        point_prizes.sort(key=lambda p: p['points_cost'])
+        next_prize = next((p for p in point_prizes if p['points_cost'] >= points), point_prizes[-1] if point_prizes else None)
+
+        if next_prize:
+            left = max(int(next_prize['points_cost']) - points, 0)
+            next_reward = (
+                f"{next_prize['name']} · Ready to redeem"
+                if left == 0 else
+                f"{next_prize['name']} · {left} points to go"
+            )
+        else:
+            next_reward = 'Ask in-store for rewards'
+
+        try:
+            earned = float(program.get('points_per_amount') or 0)
+            pesos = float(program.get('points_amount_pesos') or 0)
+        except (TypeError, ValueError):
+            earned, pesos = 0, 0
+        if earned > 0 and pesos > 0:
+            earned_text = _fmt_number(earned)
+            pesos_text = _fmt_number(pesos)
+            point_word = 'point' if earned == 1 else 'points'
+            earning_rule = f'₱{pesos_text} = {earned_text} {point_word}'
+        else:
+            earning_rule = 'Ask in-store how to earn points'
+
+        details = [('Next reward', next_reward), ('How to earn', earning_rule)]
     elif card_type == 'multipass':
         remaining = int(customer.get('multipass_sessions_remaining') or 0)
         total = int(customer.get('multipass_total_sessions') or program.get('multipass_session_count') or 0)
