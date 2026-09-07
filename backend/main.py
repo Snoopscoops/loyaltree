@@ -1822,6 +1822,7 @@ class CouponCreate(BaseModel):
 
 class CouponRedeem(BaseModel):
     customer_public_id: str
+    coupon_public_id: Optional[str] = None  # optional for backward compatibility; omitted = oldest usable coupon
     staff_pin: Optional[str] = None
     as_owner: Optional[bool] = False
 
@@ -2201,19 +2202,10 @@ def apply_card_cycle_expiration_if_needed(customer: dict, business: Optional[dic
     return updated
 
 
-def safe_get_active_coupon(customer_id: int):
-    """Return the customer's next usable coupon.
-
-    Manual owner-issued coupons still behave exactly as before (the create
-    endpoint blocks while any usable coupon exists). VIP tier-up rewards are
-    allowed to queue as additional ``active`` rows so a customer never loses a
-    reward when one purchase jumps across multiple tiers or when another coupon
-    is already waiting. The oldest non-expired coupon is therefore the current
-    one; once it is redeemed/cancelled, the next queued coupon automatically
-    becomes current without a new database status or migration.
-    """
+def safe_get_active_coupons(customer_id: int) -> list:
+    """Return every currently usable coupon in FIFO order."""
     if not supabase:
-        return None
+        return []
     try:
         res = (
             supabase.table("coupons")
@@ -2225,9 +2217,8 @@ def safe_get_active_coupon(customer_id: int):
             .execute()
         )
         rows = res.data or []
-        if not rows:
-            return None
         today = _loyalty_today()
+        usable = []
         for coupon in rows:
             expires_at = coupon.get('expires_at')
             if expires_at:
@@ -2236,10 +2227,20 @@ def safe_get_active_coupon(customer_id: int):
                         continue
                 except Exception:
                     pass
-            return coupon
-        return None
+            usable.append(coupon)
+        return usable
     except Exception:
-        return None
+        return []
+
+
+def safe_get_active_coupon(customer_id: int):
+    """Return the customer's next usable coupon (oldest first).
+
+    Kept as the single-coupon compatibility helper for existing owner and
+    redemption flows; VIP tier rewards may queue several active coupon rows.
+    """
+    coupons = safe_get_active_coupons(customer_id)
+    return coupons[0] if coupons else None
 
 def find_business_duplicate(email: Optional[str], phone: Optional[str]) -> Optional[str]:
     """Checks whether another business already uses this email or phone.
@@ -16230,6 +16231,7 @@ async def add_vip_sale(public_id: str, req: VIPSaleRequest, background_tasks: Ba
             'per_pesos': base,
         },
         'active_coupon': safe_get_active_coupon(customer.get('id')),
+        'active_coupons': safe_get_active_coupons(customer.get('id')),
     }
     if audit_row and audit_row.get('transaction_id'):
         response_payload['transaction_id'] = str(audit_row.get('transaction_id'))
@@ -16253,7 +16255,7 @@ async def adjust_vip_points(public_id: str, req: VIPAdjustRequest, background_ta
         dict(customer), dict(business), dict(program),
         'vip_adjust',
     )
-    response_payload={'vip_points':balance,'tier':new,'next_tier':get_next_vip_tier(customer,program),'tier_coupons_issued':tier_coupons_issued,'active_coupon':safe_get_active_coupon(customer.get('id'))}
+    response_payload={'vip_points':balance,'tier':new,'next_tier':get_next_vip_tier(customer,program),'tier_coupons_issued':tier_coupons_issued,'active_coupon':safe_get_active_coupon(customer.get('id')),'active_coupons':safe_get_active_coupons(customer.get('id'))}
     if audit_row and audit_row.get('transaction_id'): response_payload['transaction_id']=str(audit_row.get('transaction_id'))
     complete_transaction_audit(audit_row,balance_after=balance,response_json=response_payload)
     return response_payload
@@ -17995,7 +17997,29 @@ async def redeem_coupon(public_id: str, req: CouponRedeem, authorization: str = 
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
 
-    coupon = safe_get_active_coupon(customer.get('id'))
+    coupon = None
+    if req.coupon_public_id:
+        try:
+            res = (
+                supabase.table("coupons")
+                .select("*")
+                .eq("public_id", req.coupon_public_id)
+                .eq("customer_id", customer.get('id'))
+                .eq("status", "active")
+                .maybe_single()
+                .execute()
+            )
+            coupon = res.data
+        except Exception:
+            coupon = None
+        if coupon and coupon.get('expires_at'):
+            try:
+                if datetime.fromisoformat(str(coupon.get('expires_at'))).date() < _loyalty_today():
+                    coupon = None
+            except Exception:
+                pass
+    else:
+        coupon = safe_get_active_coupon(customer.get('id'))
     if not coupon:
         raise HTTPException(status_code=400, detail="No active coupon to redeem")
 
@@ -18025,6 +18049,7 @@ async def redeem_coupon(public_id: str, req: CouponRedeem, authorization: str = 
         "success": True,
         "reward_text": coupon.get('reward_text'),
         "redeemed_at": redeemed_at,
+        "active_coupons": safe_get_active_coupons(customer.get('id')),
     }
 
 @app.get("/api/v1/business/{public_id}/hero-image.png")
@@ -22825,7 +22850,8 @@ async def cashier_stamp_page(customer_public_id: str):
     stamp_goal = program.get('stamp_goal', 8) if program else 8
     reward_name = program.get('reward_name', 'Free Service') if program else 'Free Service'
 
-    active_coupon = safe_get_active_coupon(customer.get('id'))
+    active_coupons = safe_get_active_coupons(customer.get('id'))
+    active_coupon = active_coupons[0] if active_coupons else None
 
     card_type = program.get('card_type', 'stamp') if program else 'stamp'
     loyalty_type = effective_loyalty_type(program)
@@ -22852,6 +22878,14 @@ async def cashier_stamp_page(customer_public_id: str):
         'points_balance': customer.get('points_balance', 0),
         'points_prizes': points_prizes if isinstance(points_prizes, list) else [],
         'coupon_text': active_coupon.get('reward_text') if active_coupon else None,
+        'active_coupons': [
+            {
+                'public_id': c.get('public_id'),
+                'reward_text': c.get('reward_text'),
+                'expires_at': c.get('expires_at'),
+            }
+            for c in active_coupons
+        ],
         'multipass_sessions_remaining': customer.get('multipass_sessions_remaining', 0) or 0,
         'multipass_total_sessions': customer.get('multipass_total_sessions', 0) or 0,
         'multipass_expires_at': customer.get('multipass_expires_at'),
@@ -22921,6 +22955,7 @@ async def cashier_stamp_page(customer_public_id: str):
         'let pointsBalance=DATA.points_balance;'
         'const pointsPrizes=DATA.points_prizes||[];'
         'let couponText=DATA.coupon_text;'
+        'let activeCoupons=Array.isArray(DATA.active_coupons)?DATA.active_coupons:[];'
         'let multipassRemaining=DATA.multipass_sessions_remaining;'
         'let multipassTotal=DATA.multipass_total_sessions;'
         'let vipPoints=DATA.vip_points;'
@@ -23040,7 +23075,18 @@ async def cashier_stamp_page(customer_public_id: str):
         '"<div style=\'display:inline-block;padding:6px 16px;border-radius:999px;background:"+(tier.color||"#111827")+";color:white;font-weight:700;font-size:13px\'>"+escapeHtml(tier.name||"VIP")+"</div>"+'
         '(vipNextTier?"<div style=\'font-size:12px;color:#94a3b8;margin-top:6px\'>"+Math.max(0,vipNextTier.threshold-vipPoints)+" pts to "+escapeHtml(vipNextTier.name)+"</div>":"")+'
         '"</div>";'
-        'return tierHtml+'
+        'let nextUnlockHtml="";'
+        'if(vipNextTier){'
+        'const nextBenefits=Array.isArray(vipNextTier.benefits)?vipNextTier.benefits:[];'
+        'const nextCoupons=Array.isArray(vipNextTier.coupons)?vipNextTier.coupons:[];'
+        'let benefitHtml=nextBenefits.length?nextBenefits.map(function(x){return "<li>"+escapeHtml(String(x))+"</li>";}).join(""):"<li>No additional ongoing benefits configured</li>";'
+        'let couponListHtml=nextCoupons.length?nextCoupons.map(function(c){const expiry=c.validity_days?(" · valid "+c.validity_days+" days"):"";return "<li><b>"+escapeHtml(String(c.reward_text||"Coupon"))+"</b>"+escapeHtml(expiry)+"</li>";}).join(""):"<li>No coupons configured for this tier</li>";'
+        'nextUnlockHtml="<div style=\'margin:14px 0;padding:13px;border:1px solid #dbeafe;background:#f8fbff;border-radius:12px\'>"+'
+        '"<div style=\'font-size:11px;font-weight:900;letter-spacing:.7px;color:#1d4ed8;margin-bottom:6px\'>WHEN CUSTOMER REACHES "+escapeHtml(String(vipNextTier.name||"NEXT TIER").toUpperCase())+"</div>"+'
+        '"<div style=\'font-size:12px;font-weight:800;color:#334155;margin:8px 0 4px\'>BENEFITS THEY WILL RECEIVE</div><ul style=\'margin:0 0 8px 18px;padding:0;font-size:12px;color:#475569;line-height:1.55\'>"+benefitHtml+"</ul>"+'
+        '"<div style=\'font-size:12px;font-weight:800;color:#334155;margin:8px 0 4px\'>COUPONS YOU WILL RECEIVE</div><ul style=\'margin:0 0 0 18px;padding:0;font-size:12px;color:#475569;line-height:1.55\'>"+couponListHtml+"</ul></div>";'
+        '}'
+        'return tierHtml+nextUnlockHtml+'
         '"<input id=\'vipAmount\' type=\'number\' inputmode=\'decimal\' min=\'0\' placeholder=\'Amount spent\'>"+'
         '"<button class=\'btn-primary\' id=\'vipBtn\'>Add VIP Sale</button>";'
         '}'
@@ -23080,6 +23126,16 @@ async def cashier_stamp_page(customer_public_id: str):
         'return membershipHtml+loyaltyHtml+visitHtml+renderHybridBenefits();'
         '}'
 
+        'function renderActiveCoupons(){'
+        'if(!activeCoupons.length)return "";'
+        'let html="<div style=\'margin-top:14px;padding:13px;border:1px solid #fde68a;background:#fffbeb;border-radius:12px\'><div style=\'font-size:11px;font-weight:900;letter-spacing:.7px;color:#92400e;margin-bottom:8px\'>AVAILABLE COUPONS · "+activeCoupons.length+"</div>";'
+        'for(let i=0;i<activeCoupons.length;i++){'
+        'const c=activeCoupons[i]||{};const exp=c.expires_at?("Expires "+c.expires_at):"No expiry";'
+        'html+="<div style=\'padding:10px;background:white;border:1px solid #fde68a;border-radius:10px;margin-bottom:8px\'><div style=\'font-weight:800;font-size:14px;color:#78350f\'>🎟️ "+escapeHtml(c.reward_text||"Coupon")+"</div><div style=\'font-size:11px;color:#92400e;margin:3px 0 8px\'>"+escapeHtml(exp)+"</div><button class=\'btn-coupon redeemCouponBtn\' data-coupon-id=\'"+escapeHtml(String(c.public_id||""))+"\' style=\'margin:0\'>Redeem this coupon</button></div>";'
+        '}'
+        'return html+"</div>";'
+        '}'
+
         'function attachBodyListeners(){'
         'if(cardType==="hybrid"){'
         'if(hybridLoyaltyType==="points"){'
@@ -23117,7 +23173,7 @@ async def cashier_stamp_page(customer_public_id: str):
 
         'function renderCard(staffName,msg){'
         'const bodyHtml=cardType==="hybrid"?renderHybridBody():cardType==="points"?renderPointsBody():cardType==="multipass"?renderMultipassBody():cardType==="vip"?renderVipBody():cardType==="membership"?renderMembershipBody():renderStampBody();'
-        'const couponHtml=couponText?"<div class=\'coupon\'>&#127903; "+escapeHtml(couponText)+"</div>":"";'
+        'const couponHtml=renderActiveCoupons();'
         'const statsHtml=cardType==="hybrid"?((hybridLoyaltyType==="points"?(pointsBalance+" points"):(stampCount+" / "+DATA.stamp_goal+" stamps"))+" &bull; "+escapeHtml(String(membershipStatus||"inactive").toUpperCase())):cardType==="points"?(pointsBalance+" points"):cardType==="multipass"?(multipassRemaining+" / "+multipassTotal+" sessions"):cardType==="vip"?(escapeHtml((vipTier&&vipTier.name)||"VIP")+" &bull; "+vipPoints+" pts"):cardType==="membership"?("Membership: "+escapeHtml(membershipStatus)):(stampCount+" / "+DATA.stamp_goal+" stamps");'
         'app.innerHTML='
         '(msg?"<div class=\'msg "+(msg.ok?"msg-ok":"msg-err")+"\'>"+escapeHtml(msg.text)+"</div>":"")+'
@@ -23127,11 +23183,10 @@ async def cashier_stamp_page(customer_public_id: str):
         '"</div>"+'
         'bodyHtml+'
         'couponHtml+'
-        '(couponText?"<button class=\'btn-coupon\' id=\'redeemCouponBtn\'>Redeem Coupon</button>":"")+'
         '"<button class=\'btn-secondary\' id=\'switchBtn\'>Not "+escapeHtml(staffName||"you")+"? Switch</button>";'
         'attachBodyListeners();'
-        'const redeemCouponBtn=document.getElementById("redeemCouponBtn");'
-        'if(redeemCouponBtn)redeemCouponBtn.addEventListener("click",doRedeemCoupon);'
+        'const redeemCouponBtns=document.querySelectorAll(".redeemCouponBtn");'
+        'for(let i=0;i<redeemCouponBtns.length;i++){redeemCouponBtns[i].addEventListener("click",function(e){doRedeemCoupon(e.currentTarget.getAttribute("data-coupon-id"));});}'
         'document.getElementById("switchBtn").addEventListener("click",function(){clearSession();renderLogin();});'
         '}'
 
@@ -23226,7 +23281,11 @@ async def cashier_stamp_page(customer_public_id: str):
         'const d=await res.json();'
         'if(res.ok){'
         'vipPoints=d.vip_points;vipTier=d.tier;vipNextTier=d.next_tier;'
-        'renderCard(s?s.name:"",{ok:true,text:"+"+d.points_earned+" VIP points! Now "+(d.tier&&d.tier.name?d.tier.name:"VIP")+"."});'
+        'activeCoupons=Array.isArray(d.active_coupons)?d.active_coupons:activeCoupons;'
+        'couponText=activeCoupons.length?activeCoupons[0].reward_text:null;'
+        'const unlocked=Array.isArray(d.tier_coupons_issued)?d.tier_coupons_issued:[];'
+        'const unlockText=unlocked.length?(" You unlocked "+unlocked.length+" coupon"+(unlocked.length===1?"":"s")+"!"):"";'
+        'renderCard(s?s.name:"",{ok:true,text:"+"+d.points_earned+" VIP points! Now "+(d.tier&&d.tier.name?d.tier.name:"VIP")+"."+unlockText});'
         '}else if(res.status===401){'
         'clearSession();renderLogin(d.detail||"Session expired - log in again");'
         '}else{'
@@ -23328,20 +23387,21 @@ async def cashier_stamp_page(customer_public_id: str):
         '}'
         '}'
 
-        'async function doRedeemCoupon(){'
-        'const btn=document.getElementById("redeemCouponBtn");'
-        'btn.disabled=true;btn.textContent="Redeeming...";'
+        'async function doRedeemCoupon(couponPublicId){'
+        'let btn=null;if(couponPublicId){const bs=document.querySelectorAll(".redeemCouponBtn");for(let i=0;i<bs.length;i++){if(String(bs[i].getAttribute("data-coupon-id"))===String(couponPublicId)){btn=bs[i];break;}}}'
+        'if(btn){btn.disabled=true;btn.textContent="Redeeming...";}'
         'const s=getSession();'
         'try{'
         'const res=await fetch("/api/v1/business/"+DATA.business_public_id+"/coupon/redeem",{'
         'method:"POST",headers:authHeaders(),'
-        'body:JSON.stringify({customer_public_id:DATA.customer_public_id,'
+        'body:JSON.stringify({customer_public_id:DATA.customer_public_id,coupon_public_id:couponPublicId||undefined,'
         'staff_pin:getSession()?undefined:cachedPin})'
         '});'
         'const d=await res.json();'
         'if(res.ok){'
-        'couponText=null;'
-        'renderCard(s?s.name:"",{ok:true,text:"Coupon redeemed!"});'
+        'activeCoupons=Array.isArray(d.active_coupons)?d.active_coupons:activeCoupons.filter(function(c){return String(c.public_id)!==String(couponPublicId);});'
+        'couponText=activeCoupons.length?activeCoupons[0].reward_text:null;'
+        'renderCard(s?s.name:"",{ok:true,text:(d.reward_text||"Coupon")+" redeemed!"});'
         '}else if(res.status===401){'
         'clearSession();renderLogin(d.detail||"Session expired - log in again");'
         '}else{'
