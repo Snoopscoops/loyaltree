@@ -1686,7 +1686,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
             <div style={styles.pointsSection}>
               <div style={styles.fieldGroup}>
                 <label style={styles.label}>How should customers move up tiers?</label>
-                <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'1fr 1fr',gap:10}}>
+                <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'1fr 1fr',gap:10}}>
                   <button type="button" onClick={()=>update('vip_stamps_enabled',false)} style={{...styles.pickerCard,padding:14,...(!form.vip_stamps_enabled?{borderColor:'#ca8a04',background:'#fefce8'}:{})}}><span style={styles.pickerCardIcon}>💰</span><span style={styles.pickerCardLabel}>Points / Spending</span><span style={styles.pickerCardDesc}>Purchase amounts earn non-spendable Tier points.</span></button>
                   <button type="button" onClick={()=>update('vip_stamps_enabled',true)} style={{...styles.pickerCard,padding:14,...(form.vip_stamps_enabled?{borderColor:'#ca8a04',background:'#fefce8'}:{})}}><span style={styles.pickerCardIcon}>🎟️</span><span style={styles.pickerCardLabel}>Stamps / Visits</span><span style={styles.pickerCardDesc}>Each qualifying scan adds one cumulative Tier stamp.</span></button>
                 </div>
