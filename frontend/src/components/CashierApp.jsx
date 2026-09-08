@@ -337,6 +337,10 @@ function CashierApp({ API_BASE }) {
           vip_next_tier: c.vip_next_tier || null,
           vip_points_per_amount: program.vip_points_per_amount || 0,
           vip_amount_pesos: program.vip_amount_pesos || 1,
+          vip_progression_type: program.vip_progression_type === 'stamps'
+            || (!program.vip_progression_type && program.vip_stamps_enabled === true)
+            ? 'stamps'
+            : 'points',
           vip_stamps_enabled: program.vip_stamps_enabled === true,
           stamp_rewards: Array.isArray(program.stamp_rewards) ? program.stamp_rewards : [],
         })
@@ -381,7 +385,7 @@ function CashierApp({ API_BASE }) {
       const data = await res.json()
 
       if (res.ok) {
-        const tierStamp = customerData.card_type === 'vip' && customerData.vip_stamps_enabled === true
+        const tierStamp = customerData.card_type === 'vip' && customerData.vip_progression_type === 'stamps'
         let msg = tierStamp
           ? `✅ Tier stamp added! ${customerData.name} now has ${data.stamp_count} Tier stamps`
           : `✅ Stamp added! ${customerData.name} now has ${data.stamp_count} stamps`
@@ -1086,7 +1090,7 @@ function CashierApp({ API_BASE }) {
   })()
 
   const previewVipPoints = (() => {
-    if (!customerData || customerData.card_type !== 'vip' || customerData.vip_stamps_enabled === true) return 0
+    if (!customerData || customerData.card_type !== 'vip' || customerData.vip_progression_type === 'stamps') return 0
     const amount = parseFloat(vipSaleAmount)
     if (!amount || amount <= 0) return 0
     const rate = customerData.vip_points_per_amount || 0
@@ -1097,7 +1101,7 @@ function CashierApp({ API_BASE }) {
   const isHybrid = customerData?.card_type === 'hybrid'
   const hybridLoyaltyType = customerData?.hybrid_loyalty_type === 'stamp' ? 'stamp' : 'points'
   const usesPoints = customerData?.card_type === 'points' || (isHybrid && hybridLoyaltyType === 'points')
-  const vipUsesStamps = customerData?.card_type === 'vip' && customerData?.vip_stamps_enabled === true
+  const vipUsesStamps = customerData?.card_type === 'vip' && customerData?.vip_progression_type === 'stamps'
   const usesStamps = customerData?.card_type === 'stamp' || (isHybrid && hybridLoyaltyType === 'stamp') || vipUsesStamps
   const hasMembership = customerData?.card_type === 'membership' || isHybrid
   const canLogMembershipVisit = hasMembership && customerData?.membership_visit_logging_enabled !== false

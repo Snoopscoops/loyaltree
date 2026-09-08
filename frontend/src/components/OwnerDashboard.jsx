@@ -1102,7 +1102,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
           ...(Array.isArray(benefitData) ? benefitData.map(x => ({...x, hybrid_source:'benefit', activity_type:'membership_benefit_redeemed', created_at:x.redeemed_at || x.created_at})) : []),
         ].sort((a,b) => String(b.created_at || b.service_date || '').localeCompare(String(a.created_at || a.service_date || '')))
         setMemberHistory(combined)
-      } else if (program?.card_type === 'vip' && program?.vip_stamps_enabled === true) {
+      } else if (program?.card_type === 'vip' && (program?.vip_progression_type === 'stamps' || (!program?.vip_progression_type && program?.vip_stamps_enabled === true))) {
         const [vipRes, stampRes] = await Promise.all([
           authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${customerPublicId}/vip-history`),
           authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${customerPublicId}/stamp-history`),
@@ -1587,7 +1587,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const hybridLoyaltyType = program?.hybrid_loyalty_type === 'stamp' ? 'stamp' : 'points'
   const hybridUsesPoints = isHybridCard && hybridLoyaltyType === 'points'
   const hybridUsesStamps = isHybridCard && hybridLoyaltyType === 'stamp'
-  const vipUsesStamps = isVipCard && program?.vip_stamps_enabled === true
+  const vipUsesStamps = isVipCard && (program?.vip_progression_type === 'stamps' || (!program?.vip_progression_type && program?.vip_stamps_enabled === true))
   const hasMembershipFeatures = isMembershipCard || isHybridCard
   const pointsExperience = isPointsCard || hybridUsesPoints
   const stampExperience = (!isPointsCard && !isMembershipCard && !isMultipassCard && !isVipCard && !isHybridCard) || hybridUsesStamps || vipUsesStamps

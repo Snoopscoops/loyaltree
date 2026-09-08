@@ -74,7 +74,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
     // VIP / Tier card only
     vip_points_per_amount: 10,
     vip_amount_pesos: 100,
-    vip_stamps_enabled: false, // false = Tier points, true = Tier stamps
+    vip_progression_type: 'points',
+    vip_stamps_enabled: false, // legacy mirror; UI source of truth is vip_progression_type
     vip_tiers: [
       { id: 'bronze', name: 'Bronze', threshold: 0, color: '#92400e', discount_percent: 0, benefits: ['Member-only offers'], coupons: [], active: true },
       { id: 'silver', name: 'Silver', threshold: 1000, color: '#64748b', discount_percent: 5, benefits: [], coupons: [], active: true },
@@ -190,7 +191,13 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
           membership_quick_checkin: data.membership_quick_checkin === true,
           vip_points_per_amount: data.vip_points_per_amount ?? 10,
           vip_amount_pesos: data.vip_amount_pesos ?? 100,
-          vip_stamps_enabled: data.vip_stamps_enabled === true,
+          vip_progression_type: ['points','stamps'].includes(data.vip_progression_type)
+            ? data.vip_progression_type
+            : (data.vip_stamps_enabled === true ? 'stamps' : 'points'),
+          vip_stamps_enabled: (
+            data.vip_progression_type === 'stamps'
+            || (!data.vip_progression_type && data.vip_stamps_enabled === true)
+          ),
           vip_tiers: Array.isArray(data.vip_tiers) && data.vip_tiers.length
             ? data.vip_tiers.map(t => ({
                 ...t,
@@ -224,6 +231,16 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
 
   const update = (key, value) => {
     setForm(f => ({ ...f, [key]: value }))
+    setSaved(false)
+  }
+
+  const updateVipProgression = (type) => {
+    const normalized = type === 'stamps' ? 'stamps' : 'points'
+    setForm(f => ({
+      ...f,
+      vip_progression_type: normalized,
+      vip_stamps_enabled: normalized === 'stamps',
+    }))
     setSaved(false)
   }
 
@@ -456,7 +473,10 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
     membership_quick_checkin: form.membership_quick_checkin === true,
     vip_points_per_amount: Number(form.vip_points_per_amount) || 0,
     vip_amount_pesos: Number(form.vip_amount_pesos) || 100,
-    vip_stamps_enabled: form.card_type === 'vip' && form.vip_stamps_enabled === true,
+    vip_progression_type: form.card_type === 'vip'
+      ? (form.vip_progression_type === 'stamps' ? 'stamps' : 'points')
+      : 'points',
+    vip_stamps_enabled: form.card_type === 'vip' && form.vip_progression_type === 'stamps',
     vip_tiers: (form.vip_tiers || []).map(t => ({
       ...t,
       name: (t.name || 'Tier').trim(),
@@ -1020,8 +1040,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
               {form.card_type==='vip' && <>
                 <label style={styles.label}>How should customers move up tiers?</label>
                 <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'1fr 1fr',gap:10,marginBottom:16}}>
-                  <button type="button" onClick={()=>update('vip_stamps_enabled',false)} style={{...styles.pickerCard,padding:14,...(!form.vip_stamps_enabled?{borderColor:'#ca8a04',background:'#fefce8'}:{})}}><span style={styles.pickerCardIcon}>💰</span><span style={styles.pickerCardLabel}>Points / Spending</span><span style={styles.pickerCardDesc}>Tier points come from purchase amounts.</span></button>
-                  <button type="button" onClick={()=>update('vip_stamps_enabled',true)} style={{...styles.pickerCard,padding:14,...(form.vip_stamps_enabled?{borderColor:'#ca8a04',background:'#fefce8'}:{})}}><span style={styles.pickerCardIcon}>🎟️</span><span style={styles.pickerCardLabel}>Stamps / Visits</span><span style={styles.pickerCardDesc}>Each qualifying visit adds one cumulative Tier stamp.</span></button>
+                  <button type="button" onClick={()=>updateVipProgression('points')} style={{...styles.pickerCard,padding:14,...(!form.vip_stamps_enabled?{borderColor:'#ca8a04',background:'#fefce8'}:{})}}><span style={styles.pickerCardIcon}>💰</span><span style={styles.pickerCardLabel}>Points / Spending</span><span style={styles.pickerCardDesc}>Tier points come from purchase amounts.</span></button>
+                  <button type="button" onClick={()=>updateVipProgression('stamps')} style={{...styles.pickerCard,padding:14,...(form.vip_stamps_enabled?{borderColor:'#ca8a04',background:'#fefce8'}:{})}}><span style={styles.pickerCardIcon}>🎟️</span><span style={styles.pickerCardLabel}>Stamps / Visits</span><span style={styles.pickerCardDesc}>Each qualifying visit adds one cumulative Tier stamp.</span></button>
                 </div>
                 {!form.vip_stamps_enabled && <>
                 <label style={styles.label}>Tier earning rule</label>
@@ -1687,8 +1707,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
               <div style={styles.fieldGroup}>
                 <label style={styles.label}>How should customers move up tiers?</label>
                 <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'1fr 1fr',gap:10}}>
-                  <button type="button" onClick={()=>update('vip_stamps_enabled',false)} style={{...styles.pickerCard,padding:14,...(!form.vip_stamps_enabled?{borderColor:'#ca8a04',background:'#fefce8'}:{})}}><span style={styles.pickerCardIcon}>💰</span><span style={styles.pickerCardLabel}>Points / Spending</span><span style={styles.pickerCardDesc}>Purchase amounts earn non-spendable Tier points.</span></button>
-                  <button type="button" onClick={()=>update('vip_stamps_enabled',true)} style={{...styles.pickerCard,padding:14,...(form.vip_stamps_enabled?{borderColor:'#ca8a04',background:'#fefce8'}:{})}}><span style={styles.pickerCardIcon}>🎟️</span><span style={styles.pickerCardLabel}>Stamps / Visits</span><span style={styles.pickerCardDesc}>Each qualifying scan adds one cumulative Tier stamp.</span></button>
+                  <button type="button" onClick={()=>updateVipProgression('points')} style={{...styles.pickerCard,padding:14,...(!form.vip_stamps_enabled?{borderColor:'#ca8a04',background:'#fefce8'}:{})}}><span style={styles.pickerCardIcon}>💰</span><span style={styles.pickerCardLabel}>Points / Spending</span><span style={styles.pickerCardDesc}>Purchase amounts earn non-spendable Tier points.</span></button>
+                  <button type="button" onClick={()=>updateVipProgression('stamps')} style={{...styles.pickerCard,padding:14,...(form.vip_stamps_enabled?{borderColor:'#ca8a04',background:'#fefce8'}:{})}}><span style={styles.pickerCardIcon}>🎟️</span><span style={styles.pickerCardLabel}>Stamps / Visits</span><span style={styles.pickerCardDesc}>Each qualifying scan adds one cumulative Tier stamp.</span></button>
                 </div>
               </div>
               {!form.vip_stamps_enabled && <div style={styles.fieldGroup}>

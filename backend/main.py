@@ -1406,8 +1406,10 @@ class LoyaltyConfig(BaseModel):
     # --- VIP card only ---
     vip_points_per_amount: Optional[float] = Field(default=10, ge=0)
     vip_amount_pesos: Optional[float] = Field(default=100, ge=1)
-    # Tier progression choice: False = spend-based VIP points; True = visit-based
-    # cumulative Tier stamps. Existing Tier cards stay on points by default.
+    # Explicit Tier progression mode. Existing VIP/Tier cards default to points.
+    vip_progression_type: Literal['points', 'stamps'] = 'points'
+    # Legacy compatibility alias kept during rollout; new clients should use
+    # vip_progression_type exclusively.
     vip_stamps_enabled: bool = False
     vip_tiers: Optional[List[dict]] = None
 
@@ -2018,12 +2020,24 @@ def program_has_membership(program: Optional[dict]) -> bool:
     return str((program or {}).get('card_type') or '').lower() in ('membership', 'hybrid')
 
 
+def vip_progression_type(program: Optional[dict]) -> str:
+    """Normalized Tier progression mode with legacy fallback.
+
+    New rows store vip_progression_type = points|stamps. During rollout, old
+    rows that only have vip_stamps_enabled=true are still treated as stamp-tier
+    cards so existing businesses do not change behavior.
+    """
+    if str((program or {}).get('card_type') or '').lower() != 'vip':
+        return 'points'
+    raw = str((program or {}).get('vip_progression_type') or '').strip().lower()
+    if raw in ('points', 'stamps'):
+        return raw
+    return 'stamps' if bool((program or {}).get('vip_stamps_enabled')) else 'points'
+
+
 def vip_stamps_enabled(program: Optional[dict]) -> bool:
-    """True when a VIP/Tier card progresses by cumulative stamps instead of points."""
-    return (
-        str((program or {}).get('card_type') or '').lower() == 'vip'
-        and bool((program or {}).get('vip_stamps_enabled'))
-    )
+    """Backward-compatible helper for code paths that need Tier-by-Stamps."""
+    return vip_progression_type(program) == 'stamps'
 
 
 def vip_progress_value(customer: Optional[dict], program: Optional[dict]) -> int:
@@ -12068,7 +12082,11 @@ async def get_customer_api(public_id: str, response: Response):
             "name": business.get("name") if business else None,
             "logo_url": business.get("logo_url") if business else None,
         },
-        "program": program,
+        "program": (
+            {**program, "vip_progression_type": vip_progression_type(program)}
+            if program and program.get('card_type') == 'vip'
+            else program
+        ),
         "active_coupon": safe_get_active_coupon(customer.get('id')),
     }
 
@@ -13182,6 +13200,7 @@ async def get_loyalty_config(public_id: str, response: Response):
             "membership_quick_checkin": False,
             "vip_points_per_amount": 10,
             "vip_amount_pesos": 100,
+            "vip_progression_type": "points",
             "vip_stamps_enabled": False,
             "vip_tiers": [],
             "plan": business.get('plan', 'starter'),
@@ -13199,6 +13218,7 @@ async def get_loyalty_config(public_id: str, response: Response):
         }
     return {
         **program,
+        "vip_progression_type": vip_progression_type(program),
         "is_configured": True,
         "plan": business.get('plan', 'starter'),
         "plan_features": {
@@ -13240,6 +13260,7 @@ async def get_cashier_program(public_id: str, response: Response):
     return {
         **program,
         "card_type": card_type,
+        "vip_progression_type": vip_progression_type(program) if card_type == 'vip' else 'points',
     }
 
 @app.post("/api/v1/business/{public_id}/loyalty-config")
@@ -13329,7 +13350,10 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
             })
         data['points_prizes'] = prizes
     if config.card_type == 'vip':
-        data['vip_stamps_enabled'] = bool(config.vip_stamps_enabled)
+        data['vip_progression_type'] = config.vip_progression_type
+        # Keep legacy boolean synchronized during rollout so older deployed
+        # frontends still render the correct Tier mode.
+        data['vip_stamps_enabled'] = config.vip_progression_type == 'stamps'
         data['vip_points_per_amount'] = config.vip_points_per_amount or 0
         data['vip_amount_pesos'] = config.vip_amount_pesos or 100
         tiers=[]
