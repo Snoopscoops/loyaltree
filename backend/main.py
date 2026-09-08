@@ -23141,6 +23141,7 @@ async def cashier_stamp_page(customer_public_id: str):
         'multipass_total_sessions': customer.get('multipass_total_sessions', 0) or 0,
         'multipass_expires_at': customer.get('multipass_expires_at'),
         'vip_points': int(customer.get('vip_points') or 0),
+        'vip_progression_type': vip_progression_type(program) if card_type == 'vip' else 'points',
         'vip_tier': vip_tier_data,
         'vip_next_tier': vip_next_tier_data,
         'membership_status': membership_effective_status(customer),
@@ -23153,7 +23154,8 @@ async def cashier_stamp_page(customer_public_id: str):
     page_title = (
         f"Membership + {'Points' if loyalty_type == 'points' else 'Stamps'}"
         if card_type == 'hybrid' else
-        {'points': 'Add Points', 'multipass': 'Use Session', 'vip': 'Add VIP Sale', 'membership': 'Log Visit'}.get(card_type, 'Add Stamp')
+        ('Add Tier Stamp' if card_type == 'vip' and vip_stamps_enabled(program) else
+         {'points': 'Add Points', 'multipass': 'Use Session', 'vip': 'Add VIP Sale', 'membership': 'Log Visit'}.get(card_type, 'Add Stamp'))
     )
 
     head = (
@@ -23199,6 +23201,7 @@ async def cashier_stamp_page(customer_public_id: str):
         # (STAFF_SESSION_SECRET not set) - kept only in memory, never persisted
         'const DATA=' + data_json + ';'
         'const cardType=DATA.card_type;'
+        'const vipUsesStamps=cardType==="vip"&&DATA.vip_progression_type==="stamps";'
         'const hybridLoyaltyType=DATA.hybrid_loyalty_type==="stamp"?"stamp":"points";'
         'let membershipBenefits=DATA.membership_benefits||[];'
         'let stampCount=DATA.stamp_count;'
@@ -23322,9 +23325,11 @@ async def cashier_stamp_page(customer_public_id: str):
 
         'function renderVipBody(){'
         'const tier=vipTier||{};'
+        'const vipProgress=vipUsesStamps?stampCount:vipPoints;'
+        'const vipUnit=vipUsesStamps?"stamps":"pts";'
         'const tierHtml="<div style=\'text-align:center;margin-bottom:14px\'>"+'
         '"<div style=\'display:inline-block;padding:6px 16px;border-radius:999px;background:"+(tier.color||"#111827")+";color:white;font-weight:700;font-size:13px\'>"+escapeHtml(tier.name||"VIP")+"</div>"+'
-        '(vipNextTier?"<div style=\'font-size:12px;color:#94a3b8;margin-top:6px\'>"+Math.max(0,vipNextTier.threshold-vipPoints)+" pts to "+escapeHtml(vipNextTier.name)+"</div>":"")+'
+        '(vipNextTier?"<div style=\'font-size:12px;color:#94a3b8;margin-top:6px\'>"+Math.max(0,Number(vipNextTier.threshold||0)-Number(vipProgress||0))+" "+vipUnit+" to "+escapeHtml(vipNextTier.name)+"</div>":"")+'
         '"</div>";'
         'let nextUnlockHtml="";'
         'if(vipNextTier){'
@@ -23336,6 +23341,9 @@ async def cashier_stamp_page(customer_public_id: str):
         '"<div style=\'font-size:11px;font-weight:900;letter-spacing:.7px;color:#1d4ed8;margin-bottom:6px\'>WHEN CUSTOMER REACHES "+escapeHtml(String(vipNextTier.name||"NEXT TIER").toUpperCase())+"</div>"+'
         '"<div style=\'font-size:12px;font-weight:800;color:#334155;margin:8px 0 4px\'>BENEFITS THEY WILL RECEIVE</div><ul style=\'margin:0 0 8px 18px;padding:0;font-size:12px;color:#475569;line-height:1.55\'>"+benefitHtml+"</ul>"+'
         '"<div style=\'font-size:12px;font-weight:800;color:#334155;margin:8px 0 4px\'>COUPONS YOU WILL RECEIVE</div><ul style=\'margin:0 0 0 18px;padding:0;font-size:12px;color:#475569;line-height:1.55\'>"+couponListHtml+"</ul></div>";'
+        '}'
+        'if(vipUsesStamps){'
+        'return tierHtml+nextUnlockHtml+"<button class=\'btn-primary\' id=\'tierStampBtn\'>Add Tier Stamp</button>";'
         '}'
         'return tierHtml+nextUnlockHtml+'
         '"<input id=\'vipAmount\' type=\'number\' inputmode=\'decimal\' min=\'0\' placeholder=\'Amount spent\'>"+'
@@ -23409,8 +23417,13 @@ async def cashier_stamp_page(customer_public_id: str):
         'const multipassBtn=document.getElementById("multipassBtn");'
         'if(multipassBtn)multipassBtn.addEventListener("click",doMultipass);'
         '}else if(cardType==="vip"){'
+        'if(vipUsesStamps){'
+        'const tierStampBtn=document.getElementById("tierStampBtn");'
+        'if(tierStampBtn)tierStampBtn.addEventListener("click",doTierStamp);'
+        '}else{'
         'const vipBtn=document.getElementById("vipBtn");'
         'if(vipBtn)vipBtn.addEventListener("click",doVip);'
+        '}'
         '}else if(cardType==="membership"){'
         'const membershipBtn=document.getElementById("membershipBtn");'
         'if(membershipBtn)membershipBtn.addEventListener("click",doMembershipNote);'
@@ -23425,7 +23438,7 @@ async def cashier_stamp_page(customer_public_id: str):
         'function renderCard(staffName,msg){'
         'const bodyHtml=cardType==="hybrid"?renderHybridBody():cardType==="points"?renderPointsBody():cardType==="multipass"?renderMultipassBody():cardType==="vip"?renderVipBody():cardType==="membership"?renderMembershipBody():renderStampBody();'
         'const couponHtml=renderActiveCoupons();'
-        'const statsHtml=cardType==="hybrid"?((hybridLoyaltyType==="points"?(pointsBalance+" points"):(stampCount+" / "+DATA.stamp_goal+" stamps"))+" &bull; "+escapeHtml(String(membershipStatus||"inactive").toUpperCase())):cardType==="points"?(pointsBalance+" points"):cardType==="multipass"?(multipassRemaining+" / "+multipassTotal+" sessions"):cardType==="vip"?(escapeHtml((vipTier&&vipTier.name)||"VIP")+" &bull; "+vipPoints+" pts"):cardType==="membership"?("Membership: "+escapeHtml(membershipStatus)):(stampCount+" / "+DATA.stamp_goal+" stamps");'
+        'const statsHtml=cardType==="hybrid"?((hybridLoyaltyType==="points"?(pointsBalance+" points"):(stampCount+" / "+DATA.stamp_goal+" stamps"))+" &bull; "+escapeHtml(String(membershipStatus||"inactive").toUpperCase())):cardType==="points"?(pointsBalance+" points"):cardType==="multipass"?(multipassRemaining+" / "+multipassTotal+" sessions"):cardType==="vip"?(escapeHtml((vipTier&&vipTier.name)||"VIP")+" &bull; "+(vipUsesStamps?(stampCount+" Tier stamps"):(vipPoints+" pts"))):cardType==="membership"?("Membership: "+escapeHtml(membershipStatus)):(stampCount+" / "+DATA.stamp_goal+" stamps");'
         'app.innerHTML='
         '(msg?"<div class=\'msg "+(msg.ok?"msg-ok":"msg-err")+"\'>"+escapeHtml(msg.text)+"</div>":"")+'
         '"<div class=\'customer-box\'>"+'
@@ -23513,6 +23526,34 @@ async def cashier_stamp_page(customer_public_id: str):
         '}'
         '}catch(e){'
         'renderCard(s?s.name:"",{ok:false,text:"Network error - session not used"});'
+        '}'
+        '}'
+
+        'async function doTierStamp(){'
+        'const btn=document.getElementById("tierStampBtn");'
+        'if(btn){btn.disabled=true;btn.textContent="Adding...";}'
+        'const s=getSession();'
+        'try{'
+        'const res=await fetch("/api/v1/business/"+DATA.business_public_id+"/stamp",{'
+        'method:"POST",headers:authHeaders(),'
+        'body:JSON.stringify({customer_public_id:DATA.customer_public_id,staff_pin:getSession()?undefined:cachedPin})'
+        '});'
+        'const d=await res.json();'
+        'if(res.ok){'
+        'stampCount=Number(d.stamp_count||0);vipTier=d.tier||vipTier;vipNextTier=d.next_tier||null;'
+        'activeCoupons=Array.isArray(d.active_coupons)?d.active_coupons:activeCoupons;'
+        'couponText=activeCoupons.length?activeCoupons[0].reward_text:null;'
+        'const unlocked=Array.isArray(d.tier_coupons_issued)?d.tier_coupons_issued:[];'
+        'const upgradeText=d.upgraded&&d.tier&&d.tier.name?(" Upgraded to "+d.tier.name+"!"):"";'
+        'const couponTextMsg=unlocked.length?(" You unlocked "+unlocked.length+" coupon"+(unlocked.length===1?"":"s")+"!"):"";'
+        'renderCard(s?s.name:"",{ok:true,text:"Tier stamp added! "+stampCount+" total."+upgradeText+couponTextMsg});'
+        '}else if(res.status===401){'
+        'clearSession();renderLogin(d.detail||"Session expired - log in again");'
+        '}else{'
+        'renderCard(s?s.name:"",{ok:false,text:d.detail||"Could not add Tier stamp"});'
+        '}'
+        '}catch(e){'
+        'renderCard(s?s.name:"",{ok:false,text:"Network error - Tier stamp not added"});'
         '}'
         '}'
 
