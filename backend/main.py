@@ -13350,10 +13350,20 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
             })
         data['points_prizes'] = prizes
     if config.card_type == 'vip':
-        data['vip_progression_type'] = config.vip_progression_type
-        # Keep legacy boolean synchronized during rollout so older deployed
+        # Rolling-deploy compatibility: an older/stale frontend may still send
+        # only vip_stamps_enabled and omit vip_progression_type. In that case,
+        # infer the explicit mode from the legacy boolean instead of silently
+        # falling back to the Pydantic default ('points').
+        fields_set = getattr(config, 'model_fields_set', set())
+        requested_vip_progression = (
+            config.vip_progression_type
+            if 'vip_progression_type' in fields_set
+            else ('stamps' if config.vip_stamps_enabled else 'points')
+        )
+        data['vip_progression_type'] = requested_vip_progression
+        # Keep the legacy boolean synchronized during rollout so older deployed
         # frontends still render the correct Tier mode.
-        data['vip_stamps_enabled'] = config.vip_progression_type == 'stamps'
+        data['vip_stamps_enabled'] = requested_vip_progression == 'stamps'
         data['vip_points_per_amount'] = config.vip_points_per_amount or 0
         data['vip_amount_pesos'] = config.vip_amount_pesos or 100
         tiers=[]
