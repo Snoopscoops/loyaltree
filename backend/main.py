@@ -1830,6 +1830,9 @@ class CouponRedeem(BaseModel):
     coupon_public_id: Optional[str] = None  # optional for backward compatibility; omitted = oldest usable coupon
     staff_pin: Optional[str] = None
     as_owner: Optional[bool] = False
+    # Set only after the cashier/owner explicitly confirms the customer's
+    # birthday/ID when this particular birthday reward requires verification.
+    birthday_verified: Optional[bool] = False
 
 # Helpers
 def generate_public_id() -> str:
@@ -2258,6 +2261,21 @@ def safe_get_active_coupons(customer_id: int) -> list:
             .execute()
         )
         rows = res.data or []
+        # Birthday coupons can optionally require a staff birthday/ID check.
+        # Enrich the normal coupon payload without changing the coupons table.
+        verification_by_coupon = {}
+        coupon_ids = [str(c.get('public_id')) for c in rows if c.get('public_id')]
+        if coupon_ids:
+            try:
+                issues = (supabase.table('birthday_reward_issues')
+                          .select('coupon_public_id,verification_required')
+                          .in_('coupon_public_id', coupon_ids).execute().data or [])
+                verification_by_coupon = {
+                    str(i.get('coupon_public_id')): bool(i.get('verification_required'))
+                    for i in issues if i.get('coupon_public_id')
+                }
+            except Exception:
+                verification_by_coupon = {}
         today = _loyalty_today()
         usable = []
         for coupon in rows:
@@ -2268,7 +2286,10 @@ def safe_get_active_coupons(customer_id: int) -> list:
                         continue
                 except Exception:
                     pass
-            usable.append(coupon)
+            usable.append({
+                **coupon,
+                'birthday_verification_required': verification_by_coupon.get(str(coupon.get('public_id')), False),
+            })
         return usable
     except Exception:
         return []
@@ -6420,7 +6441,7 @@ def issue_vip_tier_upgrade_coupons(business: dict, customer: dict, program: dict
             if not reward_text:
                 continue
             validity_days = max(1, min(3650, int(coupon_config.get('validity_days') or 30)))
-            expires_at = (_loyalty_today() + timedelta(days=validity_days)).isoformat()
+            expires_at = (occasion_date + timedelta(days=validity_days)).isoformat()
             created_at = (datetime.utcnow() + timedelta(microseconds=order)).isoformat()
             order += 1
             coupon = {
@@ -12195,7 +12216,10 @@ async def maintenance_card_expiration_sweep(x_cron_secret: str = Header(default=
 
 
 @app.api_route("/api/v1/business/{public_id}/customers/{customer_public_id}", methods=["PUT", "PATCH"])
-async def update_customer(public_id: str, customer_public_id: str, update: CustomerUpdate):
+async def update_customer(public_id: str, customer_public_id: str, update: CustomerUpdate, authorization: str = Header(default='')):
+    # Customer profile corrections, including birthday changes, are owner-only.
+    # This prevents changing a birthday after signup just to claim a same-day reward.
+    require_owner_session(public_id, authorization)
     # Accepts both PUT and PATCH: EditCustomerModal.jsx calls this with PUT,
     # while the semantics here are really a partial update (PATCH). Supporting
     # both avoids a 405 Method Not Allowed without having to touch the frontend.
@@ -18158,10 +18182,17 @@ async def cancel_coupon(public_id: str, coupon_public_id: str):
         raise HTTPException(status_code=400, detail="Only an active coupon can be cancelled")
 
     try:
+        cancelled_at = datetime.utcnow().isoformat()
         supabase.table("coupons").update({
             'status': 'cancelled',
-            'updated_at': datetime.utcnow().isoformat(),
+            'updated_at': cancelled_at,
         }).eq("id", coupon.get("id")).execute()
+        try:
+            supabase.table('birthday_reward_issues').update({
+                'status':'cancelled','updated_at':cancelled_at
+            }).eq('coupon_public_id', coupon.get('public_id')).execute()
+        except Exception:
+            pass
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
@@ -18228,6 +18259,24 @@ async def redeem_coupon(public_id: str, req: CouponRedeem, authorization: str = 
     if not coupon:
         raise HTTPException(status_code=400, detail="No active coupon to redeem")
 
+    # Birthday rewards may require an explicit staff/owner birthday or ID
+    # verification. Never trust the browser alone: enforce it again here.
+    try:
+        birthday_issue_rows = (supabase.table('birthday_reward_issues')
+                               .select('verification_required')
+                               .eq('coupon_public_id', coupon.get('public_id'))
+                               .limit(1).execute().data or [])
+    except Exception:
+        birthday_issue_rows = []
+    birthday_verification_required = bool(
+        birthday_issue_rows and birthday_issue_rows[0].get('verification_required')
+    )
+    if birthday_verification_required and not bool(req.birthday_verified):
+        raise HTTPException(
+            status_code=400,
+            detail='Verify the customer birthday/ID before redeeming this birthday reward.'
+        )
+
     redeemed_at = datetime.utcnow().isoformat()
     try:
         supabase.table("coupons").update({
@@ -18235,6 +18284,12 @@ async def redeem_coupon(public_id: str, req: CouponRedeem, authorization: str = 
             'redeemed_at': redeemed_at,
             'redeemed_by_staff_id': redeeming_staff_id,
         }).eq("id", coupon.get("id")).execute()
+        try:
+            supabase.table('birthday_reward_issues').update({
+                'status':'redeemed','redeemed_at':redeemed_at,'updated_at':redeemed_at
+            }).eq('coupon_public_id', coupon.get('public_id')).execute()
+        except Exception:
+            pass
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
@@ -18994,6 +19049,7 @@ async def customer_join_page(business_public_id: str):
             '<input type="email" id="email" placeholder="Email (optional)">'
             '<label style="display:block;text-align:left;font-size:13px;color:#64748b;margin-bottom:6px;">Birthday (optional, MM/DD/YYYY)</label>'
             '<input type="date" id="birthday" placeholder="Birthday">'
+            '<div style="font-size:11px;color:#64748b;margin:-6px 0 10px;">Birthday is used for optional greetings/rewards and can only be corrected later by the business.</div>'
             '<select id="occupation">'
             '<option value="">Occupation (optional)</option>'
             '<option value="working">Working</option>'
@@ -23390,7 +23446,7 @@ async def cashier_stamp_page(customer_public_id: str):
         'let html="<div style=\'margin-top:14px;padding:13px;border:1px solid #fde68a;background:#fffbeb;border-radius:12px\'><div style=\'font-size:11px;font-weight:900;letter-spacing:.7px;color:#92400e;margin-bottom:8px\'>AVAILABLE COUPONS · "+activeCoupons.length+"</div>";'
         'for(let i=0;i<activeCoupons.length;i++){'
         'const c=activeCoupons[i]||{};const exp=c.expires_at?("Expires "+c.expires_at):"No expiry";'
-        'html+="<div style=\'padding:10px;background:white;border:1px solid #fde68a;border-radius:10px;margin-bottom:8px\'><div style=\'font-weight:800;font-size:14px;color:#78350f\'>🎟️ "+escapeHtml(c.reward_text||"Coupon")+"</div><div style=\'font-size:11px;color:#92400e;margin:3px 0 8px\'>"+escapeHtml(exp)+"</div><button class=\'btn-coupon redeemCouponBtn\' data-coupon-id=\'"+escapeHtml(String(c.public_id||""))+"\' style=\'margin:0\'>Redeem this coupon</button></div>";'
+        'html+="<div style=\'padding:10px;background:white;border:1px solid #fde68a;border-radius:10px;margin-bottom:8px\'><div style=\'font-weight:800;font-size:14px;color:#78350f\'>🎟️ "+escapeHtml(c.reward_text||"Coupon")+"</div><div style=\'font-size:11px;color:#92400e;margin:3px 0 8px\'>"+escapeHtml(exp)+(c.birthday_verification_required?" · Verify birthday/ID":"")+"</div><button class=\'btn-coupon redeemCouponBtn\' data-coupon-id=\'"+escapeHtml(String(c.public_id||""))+"\' style=\'margin:0\'>Redeem this coupon</button></div>";'
         '}'
         'return html+"</div>";'
         '}'
@@ -23681,13 +23737,16 @@ async def cashier_stamp_page(customer_public_id: str):
 
         'async function doRedeemCoupon(couponPublicId){'
         'let btn=null;if(couponPublicId){const bs=document.querySelectorAll(".redeemCouponBtn");for(let i=0;i<bs.length;i++){if(String(bs[i].getAttribute("data-coupon-id"))===String(couponPublicId)){btn=bs[i];break;}}}'
+        'const selectedCoupon=activeCoupons.find(function(c){return String(c.public_id)===String(couponPublicId);});'
+        'let birthdayVerified=false;'
+        'if(selectedCoupon&&selectedCoupon.birthday_verification_required){birthdayVerified=window.confirm("This birthday reward requires verification. Confirm you checked the customer birthday/ID before redeeming.");if(!birthdayVerified){return;}}'
         'if(btn){btn.disabled=true;btn.textContent="Redeeming...";}'
         'const s=getSession();'
         'try{'
         'const res=await fetch("/api/v1/business/"+DATA.business_public_id+"/coupon/redeem",{'
         'method:"POST",headers:authHeaders(),'
         'body:JSON.stringify({customer_public_id:DATA.customer_public_id,coupon_public_id:couponPublicId||undefined,'
-        'staff_pin:getSession()?undefined:cachedPin})'
+        'staff_pin:getSession()?undefined:cachedPin,birthday_verified:birthdayVerified})'
         '});'
         'const d=await res.json();'
         'if(res.ok){'
@@ -24407,7 +24466,7 @@ async def apple_log(request: Request):
         pass
     return Response(status_code=200)
 
-# SCHEDULED / CRON-TRIGGERED JOBS (Pro plan only)
+# SCHEDULED / CRON-TRIGGERED JOBS (plan-gated)
 # Neither of these run on their own - this app has no built-in scheduler.
 # Point an external scheduler (Render Cron Job, cron-job.org, GitHub Actions
 # on a schedule, etc.) at each of these once a day, e.g.:
@@ -24418,8 +24477,8 @@ async def apple_log(request: Request):
 
 @app.post("/api/v1/cron/birthday-greetings")
 async def run_birthday_greetings(_: bool = Depends(require_cron)):
-    today = datetime.utcnow().date()
-    sent, skipped, errors = 0, 0, 0
+    today = _loyalty_today()
+    sent, skipped, errors, rewards_issued = 0, 0, 0, 0
 
     try:
         businesses = supabase.table("businesses").select("*").eq("status", "ACTIVE").execute().data or []
@@ -24428,50 +24487,62 @@ async def run_birthday_greetings(_: bool = Depends(require_cron)):
 
     for business in businesses:
         if not get_plan_features(business.get('plan')).get('birthday_greetings'):
-            continue  # not entitled on this plan (Growth and Pro currently)
+            continue
+        settings = _retention_message_settings(business)
+        if not settings.get('birthday_enabled'):
+            continue
         try:
-            customers = supabase.table("customers").select("*").eq("business_id", business.get("id")).execute().data or []
+            customers, tx = _crm_dataset(business.get('id'))
+            birthday_visits = _birthday_visit_metrics(tx)
         except Exception:
             continue
-        program = safe_get_loyalty_program(business.get('id'))
-        retention_settings = _retention_message_settings(business)
+
         for customer in customers:
-            birthday = customer.get('birthday')
-            if not birthday:
+            occasion_date = _birthday_send_occasion(
+                customer.get('birthday'), today, settings.get('birthday_send_timing') or 'birthday'
+            )
+            if not occasion_date:
                 continue
-            try:
-                bday = datetime.fromisoformat(str(birthday)).date()
-            except Exception:
-                continue
-            if (bday.month, bday.day) != (today.month, today.day):
-                continue
-            if customer.get('last_birthday_greeting_year') == today.year:
+            occasion_year = occasion_date.year
+            if customer.get('last_birthday_greeting_year') == occasion_year:
                 skipped += 1
                 continue
 
+            visit_days = int(birthday_visits.get(str(customer.get('id')), {}).get('visit_days') or 0)
+            reward = _issue_birthday_reward(business, customer, settings, occasion_date, visit_days)
+            has_reward = bool(reward and reward.get('eligible') and (reward.get('issued') or reward.get('existing')) and reward.get('coupon_public_id'))
+            if reward and reward.get('issued'):
+                rewards_issued += 1
+
+            template = settings['birthday_reward_message'] if has_reward else settings['birthday_message']
+            first_name = _first_name(customer.get('name'))
+            body = _render_retention_message(
+                template,
+                business_name=business.get('name','us'),
+                customer_name=customer.get('name') or 'Customer',
+                first_name=first_name,
+                reward_name=settings.get('birthday_reward_name') if has_reward else '',
+                reward_description=settings.get('birthday_reward_description') if has_reward else '',
+                expiry_date=(reward or {}).get('expires_at') or '',
+            )
             object_id = f"{GOOGLE_WALLET_ISSUER_ID}.{customer.get('public_id', '')}"
-            reward_name = program.get('reward_name', 'a treat') if program else 'a treat'
             ok = send_wallet_object_message(
                 object_id,
-                header="Happy Birthday! 🎉",
-                body=_render_retention_message(
-                    retention_settings['birthday_message'],
-                    business_name=business.get('name','us'),
-                    reward_name=reward_name,
-                    customer_name=customer.get('name') or 'Customer'
-                ),
-                message_id=f"birthday-{customer.get('id')}-{today.year}",
+                header=f"Happy Birthday, {first_name}! 🎉",
+                body=body,
+                message_id=f"birthday-{customer.get('id')}-{occasion_year}",
             )
             if ok:
                 sent += 1
                 try:
-                    supabase.table("customers").update({'last_birthday_greeting_year': today.year}).eq("id", customer.get("id")).execute()
+                    supabase.table("customers").update({'last_birthday_greeting_year': occasion_year}).eq("id", customer.get("id")).execute()
                 except Exception:
                     pass
             else:
                 errors += 1
 
-    return {"sent": sent, "skipped_already_sent": skipped, "errors": errors}
+    return {"sent": sent, "skipped_already_sent": skipped, "rewards_issued": rewards_issued, "errors": errors}
+
 
 @app.post("/api/v1/cron/win-back")
 async def run_win_back(_: bool = Depends(require_cron)):
@@ -25288,6 +25359,48 @@ def _crm_dataset(business_id: int):
     return customers,tx
 
 
+# Birthday reward anti-abuse intentionally counts qualifying VISIT DAYS, not
+# every audit transaction. This prevents same-day adjustments, redemptions, or
+# repeated taps from inflating a customer's eligibility.
+BIRTHDAY_VISIT_ACTIONS = {
+    'stamp_add',
+    'points_sale',
+    'membership_visit',
+    'multipass_use',
+    'vip_sale',
+    'vip_tier_stamp',
+}
+
+
+def _birthday_visit_metrics(tx) -> dict:
+    """Per customer: unique Manila-local qualifying visit days + latest visit."""
+    days_by_customer = defaultdict(set)
+    last_by_customer = {}
+    for row in tx or []:
+        if row.get('action') not in BIRTHDAY_VISIT_ACTIONS:
+            continue
+        customer_id = row.get('customer_id')
+        if customer_id is None:
+            continue
+        parsed = _parse_ts(row.get('created_at'))
+        if not parsed:
+            continue
+        local_dt = parsed.replace(tzinfo=timezone.utc).astimezone(LOYALTY_TIMEZONE)
+        key = str(customer_id)
+        days_by_customer[key].add(local_dt.date().isoformat())
+        previous = last_by_customer.get(key)
+        if previous is None or local_dt > previous:
+            last_by_customer[key] = local_dt
+    keys = set(days_by_customer) | set(last_by_customer)
+    return {
+        key: {
+            'visit_days': len(days_by_customer.get(key, set())),
+            'last_visit_at': last_by_customer[key].isoformat() if key in last_by_customer else None,
+        }
+        for key in keys
+    }
+
+
 def _crm_metrics(customers, tx):
     now=datetime.utcnow()
     by={}
@@ -25337,7 +25450,21 @@ async def owner_crm(public_id:str, authorization:str=Header(default='')):
 
 
 class RetentionMessageSettings(BaseModel):
+    # Birthday greetings are enabled by default per business. Rewards are a
+    # separate opt-in so a merchant can celebrate customers without giving
+    # away a coupon unless they deliberately configure one.
     birthday_message: Optional[str] = None
+    birthday_enabled: Optional[bool] = None
+    birthday_send_timing: Optional[Literal['birthday', '3_days_before', '7_days_before', 'month_start']] = None
+    birthday_reward_enabled: Optional[bool] = None
+    birthday_reward_type: Optional[Literal['free_item', 'discount', 'custom']] = None
+    birthday_reward_name: Optional[str] = Field(default=None, max_length=120)
+    birthday_reward_description: Optional[str] = Field(default=None, max_length=240)
+    birthday_reward_message: Optional[str] = Field(default=None, max_length=500)
+    birthday_reward_min_membership_days: Optional[int] = Field(default=None, ge=0, le=3650)
+    birthday_reward_min_visits: Optional[int] = Field(default=None, ge=0, le=10000)
+    birthday_reward_validity_days: Optional[int] = Field(default=None, ge=1, le=365)
+    birthday_reward_staff_verification: Optional[bool] = None
     win_back_message: Optional[str] = None
     churn_days: Optional[int] = None
 
@@ -25351,30 +25478,269 @@ def _get_retention_rule(business_id: int, rule_type: str):
         return None
 
 
+BIRTHDAY_AUTOMATION_DEFAULTS = {
+    'birthday_enabled': True,
+    'birthday_send_timing': 'birthday',
+    'birthday_reward_enabled': False,
+    'birthday_reward_type': 'custom',
+    'birthday_reward_name': '',
+    'birthday_reward_description': '',
+    'birthday_reward_message': 'Happy birthday, {first_name}! 🎉 Enjoy {reward_name} from {business_name}. Valid until {expiry_date}.',
+    'birthday_reward_min_membership_days': 30,
+    'birthday_reward_min_visits': 2,
+    'birthday_reward_validity_days': 7,
+    'birthday_reward_staff_verification': False,
+}
+
+
+def _get_birthday_automation_settings(business_id: int) -> dict:
+    """Read per-business birthday controls, falling back to safe defaults."""
+    row = None
+    try:
+        rows = (supabase.table('birthday_automation_settings').select('*')
+                .eq('business_id', business_id).limit(1).execute().data or [])
+        row = rows[0] if rows else None
+    except Exception:
+        row = None
+    out = {**BIRTHDAY_AUTOMATION_DEFAULTS}
+    if row:
+        for key in out:
+            if row.get(key) is not None:
+                out[key] = row.get(key)
+    return out
+
+
+def _save_birthday_automation_settings(business_id: int, settings: dict):
+    now = datetime.utcnow().isoformat()
+    payload = {
+        'business_id': business_id,
+        'birthday_enabled': bool(settings['birthday_enabled']),
+        'birthday_send_timing': settings['birthday_send_timing'],
+        'birthday_reward_enabled': bool(settings['birthday_reward_enabled']),
+        'birthday_reward_type': settings['birthday_reward_type'],
+        'birthday_reward_name': settings['birthday_reward_name'] or None,
+        'birthday_reward_description': settings['birthday_reward_description'] or None,
+        'birthday_reward_message': settings['birthday_reward_message'],
+        'birthday_reward_min_membership_days': int(settings['birthday_reward_min_membership_days']),
+        'birthday_reward_min_visits': int(settings['birthday_reward_min_visits']),
+        'birthday_reward_validity_days': int(settings['birthday_reward_validity_days']),
+        'birthday_reward_staff_verification': bool(settings['birthday_reward_staff_verification']),
+        'updated_at': now,
+    }
+    try:
+        rows = (supabase.table('birthday_automation_settings').select('id')
+                .eq('business_id', business_id).limit(1).execute().data or [])
+        if rows:
+            supabase.table('birthday_automation_settings').update(payload).eq('id', rows[0].get('id')).execute()
+        else:
+            payload['created_at'] = now
+            supabase.table('birthday_automation_settings').insert(payload).execute()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail='Birthday automation storage is not ready. Run birthday_automation_migration.sql in Supabase, then retry.'
+        ) from exc
+
+
 def _retention_message_settings(business: dict):
     birthday=_get_retention_rule(business.get('id'),'birthday')
     winback=_get_retention_rule(business.get('id'),'win_back')
+    automation=_get_birthday_automation_settings(business.get('id'))
+    birthday_message=(birthday or {}).get('message_template') or "Happy birthday, {first_name}! 🎉 {business_name} wishes you a wonderful day!"
+    # Migrate the previous default in-memory so businesses that never edited it
+    # do not promise "a treat" when Birthday Rewards are switched off.
+    if birthday_message == "Happy birthday from {business_name}! Stop by soon to celebrate with {reward_name}.":
+        birthday_message = "Happy birthday, {first_name}! 🎉 {business_name} wishes you a wonderful day!"
     return {
-        'birthday_message': (birthday or {}).get('message_template') or
-            "Happy birthday from {business_name}! Stop by soon to celebrate with {reward_name}.",
+        'birthday_message': birthday_message,
+        **automation,
+        'birthday_reward_one_per_year': True,
         'win_back_message': (winback or {}).get('message_template') or
             "It's been a while since your last visit to {business_name} - come back and pick up where you left off!",
         'churn_days': int((winback or {}).get('days_threshold') or 30),
     }
 
 
-def _render_retention_message(template: str, *, business_name: str='', reward_name: str='', customer_name: str='', days_inactive=None):
+def _first_name(customer_name: str) -> str:
+    parts = [p for p in str(customer_name or '').strip().split() if p]
+    return parts[0] if parts else 'there'
+
+
+def _render_retention_message(
+    template: str, *, business_name: str='', reward_name: str='', reward_description: str='',
+    customer_name: str='', first_name: str='', expiry_date: str='', days_inactive=None
+):
+    full_name = customer_name or 'Customer'
     values={
         'business_name': business_name or 'us',
-        'reward_name': reward_name or 'a treat',
-        'customer_name': customer_name or 'Customer',
+        'reward_name': reward_name or '',
+        'reward_description': reward_description or '',
+        'customer_name': full_name,
+        'first_name': first_name or _first_name(full_name),
+        'expiry_date': expiry_date or '',
         'days_inactive': '' if days_inactive is None else str(days_inactive),
     }
     try:
         return str(template or '').format(**values)
     except Exception:
-        # Bad/missing placeholder should never break a scheduled job.
         return str(template or '')
+
+
+def _parse_birthday(value) -> Optional[tuple]:
+    if not value:
+        return None
+    try:
+        d = datetime.fromisoformat(str(value).replace('Z', '+00:00')).date()
+    except Exception:
+        try:
+            d = datetime.strptime(str(value)[:10], '%Y-%m-%d').date()
+        except Exception:
+            return None
+    return d.month, d.day
+
+
+def _birthday_date_for_year(month: int, day: int, year: int):
+    safe_day = min(int(day), calendar.monthrange(int(year), int(month))[1])
+    return datetime(int(year), int(month), safe_day).date()
+
+
+def _next_birthday_occurrence(birthday, today):
+    parsed = _parse_birthday(birthday)
+    if not parsed:
+        return None
+    month, day = parsed
+    occurrence = _birthday_date_for_year(month, day, today.year)
+    if occurrence < today:
+        occurrence = _birthday_date_for_year(month, day, today.year + 1)
+    return occurrence
+
+
+def _birthday_send_occasion(birthday, today, timing: str):
+    parsed = _parse_birthday(birthday)
+    if not parsed:
+        return None
+    month, day = parsed
+    timing = timing if timing in {'birthday','3_days_before','7_days_before','month_start'} else 'birthday'
+    if timing == 'month_start':
+        if today.day != 1 or today.month != month:
+            return None
+        return _birthday_date_for_year(month, day, today.year)
+    occurrence = _next_birthday_occurrence(birthday, today)
+    if not occurrence:
+        return None
+    offset = {'birthday': 0, '3_days_before': 3, '7_days_before': 7}[timing]
+    return occurrence if (occurrence - today).days == offset else None
+
+
+def _customer_membership_age_days(customer: dict, today) -> int:
+    created = _parse_ts(customer.get('created_at'))
+    if not created:
+        return 0
+    try:
+        return max(0, (today - created.date()).days)
+    except Exception:
+        return 0
+
+
+def _birthday_reward_eligibility(customer: dict, settings: dict, total_visits: int, today) -> dict:
+    membership_days = _customer_membership_age_days(customer, today)
+    min_days = int(settings.get('birthday_reward_min_membership_days') or 0)
+    min_visits = int(settings.get('birthday_reward_min_visits') or 0)
+    reasons = []
+    if membership_days < min_days:
+        reasons.append(f'Member for {membership_days} day(s); requires {min_days}')
+    if int(total_visits or 0) < min_visits:
+        reasons.append(f'{int(total_visits or 0)} qualifying visit day(s); requires {min_visits}')
+    return {
+        'eligible': not reasons,
+        'membership_age_days': membership_days,
+        'total_visits': int(total_visits or 0),
+        'reasons': reasons,
+    }
+
+
+def _get_birthday_reward_issue(business_id: int, customer_id: int, occasion_year: int):
+    try:
+        rows=(supabase.table('birthday_reward_issues').select('*')
+              .eq('business_id',business_id).eq('customer_id',customer_id)
+              .eq('occasion_year',occasion_year).limit(1).execute().data or [])
+        return rows[0] if rows else None
+    except Exception:
+        return None
+
+
+def _issue_birthday_reward(business: dict, customer: dict, settings: dict, occasion_date, total_visits: int):
+    if not settings.get('birthday_reward_enabled'):
+        return None
+    eligibility = _birthday_reward_eligibility(customer, settings, total_visits, _loyalty_today())
+    if not eligibility['eligible']:
+        return {'issued': False, **eligibility}
+
+    occasion_year = int(occasion_date.year)
+    existing = _get_birthday_reward_issue(business.get('id'), customer.get('id'), occasion_year)
+    if existing and existing.get('coupon_public_id'):
+        return {
+            'issued': False, 'eligible': True, 'existing': True,
+            'coupon_public_id': existing.get('coupon_public_id'),
+            'expires_at': existing.get('expires_at'),
+            'status': existing.get('status') or 'issued',
+            **eligibility,
+        }
+
+    now = datetime.utcnow().isoformat()
+    if not existing:
+        try:
+            inserted=(supabase.table('birthday_reward_issues').insert({
+                'public_id': generate_public_id(),
+                'business_id': business.get('id'),
+                'customer_id': customer.get('id'),
+                'occasion_year': occasion_year,
+                'status': 'pending',
+                'verification_required': bool(settings.get('birthday_reward_staff_verification')),
+                'issued_at': now,
+                'created_at': now,
+                'updated_at': now,
+            }).execute().data or [])
+            existing = inserted[0] if inserted else _get_birthday_reward_issue(business.get('id'), customer.get('id'), occasion_year)
+        except Exception as exc:
+            print(f'BIRTHDAY REWARD issue-row warning customer={customer.get("public_id")}: {exc}')
+            return {'issued': False, 'eligible': True, 'storage_error': True, **eligibility}
+
+    validity_days = max(1, min(365, int(settings.get('birthday_reward_validity_days') or 7)))
+    expires_at = (occasion_date + timedelta(days=validity_days)).isoformat()
+    reward_name = str(settings.get('birthday_reward_name') or '').strip() or 'Birthday Reward'
+    description = str(settings.get('birthday_reward_description') or '').strip()
+    reward_text = reward_name if not description else f'{reward_name} — {description}'
+    coupon_public_id = generate_public_id()
+    try:
+        supabase.table('coupons').insert({
+            'public_id': coupon_public_id,
+            'business_id': business.get('id'),
+            'customer_id': customer.get('id'),
+            'reward_text': reward_text[:200],
+            'status': 'active',
+            'expires_at': expires_at,
+            'created_at': now,
+        }).execute()
+        if existing and existing.get('id'):
+            supabase.table('birthday_reward_issues').update({
+                'coupon_public_id': coupon_public_id,
+                'status': 'issued',
+                'expires_at': expires_at,
+                'updated_at': now,
+            }).eq('id', existing.get('id')).execute()
+        try:
+            enqueue_wallet_sync(customer, business, 'birthday_reward_issued')
+        except Exception:
+            pass
+        return {
+            'issued': True, 'eligible': True, 'existing': False,
+            'coupon_public_id': coupon_public_id, 'expires_at': expires_at,
+            'status': 'issued', **eligibility,
+        }
+    except Exception as exc:
+        print(f'BIRTHDAY REWARD coupon warning customer={customer.get("public_id")}: {exc}')
+        return {'issued': False, 'eligible': True, 'coupon_error': True, **eligibility}
 
 
 @app.get('/api/v1/business/{public_id}/retention-settings')
@@ -25395,6 +25761,17 @@ async def save_retention_settings(public_id:str, req:RetentionMessageSettings, a
     birthday=(req.birthday_message if req.birthday_message is not None else current['birthday_message']).strip()
     winback=(req.win_back_message if req.win_back_message is not None else current['win_back_message']).strip()
     churn_days=req.churn_days if req.churn_days is not None else current['churn_days']
+    birthday_enabled = current['birthday_enabled'] if req.birthday_enabled is None else bool(req.birthday_enabled)
+    birthday_send_timing = req.birthday_send_timing or current['birthday_send_timing']
+    reward_enabled = current['birthday_reward_enabled'] if req.birthday_reward_enabled is None else bool(req.birthday_reward_enabled)
+    reward_type = req.birthday_reward_type or current['birthday_reward_type']
+    reward_name = (req.birthday_reward_name if req.birthday_reward_name is not None else current['birthday_reward_name']).strip()
+    reward_description = (req.birthday_reward_description if req.birthday_reward_description is not None else current['birthday_reward_description']).strip()
+    reward_message = (req.birthday_reward_message if req.birthday_reward_message is not None else current['birthday_reward_message']).strip()
+    min_membership_days = req.birthday_reward_min_membership_days if req.birthday_reward_min_membership_days is not None else current['birthday_reward_min_membership_days']
+    min_visits = req.birthday_reward_min_visits if req.birthday_reward_min_visits is not None else current['birthday_reward_min_visits']
+    validity_days = req.birthday_reward_validity_days if req.birthday_reward_validity_days is not None else current['birthday_reward_validity_days']
+    staff_verification = current['birthday_reward_staff_verification'] if req.birthday_reward_staff_verification is None else bool(req.birthday_reward_staff_verification)
 
     if not birthday or len(birthday)>500:
         raise HTTPException(status_code=400,detail='Birthday message must be 1-500 characters')
@@ -25402,15 +25779,23 @@ async def save_retention_settings(public_id:str, req:RetentionMessageSettings, a
         raise HTTPException(status_code=400,detail='Win-back message must be 1-500 characters')
     if churn_days < 7 or churn_days > 365:
         raise HTTPException(status_code=400,detail='Churn inactivity threshold must be between 7 and 365 days')
+    if birthday_send_timing not in {'birthday','3_days_before','7_days_before','month_start'}:
+        raise HTTPException(status_code=400,detail='Invalid birthday send timing')
+    if reward_type not in {'free_item','discount','custom'}:
+        raise HTTPException(status_code=400,detail='Invalid birthday reward type')
+    if reward_enabled and not reward_name:
+        raise HTTPException(status_code=400,detail='Enter a birthday reward name before enabling rewards')
+    if not reward_message or len(reward_message)>500:
+        raise HTTPException(status_code=400,detail='Birthday reward message must be 1-500 characters')
 
     now=datetime.utcnow().isoformat()
-    for rule_type,message,days in [
-        ('birthday',birthday,None),
-        ('win_back',winback,int(churn_days)),
+    for rule_type,message,days,enabled in [
+        ('birthday',birthday,None,birthday_enabled),
+        ('win_back',winback,int(churn_days),True),
     ]:
         existing=_get_retention_rule(business.get('id'),rule_type)
         payload={
-            'business_id':business.get('id'),'rule_type':rule_type,'enabled':True,
+            'business_id':business.get('id'),'rule_type':rule_type,'enabled':enabled,
             'message_template':message,'days_threshold':days,'updated_at':now,
         }
         if existing:
@@ -25418,7 +25803,100 @@ async def save_retention_settings(public_id:str, req:RetentionMessageSettings, a
         else:
             supabase.table('retention_rules').insert(payload).execute()
 
+    _save_birthday_automation_settings(business.get('id'), {
+        'birthday_enabled': birthday_enabled,
+        'birthday_send_timing': birthday_send_timing,
+        'birthday_reward_enabled': reward_enabled,
+        'birthday_reward_type': reward_type,
+        'birthday_reward_name': reward_name,
+        'birthday_reward_description': reward_description,
+        'birthday_reward_message': reward_message,
+        'birthday_reward_min_membership_days': int(min_membership_days),
+        'birthday_reward_min_visits': int(min_visits),
+        'birthday_reward_validity_days': int(validity_days),
+        'birthday_reward_staff_verification': staff_verification,
+    })
     return _retention_message_settings(business)
+
+
+@app.get('/api/v1/business/{public_id}/birthday-celebrants')
+async def birthday_celebrants(public_id:str, authorization:str=Header(default='')):
+    require_owner_session(public_id,authorization)
+    business=safe_get_business(public_id)
+    if not business: raise HTTPException(status_code=404,detail='Business not found')
+
+    settings=_retention_message_settings(business)
+    customers,tx=_crm_dataset(business.get('id'))
+    crm_rows=_crm_metrics(customers,tx)
+    crm_by_id={str(r.get('id')):r for r in crm_rows}
+    birthday_visits=_birthday_visit_metrics(tx)
+    today=_loyalty_today()
+
+    issue_rows=[]
+    try:
+        issue_rows=(supabase.table('birthday_reward_issues').select('*')
+                    .eq('business_id',business.get('id')).execute().data or [])
+    except Exception:
+        issue_rows=[]
+    issues={(str(r.get('customer_id')),int(r.get('occasion_year') or 0)):r for r in issue_rows}
+
+    counts={'today':0,'this_month':0,'next_7_days':0,'next_30_days':0}
+    out=[]
+    for customer in customers:
+        parsed=_parse_birthday(customer.get('birthday'))
+        if not parsed:
+            continue
+        month,day=parsed
+        next_date=_next_birthday_occurrence(customer.get('birthday'),today)
+        if not next_date:
+            continue
+        days_until=(next_date-today).days
+        is_today=(month,day)==(today.month,today.day)
+        in_this_month=month==today.month
+        if is_today: counts['today']+=1
+        if in_this_month: counts['this_month']+=1
+        if 0 <= days_until <= 7: counts['next_7_days']+=1
+        if 0 <= days_until <= 30: counts['next_30_days']+=1
+        if not in_this_month and not (0 <= days_until <= 30):
+            continue
+
+        crm=crm_by_id.get(str(customer.get('id')),{}).get('crm',{})
+        visit_metrics=birthday_visits.get(str(customer.get('id')), {})
+        total_visits=int(visit_metrics.get('visit_days') or 0)
+        status_year=today.year if in_this_month else next_date.year
+        issue=issues.get((str(customer.get('id')),status_year))
+        reward_status=(issue or {}).get('status')
+        if reward_status == 'issued' and (issue or {}).get('expires_at'):
+            try:
+                if datetime.fromisoformat(str(issue.get('expires_at'))).date() < today:
+                    reward_status='expired'
+            except Exception:
+                pass
+        eligibility=_birthday_reward_eligibility(customer,settings,total_visits,today)
+        out.append({
+            'customer_public_id':customer.get('public_id'),
+            'customer_name':customer.get('name') or 'Customer',
+            'first_name':_first_name(customer.get('name')),
+            'birthday':str(customer.get('birthday'))[:10],
+            'is_today':is_today,
+            'in_this_month':in_this_month,
+            'days_until':days_until,
+            'next_birthday_date':next_date.isoformat(),
+            'last_visit_at':visit_metrics.get('last_visit_at'),
+            'total_visits':total_visits,
+            'membership_status':customer.get('membership_status'),
+            'points_balance':int(customer.get('points_balance') or 0),
+            'stamp_count':int(customer.get('stamp_count') or 0),
+            'reward_eligible':bool(settings.get('birthday_reward_enabled')) and eligibility['eligible'],
+            'reward_eligibility_reasons':eligibility['reasons'],
+            'reward_status':reward_status,
+            'reward_coupon_public_id':(issue or {}).get('coupon_public_id'),
+            'reward_expires_at':(issue or {}).get('expires_at'),
+            'verification_required':bool((issue or {}).get('verification_required') if issue else settings.get('birthday_reward_staff_verification')),
+        })
+
+    out.sort(key=lambda r:(0 if r['is_today'] else 1, r['days_until'], r['customer_name'].lower()))
+    return {'as_of':today.isoformat(),'counts':counts,'customers':out,'settings':settings}
 
 
 @app.get('/api/v1/business/{public_id}/retention-opportunities')

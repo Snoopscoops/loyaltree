@@ -10,12 +10,28 @@ function AnalyticsDashboard({ API_BASE, user }) {
   const [crmData, setCrmData] = useState({ customers: [], segments: {}, total_customers: 0 })
   const [retentionData, setRetentionData] = useState({})
   const [retentionOps, setRetentionOps] = useState([])
+  const [birthdayData, setBirthdayData] = useState({
+    as_of: '', counts: { today: 0, this_month: 0, next_7_days: 0, next_30_days: 0 }, customers: []
+  })
+  const [birthdayFilter, setBirthdayFilter] = useState('month')
   const [auditTransactions, setAuditTransactions] = useState([])
   const [fraudAlerts, setFraudAlerts] = useState([])
   const [extendedLoading, setExtendedLoading] = useState(true)
   const [extendedError, setExtendedError] = useState('')
   const [retentionSettings, setRetentionSettings] = useState({
-    birthday_message: 'Happy birthday from {business_name}! Stop by soon to celebrate with {reward_name}.',
+    birthday_message: 'Happy birthday, {first_name}! 🎉 {business_name} wishes you a wonderful day!',
+    birthday_enabled: true,
+    birthday_send_timing: 'birthday',
+    birthday_reward_enabled: false,
+    birthday_reward_type: 'custom',
+    birthday_reward_name: '',
+    birthday_reward_description: '',
+    birthday_reward_message: 'Happy birthday, {first_name}! 🎉 Enjoy {reward_name} from {business_name}. Valid until {expiry_date}.',
+    birthday_reward_min_membership_days: 30,
+    birthday_reward_min_visits: 2,
+    birthday_reward_validity_days: 7,
+    birthday_reward_staff_verification: false,
+    birthday_reward_one_per_year: true,
     win_back_message: "It's been a while since your last visit to {business_name} - come back and pick up where you left off!",
     churn_days: 30,
   })
@@ -52,7 +68,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
     setExtendedError('')
     const base = `${API_BASE}/api/v1/business/${user.business_slug}`
     try {
-      const [walletRes, crmRes, retentionRes, opportunityRes, auditRes, fraudRes, settingsRes] = await Promise.all([
+      const [walletRes, crmRes, retentionRes, opportunityRes, auditRes, fraudRes, settingsRes, birthdayRes] = await Promise.all([
         authFetch(`${base}/wallet-queue?limit=100`),
         authFetch(`${base}/crm`),
         authFetch(`${base}/retention-analytics?days=90`),
@@ -60,9 +76,10 @@ function AnalyticsDashboard({ API_BASE, user }) {
         authFetch(`${base}/transaction-audit?limit=100`),
         authFetch(`${base}/fraud-alerts?hours=24`),
         authFetch(`${base}/retention-settings`),
+        authFetch(`${base}/birthday-celebrants`),
       ])
 
-      const [wallet, crm, retention, opportunities, audit, fraud, settings] = await Promise.all([
+      const [wallet, crm, retention, opportunities, audit, fraud, settings, birthdays] = await Promise.all([
         walletRes.json().catch(() => ({})),
         crmRes.json().catch(() => ({})),
         retentionRes.json().catch(() => ({})),
@@ -70,6 +87,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
         auditRes.json().catch(() => ({})),
         fraudRes.json().catch(() => ({})),
         settingsRes.json().catch(() => ({})),
+        birthdayRes.json().catch(() => ({})),
       ])
 
       if (walletRes.ok) setWalletQueue(wallet)
@@ -79,10 +97,15 @@ function AnalyticsDashboard({ API_BASE, user }) {
       if (auditRes.ok) setAuditTransactions(Array.isArray(audit.transactions) ? audit.transactions : [])
       if (fraudRes.ok) setFraudAlerts(Array.isArray(fraud.alerts) ? fraud.alerts : [])
       if (settingsRes.ok) setRetentionSettings(settings)
+      if (birthdayRes.ok) setBirthdayData({
+        as_of: birthdays.as_of || '',
+        counts: birthdays.counts || { today: 0, this_month: 0, next_7_days: 0, next_30_days: 0 },
+        customers: Array.isArray(birthdays.customers) ? birthdays.customers : [],
+      })
 
       const failed = [
         [walletRes, wallet], [crmRes, crm], [retentionRes, retention],
-        [opportunityRes, opportunities], [auditRes, audit], [fraudRes, fraud], [settingsRes, settings],
+        [opportunityRes, opportunities], [auditRes, audit], [fraudRes, fraud], [settingsRes, settings], [birthdayRes, birthdays],
       ].find(([res]) => !res.ok)
       if (failed) setExtendedError(failed[1]?.detail || 'Some extended analytics could not be loaded.')
     } catch (err) {
@@ -144,6 +167,13 @@ function AnalyticsDashboard({ API_BASE, user }) {
   if (!analytics) return null
 
   const { overview, trends, customers, demographics, stamps, rewards, revenue } = analytics
+  const birthdayRows = (birthdayData.customers || []).filter(c => {
+    if (birthdayFilter === 'today') return c.is_today
+    if (birthdayFilter === '7d') return Number(c.days_until) >= 0 && Number(c.days_until) <= 7
+    if (birthdayFilter === '30d') return Number(c.days_until) >= 0 && Number(c.days_until) <= 30
+    return c.in_this_month
+  })
+  const birthdayFilterLabel = birthdayFilter === 'today' ? 'Today' : birthdayFilter === '7d' ? 'Next 7 Days' : birthdayFilter === '30d' ? 'Next 30 Days' : 'This Month'
   const isPoints = overview.card_type === 'points'
   const isMultipass = overview.card_type === 'multipass'
   const isMembership = overview.card_type === 'membership'
@@ -624,26 +654,123 @@ function AnalyticsDashboard({ API_BASE, user }) {
         <div style={{...styles.insightCard, marginBottom:16}}>
           <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start',flexWrap:'wrap',marginBottom:14}}>
             <div>
-              <h4 style={{...styles.insightTitle,marginBottom:4}}>✍️ Automated Message Settings</h4>
-              <div style={styles.mutedText}>Businesses can personalize the birthday greeting and churn / win-back message.</div>
+              <h4 style={{...styles.insightTitle,marginBottom:4}}>🎂 Birthday Automation</h4>
+              <div style={styles.mutedText}>Birthday greetings are on by default. Birthday rewards stay off until the business explicitly enables them.</div>
             </div>
             <button className="an-actionbtn" style={styles.actionBtn} disabled={savingRetentionSettings} onClick={saveRetentionSettings}>
-              {savingRetentionSettings ? 'Saving…' : 'Save Messages'}
+              {savingRetentionSettings ? 'Saving…' : 'Save Birthday & Retention Settings'}
             </button>
           </div>
 
-          <label style={styles.editorLabel}>Birthday Greeting</label>
-          <textarea
-            value={retentionSettings.birthday_message || ''}
-            onChange={e=>setRetentionSettings(s=>({...s,birthday_message:e.target.value}))}
-            maxLength={500}
-            rows={3}
-            style={styles.editorTextarea}
-          />
-          <div style={styles.editorHelp}>Available: {'{business_name}'}, {'{customer_name}'}, {'{reward_name}'}</div>
+          <div style={styles.settingRow}>
+            <div>
+              <div style={styles.settingTitle}>Birthday Greetings</div>
+              <div style={styles.mutedText}>Send a personalized Wallet message to birthday celebrants.</div>
+            </div>
+            <label style={styles.checkboxLabel}>
+              <input type="checkbox" checked={retentionSettings.birthday_enabled !== false} onChange={e=>setRetentionSettings(s=>({...s,birthday_enabled:e.target.checked}))} />
+              {retentionSettings.birthday_enabled !== false ? 'On' : 'Off'}
+            </label>
+          </div>
 
-          <div style={{height:14}} />
+          {retentionSettings.birthday_enabled !== false && <>
+            <div style={styles.formGrid2}>
+              <div>
+                <label style={styles.editorLabel}>Send Timing</label>
+                <select style={styles.editorSelect} value={retentionSettings.birthday_send_timing || 'birthday'} onChange={e=>setRetentionSettings(s=>({...s,birthday_send_timing:e.target.value}))}>
+                  <option value="birthday">On the birthday</option>
+                  <option value="3_days_before">3 days before</option>
+                  <option value="7_days_before">7 days before</option>
+                  <option value="month_start">Start of birthday month</option>
+                </select>
+              </div>
+            </div>
 
+            <label style={styles.editorLabel}>Birthday Greeting</label>
+            <textarea
+              value={retentionSettings.birthday_message || ''}
+              onChange={e=>setRetentionSettings(s=>({...s,birthday_message:e.target.value}))}
+              maxLength={500}
+              rows={3}
+              style={styles.editorTextarea}
+            />
+            <div style={styles.editorHelp}>Personalize with {'{first_name}'}. Also available: {'{customer_name}'}, {'{business_name}'}.</div>
+
+            <div style={{...styles.settingRow,marginTop:16,paddingTop:16,borderTop:'1px solid #e2e8f0'}}>
+              <div>
+                <div style={styles.settingTitle}>🎁 Birthday Rewards</div>
+                <div style={styles.mutedText}>Optional. Eligible customers receive a one-time coupon through the existing Loyalty Tree coupon system.</div>
+              </div>
+              <label style={styles.checkboxLabel}>
+                <input type="checkbox" checked={retentionSettings.birthday_reward_enabled === true} onChange={e=>setRetentionSettings(s=>({...s,birthday_reward_enabled:e.target.checked}))} />
+                {retentionSettings.birthday_reward_enabled === true ? 'On' : 'Off'}
+              </label>
+            </div>
+
+            {retentionSettings.birthday_reward_enabled === true && <div style={styles.rewardPanel}>
+              <div style={styles.formGrid2}>
+                <div>
+                  <label style={styles.editorLabel}>Reward Type</label>
+                  <select style={styles.editorSelect} value={retentionSettings.birthday_reward_type || 'custom'} onChange={e=>setRetentionSettings(s=>({...s,birthday_reward_type:e.target.value}))}>
+                    <option value="free_item">Free Item</option>
+                    <option value="discount">Discount</option>
+                    <option value="custom">Custom Perk</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={styles.editorLabel}>Reward Name</label>
+                  <input style={styles.editorInput} maxLength={120} placeholder="e.g. Free Birthday Drink" value={retentionSettings.birthday_reward_name || ''} onChange={e=>setRetentionSettings(s=>({...s,birthday_reward_name:e.target.value}))} />
+                </div>
+              </div>
+
+              <label style={styles.editorLabel}>Reward Description</label>
+              <input style={styles.editorInput} maxLength={240} placeholder="e.g. Any regular handcrafted beverage" value={retentionSettings.birthday_reward_description || ''} onChange={e=>setRetentionSettings(s=>({...s,birthday_reward_description:e.target.value}))} />
+
+              <label style={{...styles.editorLabel,marginTop:12}}>Reward Message</label>
+              <textarea
+                value={retentionSettings.birthday_reward_message || ''}
+                onChange={e=>setRetentionSettings(s=>({...s,birthday_reward_message:e.target.value}))}
+                maxLength={500}
+                rows={3}
+                style={styles.editorTextarea}
+              />
+              <div style={styles.editorHelp}>Available: {'{first_name}'}, {'{business_name}'}, {'{reward_name}'}, {'{reward_description}'}, {'{expiry_date}'}.</div>
+
+              <div style={{...styles.formGrid2,marginTop:12}}>
+                <div>
+                  <label style={styles.editorLabel}>Minimum Membership Age</label>
+                  <select style={styles.editorSelect} value={retentionSettings.birthday_reward_min_membership_days ?? 30} onChange={e=>setRetentionSettings(s=>({...s,birthday_reward_min_membership_days:Number(e.target.value)}))}>
+                    <option value={0}>No waiting period</option>
+                    <option value={30}>30 days</option>
+                    <option value={60}>60 days</option>
+                    <option value={90}>90 days</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={styles.editorLabel}>Minimum Qualifying Visit Days</label>
+                  <input type="number" min="0" max="10000" style={styles.editorInput} value={retentionSettings.birthday_reward_min_visits ?? 2} onChange={e=>setRetentionSettings(s=>({...s,birthday_reward_min_visits:Number(e.target.value)}))} />
+                </div>
+                <div>
+                  <label style={styles.editorLabel}>Reward Validity</label>
+                  <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                    <input type="number" min="1" max="365" style={{...styles.editorInput,width:100}} value={retentionSettings.birthday_reward_validity_days ?? 7} onChange={e=>setRetentionSettings(s=>({...s,birthday_reward_validity_days:Number(e.target.value)}))} />
+                    <span style={styles.mutedText}>days</span>
+                  </div>
+                </div>
+                <div>
+                  <label style={styles.editorLabel}>Anti-Abuse</label>
+                  <div style={{fontSize:13,color:'#166534',fontWeight:700}}>✓ One reward per customer per birthday year</div>
+                  <label style={{...styles.checkboxLabel,marginTop:8,justifyContent:'flex-start'}}>
+                    <input type="checkbox" checked={retentionSettings.birthday_reward_staff_verification === true} onChange={e=>setRetentionSettings(s=>({...s,birthday_reward_staff_verification:e.target.checked}))} />
+                    Ask staff to verify birthday / ID at redemption
+                  </label>
+                </div>
+              </div>
+            </div>}
+          </>}
+
+          <div style={{height:18}} />
+          <div style={{borderTop:'1px solid #e2e8f0',paddingTop:16}}>
           <label style={styles.editorLabel}>Churn / Win-Back Message</label>
           <textarea
             value={retentionSettings.win_back_message || ''}
@@ -667,7 +794,71 @@ function AnalyticsDashboard({ API_BASE, user }) {
             />
             <span style={styles.mutedText}>days without loyalty activity</span>
           </div>
+          </div>
           {retentionSettingsMessage && <div style={{marginTop:10,fontSize:13,fontWeight:700,color:retentionSettingsMessage.includes('Saved')?'#166534':'#b91c1c'}}>{retentionSettingsMessage}</div>}
+        </div>
+
+        <div style={{...styles.insightCard,marginBottom:16}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12,flexWrap:'wrap',marginBottom:14}}>
+            <div>
+              <h4 style={{...styles.insightTitle,marginBottom:4}}>🎉 Birthday Celebrants</h4>
+              <div style={styles.mutedText}>See this month's celebrants and upcoming birthdays. Reward eligibility uses unique qualifying visit days, so same-day adjustments or redemptions do not inflate eligibility.</div>
+            </div>
+            <div style={styles.birthdayFilterBar}>
+              {[
+                ['month','This Month',birthdayData.counts?.this_month || 0],
+                ['today','Today',birthdayData.counts?.today || 0],
+                ['7d','Next 7 Days',birthdayData.counts?.next_7_days || 0],
+                ['30d','Next 30 Days',birthdayData.counts?.next_30_days || 0],
+              ].map(([key,label,count])=>(
+                <button key={key} type="button" onClick={()=>setBirthdayFilter(key)} style={{...styles.filterChip,...(birthdayFilter===key?styles.filterChipActive:{})}}>{label} · {count}</button>
+              ))}
+            </div>
+          </div>
+
+          <div className="an-overview-grid" style={{...styles.overviewGrid,marginBottom:14}}>
+            <MiniMetric label="This Month" value={birthdayData.counts?.this_month || 0} />
+            <MiniMetric label="Today" value={birthdayData.counts?.today || 0} />
+            <MiniMetric label="Next 7 Days" value={birthdayData.counts?.next_7_days || 0} />
+            <MiniMetric label="Next 30 Days" value={birthdayData.counts?.next_30_days || 0} />
+          </div>
+
+          <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:8}}>{birthdayFilterLabel}</div>
+          {birthdayRows.length === 0 ? <div style={styles.noData}>No birthday celebrants in this view.</div> : (
+            <div>
+              {birthdayRows.map(c=>(
+                <div key={`${c.customer_public_id}-${c.birthday}`} style={styles.birthdayRow}>
+                  <div style={{minWidth:0,flex:1}}>
+                    <div style={{fontWeight:800,color:'#1e293b'}}>{c.customer_name}</div>
+                    <div style={styles.mutedText}>
+                      🎂 {c.birthday ? new Date(`${c.birthday}T00:00:00`).toLocaleDateString(undefined,{month:'short',day:'numeric'}) : '—'}
+                      {c.is_today ? ' · Today!' : c.days_until >= 0 ? ` · ${c.days_until} day${c.days_until===1?'':'s'} away` : ''}
+                      {c.total_visits != null ? ` · ${c.total_visits} recorded visit${c.total_visits===1?'':'s'}` : ''}
+                    </div>
+                    {c.last_visit_at && <div style={styles.mutedText}>Last qualifying visit: {new Date(c.last_visit_at).toLocaleDateString()}</div>}
+                  </div>
+                  <div style={{textAlign:'right',minWidth:150}}>
+                    {!retentionSettings.birthday_reward_enabled ? (
+                      <span style={styles.statusPill}>Greeting only</span>
+                    ) : c.reward_status ? (
+                      <>
+                        <span style={{...styles.statusPill,...(c.reward_status==='redeemed'?styles.statusGood:c.reward_status==='issued'?styles.statusWarn:{})}}>Reward {c.reward_status}</span>
+                        {c.reward_expires_at && <div style={styles.mutedText}>Expires {c.reward_expires_at}</div>}
+                      </>
+                    ) : c.reward_eligible ? (
+                      <span style={{...styles.statusPill,...styles.statusGood}}>Reward eligible</span>
+                    ) : (
+                      <>
+                        <span style={{...styles.statusPill,...styles.statusBad}}>Not eligible</span>
+                        {!!c.reward_eligibility_reasons?.length && <div style={{...styles.mutedText,maxWidth:240}}>{c.reward_eligibility_reasons.join(' · ')}</div>}
+                      </>
+                    )}
+                    {c.verification_required && <div style={styles.mutedText}>ID verification requested</div>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="an-overview-grid" style={styles.overviewGrid}>
@@ -1078,6 +1269,91 @@ const styles = {
     marginTop:5,
     fontSize:11,
     color:'#94a3b8',
+  },
+  settingRow: {
+    display:'flex',
+    justifyContent:'space-between',
+    alignItems:'center',
+    gap:14,
+    flexWrap:'wrap',
+    marginBottom:14,
+  },
+  settingTitle: {
+    fontSize:14,
+    fontWeight:800,
+    color:'#1e293b',
+  },
+  checkboxLabel: {
+    display:'flex',
+    alignItems:'center',
+    justifyContent:'flex-end',
+    gap:7,
+    fontSize:13,
+    fontWeight:700,
+    color:'#475569',
+    cursor:'pointer',
+  },
+  formGrid2: {
+    display:'grid',
+    gridTemplateColumns:'repeat(auto-fit,minmax(210px,1fr))',
+    gap:12,
+    marginBottom:12,
+  },
+  editorInput: {
+    width:'100%',
+    boxSizing:'border-box',
+    border:'1px solid #cbd5e1',
+    borderRadius:9,
+    padding:'9px 10px',
+    fontSize:13,
+    color:'#1e293b',
+    fontFamily:'inherit',
+  },
+  editorSelect: {
+    width:'100%',
+    boxSizing:'border-box',
+    border:'1px solid #cbd5e1',
+    borderRadius:9,
+    padding:'9px 10px',
+    fontSize:13,
+    color:'#1e293b',
+    background:'white',
+  },
+  rewardPanel: {
+    marginTop:12,
+    padding:14,
+    border:'1px solid #ccfbf1',
+    borderRadius:12,
+    background:'#f0fdfa',
+  },
+  birthdayFilterBar: {
+    display:'flex',
+    gap:6,
+    flexWrap:'wrap',
+  },
+  filterChip: {
+    border:'1px solid #cbd5e1',
+    background:'white',
+    color:'#475569',
+    borderRadius:999,
+    padding:'7px 10px',
+    fontSize:11,
+    fontWeight:700,
+    cursor:'pointer',
+  },
+  filterChipActive: {
+    background:'#0d9488',
+    color:'white',
+    borderColor:'#0d9488',
+  },
+  birthdayRow: {
+    display:'flex',
+    justifyContent:'space-between',
+    alignItems:'center',
+    gap:14,
+    padding:'12px 0',
+    borderBottom:'1px solid #f1f5f9',
+    flexWrap:'wrap',
   },
   sectionTitle: {
     fontSize: 20,

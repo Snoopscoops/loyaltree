@@ -3472,8 +3472,11 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               <input style={styles.input} value={editForm.phone || ''} onChange={e => setEditForm({...editForm, phone: e.target.value})} required />
               <label style={styles.label}>Email</label>
               <input style={styles.input} type="email" value={editForm.email || ''} onChange={e => setEditForm({...editForm, email: e.target.value})} />
-              <label style={styles.label}>Birthday</label>
+              <label style={styles.label}>Birthday (owner correction only)</label>
               <input style={styles.input} type="date" value={editForm.birthday || ''} onChange={e => setEditForm({...editForm, birthday: e.target.value})} />
+              <div style={{fontSize:11,color:'#64748b',marginTop:-8,marginBottom:12}}>
+                Customers cannot change their birthday after signup. Verify the correct date before editing to protect birthday rewards from abuse.
+              </div>
               <label style={styles.label}>Occupation</label>
               <select style={styles.input} value={editForm.occupation || ''} onChange={e => setEditForm({...editForm, occupation: e.target.value})}>
                 <option value="">Not specified</option>
