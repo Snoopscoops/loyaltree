@@ -295,10 +295,13 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [deletingStaff, setDeletingStaff] = useState(false)
   const [qrImageUrl, setQrImageUrl] = useState(null)
 
-  // One-time coupon state - at most one active coupon per customer,
-  // scoped to whichever customer is currently open in the Edit modal.
+  // Coupon editor manages the next FIFO active coupon for the Edit modal.
+  // The card-level Available Now panel below separately shows every current
+  // coupon/redeemable entitlement for the selected customer.
   const [activeCoupon, setActiveCoupon] = useState(null)
   const [couponLoading, setCouponLoading] = useState(false)
+  const [currentRedeemables, setCurrentRedeemables] = useState([])
+  const [redeemablesLoading, setRedeemablesLoading] = useState(false)
   const [showCouponForm, setShowCouponForm] = useState(false)
   const [couponText, setCouponText] = useState('')
   const [couponExpiry, setCouponExpiry] = useState('')
@@ -1193,6 +1196,22 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     setCouponLoading(false)
   }
 
+  const fetchCurrentRedeemables = async (customerPublicId) => {
+    if (!customerPublicId) {
+      setCurrentRedeemables([])
+      return
+    }
+    setRedeemablesLoading(true)
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${customerPublicId}/redeemables`)
+      const data = await res.json().catch(() => ({}))
+      setCurrentRedeemables(res.ok && Array.isArray(data.redeemables) ? data.redeemables : [])
+    } catch (_) {
+      setCurrentRedeemables([])
+    }
+    setRedeemablesLoading(false)
+  }
+
   const handleCreateCoupon = async () => {
     setCouponError('')
     if (!couponText.trim()) {
@@ -1217,7 +1236,10 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         setCouponExpiry('')
         // Coupon issuance is part of the customer's loyalty timeline too.
         // Refresh immediately so the owner sees it without closing/reopening.
-        if (editForm.public_id) fetchMemberHistory(editForm.public_id)
+        if (editForm.public_id) {
+          fetchMemberHistory(editForm.public_id)
+          fetchCurrentRedeemables(editForm.public_id)
+        }
       } else {
         setCouponError(data.detail || 'Failed to create coupon')
       }
@@ -1236,8 +1258,11 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       })
       if (res.ok) {
         setActiveCoupon(null)
-        // Keep the loyalty timeline in sync with coupon cancellation.
-        if (editForm.public_id) fetchMemberHistory(editForm.public_id)
+        // Keep the loyalty timeline and the card's Available Now snapshot in sync.
+        if (editForm.public_id) {
+          fetchMemberHistory(editForm.public_id)
+          fetchCurrentRedeemables(editForm.public_id)
+        }
       }
     } catch (err) {
       setCouponError('Failed to cancel coupon')
@@ -1549,6 +1574,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const viewCustomerCard = (customer) => {
     setSelectedCustomer(customer)
     fetchCoupons(customer.public_id)
+    fetchCurrentRedeemables(customer.public_id)
     setMemberVisitService('')
     setMemberVisitNote('')
     if (['stamp', 'membership', 'multipass', 'points', 'vip', 'hybrid'].includes(program?.card_type)) {
@@ -3009,6 +3035,54 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                   </>
                 )}
               </div>
+            </div>
+
+            <div style={{
+              marginBottom:18,
+              padding:16,
+              border:'1px solid #dbeafe',
+              background:'linear-gradient(135deg, #f8fbff 0%, #f0f9ff 100%)',
+              borderRadius:14,
+            }}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12,marginBottom:12}}>
+                <div>
+                  <div style={{fontSize:11,fontWeight:900,letterSpacing:1.1,color:'#2563eb',textTransform:'uppercase'}}>Available Now</div>
+                  <div style={{fontSize:17,fontWeight:900,color:'#0f172a',marginTop:2}}>🎁 Coupons & Redeemables</div>
+                  <div style={{fontSize:12.5,color:'#64748b',marginTop:4}}>What this customer can use or redeem from this card right now.</div>
+                </div>
+                <span style={{
+                  minWidth:34,height:34,padding:'0 9px',borderRadius:999,background:'#dbeafe',color:'#1d4ed8',
+                  fontSize:13,fontWeight:900,display:'inline-flex',alignItems:'center',justifyContent:'center'
+                }}>
+                  {redeemablesLoading ? '…' : currentRedeemables.length}
+                </span>
+              </div>
+
+              {redeemablesLoading ? (
+                <div style={{background:'white',border:'1px solid #dbeafe',borderRadius:12,padding:12,color:'#64748b',fontSize:13}}>Checking current entitlements…</div>
+              ) : currentRedeemables.length === 0 ? (
+                <div style={{background:'white',border:'1px solid #dbeafe',borderRadius:12,padding:12,color:'#64748b',fontSize:13}}>No coupons or redeemable rewards are available right now.</div>
+              ) : (
+                <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2, minmax(0, 1fr))',gap:8}}>
+                  {currentRedeemables.map((item,i) => {
+                    const icon = item.kind === 'coupon' ? '🎟️'
+                      : item.kind === 'points_prize' ? '💎'
+                      : item.kind === 'membership_benefit' ? '✓'
+                      : item.kind === 'multipass_session' ? '🎫'
+                      : item.kind === 'tier_benefit' ? '👑'
+                      : '🎁'
+                    return (
+                      <div key={`${item.kind}-${item.public_id || item.id || i}`} style={{display:'flex',gap:10,alignItems:'flex-start',background:'white',border:'1px solid #dbeafe',borderRadius:12,padding:12}}>
+                        <span style={{fontSize:18,lineHeight:1.2}}>{icon}</span>
+                        <div style={{minWidth:0}}>
+                          <div style={{fontSize:13.5,fontWeight:900,color:'#0f172a',lineHeight:1.35}}>{item.title || item.display_text || 'Redeemable'}</div>
+                          {item.detail && <div style={{fontSize:11.5,color:'#64748b',marginTop:4,lineHeight:1.4}}>{item.detail}</div>}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
             </div>
 
             {program?.card_expiration_enabled && ['stamp', 'points', 'vip', 'hybrid'].includes(program?.card_type) && (

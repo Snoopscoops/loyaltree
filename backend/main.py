@@ -3357,6 +3357,16 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         if card_cycle_reset_on:
             details.append(('reset_on', 'RESET ON', card_cycle_reset_on))
 
+    current_redeemables = get_current_card_redeemables(business, customer, program)
+    if current_redeemables:
+        available_text = "\n".join(
+            f"• {item.get('display_text') or item.get('title')}"
+            for item in current_redeemables[:8]
+        )
+        if len(current_redeemables) > 8:
+            available_text += f"\n• +{len(current_redeemables) - 8} more in Card & History"
+        details.insert(0, ('available_now', 'AVAILABLE NOW', available_text))
+
     order_ahead_action = order_ahead_wallet_action(customer, business)
 
     loyalty_object = {
@@ -4772,6 +4782,16 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     else:
         apple_details.append(('stamp_progress', 'STAMPS', f'{current_stamps}/{full_stamp_goal}'))
         apple_details.append(('next_reward_detail', 'NEXT REWARD', stamp_next_reward_value))
+
+    current_redeemables = get_current_card_redeemables(business, customer, program)
+    if current_redeemables:
+        available_text = "\n".join(
+            f"• {item.get('display_text') or item.get('title')}"
+            for item in current_redeemables[:8]
+        )
+        if len(current_redeemables) > 8:
+            available_text += f"\n• +{len(current_redeemables) - 8} more in LoyaltyTree"
+        apple_details.append(('available_now', 'AVAILABLE NOW', available_text))
 
     if card_cycle_reset_on:
         apple_details.append(('card_reset_on', 'RESET ON', card_cycle_reset_on))
@@ -12183,6 +12203,29 @@ async def get_customers(public_id: str):
 
     return customers
 
+
+@app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/redeemables")
+async def get_customer_current_redeemables(public_id: str, customer_public_id: str, authorization: str = Header(default="")):
+    """Owner-facing snapshot of everything this member can use right now."""
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    customer = safe_get_customer(customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail="Customer not found for this business")
+    program = safe_get_loyalty_program(business.get('id')) or {}
+    if program.get('card_expiration_enabled'):
+        customer = apply_card_cycle_expiration_if_needed(customer, business, program)
+    redeemables = get_current_card_redeemables(business, customer, program)
+    return {
+        'customer_public_id': customer_public_id,
+        'card_type': program.get('card_type', 'stamp'),
+        'count': len(redeemables),
+        'redeemables': redeemables,
+    }
+
+
 @app.post("/api/v1/admin/card-expiration/sweep")
 async def admin_sweep_card_expirations(_: bool = Depends(require_admin)):
     """Manual/cron-friendly sweep. Lazy request-time enforcement remains the fallback."""
@@ -15719,6 +15762,152 @@ def get_available_stamp_rewards(customer: dict, program: Optional[dict]) -> List
     return [r for r in get_stamp_rewards(program)
             if count >= int(r['stamps']) and str(r['id']) not in claimed_ids]
 
+
+def get_current_card_redeemables(business: dict, customer: dict, program: Optional[dict]) -> List[dict]:
+    """Return everything this customer can actually use/redeem *right now*.
+
+    This is intentionally derived from the existing loyalty ledgers rather than
+    stored in a second table, so Wallet, owner dashboard and cashier views do not
+    drift out of sync. It combines queued one-time coupons (manual, VIP-tier and
+    birthday), earned Stamp milestones, affordable Points prizes, live Membership
+    benefits, Multipass sessions, and current VIP/Tier perks.
+    """
+    if not business or not customer or not program:
+        return []
+
+    items: List[dict] = []
+    seen = set()
+
+    def _fmt(value) -> str:
+        try:
+            number = float(value)
+            return str(int(number)) if number.is_integer() else f'{number:g}'
+        except (TypeError, ValueError):
+            return str(value or '')
+
+    def add(kind: str, title: str, detail: Optional[str] = None, **extra):
+        title = str(title or '').strip()
+        detail = str(detail or '').strip()
+        if not title:
+            return
+        key = (kind, title.lower(), detail.lower(), str(extra.get('public_id') or extra.get('id') or ''))
+        if key in seen:
+            return
+        seen.add(key)
+        display_text = title if not detail else f'{title} · {detail}'
+        items.append({
+            'kind': kind,
+            'title': title,
+            'detail': detail or None,
+            'display_text': display_text,
+            **extra,
+        })
+
+    # Every one-time coupon lives in the shared coupons queue, including
+    # owner-issued, birthday and VIP tier-up rewards. Only unexpired active rows
+    # are returned by safe_get_active_coupons().
+    for coupon in safe_get_active_coupons(customer.get('id')):
+        expires_at = coupon.get('expires_at')
+        detail = f'Expires {str(expires_at)[:10]}' if expires_at else 'One-time coupon'
+        add(
+            'coupon', coupon.get('reward_text') or 'Coupon', detail,
+            public_id=coupon.get('public_id'), expires_at=expires_at,
+            redeem_endpoint='coupon',
+        )
+
+    card_type = str(program.get('card_type') or 'stamp').lower()
+    loyalty_type = effective_loyalty_type(program)
+
+    # Stamp rewards are milestone claims. Tier-by-Stamps deliberately does not
+    # use this branch because VIP stamps are cumulative progression, not rewards.
+    if loyalty_type == 'stamp' and card_type != 'vip':
+        for reward in get_available_stamp_rewards(customer, program):
+            required = int(reward.get('stamps') or 0)
+            add(
+                'stamp_reward', reward.get('reward_name') or 'Stamp reward',
+                f'{required} stamp milestone',
+                id=str(reward.get('id') or ''), required_stamps=required,
+                redeem_endpoint='stamp_reward',
+            )
+
+    # Points prizes are choices the member can currently afford. Listing all
+    # affordable prizes is more useful than only showing the next target.
+    if loyalty_type == 'points':
+        balance = int(customer.get('points_balance') or 0)
+        affordable = []
+        for prize in (program.get('points_prizes') or []):
+            if not isinstance(prize, dict):
+                continue
+            try:
+                cost = int(float(prize.get('points_cost') or 0))
+            except (TypeError, ValueError):
+                cost = 0
+            name = str(prize.get('name') or '').strip()
+            if name and cost > 0 and balance >= cost:
+                affordable.append((cost, prize))
+        for cost, prize in sorted(affordable, key=lambda x: x[0]):
+            add(
+                'points_prize', prize.get('name'), f'{cost:,} points',
+                id=str(prize.get('id') or ''), points_cost=cost,
+                description=prize.get('description'), redeem_endpoint='points_prize',
+            )
+
+    # Membership/Hybrid benefits have their own usage windows. Only benefits
+    # whose current window still has capacity are exposed as available now.
+    if program_has_membership(program):
+        for benefit in get_membership_benefit_statuses(business, customer, program):
+            if not benefit.get('available'):
+                continue
+            remaining = benefit.get('remaining_in_window')
+            reset_period = str(benefit.get('reset_period') or 'never')
+            if remaining is None:
+                detail = 'Unlimited while active'
+            else:
+                unit = {
+                    'daily': 'today', 'weekly': 'this week', 'monthly': 'this month',
+                    'membership_cycle': 'this membership cycle', 'never': 'remaining',
+                }.get(reset_period, 'remaining')
+                detail = f'{remaining} use' + ('' if int(remaining) == 1 else 's') + f' {unit}'
+            add(
+                'membership_benefit', benefit.get('name') or 'Membership benefit', detail,
+                id=str(benefit.get('id') or ''), remaining=remaining,
+                reset_period=reset_period, benefit_type=benefit.get('benefit_type'),
+                value=benefit.get('value'), description=benefit.get('description'),
+                redeem_endpoint='membership_benefit',
+            )
+
+    # A Multipass session is itself the redeemable entitlement. Keep it as one
+    # concise item instead of emitting one row per remaining session.
+    if card_type == 'multipass':
+        remaining = int(customer.get('multipass_sessions_remaining') or 0)
+        total = int(customer.get('multipass_total_sessions') or program.get('multipass_session_count') or 0)
+        expiry = customer.get('multipass_expires_at')
+        valid = remaining > 0
+        if expiry:
+            try:
+                valid = valid and datetime.fromisoformat(str(expiry)[:10]).date() >= _loyalty_today()
+            except Exception:
+                pass
+        if valid:
+            detail = f'{remaining} of {total} sessions left' if total else f'{remaining} sessions left'
+            if expiry:
+                detail += f' · valid until {str(expiry)[:10]}'
+            add('multipass_session', 'Session access', detail, remaining=remaining, total=total, expires_at=expiry, redeem_endpoint='multipass')
+
+    # VIP/Tier benefits are live entitlements of the customer's *current* tier.
+    # One-time tier coupons are not copied from config here; once earned, they
+    # already appear above from the actual coupons queue.
+    if card_type == 'vip':
+        tier = get_vip_tier(customer, program)
+        tier_name = str(tier.get('name') or 'VIP')
+        discount = float(tier.get('discount_percent') or 0)
+        if discount > 0:
+            add('tier_benefit', f'{_fmt(discount)}% discount', f'{tier_name} tier', tier_name=tier_name)
+        for benefit in _clean_vip_benefits(tier.get('benefits') or [], discount):
+            add('tier_benefit', benefit, f'{tier_name} tier', tier_name=tier_name)
+
+    return items
+
 def stamped_today(business_id: int, customer_id: int) -> bool:
     """Uses stamp_events so the once-a-day rule is server enforced across cashiers/devices."""
     today = datetime.utcnow().date()
@@ -16023,6 +16212,7 @@ def sync_loyalty_wallets_background(
             'points_sale', 'points_redeem', 'vip_sale', 'vip_adjust', 'vip_tier_stamp',
             'multipass_issue', 'multipass_use',
             'membership_benefit_redeemed', 'membership_action', 'membership_visit',
+            'coupon_created', 'coupon_cancelled', 'coupon_redeemed',
         }
         use_custom_google_message = bool(
             notify_header and notify_message_id and reason not in routine_google_update_reasons
@@ -18096,7 +18286,7 @@ async def redeem_reward(public_id: str, req: RedeemRequest, authorization: str =
 # /stamp and /reward/redeem above.
 
 @app.post("/api/v1/business/{public_id}/customers/{customer_public_id}/coupons")
-async def create_coupon(public_id: str, customer_public_id: str, req: CouponCreate):
+async def create_coupon(public_id: str, customer_public_id: str, req: CouponCreate, background_tasks: BackgroundTasks):
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -18138,6 +18328,15 @@ async def create_coupon(public_id: str, customer_public_id: str, req: CouponCrea
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
+    # AVAILABLE NOW is customer-specific on the native Wallet passes. Refresh
+    # after manual coupon issuance so the new coupon appears without waiting
+    # for the customer's next loyalty transaction.
+    program = safe_get_loyalty_program(business.get('id')) or {}
+    background_tasks.add_task(
+        sync_loyalty_wallets_background,
+        dict(customer), dict(business), dict(program), 'coupon_created'
+    )
+
     return created
 
 @app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/coupons")
@@ -18163,7 +18362,7 @@ async def list_customer_coupons(public_id: str, customer_public_id: str):
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
 @app.delete("/api/v1/business/{public_id}/coupons/{coupon_public_id}")
-async def cancel_coupon(public_id: str, coupon_public_id: str):
+async def cancel_coupon(public_id: str, coupon_public_id: str, background_tasks: BackgroundTasks):
     """Lets the owner cancel a coupon they just issued by mistake, freeing
     the customer up for a new one. Only works while it's still active -
     a redeemed or already-cancelled/expired coupon can't be touched."""
@@ -18196,10 +18395,18 @@ async def cancel_coupon(public_id: str, coupon_public_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
+    customer = safe_get_customer_by_id(coupon.get('customer_id'))
+    if customer:
+        program = safe_get_loyalty_program(business.get('id')) or {}
+        background_tasks.add_task(
+            sync_loyalty_wallets_background,
+            dict(customer), dict(business), dict(program), 'coupon_cancelled'
+        )
+
     return {"message": "Coupon cancelled"}
 
 @app.post("/api/v1/business/{public_id}/coupon/redeem")
-async def redeem_coupon(public_id: str, req: CouponRedeem, authorization: str = Header(default="")):
+async def redeem_coupon(public_id: str, req: CouponRedeem, background_tasks: BackgroundTasks, authorization: str = Header(default="")):
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -18302,6 +18509,13 @@ async def redeem_coupon(public_id: str, req: CouponRedeem, authorization: str = 
         customer.get('id'),
         staff_id=redeeming_staff_id,
         branch_id=redeeming_branch_id,
+    )
+
+    # Drop the redeemed coupon from AVAILABLE NOW on Google/Apple Wallet.
+    program = safe_get_loyalty_program(business.get('id')) or {}
+    background_tasks.add_task(
+        sync_loyalty_wallets_background,
+        dict(customer), dict(business), dict(program), 'coupon_redeemed'
     )
 
     return {
@@ -22732,6 +22946,8 @@ async def customer_wallet_page(customer_public_id: str):
         metric_sub = reward_name if remaining == 0 else f'{remaining} more to {reward_name}'
         details = [('Reward', reward_name)]
 
+    current_redeemables = get_current_card_redeemables(business, customer, program)
+
     if description:
         details.append(('About', description))
     category = design['category']
@@ -22741,6 +22957,19 @@ async def customer_wallet_page(customer_public_id: str):
         '<div class="detail"><span>' + html_lib.escape(str(k)) + '</span><strong>' + html_lib.escape(str(v)) + '</strong></div>'
         for k, v in details[:4]
     )
+
+    if current_redeemables:
+        available_cards = ''.join(
+            '<div class="available-item"><div class="available-icon">'
+            + ({'coupon':'🎟️','stamp_reward':'🎁','points_prize':'💎','membership_benefit':'✓','multipass_session':'🎫','tier_benefit':'👑'}.get(str(item.get('kind')), '🎁'))
+            + '</div><div><strong>' + html_lib.escape(str(item.get('title') or 'Reward')) + '</strong>'
+            + ('<span>' + html_lib.escape(str(item.get('detail'))) + '</span>' if item.get('detail') else '')
+            + '</div></div>'
+            for item in current_redeemables
+        )
+        available_html = '<section class="available"><div class="available-head"><div><span>AVAILABLE NOW</span><h2>Coupons & Redeemables</h2></div><b>' + str(len(current_redeemables)) + '</b></div><div class="available-list">' + available_cards + '</div></section>'
+    else:
+        available_html = '<section class="available empty"><div class="available-head"><div><span>AVAILABLE NOW</span><h2>Coupons & Redeemables</h2></div><b>0</b></div><p>No coupons or redeemable rewards are available right now.</p></section>'
 
     logo_html = (
         '<img class="logo" src="' + html_lib.escape(logo_url) + '" alt="Logo">'
@@ -22787,6 +23016,7 @@ async def customer_wallet_page(customer_public_id: str):
 .metric{{font-size:clamp(30px,5vw,54px);font-weight:850;line-height:.95;margin-top:6px}}.metric.active{{color:#4ade80}}.sub{{font-size:11px;color:rgba(255,255,255,.72);margin-top:7px}}
 .right{{display:flex;flex-direction:column;justify-content:center;align-items:flex-end}}.qrbox{{width:min(100%,260px);padding:11px;background:#fff;border-radius:19px;box-shadow:0 14px 35px rgba(0,0,0,.28)}}.qrbox img{{display:block;width:100%;aspect-ratio:1/1}}.scan{{font-size:9px;letter-spacing:1.2px;font-weight:800;color:rgba(255,255,255,.62);margin:10px auto 0}}
 .details{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:14px}}.detail{{background:#111827;border:1px solid #202a3b;border-radius:13px;padding:12px 13px;min-width:0}}.detail span{{display:block;color:#75839a;font-size:9px;text-transform:uppercase;letter-spacing:.7px;margin-bottom:5px}}.detail strong{{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}}
+.available{{margin-top:14px;background:#111827;border:1px solid #263247;border-radius:16px;padding:15px}}.available-head{{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}}.available-head span{{font-size:9px;letter-spacing:1px;color:#8390a5;font-weight:800}}.available-head h2{{font-size:16px;margin:3px 0 0}}.available-head b{{display:grid;place-items:center;min-width:30px;height:30px;padding:0 8px;border-radius:999px;background:#172033;color:#fff;font-size:12px}}.available-list{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}}.available-item{{display:flex;gap:10px;align-items:flex-start;background:#0d1420;border:1px solid #202a3b;border-radius:12px;padding:11px}}.available-icon{{font-size:18px;line-height:1.1}}.available-item strong{{display:block;font-size:12px;color:#f8fafc}}.available-item span{{display:block;font-size:10px;color:#8fa0b8;margin-top:4px;line-height:1.35}}.available.empty p{{margin:0;color:#8390a5;font-size:12px}}
 .actions{{display:grid;grid-template-columns:1fr;gap:10px;margin-top:13px}}
 .btn,.share{{border:0;border-radius:12px;padding:14px;text-align:center;text-decoration:none;font-weight:750;font-size:13px;cursor:pointer}}
 .wallet{{background:#fff;color:#050505;width:100%}}
@@ -22798,7 +23028,7 @@ async def customer_wallet_page(customer_public_id: str):
 .wallet-choice.google{{background:#1a73e8;color:#fff}}
 .wallet-choice.disabled{{opacity:.5;cursor:not-allowed}}
 .wallet-note{{font-size:10px;color:#8390a5;text-align:center;margin:1px 0 0}}
-@media(max-width:680px){{.wrap{{padding:12px 9px 30px}}.card{{min-height:245px;aspect-ratio:1.58/1;padding:16px;border-radius:20px}}.grid{{grid-template-columns:minmax(0,1fr) 34%;gap:11px}}.logo{{width:39px;height:39px;border-radius:10px}}.biz{{font-size:17px}}.type{{font-size:7px}}.name{{font-size:21px;margin:5px 0 11px}}.metric{{font-size:25px}}.sub{{font-size:8px}}.qrbox{{padding:7px;border-radius:11px}}.scan{{font-size:6px;margin-top:6px}}.details{{grid-template-columns:1fr 1fr}}}}
+@media(max-width:680px){{.wrap{{padding:12px 9px 30px}}.card{{min-height:245px;aspect-ratio:1.58/1;padding:16px;border-radius:20px}}.grid{{grid-template-columns:minmax(0,1fr) 34%;gap:11px}}.logo{{width:39px;height:39px;border-radius:10px}}.biz{{font-size:17px}}.type{{font-size:7px}}.name{{font-size:21px;margin:5px 0 11px}}.metric{{font-size:25px}}.sub{{font-size:8px}}.qrbox{{padding:7px;border-radius:11px}}.scan{{font-size:6px;margin-top:6px}}.details{{grid-template-columns:1fr 1fr}}.available-list{{grid-template-columns:1fr}}}}
 </style></head>
 <body><main class="wrap">
 <div class="top"><b>🌳 LoyaltyTree</b><span>{html_lib.escape(card_label)}</span></div>
@@ -22808,6 +23038,7 @@ async def customer_wallet_page(customer_public_id: str):
 <div class="right"><div class="qrbox"><img src="{qr_image}" alt="Member QR"></div><div class="scan">PRESENT TO CHECK IN</div></div>
 </div></section>
 <section class="details">{details_html}</section>
+{available_html}
 <section class="actions">
 <button class="btn wallet" id="add-wallet" type="button">Add to Wallet</button>
 <div class="wallet-chooser" id="wallet-chooser">
