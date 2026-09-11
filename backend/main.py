@@ -4942,7 +4942,12 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
             available_text += f"\n• +{len(current_redeemables) - 8} more in LoyaltyTree"
         apple_details.append(('available_now', 'AVAILABLE NOW', available_text))
 
-    if card_cycle_reset_on:
+    # RESET ON is already shown as an auxiliary field on Points, Stamp and
+    # Tier/VIP cards. PassKit requires field keys to be unique across the
+    # entire pass, so do not repeat the same `card_reset_on` key in backFields.
+    # Hybrid, Membership and Multipass do not use cycle_auxiliary_fields on the
+    # front, so keep RESET ON in Pass Details for those card types.
+    if card_cycle_reset_on and card_type not in ('points', 'stamp', 'vip'):
         apple_details.append(('card_reset_on', 'RESET ON', card_cycle_reset_on))
 
     # Recent Activity: one backField per movement (stamp added, points
@@ -5687,7 +5692,7 @@ def push_apple_wallet_update(serial_number: str):
     return {"status": status, "registrations": len(tokens), "pushes_sent": sent}
 
 
-APPLE_PASS_LAYOUT_RELEASE = "wallet-layout-2026-09-11-v8-hybrid-tier-colors"
+APPLE_PASS_LAYOUT_RELEASE = "wallet-layout-2026-09-11-v9-unique-reset-field"
 
 
 def refresh_business_apple_wallet_passes(business_id: int, reason: str = "card_config_change"):
