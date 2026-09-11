@@ -2878,7 +2878,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             {/* Digital Card Preview */}
             <div style={{
               ...styles.loyaltyCard,
-              background: `linear-gradient(135deg, ${program?.primary_color || '#0d9488'} 0%, ${program?.primary_color || '#14b8a6'} 100%)`,
+              background: `linear-gradient(135deg, ${((isVipCard || (isHybridCard && hybridTierEnabled)) && selectedCustomer?.vip_tier?.color) || program?.primary_color || '#0d9488'} 0%, ${((isVipCard || (isHybridCard && hybridTierEnabled)) && selectedCustomer?.vip_tier?.color) || program?.wallet_secondary_color || program?.primary_color || '#14b8a6'} 100%)`,
             }}>
               <div style={styles.ownerCardQr}>
                 <img src={`https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(`${API_BASE}/stamp/${selectedCustomer.public_id}`)}`} alt="Member QR" style={styles.ownerCardQrImage}/>

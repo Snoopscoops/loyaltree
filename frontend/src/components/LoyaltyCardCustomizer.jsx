@@ -325,7 +325,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
             <div style={styles.inputWithSuffix}><input style={{...styles.input,border:0,padding:'11px 10px'}} type="number" min="0" value={tier.threshold || 0} onChange={e => updateVipTier(i,{threshold:Number(e.target.value)})}/><span>{tierUsesStamps ? 'stamps' : 'pts'}</span></div>
           </div>
           <div>
-            <label style={styles.miniLabel}>Tier color</label>
+            <label style={styles.miniLabel}>Tier color {form.card_type === 'hybrid' ? '· card accent' : ''}</label>
             <input type="color" style={styles.vipColorInput} value={tier.color || '#64748b'} onChange={e => updateVipTier(i,{color:e.target.value})}/>
           </div>
         </div>
@@ -698,7 +698,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
 
   const walletPreset = form.wallet_style === 'minimal' ? 'classic' : (form.wallet_style || 'gradient')
   const previewVipTier = (form.vip_tiers || []).find(t => String(t.name || '').toLowerCase() === 'gold') || (form.vip_tiers || [])[0] || {}
-  const previewPrimary = form.card_type === 'vip' ? (previewVipTier.color || '#111827') : (form.primary_color || '#0d9488')
+  const previewPrimary = (form.card_type === 'vip' || (form.card_type === 'hybrid' && hybridTierEnabled)) ? (previewVipTier.color || form.primary_color || '#0d9488') : (form.primary_color || '#0d9488')
   const previewSecondary = form.card_type === 'vip'
     ? (previewVipTier.secondary_color || form.wallet_secondary_color || '#111827')
     : (form.wallet_secondary_color || '#14b8a6')
@@ -1344,7 +1344,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
           <div className="lc-preview-sticky" style={styles.previewSticky}>
             <div style={styles.previewLabel}>Live preview</div>
             <div style={styles.card}>
-              <div style={{ ...styles.cardHeader, background: form.card_type === 'vip' ? ((form.vip_tiers||[]).find(t=>String(t.name||'').toLowerCase()==='gold')?.color || (form.vip_tiers||[])[0]?.color || '#111827') : (form.primary_color || '#0d9488') }}>
+              <div style={{ ...styles.cardHeader, background: (form.card_type === 'vip' || (form.card_type === 'hybrid' && hybridTierEnabled)) ? (previewVipTier.color || form.primary_color || '#0d9488') : (form.primary_color || '#0d9488') }}>
                 <span style={styles.cardHeaderTitle}>
                   {form.card_type === 'hybrid'
                     ? `Hybrid · Reward ${effectiveLoyaltyType === 'points' ? 'Points' : 'Stamps'}${hybridTierEnabled ? ` + Tier ${tierUsesStamps ? 'Stamps' : 'Points'}` : ''}`
@@ -1369,9 +1369,10 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                 ) : null}
                 {form.card_type === 'hybrid' ? (
                   <>
-                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:12}}>
+                    <div style={{display:'grid',gridTemplateColumns:hybridTierEnabled?'repeat(3,1fr)':'1fr 1fr',gap:10,marginBottom:12}}>
                       <div style={{...styles.previewPrizeRow,display:'block',textAlign:'center'}}><small style={{display:'block',color:'#64748b'}}>SUBSCRIPTION</small><b style={{color:form.primary_color||'#0d9488'}}>ACTIVE</b></div>
-                      <div style={{...styles.previewPrizeRow,display:'block',textAlign:'center'}}><small style={{display:'block',color:'#64748b'}}>{effectiveLoyaltyType==='points'?'POINTS':'STAMPS'}</small><b style={{color:form.primary_color||'#0d9488'}}>{effectiveLoyaltyType==='points'?'240':`5 / ${stampGoal}`}</b></div>
+                      <div style={{...styles.previewPrizeRow,display:'block',textAlign:'center'}}><small style={{display:'block',color:'#64748b'}}>{effectiveLoyaltyType==='points'?'REWARD POINTS':'REWARD STAMPS'}</small><b style={{color:form.primary_color||'#0d9488'}}>{effectiveLoyaltyType==='points'?'240':`5 / ${stampGoal}`}</b></div>
+                      {hybridTierEnabled && <div style={{...styles.previewPrizeRow,display:'block',textAlign:'center',borderColor:previewVipTier.color||'#fde68a'}}><small style={{display:'block',color:'#64748b'}}>TIER</small><b style={{color:previewVipTier.color||'#ca8a04'}}>{String(previewVipTier.name||'Gold').toUpperCase()}</b></div>}
                     </div>
                     <div style={styles.cardFoot}>
                       {Number(form.membership_price)>0?`₱${Number(form.membership_price).toLocaleString()} / ${Number(form.membership_duration_days)||30} days · `:''}
@@ -2043,7 +2044,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
 
                 <div style={styles.fieldGroup}>
                   <label style={styles.label}>Tier levels, benefits & coupons</label>
-                  <p style={{...styles.hint,margin:'0 0 12px'}}>For the 7-challenge model, a simple setup can be Challenge Phase at 0, Member at 7, then higher tiers later.</p>
+                  <p style={{...styles.hint,margin:'0 0 12px'}}>For the 7-challenge model, a simple setup can be Challenge Phase at 0, Member at 7, then higher tiers later. Each tier can also have its own color; Hybrid customers in that tier use that color as the card accent.</p>
                   {(form.vip_tiers||[]).map((tier,i)=>renderVipTierEditor(tier,i,false))}
                   <button type="button" style={styles.addPrizeBtn} onClick={addVipTier}>+ Add Tier</button>
                   <p style={styles.hint}>Tier {form.hybrid_tier_progression_type === 'points' ? 'points are cumulative and non-spendable' : 'stamps are cumulative and never redeemed'}. One-time tier coupons are issued when a customer crosses the configured threshold.</p>
