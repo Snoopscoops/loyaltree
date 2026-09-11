@@ -5,7 +5,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 // Only shows the raw scan/debug panel in local dev - never in a production
 // build, since it prints internal API paths and response codes on-screen.
 const DEBUG = import.meta.env.DEV
-const CASHIER_BUILD = 'HYBRID-V17-MEMBERSHIP-LOYALTY'
+const CASHIER_BUILD = 'COMPOSITE-V18-MEMBERSHIP-TIER-REWARDS'
 const BUSINESS_ICONS={spa:'🌿',salon:'✂️',fitness:'🏋️',restaurant:'🍽️',coffee:'☕',retail:'🛍️',clinic:'🩺',laundry:'🧺',gas_station:'⛽',car_wash:'🚿',pharmacy:'💊',bakery:'🥐',hotel:'🏨',other:'🏪',car_lending:'🚗',cockpit:'🏆'}
 
 // Accept both the new direct Cashier URL and older Gift Card QR formats so
@@ -279,7 +279,7 @@ function CashierApp({ API_BASE }) {
 
         const cardType = returnedCardType
         const goal = program.stamp_goal || 8
-        let membershipBenefitState = { benefits: [], membership_name: program.membership_name || 'Membership' }
+        let membershipBenefitState = { benefits: [], membership_name: program.membership_name || 'Membership', benefits_unlocked: true, unlock: { enabled:false, unlocked:true } }
         if (cardType === 'membership' || cardType === 'hybrid') {
           try {
             const benefitRes = await fetch(`${API_BASE}/api/v1/business/${scannedBusinessSlug || businessSlug}/customers/${c.public_id}/membership-benefits`, { cache:'no-store' })
@@ -301,6 +301,14 @@ function CashierApp({ API_BASE }) {
           business_type: data.business?.business_type || 'other',
           card_type: cardType,
           hybrid_loyalty_type: program.hybrid_loyalty_type === 'stamp' ? 'stamp' : 'points',
+          hybrid_tier_enabled: program.hybrid_tier_enabled === true,
+          hybrid_tier_progression_type: program.hybrid_tier_progression_type === 'points' ? 'points' : 'stamps',
+          tier_progression_type: c.tier_progression_type || program.tier_progression_type || (program.card_type === 'hybrid'
+            ? (program.hybrid_tier_progression_type === 'points' ? 'points' : 'stamps')
+            : (program.vip_progression_type === 'stamps' || program.vip_stamps_enabled === true ? 'stamps' : 'points')),
+          tier_stamp_count: Number(c.tier_stamp_count ?? ((program.card_type === 'vip' && (program.vip_progression_type === 'stamps' || program.vip_stamps_enabled === true)) ? (c.stamp_count || 0) : 0)),
+          tier_progress_value: Number(c.tier_progress_value ?? (c.vip_points || 0)),
+          tier_stamp_once_per_day: program.tier_stamp_once_per_day === true,
           stamp_count: c.stamp_count || 0,
           reward_unlocked: !!c.reward_unlocked,
           reward_threshold: goal,
@@ -329,6 +337,8 @@ function CashierApp({ API_BASE }) {
           membership_name: membershipBenefitState.membership_name || program.membership_name || program.card_name || 'Membership',
           membership_services: Array.isArray(program.membership_services) ? program.membership_services : [],
           membership_benefits: Array.isArray(membershipBenefitState.benefits) ? membershipBenefitState.benefits : [],
+          membership_benefits_unlocked: c.membership_benefits_unlocked ?? membershipBenefitState.benefits_unlocked ?? true,
+          membership_unlock: c.membership_unlock || membershipBenefitState.unlock || { enabled:false, unlocked:true },
           membership_description: program.description || '',
           membership_visit_logging_enabled: program.membership_visit_logging_enabled !== false,
           membership_quick_checkin: !!program.membership_quick_checkin,
@@ -337,11 +347,7 @@ function CashierApp({ API_BASE }) {
           vip_next_tier: c.vip_next_tier || null,
           vip_points_per_amount: program.vip_points_per_amount || 0,
           vip_amount_pesos: program.vip_amount_pesos || 1,
-          vip_progression_type: program.vip_progression_type === 'stamps'
-            || (!program.vip_progression_type && program.vip_stamps_enabled === true)
-            ? 'stamps'
-            : 'points',
-          vip_stamps_enabled: program.vip_stamps_enabled === true,
+          vip_stamps_enabled: program.vip_progression_type === 'stamps' || program.vip_stamps_enabled === true,
           stamp_rewards: Array.isArray(program.stamp_rewards) ? program.stamp_rewards : [],
         })
         setMessage(`Found: ${c.name}`)
@@ -357,13 +363,13 @@ function CashierApp({ API_BASE }) {
     setLoading(false)
   }
 
-  const addStamp = async () => {
+  const addStamp = async (stampKind = 'reward') => {
     if (!customerData || !businessSlug || (!isOwner && !staffPin && !sessionToken)) {
       setMessage('Missing info - scan again')
       return
     }
     setLoading(true)
-    setMessage('Adding stamp...')
+    setMessage(stampKind === 'tier' ? 'Adding Tier stamp...' : 'Adding reward stamp...')
 
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/stamp`, {
@@ -377,6 +383,7 @@ function CashierApp({ API_BASE }) {
         },
         body: JSON.stringify({
           customer_public_id: customerData.public_id,
+          stamp_kind: stampKind,
           ...(sessionToken ? {} : { staff_pin: staffPin }),
           as_owner: isOwner,
         })
@@ -385,23 +392,29 @@ function CashierApp({ API_BASE }) {
       const data = await res.json()
 
       if (res.ok) {
-        const tierStamp = customerData.card_type === 'vip' && customerData.vip_progression_type === 'stamps'
+        const tierStamp = stampKind === 'tier'
+        const updatedTierStamps = Number(data.tier_stamp_count ?? data.stamp_count ?? customerData.tier_stamp_count ?? 0)
         let msg = tierStamp
-          ? `✅ Tier stamp added! ${customerData.name} now has ${data.stamp_count} Tier stamps`
-          : `✅ Stamp added! ${customerData.name} now has ${data.stamp_count} stamps`
+          ? `✅ Tier stamp added! ${customerData.name} now has ${updatedTierStamps} Tier stamps`
+          : `✅ Reward stamp added! ${customerData.name} now has ${data.stamp_count} reward stamps`
         if (tierStamp && data.upgraded && data.tier?.name) msg += ` 🎉 Upgraded to ${data.tier.name}!`
+        if (tierStamp && data.membership_unlock?.enabled && data.membership_unlock?.unlocked) msg += ' 🔓 Membership benefits unlocked!'
         if (!tierStamp && data.reward_unlocked) msg += ' 🎉 REWARD UNLOCKED!'
         if (data.warning) msg += ` (${data.warning})`
         setMessage(msg)
         setCustomerData(prev => prev ? {
           ...prev,
-          stamp_count: data.stamp_count,
-          reward_unlocked: tierStamp ? false : !!data.reward_unlocked,
+          ...(tierStamp
+            ? { tier_stamp_count: updatedTierStamps, tier_progress_value: updatedTierStamps }
+            : { stamp_count: data.stamp_count, reward_unlocked: !!data.reward_unlocked }),
           vip_tier: data.tier || prev.vip_tier,
           vip_next_tier: data.next_tier !== undefined ? data.next_tier : prev.vip_next_tier,
+          membership_benefits_unlocked: data.membership_benefits_unlocked ?? prev.membership_benefits_unlocked,
+          membership_unlock: data.membership_unlock || prev.membership_unlock,
           active_coupon: data.active_coupon !== undefined ? data.active_coupon : prev.active_coupon,
           active_coupons: Array.isArray(data.active_coupons) ? data.active_coupons : prev.active_coupons,
         } : prev)
+        if (tierStamp && data.membership_unlock?.enabled) refreshMembershipBenefits()
       } else {
         setMessage(`❌ Failed: ${data.detail || 'Unknown error'}`)
       }
@@ -484,7 +497,7 @@ function CashierApp({ API_BASE }) {
     }
 
     setLoading(true)
-    setMessage('Adding VIP points...')
+    setMessage('Adding Tier points...')
 
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/vip-sale`, {
@@ -501,13 +514,16 @@ function CashierApp({ API_BASE }) {
         }),
       })
       const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.detail || 'VIP sale failed')
+      if (!res.ok) throw new Error(data.detail || 'Tier points sale failed')
 
       setCustomerData(prev => prev ? {
         ...prev,
-        vip_points: data.vip_points,
+        vip_points: Number(data.tier_points ?? data.vip_points ?? prev.vip_points ?? 0),
+        tier_progress_value: Number(data.tier_points ?? data.vip_points ?? prev.tier_progress_value ?? 0),
         vip_tier: data.tier,
         vip_next_tier: data.next_tier,
+        membership_benefits_unlocked: data.membership_benefits_unlocked ?? prev.membership_benefits_unlocked,
+        membership_unlock: data.membership_unlock || prev.membership_unlock,
         active_coupon: data.active_coupon !== undefined ? data.active_coupon : prev.active_coupon,
         active_coupons: Array.isArray(data.active_coupons) ? data.active_coupons : prev.active_coupons,
       } : prev)
@@ -515,9 +531,10 @@ function CashierApp({ API_BASE }) {
 
       setMessage(
         data.upgraded
-          ? `🎉 ${customerData.name} upgraded to ${data.tier.name}! +${data.points_earned} VIP points`
-          : `✅ ₱${Number(data.amount_spent || amount).toLocaleString()} recorded · +${data.points_earned} VIP points · ${data.vip_points} total`
+          ? `🎉 ${customerData.name} upgraded to ${data.tier.name}! +${data.points_earned} Tier points`
+          : `✅ ₱${Number(data.amount_spent || amount).toLocaleString()} recorded · +${data.points_earned} Tier points · ${Number(data.tier_points ?? data.vip_points ?? 0).toLocaleString()} total`
       )
+      if (data.membership_unlock?.enabled) refreshMembershipBenefits()
     } catch (err) {
       setMessage(`❌ ${err.message}`)
     }
@@ -564,7 +581,13 @@ function CashierApp({ API_BASE }) {
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/customers/${customerData.public_id}/membership-benefits`, {cache:'no-store'})
       const data = await res.json().catch(() => ({}))
-      if (res.ok) setCustomerData(prev => prev ? {...prev, membership_name:data.membership_name||prev.membership_name, membership_benefits:Array.isArray(data.benefits)?data.benefits:[]} : prev)
+      if (res.ok) setCustomerData(prev => prev ? {
+        ...prev,
+        membership_name:data.membership_name||prev.membership_name,
+        membership_benefits:Array.isArray(data.benefits)?data.benefits:[],
+        membership_benefits_unlocked:data.benefits_unlocked ?? prev.membership_benefits_unlocked,
+        membership_unlock:data.unlock || prev.membership_unlock,
+      } : prev)
     } catch (_) {}
   }
 
@@ -1090,7 +1113,10 @@ function CashierApp({ API_BASE }) {
   })()
 
   const previewVipPoints = (() => {
-    if (!customerData || customerData.card_type !== 'vip' || customerData.vip_progression_type === 'stamps') return 0
+    if (!customerData) return 0
+    const tierEnabled = customerData.card_type === 'vip' || (customerData.card_type === 'hybrid' && customerData.hybrid_tier_enabled === true)
+    const progression = customerData.tier_progression_type || (customerData.card_type === 'hybrid' ? customerData.hybrid_tier_progression_type : (customerData.vip_stamps_enabled ? 'stamps' : 'points'))
+    if (!tierEnabled || progression === 'stamps') return 0
     const amount = parseFloat(vipSaleAmount)
     if (!amount || amount <= 0) return 0
     const rate = customerData.vip_points_per_amount || 0
@@ -1101,8 +1127,14 @@ function CashierApp({ API_BASE }) {
   const isHybrid = customerData?.card_type === 'hybrid'
   const hybridLoyaltyType = customerData?.hybrid_loyalty_type === 'stamp' ? 'stamp' : 'points'
   const usesPoints = customerData?.card_type === 'points' || (isHybrid && hybridLoyaltyType === 'points')
-  const vipUsesStamps = customerData?.card_type === 'vip' && customerData?.vip_progression_type === 'stamps'
-  const usesStamps = customerData?.card_type === 'stamp' || (isHybrid && hybridLoyaltyType === 'stamp') || vipUsesStamps
+  const usesStamps = customerData?.card_type === 'stamp' || (isHybrid && hybridLoyaltyType === 'stamp')
+  const hybridTierEnabled = isHybrid && customerData?.hybrid_tier_enabled === true
+  const tierEnabled = customerData?.card_type === 'vip' || hybridTierEnabled
+  const tierProgressionType = customerData?.tier_progression_type === 'points' ? 'points' : 'stamps'
+  const tierUsesStamps = tierEnabled && tierProgressionType === 'stamps'
+  const tierUsesPoints = tierEnabled && tierProgressionType === 'points'
+  const vipUsesStamps = customerData?.card_type === 'vip' && tierUsesStamps
+  const tierProgress = tierUsesStamps ? Number(customerData?.tier_stamp_count || 0) : Number(customerData?.vip_points || customerData?.tier_progress_value || 0)
   const hasMembership = customerData?.card_type === 'membership' || isHybrid
   const canLogMembershipVisit = hasMembership && customerData?.membership_visit_logging_enabled !== false
 
@@ -1112,8 +1144,8 @@ function CashierApp({ API_BASE }) {
         soft: '#f0fdfa',
         border: '#99f6e4',
         icon: '✨',
-        label: `Hybrid Card · Membership + ${hybridLoyaltyType === 'points' ? 'Points' : 'Stamps'}`,
-        actionTitle: 'Membership & Loyalty Actions',
+        label: `Composite Card · Membership + ${hybridLoyaltyType === 'points' ? 'Reward Points' : 'Reward Stamps'}${hybridTierEnabled ? ` + Tier ${tierUsesStamps ? 'Stamps' : 'Points'}` : ''}`,
+        actionTitle: hybridTierEnabled ? 'Membership, Rewards & Tier Actions' : 'Membership & Reward Actions',
       }
     : customerData?.card_type === 'points'
     ? {
@@ -1148,8 +1180,8 @@ function CashierApp({ API_BASE }) {
         soft: '#fefce8',
         border: '#fde68a',
         icon: '👑',
-        label: 'VIP Card',
-        actionTitle: vipUsesStamps ? 'Add Tier Stamp' : 'Enter Amount Spent & Earn VIP Points',
+        label: 'Tier Card',
+        actionTitle: vipUsesStamps ? 'Add Tier Stamp' : 'Enter Amount Spent & Earn Tier Points',
       }
     : {
         accent: '#0d9488',
@@ -1303,13 +1335,13 @@ function CashierApp({ API_BASE }) {
               <h3 style={styles.customerName}>{customerData.name}</h3>
               <p style={styles.customerMeta}>
                 {customerData.card_type === 'hybrid'
-                  ? `${customerData.membership_status.toUpperCase()}${customerData.membership_expires_at ? ` • until ${customerData.membership_expires_at}` : ''} • ${hybridLoyaltyType === 'points' ? `${customerData.points_balance} points` : `${customerData.stamp_count}/${customerData.reward_threshold} stamps`}`
+                  ? `${customerData.membership_status.toUpperCase()}${customerData.membership_expires_at ? ` • until ${customerData.membership_expires_at}` : ''} • ${hybridLoyaltyType === 'points' ? `${customerData.points_balance} reward points` : `${customerData.stamp_count}/${customerData.reward_threshold} reward stamps`}${hybridTierEnabled ? ` • ${customerData.vip_tier?.name || 'Tier'} (${tierProgress} Tier ${tierUsesStamps ? 'stamps' : 'points'})` : ''}`
                   : customerData.card_type === 'points'
                   ? `${customerData.points_balance} points`
                   : customerData.card_type === 'multipass'
                   ? `${customerData.sessions_remaining}/${customerData.sessions_total} sessions left`
                   : customerData.card_type === 'vip'
-                  ? `${customerData.vip_tier?.name || 'VIP'} · ${vipUsesStamps ? `${customerData.stamp_count || 0} Tier stamps` : `${customerData.vip_points || 0} points`}`
+                  ? `${customerData.vip_tier?.name || 'Tier'} · ${vipUsesStamps ? `${customerData.tier_stamp_count || 0} Tier stamps` : `${customerData.vip_points || 0} Tier points`}`
                   : customerData.card_type === 'membership'
                   ? `${customerData.membership_status.toUpperCase()}${customerData.membership_expires_at ? ` • until ${customerData.membership_expires_at}` : ''}`
                   : `${customerData.stamp_count} rings • ${customerData.reward_threshold - (customerData.stamp_count % customerData.reward_threshold)} to fruit`}
@@ -1362,7 +1394,7 @@ function CashierApp({ API_BASE }) {
                         const affordable = customerData.points_balance >= prize.points_cost
                         return <div key={prize.id} style={{...styles.prizeRow,opacity:affordable?1:.5}}>
                           <div><div style={styles.prizeName}>{prize.name}</div><div style={styles.prizeCost}>{prize.points_cost} pts</div></div>
-                          <button style={{...styles.prizeRedeemBtn,background:affordable?'#2563eb':'#cbd5e1',cursor:affordable?'pointer':'not-allowed'}} disabled={!affordable||loading} onClick={()=>redeemPointsPrize(prize)}>Redeem</button>
+                          <button style={{...styles.prizeRedeemBtn,background:affordable?'#2563eb':'#cbd5e1',cursor:affordable?'pointer':'not-allowed'}} disabled={!affordable||loading} onClick={()=>redeemPrize(prize)}>Redeem</button>
                         </div>
                       })}
                     </div>
@@ -1371,6 +1403,23 @@ function CashierApp({ API_BASE }) {
               ) : (
                 <div style={styles.stampVisual}>
                   {Array.from({length:customerData.reward_threshold||8}).map((_,i)=><div key={i} style={{...styles.stampDot,background:i<(customerData.stamp_count%(customerData.reward_threshold||8))?'#0d9488':'#e2e8f0'}}>{i<(customerData.stamp_count%(customerData.reward_threshold||8))?'🍃':''}</div>)}
+                </div>
+              )}
+              {hybridTierEnabled && (
+                <div style={{margin:'12px 0',padding:'12px 13px',borderRadius:12,background:'#fefce8',border:'1px solid #fde68a'}}>
+                  <div style={{fontSize:10,fontWeight:900,color:'#92400e',letterSpacing:.6}}>CURRENT TIER</div>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',gap:10,marginTop:4}}>
+                    <strong style={{fontSize:18,color:'#713f12'}}>👑 {customerData.vip_tier?.name || 'Tier'}</strong>
+                    <span style={{fontSize:12,fontWeight:800,color:'#92400e'}}>{tierProgress.toLocaleString()} Tier {tierUsesStamps ? 'stamps' : 'points'}</span>
+                  </div>
+                  {customerData.vip_next_tier && <div style={{fontSize:11,color:'#78716c',marginTop:5}}>{Math.max(0,Number(customerData.vip_next_tier.threshold||0)-tierProgress).toLocaleString()} Tier {tierUsesStamps ? 'stamps' : 'points'} to {customerData.vip_next_tier.name}</div>}
+                </div>
+              )}
+              {customerData.membership_unlock?.enabled && (
+                <div style={{margin:'10px 0 12px',padding:'11px 12px',borderRadius:12,background:customerData.membership_unlock.unlocked?'#ecfdf5':'#fff7ed',border:`1px solid ${customerData.membership_unlock.unlocked?'#a7f3d0':'#fed7aa'}`}}>
+                  <div style={{fontSize:10,fontWeight:900,color:customerData.membership_unlock.unlocked?'#047857':'#9a3412',letterSpacing:.6}}>MEMBERSHIP BENEFITS</div>
+                  <div style={{fontSize:13,fontWeight:800,color:'#334155',marginTop:4}}>{customerData.membership_unlock.unlocked ? '🔓 Full benefits unlocked' : `🔒 Challenge progress ${customerData.membership_unlock.current || 0}/${customerData.membership_unlock.threshold || 7}`}</div>
+                  {!customerData.membership_unlock.unlocked && <div style={{fontSize:11,color:'#78716c',marginTop:3}}>{customerData.membership_unlock.remaining || 0} more Tier {customerData.membership_unlock.unit || (tierUsesStamps?'stamps':'points')} to unlock full benefits</div>}
                 </div>
               )}
               {customerData.membership_benefits?.length > 0 && <div style={{margin:'14px 0'}}>
@@ -1451,7 +1500,7 @@ function CashierApp({ API_BASE }) {
             <>
               <div style={styles.pointsBalanceBox}>
                 <span style={{...styles.pointsBalanceNumber,fontSize:28}}>👑 {customerData.vip_tier?.name||'VIP'}</span>
-                <span style={styles.pointsBalanceLabel}>{vipUsesStamps ? `${customerData.stamp_count || 0} Tier stamps` : `${customerData.vip_points||0} VIP points`}</span>
+                <span style={styles.pointsBalanceLabel}>{vipUsesStamps ? `${customerData.tier_stamp_count || 0} Tier stamps` : `${customerData.vip_points||0} Tier points`}</span>
               </div>
               {vipTierPerks(customerData.vip_tier).length > 0 && (
                 <div style={{marginTop:10,padding:'10px 12px',borderRadius:12,background:'#fff',border:'1px solid #f1f5f9'}}>
@@ -1462,7 +1511,7 @@ function CashierApp({ API_BASE }) {
               {vipUsesStamps && customerData.vip_next_tier && (
                 <div style={{marginTop:10,padding:'10px 12px',borderRadius:12,background:'#fff',border:'1px solid #fde68a'}}>
                   <div style={{fontSize:10,fontWeight:900,color:'#92400e',letterSpacing:.6}}>NEXT TIER · {String(customerData.vip_next_tier.name||'').toUpperCase()}</div>
-                  <div style={{fontSize:12,color:'#78716c',marginTop:4}}>{Math.max(0,Number(customerData.vip_next_tier.threshold||0)-Number(customerData.stamp_count||0))} Tier stamps to go</div>
+                  <div style={{fontSize:12,color:'#78716c',marginTop:4}}>{Math.max(0,Number(customerData.vip_next_tier.threshold||0)-Number(customerData.tier_stamp_count||0))} Tier stamps to go</div>
                   {vipTierPerks(customerData.vip_next_tier).map((b,i)=><div key={`stamp-next-${i}`} style={{fontSize:12,color:'#475569',margin:'4px 0'}}>✓ {b}</div>)}
                   {(customerData.vip_next_tier.coupons||[]).map((c,i)=><div key={c.id||i} style={{fontSize:12,color:'#92400e',margin:'4px 0'}}>🎟️ {c.reward_text}</div>)}
                 </div>
@@ -1510,7 +1559,7 @@ function CashierApp({ API_BASE }) {
           )}
 
           {/* Reward Banner (stamp cards only) */}
-          {usesStamps && !vipUsesStamps && customerData.reward_unlocked && (
+          {usesStamps && customerData.reward_unlocked && (
             <div style={styles.rewardBanner}>
               <span style={styles.rewardEmoji}>🍎</span>
               <span style={styles.rewardText}>Fruit Ready!</span>
@@ -1589,7 +1638,7 @@ function CashierApp({ API_BASE }) {
               )}
             </div>
           ) : null}
-          {customerData.card_type === 'vip' && !vipUsesStamps ? (
+          {tierUsesPoints ? (
             <div style={{
               ...styles.pointsSaleSection,
               background: '#fefce8',
@@ -1600,7 +1649,7 @@ function CashierApp({ API_BASE }) {
                   type="number"
                   inputMode="decimal"
                   min="0"
-                  placeholder="Purchase amount (₱)"
+                  placeholder="Tier-qualifying purchase (₱)"
                   value={vipSaleAmount}
                   onChange={e => setVipSaleAmount(e.target.value)}
                   style={styles.pointsSaleInput}
@@ -1615,24 +1664,24 @@ function CashierApp({ API_BASE }) {
                   onClick={recordVipPurchase}
                   disabled={loading || !vipSaleAmount}
                 >
-                  {loading ? '...' : '👑 Add VIP Points'}
+                  {loading ? '...' : '👑 Add Tier Points'}
                 </button>
               </div>
               {vipSaleAmount && (
                 <p style={styles.pointsPreview}>
                   {previewVipPoints > 0
-                    ? `₱${Number(vipSaleAmount).toLocaleString()} earns +${previewVipPoints} VIP point${previewVipPoints === 1 ? '' : 's'}`
-                    : 'Enter a purchase amount to preview VIP points'}
+                    ? `₱${Number(vipSaleAmount).toLocaleString()} earns +${previewVipPoints} Tier point${previewVipPoints === 1 ? '' : 's'}`
+                    : 'Enter a purchase amount to preview Tier points'}
                 </p>
               )}
               <p style={styles.pointsPreview}>
-                Earning rule: {customerData.vip_points_per_amount} VIP points for every ₱{customerData.vip_amount_pesos} spent
+                Earning rule: {customerData.vip_points_per_amount} Tier points for every ₱{customerData.vip_amount_pesos} spent
               </p>
               {customerData.vip_next_tier && (
                 <div style={{marginTop:12,padding:'12px 13px',borderRadius:12,background:'#fff',border:'1px solid #fde68a'}}>
                   <div style={{fontSize:10,fontWeight:900,letterSpacing:.65,color:'#92400e'}}>WHEN CUSTOMER REACHES {String(customerData.vip_next_tier.name||'NEXT TIER').toUpperCase()}</div>
                   <div style={{fontSize:11,color:'#78716c',marginTop:3}}>
-                    {Math.max(0, Number(customerData.vip_next_tier.threshold||0) - Number(vipUsesStamps ? customerData.stamp_count : customerData.vip_points || 0)).toLocaleString()} {vipUsesStamps ? 'Tier stamps' : 'VIP points'} to go
+                    {Math.max(0, Number(customerData.vip_next_tier.threshold||0) - tierProgress).toLocaleString()} Tier {tierUsesStamps ? 'stamps' : 'points'} to go
                   </div>
                   {vipTierPerks(customerData.vip_next_tier).length > 0 && (
                     <div style={{marginTop:9}}>
@@ -1677,10 +1726,19 @@ function CashierApp({ API_BASE }) {
             {usesStamps && (
               <button
                 style={{...styles.actionBtn, background: '#0d9488'}}
-                onClick={addStamp}
+                onClick={() => addStamp('reward')}
                 disabled={loading}
               >
-                {loading ? '...' : vipUsesStamps ? '🎟️ Add Tier Stamp' : '🎟️ Add Stamp'}
+                {loading ? '...' : '🎟️ Add Reward Stamp'}
+              </button>
+            )}
+            {tierUsesStamps && (
+              <button
+                style={{...styles.actionBtn, background: '#ca8a04'}}
+                onClick={() => addStamp('tier')}
+                disabled={loading}
+              >
+                {loading ? '...' : '👑 Add Tier Stamp'}
               </button>
             )}
             {canLogMembershipVisit && (
@@ -1706,7 +1764,7 @@ function CashierApp({ API_BASE }) {
                 {loading ? '...' : '🎫 Use One Session'}
               </button>
             )}
-            {usesStamps && !vipUsesStamps && customerData.reward_unlocked && (
+            {usesStamps && customerData.reward_unlocked && (
               <button
                 style={{...styles.actionBtn, background: '#f59e0b'}}
                 onClick={redeemReward}
