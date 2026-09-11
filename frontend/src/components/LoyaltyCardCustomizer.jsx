@@ -580,7 +580,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
 
   const postConfig = async () => {
     if (form.card_type === 'hybrid' && !hybridAllowed) {
-      throw new Error('2-in-1 Loyalty Card is available on the Growth and Pro plans. Upgrade to Growth to continue.')
+      throw new Error('Hybrid Card is available on the Growth and Pro plans. Upgrade to Growth to continue.')
     }
     if (form.card_type === 'vip' || (form.card_type === 'hybrid' && form.hybrid_tier_enabled === true)) {
       const tooManyCouponTier = (form.vip_tiers || []).find(t => (Array.isArray(t.coupons) ? t.coupons.length : 0) > 20)
@@ -715,7 +715,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
   })()
 
   const guidedCardLabel = form.card_type === 'hybrid'
-    ? `2-in-1 Loyalty Card · ${effectiveLoyaltyType === 'points' ? 'Subscription + Points' : 'Subscription + Stamps'}`
+    ? `Hybrid Card · Subscription + Reward ${effectiveLoyaltyType === 'points' ? 'Points' : 'Stamps'}${hybridTierEnabled ? ` + Tier ${tierUsesStamps ? 'Stamps' : 'Points'}` : ''}`
     : form.card_type === 'points'
     ? 'Points Card'
     : form.card_type === 'membership'
@@ -793,14 +793,14 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                   ['stamp','🎟️','Stamp Card','Customers collect stamps and unlock rewards at milestones.'],
                   ['points','💎','Points Card','Customers earn points from spending and redeem them for prizes.'],
                   ['membership','🏋️','Subscription Card','For recurring subscriptions, access plans, and included benefits.'],
-                  ['hybrid','✨','2-in-1 Loyalty Card','Combine a subscription with either Points or Stamps on one Wallet card.'],
+                  ['hybrid','✨','Hybrid Card','Subscription + Rewards + Tier on one Wallet card. Rewards and Tier can use Points or Stamps independently.'],
                   ['vip','👑','Tier Card','Customers build tier progress and automatically move through reward levels.'],
                   ['multipass','🎫','Multi-Pass','Customers receive a fixed number of sessions or visits that count down.'],
                 ].map(([type,icon,label,desc])=>(
                   <button key={type} type="button"
                     onClick={()=>{
                       if(type==='hybrid' && !hybridAllowed){
-                        setGuidedError('2-in-1 Loyalty Card is available on the Growth and Pro plans. Upgrade to Growth to unlock it.')
+                        setGuidedError('Hybrid Card is available on the Growth and Pro plans. Upgrade to Growth to unlock it.')
                         return
                       }
                       setGuidedError('')
@@ -859,16 +859,28 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
 
               {isHybrid && (
                 <div style={{...styles.fieldGroup,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:12,padding:14,marginBottom:18}}>
-                  <label style={styles.label}>Reward side of this 2-in-1 Loyalty Card</label>
-                  <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'1fr 1fr',gap:10}}>
-                    <button type="button" onClick={()=>update('hybrid_loyalty_type','points')} style={{...styles.pickerCard,padding:14,...(effectiveLoyaltyType==='points'?{borderColor:'#0d9488',background:'#f0fdfa'}:{})}}>
-                      <span style={styles.pickerCardIcon}>💎</span><span style={styles.pickerCardLabel}>Subscription + Points</span>
-                    </button>
-                    <button type="button" onClick={()=>update('hybrid_loyalty_type','stamp')} style={{...styles.pickerCard,padding:14,...(effectiveLoyaltyType==='stamp'?{borderColor:'#0d9488',background:'#f0fdfa'}:{})}}>
-                      <span style={styles.pickerCardIcon}>🎟️</span><span style={styles.pickerCardLabel}>Subscription + Stamps</span>
-                    </button>
+                  <label style={styles.label}>Choose the 3 parts of your Hybrid Card</label>
+                  <p style={{...styles.hint,margin:'0 0 10px'}}>Subscription is included. Rewards and Tier can each use Points or Stamps.</p>
+                  <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'repeat(3,1fr)',gap:9}}>
+                    <div style={{padding:12,border:'1px solid #99f6e4',borderRadius:10,background:'#fff'}}>
+                      <strong>Subscription</strong><div style={{fontSize:11,color:'#64748b',marginTop:5}}>Included</div>
+                    </div>
+                    <div style={{padding:12,border:'1px solid #bfdbfe',borderRadius:10,background:'#fff'}}>
+                      <strong>Rewards</strong>
+                      <div style={{display:'flex',gap:5,marginTop:7}}>
+                        <button type="button" onClick={()=>update('hybrid_loyalty_type','points')} style={{...styles.typeChangeBtn,flex:1,padding:'7px 6px',...(effectiveLoyaltyType==='points'?{background:'#2563eb',color:'#fff',borderColor:'#2563eb'}:{})}}>Points</button>
+                        <button type="button" onClick={()=>update('hybrid_loyalty_type','stamp')} style={{...styles.typeChangeBtn,flex:1,padding:'7px 6px',...(effectiveLoyaltyType==='stamp'?{background:'#2563eb',color:'#fff',borderColor:'#2563eb'}:{})}}>Stamps</button>
+                      </div>
+                    </div>
+                    <div style={{padding:12,border:'1px solid #fde68a',borderRadius:10,background:'#fff'}}>
+                      <strong>Tier</strong>
+                      <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:4,marginTop:7}}>
+                        <button type="button" onClick={()=>{update('hybrid_tier_enabled',false);update('membership_benefits_unlock_enabled',false)}} style={{...styles.typeChangeBtn,padding:'7px 4px',...(!hybridTierEnabled?{background:'#64748b',color:'#fff',borderColor:'#64748b'}:{})}}>Off</button>
+                        <button type="button" onClick={()=>{update('hybrid_tier_enabled',true);updateHybridTierProgression('points')}} style={{...styles.typeChangeBtn,padding:'7px 4px',...(hybridTierEnabled&&!tierUsesStamps?{background:'#ca8a04',color:'#fff',borderColor:'#ca8a04'}:{})}}>Pts</button>
+                        <button type="button" onClick={()=>{update('hybrid_tier_enabled',true);updateHybridTierProgression('stamps')}} style={{...styles.typeChangeBtn,padding:'7px 4px',...(hybridTierEnabled&&tierUsesStamps?{background:'#ca8a04',color:'#fff',borderColor:'#ca8a04'}:{})}}>Stamps</button>
+                      </div>
+                    </div>
                   </div>
-                  <p style={{...styles.hint,margin:'8px 0 0'}}>Customers keep one card. Subscription status and the selected loyalty balance appear together.</p>
                 </div>
               )}
 
@@ -876,7 +888,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                 <div style={{...styles.pointsSection,border:'1px solid #99f6e4',background:'#f0fdfa',marginBottom:20}}>
                   <div style={{...styles.wallet20Eyebrow,marginBottom:6}}>Subscription</div>
                   <h3 style={{margin:'0 0 6px',fontSize:17,color:'#0f172a'}}>Set up the subscription side</h3>
-                  <p style={{...styles.hint,margin:'0 0 16px'}}>The 2-in-1 Loyalty Card keeps subscription access and {effectiveLoyaltyType === 'points' ? 'Points' : 'Stamps'} together on one customer card. Choose how customers receive subscription access, then define the benefits they can redeem.</p>
+                  <p style={{...styles.hint,margin:'0 0 16px'}}>The Hybrid Card keeps subscription access, rewards, and optional Tier progress together on one customer card. Configure the subscription details and included benefits here.</p>
 
                   <label style={styles.label}>How should customers become subscribers?</label>
                   <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'1fr 1fr',gap:10,marginBottom:14}}>
@@ -1173,7 +1185,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                 {isHybrid && <>
                   <div style={{padding:13,borderRadius:12,background:'#f8fafc'}}><b>Subscription:</b> {form.membership_name || 'Subscription'} · ₱{Number(form.membership_price || 0).toLocaleString()} / {Number(form.membership_duration_days || 30)} days · {form.subscription_enrollment_mode === 'automatic' ? 'Automatic enrollment' : 'Manual enrollment'}</div>
                   <div style={{padding:13,borderRadius:12,background:'#f8fafc'}}><b>Subscription benefits:</b> {(form.membership_benefits || []).length ? (form.membership_benefits || []).map(b=>b.name).join(', ') : 'None added yet'}</div>
-                  <div style={{padding:13,borderRadius:12,background:'#f8fafc'}}><b>Loyalty:</b> {effectiveLoyaltyType === 'points' ? `${form.points_per_amount} point(s) per ₱${form.points_amount_pesos}` : `${form.stamp_goal} stamp final goal`}</div>
+                  <div style={{padding:13,borderRadius:12,background:'#f8fafc'}}><b>Rewards:</b> {effectiveLoyaltyType === 'points' ? `Points · ${form.points_per_amount} point(s) per ₱${form.points_amount_pesos}` : `Stamps · ${form.stamp_goal} stamp final goal`}</div>
+                  <div style={{padding:13,borderRadius:12,background:'#f8fafc'}}><b>Tier:</b> {hybridTierEnabled ? `${tierUsesStamps ? 'Stamps' : 'Points'} · cumulative progression` : 'Off'}</div>
                 </>}
                 <div style={{padding:13,borderRadius:12,background:'#f8fafc',display:'flex',alignItems:'center',gap:9}}>
                   <b>Color:</b><span style={{width:22,height:22,borderRadius:6,background:form.primary_color,border:'1px solid #cbd5e1'}}/> {form.primary_color}
@@ -1262,7 +1275,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
             type="button"
             onClick={() => {
               if (!hybridAllowed) {
-                setError('2-in-1 Loyalty Card is a Growth feature. Upgrade to Growth to unlock it.')
+                setError('Hybrid Card is a Growth feature. Upgrade to Growth to unlock it.')
                 return
               }
               update('card_type', 'hybrid')
@@ -1275,8 +1288,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
             }}
           >
             <span style={styles.pickerCardIcon}>✨</span>
-            <span style={styles.pickerCardLabel}>2-in-1 Loyalty Card</span>
-            <span style={styles.pickerCardDesc}>One Wallet card combining a Subscription with Points or Stamps.</span>
+            <span style={styles.pickerCardLabel}>Hybrid Card</span>
+            <span style={styles.pickerCardDesc}>Subscription + Rewards + Tier on one Wallet card. Rewards and Tier can independently use Points or Stamps.</span>
             {!hybridAllowed && <span style={styles.pickerCardBadge}>Growth</span>}
             {hybridAllowed && form.card_type === 'hybrid' && <span style={styles.pickerCardBadge}>Selected</span>}
           </button>
@@ -1300,12 +1313,12 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
 
         <button type="button" onClick={() => {
           if(form.card_type==='hybrid' && !hybridAllowed){
-            setError('2-in-1 Loyalty Card is a Growth feature. Upgrade to Growth to unlock it.')
+            setError('Hybrid Card is a Growth feature. Upgrade to Growth to unlock it.')
             return
           }
           setStep('form')
         }} style={styles.pickerContinueBtn}>
-          Continue with {form.card_type === 'hybrid' ? '2-in-1 Loyalty Card' : form.card_type === 'points' ? 'Points Card' : form.card_type === 'membership' ? 'Subscription Card' : form.card_type === 'vip' ? 'Tier Card' : form.card_type === 'multipass' ? 'Multi-Pass' : 'Stamp Card'} →
+          Continue with {form.card_type === 'hybrid' ? 'Hybrid Card' : form.card_type === 'points' ? 'Points Card' : form.card_type === 'membership' ? 'Subscription Card' : form.card_type === 'vip' ? 'Tier Card' : form.card_type === 'multipass' ? 'Multi-Pass' : 'Stamp Card'} →
         </button>
       </div>
     )
@@ -1334,7 +1347,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
               <div style={{ ...styles.cardHeader, background: form.card_type === 'vip' ? ((form.vip_tiers||[]).find(t=>String(t.name||'').toLowerCase()==='gold')?.color || (form.vip_tiers||[])[0]?.color || '#111827') : (form.primary_color || '#0d9488') }}>
                 <span style={styles.cardHeaderTitle}>
                   {form.card_type === 'hybrid'
-                    ? `Subscription + ${effectiveLoyaltyType === 'points' ? 'Points' : 'Stamps'}`
+                    ? `Hybrid · Reward ${effectiveLoyaltyType === 'points' ? 'Points' : 'Stamps'}${hybridTierEnabled ? ` + Tier ${tierUsesStamps ? 'Stamps' : 'Points'}` : ''}`
                     : form.card_type === 'points'
                     ? 'Points Rewards'
                     : form.card_type === 'membership'
@@ -1476,13 +1489,13 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
           {saved && <div style={styles.success}>✓ Card published successfully</div>}
           {form.card_type === 'hybrid' && !hybridAllowed && (
             <div style={{...styles.error,background:'#fffbeb',borderColor:'#fde68a',color:'#92400e'}}>
-              🔒 2-in-1 Loyalty Card is a Growth feature. Your existing customer cards remain usable, but editing or republishing is locked until this business upgrades to Growth.
+              🔒 Hybrid Card is a Growth feature. Your existing customer cards remain usable, but editing or republishing is locked until this business upgrades to Growth.
             </div>
           )}
 
           <div style={styles.typeSummary}>
             <span style={styles.typeSummaryText}>
-              {form.card_type === 'hybrid' ? `✨ Composite Card · Subscription + ${effectiveLoyaltyType === 'points' ? 'Reward Points' : 'Reward Stamps'}${hybridTierEnabled ? ` + Tier by ${tierUsesStamps ? 'Stamps' : 'Points'}` : ''}` : form.card_type === 'points' ? '💎 Points Card' : form.card_type === 'membership' ? '🏋️ Subscription Card' : form.card_type === 'vip' ? '👑 Tier Card' : form.card_type === 'multipass' ? '🎫 Multi-Pass' : '🎟️ Stamp Card'}
+              {form.card_type === 'hybrid' ? `✨ Hybrid Card · Subscription + Reward ${effectiveLoyaltyType === 'points' ? 'Points' : 'Stamps'}${hybridTierEnabled ? ` + Tier ${tierUsesStamps ? 'Stamps' : 'Points'}` : ''}` : form.card_type === 'points' ? '💎 Points Card' : form.card_type === 'membership' ? '🏋️ Subscription Card' : form.card_type === 'vip' ? '👑 Tier Card' : form.card_type === 'multipass' ? '🎫 Multi-Pass' : '🎟️ Stamp Card'}
             </span>
             <button type="button" onClick={() => setStep('picker')} style={styles.typeChangeBtn}>
               Change card type
@@ -1508,21 +1521,34 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
 
           {isHybrid && (
             <div style={{...styles.pointsSection,border:'1px solid #cbd5e1',background:'#f8fafc'}}>
-              <div style={styles.fieldGroup}>
-                <label style={styles.label}>2-in-1 reward type</label>
-                <p style={styles.hint}>Subscription access is always included. Choose the rewards balance customers will also see on the same card.</p>
-                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:10}}>
-                  <button type="button" onClick={()=>update('hybrid_loyalty_type','points')} style={{...styles.pickerCard,padding:16,...(effectiveLoyaltyType==='points'?{borderColor:'#0d9488',background:'#f0fdfa'}:{})}}>
-                    <span style={styles.pickerCardIcon}>💎</span>
-                    <span style={styles.pickerCardLabel}>Subscription + Points</span>
-                    <span style={styles.pickerCardDesc}>Earn from spending and redeem configured prizes.</span>
-                  </button>
-                  <button type="button" onClick={()=>update('hybrid_loyalty_type','stamp')} style={{...styles.pickerCard,padding:16,...(effectiveLoyaltyType==='stamp'?{borderColor:'#0d9488',background:'#f0fdfa'}:{})}}>
-                    <span style={styles.pickerCardIcon}>🎟️</span>
-                    <span style={styles.pickerCardLabel}>Subscription + Stamps</span>
-                    <span style={styles.pickerCardDesc}>Track visit/purchase stamps beside subscription status.</span>
-                  </button>
+              <div style={{...styles.wallet20Eyebrow,marginBottom:6}}>HYBRID SETUP</div>
+              <h3 style={{margin:'0 0 6px',fontSize:18,color:'#0f172a'}}>Subscription + Rewards + Tier</h3>
+              <p style={{...styles.hint,margin:'0 0 14px'}}>Subscription is always included. Choose whether Rewards and Tier progress use Points or Stamps. They run independently on the same customer card.</p>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',gap:10}}>
+                <div style={{padding:14,border:'1px solid #99f6e4',borderRadius:12,background:'#fff'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',gap:8,alignItems:'center'}}><strong style={{fontSize:14}}>1 · Subscription</strong><span style={{fontSize:10,fontWeight:900,color:'#0f766e',background:'#ccfbf1',padding:'4px 7px',borderRadius:999}}>INCLUDED</span></div>
+                  <div style={{fontSize:12,color:'#64748b',marginTop:7,lineHeight:1.45}}>Controls access, duration, price, and member benefits.</div>
                 </div>
+                <div style={{padding:14,border:'1px solid #bfdbfe',borderRadius:12,background:'#fff'}}>
+                  <strong style={{fontSize:14}}>2 · Rewards</strong>
+                  <div style={{display:'flex',gap:6,marginTop:9}}>
+                    <button type="button" onClick={()=>update('hybrid_loyalty_type','points')} style={{...styles.typeChangeBtn,flex:1,padding:'8px 9px',...(effectiveLoyaltyType==='points'?{background:'#2563eb',color:'#fff',borderColor:'#2563eb'}:{})}}>Points</button>
+                    <button type="button" onClick={()=>update('hybrid_loyalty_type','stamp')} style={{...styles.typeChangeBtn,flex:1,padding:'8px 9px',...(effectiveLoyaltyType==='stamp'?{background:'#2563eb',color:'#fff',borderColor:'#2563eb'}:{})}}>Stamps</button>
+                  </div>
+                  <div style={{fontSize:12,color:'#64748b',marginTop:7,lineHeight:1.45}}>Redeemable balance used to unlock prizes or freebies.</div>
+                </div>
+                <div style={{padding:14,border:'1px solid #fde68a',borderRadius:12,background:'#fff'}}>
+                  <strong style={{fontSize:14}}>3 · Tier</strong>
+                  <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:5,marginTop:9}}>
+                    <button type="button" onClick={()=>{update('hybrid_tier_enabled',false);update('membership_benefits_unlock_enabled',false)}} style={{...styles.typeChangeBtn,padding:'8px 6px',...(!hybridTierEnabled?{background:'#64748b',color:'#fff',borderColor:'#64748b'}:{})}}>Off</button>
+                    <button type="button" onClick={()=>{update('hybrid_tier_enabled',true);updateHybridTierProgression('points')}} style={{...styles.typeChangeBtn,padding:'8px 6px',...(hybridTierEnabled&&!tierUsesStamps?{background:'#ca8a04',color:'#fff',borderColor:'#ca8a04'}:{})}}>Points</button>
+                    <button type="button" onClick={()=>{update('hybrid_tier_enabled',true);updateHybridTierProgression('stamps')}} style={{...styles.typeChangeBtn,padding:'8px 6px',...(hybridTierEnabled&&tierUsesStamps?{background:'#ca8a04',color:'#fff',borderColor:'#ca8a04'}:{})}}>Stamps</button>
+                  </div>
+                  <div style={{fontSize:12,color:'#64748b',marginTop:7,lineHeight:1.45}}>Cumulative progress used only to move customers through levels.</div>
+                </div>
+              </div>
+              <div style={{marginTop:12,padding:'10px 12px',borderRadius:10,background:'#fff',border:'1px solid #e2e8f0',fontSize:12,color:'#475569'}}>
+                <strong>Current setup:</strong> Subscription + Reward {effectiveLoyaltyType === 'points' ? 'Points' : 'Stamps'}{hybridTierEnabled ? ` + Tier ${tierUsesStamps ? 'Stamps' : 'Points'}` : ' · Tier off'}
               </div>
             </div>
           )}
@@ -1531,7 +1557,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
             <div style={{...styles.pointsSection,border:'1px solid #99f6e4',background:'#f0fdfa'}}>
               <div style={{...styles.wallet20Eyebrow,marginBottom:6}}>1 · Subscription</div>
               <h3 style={{margin:'0 0 6px',fontSize:18,color:'#0f172a'}}>Set up the subscription side</h3>
-              <p style={{...styles.hint,margin:'0 0 18px'}}>The 2-in-1 Loyalty Card keeps the subscription and loyalty rewards below on one customer card. Subscription benefits are recurring entitlements, separate from promotional coupons.</p>
+              <p style={{...styles.hint,margin:'0 0 18px'}}>Subscription is the access layer of the Hybrid Card. Configure its name, duration, price, and included benefits here.</p>
 
               <div style={styles.fieldGroup}>
                 <label style={styles.label}>How should customers become subscribers?</label>
@@ -1995,27 +2021,11 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
             </div>
           )}
 
-          {isHybrid && (
+          {isHybrid && hybridTierEnabled && (
             <div style={{...styles.pointsSection,border:'1px solid #fde68a',background:'#fffbeb'}}>
-              <div style={{...styles.wallet20Eyebrow,marginBottom:6}}>3 · Tier Progression</div>
-              <h3 style={{margin:'0 0 6px',fontSize:18,color:'#0f172a'}}>Add an independent Tier engine</h3>
-              <p style={{...styles.hint,margin:'0 0 14px'}}>Tier progress is cumulative and separate from redeemable rewards. That means Tier Stamps + Reward Points and Tier Points + Reward Stamps both work without one balance affecting the other.</p>
-              <label style={{display:'flex',gap:10,alignItems:'flex-start',padding:14,border:'1px solid #fde68a',borderRadius:12,background:'#fff',fontSize:13,fontWeight:800,cursor:'pointer'}}>
-                <input type="checkbox" checked={form.hybrid_tier_enabled === true} onChange={e=>{
-                  update('hybrid_tier_enabled',e.target.checked)
-                  if (!e.target.checked) update('membership_benefits_unlock_enabled',false)
-                }} style={{marginTop:3}}/>
-                <span><strong>Enable Tier progression on this Composite Card</strong><span style={{display:'block',fontWeight:500,color:'#64748b',marginTop:4}}>Customers keep one Wallet card while Subscription, redeemable rewards, and Tier status run together.</span></span>
-              </label>
-
-              {form.hybrid_tier_enabled && <>
-                <div style={{...styles.fieldGroup,marginTop:14}}>
-                  <label style={styles.label}>How should customers move up tiers?</label>
-                  <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'1fr 1fr',gap:10}}>
-                    <button type="button" onClick={()=>updateHybridTierProgression('stamps')} style={{...styles.pickerCard,padding:14,...(form.hybrid_tier_progression_type!=='points'?{borderColor:'#ca8a04',background:'#fff'}:{})}}><span style={styles.pickerCardIcon}>🎟️</span><span style={styles.pickerCardLabel}>Tier by Stamps</span><span style={styles.pickerCardDesc}>Cumulative challenge/visit stamps. They are never spent on rewards.</span></button>
-                    <button type="button" onClick={()=>updateHybridTierProgression('points')} style={{...styles.pickerCard,padding:14,...(form.hybrid_tier_progression_type==='points'?{borderColor:'#ca8a04',background:'#fff'}:{})}}><span style={styles.pickerCardIcon}>💰</span><span style={styles.pickerCardLabel}>Tier by Points</span><span style={styles.pickerCardDesc}>Cumulative non-spendable Tier points based on purchase amount.</span></button>
-                  </div>
-                </div>
+              <div style={{...styles.wallet20Eyebrow,marginBottom:6}}>3 · Tier</div>
+              <h3 style={{margin:'0 0 6px',fontSize:18,color:'#0f172a'}}>Tier by {tierUsesStamps ? 'Stamps' : 'Points'}</h3>
+              <p style={{...styles.hint,margin:'0 0 14px'}}>Tier progress is cumulative and never spent on rewards. Change the Tier type anytime from the Hybrid Setup above.</p>
 
                 {form.hybrid_tier_progression_type === 'points' ? <div style={styles.fieldGroup}>
                   <label style={styles.label}>Tier points earning rule</label>
@@ -2038,7 +2048,6 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                   <button type="button" style={styles.addPrizeBtn} onClick={addVipTier}>+ Add Tier</button>
                   <p style={styles.hint}>Tier {form.hybrid_tier_progression_type === 'points' ? 'points are cumulative and non-spendable' : 'stamps are cumulative and never redeemed'}. One-time tier coupons are issued when a customer crosses the configured threshold.</p>
                 </div>
-              </>}
             </div>
           )}
 

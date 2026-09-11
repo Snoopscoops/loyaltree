@@ -207,24 +207,35 @@ const CARD_SAMPLES = {
   },
   hybrid: {
     name: 'Hybrid Card',
-    intro: 'Combine loyalty points with membership status in one Apple Wallet or Google Wallet card. Available on Growth and Pro.',
+    intro: 'Combine a subscription, redeemable Points or Stamps, and Tier progression in one Apple Wallet or Google Wallet card. Available on Growth and Pro.',
     render: (styles) => (
       <div style={styles.heroCard}>
         <div style={styles.heroCardHeader}>
-          <span>Hybrid Rewards</span>
+          <span>Hybrid Card</span>
           <span style={{ fontSize: 12, opacity: 0.85 }}>Corner Cafe</span>
         </div>
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,padding:'20px 22px'}}>
-          <div>
-            <div style={{fontSize:10,fontWeight:900,letterSpacing:'.08em',color:'#64748b'}}>POINTS</div>
-            <div style={{fontSize:30,fontWeight:900,color:'#0f172a'}}>1,240</div>
+        <div style={{padding:'15px 16px 12px',display:'grid',gap:8}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,padding:'9px 11px',border:'1px solid #d1fae5',background:'#f0fdf4',borderRadius:10}}>
+            <div>
+              <div style={{fontSize:9,fontWeight:900,letterSpacing:'.08em',color:'#64748b'}}>SUBSCRIPTION</div>
+              <div style={{fontSize:13,fontWeight:900,color:'#0f172a',marginTop:2}}>Coffee Club</div>
+            </div>
+            <div style={{fontSize:11,fontWeight:900,color:'#047857'}}>ACTIVE</div>
           </div>
-          <div style={{textAlign:'right'}}>
-            <div style={{fontSize:10,fontWeight:900,letterSpacing:'.08em',color:'#64748b'}}>MEMBERSHIP</div>
-            <div style={{fontSize:25,fontWeight:900,color:'#0f766e'}}>✓</div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+            <div style={{padding:'10px 11px',border:'1px solid #e2e8f0',background:'#fff',borderRadius:10}}>
+              <div style={{fontSize:9,fontWeight:900,letterSpacing:'.08em',color:'#64748b'}}>REWARDS · STAMPS</div>
+              <div style={{fontSize:22,fontWeight:900,color:'#0f172a',marginTop:2}}>7 / 10</div>
+              <div style={{fontSize:10,color:'#64748b',marginTop:1}}>3 to free coffee</div>
+            </div>
+            <div style={{padding:'10px 11px',border:'1px solid #fde68a',background:'#fffbeb',borderRadius:10}}>
+              <div style={{fontSize:9,fontWeight:900,letterSpacing:'.08em',color:'#64748b'}}>TIER · POINTS</div>
+              <div style={{fontSize:18,fontWeight:900,color:'#a16207',marginTop:3}}>GOLD</div>
+              <div style={{fontSize:10,color:'#64748b',marginTop:2}}>3,250 tier pts</div>
+            </div>
           </div>
         </div>
-        <div style={styles.heroCardFoot}>Points + membership in one wallet card</div>
+        <div style={styles.heroCardFoot}>Subscription + Rewards + Tier in one wallet card</div>
       </div>
     ),
   },

@@ -1632,10 +1632,10 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const cardExperience = isHybridCard
     ? {
         key:'hybrid', accent:'#0d9488', soft:'#f0fdfa', border:'#99f6e4', icon:'✨',
-        title:`Composite · Subscription + ${hybridLoyaltyType === 'points' ? 'Reward Points' : 'Reward Stamps'}${hybridTierEnabled ? ` + Tier by ${hybridTierUsesStamps ? 'Stamps' : 'Points'}` : ''}`,
-        customerLabel:'Members', customerIcon:'✨', dashboardLabel:'Composite Loyalty Dashboard',
-        scanTitle:'Scan Composite Card', scanDescription:'Manage subscription, rewards, and Tier progression from one member card',
-        recentTitle:'Recent Composite Activity', editDescription:`Subscription + ${hybridLoyaltyType === 'points' ? 'redeemable points' : 'redeemable stamps'}${hybridTierEnabled ? ` + Tier by ${hybridTierUsesStamps ? 'stamps' : 'points'}` : ''}`,
+        title:`Hybrid · Subscription + Reward ${hybridLoyaltyType === 'points' ? 'Points' : 'Stamps'}${hybridTierEnabled ? ` + Tier ${hybridTierUsesStamps ? 'Stamps' : 'Points'}` : ''}`,
+        customerLabel:'Members', customerIcon:'✨', dashboardLabel:'Hybrid Loyalty Dashboard',
+        scanTitle:'Scan Hybrid Card', scanDescription:'Manage subscription, rewards, and Tier progression from one Hybrid Card',
+        recentTitle:'Recent Hybrid Activity', editDescription:`Subscription + Reward ${hybridLoyaltyType === 'points' ? 'Points' : 'Stamps'}${hybridTierEnabled ? ` + Tier ${hybridTierUsesStamps ? 'Stamps' : 'Points'}` : ''}`,
       }
     : isPointsCard
     ? {
@@ -3223,7 +3223,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:12, marginBottom:12}}>
                   <div>
                     <strong style={{fontSize:15,color:'#115e59'}}>
-                      {isHybridCard ? '2-in-1 subscription & loyalty activity' : isMultipassCard ? 'Multi-Pass activity' : isMembershipCard ? 'Member visit analytics' : isPointsCard ? 'Points activity' : isVipCard ? 'Tier activity' : 'Loyalty activity'}
+                      {isHybridCard ? 'Hybrid subscription, rewards & tier activity' : isMultipassCard ? 'Multi-Pass activity' : isMembershipCard ? 'Member visit analytics' : isPointsCard ? 'Points activity' : isVipCard ? 'Tier activity' : 'Loyalty activity'}
                     </strong>
                     <div style={{fontSize:12,color:'#64748b',marginTop:3}}>
                       {isHybridCard
@@ -3486,7 +3486,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               {isHybridCard ? (
                 <>
                   <div style={{padding:12,border:'1px solid #99f6e4',background:'#f0fdfa',borderRadius:12,marginBottom:14}}>
-                    <strong style={{color:'#115e59'}}>✨ 2-in-1 Loyalty Card</strong>
+                    <strong style={{color:'#115e59'}}>✨ Hybrid Card</strong>
                     <div style={{fontSize:12,color:'#64748b',marginTop:3}}>Membership + {hybridLoyaltyType === 'points' ? 'Points' : 'Stamps'}</div>
                   </div>
                   {hybridUsesPoints ? (<>

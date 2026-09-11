@@ -1144,8 +1144,8 @@ function CashierApp({ API_BASE }) {
         soft: '#f0fdfa',
         border: '#99f6e4',
         icon: '✨',
-        label: `Composite Card · Membership + ${hybridLoyaltyType === 'points' ? 'Reward Points' : 'Reward Stamps'}${hybridTierEnabled ? ` + Tier ${tierUsesStamps ? 'Stamps' : 'Points'}` : ''}`,
-        actionTitle: hybridTierEnabled ? 'Membership, Rewards & Tier Actions' : 'Membership & Reward Actions',
+        label: `Hybrid Card · Subscription + Reward ${hybridLoyaltyType === 'points' ? 'Points' : 'Stamps'}${hybridTierEnabled ? ` + Tier ${tierUsesStamps ? 'Stamps' : 'Points'}` : ''}`,
+        actionTitle: hybridTierEnabled ? 'Subscription, Rewards & Tier' : 'Subscription & Rewards',
       }
     : customerData?.card_type === 'points'
     ? {
