@@ -3042,50 +3042,67 @@ def _google_wallet_safe_fragment(value: str, fallback: str = "tier") -> str:
 
 
 def google_wallet_vip_class_id(business: dict, program: dict, tier: dict) -> str:
-    """One shared Google LoyaltyClass per VIP tier so its background can match the tier."""
+    """One shared Google LoyaltyClass per standalone VIP tier."""
     base = _google_wallet_base_class_id(business, program)
     tier_key = _google_wallet_safe_fragment((tier or {}).get('id') or (tier or {}).get('name') or 'vip')
     return f'{base}-vip-{tier_key}'
 
 
+def google_wallet_hybrid_tier_class_id(business: dict, program: dict, tier: dict) -> str:
+    """One shared Google LoyaltyClass per Hybrid tier so Wallet color follows Tier."""
+    base = _google_wallet_base_class_id(business, program)
+    tier_key = _google_wallet_safe_fragment((tier or {}).get('id') or (tier or {}).get('name') or 'tier')
+    return f'{base}-hybrid-tier-{tier_key}'
+
+
+def google_wallet_tier_class_id(business: dict, program: dict, tier: dict) -> str:
+    """Return the deterministic tier-class ID for standalone VIP or Hybrid Tier."""
+    if (program or {}).get('card_type') == 'hybrid' and hybrid_tier_enabled(program):
+        return google_wallet_hybrid_tier_class_id(business, program, tier)
+    return google_wallet_vip_class_id(business, program, tier)
+
+
 def google_wallet_class_id_for_customer(customer: dict, business: dict, program: dict) -> str:
-    """Return the normal class, or the customer's current tier class for VIP."""
-    if (program or {}).get('card_type') == 'vip':
-        return google_wallet_vip_class_id(business, program, get_vip_tier(customer, program or {}))
+    """Return the normal class, or the customer's current Tier-specific class."""
+    if program_has_tier(program):
+        return google_wallet_tier_class_id(
+            business,
+            program or {},
+            get_vip_tier(customer, program or {}),
+        )
     return _google_wallet_base_class_id(business, program)
 
 
-def ensure_google_wallet_vip_class(customer: dict, business: dict, program: dict) -> bool:
-    """Ensure the current member's tier LoyaltyClass exists before issuing a Save URL.
+def ensure_google_wallet_tier_class(customer: dict, business: dict, program: dict) -> bool:
+    """Ensure the current member's Tier LoyaltyClass exists before issuing/updating a pass.
 
-    A newly-created VIP member can open their wallet immediately, even if the
-    owner has not manually pressed Publish Card since tier-class support was
-    deployed. This avoids generating a LoyaltyObject that references a class
-    Google does not know about yet.
+    Standalone VIP and Hybrid Tier cards both use one Google LoyaltyClass per
+    configured tier. That lets the existing LoyaltyObject keep the same object ID
+    while moving between classes/colors as the customer levels up.
     """
-    if (program or {}).get('card_type') != 'vip':
+    if not program_has_tier(program):
         return True
 
     access_token = get_google_access_token()
     if not access_token:
-        print("GOOGLE VIP CLASS: no Google access token")
+        print("GOOGLE TIER CLASS: no Google access token")
         return False
 
     tier = get_vip_tier(customer, program or {})
-    class_id = google_wallet_vip_class_id(business, program or {}, tier)
+    class_id = google_wallet_tier_class_id(business, program or {}, tier)
+    tier_name = tier.get('name') or ('VIP' if (program or {}).get('card_type') == 'vip' else 'Tier')
     loyalty_class = build_loyalty_class(
         business,
         program or {},
         review_status='UNDER_REVIEW',
         class_id_override=class_id,
         background_color_override=tier.get('color') or '#111827',
-        vip_tier_name=tier.get('name') or 'VIP',
+        vip_tier_name=tier_name,
     )
 
     try:
         import httpx
         with httpx.Client(timeout=20) as client:
-            # Fast path: class already exists.
             check = client.get(
                 f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}',
                 headers={"Authorization": f"Bearer {access_token}"}
@@ -3094,10 +3111,9 @@ def ensure_google_wallet_vip_class(customer: dict, business: dict, program: dict
                 return True
 
             if check.status_code != 404:
-                print(f"GOOGLE VIP CLASS: GET {class_id} failed {check.status_code} - {check.text[:1000]}")
+                print(f"GOOGLE TIER CLASS: GET {class_id} failed {check.status_code} - {check.text[:1000]}")
                 return False
 
-            # Missing class: create it now.
             created = client.post(
                 'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass',
                 headers={"Authorization": f"Bearer {access_token}"},
@@ -3105,10 +3121,9 @@ def ensure_google_wallet_vip_class(customer: dict, business: dict, program: dict
             )
 
             if created.status_code in (200, 201):
-                print(f"GOOGLE VIP CLASS: created {class_id}")
+                print(f"GOOGLE TIER CLASS: created {class_id}")
                 return True
 
-            # Concurrent request may have created it between GET and POST.
             if created.status_code == 409:
                 verify = client.get(
                     f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}',
@@ -3117,11 +3132,16 @@ def ensure_google_wallet_vip_class(customer: dict, business: dict, program: dict
                 if verify.status_code == 200:
                     return True
 
-            print(f"GOOGLE VIP CLASS: create {class_id} failed {created.status_code} - {created.text[:1500]}")
+            print(f"GOOGLE TIER CLASS: create {class_id} failed {created.status_code} - {created.text[:1500]}")
             return False
     except Exception as e:
-        print(f"GOOGLE VIP CLASS error: {e}")
+        print(f"GOOGLE TIER CLASS error: {e}")
         return False
+
+
+# Backward-compatible name for any older call sites/imports.
+def ensure_google_wallet_vip_class(customer: dict, business: dict, program: dict) -> bool:
+    return ensure_google_wallet_tier_class(customer, business, program)
 
 
 def build_loyalty_class(
@@ -3161,11 +3181,14 @@ def build_loyalty_class(
         'accountNameLabel': 'MEMBER',
     }
 
-    # VIP already uses one class per tier, so use Google's native tier field
-    # instead of another custom text module.
+    # Tier-enabled cards use Google's native tier field. Hybrid keeps its
+    # normal program name while the class background follows the member's tier.
     if card_type == 'vip':
         loyalty_class['rewardsTierLabel'] = 'VIP TIER'
         loyalty_class['rewardsTier'] = vip_tier_name or 'VIP'
+    elif card_type == 'hybrid' and hybrid_tier_enabled(program):
+        loyalty_class['rewardsTierLabel'] = 'TIER'
+        loyalty_class['rewardsTier'] = vip_tier_name or 'Member'
 
     logo_url = business.get('logo_url')
     if not logo_url and program:
@@ -3529,7 +3552,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     if design['show_background'] and not (program and program.get('hero_image_url')):
         primary_color = (
             get_vip_tier(customer, program or {}).get('color') or '#111827'
-            if card_type == 'vip'
+            if program_has_tier(program)
             else design['background']
         )
         color_key = primary_color.lstrip('#')
@@ -3655,7 +3678,7 @@ async def refresh_existing_member_wallets(business: dict, program: dict, refresh
         print(f"WALLET SYNC bulk refresh error: {refresh_error}")
 
 async def republish_wallet_class_and_refresh(business: dict, program: dict):
-    """Republish the normal class, or every VIP tier class, then refresh objects."""
+    """Republish the normal class, or every Tier class, then refresh Wallet objects."""
     class_id = (program or {}).get('google_wallet_class_id')
     if class_id and GOOGLE_WALLET_ISSUER_ID:
         try:
@@ -3663,15 +3686,20 @@ async def republish_wallet_class_and_refresh(business: dict, program: dict):
             if access_token:
                 import httpx
                 class_specs = [(class_id, None, None)]
-                if (program or {}).get('card_type') == 'vip':
+                if program_has_tier(program):
+                    default_tier_name = 'VIP' if (program or {}).get('card_type') == 'vip' else 'Tier'
                     class_specs = [
                         (
-                            google_wallet_vip_class_id(business, program, tier),
+                            google_wallet_tier_class_id(business, program, tier),
                             tier.get('color') or '#111827',
-                            tier.get('name') or 'VIP',
+                            tier.get('name') or default_tier_name,
                         )
                         for tier in normalize_vip_tiers(program or {})
-                    ] or [(google_wallet_vip_class_id(business, program, get_vip_tier({}, program or {})), '#111827', 'VIP')]
+                    ] or [(
+                        google_wallet_tier_class_id(business, program, get_vip_tier({}, program or {})),
+                        '#111827',
+                        default_tier_name,
+                    )]
 
                 with httpx.Client() as client:
                     for target_id, target_color, tier_name in class_specs:
@@ -3763,8 +3791,8 @@ def sync_wallet_object(customer: dict, business: dict, program: dict,
     try:
         import httpx
 
-        if (program or {}).get('card_type') == 'vip':
-            ensure_google_wallet_vip_class(customer, business, program or {})
+        if program_has_tier(program):
+            ensure_google_wallet_tier_class(customer, business, program or {})
 
         desired = build_loyalty_object(customer, business, program)
         object_id = desired['id']
@@ -4741,13 +4769,13 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         or f'{biz_name} Rewards'
     ).strip()
 
-    # Tier data is shared by standalone VIP/Tier cards and Composite/Hybrid
-    # cards. Hybrid keeps the business card color while showing tier status in
-    # Pass Details; standalone VIP may still color the pass by current tier.
+    # Tier data is shared by standalone VIP/Tier cards and Hybrid cards.
+    # When Tier is enabled, the physical Wallet pass follows the customer's
+    # current tier color on both Apple Wallet and Google Wallet.
     vip_tier = get_vip_tier(customer, program or {}) if program_has_tier(program) else {}
     vip_next_tier = get_next_vip_tier(customer, program or {}) if program_has_tier(program) else None
 
-    if card_type == 'vip':
+    if program_has_tier(program):
         vip_tier_color = (vip_tier or {}).get('color') or '#111827'
         primary_color = _normalize_hex_color(vip_tier_color, '#111827')
     else:
@@ -5298,10 +5326,10 @@ def generate_apple_strip_bytes(customer: dict, business: dict, program: dict, wi
     card_type = (program or {}).get('card_type', 'stamp')
     stamp_goal = int((program or {}).get('stamp_goal') or 8)
     membership_summary = get_membership_summary(business.get('id'), customer.get('id')) if program_has_membership(program) else None
-    vip_tier = get_vip_tier(customer, program or {}) if card_type == 'vip' else None
+    vip_tier = get_vip_tier(customer, program or {}) if program_has_tier(program) else None
     hero_primary_color = (
         _normalize_hex_color((vip_tier or {}).get('color') or '#111827', '#111827')
-        if card_type == 'vip'
+        if program_has_tier(program)
         else design['background']
     )
     raw = generate_personalized_hero_image_bytes(
@@ -5324,7 +5352,7 @@ def generate_apple_strip_bytes(customer: dict, business: dict, program: dict, wi
         membership_expires_at=customer.get('membership_expires_at'),
         secondary_color=(
             _normalize_hex_color((vip_tier or {}).get('color') or design['secondary'], design['secondary'])
-            if card_type == 'vip'
+            if program_has_tier(program)
             else design['secondary']
         ),
         wallet_style=design['style'],
@@ -5377,7 +5405,12 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
         return None
 
     design = wallet_20_design(business, program)
-    primary_color = design['background']
+    current_tier = get_vip_tier(customer, program or {}) if program_has_tier(program) else {}
+    primary_color = (
+        _normalize_hex_color((current_tier or {}).get('color') or '#111827', '#111827')
+        if program_has_tier(program)
+        else design['background']
+    )
     biz_name = business.get('name', 'Loyalty')
 
     # Real branding when the business has uploaded it - same source URLs
@@ -5654,7 +5687,7 @@ def push_apple_wallet_update(serial_number: str):
     return {"status": status, "registrations": len(tokens), "pushes_sent": sent}
 
 
-APPLE_PASS_LAYOUT_RELEASE = "wallet-layout-2026-09-08-v7-tier-stamp-progression"
+APPLE_PASS_LAYOUT_RELEASE = "wallet-layout-2026-09-11-v8-hybrid-tier-colors"
 
 
 def refresh_business_apple_wallet_passes(business_id: int, reason: str = "card_config_change"):
@@ -18924,14 +18957,25 @@ async def get_wallet_class(public_id: str):
     else:
         class_id = f'{GOOGLE_WALLET_ISSUER_ID}.{business.get("public_id", "")}'
 
+    tier_class_ids = []
+    if program_has_tier(program):
+        tier_class_ids = [
+            google_wallet_tier_class_id(business, program or {}, tier)
+            for tier in normalize_vip_tiers(program or {})
+        ]
+
     access_token = get_google_access_token()
     google_data = None
     if access_token:
         try:
             import httpx
             with httpx.Client() as client:
+                # Tier-enabled programs intentionally use child classes instead
+                # of the stable root class. Check the first tier class so the
+                # published status remains accurate in the owner UI.
+                lookup_class_id = tier_class_ids[0] if tier_class_ids else class_id
                 resp = client.get(
-                    f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}',
+                    f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{lookup_class_id}',
                     headers={"Authorization": f"Bearer {access_token}"}
                 )
                 if resp.status_code == 200:
@@ -18939,12 +18983,8 @@ async def get_wallet_class(public_id: str):
         except Exception as e:
             print(f"Google class fetch error: {e}")
 
-    vip_tier_class_ids = []
-    if (program or {}).get('card_type') == 'vip':
-        vip_tier_class_ids = [
-            google_wallet_vip_class_id(business, program or {}, tier)
-            for tier in normalize_vip_tiers(program or {})
-        ]
+    vip_tier_class_ids = tier_class_ids if (program or {}).get('card_type') == 'vip' else []
+    hybrid_tier_class_ids = tier_class_ids if (program or {}).get('card_type') == 'hybrid' and hybrid_tier_enabled(program) else []
 
     return {
         "class_id": class_id,
@@ -18952,7 +18992,9 @@ async def get_wallet_class(public_id: str):
         "program": program,
         "google_class_exists": google_data is not None,
         "google_class_data": google_data,
+        "tier_class_ids": tier_class_ids,
         "vip_tier_class_ids": vip_tier_class_ids,
+        "hybrid_tier_class_ids": hybrid_tier_class_ids,
     }
 
 @app.post("/api/v1/business/{public_id}/wallet-class")
@@ -19019,16 +19061,17 @@ async def create_or_update_wallet_class(public_id: str):
         import httpx
 
         class_specs = []
-        if program.get('card_type') == 'vip':
+        if program_has_tier(program):
             tiers = normalize_vip_tiers(program)
             if not tiers:
                 tiers = [get_vip_tier({}, program)]
+            default_tier_name = 'VIP' if program.get('card_type') == 'vip' else 'Tier'
 
             for tier in tiers:
                 class_specs.append({
-                    'class_id': google_wallet_vip_class_id(business, program, tier),
+                    'class_id': google_wallet_tier_class_id(business, program, tier),
                     'color': tier.get('color') or '#111827',
-                    'tier_name': tier.get('name') or 'VIP',
+                    'tier_name': tier.get('name') or default_tier_name,
                 })
         else:
             class_specs.append({
@@ -19061,7 +19104,7 @@ async def create_or_update_wallet_class(public_id: str):
                     )
                 published_ids.append(spec['class_id'])
 
-        # Keep the stable root in DB. VIP tier class IDs are deterministic
+        # Keep the stable root in DB. VIP/Hybrid tier class IDs are deterministic
         # children of this ID, so no schema migration is needed.
         # Google-only metadata must not advance the loyalty program's
         # Apple-visible updated_at timestamp; doing so caused Apple to fetch a
@@ -19094,12 +19137,14 @@ async def create_or_update_wallet_class(public_id: str):
         return {
             "success": True,
             "message": (
-                f"VIP Wallet published with {len(published_ids)} tier classes. Existing member cards are refreshing automatically."
-                if program.get('card_type') == 'vip'
+                f"Tier-colored Wallet published with {len(published_ids)} tier classes. Existing member cards are refreshing automatically."
+                if program_has_tier(program)
                 else "Wallet 2.0 published. Existing member cards are refreshing automatically."
             ),
             "class_id": base_class_id,
+            "tier_class_ids": published_ids if program_has_tier(program) else [],
             "vip_tier_class_ids": published_ids if program.get('card_type') == 'vip' else [],
+            "hybrid_tier_class_ids": published_ids if program.get('card_type') == 'hybrid' and hybrid_tier_enabled(program) else [],
             "review_status": review_status,
             "google_response": google_results,
         }
@@ -24511,19 +24556,19 @@ async def get_wallet_pass(customer_public_id: str):
     loyalty_object = build_loyalty_object(customer, business, program)
 
     google_class_ready = True
-    if card_type == 'vip':
-        google_class_ready = ensure_google_wallet_vip_class(customer, business, program or {})
+    if program_has_tier(program):
+        google_class_ready = ensure_google_wallet_tier_class(customer, business, program or {})
         if not google_class_ready:
             print(
-                "WALLET-PASS: VIP tier Google class is not ready for "
+                "WALLET-PASS: Tier Google class is not ready for "
                 f"{loyalty_object.get('classId')}"
             )
 
     jwt_token = create_google_wallet_jwt(loyalty_object) if google_class_ready else ''
     save_url = f"https://pay.google.com/gp/v/save/{jwt_token}" if jwt_token else None
     if not jwt_token:
-        if card_type == 'vip' and not google_class_ready:
-            print("WALLET-PASS: Google Save URL withheld because VIP tier class could not be created")
+        if program_has_tier(program) and not google_class_ready:
+            print("WALLET-PASS: Google Save URL withheld because the Tier class could not be created")
         else:
             print("WALLET-PASS: Google JWT generation failed (check GOOGLE_WALLET_CREDENTIALS)")
 
