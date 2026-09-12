@@ -36,10 +36,11 @@ const BUSINESS_TYPES = [
   ['hotel','🏨 Hotel / Resort'],['other','🏪 Other Business'],
 ]
 
-function SignaturePad({ value, onChange }) {
+function SignaturePad({ value, onChange, onInkChange, captureRef }) {
   const canvasRef = useRef(null)
   const drawingRef = useRef(false)
   const dirtyRef = useRef(false)
+  const inkRef = useRef(Boolean(value))
 
   const commitSignature = () => {
     const canvas = canvasRef.current
@@ -78,6 +79,10 @@ function SignaturePad({ value, onChange }) {
     ctx.lineTo(p.x, p.y)
     ctx.stroke()
     dirtyRef.current = true
+    if (!inkRef.current) {
+      inkRef.current = true
+      onInkChange?.(true)
+    }
   }
 
   const end = (e) => {
@@ -92,6 +97,8 @@ function SignaturePad({ value, onChange }) {
     canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height)
     drawingRef.current = false
     dirtyRef.current = false
+    inkRef.current = false
+    onInkChange?.(false)
     onChange('')
   }
 
@@ -121,12 +128,24 @@ function SignaturePad({ value, onChange }) {
   }, [])
 
   useEffect(() => {
+    if (!captureRef) return
+    captureRef.current = () => {
+      const canvas = canvasRef.current
+      if (!canvas || !inkRef.current) return ''
+      return canvas.toDataURL('image/png')
+    }
+    return () => { captureRef.current = null }
+  }, [captureRef])
+
+  useEffect(() => {
     const canvas = canvasRef.current
     const ctx = canvas.getContext('2d')
     if (!value) {
       ctx.clearRect(0, 0, canvas.width, canvas.height)
       return
     }
+    inkRef.current = true
+    onInkChange?.(true)
     const img = new Image()
     img.onload = () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height)
@@ -172,6 +191,8 @@ function Signup({ API_BASE }) {
   const [agreementDoc, setAgreementDoc] = useState(null)
   const [agreementLoading, setAgreementLoading] = useState(false)
   const [agreementRead, setAgreementRead] = useState(false)
+  const [signatureHasInk, setSignatureHasInk] = useState(false)
+  const signatureCaptureRef = useRef(null)
   const [plans,setPlans]=useState(null)
   const [logoUpload,setLogoUpload]=useState({uploading:false,error:''})
   const [error,setError]=useState('')
@@ -215,7 +236,7 @@ function Signup({ API_BASE }) {
   }
 
   const loadAgreement=async()=>{
-    setAgreementLoading(true); setAgreementDoc(null); setAgreementRead(false); setError('')
+    setAgreementLoading(true); setAgreementDoc(null); setAgreementRead(false); setSignatureHasInk(false); setError('')
     // A changed/reloaded document must be signed again; never carry a signature
     // or confirmations forward onto a newly generated agreement hash.
     setAgreement(a=>({
@@ -251,7 +272,7 @@ function Signup({ API_BASE }) {
     !agreementRead && 'Review the agreement to the end',
     !agreement.signer_name.trim() && 'Enter the signer’s full legal name',
     !agreement.signer_title.trim() && 'Enter the signer’s position / title',
-    !agreement.signature_data_url && 'Finish drawing the signature',
+    !signatureHasInk && 'Draw your signature',
     !agreement.authority_confirmed && 'Confirm signing authority',
     !agreement.agreement_confirmed && 'Accept the Business Agreement + DPA',
     !agreement.policies_acknowledged && 'Acknowledge the Terms + Privacy Policy',
@@ -261,12 +282,20 @@ function Signup({ API_BASE }) {
   const createAccount=async()=>{
     if(registered)return true
     if(!agreementReady){setError(`Complete before signing: ${agreementMissing.join(' · ')}`);return false}
+    const capturedSignature = signatureCaptureRef.current?.() || agreement.signature_data_url
+    if(!capturedSignature){
+      setSignatureHasInk(false)
+      setError('Please draw your signature again before continuing.')
+      return false
+    }
+    setAgreement(a=>({...a,signature_data_url:capturedSignature}))
     setLoading(true);setError('')
     try{
       const res=await fetch(`${API_BASE}/api/v1/register`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
         ...form,branch_count:branchCount,setup_kit_requested:Boolean(form.setup_kit_requested),
         agreement:{
           ...agreement,
+          signature_data_url:capturedSignature,
           agreement_version:agreementDoc.agreement_version,
           terms_version:agreementDoc.terms_version,
           privacy_version:agreementDoc.privacy_version,
@@ -337,7 +366,7 @@ function Signup({ API_BASE }) {
             <h2 style={styles.signerTitle}>Electronic Signature</h2>
             <p style={styles.signerCopy}>The person signing confirms that they are authorized to enter into this agreement for the business.</p>
             <div className="lt-signup-two" style={styles.twoCol}><Field label="Authorized representative · full legal name"><input value={agreement.signer_name} onChange={e=>setAgreement(a=>({...a,signer_name:e.target.value}))} style={styles.input} placeholder="Full legal name"/></Field><Field label="Position / title"><input value={agreement.signer_title} onChange={e=>setAgreement(a=>({...a,signer_title:e.target.value}))} style={styles.input} placeholder="Owner, President, Manager, etc."/></Field></div>
-            <Field label="Draw signature"><SignaturePad value={agreement.signature_data_url} onChange={v=>setAgreement(a=>({...a,signature_data_url:v}))}/>{agreement.signature_data_url&&<small style={styles.signatureCaptured}>✓ Signature captured</small>}</Field>
+            <Field label="Draw signature"><SignaturePad value={agreement.signature_data_url} onChange={v=>setAgreement(a=>({...a,signature_data_url:v}))} onInkChange={setSignatureHasInk} captureRef={signatureCaptureRef}/>{signatureHasInk&&<small style={styles.signatureCaptured}>✓ Signature detected and ready to capture</small>}</Field>
             <div style={styles.checks}>
               <Check checked={agreement.authority_confirmed} onChange={v=>setAgreement(a=>({...a,authority_confirmed:v}))}>I represent that I am authorized to enter into this agreement on behalf of the business.</Check>
               <Check checked={agreement.agreement_confirmed} onChange={v=>setAgreement(a=>({...a,agreement_confirmed:v}))}>I have reviewed and agree to the Business Subscription Agreement and Data Processing Addendum above.</Check>
