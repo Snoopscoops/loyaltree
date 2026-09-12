@@ -39,6 +39,14 @@ const BUSINESS_TYPES = [
 function SignaturePad({ value, onChange }) {
   const canvasRef = useRef(null)
   const drawingRef = useRef(false)
+  const dirtyRef = useRef(false)
+
+  const commitSignature = () => {
+    const canvas = canvasRef.current
+    if (!canvas || !dirtyRef.current) return
+    dirtyRef.current = false
+    onChange(canvas.toDataURL('image/png'))
+  }
 
   const point = (e) => {
     const canvas = canvasRef.current
@@ -55,6 +63,7 @@ function SignaturePad({ value, onChange }) {
     const ctx = canvas.getContext('2d')
     const p = point(e)
     drawingRef.current = true
+    dirtyRef.current = false
     canvas.setPointerCapture?.(e.pointerId)
     ctx.beginPath()
     ctx.moveTo(p.x, p.y)
@@ -68,19 +77,21 @@ function SignaturePad({ value, onChange }) {
     const p = point(e)
     ctx.lineTo(p.x, p.y)
     ctx.stroke()
+    dirtyRef.current = true
   }
 
   const end = (e) => {
     if (!drawingRef.current) return
-    e.preventDefault()
+    e?.preventDefault?.()
     drawingRef.current = false
-    const canvas = canvasRef.current
-    onChange(canvas.toDataURL('image/png'))
+    commitSignature()
   }
 
   const clear = () => {
     const canvas = canvasRef.current
     canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height)
+    drawingRef.current = false
+    dirtyRef.current = false
     onChange('')
   }
 
@@ -94,9 +105,28 @@ function SignaturePad({ value, onChange }) {
   }, [])
 
   useEffect(() => {
-    if (!value) return
+    // Some browsers/trackpads can release the pointer outside the canvas.
+    // Commit globally so a visible signature can never remain unsaved.
+    const finish = () => {
+      if (!drawingRef.current) return
+      drawingRef.current = false
+      commitSignature()
+    }
+    window.addEventListener('pointerup', finish, true)
+    window.addEventListener('pointercancel', finish, true)
+    return () => {
+      window.removeEventListener('pointerup', finish, true)
+      window.removeEventListener('pointercancel', finish, true)
+    }
+  }, [])
+
+  useEffect(() => {
     const canvas = canvasRef.current
     const ctx = canvas.getContext('2d')
+    if (!value) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      return
+    }
     const img = new Image()
     img.onload = () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height)
@@ -114,6 +144,8 @@ function SignaturePad({ value, onChange }) {
       onPointerMove={move}
       onPointerUp={end}
       onPointerCancel={end}
+      onPointerLeave={e=>{ if(drawingRef.current && e.buttons===0) end(e) }}
+      onLostPointerCapture={end}
       style={styles.signatureCanvas}
       aria-label="Draw your signature"
     />
@@ -214,14 +246,21 @@ function Signup({ API_BASE }) {
   }
   const back=()=>{setError('');setWizardStep(s=>Math.max(1,s-1))}
 
-  const agreementReady = Boolean(
-    agreementDoc && agreementRead && agreement.signer_name.trim() && agreement.signer_title.trim() &&
-    agreement.signature_data_url && agreement.authority_confirmed && agreement.agreement_confirmed && agreement.policies_acknowledged
-  )
+  const agreementMissing = [
+    !agreementDoc && 'Agreement document is still loading',
+    !agreementRead && 'Review the agreement to the end',
+    !agreement.signer_name.trim() && 'Enter the signer’s full legal name',
+    !agreement.signer_title.trim() && 'Enter the signer’s position / title',
+    !agreement.signature_data_url && 'Finish drawing the signature',
+    !agreement.authority_confirmed && 'Confirm signing authority',
+    !agreement.agreement_confirmed && 'Accept the Business Agreement + DPA',
+    !agreement.policies_acknowledged && 'Acknowledge the Terms + Privacy Policy',
+  ].filter(Boolean)
+  const agreementReady = agreementMissing.length === 0
 
   const createAccount=async()=>{
     if(registered)return true
-    if(!agreementReady){setError('Review the agreement, complete the signer details, sign, and confirm all declarations before continuing.');return false}
+    if(!agreementReady){setError(`Complete before signing: ${agreementMissing.join(' · ')}`);return false}
     setLoading(true);setError('')
     try{
       const res=await fetch(`${API_BASE}/api/v1/register`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
@@ -279,6 +318,7 @@ function Signup({ API_BASE }) {
         <div style={styles.priceDisclosure}><strong>Agreement preview</strong><span>Subscription: ₱{Number(selectedPrice||0).toLocaleString()}/30-day subscription period</span>{kitTotal>0&&<span>PR Kit: ₱{kitTotal.toLocaleString()} one-time</span>}</div>
       </section>}
       {wizardStep===5&&<section><p style={styles.eyebrow}>5 · REVIEW + SIGN</p><h1 style={styles.title}>Review your LoyaltyTree agreement</h1><p style={styles.subtitle}>Review the Business Subscription & Data Processing Agreement below. The account will not be created until an authorized representative signs it.</p>
+        <div style={styles.paymentNextNotice}><strong>Signing does not charge you.</strong><span>Payment is the next step. After the agreement is signed and recorded, you’ll continue to Pay & Activate.</span></div>
         {agreementLoading&&<div style={styles.loadingBox}>Preparing your agreement…</div>}
         {!agreementLoading&&agreementDoc&&<>
           <div className="lt-agreement-summary" style={styles.agreementSummary}>
@@ -297,14 +337,16 @@ function Signup({ API_BASE }) {
             <h2 style={styles.signerTitle}>Electronic Signature</h2>
             <p style={styles.signerCopy}>The person signing confirms that they are authorized to enter into this agreement for the business.</p>
             <div className="lt-signup-two" style={styles.twoCol}><Field label="Authorized representative · full legal name"><input value={agreement.signer_name} onChange={e=>setAgreement(a=>({...a,signer_name:e.target.value}))} style={styles.input} placeholder="Full legal name"/></Field><Field label="Position / title"><input value={agreement.signer_title} onChange={e=>setAgreement(a=>({...a,signer_title:e.target.value}))} style={styles.input} placeholder="Owner, President, Manager, etc."/></Field></div>
-            <Field label="Draw signature"><SignaturePad value={agreement.signature_data_url} onChange={v=>setAgreement(a=>({...a,signature_data_url:v}))}/></Field>
+            <Field label="Draw signature"><SignaturePad value={agreement.signature_data_url} onChange={v=>setAgreement(a=>({...a,signature_data_url:v}))}/>{agreement.signature_data_url&&<small style={styles.signatureCaptured}>✓ Signature captured</small>}</Field>
             <div style={styles.checks}>
               <Check checked={agreement.authority_confirmed} onChange={v=>setAgreement(a=>({...a,authority_confirmed:v}))}>I represent that I am authorized to enter into this agreement on behalf of the business.</Check>
               <Check checked={agreement.agreement_confirmed} onChange={v=>setAgreement(a=>({...a,agreement_confirmed:v}))}>I have reviewed and agree to the Business Subscription Agreement and Data Processing Addendum above.</Check>
               <Check checked={agreement.policies_acknowledged} onChange={v=>setAgreement(a=>({...a,policies_acknowledged:v}))}>I acknowledge the <a href="/terms" target="_blank" rel="noreferrer">Terms of Service</a> and <a href="/privacy" target="_blank" rel="noreferrer">Privacy Policy</a>.</Check>
             </div>
-            <button type="button" onClick={createAccount} disabled={!agreementReady||loading} style={{...styles.primary,...((!agreementReady||loading)?styles.disabled:{})}}>{loading?'Signing & creating account…':'Sign & Create Business Account →'}</button>
-            {!agreementRead&&<p style={styles.tip}>Signing becomes available after you scroll to the end of the agreement.</p>}
+            <div style={{...styles.signingStatus,...(agreementReady?styles.signingStatusReady:{})}}>
+              {agreementReady ? <><strong>✓ Ready to sign</strong><span>Your agreement is complete. Clicking below records the agreement and continues to payment. You will not be charged yet.</span></> : <><strong>Complete before signing</strong><span>{agreementMissing.join(' · ')}</span></>}
+            </div>
+            <button type="button" onClick={createAccount} disabled={!agreementReady||loading} style={{...styles.primary,...((!agreementReady||loading)?styles.disabled:{})}}>{loading?'Recording signed agreement…':'Sign Agreement & Continue to Payment →'}</button>
           </div>
         </>}
       </section>}
@@ -325,7 +367,7 @@ function Check({checked,onChange,children}){return <label style={styles.checkRow
 
 const styles={
  page:{minHeight:'100vh',background:'#f1f5f9',padding:24,boxSizing:'border-box',fontFamily:'Inter,system-ui,sans-serif'},shell:{maxWidth:1120,margin:'0 auto',background:'#fff',borderRadius:24,boxShadow:'0 24px 70px rgba(15,23,42,.12)',display:'grid',gridTemplateColumns:'300px minmax(0,1fr)',overflow:'hidden'},sidebar:{background:'linear-gradient(160deg,#0f766e,#134e4a)',color:'#fff',padding:'38px 30px'},logo:{width:56,height:56,borderRadius:'50%'},brand:{fontWeight:900,fontSize:18,marginTop:10},sideTitle:{fontSize:28,lineHeight:1.1,margin:'34px 0 10px'},sideCopy:{fontSize:14,lineHeight:1.6,opacity:.82},stepList:{display:'grid',gap:8,marginTop:26},stepItem:{display:'flex',alignItems:'center',gap:11,padding:'9px 11px',borderRadius:12,fontSize:13.5,fontWeight:700,opacity:.72},stepActive:{background:'rgba(255,255,255,.13)',opacity:1},stepDot:{width:27,height:27,borderRadius:'50%',border:'1px solid rgba(255,255,255,.45)',display:'grid',placeItems:'center',fontSize:12,flexShrink:0},stepDone:{background:'#fff',color:'#0f766e'},stepDotActive:{border:'2px solid #fff'},main:{padding:'44px 48px',minWidth:0},mobileProgress:{fontSize:12,fontWeight:900,color:'#0f766e',textTransform:'uppercase',letterSpacing:.5,marginBottom:18},eyebrow:{fontSize:12,fontWeight:900,color:'#0d9488',letterSpacing:.8,margin:'0 0 7px'},title:{fontSize:31,color:'#0f172a',margin:'0 0 8px',letterSpacing:'-.7px'},subtitle:{color:'#64748b',fontSize:15,lineHeight:1.55,margin:'0 0 26px'},field:{display:'flex',flexDirection:'column',gap:7,marginBottom:16},label:{fontSize:13,fontWeight:750,color:'#334155'},input:{width:'100%',boxSizing:'border-box',padding:'13px 14px',border:'1.5px solid #dbe3ec',borderRadius:11,fontSize:15,fontFamily:'inherit',background:'#fff'},twoCol:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14},tip:{color:'#64748b',fontSize:11.5,lineHeight:1.4},uploadBox:{minHeight:260,border:'2px dashed #99f6e4',background:'#f0fdfa',borderRadius:18,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:8,cursor:'pointer',color:'#0f766e',textAlign:'center',padding:24},logoPreview:{width:120,height:120,objectFit:'contain',borderRadius:18,background:'#fff',border:'1px solid #dbe3ec',padding:8},planGrid:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:10,marginBottom:18},planCard:{border:'1.5px solid #e2e8f0',background:'#fff',borderRadius:14,padding:16,display:'flex',flexDirection:'column',gap:7,cursor:'pointer',color:'#334155'},planSelected:{border:'2px solid #0d9488',background:'#f0fdfa'},planIncludes:{fontSize:10.5,lineHeight:1.35,color:'#0f766e',fontWeight:800},planBadge:{alignSelf:'flex-start',fontSize:9,fontWeight:900,letterSpacing:'.06em',color:'#047857',background:'#d1fae5',padding:'4px 7px',borderRadius:999},warning:{fontSize:10,color:'#d97706'},kitCard:{display:'flex',gap:12,alignItems:'flex-start',border:'1.5px solid #e2e8f0',borderRadius:14,padding:16,cursor:'pointer'},kitSelected:{borderColor:'#0d9488',background:'#f0fdfa'},delivery:{marginTop:16,padding:16,borderRadius:14,background:'#f8fafc',border:'1px solid #e2e8f0'},priceDisclosure:{display:'flex',flexWrap:'wrap',gap:'8px 16px',marginTop:16,padding:'13px 15px',borderRadius:12,background:'#f8fafc',border:'1px solid #e2e8f0',fontSize:12.5,color:'#475569'},actions:{display:'flex',justifyContent:'space-between',gap:12,marginTop:24},primary:{border:0,borderRadius:11,padding:'13px 20px',background:'linear-gradient(135deg,#0d9488,#0f766e)',color:'#fff',fontWeight:800,fontSize:15,cursor:'pointer'},disabled:{opacity:.45,cursor:'not-allowed'},secondary:{border:'1.5px solid #dbe3ec',borderRadius:11,padding:'13px 20px',background:'#fff',color:'#475569',fontWeight:800,fontSize:15,cursor:'pointer'},error:{marginTop:16,padding:'12px 14px',background:'#fef2f2',color:'#dc2626',borderRadius:10,fontSize:13},loadingBox:{padding:30,textAlign:'center',borderRadius:14,background:'#f8fafc',color:'#64748b'},footer:{textAlign:'center',fontSize:13,color:'#64748b',margin:'28px 0 0'},
- agreementSummary:{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:10,marginBottom:16},summaryItem:{border:'1px solid #e2e8f0',borderRadius:12,padding:'11px 12px',background:'#f8fafc',display:'flex',flexDirection:'column',gap:4,fontSize:11,color:'#64748b'},paperHeader:{display:'flex',flexDirection:'column',gap:3,padding:'18px 20px',border:'1px solid #cbd5e1',borderBottom:0,borderRadius:'14px 14px 0 0',background:'#fff',textAlign:'center',color:'#0f172a'},paper:{height:480,overflowY:'auto',border:'1px solid #cbd5e1',background:'#fff',padding:'32px clamp(20px,5vw,46px)',boxShadow:'inset 0 1px 0 #fff',fontFamily:'Georgia,Times New Roman,serif',color:'#1e293b',lineHeight:1.7},contractIntro:{fontSize:15,marginBottom:24,fontWeight:600},contractSection:{marginBottom:26},contractSectionH3:{fontSize:16},annexTitle:{margin:'34px 0 22px',paddingTop:26,borderTop:'2px solid #0f172a',fontWeight:900,letterSpacing:'.04em',fontFamily:'Inter,system-ui,sans-serif'},contractEnd:{marginTop:30,paddingTop:18,borderTop:'1px solid #cbd5e1',fontSize:10,color:'#64748b',wordBreak:'break-all'},readStatus:{padding:'10px 12px',border:'1px solid #fcd34d',borderTop:0,borderRadius:'0 0 12px 12px',background:'#fffbeb',color:'#92400e',fontSize:12.5,fontWeight:700},readStatusDone:{background:'#ecfdf5',borderColor:'#a7f3d0',color:'#047857'},signerBox:{marginTop:22,padding:20,border:'1px solid #dbe3ec',borderRadius:16,background:'#f8fafc'},signerTitle:{fontSize:19,margin:'0 0 5px'},signerCopy:{fontSize:13,color:'#64748b',margin:'0 0 18px'},signatureWrap:{width:'100%'},signatureCanvas:{display:'block',width:'100%',height:170,border:'1.5px dashed #94a3b8',borderRadius:12,background:'#fff',touchAction:'none',cursor:'crosshair'},signatureHintRow:{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',marginTop:7},clearSignature:{border:0,background:'transparent',color:'#0f766e',fontSize:11.5,fontWeight:800,cursor:'pointer'},checks:{display:'grid',gap:10,margin:'16px 0'},checkRow:{display:'flex',alignItems:'flex-start',gap:10,padding:'10px 11px',borderRadius:10,background:'#fff',border:'1px solid #e2e8f0',fontSize:12.5,lineHeight:1.5,color:'#334155'},
+ agreementSummary:{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:10,marginBottom:16},paymentNextNotice:{display:'flex',flexDirection:'column',gap:4,padding:'12px 14px',margin:'-10px 0 18px',border:'1px solid #99f6e4',borderRadius:12,background:'#f0fdfa',color:'#115e59',fontSize:12.5,lineHeight:1.5},summaryItem:{border:'1px solid #e2e8f0',borderRadius:12,padding:'11px 12px',background:'#f8fafc',display:'flex',flexDirection:'column',gap:4,fontSize:11,color:'#64748b'},paperHeader:{display:'flex',flexDirection:'column',gap:3,padding:'18px 20px',border:'1px solid #cbd5e1',borderBottom:0,borderRadius:'14px 14px 0 0',background:'#fff',textAlign:'center',color:'#0f172a'},paper:{height:480,overflowY:'auto',border:'1px solid #cbd5e1',background:'#fff',padding:'32px clamp(20px,5vw,46px)',boxShadow:'inset 0 1px 0 #fff',fontFamily:'Georgia,Times New Roman,serif',color:'#1e293b',lineHeight:1.7},contractIntro:{fontSize:15,marginBottom:24,fontWeight:600},contractSection:{marginBottom:26},contractSectionH3:{fontSize:16},annexTitle:{margin:'34px 0 22px',paddingTop:26,borderTop:'2px solid #0f172a',fontWeight:900,letterSpacing:'.04em',fontFamily:'Inter,system-ui,sans-serif'},contractEnd:{marginTop:30,paddingTop:18,borderTop:'1px solid #cbd5e1',fontSize:10,color:'#64748b',wordBreak:'break-all'},readStatus:{padding:'10px 12px',border:'1px solid #fcd34d',borderTop:0,borderRadius:'0 0 12px 12px',background:'#fffbeb',color:'#92400e',fontSize:12.5,fontWeight:700},readStatusDone:{background:'#ecfdf5',borderColor:'#a7f3d0',color:'#047857'},signerBox:{marginTop:22,padding:20,border:'1px solid #dbe3ec',borderRadius:16,background:'#f8fafc'},signingStatus:{display:'flex',flexDirection:'column',gap:3,margin:'4px 0 14px',padding:'10px 12px',border:'1px solid #fecaca',borderRadius:10,background:'#fff7f7',color:'#991b1b',fontSize:11.5,lineHeight:1.45},signingStatusReady:{borderColor:'#a7f3d0',background:'#ecfdf5',color:'#047857'},signatureCaptured:{display:'block',marginTop:6,color:'#047857',fontWeight:800,fontSize:11.5},signerTitle:{fontSize:19,margin:'0 0 5px'},signerCopy:{fontSize:13,color:'#64748b',margin:'0 0 18px'},signatureWrap:{width:'100%'},signatureCanvas:{display:'block',width:'100%',height:170,border:'1.5px dashed #94a3b8',borderRadius:12,background:'#fff',touchAction:'none',cursor:'crosshair'},signatureHintRow:{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',marginTop:7},clearSignature:{border:0,background:'transparent',color:'#0f766e',fontSize:11.5,fontWeight:800,cursor:'pointer'},checks:{display:'grid',gap:10,margin:'16px 0'},checkRow:{display:'flex',alignItems:'flex-start',gap:10,padding:'10px 11px',borderRadius:10,background:'#fff',border:'1px solid #e2e8f0',fontSize:12.5,lineHeight:1.5,color:'#334155'},
 }
 
 export default Signup
