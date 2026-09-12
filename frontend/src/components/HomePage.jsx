@@ -1250,9 +1250,12 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
             <p style={styles.aboutBody}>
               Reach out for platform questions, business setup, support, or partnership opportunities.
             </p>
+            <div style={styles.homeBusinessIdentity}>
+              <strong>LoyaltyTree Information Technology Solutions</strong>
+              <span>Isabela, Philippines</span>
+            </div>
             <div style={styles.homeContactDetails}>
               <a href="tel:+639397992144" style={styles.homeContactLink}>📱 0939 799 2144 <span style={styles.homeContactMeta}>Smart</span></a>
-              <a href="mailto:fredsomeros.stocks@gmail.com" style={styles.homeContactLink}>✉️ fredsomeros.stocks@gmail.com</a>
               <a href="mailto:theloyaltytree@gmail.com" style={styles.homeContactLink}>✉️ theloyaltytree@gmail.com</a>
             </div>
             <div style={styles.contactActions}>
@@ -1278,6 +1281,12 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
             <span style={styles.footerBrand}><img src={logo64} alt="LoyaltyTree" style={styles.footerLogo} />LoyaltyTree</span>
             <span style={styles.footerNote}>Digitalize. Secure. Connect.</span>
             <span style={styles.footerSmall}>Marketing, retention, and zero-waste loyalty &mdash; automated</span>
+            <div style={styles.footerBusinessIdentity}>
+              <strong>LoyaltyTree Information Technology Solutions</strong>
+              <span>Isabela, Philippines</span>
+              <a href="tel:+639397992144" style={styles.footerBusinessLink}>0939 799 2144</a>
+              <a href="mailto:theloyaltytree@gmail.com" style={styles.footerBusinessLink}>theloyaltytree@gmail.com</a>
+            </div>
           </div>
           <div style={styles.footerLegal}>
             <span style={styles.footerLegalTitle}>LEGAL</span>
@@ -1286,7 +1295,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
             <button onClick={() => navigate('/business-agreement')} style={styles.footerLegalLink}>Business Agreement</button>
           </div>
         </div>
-        <div style={styles.footerBottom}>© 2026 LoyaltyTree. All rights reserved.</div>
+        <div style={styles.footerBottom}>© 2026 LoyaltyTree Information Technology Solutions. All rights reserved.</div>
       </footer>
 
       {activeCard && CARD_SAMPLES[activeCard] && (
@@ -1711,6 +1720,7 @@ const styles = {
   aboutTitle: { fontSize: 23, lineHeight: 1.25, fontWeight: 800, color: '#0f172a', margin: '0 0 12px' },
   aboutBody: { fontSize: 14, lineHeight: 1.7, color: '#475569', margin: 0 },
   founderLine:{marginTop:18,fontSize:12,fontWeight:850,color:'#0f766e'},
+  homeBusinessIdentity: { display:'flex', flexDirection:'column', gap:3, margin:'14px 0 12px', color:'#475569', fontSize:13, lineHeight:1.45 },
   homeContactDetails:{display:'grid',gap:8,marginTop:16},
   homeContactLink:{color:'#0f172a',fontSize:12.5,fontWeight:750,textDecoration:'none',wordBreak:'break-word'},
   homeContactMeta:{color:'#64748b',fontWeight:600},
@@ -1744,6 +1754,8 @@ const styles = {
   footer: { padding:'38px 6% 20px', background:'#073f36', color:'white' },
   footerMain: { maxWidth:1180, margin:'0 auto', display:'flex', justifyContent:'space-between', gap:36, flexWrap:'wrap' },
   footerBrandBlock: { display:'flex', flexDirection:'column', gap:10, minWidth:240 },
+  footerBusinessIdentity: { display:'flex', flexDirection:'column', gap:3, marginTop:4, color:'#c7eadf', fontSize:12, lineHeight:1.45 },
+  footerBusinessLink: { color:'#d7f5ea', textDecoration:'none', fontWeight:700 },
   footerLegal: { display:'flex', flexDirection:'column', alignItems:'flex-start', gap:10, minWidth:210 },
   footerLegalTitle: { fontSize:12, fontWeight:900, letterSpacing:'0.18em', color:'#8de0c4', marginBottom:4 },
   footerLegalLink: { border:0, background:'transparent', color:'#d7f5ea', padding:0, fontSize:15, cursor:'pointer', textAlign:'left' },

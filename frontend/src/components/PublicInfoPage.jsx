@@ -1049,6 +1049,15 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
 
         <div style={s.contactGrid}>
           <div style={s.contactCard}>
+            <div style={s.contactIconBox}>🏢</div>
+            <div>
+              <div style={s.contactLabel}>BUSINESS</div>
+              <div style={s.contactValue}>LoyaltyTree Information Technology Solutions</div>
+              <div style={s.contactMeta}>Isabela, Philippines</div>
+            </div>
+          </div>
+
+          <div style={s.contactCard}>
             <div style={s.contactIconBox}>📱</div>
             <div>
               <div style={s.contactLabel}>MOBILE NUMBER</div>
@@ -1061,7 +1070,6 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
             <div style={s.contactIconBox}>✉️</div>
             <div>
               <div style={s.contactLabel}>EMAIL</div>
-              <a href="mailto:fredsomeros.stocks@gmail.com" style={s.contactValue}>fredsomeros.stocks@gmail.com</a>
               <a href="mailto:theloyaltytree@gmail.com" style={s.contactValue}>theloyaltytree@gmail.com</a>
             </div>
           </div>
@@ -1079,8 +1087,17 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
     </main>
 
     <footer style={s.footer}>
-      <span>© {new Date().getFullYear()} LoyaltyTree</span>
-      <button onClick={()=>navigate('/')} style={s.footerLink}>Back to homepage</button>
+      <div style={s.footerIdentity}>
+        <strong>LoyaltyTree Information Technology Solutions</strong>
+        <span>Isabela, Philippines · 0939 799 2144 · theloyaltytree@gmail.com</span>
+        <span>© {new Date().getFullYear()} LoyaltyTree. All rights reserved.</span>
+      </div>
+      <div style={s.footerActions}>
+        <button onClick={()=>navigate('/privacy')} style={s.footerLink}>Privacy</button>
+        <button onClick={()=>navigate('/terms')} style={s.footerLink}>Terms</button>
+        <button onClick={()=>navigate('/business-agreement')} style={s.footerLink}>Business Agreement</button>
+        <button onClick={()=>navigate('/')} style={s.footerLink}>Back to homepage</button>
+      </div>
     </footer>
   </div>
 }
@@ -1324,6 +1341,8 @@ const s={
   contactMeta:{fontSize:12,color:'#64748b',marginTop:2},
   contactText:{fontSize:13.5,lineHeight:1.6,color:'#64748b'},
   footer:{borderTop:'1px solid #e2e8f0',padding:'24px clamp(18px,4vw,54px)',display:'flex',justifyContent:'space-between',gap:12,flexWrap:'wrap',fontSize:12,color:'#64748b'},
+  footerIdentity:{display:'flex',flexDirection:'column',gap:4,lineHeight:1.45},
+  footerActions:{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'},
   footerLink:{border:0,background:'transparent',color:'#0f766e',fontWeight:800,cursor:'pointer'},
 }
 
