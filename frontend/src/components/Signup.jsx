@@ -36,117 +36,119 @@ const BUSINESS_TYPES = [
   ['hotel','🏨 Hotel / Resort'],['other','🏪 Other Business'],
 ]
 
-function signatureStrokesToDataUrl(strokes) {
-  const usable = (strokes || []).filter(stroke => Array.isArray(stroke?.points) && stroke.points.length >= 2)
-  if (!usable.length) return ''
+function SignaturePad({ canvasRef, hasInk, setHasInk }) {
+  const drawingRef = useRef(false)
+  const pointerIdRef = useRef(null)
+  const inkRef = useRef(Boolean(hasInk))
+  inkRef.current = Boolean(hasInk)
 
-  const canvas = document.createElement('canvas')
-  canvas.width = 760
-  canvas.height = 190
-  const ctx = canvas.getContext('2d')
-  ctx.lineWidth = 3
-  ctx.lineCap = 'round'
-  ctx.lineJoin = 'round'
-  ctx.strokeStyle = '#0f172a'
-
-  usable.forEach(stroke => {
-    const pts = stroke.points
-    ctx.beginPath()
-    ctx.moveTo(pts[0].x, pts[0].y)
-    for (let i = 1; i < pts.length; i += 1) ctx.lineTo(pts[i].x, pts[i].y)
-    ctx.stroke()
-  })
-
-  return canvas.toDataURL('image/png')
-}
-
-function SignaturePad({ strokes, setStrokes }) {
-  const svgRef = useRef(null)
-  const activeStrokeIdRef = useRef(null)
-
-  const point = (e) => {
-    const svg = svgRef.current
-    const rect = svg.getBoundingClientRect()
+  const getPoint = (e) => {
+    const canvas = canvasRef.current
+    const rect = canvas.getBoundingClientRect()
     return {
-      x: Math.max(0, Math.min(760, (e.clientX - rect.left) * (760 / rect.width))),
-      y: Math.max(0, Math.min(190, (e.clientY - rect.top) * (190 / rect.height))),
+      x: (e.clientX - rect.left) * (canvas.width / rect.width),
+      y: (e.clientY - rect.top) * (canvas.height / rect.height),
     }
+  }
+
+  const context = () => {
+    const canvas = canvasRef.current
+    if (!canvas) return null
+    const ctx = canvas.getContext('2d')
+    ctx.strokeStyle = '#0f172a'
+    ctx.lineWidth = 6
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+    return ctx
   }
 
   const start = (e) => {
+    if (e.button != null && e.button !== 0) return
     e.preventDefault()
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
-    activeStrokeIdRef.current = id
-    const p = point(e)
-    setStrokes(prev => [...prev, { id, points: [p] }])
+    const canvas = canvasRef.current
+    const ctx = context()
+    if (!canvas || !ctx) return
 
-    // Pointer capture keeps the current stroke stable even if the mouse/finger
-    // briefly leaves the box. It does NOT clear or reset any previous strokes.
-    try { e.currentTarget.setPointerCapture?.(e.pointerId) } catch (_) {}
+    const p = getPoint(e)
+    drawingRef.current = true
+    pointerIdRef.current = e.pointerId
+
+    ctx.beginPath()
+    ctx.moveTo(p.x, p.y)
+
+    try { canvas.setPointerCapture?.(e.pointerId) } catch (_) {}
   }
 
   const move = (e) => {
-    const id = activeStrokeIdRef.current
-    if (!id) return
+    if (!drawingRef.current) return
+    if (pointerIdRef.current != null && e.pointerId !== pointerIdRef.current) return
     e.preventDefault()
-    const p = point(e)
-    setStrokes(prev => prev.map(stroke => (
-      stroke.id === id
-        ? { ...stroke, points: [...stroke.points, p] }
-        : stroke
-    )))
+
+    const ctx = context()
+    if (!ctx) return
+
+    const p = getPoint(e)
+    ctx.lineTo(p.x, p.y)
+    ctx.stroke()
+
+    // The first actual drawn segment is enough to make the signature valid.
+    // This does not redraw, resize, replace, or clear the canvas.
+    if (!inkRef.current) {
+      inkRef.current = true
+      setHasInk(true)
+    }
   }
 
   const end = (e) => {
-    if (!activeStrokeIdRef.current) return
+    if (!drawingRef.current) return
     e?.preventDefault?.()
-    activeStrokeIdRef.current = null
+
+    const canvas = canvasRef.current
+    const ctx = context()
+    if (ctx) ctx.closePath()
+
+    drawingRef.current = false
+    pointerIdRef.current = null
+
     try {
-      if (e?.currentTarget?.hasPointerCapture?.(e.pointerId)) {
-        e.currentTarget.releasePointerCapture(e.pointerId)
+      if (canvas?.hasPointerCapture?.(e.pointerId)) {
+        canvas.releasePointerCapture(e.pointerId)
       }
     } catch (_) {}
+
+    // Intentionally NO clearRect, width/height reset, state-to-canvas redraw,
+    // or other operation here. Releasing the mouse must leave the ink intact.
   }
 
-  const clear = () => {
-    activeStrokeIdRef.current = null
-    setStrokes([])
-  }
+  const clear = (e) => {
+    e?.preventDefault?.()
+    e?.stopPropagation?.()
 
-  useEffect(() => {
-    const finish = () => { activeStrokeIdRef.current = null }
-    window.addEventListener('pointerup', finish, true)
-    window.addEventListener('pointercancel', finish, true)
-    window.addEventListener('blur', finish, true)
-    return () => {
-      window.removeEventListener('pointerup', finish, true)
-      window.removeEventListener('pointercancel', finish, true)
-      window.removeEventListener('blur', finish, true)
-    }
-  }, [])
+    const canvas = canvasRef.current
+    const ctx = context()
+    if (canvas && ctx) ctx.clearRect(0, 0, canvas.width, canvas.height)
+
+    drawingRef.current = false
+    pointerIdRef.current = null
+    inkRef.current = false
+    setHasInk(false)
+  }
 
   return <div style={styles.signatureWrap}>
-    <svg
-      ref={svgRef}
-      viewBox="0 0 760 190"
-      preserveAspectRatio="none"
+    <canvas
+      ref={canvasRef}
+      width={1520}
+      height={380}
       onPointerDown={start}
       onPointerMove={move}
       onPointerUp={end}
       onPointerCancel={end}
       style={styles.signatureCanvas}
       aria-label="Draw your signature"
-      role="img"
-    >
-      {strokes.map(stroke => {
-        if (!stroke.points?.length) return null
-        const d = stroke.points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(2)} ${p.y.toFixed(2)}`).join(' ')
-        return <path key={stroke.id} d={d} fill="none" stroke="#0f172a" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-      })}
-    </svg>
+    />
     <div style={styles.signatureHintRow}>
-      <span style={styles.tip}>One completed line is enough to enable signing. Add as many strokes as you want — existing strokes will never be auto-cleared.</span>
-      <button type="button" onClick={clear} style={styles.clearSignature}>Clear signature</button>
+      <span style={styles.tip}>Draw normally, then release the mouse. Your signature will stay. You can add as many strokes as you need.</span>
+      <button type="button" onPointerDown={e=>e.stopPropagation()} onClick={clear} style={styles.clearSignature}>Clear signature</button>
     </div>
   </div>
 }
@@ -167,8 +169,8 @@ function Signup({ API_BASE }) {
   const [agreementDoc, setAgreementDoc] = useState(null)
   const [agreementLoading, setAgreementLoading] = useState(false)
   const [agreementRead, setAgreementRead] = useState(false)
-  const [signatureStrokes, setSignatureStrokes] = useState([])
-  const signatureHasInk = signatureStrokes.some(stroke => Array.isArray(stroke?.points) && stroke.points.length >= 2)
+  const signatureCanvasRef = useRef(null)
+  const [signatureHasInk, setSignatureHasInk] = useState(false)
   const [plans,setPlans]=useState(null)
   const [logoUpload,setLogoUpload]=useState({uploading:false,error:''})
   const [error,setError]=useState('')
@@ -212,7 +214,7 @@ function Signup({ API_BASE }) {
   }
 
   const loadAgreement=async()=>{
-    setAgreementLoading(true); setAgreementDoc(null); setAgreementRead(false); setSignatureStrokes([]); setError('')
+    setAgreementLoading(true); setAgreementDoc(null); setAgreementRead(false); setSignatureHasInk(false); setError('')
     // A changed/reloaded document must be signed again; never carry a signature
     // or confirmations forward onto a newly generated agreement hash.
     setAgreement(a=>({
@@ -258,7 +260,7 @@ function Signup({ API_BASE }) {
   const createAccount=async()=>{
     if(registered)return true
     if(!agreementReady){setError(`Complete before signing: ${agreementMissing.join(' · ')}`);return false}
-    const capturedSignature = signatureStrokesToDataUrl(signatureStrokes) || agreement.signature_data_url
+    const capturedSignature = signatureCanvasRef.current?.toDataURL('image/png') || agreement.signature_data_url
     if(!capturedSignature){
       setError('Please draw your signature before continuing.')
       return false
@@ -343,7 +345,7 @@ function Signup({ API_BASE }) {
             <div className="lt-signup-two" style={styles.twoCol}><Field label="Authorized representative · full legal name"><input value={agreement.signer_name} onChange={e=>setAgreement(a=>({...a,signer_name:e.target.value}))} style={styles.input} placeholder="Full legal name"/></Field><Field label="Position / title"><input value={agreement.signer_title} onChange={e=>setAgreement(a=>({...a,signer_title:e.target.value}))} style={styles.input} placeholder="Owner, President, Manager, etc."/></Field></div>
             <div style={styles.field}>
               <span style={styles.label}>Draw signature</span>
-              <SignaturePad strokes={signatureStrokes} setStrokes={setSignatureStrokes}/>
+              <SignaturePad key={agreementDoc.agreement_sha256} canvasRef={signatureCanvasRef} hasInk={signatureHasInk} setHasInk={setSignatureHasInk}/>
               {signatureHasInk&&<small style={styles.signatureCaptured}>✓ Signature detected. You can keep adding more strokes.</small>}
             </div>
             <div style={styles.checks}>
