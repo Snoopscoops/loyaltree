@@ -489,7 +489,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
     // Stamps and redemptions happen from the cashier's device, a separate
     // session, so this dashboard has no way to know data changed unless it
-    // asks again. Poll periodically to keep Leaves/Rings/Fruits current.
+    // asks again. Poll periodically to keep reward activity current.
     const interval = setInterval(loadData, 15000)
     return () => clearInterval(interval)
   }, [user])
@@ -1609,7 +1609,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   }
 
   const addToAppleWallet = (customer) => {
-    setMessage('Apple Wallet coming soon!')
+    if (!customer?.public_id) return
+    window.open(`${API_BASE}/api/v1/customer/${customer.public_id}/apple-wallet-pass`, '_blank')
   }
 
   const isPointsCard = program?.card_type === 'points'
@@ -1633,8 +1634,8 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     ? {
         key:'hybrid', accent:'#0d9488', soft:'#f0fdfa', border:'#99f6e4', icon:'✨',
         title:`Hybrid · Subscription + Reward ${hybridLoyaltyType === 'points' ? 'Points' : 'Stamps'}${hybridTierEnabled ? ` + Tier ${hybridTierUsesStamps ? 'Stamps' : 'Points'}` : ''}`,
-        customerLabel:'Members', customerIcon:'✨', dashboardLabel:'Hybrid Loyalty Dashboard',
-        scanTitle:'Scan Hybrid Card', scanDescription:'Manage subscription, rewards, and Tier progression from one Hybrid Card',
+        customerLabel:'Subscribers', customerIcon:'✨', dashboardLabel:'Hybrid Loyalty Dashboard',
+        scanTitle:'Record Transaction', scanDescription:'Record customer activity without switching between reward and Tier tools',
         recentTitle:'Recent Hybrid Activity', editDescription:`Subscription + Reward ${hybridLoyaltyType === 'points' ? 'Points' : 'Stamps'}${hybridTierEnabled ? ` + Tier ${hybridTierUsesStamps ? 'Stamps' : 'Points'}` : ''}`,
       }
     : isPointsCard
@@ -1663,12 +1664,12 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         border: '#99f6e4',
         icon: '🏋️',
         title: 'Subscription',
-        customerLabel: 'Members',
+        customerLabel: 'Subscribers',
         customerIcon: '👤',
         dashboardLabel: 'Subscription Dashboard',
-        scanTitle: 'Check In Member',
-        scanDescription: 'Verify subscription access and log a member visit',
-        recentTitle: 'Recent Members',
+        scanTitle: 'Check In Subscriber',
+        scanDescription: 'Verify subscription access and log a subscriber visit',
+        recentTitle: 'Recent Subscribers',
         editDescription: 'Configure subscription duration, price, perks, and terms',
       }
     : isMultipassCard
@@ -1735,6 +1736,25 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   // Leaves (customers) search - matches name, phone, or email
   const customerSearchTerm = customerSearch.trim().toLowerCase()
+  const activeNavGroup = ['staff','orderahead','giftcards','operations'].includes(activeTab)
+    ? 'operate'
+    : ['satisfaction','retention','crm'].includes(activeTab)
+    ? 'grow'
+    : activeTab === 'program'
+    ? 'card'
+    : ['billing','security','walletqueue'].includes(activeTab)
+    ? 'more'
+    : activeTab
+
+  const goOwnerNav = (group) => {
+    if (group === 'tree') return setActiveTab('tree')
+    if (group === 'customers') return setActiveTab('customers')
+    if (group === 'operate') return setActiveTab('staff')
+    if (group === 'grow') return setActiveTab('satisfaction')
+    if (group === 'card') return setActiveTab('program')
+    if (group === 'more') return setActiveTab('billing')
+  }
+
   const filteredCustomers = customerSearchTerm
     ? customers.filter(c => (
         (c.name || '').toLowerCase().includes(customerSearchTerm) ||
@@ -1794,9 +1814,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 : `⏰ Renews in ${subscription.days_left}d — Pay now`}
             </button>
           )}
-          <button onClick={() => { setOnboardingStep(0); setShowOnboarding(true); if (isTablet || isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>🎓 Setup Guide</button>
-          <button onClick={() => { setShowAnnouncements(true); markAnnouncementsChecked(); if (isTablet || isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>📢 Announcements</button>
-          <button onClick={() => { markAnalyticsChecked(); navigate('/analytics'); if (isTablet || isMobile) setMobileHeaderOpen(false) }} style={{...styles.navBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>📊 Analytics</button>
           {(isTablet || isMobile) && (
           <button
             type="button"
@@ -1812,13 +1829,6 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             {isStandaloneApp ? '✓ App Installed' : '📲 Add to Home Screen'}
           </button>
           )}
-          <button
-            onClick={() => { setMobileHeaderOpen(false); contactLoyaltyTreeSupport() }}
-            style={{...styles.supportBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}
-            title="Chat with LoyaltyTree Support on Messenger"
-          >
-            💬 Support
-          </button>
           <button onClick={() => { setMobileHeaderOpen(false); onLogout() }} style={{...styles.logoutBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>Logout</button>
         </div>
         )}
@@ -1934,7 +1944,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               ]
             : isHybridCard
             ? [
-                { value: membershipActive, label: 'Active Members', hint: 'Currently active subscriptions' },
+                { value: membershipActive, label: 'Active Subscribers', hint: 'Customers with active subscriptions' },
                 { value: hybridUsesPoints ? totalPoints : confirmedStamps, label: hybridUsesPoints ? 'Reward Points' : 'Reward Stamps', hint: hybridUsesPoints ? 'Total spendable reward points' : 'Total redeemable reward stamps' },
                 hybridTierEnabled
                   ? { value: hybridTierUsesStamps ? totalTierStamps : totalVipPoints, label: hybridTierUsesStamps ? 'Tier Stamps' : 'Tier Points', hint: 'Cumulative Tier progress; never spent on rewards' }
@@ -1942,7 +1952,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               ]
             : isMembershipCard
             ? [
-                { value: membershipActive, label: 'Active Members', hint: 'Currently allowed to check in' },
+                { value: membershipActive, label: 'Active Subscribers', hint: 'Currently allowed to check in' },
                 { value: membershipExpiringSoon, label: 'Expiring Soon', hint: 'Memberships ending within 7 days' },
                 { value: membershipExpired, label: 'Expired', hint: 'Memberships requiring renewal' },
               ]
@@ -1976,32 +1986,49 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         {/* Navigation Tabs */}
         <nav style={{...styles.tabs,...(isTablet?styles.tabsTablet:{}),...(isMobile?styles.tabsMobile:{})}} aria-label="Owner dashboard sections">
           {[
-            { id: 'tree', label: 'Overview', icon: cardExperience.icon },
-            { id: 'customers', label: cardExperience.customerLabel, icon: cardExperience.customerIcon },
-            { id: 'staff', label: 'Team', icon: '👥' },
-            ...(business?.order_ahead_enabled ? [{ id: 'orderahead', label: 'Order Ahead', icon: '🛍️' }] : []),
-            { id: 'satisfaction', label: 'Satisfaction', icon: '⭐' },
-            { id: 'program', label: 'Edit Card', icon: '✏️' },
-            { id: 'giftcards', label: 'Gift Cards', icon: '🎁' },
-            { id: 'billing', label: needsRenewal ? 'Billing ⚠️' : 'Billing', icon: '💳' },
+            { id:'tree', label:'Overview', icon:'⌂' },
+            { id:'customers', label:cardExperience.customerLabel, icon:'◉' },
+            { id:'operate', label:'Operate', icon:'▣' },
+            { id:'grow', label:'Grow', icon:'↗' },
+            { id:'card', label:'Card', icon:'◫' },
+            { id:'more', label:'More', icon:'•••' },
           ].map(tab => (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => goOwnerNav(tab.id)}
               style={{
                 ...styles.tab,
-                ...(activeTab === tab.id ? {
-                  background: '#0d9488',
-                  color: 'white',
-                  boxShadow: '0 8px 18px rgba(13,148,136,0.22)',
+                ...(activeNavGroup === tab.id ? {
+                  background:'#0d9488', color:'white', boxShadow:'0 8px 18px rgba(13,148,136,0.22)',
                 } : {}),
               }}
             >
-              <span aria-hidden="true">{tab.icon}</span>
-              <span>{tab.label}</span>
+              <span aria-hidden="true">{tab.icon}</span><span>{tab.label}</span>
             </button>
           ))}
         </nav>
+
+        {activeNavGroup === 'operate' && (
+          <div style={{...styles.subTabs,...(isMobile?styles.subTabsMobile:{})}}>
+            <button style={{...styles.subTab,...(activeTab==='staff'?styles.subTabActive:{})}} onClick={()=>setActiveTab('staff')}>Team</button>
+            {business?.order_ahead_enabled && <button style={{...styles.subTab,...(activeTab==='orderahead'?styles.subTabActive:{})}} onClick={()=>setActiveTab('orderahead')}>Order Ahead</button>}
+            <button style={{...styles.subTab,...(activeTab==='giftcards'?styles.subTabActive:{})}} onClick={()=>setActiveTab('giftcards')}>Gift Cards</button>
+          </div>
+        )}
+        {activeNavGroup === 'grow' && (
+          <div style={{...styles.subTabs,...(isMobile?styles.subTabsMobile:{})}}>
+            <button style={{...styles.subTab,...(activeTab==='satisfaction'?styles.subTabActive:{})}} onClick={()=>setActiveTab('satisfaction')}>Satisfaction</button>
+            <button style={styles.subTab} onClick={()=>{setShowAnnouncements(true);markAnnouncementsChecked()}}>Announcements</button>
+            <button style={styles.subTab} onClick={()=>{markAnalyticsChecked();navigate('/analytics')}}>Analytics</button>
+          </div>
+        )}
+        {activeNavGroup === 'more' && (
+          <div style={{...styles.subTabs,...(isMobile?styles.subTabsMobile:{})}}>
+            <button style={{...styles.subTab,...(activeTab==='billing'?styles.subTabActive:{})}} onClick={()=>setActiveTab('billing')}>{needsRenewal?'Billing ⚠️':'Billing'}</button>
+            <button style={styles.subTab} onClick={()=>{setOnboardingStep(0);setShowOnboarding(true)}}>Setup Guide</button>
+            <button style={styles.subTab} onClick={contactLoyaltyTreeSupport}>Support</button>
+          </div>
+        )}
       </section>
 
       {/* Tab Content */}
@@ -2067,9 +2094,9 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                   <span style={styles.activityLeaf}>🍃</span>
                   <span style={styles.activityName}>{c.name}</span>
                   <span style={styles.activityStamps}>
-                    {isPointsCard ? `${c.points_balance || 0} points` : isMultipassCard ? `${c.multipass_sessions_remaining || 0}/${c.multipass_total_sessions || 0} sessions` : isVipCard ? `${c.vip_tier?.name || 'Tier'} · ${vipUsesStamps ? `${c.stamp_count || 0} stamps` : `${c.vip_points || 0} pts`}` : isMembershipCard ? `${(c.membership_effective_status || c.membership_status || 'inactive').toUpperCase()}` : `${c.stamp_count} rings`}
+                    {isPointsCard ? `${c.points_balance || 0} points` : isMultipassCard ? `${c.multipass_sessions_remaining || 0}/${c.multipass_total_sessions || 0} sessions` : isVipCard ? `${c.vip_tier?.name || 'Tier'} · ${vipUsesStamps ? `${c.stamp_count || 0} stamps` : `${c.vip_points || 0} pts`}` : isMembershipCard ? `${(c.membership_effective_status || c.membership_status || 'inactive').toUpperCase()}` : `${c.stamp_count} stamps`}
                   </span>
-                  {c.reward_unlocked && <span style={styles.activityFruit}>🍎</span>}
+                  {c.reward_unlocked && <span style={styles.activityFruit}>🎁</span>}
                 </div>
               ))}
             </div>
@@ -2118,7 +2145,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                       <>
                         <p style={{...styles.stampText,fontWeight:800}}>✨ {(c.membership_effective_status || c.membership_status || 'inactive').toUpperCase()} · {hybridUsesPoints ? `${c.points_balance || 0} reward points` : `${c.stamp_count || 0}/${program?.stamp_goal || 8} reward stamps`}</p>
                         {hybridTierEnabled && <p style={{...styles.lastStampedText,fontWeight:800,color:c.vip_tier?.color||'#ca8a04'}}>👑 {c.vip_tier?.name || 'Tier'} · {hybridTierUsesStamps ? `${c.tier_stamp_count || 0} Tier stamps` : `${c.vip_points || 0} Tier points`}{c.vip_next_tier ? ` · ${Math.max(0,Number(c.vip_next_tier.threshold||0)-Number(hybridTierUsesStamps?(c.tier_stamp_count||0):(c.vip_points||0)))} to ${c.vip_next_tier.name}` : ' · Highest tier'}</p>}
-                        {c.membership_unlock?.enabled && <p style={styles.lastStampedText}>{c.membership_unlock.unlocked ? '✓ Full membership benefits unlocked' : `🔒 Benefits: ${c.membership_unlock.current}/${c.membership_unlock.threshold} Tier ${c.membership_unlock.unit}`}</p>}
+                        {c.membership_unlock?.enabled && <p style={styles.lastStampedText}>{c.membership_unlock.unlocked ? '✓ Full subscription benefits unlocked' : `🔒 Benefits: ${c.membership_unlock.current}/${c.membership_unlock.threshold} Tier ${c.membership_unlock.unit}`}</p>}
                         <p style={styles.lastStampedText}>{(c.membership_effective_status || c.membership_status) === 'lifetime' ? 'Lifetime subscription' : c.membership_expires_at ? `Active until ${c.membership_expires_at}` : 'Subscription not yet activated'}</p>
                       </>
                     ) : isPointsCard ? (
@@ -2166,7 +2193,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                             }}></span>
                           ))}
                         </div>
-                        <p style={styles.stampText}>{c.stamp_count % (program?.stamp_goal || 8)} / {program?.stamp_goal || 8} rings</p>
+                        <p style={styles.stampText}>{c.stamp_count % (program?.stamp_goal || 8)} / {program?.stamp_goal || 8} stamps</p>
                       </>
                     )}
                     {isHybridCard ? (
@@ -2196,7 +2223,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                         ↻ Resets {formatCardDate(cardResetDate(c.card_expires_at))}
                       </span>
                     )}
-                    {c.reward_unlocked && <span style={styles.fruitBadge}>🍎 Reward Ready!</span>}
+                    {c.reward_unlocked && <span style={styles.fruitBadge}>🎁 Reward Ready!</span>}
                     {isMultipassCard && (c.multipass_sessions_remaining || 0) <= 0 && (c.multipass_total_sessions || 0) > 0 && (
                       <span style={styles.fruitBadge}>🎫 Pass Complete</span>
                     )}
@@ -2893,7 +2920,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 {isHybridCard ? (
                   <div style={styles.cardProgress}>
                     <p style={{fontSize:26,fontWeight:900,color:'white',margin:'8px 0 2px'}}>✨ {(selectedCustomer.membership_effective_status || selectedCustomer.membership_status || 'inactive').toUpperCase()}</p>
-                    <p style={{fontSize:12.5,color:'rgba(255,255,255,.85)',margin:'2px 0 10px'}}>{(selectedCustomer.membership_effective_status || selectedCustomer.membership_status) === 'lifetime' ? 'Lifetime subscription' : selectedCustomer.membership_expires_at ? `Membership until ${selectedCustomer.membership_expires_at}` : 'Subscription not yet activated'}</p>
+                    <p style={{fontSize:12.5,color:'rgba(255,255,255,.85)',margin:'2px 0 10px'}}>{(selectedCustomer.membership_effective_status || selectedCustomer.membership_status) === 'lifetime' ? 'Lifetime subscription' : selectedCustomer.membership_expires_at ? `Subscription until ${selectedCustomer.membership_expires_at}` : 'Subscription not yet activated'}</p>
                     {hybridUsesPoints ? (
                       <>
                         <p style={{fontSize:32,fontWeight:800,color:'white',margin:'8px 0 0'}}>{selectedCustomer.points_balance || 0}</p>
@@ -2910,7 +2937,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                       <p style={{fontSize:12,fontWeight:900,color:'white',margin:'3px 0'}}>👑 {selectedCustomer.vip_tier?.name || 'Tier'} · {hybridTierUsesStamps ? `${selectedCustomer.tier_stamp_count || 0} Tier stamps` : `${selectedCustomer.vip_points || 0} Tier points`}</p>
                       {selectedCustomer.vip_next_tier && <p style={{fontSize:11,color:'rgba(255,255,255,.78)',margin:'3px 0'}}>{Math.max(0,Number(selectedCustomer.vip_next_tier.threshold||0)-Number(hybridTierUsesStamps?(selectedCustomer.tier_stamp_count||0):(selectedCustomer.vip_points||0)))} {hybridTierUsesStamps?'stamps':'points'} to {selectedCustomer.vip_next_tier.name}</p>}
                     </div>}
-                    {selectedCustomer.membership_unlock?.enabled && <p style={{fontSize:12,color:selectedCustomer.membership_unlock.unlocked?'#dcfce7':'#fef3c7',fontWeight:800,textAlign:'left',margin:'7px 0'}}>{selectedCustomer.membership_unlock.unlocked ? '✓ Full membership benefits unlocked' : `🔒 Benefits locked · ${selectedCustomer.membership_unlock.current}/${selectedCustomer.membership_unlock.threshold} Tier ${selectedCustomer.membership_unlock.unit}`}</p>}
+                    {selectedCustomer.membership_unlock?.enabled && <p style={{fontSize:12,color:selectedCustomer.membership_unlock.unlocked?'#dcfce7':'#fef3c7',fontWeight:800,textAlign:'left',margin:'7px 0'}}>{selectedCustomer.membership_unlock.unlocked ? '✓ Full subscription benefits unlocked' : `🔒 Benefits locked · ${selectedCustomer.membership_unlock.current}/${selectedCustomer.membership_unlock.threshold} Tier ${selectedCustomer.membership_unlock.unit}`}</p>}
                     {(!selectedCustomer.membership_unlock?.enabled || selectedCustomer.membership_unlock?.unlocked) && (Array.isArray(program?.membership_benefits) && program.membership_benefits.length ? program.membership_benefits : (program?.membership_services||[]).map((name,i)=>({id:`legacy-${i}`,name}))).slice(0,3).map((benefit,i)=><p key={benefit.id||i} style={{fontSize:12,color:'white',margin:'4px 0',textAlign:'left'}}>✓ {benefit.name || benefit}</p>)}
                   </div>
                 ) : isPointsCard ? (
@@ -3005,7 +3032,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                         color: 'rgba(255,255,255,0.72)',
                         margin: '6px 0 0',
                       }}>
-                        Member since {selectedCustomer.membership_start_date}
+                        Subscriber since {selectedCustomer.membership_start_date}
                       </p>
                     )}
 
@@ -3024,7 +3051,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                           textTransform: 'uppercase',
                           letterSpacing: 0.6,
                         }}>
-                          Membership perks
+                          Subscription benefits
                         </p>
                         {program.membership_services.slice(0, 5).map((benefit, i) => (
                           <p key={i} style={{
@@ -3206,14 +3233,14 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                         disabled={membershipActionLoading}
                         onClick={logMemberVisitFromOwner}
                       >
-                        {membershipActionLoading ? 'Saving visit…' : 'Log Member Visit'}
+                        {membershipActionLoading ? 'Saving visit…' : 'Log Subscription Visit'}
                       </button>
                     </div>
                   </>
                 )}
 
                 {(isMembershipCard || isHybridCard) && membershipBenefitStatus.length > 0 && <div style={{marginBottom:14,display:'grid',gap:8}}>
-                  <strong style={{fontSize:14,color:'#115e59'}}>Membership benefits</strong>
+                  <strong style={{fontSize:14,color:'#115e59'}}>Subscription benefits</strong>
                   {membershipBenefitStatus.map(benefit => <div key={benefit.id} style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'center',padding:'9px 11px',border:'1px solid #e2e8f0',borderRadius:10,background:benefit.available?'#f0fdf4':'#f8fafc'}}>
                     <div><div style={{fontSize:13,fontWeight:800,color:'#0f172a'}}>{benefit.name}</div><div style={{fontSize:11,color:'#64748b'}}>{benefit.remaining_in_window==null?'Unlimited':`${benefit.remaining_in_window} remaining`}{benefit.unavailable_reason?` · ${benefit.unavailable_reason}`:''}</div></div>
                     <span style={{fontSize:10,fontWeight:900,color:benefit.available?'#15803d':'#64748b'}}>{benefit.available?'AVAILABLE':'USED / UNAVAILABLE'}</span>
@@ -3223,11 +3250,11 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:12, marginBottom:12}}>
                   <div>
                     <strong style={{fontSize:15,color:'#115e59'}}>
-                      {isHybridCard ? 'Hybrid subscription, rewards & tier activity' : isMultipassCard ? 'Multi-Pass activity' : isMembershipCard ? 'Member visit analytics' : isPointsCard ? 'Points activity' : isVipCard ? 'Tier activity' : 'Loyalty activity'}
+                      {isHybridCard ? 'Hybrid subscription, rewards & tier activity' : isMultipassCard ? 'Multi-Pass activity' : isMembershipCard ? 'Subscription visit analytics' : isPointsCard ? 'Points activity' : isVipCard ? 'Tier activity' : 'Loyalty activity'}
                     </strong>
                     <div style={{fontSize:12,color:'#64748b',marginTop:3}}>
                       {isHybridCard
-                        ? `Membership visits plus ${hybridUsesPoints ? 'points' : 'stamp'} activity`
+                        ? `Subscription visits plus ${hybridUsesPoints ? 'points' : 'stamp'} activity`
                         : isMembershipCard
                         ? 'Service, notes, cashier, branch, and visit date'
                         : isMultipassCard
@@ -3508,7 +3535,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     <label style={styles.label}>Manual tier override</label>
                     <select style={styles.input} value={editForm.vip_manual_tier_id||''} onChange={e=>setEditForm({...editForm,vip_manual_tier_id:e.target.value})}><option value=''>Automatic from {hybridTierUsesStamps?'Tier stamps':'Tier points'}</option>{(program?.vip_tiers||[]).map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select>
                   </div>}
-                  <label style={styles.label}>Membership status</label>
+                  <label style={styles.label}>Subscription status</label>
                   <input style={styles.input} value={(editForm.membership_status || 'inactive').toUpperCase()} readOnly />
                   <label style={styles.label}>Started</label>
                   <input style={styles.input} type="date" value={editForm.membership_start_date || ''} readOnly />
@@ -3556,7 +3583,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 </>
               ) : isMembershipCard ? (
                 <>
-                  <label style={styles.label}>Membership status</label>
+                  <label style={styles.label}>Subscription status</label>
                   <input style={styles.input} value={(editForm.membership_status || 'inactive').toUpperCase()} readOnly />
                   <label style={styles.label}>Started</label>
                   <input style={styles.input} type="date" value={editForm.membership_start_date || ''} readOnly />
@@ -4912,6 +4939,33 @@ const styles = {
     marginTop: 10,
     color: '#98a2b3',
     fontSize: 12,
+  },
+  subTabs: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 8,
+    padding: '10px 2px 2px',
+  },
+  subTabsMobile: {
+    overflowX: 'auto',
+    flexWrap: 'nowrap',
+    paddingBottom: 4,
+  },
+  subTab: {
+    border: '1px solid #e2e8f0',
+    background: '#fff',
+    color: '#475569',
+    borderRadius: 999,
+    padding: '8px 12px',
+    fontSize: 12,
+    fontWeight: 800,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  },
+  subTabActive: {
+    borderColor: '#99f6e4',
+    background: '#f0fdfa',
+    color: '#0f766e',
   },
   tabs: {
     display: 'flex',

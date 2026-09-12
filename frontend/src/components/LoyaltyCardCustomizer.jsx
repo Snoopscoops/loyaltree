@@ -113,6 +113,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
   const [guidedStep, setGuidedStep] = useState(0)
   const [guidedError, setGuidedError] = useState('')
   const [guidedMobile, setGuidedMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth <= 640)
+  const [previewSurface, setPreviewSurface] = useState('card')
+  const [hybridEditorSection, setHybridEditorSection] = useState('subscription')
+  const [showMobilePreview, setShowMobilePreview] = useState(false)
   const [plan, setPlan] = useState('starter')
   const [planFeatures, setPlanFeatures] = useState({ hybrid_cards: false, gift_cards: false })
 
@@ -1338,11 +1341,27 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
         <p style={styles.subtitle}>Changes here update what customers see on their wallet pass and join page.</p>
       </div>
 
+      {guidedMobile && !showMobilePreview && (
+        <button type="button" onClick={()=>setShowMobilePreview(true)} style={{position:'fixed',right:14,bottom:16,zIndex:40,border:0,borderRadius:999,padding:'12px 16px',background:'#0d9488',color:'#fff',fontWeight:900,boxShadow:'0 10px 28px rgba(13,148,136,.28)'}}>Preview Card</button>
+      )}
+
       <div className="lc-grid" style={styles.grid}>
         {/* Live preview */}
-        <div style={{ ...styles.previewCol, gridArea: 'preview' }}>
-          <div className="lc-preview-sticky" style={styles.previewSticky}>
-            <div style={styles.previewLabel}>Live preview</div>
+        <div style={{
+          ...styles.previewCol,
+          gridArea:'preview',
+          ...(guidedMobile ? (showMobilePreview ? {display:'block',position:'fixed',inset:0,zIndex:50,overflowY:'auto',background:'#f8fafc',padding:16} : {display:'none'}) : {}),
+        }}>
+          <div className="lc-preview-sticky" style={{...styles.previewSticky,...(guidedMobile?{position:'static',maxWidth:520,margin:'0 auto'}:{})}}>
+            {guidedMobile && <button type="button" onClick={()=>setShowMobilePreview(false)} style={{...styles.typeChangeBtn,width:'100%',marginBottom:10,padding:'10px 12px'}}>Close Preview</button>}
+            <div style={styles.previewLabel}>Preview</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:6,marginBottom:10}}>
+              {[
+                ['card','LoyaltyTree'],['apple','Apple'],['google','Google']
+              ].map(([value,label]) => <button key={value} type="button" onClick={()=>setPreviewSurface(value)} style={{...styles.typeChangeBtn,padding:'8px 6px',...(previewSurface===value?{background:'#0d9488',color:'#fff',borderColor:'#0d9488'}:{})}}>{label}</button>)}
+            </div>
+            {previewSurface === 'card' ? (
+              <>
             <div style={styles.card}>
               <div style={{ ...styles.cardHeader, background: (form.card_type === 'vip' || (form.card_type === 'hybrid' && hybridTierEnabled)) ? (previewVipTier.color || form.primary_color || '#0d9488') : (form.primary_color || '#0d9488') }}>
                 <span style={styles.cardHeaderTitle}>
@@ -1481,6 +1500,48 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
             ) : (
               <p style={styles.cardDescriptionPlaceholder}>Add a short description below &mdash; it'll appear right here, under the card.</p>
             )}
+              </>
+            ) : (
+              <>
+            <div style={styles.previewLabel}>{previewSurface === 'apple' ? 'Apple Wallet preview' : 'Google Wallet preview'}</div>
+            <div style={{...styles.wallet20Preview,background:walletPreviewBackground}}>
+              {form.hero_image_url && <img src={form.hero_image_url} alt="" style={styles.wallet20PreviewBg}/>}
+              <div style={styles.wallet20PreviewShade}/>
+              <div style={styles.wallet20PreviewTop}>
+                <div style={styles.wallet20PreviewBrand}>
+                  {form.program_logo_url?<img src={form.program_logo_url} alt="" style={styles.wallet20PreviewLogo}/>:<span style={styles.wallet20PreviewLogoFallback}>🌳</span>}
+                  <div><b>{form.card_name||'Your Business Card'}</b><small>{form.card_type.toUpperCase()}</small></div>
+                </div>
+                <span style={styles.wallet20PreviewMenu}>•••</span>
+              </div>
+              <div style={styles.wallet20PreviewBottom}>
+                <div style={styles.wallet20PreviewInfo}>
+                  <div><small>CUSTOMER</small><strong>John Customer</strong></div>
+                  <div style={styles.wallet20PreviewMetric}>
+                    <small>{form.card_type==='hybrid'?(effectiveLoyaltyType==='points'?'POINTS':'STAMPS'):form.card_type==='points'?'POINTS':form.card_type==='multipass'?'SESSIONS LEFT':form.card_type==='membership'?'STATUS':form.card_type==='vip'?'TIER':'STAMPS'}</small>
+                    <strong>{form.card_type==='hybrid'?(effectiveLoyaltyType==='points'?'2,850':'5 / 8'):form.card_type==='points'?'2,850':form.card_type==='multipass'?'5 / 10':form.card_type==='membership'?'ACTIVE':form.card_type==='vip'?'GOLD':'5 / 8'}</strong>
+                  </div>
+                </div>
+                <div style={styles.wallet20PreviewQrBox}>
+                  <img style={styles.wallet20PreviewQr} alt="QR preview" src={`https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(`${API_BASE}/join/${user?.business_slug||'preview'}`)}`}/>
+                </div>
+              </div>
+              {isHybrid && (
+                <div style={{...styles.wallet20ResetPreview,marginBottom:8}}>
+                  <span>☕ SUBSCRIPTION</span><strong>ACTIVE · {Number(form.membership_duration_days)||30} DAYS</strong>
+                </div>
+              )}
+              {previewResetDate && (
+                <div style={styles.wallet20ResetPreview}>
+                  <span>🔄 RESET ON</span>
+                  <strong>{previewResetDate}</strong>
+                </div>
+              )}
+            </div>
+            <p style={styles.hint}>Preview is intentionally approximate: Apple and Google control parts of their native layout. LoyaltyTree keeps your logo, colors and customer information as consistent as each platform allows.</p>
+
+              </>
+            )}
           </div>
         </div>
 
@@ -1526,20 +1587,20 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
               <h3 style={{margin:'0 0 6px',fontSize:18,color:'#0f172a'}}>Subscription + Rewards + Tier</h3>
               <p style={{...styles.hint,margin:'0 0 14px'}}>Subscription is always included. Choose whether Rewards and Tier progress use Points or Stamps. They run independently on the same customer card.</p>
               <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',gap:10}}>
-                <div style={{padding:14,border:'1px solid #99f6e4',borderRadius:12,background:'#fff'}}>
-                  <div style={{display:'flex',justifyContent:'space-between',gap:8,alignItems:'center'}}><strong style={{fontSize:14}}>1 · Subscription</strong><span style={{fontSize:10,fontWeight:900,color:'#0f766e',background:'#ccfbf1',padding:'4px 7px',borderRadius:999}}>INCLUDED</span></div>
+                <div style={{padding:14,border:`1px solid ${hybridEditorSection==='subscription'?'#0d9488':'#99f6e4'}`,borderRadius:12,background:'#fff',boxShadow:hybridEditorSection==='subscription'?'0 0 0 2px rgba(13,148,136,.08)':'none'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',gap:8,alignItems:'center'}}><strong style={{fontSize:14}}>1 · Subscription</strong><button type="button" onClick={()=>setHybridEditorSection('subscription')} style={{...styles.typeChangeBtn,padding:'5px 8px'}}>Edit</button></div>
                   <div style={{fontSize:12,color:'#64748b',marginTop:7,lineHeight:1.45}}>Controls access, duration, price, and member benefits.</div>
                 </div>
-                <div style={{padding:14,border:'1px solid #bfdbfe',borderRadius:12,background:'#fff'}}>
-                  <strong style={{fontSize:14}}>2 · Rewards</strong>
+                <div style={{padding:14,border:`1px solid ${hybridEditorSection==='rewards'?'#2563eb':'#bfdbfe'}`,borderRadius:12,background:'#fff',boxShadow:hybridEditorSection==='rewards'?'0 0 0 2px rgba(37,99,235,.08)':'none'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',gap:8,alignItems:'center'}}><strong style={{fontSize:14}}>2 · Rewards</strong><button type="button" onClick={()=>setHybridEditorSection('rewards')} style={{...styles.typeChangeBtn,padding:'5px 8px'}}>Edit</button></div>
                   <div style={{display:'flex',gap:6,marginTop:9}}>
                     <button type="button" onClick={()=>update('hybrid_loyalty_type','points')} style={{...styles.typeChangeBtn,flex:1,padding:'8px 9px',...(effectiveLoyaltyType==='points'?{background:'#2563eb',color:'#fff',borderColor:'#2563eb'}:{})}}>Points</button>
                     <button type="button" onClick={()=>update('hybrid_loyalty_type','stamp')} style={{...styles.typeChangeBtn,flex:1,padding:'8px 9px',...(effectiveLoyaltyType==='stamp'?{background:'#2563eb',color:'#fff',borderColor:'#2563eb'}:{})}}>Stamps</button>
                   </div>
                   <div style={{fontSize:12,color:'#64748b',marginTop:7,lineHeight:1.45}}>Redeemable balance used to unlock prizes or freebies.</div>
                 </div>
-                <div style={{padding:14,border:'1px solid #fde68a',borderRadius:12,background:'#fff'}}>
-                  <strong style={{fontSize:14}}>3 · Tier</strong>
+                <div style={{padding:14,border:`1px solid ${hybridEditorSection==='tier'?'#ca8a04':'#fde68a'}`,borderRadius:12,background:'#fff',boxShadow:hybridEditorSection==='tier'?'0 0 0 2px rgba(202,138,4,.08)':'none'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',gap:8,alignItems:'center'}}><strong style={{fontSize:14}}>3 · Tier</strong><button type="button" onClick={()=>setHybridEditorSection('tier')} style={{...styles.typeChangeBtn,padding:'5px 8px'}}>Edit</button></div>
                   <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:5,marginTop:9}}>
                     <button type="button" onClick={()=>{update('hybrid_tier_enabled',false);update('membership_benefits_unlock_enabled',false)}} style={{...styles.typeChangeBtn,padding:'8px 6px',...(!hybridTierEnabled?{background:'#64748b',color:'#fff',borderColor:'#64748b'}:{})}}>Off</button>
                     <button type="button" onClick={()=>{update('hybrid_tier_enabled',true);updateHybridTierProgression('points')}} style={{...styles.typeChangeBtn,padding:'8px 6px',...(hybridTierEnabled&&!tierUsesStamps?{background:'#ca8a04',color:'#fff',borderColor:'#ca8a04'}:{})}}>Points</button>
@@ -1554,7 +1615,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
             </div>
           )}
 
-          {isHybrid && (
+          {isHybrid && hybridEditorSection === 'subscription' && (
             <div style={{...styles.pointsSection,border:'1px solid #99f6e4',background:'#f0fdfa'}}>
               <div style={{...styles.wallet20Eyebrow,marginBottom:6}}>1 · Subscription</div>
               <h3 style={{margin:'0 0 6px',fontSize:18,color:'#0f172a'}}>Set up the subscription side</h3>
@@ -1651,6 +1712,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
             </div>
           )}
 
+          {(!isHybrid || hybridEditorSection === 'rewards') && (
+            <>
           {isHybrid && <div style={{...styles.wallet20Eyebrow,margin:'4px 0 8px'}}>2 · {effectiveLoyaltyType === 'points' ? 'Points Rewards' : 'Stamp Rewards'}</div>}
 
           {effectiveLoyaltyType === 'stamp' ? (
@@ -2021,8 +2084,18 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
               </div>
             </div>
           )}
+            </>
+          )}
 
-          {isHybrid && hybridTierEnabled && (
+          {isHybrid && hybridEditorSection === 'tier' && !hybridTierEnabled && (
+            <div style={{...styles.pointsSection,border:'1px dashed #cbd5e1',background:'#f8fafc',textAlign:'center'}}>
+              <div style={{fontSize:28,marginBottom:6}}>👑</div>
+              <h3 style={{margin:'0 0 6px'}}>Tier is off</h3>
+              <p style={{...styles.hint,margin:'0 auto 12px',maxWidth:420}}>Turn Tier on from the Hybrid Setup above and choose Points or Stamps. Then the Tier rules will appear here.</p>
+            </div>
+          )}
+
+          {isHybrid && hybridEditorSection === 'tier' && hybridTierEnabled && (
             <div style={{...styles.pointsSection,border:'1px solid #fde68a',background:'#fffbeb'}}>
               <div style={{...styles.wallet20Eyebrow,marginBottom:6}}>3 · Tier</div>
               <h3 style={{margin:'0 0 6px',fontSize:18,color:'#0f172a'}}>Tier by {tierUsesStamps ? 'Stamps' : 'Points'}</h3>
@@ -2051,60 +2124,6 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                 </div>
             </div>
           )}
-
-          <div style={styles.wallet20Box}>
-            <div style={styles.wallet20TitleRow}>
-              <div>
-                <div style={styles.wallet20Eyebrow}>Card Cycle</div>
-                <h3 style={styles.wallet20Title}>Card expiration</h3>
-              </div>
-              <span style={styles.wallet20Badge}>{form.card_expiration_enabled ? 'Enabled' : 'Optional'}</span>
-            </div>
-
-            <label style={{display:'flex',gap:10,alignItems:'flex-start',fontSize:13,fontWeight:800,cursor:'pointer',marginBottom:12}}>
-              <input
-                type="checkbox"
-                checked={form.card_expiration_enabled === true}
-                onChange={e => update('card_expiration_enabled', e.target.checked)}
-                style={{marginTop:2}}
-              />
-              <span>
-                Automatically expire each customer's card
-                <span style={{display:'block',fontWeight:500,color:'#64748b',marginTop:4,lineHeight:1.5}}>
-                  Each member gets their own cycle starting from enrollment. Turning this on for the first time starts existing members from today.
-                </span>
-              </span>
-            </label>
-
-            {form.card_expiration_enabled && (
-              <div style={styles.fieldGroup}>
-                <label style={styles.label}>Card valid for</label>
-                <div style={{...styles.colorRow,maxWidth:190}}>
-                  <input
-                    style={styles.input}
-                    type="number"
-                    min={1}
-                    max={3650}
-                    value={form.card_validity_days}
-                    onChange={e => update('card_validity_days', e.target.value)}
-                  />
-                  <span style={styles.unit}>days</span>
-                </div>
-                <p style={styles.hint}>
-                  {effectiveLoyaltyType === 'stamp'
-                    ? (isHybrid ? 'At expiry, reward stamps reset to 0; Tier progress also resets when enabled, and subscription access expires for the new card cycle.' : 'At expiry, stamps reset to 0 and reward milestones become available again in the new cycle.')
-                    : effectiveLoyaltyType === 'points'
-                    ? (isHybrid ? 'At expiry, reward points reset to 0; Tier progress also resets when enabled, and subscription access expires for the new card cycle.' : 'At expiry, the current points balance resets to 0. Purchase/redemption history is kept.')
-                    : form.card_type === 'vip'
-                    ? 'At expiry, tier points reset to 0 and the member returns to the starting tier. Tier history is kept.'
-                    : form.card_type === 'multipass'
-                    ? 'At expiry, the current multi-pass becomes unusable even if sessions remain. A new pass must be issued.'
-                    : 'At expiry, the subscription becomes EXPIRED and must be renewed or reactivated.'}
-                </p>
-                <p style={styles.hint}>Changing the number of days affects new/next cycles; it does not wipe current balances when you save.</p>
-              </div>
-            )}
-          </div>
 
           <div style={styles.wallet20Box}>
             <div style={styles.wallet20TitleRow}>
@@ -2219,54 +2238,76 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
               <div><b>Google Wallet</b><span>Uses your main native color plus the matching branded hero/header treatment.</span></div>
             </div>
 
-            <div style={styles.previewLabel}>Approximate customer view</div>
-            <div style={{...styles.wallet20Preview,background:walletPreviewBackground}}>
-              {form.hero_image_url && <img src={form.hero_image_url} alt="" style={styles.wallet20PreviewBg}/>}
-              <div style={styles.wallet20PreviewShade}/>
-              <div style={styles.wallet20PreviewTop}>
-                <div style={styles.wallet20PreviewBrand}>
-                  {form.program_logo_url?<img src={form.program_logo_url} alt="" style={styles.wallet20PreviewLogo}/>:<span style={styles.wallet20PreviewLogoFallback}>🌳</span>}
-                  <div><b>{form.card_name||'Your Business Card'}</b><small>{form.card_type.toUpperCase()}</small></div>
-                </div>
-                <span style={styles.wallet20PreviewMenu}>•••</span>
-              </div>
-              <div style={styles.wallet20PreviewBottom}>
-                <div style={styles.wallet20PreviewInfo}>
-                  <div><small>MEMBER</small><strong>John Customer</strong></div>
-                  <div style={styles.wallet20PreviewMetric}>
-                    <small>{form.card_type==='hybrid'?(effectiveLoyaltyType==='points'?'POINTS':'STAMPS'):form.card_type==='points'?'POINTS':form.card_type==='multipass'?'SESSIONS LEFT':form.card_type==='membership'?'STATUS':form.card_type==='vip'?'TIER':'STAMPS'}</small>
-                    <strong>{form.card_type==='hybrid'?(effectiveLoyaltyType==='points'?'2,850':'5 / 8'):form.card_type==='points'?'2,850':form.card_type==='multipass'?'5 / 10':form.card_type==='membership'?'ACTIVE':form.card_type==='vip'?'GOLD':'5 / 8'}</strong>
-                  </div>
-                </div>
-                <div style={styles.wallet20PreviewQrBox}>
-                  <img style={styles.wallet20PreviewQr} alt="QR preview" src={`https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(`${API_BASE}/join/${user?.business_slug||'preview'}`)}`}/>
-                </div>
-              </div>
-              {isHybrid && (
-                <div style={{...styles.wallet20ResetPreview,marginBottom:8}}>
-                  <span>☕ SUBSCRIPTION</span><strong>ACTIVE · {Number(form.membership_duration_days)||30} DAYS</strong>
-                </div>
-              )}
-              {previewResetDate && (
-                <div style={styles.wallet20ResetPreview}>
-                  <span>🔄 RESET ON</span>
-                  <strong>{previewResetDate}</strong>
-                </div>
-              )}
-            </div>
-            <p style={styles.hint}>Preview is intentionally approximate: Apple and Google control parts of their native layout. LoyaltyTree keeps your logo, colors and customer information as consistent as each platform allows.</p>
           </div>
 
-          <div style={styles.fieldGroup}>
-            <label style={styles.label}>Google review link</label>
-            <input
-              style={styles.input}
-              placeholder="https://g.page/r/..."
-              value={form.google_review_url}
-              onChange={e => update('google_review_url', e.target.value)}
-            />
-            <p style={styles.hint}>Growth &amp; Pro plans only &mdash; prompted right after a customer redeems a reward.</p>
+          <details style={{...styles.optionalBranding,marginTop:16}}>
+            <summary style={{fontWeight:900,fontSize:14,color:'#334155',cursor:'pointer'}}>Advanced Settings</summary>
+            <div style={{marginTop:14}}>
+<div style={styles.wallet20Box}>
+            <div style={styles.wallet20TitleRow}>
+              <div>
+                <div style={styles.wallet20Eyebrow}>Card Cycle</div>
+                <h3 style={styles.wallet20Title}>Card expiration</h3>
+              </div>
+              <span style={styles.wallet20Badge}>{form.card_expiration_enabled ? 'Enabled' : 'Optional'}</span>
+            </div>
+
+            <label style={{display:'flex',gap:10,alignItems:'flex-start',fontSize:13,fontWeight:800,cursor:'pointer',marginBottom:12}}>
+              <input
+                type="checkbox"
+                checked={form.card_expiration_enabled === true}
+                onChange={e => update('card_expiration_enabled', e.target.checked)}
+                style={{marginTop:2}}
+              />
+              <span>
+                Automatically expire each customer's card
+                <span style={{display:'block',fontWeight:500,color:'#64748b',marginTop:4,lineHeight:1.5}}>
+                  Each customer gets their own cycle starting from enrollment. Turning this on for the first time starts existing members from today.
+                </span>
+              </span>
+            </label>
+
+            {form.card_expiration_enabled && (
+              <div style={styles.fieldGroup}>
+                <label style={styles.label}>Card valid for</label>
+                <div style={{...styles.colorRow,maxWidth:190}}>
+                  <input
+                    style={styles.input}
+                    type="number"
+                    min={1}
+                    max={3650}
+                    value={form.card_validity_days}
+                    onChange={e => update('card_validity_days', e.target.value)}
+                  />
+                  <span style={styles.unit}>days</span>
+                </div>
+                <p style={styles.hint}>
+                  {effectiveLoyaltyType === 'stamp'
+                    ? (isHybrid ? 'At expiry, reward stamps reset to 0; Tier progress also resets when enabled, and subscription access expires for the new card cycle.' : 'At expiry, stamps reset to 0 and reward milestones become available again in the new cycle.')
+                    : effectiveLoyaltyType === 'points'
+                    ? (isHybrid ? 'At expiry, reward points reset to 0; Tier progress also resets when enabled, and subscription access expires for the new card cycle.' : 'At expiry, the current points balance resets to 0. Purchase/redemption history is kept.')
+                    : form.card_type === 'vip'
+                    ? 'At expiry, tier points reset to 0 and the customer returns to the starting tier. Tier history is kept.'
+                    : form.card_type === 'multipass'
+                    ? 'At expiry, the current multi-pass becomes unusable even if sessions remain. A new pass must be issued.'
+                    : 'At expiry, the subscription becomes EXPIRED and must be renewed or reactivated.'}
+                </p>
+                <p style={styles.hint}>Changing the number of days affects new/next cycles; it does not wipe current balances when you save.</p>
+              </div>
+            )}
           </div>
+              <div style={{...styles.fieldGroup,marginTop:14}}>
+                <label style={styles.label}>Google review link</label>
+                <input
+                  style={styles.input}
+                  placeholder="https://g.page/r/..."
+                  value={form.google_review_url}
+                  onChange={e => update('google_review_url', e.target.value)}
+                />
+                <p style={styles.hint}>Growth &amp; Pro plans only — prompted after a customer redeems a reward.</p>
+              </div>
+            </div>
+          </details>
 
           <div style={styles.walletStatus}>
             <span>🎫 Google Wallet card</span>
