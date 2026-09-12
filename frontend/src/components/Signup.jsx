@@ -341,7 +341,11 @@ function Signup({ API_BASE }) {
             <h2 style={styles.signerTitle}>Electronic Signature</h2>
             <p style={styles.signerCopy}>The person signing confirms that they are authorized to enter into this agreement for the business.</p>
             <div className="lt-signup-two" style={styles.twoCol}><Field label="Authorized representative · full legal name"><input value={agreement.signer_name} onChange={e=>setAgreement(a=>({...a,signer_name:e.target.value}))} style={styles.input} placeholder="Full legal name"/></Field><Field label="Position / title"><input value={agreement.signer_title} onChange={e=>setAgreement(a=>({...a,signer_title:e.target.value}))} style={styles.input} placeholder="Owner, President, Manager, etc."/></Field></div>
-            <Field label="Draw signature"><SignaturePad strokes={signatureStrokes} setStrokes={setSignatureStrokes}/>{signatureHasInk&&<small style={styles.signatureCaptured}>✓ Signature detected. You can keep adding more strokes.</small>}</Field>
+            <div style={styles.field}>
+              <span style={styles.label}>Draw signature</span>
+              <SignaturePad strokes={signatureStrokes} setStrokes={setSignatureStrokes}/>
+              {signatureHasInk&&<small style={styles.signatureCaptured}>✓ Signature detected. You can keep adding more strokes.</small>}
+            </div>
             <div style={styles.checks}>
               <Check checked={agreement.authority_confirmed} onChange={v=>setAgreement(a=>({...a,authority_confirmed:v}))}>I represent that I am authorized to enter into this agreement on behalf of the business.</Check>
               <Check checked={agreement.agreement_confirmed} onChange={v=>setAgreement(a=>({...a,agreement_confirmed:v}))}>I have reviewed and agree to the Business Subscription Agreement and Data Processing Addendum above.</Check>
