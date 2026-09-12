@@ -32,7 +32,15 @@ import time
 
 # Environment
 SUPABASE_URL = os.getenv('SUPABASE_URL', '')
-SUPABASE_KEY = os.getenv('SUPABASE_KEY', '')
+# Trusted server credential only. Prefer the modern Supabase secret key, then
+# the legacy service-role key, while keeping SUPABASE_KEY as a backwards-compatible
+# fallback for existing Render deployments. Never put any of these server keys in
+# browser/frontend environment variables.
+SUPABASE_KEY = (
+    os.getenv('SUPABASE_SECRET_KEY', '')
+    or os.getenv('SUPABASE_SERVICE_ROLE_KEY', '')
+    or os.getenv('SUPABASE_KEY', '')
+)
 BASE_URL = os.getenv('BASE_URL', 'https://loyaltree-btw1.onrender.com')
 GOOGLE_WALLET_ISSUER_ID = os.getenv('GOOGLE_WALLET_ISSUER_ID', '')
 GOOGLE_WALLET_CLASS_SUFFIX = os.getenv('GOOGLE_WALLET_CLASS_SUFFIX', '')
@@ -869,16 +877,53 @@ def require_owner_session(public_id: str, authorization: str):
         raise HTTPException(status_code=403, detail='Session does not match this business')
     return claims
 
+def _supabase_server_key_role(key: str) -> Optional[str]:
+    """Best-effort classification without logging or verifying the secret itself.
+
+    Modern ``sb_secret_`` keys are server-only and map to service_role. Modern
+    ``sb_publishable_`` keys are public/anon credentials and must never power this
+    backend. Legacy Supabase keys are JWTs, so we can inspect only the unverified
+    payload's role claim to catch an accidental anon key before RLS is enabled.
+    Unknown formats are left alone so future Supabase key formats do not cause a
+    needless outage; database RLS still remains the authoritative protection.
+    """
+    raw = str(key or '').strip()
+    if raw.startswith('sb_secret_'):
+        return 'service_role'
+    if raw.startswith('sb_publishable_'):
+        return 'anon'
+    if raw.count('.') == 2:
+        try:
+            payload_b64 = raw.split('.')[1]
+            payload_b64 += '=' * (-len(payload_b64) % 4)
+            payload = json.loads(base64.urlsafe_b64decode(payload_b64.encode()).decode())
+            return str(payload.get('role') or '').strip() or None
+        except Exception:
+            return None
+    return None
+
+
 ENV_ERROR = None
 if not SUPABASE_URL or not SUPABASE_KEY:
-    ENV_ERROR = 'SUPABASE_URL or SUPABASE_KEY not set in environment variables.'
+    ENV_ERROR = (
+        'SUPABASE_URL and a server-only Supabase secret/service-role key are required. '
+        'Set SUPABASE_SECRET_KEY (preferred), SUPABASE_SERVICE_ROLE_KEY, or the existing SUPABASE_KEY.'
+    )
     supabase = None
 else:
-    try:
-        supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    except Exception as e:
-        ENV_ERROR = str(e)
+    _db_key_role = _supabase_server_key_role(SUPABASE_KEY)
+    if _db_key_role in ('anon', 'authenticated'):
+        ENV_ERROR = (
+            'Unsafe Supabase credential: the LoyaltyTree backend is using a publishable/anon key. '
+            'Use a server-only Supabase secret key (sb_secret_...) or legacy service-role key before enabling RLS.'
+        )
         supabase = None
+    else:
+        try:
+            supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        except Exception as e:
+            ENV_ERROR = str(e)
+            supabase = None
 
 
 # LoyaltyTree self-serve business categories. Car Lending and Cockpit stay
@@ -909,7 +954,343 @@ def normalize_business_type(value: Optional[str]) -> str:
 def business_category_meta(value: Optional[str]) -> dict:
     return BUSINESS_CATEGORY_META.get(normalize_business_type(value), BUSINESS_CATEGORY_META['other'])
 
+# -----------------------------------------------------------------------------
+# SELF-SERVE BUSINESS SIGNUP AGREEMENT
+# -----------------------------------------------------------------------------
+# Keep document versions explicit. A business_agreements row stores the exact
+# signed snapshot and SHA-256 digest, so later revisions never overwrite the
+# document a business actually accepted.
+LOYALTYTREE_LEGAL_NAME = 'LoyaltyTree Information Technology Solutions'
+LOYALTYTREE_LEGAL_LOCATION = 'Isabela, Philippines'
+LOYALTYTREE_LEGAL_PHONE = '0939 799 2144'
+LOYALTYTREE_LEGAL_EMAIL = 'theloyaltytree@gmail.com'
+BUSINESS_AGREEMENT_VERSION = '2026-09-12-v1'
+TERMS_VERSION = '2026-09-12'
+PRIVACY_VERSION = '2026-09-12'
+DPA_VERSION = '2026-09-12-v1'
+
+
+def _signup_agreement_sections() -> list:
+    return [
+        {
+            'title': 'Parties, authority, and electronic acceptance',
+            'paragraphs': [
+                f'This Business Subscription Agreement is between {LOYALTYTREE_LEGAL_NAME} ("LoyaltyTree") and the business identified in the Subscription Summary (the "Business").',
+                'The person signing for the Business represents that they have authority to bind the Business. The parties agree that this agreement may be entered into electronically and that the electronic signature, confirmations, timestamp, document version, and document hash may be retained as evidence of acceptance.',
+            ],
+        },
+        {
+            'title': 'LoyaltyTree service',
+            'paragraphs': [
+                'LoyaltyTree provides software for digital loyalty and customer-engagement programs, including supported digital cards, Apple Wallet and Google Wallet integrations, customer and staff tools, branches, rewards, analytics, announcements, review prompts, and other features included in the selected plan.',
+                'Features may vary by plan and may evolve. Specialized development, websites, POS integrations, Order Ahead, NFC/contactless systems, booking, custom payment integrations, hardware, or other non-standard work may require a separate quotation or Scope of Work.',
+            ],
+        },
+        {
+            'title': 'Subscription, billing, renewal, and optional PR Kit',
+            'paragraphs': [
+                'The Business will pay the subscription price shown in the Subscription Summary. A successful subscription payment activates or extends access for the applicable subscription period. Unless a separate recurring-payment arrangement is expressly enabled, LoyaltyTree does not represent that renewal is automatic.',
+                'Failure to pay may result in the account remaining pending, being limited, or being suspended until payment is received. Taxes, custom work, hardware, delivery, and third-party charges may be separate where disclosed.',
+                'If the Business selects the Physical QR / PR Kit, the one-time amount shown in the Subscription Summary is additional to the subscription fee and is based on the number of branches selected at signup. Fulfillment begins after the applicable payment is confirmed.',
+                'Except where required by law or expressly stated in a written order, fees already earned for an activated subscription period, completed setup work, custom development, or fulfilled physical items are not automatically refundable merely because the Business later stops using the service.',
+            ],
+        },
+        {
+            'title': 'Business loyalty-program responsibility',
+            'paragraphs': [
+                'The Business controls the customer-facing loyalty offer, including points, stamps, tiers, subscriptions, memberships, multipasses, coupons, rewards, redemption rules, benefits, promotions, and program-specific expiration rules where legally permitted.',
+                'The Business is responsible for the accuracy, legality, and fulfillment of its goods, services, rewards, discounts, benefits, representations, and customer promises. LoyaltyTree supplies the technology and does not become the seller of the Business\'s underlying goods or services merely because the transaction or loyalty activity is recorded through the platform.',
+            ],
+        },
+        {
+            'title': 'Customer data and privacy roles',
+            'paragraphs': [
+                'For customer information processed to operate the Business\'s loyalty program, the Business generally determines the purposes and means of that customer relationship and is responsible for its applicable obligations as a personal information controller. LoyaltyTree generally processes that information to provide the contracted platform and may act as a personal information processor for that processing.',
+                'LoyaltyTree may separately act as a personal information controller for data it determines and processes for its own account administration, billing, security, legal compliance, support, fraud prevention, and first-party platform analytics.',
+                'Each party will comply with its applicable obligations under Philippine data-protection law. The Business must provide required privacy notices, establish an appropriate lawful basis, obtain consent when required, collect only appropriate information, and not instruct LoyaltyTree to process data unlawfully.',
+            ],
+        },
+        {
+            'title': 'Customer communications and direct marketing',
+            'paragraphs': [
+                'The Business is responsible for the content, audience, accuracy, and lawful basis of announcements, promotional messages, birthday messages, win-back communications, coupons, review prompts, and other communications it initiates or configures through LoyaltyTree.',
+                'The Business must respect applicable consent requirements, objections, opt-outs, customer preferences, consumer-protection rules, and restrictions on deceptive or unlawful marketing.',
+            ],
+        },
+        {
+            'title': 'Staff access, account security, and transaction records',
+            'paragraphs': [
+                'The Business decides which owners, managers, cashiers, staff, or agents receive access and must keep credentials, devices, PINs, and sessions secure and remove access when no longer authorized.',
+                'The Business is responsible for internal controls over points, stamps, visits, redemptions, memberships, coupons, and other activities performed by authorized personnel. LoyaltyTree may retain audit and transaction records for security, support, fraud prevention, accounting, and dispute investigation.',
+            ],
+        },
+        {
+            'title': 'Third-party services and integrations',
+            'paragraphs': [
+                'LoyaltyTree may depend on third-party services such as Apple Wallet, Google Wallet, hosting, database, cloud storage, image hosting, analytics, email, communications, and payment providers. Those providers may have their own terms, technical requirements, availability, approvals, and policies.',
+                'LoyaltyTree will use reasonable efforts to maintain supported integrations but does not guarantee that a third-party provider will never change, suspend, reject, or discontinue an integration or API.',
+            ],
+        },
+        {
+            'title': 'Order Ahead, payments, and merchant responsibility',
+            'paragraphs': [
+                'When Order Ahead, online ordering, booking, or payment features are enabled for the Business, the Business remains the merchant or service provider for its underlying products and services unless a separate written agreement expressly states otherwise.',
+                'The Business is responsible for product descriptions, prices, availability, preparation, fulfillment, statutory receipts or invoices, cancellations, refunds, consumer complaints, product or food quality, and other merchant obligations applicable to its transaction. LoyaltyTree remains responsible for obligations imposed on LoyaltyTree by law based on its own role and cannot exclude rights or liabilities that cannot lawfully be excluded.',
+            ],
+        },
+        {
+            'title': 'Gift cards, promotions, and regulated offers',
+            'paragraphs': [
+                'The Business is responsible for ensuring that gift cards, promotional vouchers, sales promotions, discounts, contests, and other offers configured through LoyaltyTree comply with applicable Philippine law and any required permits or disclosures.',
+                'Paid stored-value gift cards must be distinguished from free promotional rewards or vouchers. LoyaltyTree may impose product safeguards or configuration limits intended to support legal compliance, but the Business remains responsible for its offer and regulatory obligations.',
+            ],
+        },
+        {
+            'title': 'Intellectual property and business branding',
+            'paragraphs': [
+                'LoyaltyTree retains its rights in the platform software, code, system architecture, designs, branding, documentation, and original materials. The Business retains its rights in its own name, logo, photos, marks, and content.',
+                'The Business grants LoyaltyTree permission to host, reproduce, resize, process, and display submitted business materials only as reasonably necessary to provide the service, generate digital cards and QR materials, support the account, and create promotional material specifically agreed with the Business.',
+            ],
+        },
+        {
+            'title': 'Availability, maintenance, and platform changes',
+            'paragraphs': [
+                'LoyaltyTree will use reasonable efforts to provide a reliable service but does not guarantee uninterrupted or error-free operation. Maintenance, security work, internet failures, third-party outages, device compatibility, and events outside reasonable control may affect availability.',
+                'Features may be improved, modified, replaced, or discontinued when reasonably necessary, subject to applicable contractual commitments and law.',
+            ],
+        },
+        {
+            'title': 'Acceptable use',
+            'paragraphs': [
+                'The Business must not use LoyaltyTree for unlawful, fraudulent, deceptive, abusive, infringing, or unauthorized activity; manipulate loyalty balances dishonestly; access another account without authorization; bypass plan or security restrictions; distribute malicious code; overload or improperly scrape the service; or process customer information without an appropriate legal basis.',
+            ],
+        },
+        {
+            'title': 'Suspension, termination, and account data',
+            'paragraphs': [
+                'LoyaltyTree may restrict, suspend, or terminate access for material breach, nonpayment, fraud, unlawful processing, abuse, misuse, security threats, or conduct that creates material risk to the platform or other users. Where appropriate, LoyaltyTree will use reasonable efforts to provide notice and an opportunity to resolve the issue.',
+                'After termination, information will be retained, returned, deleted, or restricted according to applicable law, legitimate security and dispute needs, contractual requirements, the Privacy Policy, and the Data Processing Addendum below.',
+            ],
+        },
+        {
+            'title': 'Confidentiality',
+            'paragraphs': [
+                'Each party will use reasonable care to protect non-public business, technical, security, customer, and commercial information received from the other party and will use that information only for the relationship or as otherwise permitted by law.',
+                'Confidentiality obligations do not apply to information that is lawfully public, independently developed without use of the confidential information, rightfully received from another source without a duty of confidentiality, or required to be disclosed by law subject to appropriate notice where lawful and practicable.',
+            ],
+        },
+        {
+            'title': 'Warranties, results, and limitation of liability',
+            'paragraphs': [
+                'LoyaltyTree does not guarantee any particular increase in sales, retention, repeat visits, revenue, reviews, or customer growth. The Business remains responsible for its commercial decisions and underlying customer transactions.',
+                'To the maximum extent permitted by law, LoyaltyTree\'s aggregate liability arising from the standard subscription relationship will not exceed the subscription fees actually paid or payable to LoyaltyTree by the Business for the six months immediately preceding the event giving rise to the claim. This cap does not apply where a liability cannot lawfully be limited and does not excuse fraud, willful misconduct, gross negligence, infringement obligations, or data-protection/confidentiality obligations to the extent such exclusion would be unlawful or unreasonable.',
+                'Neither party will be liable to the other for indirect, incidental, special, exemplary, or consequential losses to the extent such exclusion is permitted by law.',
+            ],
+        },
+        {
+            'title': 'Custom work and separate Scope of Work',
+            'paragraphs': [
+                'Specialized systems, custom integrations, websites, POS integrations, NFC/contactless deployments, booking systems, Order Ahead customizations, hardware, migrations, or other project work may be governed by a separate quotation, proposal, statement of work, implementation schedule, or signed project agreement.',
+                'For a specific custom project, the specialized written agreement controls to the extent it expressly conflicts with this standard subscription agreement.',
+            ],
+        },
+        {
+            'title': 'Governing law, disputes, and governing documents',
+            'paragraphs': [
+                'This agreement is governed by the laws of the Republic of the Philippines, without prejudice to mandatory rights that cannot be waived. Before commencing formal proceedings, the parties should first attempt in good faith to resolve the dispute directly.',
+                'This signed agreement, its Data Processing Addendum, the selected plan and order details, the LoyaltyTree Terms of Service, and the LoyaltyTree Privacy Policy form the governing documents for the self-serve subscription. A later signed specialized agreement may supplement or override specified provisions for its particular project.',
+            ],
+        },
+    ]
+
+
+def _signup_dpa_sections() -> list:
+    return [
+        {
+            'title': 'Roles and documented instructions',
+            'paragraphs': [
+                'For Business customer data processed to deliver the loyalty service, the Business generally acts as the personal information controller and LoyaltyTree generally acts as its personal information processor. LoyaltyTree will process that data only to provide, secure, support, maintain, and improve the contracted service; comply with lawful documented instructions; or satisfy applicable law.',
+            ],
+        },
+        {
+            'title': 'Categories of data and processing',
+            'paragraphs': [
+                'Depending on the Business configuration, processing may include customer names and contact details; digital-card identifiers; points, stamps, visits, tiers, rewards, coupons, membership or multipass activity; birthday or age information when configured; communication preferences; branch and staff transaction records; wallet/device identifiers; support records; and related loyalty activity.',
+                'Processing may include collection, recording, organization, storage, retrieval, consultation, transmission to approved service providers, updating, analytics, security monitoring, restriction, deletion, and other operations reasonably necessary to provide the service.',
+            ],
+        },
+        {
+            'title': 'Purpose and duration',
+            'paragraphs': [
+                'Processing continues for the duration of the Business account and for any legally permitted retention period needed for security, dispute resolution, legal compliance, backup lifecycle, or documented return/deletion obligations.',
+            ],
+        },
+        {
+            'title': 'Confidentiality and security',
+            'paragraphs': [
+                'LoyaltyTree will use reasonable organizational and technical safeguards appropriate to the nature of the processing and will limit access to personnel and service providers who need access for authorized purposes and are subject to appropriate confidentiality or contractual obligations.',
+            ],
+        },
+        {
+            'title': 'Subprocessors and cross-border services',
+            'paragraphs': [
+                'The Business authorizes LoyaltyTree to use hosting, database, cloud storage, wallet, communications, security, analytics, image-hosting, and payment subprocessors reasonably necessary to operate the platform. Some providers or infrastructure may process information outside the Philippines. LoyaltyTree will require appropriate data-protection commitments where applicable and remains responsible for its own processor obligations.',
+            ],
+        },
+        {
+            'title': 'Data-subject requests',
+            'paragraphs': [
+                'Where the Business is the controller, the Business is primarily responsible for responding to requests from its customers. LoyaltyTree will provide reasonable assistance appropriate to its role and the functionality of the service for access, correction, objection, erasure/blocking, portability, or other applicable rights.',
+            ],
+        },
+        {
+            'title': 'Personal-data breaches',
+            'paragraphs': [
+                'LoyaltyTree will notify the Business without undue delay after confirming a personal-data breach affecting Business-controlled customer data and will provide reasonably available information needed for the Business to assess and meet applicable notification duties. Each party remains responsible for notifications required of it by law based on its role.',
+            ],
+        },
+        {
+            'title': 'Return, deletion, and retention',
+            'paragraphs': [
+                'Upon termination or a valid documented request, LoyaltyTree will delete, return, anonymize, or restrict Business-controlled data as reasonably applicable to the service and law, subject to lawful retention, security logs, dispute holds, backup lifecycle, and records that LoyaltyTree must retain as an independent controller.',
+            ],
+        },
+        {
+            'title': 'Compliance assistance and records',
+            'paragraphs': [
+                'The parties will reasonably cooperate on data-protection inquiries related to the service. LoyaltyTree may maintain records of processing, security measures, subprocessors, incidents, and contractual commitments as appropriate to demonstrate compliance.',
+            ],
+        },
+        {
+            'title': 'Business instructions and warranties',
+            'paragraphs': [
+                'The Business represents that it has the authority and appropriate lawful basis to provide personal data to LoyaltyTree and to instruct the processing described in this Addendum. The Business must not use LoyaltyTree as an electronic medical record system or place unnecessary medical diagnoses, treatment histories, or other highly sensitive information into general loyalty notes unless a separate approved implementation expressly supports that processing.',
+            ],
+        },
+    ]
+
+
+def build_signup_agreement_document(*, name: str, email: str, phone: Optional[str], address: Optional[str], contact_person: Optional[str], plan: str, branch_count: int, setup_kit_requested: bool) -> dict:
+    plan_data = SUBSCRIPTION_PLANS.get(plan)
+    if not plan_data:
+        raise HTTPException(status_code=400, detail='Unknown subscription plan')
+    branch_count = int(branch_count or 1)
+    price_month = int(get_price_for_plan(plan, branch_count) or 0)
+    setup_kit_amount = SETUP_KIT_PRICE_PER_BRANCH * branch_count if setup_kit_requested else 0
+    sections = _signup_agreement_sections()
+    dpa_sections = _signup_dpa_sections()
+    title = 'Business Subscription & Data Processing Agreement'
+    intro = (
+        'Please review this agreement carefully. It records the standard terms for the Business self-serve LoyaltyTree subscription and includes Annex A, the Data Processing Addendum. '
+        'The signer details and electronic signature are recorded separately with this exact document version and cryptographic document hash.'
+    )
+    summary_lines = [
+        f'Agreement title: {title}',
+        f'Agreement version: {BUSINESS_AGREEMENT_VERSION}',
+        f'Operator: {LOYALTYTREE_LEGAL_NAME}',
+        f'Operator location: {LOYALTYTREE_LEGAL_LOCATION}',
+        f'Operator phone: {LOYALTYTREE_LEGAL_PHONE}',
+        f'Operator email: {LOYALTYTREE_LEGAL_EMAIL}',
+        f'Business: {(name or "").strip()}',
+        f'Business email: {(email or "").strip()}',
+        f'Business phone: {(phone or "").strip()}',
+        f'Business address: {(address or "").strip()}',
+        f'Primary contact: {(contact_person or "").strip()}',
+        f'Plan: {plan_data.get("label", plan)}',
+        f'Branches: {branch_count}',
+        f'Subscription fee: PHP {price_month} per 30-day subscription period',
+        f'Physical QR / PR Kit: {"PHP " + str(setup_kit_amount) + " one-time" if setup_kit_amount else "Not selected"}',
+        f'Terms version acknowledged: {TERMS_VERSION}',
+        f'Privacy Policy version acknowledged: {PRIVACY_VERSION}',
+        f'DPA version: {DPA_VERSION}',
+    ]
+    snapshot_parts = [title, '', *summary_lines, '', intro, '']
+    for i, section in enumerate(sections, 1):
+        snapshot_parts.append(f'{i}. {section["title"]}')
+        snapshot_parts.extend(section['paragraphs'])
+        snapshot_parts.append('')
+    snapshot_parts.append('ANNEX A — DATA PROCESSING ADDENDUM')
+    snapshot_parts.append('')
+    for i, section in enumerate(dpa_sections, 1):
+        snapshot_parts.append(f'A{i}. {section["title"]}')
+        snapshot_parts.extend(section['paragraphs'])
+        snapshot_parts.append('')
+    snapshot = '\n'.join(snapshot_parts).strip()
+    digest = hashlib.sha256(snapshot.encode('utf-8')).hexdigest()
+    return {
+        'title': title,
+        'agreement_version': BUSINESS_AGREEMENT_VERSION,
+        'terms_version': TERMS_VERSION,
+        'privacy_version': PRIVACY_VERSION,
+        'dpa_version': DPA_VERSION,
+        'agreement_sha256': digest,
+        'snapshot': snapshot,
+        'intro': intro,
+        'sections': sections,
+        'dpa_sections': dpa_sections,
+        'plan_label': plan_data.get('label', plan),
+        'price_month': price_month,
+        'setup_kit_amount': setup_kit_amount,
+        'operator': {
+            'name': LOYALTYTREE_LEGAL_NAME,
+            'location': LOYALTYTREE_LEGAL_LOCATION,
+            'phone': LOYALTYTREE_LEGAL_PHONE,
+            'email': LOYALTYTREE_LEGAL_EMAIL,
+        },
+    }
+
+
+def _decode_signature_data_url(value: str) -> bytes:
+    raw = str(value or '').strip()
+    match = re.fullmatch(r'data:image/(png|jpeg|jpg);base64,([A-Za-z0-9+/=\r\n]+)', raw)
+    if not match:
+        raise HTTPException(status_code=400, detail='A valid drawn signature is required')
+    try:
+        decoded = base64.b64decode(match.group(2), validate=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail='Signature image is invalid')
+    if len(decoded) < 100:
+        raise HTTPException(status_code=400, detail='Signature image is empty')
+    if len(decoded) > 250_000:
+        raise HTTPException(status_code=400, detail='Signature image is too large')
+    return decoded
+
+
+def _agreement_request_ip_hash(request: Request) -> Optional[str]:
+    forwarded = (request.headers.get('x-forwarded-for') or '').split(',')[0].strip()
+    ip = forwarded or (request.client.host if request.client else '')
+    if not ip:
+        return None
+    secret = STAFF_SESSION_SECRET or APPLE_PASS_AUTH_SECRET or 'loyaltytree-agreement-audit'
+    return hmac.new(secret.encode('utf-8'), ip.encode('utf-8'), hashlib.sha256).hexdigest()
+
+
 # Pydantic Models
+class BusinessAgreementAcceptance(BaseModel):
+    signer_name: str = Field(min_length=2, max_length=160)
+    signer_title: str = Field(min_length=2, max_length=120)
+    signature_data_url: str = Field(min_length=100, max_length=350000)
+    authority_confirmed: bool
+    agreement_confirmed: bool
+    policies_acknowledged: bool
+    agreement_version: str
+    terms_version: str
+    privacy_version: str
+    dpa_version: str
+    agreement_sha256: str = Field(min_length=64, max_length=64)
+
+
+class SignupAgreementPreviewRequest(BaseModel):
+    name: str
+    email: str
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    contact_person: Optional[str] = None
+    plan: str
+    branch_count: int = Field(default=1, ge=1, le=5)
+    setup_kit_requested: bool = False
+
+
 class BusinessCreate(BaseModel):
     name: str
     email: str
@@ -927,6 +1308,7 @@ class BusinessCreate(BaseModel):
     kit_delivery_address: Optional[str] = None
     kit_delivery_instructions: Optional[str] = None
     partner_code: Optional[str] = Field(default=None, max_length=64)
+    agreement: Optional[BusinessAgreementAcceptance] = None
 
 class BusinessOnboardingUpdate(BaseModel):
     onboarding_step: Optional[int] = Field(default=None, ge=0, le=9)
@@ -7499,11 +7881,46 @@ async def login(req: LoginRequest, request: Request):
     _record_auth_failure('owner', request, req.email)
     raise HTTPException(status_code=401, detail="Invalid email or password")
 
+@app.post("/api/v1/legal/signup-agreement/preview")
+async def signup_agreement_preview(req: SignupAgreementPreviewRequest):
+    """Return the exact standard agreement document the business will sign.
+
+    The registration endpoint regenerates this document from the final signup
+    values and requires the same SHA-256 digest, preventing a client from
+    signing one set of commercial terms and registering with another.
+    """
+    if req.plan not in SUBSCRIPTION_PLANS:
+        raise HTTPException(status_code=400, detail='Unknown subscription plan')
+    max_branches = SUBSCRIPTION_PLANS[req.plan].get('max_branches')
+    if max_branches is not None and req.branch_count > max_branches:
+        raise HTTPException(status_code=400, detail='Selected plan does not support this number of branches')
+    doc = build_signup_agreement_document(
+        name=req.name,
+        email=req.email,
+        phone=req.phone,
+        address=req.address,
+        contact_person=req.contact_person,
+        plan=req.plan,
+        branch_count=req.branch_count,
+        setup_kit_requested=req.setup_kit_requested,
+    )
+    return {k: v for k, v in doc.items() if k != 'snapshot'}
+
+
 @app.post("/api/v1/register")
 @app.post("/api/v1/auth/register")
-async def register(biz: BusinessCreate):
+async def register(biz: BusinessCreate, request: Request):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database not connected")
+
+    acceptance = biz.agreement
+    if not acceptance:
+        raise HTTPException(status_code=400, detail='A signed Business Subscription & Data Processing Agreement is required')
+    if not (acceptance.authority_confirmed and acceptance.agreement_confirmed and acceptance.policies_acknowledged):
+        raise HTTPException(status_code=400, detail='All agreement confirmations are required')
+    if acceptance.agreement_version != BUSINESS_AGREEMENT_VERSION or acceptance.terms_version != TERMS_VERSION or acceptance.privacy_version != PRIVACY_VERSION or acceptance.dpa_version != DPA_VERSION:
+        raise HTTPException(status_code=409, detail='The legal documents have been updated. Please review and sign the current agreement.')
+    signature_bytes = _decode_signature_data_url(acceptance.signature_data_url)
 
     # Some business types are invite-only / admin-provisioned (specialized
     # dashboards set up by us, not self-serve) - block them here rather than
@@ -7534,6 +7951,13 @@ async def register(biz: BusinessCreate):
     else:
         plan = determine_plan_from_branch_count(biz.branch_count)
     price_month = get_price_for_plan(plan, biz.branch_count)
+    agreement_doc = build_signup_agreement_document(
+        name=biz.name, email=biz.email, phone=biz.phone, address=biz.address,
+        contact_person=biz.contact_person, plan=plan, branch_count=biz.branch_count,
+        setup_kit_requested=bool(biz.setup_kit_requested),
+    )
+    if not hmac.compare_digest(str(acceptance.agreement_sha256).lower(), agreement_doc['agreement_sha256']):
+        raise HTTPException(status_code=409, detail='Agreement details changed. Please review the updated agreement before signing.')
     assigned_partner = None
     if (biz.partner_code or '').strip():
         code = biz.partner_code.strip().upper()
@@ -7580,6 +8004,56 @@ async def register(biz: BusinessCreate):
         business_id = insert_res.data[0]['id'] if insert_res.data else None
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Registration failed: {str(e)}")
+
+    if not business_id:
+        raise HTTPException(status_code=500, detail='Business account could not be created')
+
+    signed_at = datetime.now(timezone.utc).isoformat()
+    try:
+        signature_sha256 = hashlib.sha256(signature_bytes).hexdigest()
+        supabase.table('business_agreements').insert({
+            'public_id': generate_public_id(),
+            'business_id': business_id,
+            'agreement_version': BUSINESS_AGREEMENT_VERSION,
+            'agreement_title': agreement_doc['title'],
+            'agreement_snapshot': agreement_doc['snapshot'],
+            'agreement_sha256': agreement_doc['agreement_sha256'],
+            'signer_name': acceptance.signer_name.strip(),
+            'signer_title': acceptance.signer_title.strip(),
+            'signer_email': biz.email.strip(),
+            'signature_data_url': acceptance.signature_data_url,
+            'signature_sha256': signature_sha256,
+            'terms_version': TERMS_VERSION,
+            'privacy_version': PRIVACY_VERSION,
+            'dpa_version': DPA_VERSION,
+            'authority_confirmed': True,
+            'agreement_confirmed': True,
+            'policies_acknowledged': True,
+            'selected_plan': plan,
+            'branch_count': int(biz.branch_count),
+            'agreed_monthly_price': int(price_month or 0),
+            'setup_kit_requested': bool(biz.setup_kit_requested),
+            'setup_kit_amount': int(agreement_doc.get('setup_kit_amount') or 0),
+            'signed_at': signed_at,
+            'user_agent': (request.headers.get('user-agent') or '')[:500] or None,
+            'ip_address_hash': _agreement_request_ip_hash(request),
+            'created_at': signed_at,
+        }).execute()
+    except Exception as e:
+        # Never leave a self-serve business account behind if its mandatory
+        # signed agreement could not be stored. No branches or setup-kit rows
+        # have been created at this point, so rollback is safe.
+        try:
+            supabase.table('businesses').delete().eq('id', business_id).execute()
+        except Exception as rollback_error:
+            print(f"AGREEMENT rollback warning: {rollback_error}")
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                'Signed agreement could not be stored. Run the business_agreements migration in Supabase before enabling self-serve signup. '
+                f'Database error: {friendly_db_error(e)}'
+            ),
+        )
 
     if business_id and biz.setup_kit_requested:
         try:
@@ -7654,6 +8128,10 @@ async def register(biz: BusinessCreate):
         "plan": plan,
         "branch_count": biz.branch_count,
         "price_month": price_month,
+        "agreement_signed": True,
+        "agreement_version": BUSINESS_AGREEMENT_VERSION,
+        "agreement_sha256": agreement_doc['agreement_sha256'],
+        "signed_at": signed_at,
     }
 
 @app.get("/api/v1/me")
