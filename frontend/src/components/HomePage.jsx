@@ -324,7 +324,7 @@ const PLANS = [
   {
     key: 'starter',
     name: 'Starter',
-    prices: { '1': 350, '2-3': 650, '5': 1300 },
+    prices: { '1': 350, '2': 700, '3': 1000, '5': 1600 },
     features: [
       'Google Wallet & Apple Wallet',
       '2 active announcements',
@@ -339,7 +339,7 @@ const PLANS = [
     key: 'growth',
     name: 'Growth',
     highlight: true,
-    prices: { '1': 550, '2-3': 1050, '5': 2100 },
+    prices: { '1': 550, '2': 1100, '3': 1600, '5': 2600 },
     features: [
       'Google Wallet & Apple Wallet',
       'Up to 5 active announcements',
@@ -358,7 +358,7 @@ const PLANS = [
     key: 'pro',
     name: 'Pro',
     comingSoon: true,
-    prices: { '1': 750, '2-3': 1450, '5': 2900 },
+    prices: { '1': 750, '2': 1500, '3': 2100, '5': 3600 },
     features: [
       'Google Wallet & Apple Wallet',
       'Up to 7 active announcements',
@@ -424,34 +424,59 @@ function AndroidWalletPreview() {
       <div className="lt-android-screen" style={styles.androidPhoneScreen}>
         <div style={styles.androidStatusBar}>
           <span>10:45</span>
-          <span style={styles.androidStatusIcons}>● ︿ ▮▮ 100%</span>
+          <span style={styles.androidStatusIcons}>◉  ▮▮▮  ◒  ▰</span>
         </div>
+
         <div style={styles.androidWalletToolbar}>
           <span style={styles.androidBack}>←</span>
           <span style={styles.androidToolbarSpacer}></span>
-          <span style={styles.androidStar}>☆</span>
-          <span style={styles.androidDots}>⋮</span>
+          <span style={styles.androidVerified}>✓</span>
+          <span style={styles.androidHistory}>↶</span>
         </div>
-        <div style={styles.androidPass}>
-          <div style={styles.androidPassTop}>
-            <div style={styles.androidBrandRow}>
-              <img src={logo64} alt="" style={styles.androidBusinessLogo} />
-              <strong style={styles.androidBusinessName}>Your Business</strong>
+
+        <div style={styles.googleWalletCard}>
+          <div style={styles.googleWalletIdentity}>
+            <div style={styles.googleWalletLogoRing}>
+              <img src={logo192} alt="LoyaltyTree sample business logo" style={styles.googleWalletLogo} />
             </div>
-            <div style={styles.androidDivider}></div>
-            <div style={styles.androidProgramName}>Your Rewards</div>
-            <div style={styles.androidStampLabel}>Stamps</div>
-            <div className="lt-stamp-count" style={styles.androidStampCount}>5/8</div>
-            <div style={styles.androidQrWrap}><DemoQR /></div>
-            <div style={styles.androidCustomerName}>Your Customer</div>
+            <div style={styles.googleWalletBusiness}>YOUR BUSINESS</div>
+            <div style={styles.googleWalletProgram}>Your Rewards</div>
           </div>
-          <div style={styles.androidPassBottom}>
-            <div style={styles.androidRewardSmall}>YOUR BUSINESS · STAMP CARD</div>
-            <div style={styles.androidRewardTitle}>FREE REWARD</div>
-            <div style={styles.androidRewardMeta}>Collect 8 stamps to unlock</div>
+
+          <div style={styles.googleWalletQrWrap}><DemoQR /></div>
+          <div style={styles.googleWalletQrLabel}>Member stamp</div>
+
+          <div style={styles.googleWalletProgress}>
+            <span>Stamps</span>
+            <strong className="lt-stamp-count" style={styles.googleWalletProgressStrong}>5/8</strong>
+          </div>
+
+          <div style={styles.googleWalletPromo}>
+            <div style={styles.googleWalletPromoMark}>
+              <img src={logo64} alt="" style={styles.googleWalletPromoLogo} />
+            </div>
+            <div style={styles.googleWalletPromoCopy}>
+              <strong style={{fontSize:12.5,lineHeight:1.1,color:'#0f172a'}}>Growing customer loyalty that lasts.</strong>
+              <span style={{fontSize:9.5,lineHeight:1.35,color:'#64748b'}}>Rewards, updates, and repeat visits — all in one digital card.</span>
+            </div>
+            <div style={styles.googleWalletPromoPhone}>▯</div>
+          </div>
+
+          <div style={styles.googleWalletMemberPanel}>
+            <span style={styles.googleWalletMemberLabel}>Member name</span>
+            <strong>Your Customer</strong>
+            <div style={styles.googleWalletMemberRule}></div>
+            <div style={styles.googleWalletMemberMeta}>
+              <span>Member stamp</span>
+              <span>LT-2048</span>
+            </div>
           </div>
         </div>
-        <div style={styles.androidPageDots}><span style={styles.androidDotActive}></span><span style={styles.androidDot}></span></div>
+
+        <div style={styles.androidPageDots}>
+          <span style={styles.androidDotActive}></span>
+          <span style={styles.androidDot}></span>
+        </div>
       </div>
     </div>
   )
@@ -921,7 +946,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
           </div>
         </div>
 
-        <div className="lt-hero-phone-visual" style={styles.heroVisual} aria-label="Android phone showing a LoyaltyTree digital loyalty card">
+        <div className="lt-hero-phone-visual" style={styles.heroVisual} aria-label="Android phone showing a branded LoyaltyTree card in a Google Wallet-style layout">
           <div style={styles.heroVisualGlow}></div>
           <AndroidWalletPreview />
         </div>
@@ -1333,6 +1358,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
                     </button>
                   ))}
                 </div>
+                <p style={styles.pricingSetupNote}>One-time PR kit: ₱150 per branch.</p>
 
                 <div style={styles.pricingGrid}>
                   {PLANS.map(p => (
@@ -1501,41 +1527,42 @@ const styles = {
   androidPhoneShell:{
     position:'relative',zIndex:2,width:'100%',maxWidth:390,padding:9,borderRadius:48,
     background:'linear-gradient(145deg,#121212,#3d4144 48%,#0b0b0b)',
-    boxShadow:'0 28px 70px rgba(15,23,42,.24), inset 0 0 0 1px rgba(255,255,255,.35)',
+    boxShadow:'0 30px 76px rgba(15,23,42,.25), inset 0 0 0 1px rgba(255,255,255,.35)',
   },
   androidPhoneScreen:{
-    minHeight:650,borderRadius:40,background:'#f4f5f4',overflow:'hidden',padding:'14px 14px 18px',
-    boxSizing:'border-box',position:'relative',fontFamily:'Arial, sans-serif',
+    minHeight:680,borderRadius:40,background:'#7fd1d3',overflow:'hidden',padding:'14px 0 18px',
+    boxSizing:'border-box',position:'relative',fontFamily:'Arial, sans-serif',color:'#050505',
   },
-  androidStatusBar:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'2px 10px 8px',fontSize:12,fontWeight:800,color:'#111'},
+  androidStatusBar:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'2px 22px 8px',fontSize:12,fontWeight:800,color:'#050505'},
   androidStatusIcons:{fontSize:9.5,letterSpacing:'.02em'},
-  androidWalletToolbar:{display:'flex',alignItems:'center',gap:16,padding:'10px 7px 14px',color:'#111'},
-  androidBack:{fontSize:28,lineHeight:1,fontWeight:300},
+  androidWalletToolbar:{display:'flex',alignItems:'center',gap:17,padding:'11px 18px 16px',color:'#050505'},
+  androidBack:{fontSize:30,lineHeight:1,fontWeight:300},
   androidToolbarSpacer:{flex:1},
-  androidStar:{fontSize:27,lineHeight:1},
-  androidDots:{fontSize:27,lineHeight:1},
-  androidPass:{borderRadius:25,overflow:'hidden',boxShadow:'0 14px 34px rgba(15,23,42,.20)',background:'#111'},
-  androidPassTop:{background:'#070707',color:'#fff',padding:'20px 18px 18px'},
-  androidBrandRow:{display:'flex',alignItems:'center',gap:11},
-  androidBusinessLogo:{width:34,height:34,borderRadius:'50%',background:'#fff',objectFit:'cover'},
-  androidBusinessName:{fontSize:17,fontWeight:750},
-  androidDivider:{height:1,background:'rgba(255,255,255,.12)',margin:'16px -18px 17px'},
-  androidProgramName:{fontSize:30,lineHeight:1.05,fontWeight:500,marginBottom:22},
-  androidStampLabel:{fontSize:12,opacity:.88},
-  androidStampCount:{fontSize:19,fontWeight:650,marginBottom:18,transformOrigin:'left center'},
-  androidQrWrap:{width:184,height:184,background:'#fff',borderRadius:19,padding:16,boxSizing:'border-box',margin:'0 auto 14px'},
+  androidVerified:{width:29,height:29,borderRadius:10,display:'flex',alignItems:'center',justifyContent:'center',background:'#fff',fontSize:17,fontWeight:950,transform:'rotate(8deg)',boxShadow:'0 4px 10px rgba(15,23,42,.08)'},
+  androidHistory:{fontSize:27,lineHeight:1,fontWeight:600},
+  googleWalletCard:{padding:'4px 0 0'},
+  googleWalletIdentity:{textAlign:'center',padding:'3px 28px 0'},
+  googleWalletLogoRing:{width:82,height:82,borderRadius:'50%',padding:5,margin:'0 auto 15px',background:'rgba(255,255,255,.35)',boxShadow:'0 3px 8px rgba(15,23,42,.15), inset 0 0 0 2px rgba(255,255,255,.38)'},
+  googleWalletLogo:{width:'100%',height:'100%',borderRadius:'50%',objectFit:'cover',display:'block',background:'#eefcf7'},
+  googleWalletBusiness:{fontSize:13,fontWeight:800,letterSpacing:'.025em',marginBottom:15},
+  googleWalletProgram:{fontSize:39,lineHeight:1,fontWeight:900,letterSpacing:'-.035em',marginBottom:22},
+  googleWalletQrWrap:{width:180,height:180,background:'#fff',borderRadius:20,padding:16,boxSizing:'border-box',margin:'0 auto 8px',boxShadow:'0 3px 8px rgba(15,23,42,.04)'},
   demoQr:{display:'grid',gridTemplateColumns:'repeat(21,1fr)',gridTemplateRows:'repeat(21,1fr)',width:'100%',height:'100%',gap:0,background:'#fff'},
-  androidCustomerName:{fontSize:15.5,fontWeight:650,textAlign:'center',marginTop:4},
-  androidPassBottom:{
-    minHeight:126,padding:'18px 18px 20px',boxSizing:'border-box',color:'#111',
-    background:'linear-gradient(135deg,#f2dfc8 0%,#f7eee2 54%,#d9f0e9 100%)',
-  },
-  androidRewardSmall:{fontSize:9,fontWeight:800,letterSpacing:'.08em',marginBottom:9},
-  androidRewardTitle:{fontSize:31,fontWeight:950,lineHeight:1,letterSpacing:'-.02em'},
-  androidRewardMeta:{fontSize:11.5,marginTop:7,color:'#4b5563'},
-  androidPageDots:{display:'flex',gap:7,justifyContent:'center',paddingTop:19},
-  androidDotActive:{width:8,height:8,borderRadius:'50%',background:'#111'},
-  androidDot:{width:8,height:8,borderRadius:'50%',background:'#c4c7c5'},
+  googleWalletQrLabel:{textAlign:'center',fontSize:14.5,fontWeight:700,marginTop:5},
+  googleWalletProgress:{display:'grid',justifyItems:'center',gap:2,padding:'24px 20px 27px',fontSize:15},
+  googleWalletProgressStrong:{fontSize:20,fontWeight:850},
+  googleWalletPromo:{display:'grid',gridTemplateColumns:'56px 1fr 52px',alignItems:'center',gap:13,background:'rgba(255,255,255,.94)',padding:'17px 18px',margin:'0',borderTop:'1px solid rgba(15,23,42,.06)',borderBottom:'1px solid rgba(15,23,42,.06)'},
+  googleWalletPromoMark:{width:52,height:52,borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',background:'#edf9f5'},
+  googleWalletPromoLogo:{width:46,height:46,borderRadius:'50%',objectFit:'cover'},
+  googleWalletPromoCopy:{display:'grid',gap:4,minWidth:0},
+  googleWalletPromoPhone:{fontSize:38,fontWeight:200,transform:'rotate(8deg)',textAlign:'center',color:'#0f766e'},
+  googleWalletMemberPanel:{margin:'18px 18px 0',padding:'16px 18px',borderRadius:22,background:'rgba(255,255,255,.30)',border:'1px solid rgba(255,255,255,.30)',display:'grid',gap:4},
+  googleWalletMemberLabel:{fontSize:12,fontWeight:800},
+  googleWalletMemberRule:{height:1,background:'rgba(15,23,42,.55)',margin:'5px 0 2px'},
+  googleWalletMemberMeta:{display:'flex',justifyContent:'space-between',gap:12,fontSize:11.5,fontWeight:650},
+  androidPageDots:{display:'flex',gap:7,justifyContent:'center',paddingTop:16},
+  androidDotActive:{width:8,height:8,borderRadius:'50%',background:'#050505'},
+  androidDot:{width:8,height:8,borderRadius:'50%',background:'rgba(5,5,5,.25)'},
   heroImpactStrip:{
     maxWidth:1180,margin:'0 auto 56px',padding:'20px 24px',display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:0,
     background:'#fff',border:'1px solid #e2e8f0',borderRadius:20,boxShadow:'0 16px 42px rgba(15,23,42,.07)',
@@ -1945,6 +1972,9 @@ const styles = {
   },
   branchTierBtnActive: {
     borderColor: '#0d9488', background: '#0d9488', color: 'white',
+  },
+  pricingSetupNote: {
+    margin: '-14px auto 24px', textAlign: 'center', color: '#64748b', fontSize: 12.5, fontWeight: 650,
   },
   pricingGrid: {
     display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16,
