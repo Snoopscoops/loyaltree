@@ -41,12 +41,15 @@ function SignaturePad({ value, onChange, onInkChange, captureRef }) {
   const drawingRef = useRef(false)
   const dirtyRef = useRef(false)
   const inkRef = useRef(Boolean(value))
+  const lastCommittedRef = useRef(value || '')
 
   const commitSignature = () => {
     const canvas = canvasRef.current
     if (!canvas || !dirtyRef.current) return
     dirtyRef.current = false
-    onChange(canvas.toDataURL('image/png'))
+    const dataUrl = canvas.toDataURL('image/png')
+    lastCommittedRef.current = dataUrl
+    onChange(dataUrl)
   }
 
   const point = (e) => {
@@ -89,10 +92,11 @@ function SignaturePad({ value, onChange, onInkChange, captureRef }) {
     ctx.lineTo(p.x, p.y)
     ctx.stroke()
     dirtyRef.current = true
-    if (!inkRef.current) {
-      inkRef.current = true
-      onInkChange?.(true)
-    }
+    // A signature is considered present as soon as the first real stroke is
+    // drawn. Notify the parent on every drawn segment so React state can never
+    // get stuck false even if the canvas survived an agreement reset/remount.
+    if (!inkRef.current) inkRef.current = true
+    onInkChange?.(true)
   }
 
   const end = (e) => {
@@ -108,6 +112,7 @@ function SignaturePad({ value, onChange, onInkChange, captureRef }) {
     drawingRef.current = false
     dirtyRef.current = false
     inkRef.current = false
+    lastCommittedRef.current = ''
     onInkChange?.(false)
     onChange('')
   }
@@ -154,14 +159,27 @@ function SignaturePad({ value, onChange, onInkChange, captureRef }) {
     const ctx = canvas.getContext('2d')
     if (!value) {
       ctx.clearRect(0, 0, canvas.width, canvas.height)
+      drawingRef.current = false
+      dirtyRef.current = false
+      inkRef.current = false
+      lastCommittedRef.current = ''
+      onInkChange?.(false)
       return
     }
+
     inkRef.current = true
     onInkChange?.(true)
+
+    // When this value is the snapshot we just emitted ourselves, the pixels
+    // are already on this canvas. Skipping a redraw avoids an async image load
+    // wiping out the beginning of the owner's next stroke.
+    if (value === lastCommittedRef.current) return
+
     const img = new Image()
     img.onload = () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height)
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+      lastCommittedRef.current = value
     }
     img.src = value
   }, [value])
@@ -181,7 +199,7 @@ function SignaturePad({ value, onChange, onInkChange, captureRef }) {
       aria-label="Draw your signature"
     />
     <div style={styles.signatureHintRow}>
-      <span style={styles.tip}>Draw your signature using your mouse, trackpad, or finger.</span>
+      <span style={styles.tip}>Start with one stroke to enable signing. You can keep adding as many strokes as you need using your mouse, trackpad, or finger.</span>
       <button type="button" onClick={clear} style={styles.clearSignature}>Clear signature</button>
     </div>
   </div>
