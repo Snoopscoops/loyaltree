@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 
-const EMPTY_FORM = { title: '', message: '', type: 'promo', end_date: '', is_active: true }
+const EMPTY_FORM = { title: '', message: '', type: 'promo' }
 
 // Lets the platform admin write/edit/delete the promos that show up as a
 // dismissible banner on every business owner's dashboard (PlatformPromoBanner.jsx).
@@ -41,8 +41,6 @@ function PlatformAnnouncementsAdmin({ API_BASE, token }) {
       title: item.title || '',
       message: item.message || '',
       type: item.type || 'promo',
-      end_date: item.end_date || '',
-      is_active: item.is_active !== false,
     })
   }
 
@@ -65,8 +63,6 @@ function PlatformAnnouncementsAdmin({ API_BASE, token }) {
         title: form.title.trim(),
         message: form.message.trim(),
         type: form.type,
-        end_date: form.end_date || null,
-        is_active: form.is_active,
       }
       const res = editingId
         ? await authedFetch(`/api/v1/admin/platform-announcements/${editingId}`, {
@@ -142,21 +138,7 @@ function PlatformAnnouncementsAdmin({ API_BASE, token }) {
             <option value="info">Info</option>
             <option value="update">Feature update</option>
           </select>
-          <input
-            type="date"
-            value={form.end_date}
-            onChange={e => setForm({ ...form, end_date: e.target.value })}
-            style={styles.select}
-            title="Optional end date"
-          />
-          <label style={styles.checkboxLabel}>
-            <input
-              type="checkbox"
-              checked={form.is_active}
-              onChange={e => setForm({ ...form, is_active: e.target.checked })}
-            />
-            Active
-          </label>
+          <span style={styles.immediateNote}>Posts immediately and stays visible until deactivated or deleted.</span>
         </div>
 
         {error && <div style={styles.error}>{error}</div>}
@@ -166,7 +148,7 @@ function PlatformAnnouncementsAdmin({ API_BASE, token }) {
             <button type="button" onClick={cancelEdit} style={styles.cancelBtn}>Cancel</button>
           )}
           <button type="submit" disabled={saving} style={styles.submitBtn}>
-            {saving ? 'Saving...' : editingId ? 'Save Changes' : 'Post to All Owners'}
+            {saving ? 'Saving...' : editingId ? 'Save Changes' : 'Post Now to All Owners'}
           </button>
         </div>
       </form>
@@ -186,7 +168,6 @@ function PlatformAnnouncementsAdmin({ API_BASE, token }) {
                 <span style={styles.itemTitle}>{item.title}</span>
               </div>
               <div style={styles.itemMessage}>{item.message}</div>
-              {item.end_date && <div style={styles.itemMeta}>Ends {item.end_date}</div>}
               <div style={styles.itemActions}>
                 <button onClick={() => toggleActive(item)} style={styles.smallBtn}>
                   {item.is_active ? 'Deactivate' : 'Activate'}
@@ -257,6 +238,11 @@ const styles = {
     gap: 6,
     fontSize: 13.5,
     color: '#334155',
+  },
+  immediateNote: {
+    fontSize: 12.5,
+    color: '#64748b',
+    lineHeight: 1.4,
   },
   formActions: {
     display: 'flex',

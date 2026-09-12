@@ -1577,7 +1577,6 @@ class AnnouncementCreate(BaseModel):
     message: str
     type: Optional[str] = 'info'
     is_active: Optional[bool] = True
-    end_date: Optional[str] = None  # 'YYYY-MM-DD'
     target_scope: Literal['business', 'branch'] = 'business'
     branch_public_id: Optional[str] = None
 
@@ -1592,21 +1591,18 @@ class PlatformAnnouncementCreate(BaseModel):
     message: str
     type: Optional[str] = 'promo'
     is_active: Optional[bool] = True
-    end_date: Optional[str] = None  # 'YYYY-MM-DD'
 
 class PlatformAnnouncementUpdate(BaseModel):
     title: Optional[str] = None
     message: Optional[str] = None
     type: Optional[str] = None
     is_active: Optional[bool] = None
-    end_date: Optional[str] = None
 
 class AnnouncementUpdate(BaseModel):
     title: Optional[str] = None
     message: Optional[str] = None
     type: Optional[str] = None
     is_active: Optional[bool] = None
-    end_date: Optional[str] = None
     target_scope: Optional[Literal['business', 'branch']] = None
     branch_public_id: Optional[str] = None
 
@@ -4637,12 +4633,8 @@ def get_latest_active_announcement(business_id: int) -> Optional[dict]:
         except Exception:
             return None
 
-    today = datetime.utcnow().date().isoformat()
     business = safe_get_business_by_id(business_id) or {'id': business_id}
     for ann in rows:
-        end_date = ann.get('end_date')
-        if end_date and str(end_date) < today:
-            continue
         if str(ann.get('target_scope') or 'business') != 'business':
             continue
         return _enrich_announcement_target(business, ann)
@@ -4666,11 +4658,7 @@ def get_latest_active_announcement_for_customer(business: dict, customer: dict) 
     except Exception:
         return get_latest_active_announcement(business.get('id'))
 
-    today = datetime.utcnow().date().isoformat()
     for ann in rows:
-        end_date = ann.get('end_date')
-        if end_date and str(end_date) < today:
-            continue
         scope = str(ann.get('target_scope') or 'business')
         if scope == 'business':
             return _enrich_announcement_target(business, ann)
@@ -11831,8 +11819,8 @@ async def admin_create_platform_announcement(ann: PlatformAnnouncementCreate, _:
         'title': ann.title,
         'message': ann.message,
         'type': ann.type or 'promo',
-        'is_active': ann.is_active if ann.is_active is not None else True,
-        'end_date': ann.end_date,
+        'is_active': True,
+        'end_date': None,
         'created_at': datetime.utcnow().isoformat(),
         'updated_at': datetime.utcnow().isoformat(),
     }
@@ -11845,6 +11833,8 @@ async def admin_create_platform_announcement(ann: PlatformAnnouncementCreate, _:
 @app.put("/api/v1/admin/platform-announcements/{announcement_id}")
 async def admin_update_platform_announcement(announcement_id: str, ann: PlatformAnnouncementUpdate, _: bool = Depends(require_admin)):
     update_data = {k: v for k, v in ann.dict().items() if v is not None}
+    update_data.pop('end_date', None)
+    update_data['end_date'] = None
     update_data['updated_at'] = datetime.utcnow().isoformat()
     try:
         res = (
@@ -15552,7 +15542,6 @@ async def get_platform_announcements(public_id: str):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
-    today = datetime.utcnow().date().isoformat()
     try:
         res = (
             supabase.table("platform_announcements")
@@ -15565,10 +15554,6 @@ async def get_platform_announcements(public_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
-    # Drop anything past its end_date - same "still running" check the
-    # customer-facing announcements use.
-    still_running = [a for a in all_active if not a.get('end_date') or a.get('end_date') >= today]
-
     try:
         dismissed_res = (
             supabase.table("platform_announcement_dismissals")
@@ -15580,7 +15565,7 @@ async def get_platform_announcements(public_id: str):
     except Exception:
         dismissed_ids = set()  # best-effort - worst case an owner sees one they already dismissed
 
-    return [a for a in still_running if a.get('id') not in dismissed_ids]
+    return [a for a in all_active if a.get('id') not in dismissed_ids]
 
 @app.post("/api/v1/business/{public_id}/platform-announcements/{announcement_id}/dismiss")
 async def dismiss_platform_announcement(public_id: str, announcement_id: str):
@@ -15634,7 +15619,7 @@ async def create_announcement(
         if not target_branch:
             raise HTTPException(status_code=400, detail='Choose a valid branch for this announcement.')
 
-    is_active = ann.is_active if ann.is_active is not None else True
+    is_active = True
     limit = get_effective_announcement_limit(business)
 
     # Whole-business and branch-specific posts both consume exactly one
@@ -15649,8 +15634,8 @@ async def create_announcement(
         'title': ann.title,
         'message': ann.message,
         'type': ann.type or 'info',
-        'is_active': is_active,
-        'end_date': ann.end_date,
+        'is_active': True,
+        'end_date': None,
         'target_scope': target_scope,
         'branch_id': target_branch.get('id') if target_branch else None,
         'created_at': now_iso,
@@ -15672,28 +15657,26 @@ async def create_announcement(
     commit_announcement_quota(usage_key, created.get('id'))
     created = _enrich_announcement_target(business, created)
 
-    # Auto-push on new active announcements. Editing later remains silent.
-    if is_active:
-        result = _send_announcement_notification(business, created, resend=False)
-        created['_push_sent'] = bool(result.get('sent'))
-        created['_push_scope'] = result.get('scope')
-        created['_push_target_count'] = result.get('target_count')
-        created['_push_google_sent'] = result.get('google_sent', 0)
-        created['_push_apple_sent'] = result.get('apple_sent', 0)
-        created['_notification_header'] = result.get('header')
-        if result.get('error'):
-            created['_push_error'] = result.get('error')
-        if result.get('sent'):
-            try:
-                notified_at = datetime.utcnow().isoformat()
-                supabase.table("announcements").update(
-                    {'notified_at': notified_at}
-                ).eq("id", created.get("id")).execute()
-                created['notified_at'] = notified_at
-            except Exception:
-                pass
-    else:
-        created['_push_sent'] = False
+    # Posting is immediate: every newly created announcement is active and the
+    # Wallet notification is attempted right away. Editing later remains silent.
+    result = _send_announcement_notification(business, created, resend=False)
+    created['_push_sent'] = bool(result.get('sent'))
+    created['_push_scope'] = result.get('scope')
+    created['_push_target_count'] = result.get('target_count')
+    created['_push_google_sent'] = result.get('google_sent', 0)
+    created['_push_apple_sent'] = result.get('apple_sent', 0)
+    created['_notification_header'] = result.get('header')
+    if result.get('error'):
+        created['_push_error'] = result.get('error')
+    if result.get('sent'):
+        try:
+            notified_at = datetime.utcnow().isoformat()
+            supabase.table("announcements").update(
+                {'notified_at': notified_at}
+            ).eq("id", created.get("id")).execute()
+            created['notified_at'] = notified_at
+        except Exception:
+            pass
 
     return created
 
@@ -15727,8 +15710,9 @@ async def update_announcement(
     incoming = ann.dict(exclude_unset=True)
     update_data = {
         k: v for k, v in incoming.items()
-        if k not in ('branch_public_id',) and v is not None
+        if k not in ('branch_public_id', 'end_date') and v is not None
     }
+    update_data['end_date'] = None
 
     effective_scope = incoming.get('target_scope', existing.data.get('target_scope') or 'business')
     if effective_scope == 'branch':
@@ -24449,10 +24433,6 @@ async def announcement_detail_page(business_public_id: str, announcement_id: str
             'style="width:56px;height:56px;border-radius:14px;object-fit:cover;margin-bottom:14px;" alt="Logo"/>'
         )
 
-    end_date_html = ''
-    if ann.get('end_date'):
-        end_date_html = '<p class="meta">Valid until ' + html_lib.escape(str(ann.get('end_date'))) + '</p>'
-
     title = html_lib.escape(ann.get('title') or '')
     message = html_lib.escape(ann.get('message') or '').replace('\n', '<br>')
 
@@ -24480,7 +24460,6 @@ async def announcement_detail_page(business_public_id: str, announcement_id: str
         '<div class="badge">' + meta['icon'] + ' ' + meta['label'] + '</div>'
         '<h1>' + title + '</h1>'
         '<p class="message">' + message + '</p>'
-        + end_date_html +
         '<div class="biz">From ' + html_lib.escape(biz_name) + '</div>'
         '</div></body></html>'
     )
