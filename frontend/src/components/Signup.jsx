@@ -36,7 +36,7 @@ const BUSINESS_TYPES = [
   ['hotel','🏨 Hotel / Resort'],['other','🏪 Other Business'],
 ]
 
-function SignaturePad({ onInkChange, captureRef, resetKey }) {
+function SignaturePad({ onInkChange, captureRef }) {
   const canvasRef = useRef(null)
   const drawingRef = useRef(false)
   const inkRef = useRef(false)
@@ -129,12 +129,6 @@ function SignaturePad({ onInkChange, captureRef, resetKey }) {
     return () => { captureRef.current = null }
   }, [captureRef])
 
-  // Only an explicit agreement reset is allowed to clear the pad.
-  useEffect(() => {
-    clearCanvas(false)
-    onInkChange?.(false)
-  }, [resetKey])
-
   return <div style={styles.signatureWrap}>
     <canvas
       ref={canvasRef}
@@ -149,7 +143,7 @@ function SignaturePad({ onInkChange, captureRef, resetKey }) {
       aria-label="Draw your signature"
     />
     <div style={styles.signatureHintRow}>
-      <span style={styles.tip}>One stroke enables signing. Keep adding as many strokes as you want; the pad will not clear unless you press Clear signature or the agreement changes.</span>
+      <span style={styles.tip}>One real stroke enables signing. Keep adding as many strokes as you want. Nothing will clear this pad unless you press Clear signature or leave this agreement step.</span>
       <button type="button" onClick={()=>clearCanvas(true)} style={styles.clearSignature}>Clear signature</button>
     </div>
   </div>
@@ -172,7 +166,6 @@ function Signup({ API_BASE }) {
   const [agreementLoading, setAgreementLoading] = useState(false)
   const [agreementRead, setAgreementRead] = useState(false)
   const [signatureHasInk, setSignatureHasInk] = useState(false)
-  const [signatureResetKey, setSignatureResetKey] = useState(0)
   const signatureCaptureRef = useRef(null)
   const [plans,setPlans]=useState(null)
   const [logoUpload,setLogoUpload]=useState({uploading:false,error:''})
@@ -217,7 +210,7 @@ function Signup({ API_BASE }) {
   }
 
   const loadAgreement=async()=>{
-    setAgreementLoading(true); setAgreementDoc(null); setAgreementRead(false); setSignatureHasInk(false); setSignatureResetKey(k=>k+1); setError('')
+    setAgreementLoading(true); setAgreementDoc(null); setAgreementRead(false); setSignatureHasInk(false); setError('')
     // A changed/reloaded document must be signed again; never carry a signature
     // or confirmations forward onto a newly generated agreement hash.
     setAgreement(a=>({
@@ -347,7 +340,7 @@ function Signup({ API_BASE }) {
             <h2 style={styles.signerTitle}>Electronic Signature</h2>
             <p style={styles.signerCopy}>The person signing confirms that they are authorized to enter into this agreement for the business.</p>
             <div className="lt-signup-two" style={styles.twoCol}><Field label="Authorized representative · full legal name"><input value={agreement.signer_name} onChange={e=>setAgreement(a=>({...a,signer_name:e.target.value}))} style={styles.input} placeholder="Full legal name"/></Field><Field label="Position / title"><input value={agreement.signer_title} onChange={e=>setAgreement(a=>({...a,signer_title:e.target.value}))} style={styles.input} placeholder="Owner, President, Manager, etc."/></Field></div>
-            <Field label="Draw signature"><SignaturePad onInkChange={setSignatureHasInk} captureRef={signatureCaptureRef} resetKey={signatureResetKey}/>{signatureHasInk&&<small style={styles.signatureCaptured}>✓ Signature detected. You can keep adding more strokes.</small>}</Field>
+            <Field label="Draw signature"><SignaturePad onInkChange={setSignatureHasInk} captureRef={signatureCaptureRef}/>{signatureHasInk&&<small style={styles.signatureCaptured}>✓ Signature detected. You can keep adding more strokes.</small>}</Field>
             <div style={styles.checks}>
               <Check checked={agreement.authority_confirmed} onChange={v=>setAgreement(a=>({...a,authority_confirmed:v}))}>I represent that I am authorized to enter into this agreement on behalf of the business.</Check>
               <Check checked={agreement.agreement_confirmed} onChange={v=>setAgreement(a=>({...a,agreement_confirmed:v}))}>I have reviewed and agree to the Business Subscription Agreement and Data Processing Addendum above.</Check>
