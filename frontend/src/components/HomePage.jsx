@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import logo192 from './logo-192.png'
 import logo64 from './logo-64.png'
+import realGoogleWalletCard from './loyaltree_real_google_wallet_card.webp'
 import { trackEvent } from '../analytics'
 
 const FEATURES = [
@@ -421,62 +422,13 @@ function DemoQR() {
 function AndroidWalletPreview() {
   return (
     <div className="lt-phone-float lt-android-phone" style={styles.androidPhoneShell}>
-      <div className="lt-android-screen" style={styles.androidPhoneScreen}>
-        <div style={styles.androidStatusBar}>
-          <span>10:45</span>
-          <span style={styles.androidStatusIcons}>◉  ▮▮▮  ◒  ▰</span>
-        </div>
-
-        <div style={styles.androidWalletToolbar}>
-          <span style={styles.androidBack}>←</span>
-          <span style={styles.androidToolbarSpacer}></span>
-          <span style={styles.androidVerified}>✓</span>
-          <span style={styles.androidHistory}>↶</span>
-        </div>
-
-        <div style={styles.googleWalletCard}>
-          <div style={styles.googleWalletIdentity}>
-            <div style={styles.googleWalletLogoRing}>
-              <img src={logo192} alt="LoyaltyTree sample business logo" style={styles.googleWalletLogo} />
-            </div>
-            <div style={styles.googleWalletBusiness}>YOUR BUSINESS</div>
-            <div style={styles.googleWalletProgram}>Your Rewards</div>
-          </div>
-
-          <div style={styles.googleWalletQrWrap}><DemoQR /></div>
-          <div style={styles.googleWalletQrLabel}>Member stamp</div>
-
-          <div style={styles.googleWalletProgress}>
-            <span>Stamps</span>
-            <strong className="lt-stamp-count" style={styles.googleWalletProgressStrong}>5/8</strong>
-          </div>
-
-          <div style={styles.googleWalletPromo}>
-            <div style={styles.googleWalletPromoMark}>
-              <img src={logo64} alt="" style={styles.googleWalletPromoLogo} />
-            </div>
-            <div style={styles.googleWalletPromoCopy}>
-              <strong style={{fontSize:12.5,lineHeight:1.1,color:'#0f172a'}}>Growing customer loyalty that lasts.</strong>
-              <span style={{fontSize:9.5,lineHeight:1.35,color:'#64748b'}}>Rewards, updates, and repeat visits — all in one digital card.</span>
-            </div>
-            <div style={styles.googleWalletPromoPhone}>▯</div>
-          </div>
-
-          <div style={styles.googleWalletMemberPanel}>
-            <span style={styles.googleWalletMemberLabel}>Member name</span>
-            <strong>Your Customer</strong>
-            <div style={styles.googleWalletMemberRule}></div>
-            <div style={styles.googleWalletMemberMeta}>
-              <span>Member stamp</span>
-              <span>LT-2048</span>
-            </div>
-          </div>
-        </div>
-
-        <div style={styles.androidPageDots}>
-          <span style={styles.androidDotActive}></span>
-          <span style={styles.androidDot}></span>
-        </div>
+      <div className="lt-android-real-screen" style={styles.androidRealScreen}>
+        <img
+          src={realGoogleWalletCard}
+          alt="Actual LoyaltyTree Google Wallet loyalty card"
+          style={styles.androidRealWalletImage}
+        />
+        <div style={styles.androidRealScreenShine} aria-hidden="true" />
       </div>
     </div>
   )
@@ -821,6 +773,8 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
           .lt-hero-phone-visual { padding-top:2px; }
           .lt-android-phone { max-width:310px !important; border-radius:39px !important; padding:7px !important; box-shadow:0 20px 48px rgba(15,23,42,.20) !important; }
           .lt-android-screen { min-height:520px !important; border-radius:33px !important; padding:11px 11px 14px !important; }
+          .lt-android-real-screen { min-height:520px !important; border-radius:33px !important; }
+          .lt-android-real-screen img { min-height:520px !important; }
           .lt-hero-impact-strip { margin:0 14px !important; border-radius:18px !important; overflow:hidden !important; box-shadow:0 12px 30px rgba(15,23,42,.07) !important; }
           .lt-hero-impact-strip > div { min-height:105px !important; padding:16px 8px !important; border-right:0 !important; }
           .lt-hero-impact-strip > div:nth-child(odd) { border-right:1px solid #e2e8f0 !important; }
@@ -946,7 +900,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
           </div>
         </div>
 
-        <div className="lt-hero-phone-visual" style={styles.heroVisual} aria-label="Android phone showing a branded LoyaltyTree card in a Google Wallet-style layout">
+        <div className="lt-hero-phone-visual" style={styles.heroVisual} aria-label="Android phone showing an actual LoyaltyTree Google Wallet card">
           <div style={styles.heroVisualGlow}></div>
           <AndroidWalletPreview />
         </div>
@@ -1532,6 +1486,18 @@ const styles = {
   androidPhoneScreen:{
     minHeight:680,borderRadius:40,background:'#7fd1d3',overflow:'hidden',padding:'14px 0 18px',
     boxSizing:'border-box',position:'relative',fontFamily:'Arial, sans-serif',color:'#050505',
+  },
+  androidRealScreen:{
+    minHeight:680,borderRadius:40,background:'#7fd1d3',overflow:'hidden',padding:0,
+    boxSizing:'border-box',position:'relative',fontFamily:'Arial, sans-serif',color:'#050505',
+  },
+  androidRealWalletImage:{
+    display:'block',width:'100%',height:'100%',minHeight:680,objectFit:'cover',objectPosition:'top center',
+    background:'#7fd1d3',
+  },
+  androidRealScreenShine:{
+    position:'absolute',inset:0,pointerEvents:'none',
+    background:'linear-gradient(180deg,rgba(255,255,255,.10) 0%,rgba(255,255,255,0) 18%)',
   },
   androidStatusBar:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'2px 22px 8px',fontSize:12,fontWeight:800,color:'#050505'},
   androidStatusIcons:{fontSize:9.5,letterSpacing:'.02em'},
