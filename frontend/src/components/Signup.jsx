@@ -65,7 +65,6 @@ function SignaturePad({ value, onChange, onInkChange, captureRef }) {
     const p = point(e)
     drawingRef.current = true
     dirtyRef.current = false
-    canvas.setPointerCapture?.(e.pointerId)
     ctx.beginPath()
     ctx.moveTo(p.x, p.y)
   }
@@ -74,6 +73,17 @@ function SignaturePad({ value, onChange, onInkChange, captureRef }) {
     if (!drawingRef.current) return
     e.preventDefault()
     const canvas = canvasRef.current
+    const rect = canvas.getBoundingClientRect()
+
+    // If the pointer leaves the signature box while the button/finger is still
+    // down, finish the stroke immediately. Do not leave the pad stuck in a
+    // drawing state waiting for a pointerup that may happen elsewhere.
+    const outside = e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom
+    if (outside) {
+      end(e)
+      return
+    }
+
     const ctx = canvas.getContext('2d')
     const p = point(e)
     ctx.lineTo(p.x, p.y)
@@ -121,9 +131,11 @@ function SignaturePad({ value, onChange, onInkChange, captureRef }) {
     }
     window.addEventListener('pointerup', finish, true)
     window.addEventListener('pointercancel', finish, true)
+    window.addEventListener('blur', finish, true)
     return () => {
       window.removeEventListener('pointerup', finish, true)
       window.removeEventListener('pointercancel', finish, true)
+      window.removeEventListener('blur', finish, true)
     }
   }, [])
 
@@ -163,8 +175,8 @@ function SignaturePad({ value, onChange, onInkChange, captureRef }) {
       onPointerMove={move}
       onPointerUp={end}
       onPointerCancel={end}
-      onPointerLeave={e=>{ if(drawingRef.current && e.buttons===0) end(e) }}
-      onLostPointerCapture={end}
+      onPointerLeave={end}
+      onPointerOut={end}
       style={styles.signatureCanvas}
       aria-label="Draw your signature"
     />
