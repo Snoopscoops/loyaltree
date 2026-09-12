@@ -36,21 +36,10 @@ const BUSINESS_TYPES = [
   ['hotel','🏨 Hotel / Resort'],['other','🏪 Other Business'],
 ]
 
-function SignaturePad({ value, onChange, onInkChange, captureRef }) {
+function SignaturePad({ onInkChange, captureRef, resetKey }) {
   const canvasRef = useRef(null)
   const drawingRef = useRef(false)
-  const dirtyRef = useRef(false)
-  const inkRef = useRef(Boolean(value))
-  const lastCommittedRef = useRef(value || '')
-
-  const commitSignature = () => {
-    const canvas = canvasRef.current
-    if (!canvas || !dirtyRef.current) return
-    dirtyRef.current = false
-    const dataUrl = canvas.toDataURL('image/png')
-    lastCommittedRef.current = dataUrl
-    onChange(dataUrl)
-  }
+  const inkRef = useRef(false)
 
   const point = (e) => {
     const canvas = canvasRef.current
@@ -61,13 +50,21 @@ function SignaturePad({ value, onChange, onInkChange, captureRef }) {
     }
   }
 
+  const clearCanvas = (notify = true) => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height)
+    drawingRef.current = false
+    inkRef.current = false
+    if (notify) onInkChange?.(false)
+  }
+
   const start = (e) => {
     e.preventDefault()
     const canvas = canvasRef.current
     const ctx = canvas.getContext('2d')
     const p = point(e)
     drawingRef.current = true
-    dirtyRef.current = false
     ctx.beginPath()
     ctx.moveTo(p.x, p.y)
   }
@@ -77,44 +74,28 @@ function SignaturePad({ value, onChange, onInkChange, captureRef }) {
     e.preventDefault()
     const canvas = canvasRef.current
     const rect = canvas.getBoundingClientRect()
-
-    // If the pointer leaves the signature box while the button/finger is still
-    // down, finish the stroke immediately. Do not leave the pad stuck in a
-    // drawing state waiting for a pointerup that may happen elsewhere.
-    const outside = e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom
-    if (outside) {
-      end(e)
+    if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) {
+      drawingRef.current = false
       return
     }
-
     const ctx = canvas.getContext('2d')
     const p = point(e)
     ctx.lineTo(p.x, p.y)
     ctx.stroke()
-    dirtyRef.current = true
-    // A signature is considered present as soon as the first real stroke is
-    // drawn. Notify the parent on every drawn segment so React state can never
-    // get stuck false even if the canvas survived an agreement reset/remount.
-    if (!inkRef.current) inkRef.current = true
-    onInkChange?.(true)
+
+    // First real line movement is enough to make the signature valid.
+    // Keep the drawing itself entirely inside the canvas; do NOT mirror every
+    // stroke into React state, because parent re-renders must never erase ink.
+    if (!inkRef.current) {
+      inkRef.current = true
+      onInkChange?.(true)
+    }
   }
 
   const end = (e) => {
     if (!drawingRef.current) return
     e?.preventDefault?.()
     drawingRef.current = false
-    commitSignature()
-  }
-
-  const clear = () => {
-    const canvas = canvasRef.current
-    canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height)
-    drawingRef.current = false
-    dirtyRef.current = false
-    inkRef.current = false
-    lastCommittedRef.current = ''
-    onInkChange?.(false)
-    onChange('')
   }
 
   useEffect(() => {
@@ -127,13 +108,7 @@ function SignaturePad({ value, onChange, onInkChange, captureRef }) {
   }, [])
 
   useEffect(() => {
-    // Some browsers/trackpads can release the pointer outside the canvas.
-    // Commit globally so a visible signature can never remain unsaved.
-    const finish = () => {
-      if (!drawingRef.current) return
-      drawingRef.current = false
-      commitSignature()
-    }
+    const finish = () => { drawingRef.current = false }
     window.addEventListener('pointerup', finish, true)
     window.addEventListener('pointercancel', finish, true)
     window.addEventListener('blur', finish, true)
@@ -154,35 +129,11 @@ function SignaturePad({ value, onChange, onInkChange, captureRef }) {
     return () => { captureRef.current = null }
   }, [captureRef])
 
+  // Only an explicit agreement reset is allowed to clear the pad.
   useEffect(() => {
-    const canvas = canvasRef.current
-    const ctx = canvas.getContext('2d')
-    if (!value) {
-      ctx.clearRect(0, 0, canvas.width, canvas.height)
-      drawingRef.current = false
-      dirtyRef.current = false
-      inkRef.current = false
-      lastCommittedRef.current = ''
-      onInkChange?.(false)
-      return
-    }
-
-    inkRef.current = true
-    onInkChange?.(true)
-
-    // When this value is the snapshot we just emitted ourselves, the pixels
-    // are already on this canvas. Skipping a redraw avoids an async image load
-    // wiping out the beginning of the owner's next stroke.
-    if (value === lastCommittedRef.current) return
-
-    const img = new Image()
-    img.onload = () => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height)
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
-      lastCommittedRef.current = value
-    }
-    img.src = value
-  }, [value])
+    clearCanvas(false)
+    onInkChange?.(false)
+  }, [resetKey])
 
   return <div style={styles.signatureWrap}>
     <canvas
@@ -194,13 +145,12 @@ function SignaturePad({ value, onChange, onInkChange, captureRef }) {
       onPointerUp={end}
       onPointerCancel={end}
       onPointerLeave={end}
-      onPointerOut={end}
       style={styles.signatureCanvas}
       aria-label="Draw your signature"
     />
     <div style={styles.signatureHintRow}>
-      <span style={styles.tip}>Start with one stroke to enable signing. You can keep adding as many strokes as you need using your mouse, trackpad, or finger.</span>
-      <button type="button" onClick={clear} style={styles.clearSignature}>Clear signature</button>
+      <span style={styles.tip}>One stroke enables signing. Keep adding as many strokes as you want; the pad will not clear unless you press Clear signature or the agreement changes.</span>
+      <button type="button" onClick={()=>clearCanvas(true)} style={styles.clearSignature}>Clear signature</button>
     </div>
   </div>
 }
@@ -222,6 +172,7 @@ function Signup({ API_BASE }) {
   const [agreementLoading, setAgreementLoading] = useState(false)
   const [agreementRead, setAgreementRead] = useState(false)
   const [signatureHasInk, setSignatureHasInk] = useState(false)
+  const [signatureResetKey, setSignatureResetKey] = useState(0)
   const signatureCaptureRef = useRef(null)
   const [plans,setPlans]=useState(null)
   const [logoUpload,setLogoUpload]=useState({uploading:false,error:''})
@@ -266,7 +217,7 @@ function Signup({ API_BASE }) {
   }
 
   const loadAgreement=async()=>{
-    setAgreementLoading(true); setAgreementDoc(null); setAgreementRead(false); setSignatureHasInk(false); setError('')
+    setAgreementLoading(true); setAgreementDoc(null); setAgreementRead(false); setSignatureHasInk(false); setSignatureResetKey(k=>k+1); setError('')
     // A changed/reloaded document must be signed again; never carry a signature
     // or confirmations forward onto a newly generated agreement hash.
     setAgreement(a=>({
@@ -396,7 +347,7 @@ function Signup({ API_BASE }) {
             <h2 style={styles.signerTitle}>Electronic Signature</h2>
             <p style={styles.signerCopy}>The person signing confirms that they are authorized to enter into this agreement for the business.</p>
             <div className="lt-signup-two" style={styles.twoCol}><Field label="Authorized representative · full legal name"><input value={agreement.signer_name} onChange={e=>setAgreement(a=>({...a,signer_name:e.target.value}))} style={styles.input} placeholder="Full legal name"/></Field><Field label="Position / title"><input value={agreement.signer_title} onChange={e=>setAgreement(a=>({...a,signer_title:e.target.value}))} style={styles.input} placeholder="Owner, President, Manager, etc."/></Field></div>
-            <Field label="Draw signature"><SignaturePad value={agreement.signature_data_url} onChange={v=>setAgreement(a=>({...a,signature_data_url:v}))} onInkChange={setSignatureHasInk} captureRef={signatureCaptureRef}/>{signatureHasInk&&<small style={styles.signatureCaptured}>✓ Signature detected and ready to capture</small>}</Field>
+            <Field label="Draw signature"><SignaturePad onInkChange={setSignatureHasInk} captureRef={signatureCaptureRef} resetKey={signatureResetKey}/>{signatureHasInk&&<small style={styles.signatureCaptured}>✓ Signature detected. You can keep adding more strokes.</small>}</Field>
             <div style={styles.checks}>
               <Check checked={agreement.authority_confirmed} onChange={v=>setAgreement(a=>({...a,authority_confirmed:v}))}>I represent that I am authorized to enter into this agreement on behalf of the business.</Check>
               <Check checked={agreement.agreement_confirmed} onChange={v=>setAgreement(a=>({...a,agreement_confirmed:v}))}>I have reviewed and agree to the Business Subscription Agreement and Data Processing Addendum above.</Check>
