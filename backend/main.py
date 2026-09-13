@@ -171,6 +171,7 @@ SUBSCRIPTION_PLANS = {
         # Growth-tier product modules. Starter cannot create/edit these.
         'hybrid_cards': False,
         'gift_cards': False,
+        'pos_integration': False,
     },
     'growth': {
         'label': 'Growth',
@@ -189,6 +190,7 @@ SUBSCRIPTION_PLANS = {
         'geofence_notifications': False,
         'hybrid_cards': True,
         'gift_cards': True,
+        'pos_integration': False,
     },
     'pro': {
         'label': 'Pro',
@@ -206,9 +208,10 @@ SUBSCRIPTION_PLANS = {
         'max_branches': 5,
         # Reserved until geotag/geofence delivery is implemented and enabled.
         'geofence_notifications': False,
-        # Pro inherits Growth product modules.
+        # Pro inherits Growth product modules and includes POS Integration.
         'hybrid_cards': True,
         'gift_cards': True,
+        'pos_integration': True,
     },
 }
 
@@ -1880,6 +1883,45 @@ class PointsSaleRequest(BaseModel):
     staff_pin: Optional[str] = None
     as_owner: Optional[bool] = False
 
+
+# POS Integration (Pro) -------------------------------------------------------
+# StoreHub is the first provider. Provider-facing data is normalized into the
+# pos_* tables while the existing LoyaltyTree loyalty engine remains the source
+# of truth for points/stamps, tiers/rewards and Wallet refreshes.
+class POSIntegrationCreate(BaseModel):
+    provider: Literal['storehub'] = 'storehub'
+    mode: Literal['test', 'live'] = 'test'
+
+
+class POSBranchMappingInput(BaseModel):
+    branch_public_id: str
+    external_branch_id: Optional[str] = None
+    external_branch_name: Optional[str] = None
+
+
+class POSBranchMappingsUpdate(BaseModel):
+    provider: Literal['storehub'] = 'storehub'
+    mappings: List[POSBranchMappingInput] = Field(default_factory=list, max_length=100)
+
+
+class POSSettingsUpdate(BaseModel):
+    provider: Literal['storehub'] = 'storehub'
+    member_identification: Optional[Literal['qr', 'phone', 'email']] = None
+    loyalty_source: Optional[Literal['existing_loyaltytree_program']] = None
+    earning_enabled: Optional[bool] = None
+    redemption_enabled: Optional[bool] = None
+
+
+class POSStoreHubTestTransaction(BaseModel):
+    customer_public_id: str
+    amount_spent: float = Field(gt=0)
+    external_transaction_id: str = Field(min_length=3, max_length=200)
+    branch_public_id: Optional[str] = None
+
+
+class POSGoLiveRequest(BaseModel):
+    provider: Literal['storehub'] = 'storehub'
+
 class VIPSaleRequest(BaseModel):
     customer_public_id: str
     amount_spent: float = Field(gt=0)
@@ -2294,6 +2336,137 @@ def safe_get_branch(public_id: str):
         return res.data
     except Exception:
         return None
+
+
+# POS Integration helpers -----------------------------------------------------
+def _pos_schema_error(exc) -> HTTPException:
+    message = friendly_db_error(exc)
+    raw = str(exc or '').lower()
+    if (
+        'pos_integrations' in raw
+        or 'pos_branch_mappings' in raw
+        or 'pos_transactions' in raw
+        or 'schema cache' in raw
+        or 'pgrst205' in raw
+    ):
+        return HTTPException(
+            status_code=503,
+            detail=(
+                'POS Integration database migration is not installed or is not visible to PostgREST. '
+                'Run pos_integration.sql in Supabase and reload the schema before retrying. '
+                f'Database error: {message}'
+            ),
+        )
+    return HTTPException(status_code=500, detail=message)
+
+
+def _require_pos_pro_business(public_id: str, authorization: str) -> dict:
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    if not business_has_plan_feature(business, 'pos_integration'):
+        raise HTTPException(
+            status_code=403,
+            detail='POS Integration is included with the Pro plan. Upgrade this business to Pro to continue.',
+        )
+    return business
+
+
+def _get_pos_integration(business_id: int, provider: str = 'storehub') -> Optional[dict]:
+    try:
+        res = (
+            supabase.table('pos_integrations')
+            .select('*')
+            .eq('business_id', business_id)
+            .eq('provider', provider)
+            .maybe_single()
+            .execute()
+        )
+        return res.data
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+
+
+def _pos_branch_rows(business_id: int, integration_id) -> list:
+    try:
+        rows = (
+            supabase.table('pos_branch_mappings')
+            .select('*')
+            .eq('business_id', business_id)
+            .eq('integration_id', integration_id)
+            .order('created_at')
+            .execute()
+            .data or []
+        )
+        branch_rows = (
+            supabase.table('branches')
+            .select('id,public_id,name,address,is_active')
+            .eq('business_id', business_id)
+            .execute()
+            .data or []
+        )
+        branch_map = {str(row.get('id')): row for row in branch_rows}
+        enriched = []
+        for row in rows:
+            branch = branch_map.get(str(row.get('branch_id'))) or {}
+            enriched.append({
+                **row,
+                'branch_public_id': branch.get('public_id'),
+                'branch_name': branch.get('name'),
+                'branch_address': branch.get('address'),
+            })
+        return enriched
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+
+
+def _merge_pos_config(integration: dict, patch: dict) -> dict:
+    current = integration.get('config') if isinstance(integration.get('config'), dict) else {}
+    merged = dict(current or {})
+    for key, value in (patch or {}).items():
+        if value is not None:
+            merged[key] = value
+    return merged
+
+
+def _pos_first_active_mapping(business_id: int, integration_id) -> Optional[dict]:
+    rows = [row for row in _pos_branch_rows(business_id, integration_id) if row.get('is_active') is not False]
+    return rows[0] if rows else None
+
+
+def _pos_attach_audit_context(transaction_id, branch_id, provider: str, external_transaction_id: str):
+    """Best-effort enrichment of the existing immutable-ish loyalty audit envelope.
+
+    POS branch attribution is authoritative in pos_transactions. This additionally
+    annotates transaction_audit so the existing owner security ledger can show the
+    branch/provider without creating a second loyalty ledger.
+    """
+    if not transaction_id:
+        return
+    try:
+        row = (
+            supabase.table('transaction_audit')
+            .select('transaction_id,metadata,branch_id')
+            .eq('transaction_id', transaction_id)
+            .maybe_single()
+            .execute()
+            .data
+        )
+        if not row:
+            return
+        metadata = row.get('metadata') if isinstance(row.get('metadata'), dict) else {}
+        metadata = {
+            **metadata,
+            'pos_provider': provider,
+            'pos_external_transaction_id': external_transaction_id,
+        }
+        patch = {'metadata': metadata}
+        if branch_id is not None and row.get('branch_id') is None:
+            patch['branch_id'] = branch_id
+        supabase.table('transaction_audit').update(patch).eq('transaction_id', transaction_id).execute()
+    except Exception as exc:
+        print(f'POS AUDIT enrichment warning: {exc}')
 
 def safe_get_cl_customer(public_id: str):
     if not supabase:
@@ -17635,6 +17808,441 @@ async def add_points_sale(public_id: str, req: PointsSaleRequest, background_tas
     if audit_row and audit_row.get('transaction_id'): response_payload['transaction_id']=str(audit_row.get('transaction_id'))
     complete_transaction_audit(audit_row,balance_after=new_balance,response_json=response_payload)
     return response_payload
+
+# -----------------------------------------------------------------------------
+# POS INTEGRATION - PRO PLAN / STOREHUB V1
+# -----------------------------------------------------------------------------
+# V1 deliberately supports StoreHub TEST MODE first. It normalizes a simulated
+# StoreHub sale into pos_transactions, then delegates the actual loyalty mutation
+# to the existing add_points_sale()/add_stamp() routes so Wallet sync, caps,
+# milestones and idempotency stay in one loyalty engine.
+
+
+@app.get('/api/v1/business/{public_id}/pos')
+async def get_pos_integration_status(public_id: str, authorization: str = Header(default='')):
+    business = _require_pos_pro_business(public_id, authorization)
+    integration = _get_pos_integration(business.get('id'), 'storehub')
+    mappings = _pos_branch_rows(business.get('id'), integration.get('id')) if integration else []
+    recent = []
+    if integration:
+        try:
+            recent = (
+                supabase.table('pos_transactions')
+                .select('*')
+                .eq('integration_id', integration.get('id'))
+                .order('created_at', desc=True)
+                .limit(25)
+                .execute()
+                .data or []
+            )
+        except Exception as exc:
+            raise _pos_schema_error(exc)
+    return {
+        'feature': 'pos_integration',
+        'plan': business.get('plan'),
+        'integration': integration,
+        'branch_mappings': mappings,
+        'recent_transactions': recent,
+        'providers': [
+            {'id': 'storehub', 'name': 'StoreHub', 'status': 'available', 'mode': 'test'},
+            {'id': 'loyverse', 'name': 'Loyverse', 'status': 'coming_soon'},
+            {'id': 'mosaic', 'name': 'Mosaic', 'status': 'coming_soon'},
+            {'id': 'qashier', 'name': 'Qashier', 'status': 'coming_soon'},
+            {'id': 'shopify', 'name': 'Shopify POS', 'status': 'coming_soon'},
+            {'id': 'square', 'name': 'Square', 'status': 'coming_soon'},
+        ],
+    }
+
+
+@app.post('/api/v1/business/{public_id}/pos/integrations')
+async def start_pos_integration(public_id: str, req: POSIntegrationCreate, authorization: str = Header(default='')):
+    business = _require_pos_pro_business(public_id, authorization)
+    if req.provider != 'storehub':
+        raise HTTPException(status_code=400, detail='Only StoreHub is available in POS Integration V1.')
+    if req.mode == 'live':
+        raise HTTPException(
+            status_code=409,
+            detail='StoreHub live API access is not connected yet. Start in Test Mode first.',
+        )
+
+    now = datetime.utcnow().isoformat()
+    existing = _get_pos_integration(business.get('id'), 'storehub')
+    config = _merge_pos_config(existing or {}, {
+        'member_identification': 'qr',
+        'loyalty_source': 'existing_loyaltytree_program',
+        'earning_enabled': True,
+        'redemption_enabled': False,
+        'simulator': True,
+        'setup_step': 2,
+    })
+    payload = {
+        'business_id': business.get('id'),
+        'provider': 'storehub',
+        'status': 'connected',
+        'mode': 'test',
+        'external_account_name': 'StoreHub Simulator',
+        'config': config,
+        'capabilities': {
+            'transactions': True,
+            'refunds': False,
+            'webhooks': False,
+            'redemption': False,
+            'simulator': True,
+        },
+        'last_error': None,
+        'connected_at': (existing or {}).get('connected_at') or now,
+        'disconnected_at': None,
+    }
+    try:
+        if existing:
+            res = supabase.table('pos_integrations').update(payload).eq('id', existing.get('id')).execute()
+        else:
+            res = supabase.table('pos_integrations').insert(payload).execute()
+        integration = (res.data or [None])[0] or {**(existing or {}), **payload}
+        return {'integration': integration, 'message': 'StoreHub Test Mode is ready.'}
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+
+
+@app.put('/api/v1/business/{public_id}/pos/branch-mappings')
+async def save_pos_branch_mappings(public_id: str, req: POSBranchMappingsUpdate, authorization: str = Header(default='')):
+    business = _require_pos_pro_business(public_id, authorization)
+    integration = _get_pos_integration(business.get('id'), req.provider)
+    if not integration:
+        raise HTTPException(status_code=409, detail='Set up StoreHub before mapping branches.')
+    if not req.mappings:
+        raise HTTPException(status_code=400, detail='Map at least one branch.')
+
+    # Validate first so a bad row cannot leave a half-saved mapping set.
+    prepared = []
+    seen_branches = set()
+    seen_external = set()
+    for item in req.mappings:
+        branch = safe_get_branch(item.branch_public_id)
+        if not branch or branch.get('business_id') != business.get('id'):
+            raise HTTPException(status_code=404, detail=f'Branch not found: {item.branch_public_id}')
+        if item.branch_public_id in seen_branches:
+            raise HTTPException(status_code=400, detail=f'Duplicate branch mapping: {item.branch_public_id}')
+        seen_branches.add(item.branch_public_id)
+
+        external_name = (item.external_branch_name or '').strip() or branch.get('name') or 'StoreHub outlet'
+        external_id = (item.external_branch_id or '').strip()
+        if not external_id:
+            # StoreHub Simulator does not have provider outlet IDs yet. Generate a
+            # deterministic TEST identifier that will be replaced after API access.
+            if integration.get('mode') != 'test':
+                raise HTTPException(status_code=400, detail=f'StoreHub outlet ID is required for {branch.get("name")}.')
+            external_id = f'test-{item.branch_public_id}'
+        if external_id in seen_external:
+            raise HTTPException(status_code=400, detail=f'StoreHub outlet is mapped more than once: {external_id}')
+        seen_external.add(external_id)
+        prepared.append((branch, external_id, external_name))
+
+    try:
+        # Preserve history instead of deleting mappings: omitted rows become inactive.
+        supabase.table('pos_branch_mappings').update({'is_active': False}).eq('integration_id', integration.get('id')).execute()
+        for branch, external_id, external_name in prepared:
+            existing = (
+                supabase.table('pos_branch_mappings')
+                .select('*')
+                .eq('integration_id', integration.get('id'))
+                .eq('branch_id', branch.get('id'))
+                .maybe_single()
+                .execute()
+                .data
+            )
+            row = {
+                'integration_id': integration.get('id'),
+                'business_id': business.get('id'),
+                'branch_id': branch.get('id'),
+                'external_branch_id': external_id,
+                'external_branch_name': external_name,
+                'is_active': True,
+            }
+            if existing:
+                supabase.table('pos_branch_mappings').update(row).eq('id', existing.get('id')).execute()
+            else:
+                supabase.table('pos_branch_mappings').insert(row).execute()
+
+        config = _merge_pos_config(integration, {'setup_step': 3})
+        supabase.table('pos_integrations').update({'config': config}).eq('id', integration.get('id')).execute()
+        return {
+            'branch_mappings': _pos_branch_rows(business.get('id'), integration.get('id')),
+            'message': 'StoreHub branch mapping saved.',
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+
+
+@app.patch('/api/v1/business/{public_id}/pos/settings')
+async def update_pos_settings(public_id: str, req: POSSettingsUpdate, authorization: str = Header(default='')):
+    business = _require_pos_pro_business(public_id, authorization)
+    integration = _get_pos_integration(business.get('id'), req.provider)
+    if not integration:
+        raise HTTPException(status_code=409, detail='Set up StoreHub before changing POS settings.')
+    if req.redemption_enabled is True:
+        raise HTTPException(
+            status_code=409,
+            detail='StoreHub POS redemption is not enabled in V1. Launch earning first; redemption will be enabled after StoreHub API support is verified.',
+        )
+
+    patch = req.dict(exclude_none=True)
+    patch.pop('provider', None)
+    if 'member_identification' in patch:
+        patch['setup_step'] = max(int((integration.get('config') or {}).get('setup_step') or 2), 4)
+    if 'loyalty_source' in patch or 'earning_enabled' in patch:
+        patch['setup_step'] = max(int((integration.get('config') or {}).get('setup_step') or 2), 5)
+    if 'redemption_enabled' in patch:
+        patch['setup_step'] = max(int((integration.get('config') or {}).get('setup_step') or 2), 6)
+
+    config = _merge_pos_config(integration, patch)
+    try:
+        res = supabase.table('pos_integrations').update({'config': config}).eq('id', integration.get('id')).execute()
+        updated = (res.data or [None])[0] or {**integration, 'config': config}
+        return {'integration': updated, 'message': 'POS settings saved.'}
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+
+
+@app.post('/api/v1/business/{public_id}/pos/storehub/test-transaction')
+async def storehub_test_transaction(
+    public_id: str,
+    req: POSStoreHubTestTransaction,
+    background_tasks: BackgroundTasks,
+    authorization: str = Header(default=''),
+):
+    business = _require_pos_pro_business(public_id, authorization)
+    integration = _get_pos_integration(business.get('id'), 'storehub')
+    if not integration:
+        raise HTTPException(status_code=409, detail='Set up StoreHub Test Mode first.')
+    if integration.get('mode') != 'test':
+        raise HTTPException(status_code=409, detail='This endpoint is available only in StoreHub Test Mode.')
+    if integration.get('status') in ('paused', 'disconnected'):
+        raise HTTPException(status_code=409, detail=f'StoreHub integration is {integration.get("status")}.')
+
+    config = integration.get('config') if isinstance(integration.get('config'), dict) else {}
+    if config.get('earning_enabled') is False:
+        raise HTTPException(status_code=409, detail='POS earning is disabled for this integration.')
+
+    customer = safe_get_customer(req.customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail='Customer not found for this business.')
+
+    mapping = None
+    if req.branch_public_id:
+        for candidate in _pos_branch_rows(business.get('id'), integration.get('id')):
+            if candidate.get('branch_public_id') == req.branch_public_id and candidate.get('is_active') is not False:
+                mapping = candidate
+                break
+        if not mapping:
+            raise HTTPException(status_code=404, detail='That Loyalty Tree branch is not mapped to StoreHub.')
+    else:
+        mapping = _pos_first_active_mapping(business.get('id'), integration.get('id'))
+    if not mapping:
+        raise HTTPException(status_code=409, detail='Map at least one branch before running a StoreHub test transaction.')
+
+    amount = float(Decimal(str(req.amount_spent)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+    external_tx = req.external_transaction_id.strip()
+    if not external_tx:
+        raise HTTPException(status_code=400, detail='StoreHub transaction ID is required.')
+
+    try:
+        existing_tx = (
+            supabase.table('pos_transactions')
+            .select('*')
+            .eq('integration_id', integration.get('id'))
+            .eq('external_transaction_id', external_tx)
+            .maybe_single()
+            .execute()
+            .data
+        )
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+
+    if existing_tx and existing_tx.get('status') == 'loyalty_applied':
+        meta = existing_tx.get('processing_metadata') if isinstance(existing_tx.get('processing_metadata'), dict) else {}
+        result = meta.get('loyalty_result') if isinstance(meta.get('loyalty_result'), dict) else {}
+        return {
+            **result,
+            'pos_transaction_id': str(existing_tx.get('id')),
+            'external_transaction_id': external_tx,
+            'duplicate_prevented': True,
+        }
+
+    pos_row = existing_tx
+    if not pos_row:
+        try:
+            inserted = supabase.table('pos_transactions').insert({
+                'integration_id': integration.get('id'),
+                'business_id': business.get('id'),
+                'branch_id': mapping.get('branch_id'),
+                'customer_id': customer.get('id'),
+                'provider': 'storehub',
+                'external_transaction_id': external_tx,
+                'external_receipt_number': external_tx,
+                'transaction_type': 'sale',
+                'source': 'simulator',
+                'currency': 'PHP',
+                'gross_amount': amount,
+                'net_amount': amount,
+                'eligible_amount': amount,
+                'status': 'processing',
+                'raw_payload': {
+                    'simulator': True,
+                    'customer_public_id': req.customer_public_id,
+                    'amount_spent': amount,
+                    'storehub_outlet_id': mapping.get('external_branch_id'),
+                    'storehub_outlet_name': mapping.get('external_branch_name'),
+                },
+                'transacted_at': datetime.utcnow().isoformat(),
+            }).execute()
+            pos_row = (inserted.data or [None])[0]
+        except Exception as exc:
+            # A concurrent retry may have won the unique external ID race.
+            try:
+                pos_row = (
+                    supabase.table('pos_transactions').select('*')
+                    .eq('integration_id', integration.get('id'))
+                    .eq('external_transaction_id', external_tx)
+                    .maybe_single().execute().data
+                )
+            except Exception:
+                pos_row = None
+            if not pos_row:
+                raise _pos_schema_error(exc)
+
+    idempotency_key = f'pos:storehub:{integration.get("id")}:{external_tx}'[:240]
+    program = safe_get_loyalty_program(business.get('id')) or {}
+    loyalty_type = effective_loyalty_type(program)
+
+    try:
+        if loyalty_type == 'points':
+            loyalty_result = await add_points_sale(
+                public_id,
+                PointsSaleRequest(
+                    customer_public_id=req.customer_public_id,
+                    amount_spent=amount,
+                    as_owner=True,
+                ),
+                background_tasks,
+                authorization='',
+                x_idempotency_key=idempotency_key,
+            )
+        elif loyalty_type == 'stamp':
+            loyalty_result = await add_stamp(
+                public_id,
+                StampRequest(
+                    customer_public_id=req.customer_public_id,
+                    as_owner=True,
+                    stamp_kind='reward',
+                ),
+                background_tasks,
+                authorization='',
+                x_idempotency_key=idempotency_key,
+            )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f'StoreHub V1 simulator currently supports Points, Stamps, and Hybrid cards whose reward engine is Points or Stamps. '
+                    f'This business currently uses {program.get("card_type") or loyalty_type}.'
+                ),
+            )
+
+        audit_ref = loyalty_result.get('transaction_id') if isinstance(loyalty_result, dict) else None
+        _pos_attach_audit_context(audit_ref, mapping.get('branch_id'), 'storehub', external_tx)
+
+        points_earned = int((loyalty_result or {}).get('points_earned') or 0)
+        stamps_earned = 1 if loyalty_type == 'stamp' and not (loyalty_result or {}).get('duplicate_prevented') else 0
+        wallet_status = ((loyalty_result or {}).get('wallet_sync') or {}).get('status') or 'queued'
+        processing_metadata = {
+            'loyalty_type': loyalty_type,
+            'loyalty_result': loyalty_result or {},
+            'wallet_sync_status': wallet_status,
+            'branch_public_id': mapping.get('branch_public_id'),
+            'storehub_outlet_id': mapping.get('external_branch_id'),
+            'storehub_outlet_name': mapping.get('external_branch_name'),
+        }
+        try:
+            updated = supabase.table('pos_transactions').update({
+                'status': 'loyalty_applied',
+                'points_earned': points_earned,
+                'stamps_earned': stamps_earned,
+                'transaction_audit_ref': str(audit_ref) if audit_ref else None,
+                'processing_metadata': processing_metadata,
+                'error_message': None,
+                'processed_at': datetime.utcnow().isoformat(),
+            }).eq('id', pos_row.get('id')).execute()
+            if updated.data:
+                pos_row = updated.data[0]
+            supabase.table('pos_integrations').update({
+                'last_sync_at': datetime.utcnow().isoformat(),
+                'last_error': None,
+                'config': _merge_pos_config(integration, {'setup_step': 6, 'last_test_passed': True}),
+            }).eq('id', integration.get('id')).execute()
+        except Exception as exc:
+            # The loyalty mutation is already protected by its own idempotency key.
+            # Surface the persistence issue so a retry can safely finish the POS row.
+            raise _pos_schema_error(exc)
+
+        return {
+            **(loyalty_result or {}),
+            'amount_spent': amount,
+            'pos_transaction_id': str(pos_row.get('id')),
+            'external_transaction_id': external_tx,
+            'provider': 'storehub',
+            'mode': 'test',
+            'branch_public_id': mapping.get('branch_public_id'),
+            'storehub_outlet_id': mapping.get('external_branch_id'),
+            'wallet_sync_status': wallet_status,
+        }
+    except HTTPException as exc:
+        try:
+            supabase.table('pos_transactions').update({
+                'status': 'failed',
+                'error_message': str(exc.detail)[:1000],
+                'processed_at': datetime.utcnow().isoformat(),
+            }).eq('id', pos_row.get('id')).execute()
+            supabase.table('pos_integrations').update({
+                'last_error': str(exc.detail)[:1000],
+            }).eq('id', integration.get('id')).execute()
+        except Exception as log_exc:
+            print(f'POS TEST failure-log warning: {log_exc}')
+        raise
+    except Exception as exc:
+        try:
+            supabase.table('pos_transactions').update({
+                'status': 'failed',
+                'error_message': str(exc)[:1000],
+                'processed_at': datetime.utcnow().isoformat(),
+            }).eq('id', pos_row.get('id')).execute()
+            supabase.table('pos_integrations').update({
+                'last_error': str(exc)[:1000],
+            }).eq('id', integration.get('id')).execute()
+        except Exception as log_exc:
+            print(f'POS TEST failure-log warning: {log_exc}')
+        raise HTTPException(status_code=500, detail=f'POS test transaction failed: {friendly_db_error(exc)}')
+
+
+@app.post('/api/v1/business/{public_id}/pos/go-live')
+async def pos_go_live(public_id: str, req: POSGoLiveRequest, authorization: str = Header(default='')):
+    business = _require_pos_pro_business(public_id, authorization)
+    integration = _get_pos_integration(business.get('id'), req.provider)
+    if not integration:
+        raise HTTPException(status_code=409, detail='Set up StoreHub first.')
+    # Do not pretend the simulator is a live StoreHub connector. Once StoreHub
+    # supplies verified API/partner credentials, this route will validate them,
+    # switch mode to live, register webhooks/polling and then set status=live.
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            'StoreHub Test Mode is ready, but live StoreHub API access has not been connected yet. '
+            'Keep this integration in Test Mode until StoreHub credentials/API access are verified.'
+        ),
+    )
+
 
 @app.post("/api/v1/business/{public_id}/points-redeem")
 async def redeem_points_prize(public_id: str, req: PointsRedeemRequest, background_tasks: BackgroundTasks, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
