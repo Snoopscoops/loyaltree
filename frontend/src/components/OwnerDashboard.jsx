@@ -460,7 +460,13 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   }, [showOnboarding, isMobile])
 
 
+  // A Google Wallet class means the loyalty card has already been published.
+  // New owners with no published card stay inside the required setup flow.
+  // Once a card has been published, Setup Guide becomes a revisitable guide and
+  // the owner can return to the dashboard at any time.
   const cardSetUp = !!program?.google_wallet_class_id
+  const onboardingPreviouslyCompleted = business?.onboarding_completed === true || (onboardingKey && localStorage.getItem(onboardingKey) === '1')
+  const canExitSetupGuide = cardSetUp || onboardingPreviouslyCompleted
   const cashierSetUp = staff.some(member => String(member?.role || '').toLowerCase() === 'cashier')
 
   useEffect(()=>{
@@ -3832,7 +3838,10 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         }
 
         return (
-          <div style={{...styles.modalOverlay, ...(isMobile ? styles.onboardingOverlayMobile : {})}}>
+          <div
+            style={{...styles.modalOverlay, ...(isMobile ? styles.onboardingOverlayMobile : {})}}
+            onClick={canExitSetupGuide ? closeOnboarding : undefined}
+          >
             <div
               style={{
                 ...styles.modal,
@@ -3877,19 +3886,40 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     </h2>
                   </div>
 
-                  <div style={{display: 'flex', gap: 6}}>
-                    {Array.from({length: totalSteps}).map((_, i) => (
-                      <span
-                        key={i}
+                  <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap',justifyContent:'flex-end'}}>
+                    <div style={{display: 'flex', gap: 6}}>
+                      {Array.from({length: totalSteps}).map((_, i) => (
+                        <span
+                          key={i}
+                          style={{
+                            width: i === safeStep ? 28 : 9,
+                            height: 9,
+                            borderRadius: 999,
+                            background: i < safeStep ? '#22c55e' : i === safeStep ? cardExperience.accent : '#e2e8f0',
+                            transition: 'all .2s ease',
+                          }}
+                        />
+                      ))}
+                    </div>
+                    {canExitSetupGuide && (
+                      <button
+                        type="button"
+                        onClick={closeOnboarding}
                         style={{
-                          width: i === safeStep ? 28 : 9,
-                          height: 9,
-                          borderRadius: 999,
-                          background: i < safeStep ? '#22c55e' : i === safeStep ? cardExperience.accent : '#e2e8f0',
-                          transition: 'all .2s ease',
+                          border:'1px solid #cbd5e1',
+                          background:'#fff',
+                          color:'#475569',
+                          borderRadius:10,
+                          padding:'8px 11px',
+                          fontSize:12,
+                          fontWeight:800,
+                          cursor:'pointer',
+                          whiteSpace:'nowrap',
                         }}
-                      />
-                    ))}
+                      >
+                        ← Back to Dashboard
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
