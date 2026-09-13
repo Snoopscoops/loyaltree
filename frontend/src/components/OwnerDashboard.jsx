@@ -5,6 +5,7 @@ import PlatformPromoBanner from './PlatformPromoBanner'
 import LoyaltyCardCustomizer from './LoyaltyCardCustomizer'
 import GiftCards from './GiftCards'
 import SubscriptionPayment from './SubscriptionPayment'
+import POSIntegration from './POSIntegration'
 import logo192 from './logo-192.png'
 import logo64 from './logo-64.png'
 
@@ -1743,7 +1744,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   // Leaves (customers) search - matches name, phone, or email
   const customerSearchTerm = customerSearch.trim().toLowerCase()
-  const activeNavGroup = ['staff','orderahead','giftcards','operations'].includes(activeTab)
+  const activeNavGroup = ['staff','orderahead','giftcards','pos','operations'].includes(activeTab)
     ? 'operate'
     : ['satisfaction','retention','crm'].includes(activeTab)
     ? 'grow'
@@ -2020,6 +2021,13 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             <button style={{...styles.subTab,...(activeTab==='staff'?styles.subTabActive:{})}} onClick={()=>setActiveTab('staff')}>Team</button>
             {business?.order_ahead_enabled && <button style={{...styles.subTab,...(activeTab==='orderahead'?styles.subTabActive:{})}} onClick={()=>setActiveTab('orderahead')}>Order Ahead</button>}
             <button style={{...styles.subTab,...(activeTab==='giftcards'?styles.subTabActive:{})}} onClick={()=>setActiveTab('giftcards')}>Gift Cards</button>
+            <button
+              style={{...styles.subTab,...(activeTab==='pos'?styles.subTabActive:{})}}
+              onClick={()=>setActiveTab('pos')}
+              title={String(subscription?.plan || business?.plan || '').toLowerCase() === 'pro' ? 'POS Integration' : 'Available on Pro'}
+            >
+              POS Integration{String(subscription?.plan || business?.plan || '').toLowerCase() === 'pro' ? '' : ' 🔒'}
+            </button>
           </div>
         )}
         {activeNavGroup === 'grow' && (
@@ -2861,6 +2869,17 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
             user={user}
             plan={subscription?.plan || business?.plan || ''}
             enabled={subscription?.features?.gift_cards ?? ['growth','pro'].includes(String(subscription?.plan || business?.plan || '').toLowerCase())}
+          />
+        )}
+
+        {activeTab === 'pos' && (
+          <POSIntegration
+            API_BASE={API_BASE}
+            user={user}
+            business={{...business, plan: subscription?.plan || business?.plan}}
+            branches={branches}
+            authFetch={authFetch}
+            onUpgrade={()=>setActiveTab('billing')}
           />
         )}
 
