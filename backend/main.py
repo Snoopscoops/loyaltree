@@ -5140,10 +5140,15 @@ def _enrich_announcement_target(business: dict, announcement: dict) -> dict:
 
 
 def _push_apple_wallet_to_customer_public_ids(customer_public_ids: list[str]) -> int:
-    """Target only the selected customers' registered Apple Wallet passes."""
+    """Target only the selected customers' registered Apple Wallet passes.
+
+    De-duplicate serials before looking up registrations. A customer can appear
+    more than once in an audience assembled from several activity sources, but
+    one saved Wallet pass must still receive only one announcement wake-up.
+    """
     if not supabase or not APPLE_PASS_TYPE_IDENTIFIER:
         return 0
-    serial_numbers = [str(x) for x in customer_public_ids if x]
+    serial_numbers = list(dict.fromkeys(str(x) for x in customer_public_ids if x))
     if not serial_numbers:
         return 0
     push_tokens = []
@@ -5226,6 +5231,9 @@ def _send_announcement_notification(business: dict, announcement: dict, resend: 
         }
 
     # Whole-business Google Wallet remains one efficient class-level send.
+    # Do NOT fan out once per branch. The Google loyalty class is business-wide,
+    # so a business with 2, 5, or 20 branches still gets exactly one class-level
+    # announcement send here.
     program = safe_get_loyalty_program(business.get('id'))
     class_id = program.get('google_wallet_class_id') if program else None
     class_sent = False
@@ -5461,10 +5469,21 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         (announcement or {}).get('_notification_header')
         or _announcement_notification_header(business, announcement or {})
     )
-    # The Wallet notification copy follows the agreed format:
-    # "Business — Branch: message" or "Business: message".
-    announcement_value = ann_message.strip() or ann_title.strip() or 'Check back for updates'
-    announcement_change_message = f"{ann_notification_header}: %@"
+    ann_scope = str((announcement or {}).get('target_scope') or 'business')
+    ann_branch_name = str((announcement or {}).get('branch_name') or '').strip()
+    base_announcement_value = ann_message.strip() or ann_title.strip() or 'Check back for updates'
+
+    # Make the branch visible ON the Apple pass itself, not only in the push
+    # changeMessage. For a branch post the field reads "BGC — message"; for a
+    # whole-business post it stays just the message. Because PassKit substitutes
+    # the field value into changeMessage, use the business name as the prefix for
+    # branch posts to avoid repeating the branch twice.
+    if ann_scope == 'branch' and ann_branch_name:
+        announcement_value = f"{ann_branch_name} — {base_announcement_value}"
+        announcement_change_message = f"{biz_name}: %@"
+    else:
+        announcement_value = base_announcement_value
+        announcement_change_message = f"{ann_notification_header}: %@"
 
     card_cycle_reset_on = card_cycle_reset_on_date(customer, program)
     cycle_auxiliary_fields = (
@@ -6273,7 +6292,12 @@ def _send_apple_wallet_pushes(push_tokens: list) -> int:
     silent on failure - a push hiccup must never block the caller.
     Returns the number of tokens APNs accepted (200 response), just for
     logging - callers don't need to react to this."""
-    tokens = [t for t in push_tokens if t]
+    # One APNs push token can be present in multiple registration rows (for
+    # example after a device re-registers or the same device has more than one
+    # eligible serial). A single empty PassKit push wakes Wallet so it can ask
+    # which passes changed; sending the same token twice can create duplicate
+    # lock-screen notifications. Preserve order while removing duplicates.
+    tokens = list(dict.fromkeys(t for t in push_tokens if t))
     if not tokens:
         return 0
     cert_path, key_path = get_apple_push_cert_files()
@@ -6533,7 +6557,7 @@ def push_apple_wallet_announcement(business_id: int) -> int:
         ).data or []
     except Exception:
         return 0
-    serial_numbers = [r['public_id'] for r in customer_rows if r.get('public_id')]
+    serial_numbers = list(dict.fromkeys(r['public_id'] for r in customer_rows if r.get('public_id')))
     if not serial_numbers:
         return 0
     push_tokens = []
@@ -25743,7 +25767,7 @@ async def announcement_detail_page(business_public_id: str, announcement_id: str
         '<div class="badge">' + meta['icon'] + ' ' + meta['label'] + '</div>'
         '<h1>' + title + '</h1>'
         '<p class="message">' + message + '</p>'
-        '<div class="biz">From ' + html_lib.escape(biz_name) + '</div>'
+        '<div class="biz">From ' + html_lib.escape(notification_header) + '</div>'
         '</div></body></html>'
     )
     return HTMLResponse(html_out)
