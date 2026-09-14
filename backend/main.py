@@ -119,6 +119,7 @@ PAYMONGO_API_BASE = 'https://api.paymongo.com/v1'
 # Only this platform-level encryption secret belongs in Render. Never put it in
 # React or Supabase browser/client environment variables.
 STOREHUB_API_BASE = os.getenv('STOREHUB_API_BASE', 'https://api.storehubhq.com').rstrip('/')
+LOYVERSE_API_BASE = os.getenv('LOYVERSE_API_BASE', 'https://api.loyverse.com/v1.0').rstrip('/')
 POS_CREDENTIALS_ENCRYPTION_KEY = os.getenv('POS_CREDENTIALS_ENCRYPTION_KEY', '').strip()
 
 # Cloudinary (vehicle photo uploads from the Inventory / AddVehicleModal).
@@ -2007,7 +2008,7 @@ class PointsSaleRequest(BaseModel):
 # pos_* tables while the existing LoyaltyTree loyalty engine remains the source
 # of truth for points/stamps, tiers/rewards and Wallet refreshes.
 class POSIntegrationCreate(BaseModel):
-    provider: Literal['storehub'] = 'storehub'
+    provider: Literal['storehub', 'loyverse'] = 'storehub'
     mode: Literal['test', 'live'] = 'test'
 
 
@@ -2018,12 +2019,12 @@ class POSBranchMappingInput(BaseModel):
 
 
 class POSBranchMappingsUpdate(BaseModel):
-    provider: Literal['storehub'] = 'storehub'
+    provider: Literal['storehub', 'loyverse'] = 'storehub'
     mappings: List[POSBranchMappingInput] = Field(default_factory=list, max_length=100)
 
 
 class POSSettingsUpdate(BaseModel):
-    provider: Literal['storehub'] = 'storehub'
+    provider: Literal['storehub', 'loyverse'] = 'storehub'
     member_identification: Optional[Literal['qr', 'phone', 'email']] = None
     loyalty_source: Optional[Literal['existing_loyaltytree_program']] = None
     earning_enabled: Optional[bool] = None
@@ -2038,7 +2039,7 @@ class POSStoreHubTestTransaction(BaseModel):
 
 
 class POSGoLiveRequest(BaseModel):
-    provider: Literal['storehub'] = 'storehub'
+    provider: Literal['storehub', 'loyverse'] = 'storehub'
 
 
 class POSStoreHubConnectRequest(BaseModel):
@@ -2051,6 +2052,19 @@ class POSStoreHubConnectionTestRequest(BaseModel):
 
 
 class POSStoreHubPreviewRequest(BaseModel):
+    days: int = Field(default=1, ge=1, le=14)
+    limit: int = Field(default=10, ge=1, le=50)
+
+
+class POSLoyverseConnectRequest(BaseModel):
+    api_token: str = Field(min_length=6, max_length=4000)
+
+
+class POSLoyverseConnectionTestRequest(BaseModel):
+    provider: Literal['loyverse'] = 'loyverse'
+
+
+class POSLoyversePreviewRequest(BaseModel):
     days: int = Field(default=1, ge=1, le=14)
     limit: int = Field(default=10, ge=1, le=50)
 
@@ -2657,7 +2671,7 @@ def _encrypt_pos_credentials(payload: dict) -> str:
 def _decrypt_pos_credentials(integration: dict) -> dict:
     ciphertext = str((integration or {}).get('credentials_ciphertext') or '').strip()
     if not ciphertext:
-        raise HTTPException(status_code=409, detail='StoreHub credentials are not connected yet.')
+        raise HTTPException(status_code=409, detail='POS provider credentials are not connected yet.')
     try:
         raw = _pos_credentials_cipher().decrypt(ciphertext.encode('utf-8'))
         payload = json.loads(raw.decode('utf-8'))
@@ -2667,12 +2681,12 @@ def _decrypt_pos_credentials(integration: dict) -> dict:
         raise HTTPException(
             status_code=500,
             detail=(
-                'Stored StoreHub credentials could not be decrypted. If the platform '
-                'encryption key was changed, reconnect the StoreHub account.'
+                'Stored POS credentials could not be decrypted. If the platform '
+                'encryption key was changed, reconnect the POS account.'
             ),
         )
     if not isinstance(payload, dict):
-        raise HTTPException(status_code=500, detail='Stored StoreHub credentials are invalid.')
+        raise HTTPException(status_code=500, detail='Stored POS credentials are invalid.')
     return payload
 
 
@@ -2880,6 +2894,124 @@ def _pos_loyalty_contract(business: dict) -> dict:
         }
 
     return contract
+
+
+
+
+def _loyverse_request_with_token(
+    api_token: str,
+    path: str,
+    params: Optional[dict] = None,
+    method: str = 'GET',
+    json_body: Optional[dict] = None,
+):
+    """Official Loyverse API v1.0 request using a personal access token.
+
+    Personal tokens are sent as Bearer tokens. This helper is intentionally
+    provider-specific while the POS tables and loyalty engine remain generic.
+    """
+    token = str(api_token or '').strip()
+    if not token:
+        raise HTTPException(status_code=400, detail='Loyverse access token is required.')
+
+    import httpx
+
+    safe_path = '/' + str(path or '').lstrip('/')
+    url = f"{LOYVERSE_API_BASE}{safe_path}"
+    headers = {
+        'Accept': 'application/json',
+        'Authorization': f'Bearer {token}',
+    }
+    if json_body is not None:
+        headers['Content-Type'] = 'application/json'
+
+    try:
+        with httpx.Client(timeout=20) as client:
+            res = client.request(
+                str(method or 'GET').upper(),
+                url,
+                headers=headers,
+                params=params or {},
+                json=json_body,
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f'Could not reach Loyverse API: {exc}')
+
+    if res.status_code >= 400:
+        provider_text = (res.text or '').strip()
+        if len(provider_text) > 500:
+            provider_text = provider_text[:500] + '…'
+        # Preserve provider auth semantics for clearer setup feedback.
+        status = 401 if res.status_code == 401 else 502
+        raise HTTPException(
+            status_code=status,
+            detail=(
+                f'Loyverse API returned HTTP {res.status_code} for {safe_path}. '
+                f'{provider_text or "No response body."}'
+            ),
+        )
+
+    if not res.content:
+        return {}
+    try:
+        return res.json()
+    except Exception:
+        raise HTTPException(
+            status_code=502,
+            detail=f'Loyverse API returned a non-JSON response for {safe_path}.',
+        )
+
+
+def _loyverse_get(integration: dict, path: str, params: Optional[dict] = None):
+    credentials = _decrypt_pos_credentials(integration)
+    return _loyverse_request_with_token(
+        credentials.get('api_token'),
+        path,
+        params=params,
+        method='GET',
+    )
+
+
+def _loyverse_list(value, key: str) -> list:
+    if isinstance(value, dict):
+        rows = value.get(key)
+        if isinstance(rows, list):
+            return rows
+    if isinstance(value, list):
+        return value
+    return []
+
+
+def _loyverse_store_summary(row: dict) -> dict:
+    if not isinstance(row, dict):
+        return {'raw': row}
+    return {
+        'id': row.get('id'),
+        'name': row.get('name'),
+        'address': row.get('address'),
+        'city': row.get('city'),
+        'state': row.get('state'),
+        'country': row.get('country'),
+    }
+
+
+def _loyverse_receipt_summary(row: dict) -> dict:
+    if not isinstance(row, dict):
+        return {'raw': row}
+    return {
+        'receipt_number': row.get('receipt_number'),
+        'receipt_type': row.get('receipt_type'),
+        'refund_for': row.get('refund_for'),
+        'store_id': row.get('store_id'),
+        'customer_id': row.get('customer_id'),
+        'total_money': row.get('total_money'),
+        'points_earned': row.get('points_earned'),
+        'points_deducted': row.get('points_deducted'),
+        'receipt_date': row.get('receipt_date'),
+        'updated_at': row.get('updated_at'),
+        'cancelled_at': row.get('cancelled_at'),
+        'source': row.get('source'),
+    }
 
 
 def safe_get_cl_customer(public_id: str):
@@ -18835,18 +18967,26 @@ async def add_points_sale(public_id: str, req: PointsSaleRequest, background_tas
     return response_payload
 
 # -----------------------------------------------------------------------------
-# POS INTEGRATION - PRO PLAN / STOREHUB V1
+# POS INTEGRATION - PRO PLAN / STOREHUB + LOYVERSE
 # -----------------------------------------------------------------------------
-# V1 deliberately supports StoreHub TEST MODE first. It normalizes a simulated
-# StoreHub sale into pos_transactions, then delegates the actual loyalty mutation
-# to the existing add_points_sale()/add_stamp() routes so Wallet sync, caps,
-# milestones and idempotency stay in one loyalty engine.
+# Provider connections stay isolated from the Loyalty Tree loyalty engine. StoreHub
+# retains its simulator while Loyverse initially connects through the official API
+# in read-only mode. Live receipt processing will still delegate to the existing
+# loyalty routes so Wallet sync, caps, milestones and idempotency stay centralized.
 
 
 @app.get('/api/v1/business/{public_id}/pos')
-async def get_pos_integration_status(public_id: str, authorization: str = Header(default='')):
+async def get_pos_integration_status(
+    public_id: str,
+    provider: str = Query(default='storehub'),
+    authorization: str = Header(default=''),
+):
     business = _require_pos_pro_business(public_id, authorization)
-    integration = _get_pos_integration(business.get('id'), 'storehub')
+    provider = str(provider or 'storehub').strip().lower()
+    if provider not in ('storehub', 'loyverse'):
+        raise HTTPException(status_code=400, detail='Unsupported POS provider.')
+
+    integration = _get_pos_integration(business.get('id'), provider)
     mappings = _pos_branch_rows(business.get('id'), integration.get('id')) if integration else []
     recent = []
     if integration:
@@ -18862,23 +19002,42 @@ async def get_pos_integration_status(public_id: str, authorization: str = Header
             recent = getattr(recent_res, 'data', None) or []
         except Exception as exc:
             raise _pos_schema_error(exc)
-    return {
-        'feature': 'pos_integration',
-        'plan': business.get('plan'),
-        'integration': _pos_public_integration(integration),
-        'storehub_connection': {
+
+    config = (integration or {}).get('config') or {}
+    storehub_connection = None
+    loyverse_connection = None
+
+    if provider == 'storehub':
+        storehub_connection = {
             'credentials_saved': bool((integration or {}).get('credentials_ciphertext')),
             'encryption_configured': bool(POS_CREDENTIALS_ENCRYPTION_KEY),
             'store_name': (integration or {}).get('external_account_name'),
             'base_url': STOREHUB_API_BASE,
-            'outlets': ((integration or {}).get('config') or {}).get('storehub_outlets') or [],
-        },
+            'outlets': config.get('storehub_outlets') or [],
+        }
+    else:
+        loyverse_connection = {
+            'credentials_saved': bool((integration or {}).get('credentials_ciphertext')),
+            'encryption_configured': bool(POS_CREDENTIALS_ENCRYPTION_KEY),
+            'account_name': (integration or {}).get('external_account_name'),
+            'base_url': LOYVERSE_API_BASE,
+            'stores': config.get('loyverse_stores') or [],
+            'merchant': config.get('loyverse_merchant') or None,
+        }
+
+    return {
+        'feature': 'pos_integration',
+        'plan': business.get('plan'),
+        'selected_provider': provider,
+        'integration': _pos_public_integration(integration),
+        'storehub_connection': storehub_connection,
+        'loyverse_connection': loyverse_connection,
         'loyalty_contract': _pos_loyalty_contract(business),
         'branch_mappings': mappings,
         'recent_transactions': recent,
         'providers': [
             {'id': 'storehub', 'name': 'StoreHub', 'status': 'available', 'mode': 'test'},
-            {'id': 'loyverse', 'name': 'Loyverse', 'status': 'coming_soon'},
+            {'id': 'loyverse', 'name': 'Loyverse', 'status': 'available', 'mode': 'test'},
             {'id': 'mosaic', 'name': 'Mosaic', 'status': 'coming_soon'},
             {'id': 'qashier', 'name': 'Qashier', 'status': 'coming_soon'},
             {'id': 'shopify', 'name': 'Shopify POS', 'status': 'coming_soon'},
@@ -18890,16 +19049,17 @@ async def get_pos_integration_status(public_id: str, authorization: str = Header
 @app.post('/api/v1/business/{public_id}/pos/integrations')
 async def start_pos_integration(public_id: str, req: POSIntegrationCreate, authorization: str = Header(default='')):
     business = _require_pos_pro_business(public_id, authorization)
-    if req.provider != 'storehub':
-        raise HTTPException(status_code=400, detail='Only StoreHub is available in POS Integration V1.')
+    if req.provider not in ('storehub', 'loyverse'):
+        raise HTTPException(status_code=400, detail='Unsupported POS provider.')
     if req.mode == 'live':
         raise HTTPException(
             status_code=409,
-            detail='StoreHub live API access is not connected yet. Start in Test Mode first.',
+            detail='Start the POS connector in Test Mode first.',
         )
 
+    label = 'StoreHub' if req.provider == 'storehub' else 'Loyverse'
     now = datetime.utcnow().isoformat()
-    existing = _get_pos_integration(business.get('id'), 'storehub')
+    existing = _get_pos_integration(business.get('id'), req.provider)
     config = _merge_pos_config(existing or {}, {
         'member_identification': 'qr',
         'loyalty_source': 'existing_loyaltytree_program',
@@ -18910,10 +19070,10 @@ async def start_pos_integration(public_id: str, req: POSIntegrationCreate, autho
     })
     payload = {
         'business_id': business.get('id'),
-        'provider': 'storehub',
+        'provider': req.provider,
         'status': 'connected',
         'mode': 'test',
-        'external_account_name': 'StoreHub Simulator',
+        'external_account_name': f'{label} Simulator',
         'config': config,
         'capabilities': {
             'transactions': True,
@@ -18932,7 +19092,7 @@ async def start_pos_integration(public_id: str, req: POSIntegrationCreate, autho
         else:
             res = supabase.table('pos_integrations').insert(payload).execute()
         integration = (res.data or [None])[0] or {**(existing or {}), **payload}
-        return {'integration': _pos_public_integration(integration), 'message': 'StoreHub Test Mode is ready.'}
+        return {'integration': _pos_public_integration(integration), 'message': f'{label} Test Mode is ready.'}
     except Exception as exc:
         raise _pos_schema_error(exc)
 
@@ -18942,7 +19102,7 @@ async def save_pos_branch_mappings(public_id: str, req: POSBranchMappingsUpdate,
     business = _require_pos_pro_business(public_id, authorization)
     integration = _get_pos_integration(business.get('id'), req.provider)
     if not integration:
-        raise HTTPException(status_code=409, detail='Set up StoreHub before mapping branches.')
+        raise HTTPException(status_code=409, detail=f'Set up {req.provider.title()} before mapping branches.')
     if not req.mappings:
         raise HTTPException(status_code=400, detail='Map at least one branch.')
 
@@ -18958,22 +19118,24 @@ async def save_pos_branch_mappings(public_id: str, req: POSBranchMappingsUpdate,
             raise HTTPException(status_code=400, detail=f'Duplicate branch mapping: {item.branch_public_id}')
         seen_branches.add(item.branch_public_id)
 
-        external_name = (item.external_branch_name or '').strip() or branch.get('name') or 'StoreHub outlet'
+        provider_label = 'StoreHub' if req.provider == 'storehub' else 'Loyverse'
+        external_name = (item.external_branch_name or '').strip() or branch.get('name') or f'{provider_label} location'
         external_id = (item.external_branch_id or '').strip()
         if not external_id:
-            # StoreHub Simulator does not have provider outlet IDs yet. Generate a
+            # Simulator mode may not have provider location IDs yet. Generate a
             # deterministic TEST identifier that will be replaced after API access.
             if integration.get('mode') != 'test':
-                raise HTTPException(status_code=400, detail=f'StoreHub outlet ID is required for {branch.get("name")}.')
+                raise HTTPException(status_code=400, detail=f'POS location ID is required for {branch.get("name")}.')
             external_id = f'test-{item.branch_public_id}'
         if external_id in seen_external:
-            raise HTTPException(status_code=400, detail=f'StoreHub outlet is mapped more than once: {external_id}')
-        known_outlets = ((integration.get('config') or {}).get('storehub_outlets') or [])
-        known_ids = {str(row.get('id')) for row in known_outlets if isinstance(row, dict) and row.get('id') is not None}
+            raise HTTPException(status_code=400, detail=f'POS location is mapped more than once: {external_id}')
+        location_key = 'storehub_outlets' if req.provider == 'storehub' else 'loyverse_stores'
+        known_locations = ((integration.get('config') or {}).get(location_key) or [])
+        known_ids = {str(row.get('id')) for row in known_locations if isinstance(row, dict) and row.get('id') is not None}
         if known_ids and external_id not in known_ids:
             raise HTTPException(
                 status_code=400,
-                detail=f'StoreHub outlet ID is not part of the connected account: {external_id}',
+                detail=f'POS location ID is not part of the connected account: {external_id}',
             )
         seen_external.add(external_id)
         prepared.append((branch, external_id, external_name))
@@ -18982,15 +19144,16 @@ async def save_pos_branch_mappings(public_id: str, req: POSBranchMappingsUpdate,
         # Preserve history instead of deleting mappings: omitted rows become inactive.
         supabase.table('pos_branch_mappings').update({'is_active': False}).eq('integration_id', integration.get('id')).execute()
         for branch, external_id, external_name in prepared:
-            existing = (
+            existing_res = (
                 supabase.table('pos_branch_mappings')
                 .select('*')
                 .eq('integration_id', integration.get('id'))
                 .eq('branch_id', branch.get('id'))
-                .maybe_single()
+                .limit(1)
                 .execute()
-                .data
             )
+            existing_rows = getattr(existing_res, 'data', None) or []
+            existing = existing_rows[0] if existing_rows else None
             row = {
                 'integration_id': integration.get('id'),
                 'business_id': business.get('id'),
@@ -19008,7 +19171,7 @@ async def save_pos_branch_mappings(public_id: str, req: POSBranchMappingsUpdate,
         supabase.table('pos_integrations').update({'config': config}).eq('id', integration.get('id')).execute()
         return {
             'branch_mappings': _pos_branch_rows(business.get('id'), integration.get('id')),
-            'message': 'StoreHub branch mapping saved.',
+            'message': f'{provider_label} branch mapping saved.',
         }
     except HTTPException:
         raise
@@ -19021,11 +19184,11 @@ async def update_pos_settings(public_id: str, req: POSSettingsUpdate, authorizat
     business = _require_pos_pro_business(public_id, authorization)
     integration = _get_pos_integration(business.get('id'), req.provider)
     if not integration:
-        raise HTTPException(status_code=409, detail='Set up StoreHub before changing POS settings.')
+        raise HTTPException(status_code=409, detail=f'Set up {req.provider.title()} before changing POS settings.')
     if req.redemption_enabled is True:
         raise HTTPException(
             status_code=409,
-            detail='StoreHub POS redemption is not enabled in V1. Launch earning first; redemption will be enabled after StoreHub API support is verified.',
+            detail=f'{req.provider.title()} POS redemption is not enabled in this rollout. Launch earning first; redemption will be enabled after the write-back flow is verified.',
         )
 
     patch = req.dict(exclude_none=True)
@@ -19285,6 +19448,284 @@ async def storehub_transactions_preview(
         'returned': len(summaries),
         'transactions': summaries,
         'message': 'Read-only StoreHub transaction preview. No LoyaltyTree balances were changed.',
+    }
+
+
+
+@app.post('/api/v1/business/{public_id}/pos/loyverse/connect')
+async def connect_loyverse_account(
+    public_id: str,
+    req: POSLoyverseConnectRequest,
+    authorization: str = Header(default=''),
+):
+    """Validate and securely save a Loyverse personal access token.
+
+    V1 uses Loyverse's official Bearer-token API. OAuth can replace manual token
+    entry later without changing the POS tables or loyalty processing model.
+    """
+    business = _require_pos_pro_business(public_id, authorization)
+    api_token = req.api_token.strip()
+
+    _pos_credentials_cipher()
+
+    stores_payload = _loyverse_request_with_token(api_token, '/stores')
+    stores = [_loyverse_store_summary(row) for row in _loyverse_list(stores_payload, 'stores')]
+
+    merchant = {}
+    try:
+        merchant_payload = _loyverse_request_with_token(api_token, '/merchant/')
+        if isinstance(merchant_payload, dict):
+            merchant = merchant_payload
+    except HTTPException:
+        # A valid personal token normally has broad access. Store access is enough
+        # to establish the connector if merchant metadata is unavailable.
+        merchant = {}
+
+    account_name = (
+        merchant.get('business_name')
+        or (stores[0].get('name') if len(stores) == 1 else None)
+        or 'Loyverse'
+    )
+    encrypted = _encrypt_pos_credentials({
+        'api_token': api_token,
+        'auth_type': 'personal_access_token',
+    })
+
+    now = datetime.utcnow().isoformat()
+    existing = _get_pos_integration(business.get('id'), 'loyverse')
+    config = _merge_pos_config(existing or {}, {
+        'member_identification': 'qr',
+        'loyalty_source': 'existing_loyaltytree_program',
+        'earning_enabled': True,
+        'redemption_enabled': False,
+        'simulator': True,
+        'real_api_tested': True,
+        'real_api_tested_at': now,
+        'loyverse_stores': stores[:250],
+        'loyverse_merchant': {
+            'id': merchant.get('id'),
+            'business_name': merchant.get('business_name'),
+            'email': merchant.get('email'),
+            'country': merchant.get('country'),
+            'currency': merchant.get('currency'),
+        } if merchant else None,
+        'setup_step': max(int(((existing or {}).get('config') or {}).get('setup_step') or 1), 2),
+    })
+    capabilities = {
+        **(((existing or {}).get('capabilities') or {}) if isinstance((existing or {}).get('capabilities'), dict) else {}),
+        'api_read': True,
+        'stores_read': True,
+        'receipts_read': True,
+        'customers_read': True,
+        'customers_write': True,
+        'webhooks_supported': True,
+        'redemption': False,
+        'simulator': True,
+        'real_api_tested': True,
+    }
+    payload = {
+        'business_id': business.get('id'),
+        'provider': 'loyverse',
+        'status': 'connected',
+        'mode': 'test',
+        'external_account_name': account_name,
+        'credentials_ciphertext': encrypted,
+        'config': config,
+        'capabilities': capabilities,
+        'last_error': None,
+        'connected_at': (existing or {}).get('connected_at') or now,
+        'disconnected_at': None,
+        'last_sync_at': now,
+    }
+    try:
+        if existing:
+            res = supabase.table('pos_integrations').update(payload).eq('id', existing.get('id')).execute()
+        else:
+            res = supabase.table('pos_integrations').insert(payload).execute()
+        saved = (res.data or [None])[0] or {**(existing or {}), **payload}
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+
+    return {
+        'ok': True,
+        'provider': 'loyverse',
+        'account_name': account_name,
+        'store_count': len(stores),
+        'stores': stores,
+        'merchant': config.get('loyverse_merchant'),
+        'integration': _pos_public_integration(saved),
+        'loyalty_contract': _pos_loyalty_contract(business),
+        'message': 'Loyverse account connected securely. Access token was encrypted and saved.',
+    }
+
+
+@app.post('/api/v1/business/{public_id}/pos/loyverse/disconnect')
+async def disconnect_loyverse_account(
+    public_id: str,
+    authorization: str = Header(default=''),
+):
+    business = _require_pos_pro_business(public_id, authorization)
+    integration = _get_pos_integration(business.get('id'), 'loyverse')
+    if not integration:
+        return {'ok': True, 'message': 'Loyverse is already disconnected.'}
+    now = datetime.utcnow().isoformat()
+    config = _merge_pos_config(integration, {
+        'real_api_tested': False,
+        'loyverse_stores': [],
+        'loyverse_merchant': None,
+    })
+    try:
+        res = supabase.table('pos_integrations').update({
+            'status': 'disconnected',
+            'credentials_ciphertext': None,
+            'external_account_name': None,
+            'config': config,
+            'last_error': None,
+            'disconnected_at': now,
+        }).eq('id', integration.get('id')).execute()
+        updated = (res.data or [None])[0] or {
+            **integration,
+            'status': 'disconnected',
+            'credentials_ciphertext': None,
+            'external_account_name': None,
+            'config': config,
+            'disconnected_at': now,
+        }
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    return {
+        'ok': True,
+        'integration': _pos_public_integration(updated),
+        'message': 'Loyverse credentials disconnected. Saved branch mappings were preserved.',
+    }
+
+
+@app.post('/api/v1/business/{public_id}/pos/loyverse/connection-test')
+async def loyverse_connection_test(
+    public_id: str,
+    req: POSLoyverseConnectionTestRequest,
+    authorization: str = Header(default=''),
+):
+    business = _require_pos_pro_business(public_id, authorization)
+    integration = _get_pos_integration(business.get('id'), 'loyverse')
+    if not integration or not integration.get('credentials_ciphertext'):
+        raise HTTPException(status_code=409, detail='Connect a Loyverse access token first.')
+
+    stores_payload = _loyverse_get(integration, '/stores')
+    stores = [_loyverse_store_summary(row) for row in _loyverse_list(stores_payload, 'stores')]
+
+    merchant = {}
+    try:
+        merchant_payload = _loyverse_get(integration, '/merchant/')
+        if isinstance(merchant_payload, dict):
+            merchant = merchant_payload
+    except HTTPException:
+        merchant = {}
+
+    now = datetime.utcnow().isoformat()
+    config = _merge_pos_config(integration, {
+        'real_api_tested': True,
+        'real_api_tested_at': now,
+        'loyverse_stores': stores[:250],
+        'loyverse_merchant': {
+            'id': merchant.get('id'),
+            'business_name': merchant.get('business_name'),
+            'email': merchant.get('email'),
+            'country': merchant.get('country'),
+            'currency': merchant.get('currency'),
+        } if merchant else (integration.get('config') or {}).get('loyverse_merchant'),
+    })
+    account_name = merchant.get('business_name') or integration.get('external_account_name') or 'Loyverse'
+    capabilities = integration.get('capabilities') if isinstance(integration.get('capabilities'), dict) else {}
+    capabilities = {
+        **capabilities,
+        'api_read': True,
+        'stores_read': True,
+        'receipts_read': True,
+        'customers_read': True,
+        'customers_write': True,
+        'webhooks_supported': True,
+        'real_api_tested': True,
+    }
+
+    try:
+        res = supabase.table('pos_integrations').update({
+            'status': 'connected',
+            'external_account_name': account_name,
+            'config': config,
+            'capabilities': capabilities,
+            'last_sync_at': now,
+            'last_error': None,
+        }).eq('id', integration.get('id')).execute()
+        updated = (res.data or [None])[0] or {
+            **integration,
+            'status': 'connected',
+            'external_account_name': account_name,
+            'config': config,
+            'capabilities': capabilities,
+            'last_sync_at': now,
+        }
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+
+    return {
+        'ok': True,
+        'provider': 'loyverse',
+        'mode': 'read_only_test',
+        'account_name': account_name,
+        'stores': stores,
+        'store_count': len(stores),
+        'merchant': config.get('loyverse_merchant'),
+        'integration': _pos_public_integration(updated),
+        'loyalty_contract': _pos_loyalty_contract(business),
+        'message': 'Loyverse API authentication succeeded. No loyalty transaction was created.',
+    }
+
+
+@app.post('/api/v1/business/{public_id}/pos/loyverse/receipts-preview')
+async def loyverse_receipts_preview(
+    public_id: str,
+    req: POSLoyversePreviewRequest,
+    authorization: str = Header(default=''),
+):
+    """Read recent Loyverse receipts without applying Loyalty Tree rewards."""
+    business = _require_pos_pro_business(public_id, authorization)
+    integration = _get_pos_integration(business.get('id'), 'loyverse')
+    if not integration or not integration.get('credentials_ciphertext'):
+        raise HTTPException(status_code=409, detail='Connect Loyverse first.')
+    if not (integration.get('config') or {}).get('real_api_tested'):
+        raise HTTPException(status_code=409, detail='Test the Loyverse API connection first.')
+
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=int(req.days))
+    payload = _loyverse_get(
+        integration,
+        '/receipts',
+        params={
+            'created_at_min': start.isoformat().replace('+00:00', 'Z'),
+            'created_at_max': end.isoformat().replace('+00:00', 'Z'),
+            'limit': int(req.limit),
+        },
+    )
+    rows = _loyverse_list(payload, 'receipts')
+    summaries = [_loyverse_receipt_summary(row) for row in rows[: int(req.limit)]]
+
+    try:
+        supabase.table('pos_integrations').update({
+            'last_sync_at': datetime.utcnow().isoformat(),
+            'last_error': None,
+        }).eq('id', integration.get('id')).execute()
+    except Exception as exc:
+        print(f'LOYVERSE preview sync timestamp warning: {exc}')
+
+    return {
+        'ok': True,
+        'provider': 'loyverse',
+        'read_only': True,
+        'days': int(req.days),
+        'returned': len(summaries),
+        'receipts': summaries,
+        'message': 'Read-only Loyverse receipt preview. No Loyalty Tree balances were changed.',
     }
 
 
@@ -19558,15 +19999,15 @@ async def pos_go_live(public_id: str, req: POSGoLiveRequest, authorization: str 
     business = _require_pos_pro_business(public_id, authorization)
     integration = _get_pos_integration(business.get('id'), req.provider)
     if not integration:
-        raise HTTPException(status_code=409, detail='Set up StoreHub first.')
-    # Do not pretend the simulator is a live StoreHub connector. Once StoreHub
-    # supplies verified API/partner credentials, this route will validate them,
-    # switch mode to live, register webhooks/polling and then set status=live.
+        raise HTTPException(status_code=409, detail=f'Set up {req.provider.title()} first.')
+    # Keep live transaction mutation disabled until the provider-specific member
+    # matching and webhook/write-back path is proven end-to-end.
+    provider_label = 'StoreHub' if req.provider == 'storehub' else 'Loyverse'
     raise HTTPException(
         status_code=409,
         detail=(
-            'StoreHub Test Mode is ready, but live StoreHub API access has not been connected yet. '
-            'Keep this integration in Test Mode until StoreHub credentials/API access are verified.'
+            f'{provider_label} is connected in safe test mode. '
+            'Keep it in Test Mode until customer matching and real transaction processing are verified.'
         ),
     )
 

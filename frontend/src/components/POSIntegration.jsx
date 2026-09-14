@@ -12,8 +12,8 @@ const PROVIDERS = [
     id: 'loyverse',
     name: 'Loyverse',
     region: 'Global',
-    description: 'Public API connector planned after StoreHub.',
-    status: 'coming_soon',
+    description: 'Official API connector for stores, customers and receipts.',
+    status: 'available',
   },
   {
     id: 'mosaic',
@@ -83,6 +83,11 @@ function POSIntegration({
   const [showReconnect, setShowReconnect] = useState(false)
   const [storeHubRealResult, setStoreHubRealResult] = useState(null)
   const [storeHubTransactions, setStoreHubTransactions] = useState([])
+  const [loyverseConnection, setLoyverseConnection] = useState(null)
+  const [loyverseCredentials, setLoyverseCredentials] = useState({ api_token: '' })
+  const [loyverseStores, setLoyverseStores] = useState([])
+  const [loyverseResult, setLoyverseResult] = useState(null)
+  const [loyverseReceipts, setLoyverseReceipts] = useState([])
 
   const activeProvider = useMemo(
     () => PROVIDERS.find(item => item.id === provider) || PROVIDERS[0],
@@ -90,9 +95,14 @@ function POSIntegration({
   )
 
   const integrationStatus = String(integration?.status || 'not_connected').toLowerCase()
-  const hasSavedStoreHubCredentials = Boolean(storeHubConnection?.credentials_saved || integration?.config?.real_api_tested)
-  const isConnected = ['connected', 'testing', 'live'].includes(integrationStatus) && (integrationStatus === 'live' || hasSavedStoreHubCredentials)
+  const hasSavedStoreHubCredentials = Boolean(storeHubConnection?.credentials_saved || (provider === 'storehub' && integration?.config?.real_api_tested))
+  const hasSavedLoyverseCredentials = Boolean(loyverseConnection?.credentials_saved || (provider === 'loyverse' && integration?.config?.real_api_tested))
+  const hasSavedCredentials = provider === 'loyverse' ? hasSavedLoyverseCredentials : hasSavedStoreHubCredentials
+  const isConnected = ['connected', 'testing', 'live'].includes(integrationStatus) && (integrationStatus === 'live' || hasSavedCredentials)
   const isLive = integrationStatus === 'live'
+  const providerLabel = provider === 'loyverse' ? 'Loyverse' : 'StoreHub'
+  const providerLocations = provider === 'loyverse' ? loyverseStores : storeHubOutlets
+  const locationLabel = provider === 'loyverse' ? 'store' : 'outlet'
 
   const call = async (url, options = {}) => {
     if (!authFetch) throw new Error('Authenticated API helper is not available.')
@@ -104,7 +114,7 @@ function POSIntegration({
     setLoading(true)
     setError('')
     try {
-      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos`, {
+      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos?provider=${encodeURIComponent(provider)}`, {
         cache: 'no-store',
       })
 
@@ -122,7 +132,9 @@ function POSIntegration({
       setApiAvailable(true)
       setIntegration(data.integration || null)
       setStoreHubConnection(data.storehub_connection || null)
-      setStoreHubOutlets(data.storehub_connection?.outlets || data.integration?.config?.storehub_outlets || [])
+      setStoreHubOutlets(data.storehub_connection?.outlets || (provider === 'storehub' ? data.integration?.config?.storehub_outlets : []) || [])
+      setLoyverseConnection(data.loyverse_connection || null)
+      setLoyverseStores(data.loyverse_connection?.stores || (provider === 'loyverse' ? data.integration?.config?.loyverse_stores : []) || [])
       setLoyaltyContract(data.loyalty_contract || null)
       if (data.storehub_connection?.store_name) {
         setStoreHubCredentials(current => ({ ...current, store_name: data.storehub_connection.store_name }))
@@ -138,10 +150,10 @@ function POSIntegration({
       })
       setBranchMappings(mappings)
 
-      if (data.integration?.provider) setProvider(data.integration.provider)
-
       const status = String(data.integration?.status || '').toLowerCase()
-      const credentialsSaved = Boolean(data.storehub_connection?.credentials_saved || data.integration?.config?.real_api_tested)
+      const credentialsSaved = provider === 'loyverse'
+        ? Boolean(data.loyverse_connection?.credentials_saved || data.integration?.config?.real_api_tested)
+        : Boolean(data.storehub_connection?.credentials_saved || data.integration?.config?.real_api_tested)
       if (status === 'live') setSetupStep(7)
       else if (!credentialsSaved) setSetupStep(1)
       else if (status === 'testing') setSetupStep(6)
@@ -155,9 +167,13 @@ function POSIntegration({
   }
 
   useEffect(() => {
+    setMessage('')
+    setError('')
+    setTestResult(null)
+    setBranchMappings({})
     loadPOS()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPro, slug])
+  }, [isPro, slug, provider])
 
   const connectStoreHub = async () => {
     if (!slug) return
@@ -205,7 +221,7 @@ function POSIntegration({
       const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/storehub/connection-test`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: 'storehub' }),
+        body: JSON.stringify({ provider }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'StoreHub API connection test failed.')
@@ -217,6 +233,119 @@ function POSIntegration({
       await loadPOS()
     } catch (err) {
       setError(err.message || 'StoreHub API connection test failed.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const connectLoyverse = async () => {
+    if (!slug) return
+    const apiToken = loyverseCredentials.api_token.trim()
+    if (!apiToken) {
+      setError('Enter the Loyverse access token.')
+      return
+    }
+    setSaving(true)
+    setError('')
+    setMessage('')
+    setLoyverseResult(null)
+    try {
+      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/loyverse/connect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api_token: apiToken }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not connect Loyverse.')
+      setIntegration(data.integration || null)
+      setLoyverseResult(data)
+      setLoyverseStores(data.stores || [])
+      setLoyaltyContract(data.loyalty_contract || null)
+      setLoyverseCredentials({ api_token: '' })
+      setShowReconnect(false)
+      setSetupStep(2)
+      setMessage(`Loyverse connected securely. ${data.store_count ?? 0} store(s) detected.`)
+      await loadPOS()
+    } catch (err) {
+      setError(err.message || 'Could not connect Loyverse.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const testSavedLoyverseConnection = async () => {
+    if (!slug) return
+    setSaving(true)
+    setError('')
+    setMessage('')
+    setLoyverseResult(null)
+    try {
+      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/loyverse/connection-test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'loyverse' }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Loyverse API connection test failed.')
+      setLoyverseResult(data)
+      setIntegration(data.integration || integration)
+      setLoyverseStores(data.stores || [])
+      setLoyaltyContract(data.loyalty_contract || loyaltyContract)
+      setMessage(`Loyverse API connected. ${data.store_count ?? 0} store(s) detected.`)
+      await loadPOS()
+    } catch (err) {
+      setError(err.message || 'Loyverse API connection test failed.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const disconnectLoyverse = async () => {
+    if (!slug) return
+    if (!window.confirm('Disconnect Loyverse credentials? Saved branch mappings will be preserved.')) return
+    setSaving(true)
+    setError('')
+    setMessage('')
+    try {
+      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/loyverse/disconnect`, {
+        method: 'POST',
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not disconnect Loyverse.')
+      setIntegration(data.integration || null)
+      setLoyverseStores([])
+      setLoyverseReceipts([])
+      setLoyverseResult(null)
+      setLoyverseCredentials({ api_token: '' })
+      setSetupStep(1)
+      setMessage('Loyverse disconnected. Branch mappings were preserved for reconnecting later.')
+      await loadPOS()
+    } catch (err) {
+      setError(err.message || 'Could not disconnect Loyverse.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const previewLoyverseReceipts = async () => {
+    if (!slug) return
+    setSaving(true)
+    setError('')
+    setMessage('')
+    try {
+      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/loyverse/receipts-preview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ days: 1, limit: 10 }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not read Loyverse receipts.')
+      setLoyverseReceipts(data.receipts || [])
+      setTestResult({ provider: 'loyverse', preview_ok: true, returned: data.returned ?? 0 })
+      setSetupStep(6)
+      setMessage(`Read ${data.returned ?? 0} recent Loyverse receipt(s). No loyalty balances changed.`)
+    } catch (err) {
+      setError(err.message || 'Could not read Loyverse receipts.')
     } finally {
       setSaving(false)
     }
@@ -293,7 +422,7 @@ function POSIntegration({
     })).filter(row => row.external_branch_id || row.external_branch_name)
 
     if (!mappings.length) {
-      setError('Map at least one Loyalty Tree branch to a StoreHub outlet.')
+      setError(`Map at least one Loyalty Tree branch to a ${providerLabel} ${locationLabel}.`)
       return
     }
 
@@ -304,7 +433,7 @@ function POSIntegration({
       const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/branch-mappings`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: 'storehub', mappings }),
+        body: JSON.stringify({ provider, mappings }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Could not save branch mappings.')
@@ -328,7 +457,7 @@ function POSIntegration({
       const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/settings`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: 'storehub', ...patch }),
+        body: JSON.stringify({ provider, ...patch }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Could not save POS settings.')
@@ -369,7 +498,7 @@ function POSIntegration({
           amount_spent: amount,
           external_transaction_id:
             testForm.external_transaction_id.trim() ||
-            `STOREHUB-TEST-${Date.now()}`,
+            `${provider.toUpperCase()}-TEST-${Date.now()}`,
         }),
       })
       const data = await res.json().catch(() => ({}))
@@ -394,19 +523,19 @@ function POSIntegration({
       const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/go-live`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: 'storehub' }),
+        body: JSON.stringify({ provider }),
       })
       const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.detail || 'Could not activate StoreHub integration.')
+      if (!res.ok) throw new Error(data.detail || `Could not activate ${providerLabel} integration.`)
 
       setIntegration(data.integration || {
         ...(integration || {}),
         status: 'live',
       })
       setSetupStep(7)
-      setMessage('StoreHub integration is live.')
+      setMessage(`${providerLabel} integration is live.`)
     } catch (err) {
-      setError(err.message || 'Could not activate StoreHub integration.')
+      setError(err.message || `Could not activate ${providerLabel} integration.`)
     } finally {
       setSaving(false)
     }
@@ -554,9 +683,49 @@ function POSIntegration({
                 </div>
               </div>
             )}
+
+            {activeProvider.id === 'loyverse' && !isConnected && (
+              <div style={{marginTop:18,display:'grid',gap:12}}>
+                <div style={s.ruleBox}>
+                  <b>Connect your Loyverse account</b>
+                  <div style={s.smallMuted}>
+                    Create a personal access token in Loyverse Back Office → Access Tokens. Loyalty Tree encrypts it before saving.
+                  </div>
+                </div>
+                {!loyverseConnection?.encryption_configured && (
+                  <div style={s.infoBanner}>
+                    Platform setup required: add <code>POS_CREDENTIALS_ENCRYPTION_KEY</code> once to the Loyalty Tree backend environment.
+                  </div>
+                )}
+                <label style={{display:'grid',gap:6,maxWidth:620}}>
+                  <span style={s.smallMuted}>Loyverse personal access token</span>
+                  <input
+                    style={s.input}
+                    type="password"
+                    placeholder="Paste Loyverse access token"
+                    autoComplete="new-password"
+                    value={loyverseCredentials.api_token}
+                    onChange={e => setLoyverseCredentials({ api_token: e.target.value })}
+                  />
+                </label>
+                <div style={s.actionRow}>
+                  <button
+                    type="button"
+                    style={s.primaryButton}
+                    disabled={saving || !apiAvailable || !loyverseConnection?.encryption_configured}
+                    onClick={connectLoyverse}
+                  >
+                    {saving ? 'Testing…' : 'Test & connect Loyverse'}
+                  </button>
+                  <span style={s.smallMuted}>
+                    We validate the token against Loyverse's official <code>/stores</code> API before saving it.
+                  </span>
+                </div>
+              </div>
+            )}
           </section>
 
-          {isConnected && (
+          {isConnected && provider === 'storehub' && (
             <section style={s.card}>
               <div style={s.sectionHeader}>
                 <div>
@@ -646,11 +815,96 @@ function POSIntegration({
             </section>
           )}
 
+          {isConnected && provider === 'loyverse' && (
+            <section style={s.card}>
+              <div style={s.sectionHeader}>
+                <div>
+                  <div style={s.stepLabel}>LOYVERSE ACCOUNT</div>
+                  <h3 style={s.sectionTitle}>Connected securely</h3>
+                </div>
+                <span style={s.connectedPill}>Connected</span>
+              </div>
+              <div style={s.ruleBox}>
+                <b>{integration?.external_account_name || loyverseConnection?.account_name || 'Loyverse'}</b>
+                <div style={s.smallMuted}>
+                  Access token: •••••••••••• · Stored encrypted on Loyalty Tree's backend
+                </div>
+              </div>
+
+              {showReconnect && (
+                <div style={{marginTop:12,display:'grid',gap:10}}>
+                  <input
+                    style={s.input}
+                    type="password"
+                    placeholder="New Loyverse access token"
+                    autoComplete="new-password"
+                    value={loyverseCredentials.api_token}
+                    onChange={e => setLoyverseCredentials({ api_token: e.target.value })}
+                  />
+                  <button type="button" style={s.primaryButton} disabled={saving} onClick={connectLoyverse}>
+                    {saving ? 'Testing…' : 'Test & replace token'}
+                  </button>
+                </div>
+              )}
+
+              <div style={s.actionRow}>
+                <button type="button" style={s.secondaryButton} disabled={saving} onClick={testSavedLoyverseConnection}>
+                  Test saved connection
+                </button>
+                <button type="button" style={s.secondaryButton} disabled={saving} onClick={previewLoyverseReceipts}>
+                  Preview recent receipts
+                </button>
+                <button type="button" style={s.secondaryButton} disabled={saving} onClick={() => setShowReconnect(value => !value)}>
+                  {showReconnect ? 'Cancel reconnect' : 'Reconnect / change token'}
+                </button>
+                <button type="button" style={s.secondaryButton} disabled={saving} onClick={disconnectLoyverse}>
+                  Disconnect
+                </button>
+              </div>
+
+              {!!loyverseStores.length && (
+                <div style={{marginTop:14}}>
+                  <b style={{fontSize:13}}>Detected Loyverse stores</b>
+                  <div style={{marginTop:8,display:'grid',gap:6}}>
+                    {loyverseStores.slice(0,20).map((store, index) => (
+                      <div key={store.id || index} style={s.resultItem}>
+                        <b>{store.name || store.id || `Store ${index + 1}`}</b>
+                        {store.id && <div style={s.smallMuted}>ID: {store.id}</div>}
+                        {(store.city || store.address) && (
+                          <div style={s.smallMuted}>{[store.address, store.city].filter(Boolean).join(' · ')}</div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {!!loyverseReceipts.length && (
+                <div style={{marginTop:14}}>
+                  <b style={{fontSize:13}}>Recent Loyverse receipts · read-only</b>
+                  <div style={{marginTop:8,display:'grid',gap:7}}>
+                    {loyverseReceipts.map((tx, index) => (
+                      <div key={tx.receipt_number || index} style={s.resultItem}>
+                        <div style={{display:'flex',justifyContent:'space-between',gap:10,flexWrap:'wrap'}}>
+                          <b>{tx.receipt_number || `Receipt ${index + 1}`}</b>
+                          <b>{tx.total_money === null || tx.total_money === undefined ? '—' : `₱${Number(tx.total_money).toFixed(2)}`}</b>
+                        </div>
+                        <div style={s.smallMuted}>
+                          Store: {tx.store_id || '—'} · Customer: {tx.customer_id || 'none'} · {tx.receipt_date || ''}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
+
           {isConnected && (
             <>
               <section style={s.card}>
                 <div style={s.stepLabel}>2 · BRANCH MAPPING</div>
-                <h3 style={s.sectionTitle}>Match Loyalty Tree branches to StoreHub outlets</h3>
+                <h3 style={s.sectionTitle}>Match Loyalty Tree branches to {providerLabel} {provider === 'loyverse' ? 'stores' : 'outlets'}</h3>
                 <p style={s.muted}>
                   Each POS transaction must resolve to the correct Loyalty Tree branch.
                 </p>
@@ -665,18 +919,18 @@ function POSIntegration({
                         </div>
                         <div style={s.arrow}>↔</div>
                         <div style={s.mappingFields}>
-                          {storeHubOutlets.length ? (
+                          {providerLocations.length ? (
                             <select
                               style={s.input}
                               value={branchMappings[branch.public_id]?.external_branch_id || ''}
                               onChange={e => {
-                                const selected = storeHubOutlets.find(item => String(item.id) === e.target.value)
+                                const selected = providerLocations.find(item => String(item.id) === e.target.value)
                                 updateMapping(branch.public_id, 'external_branch_id', e.target.value)
                                 updateMapping(branch.public_id, 'external_branch_name', selected?.name || '')
                               }}
                             >
-                              <option value="">Choose StoreHub outlet…</option>
-                              {storeHubOutlets.map((outlet, index) => (
+                              <option value="">Choose {providerLabel} {locationLabel}…</option>
+                              {providerLocations.map((outlet, index) => (
                                 <option key={outlet.id || index} value={String(outlet.id || '')}>
                                   {outlet.name || outlet.id || `Outlet ${index + 1}`}
                                 </option>
@@ -686,13 +940,13 @@ function POSIntegration({
                             <>
                               <input
                                 style={s.input}
-                                placeholder="StoreHub outlet ID"
+                                placeholder={`${providerLabel} ${locationLabel} ID`}
                                 value={branchMappings[branch.public_id]?.external_branch_id || ''}
                                 onChange={e => updateMapping(branch.public_id, 'external_branch_id', e.target.value)}
                               />
                               <input
                                 style={s.input}
-                                placeholder="StoreHub outlet name"
+                                placeholder={`${providerLabel} ${locationLabel} name`}
                                 value={branchMappings[branch.public_id]?.external_branch_name || ''}
                                 onChange={e => updateMapping(branch.public_id, 'external_branch_name', e.target.value)}
                               />
@@ -703,7 +957,7 @@ function POSIntegration({
                     ))}
                   </div>
                 ) : (
-                  <div style={s.emptyState}>Create at least one branch before mapping StoreHub.</div>
+                  <div style={s.emptyState}>Create at least one branch before mapping {providerLabel}.</div>
                 )}
 
                 <button
@@ -756,7 +1010,7 @@ function POSIntegration({
                   <div style={s.ruleBox}>
                     <b>No duplicate loyalty configuration.</b>
                     <div style={s.smallMuted}>
-                      StoreHub supplies the purchase transaction. Loyalty Tree remains the
+                      {providerLabel} supplies the purchase transaction. Loyalty Tree remains the
                       source of truth for earning, rewards and redemption rules.
                     </div>
                     {loyaltyContract?.configured && (
@@ -812,13 +1066,13 @@ function POSIntegration({
                 <h3 style={s.sectionTitle}>Redemption through POS</h3>
                 <p style={s.muted}>
                   Loyalty Tree already remains the source of truth for redemption rules.
-                  Automatic StoreHub redemption will be enabled after StoreHub confirms the
+                  Automatic {providerLabel} redemption will be enabled after the
                   discount/tender write-back needed to apply an approved redemption to checkout.
                 </p>
                 <ChoiceRow
                   checked={integration?.config?.redemption_enabled === true}
                   disabled
-                  label="StoreHub redemption"
+                  label={`${providerLabel} redemption`}
                   description="Prepared in the integration model, but keep disabled during the first earning-only test."
                 />
                 <button
@@ -836,6 +1090,7 @@ function POSIntegration({
                 </button>
               </section>
 
+              {provider === 'storehub' ? (
               <section style={s.card}>
                 <div style={s.stepLabel}>6 · TEST TRANSACTION</div>
                 <h3 style={s.sectionTitle}>Simulate a StoreHub sale</h3>
@@ -917,18 +1172,53 @@ function POSIntegration({
                   </div>
                 )}
               </section>
+              ) : (
+                <section style={s.card}>
+                  <div style={s.stepLabel}>6 · API RECEIPT TEST</div>
+                  <h3 style={s.sectionTitle}>Read a real Loyverse receipt safely</h3>
+                  <p style={s.muted}>
+                    This reads recent receipts from Loyverse using the connected token. It does not
+                    award Loyalty Tree points yet. We first verify that receipt data includes the
+                    Loyverse customer ID, store ID and amount we need for automatic loyalty.
+                  </p>
+                  <div style={s.ruleBox}>
+                    <b>Next milestone</b>
+                    <div style={s.smallMuted}>
+                      Sync a Loyalty Tree member's QR value into Loyverse <code>customer_code</code>,
+                      scan that card in Loyverse POS, then confirm the resulting receipt contains the
+                      expected <code>customer_id</code>.
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    style={s.primaryButton}
+                    disabled={saving || !apiAvailable}
+                    onClick={previewLoyverseReceipts}
+                  >
+                    {saving ? 'Reading…' : 'Preview recent Loyverse receipts'}
+                  </button>
+                  {testResult?.provider === 'loyverse' && (
+                    <div style={s.testResult}>
+                      <b>✓ Loyverse API read test passed</b>
+                      <div style={s.smallMuted}>
+                        {testResult.returned ?? 0} receipt(s) returned. No Loyalty Tree balance changed.
+                      </div>
+                    </div>
+                  )}
+                </section>
+              )}
 
               <section style={s.card}>
                 <div style={s.stepLabel}>7 · GO LIVE</div>
                 <div style={s.sectionHeader}>
                   <div>
                     <h3 style={s.sectionTitle}>
-                      {isLive ? 'StoreHub integration is live' : 'Ready for live StoreHub'}
+                      {isLive ? `${providerLabel} integration is live` : `Ready for live ${providerLabel}`}
                     </h3>
                     <p style={s.muted}>
                       {isLive
-                        ? 'Loyalty Tree is ready to receive supported StoreHub transactions for this business.'
-                        : 'Activate only after the test flow passes and real StoreHub API credentials are available.'}
+                        ? `Loyalty Tree is ready to receive supported ${providerLabel} transactions for this business.`
+                        : `Activate only after the ${providerLabel} test flow passes and customer matching is verified.`}
                     </p>
                   </div>
                   {isLive && <span style={s.livePill}>● LIVE</span>}
