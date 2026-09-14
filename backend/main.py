@@ -2506,16 +2506,24 @@ def _require_pos_pro_business(public_id: str, authorization: str) -> dict:
 
 
 def _get_pos_integration(business_id: int, provider: str = 'storehub') -> Optional[dict]:
+    """Return one POS integration, or None when the business has not connected one yet.
+
+    Do not use maybe_single() here. Some PostgREST/Supabase client versions can
+    return None for an empty maybe_single() response, which caused the first visit
+    to POS Integration to fail with: 'NoneType' object has no attribute 'data'.
+    A normal limited select always gives us a list-shaped response.
+    """
     try:
         res = (
             supabase.table('pos_integrations')
             .select('*')
             .eq('business_id', business_id)
             .eq('provider', provider)
-            .maybe_single()
+            .limit(1)
             .execute()
         )
-        return res.data
+        rows = getattr(res, 'data', None) or []
+        return rows[0] if rows else None
     except Exception as exc:
         raise _pos_schema_error(exc)
 
@@ -18843,15 +18851,15 @@ async def get_pos_integration_status(public_id: str, authorization: str = Header
     recent = []
     if integration:
         try:
-            recent = (
+            recent_res = (
                 supabase.table('pos_transactions')
                 .select('*')
                 .eq('integration_id', integration.get('id'))
                 .order('created_at', desc=True)
                 .limit(25)
                 .execute()
-                .data or []
             )
+            recent = getattr(recent_res, 'data', None) or []
         except Exception as exc:
             raise _pos_schema_error(exc)
     return {
