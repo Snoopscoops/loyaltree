@@ -805,6 +805,32 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
       </div>
     )
   }
+  const walletStampGlyphMap = {
+    circle: ['●','○'],
+    star: ['★','☆'],
+    heart: ['♥','♡'],
+    coffee: ['☕︎','○'],
+    gift: ['◆','◇'],
+    leaf: ['❧','○'],
+  }
+  const walletStampLines = (() => {
+    if (stampDisplayStyle !== 'icon' || !stampVisualSupported) return []
+    const goal = Math.min(20, Math.max(1, rawStampGoal))
+    const current = Math.max(0, Math.min(Math.min(5, rawStampGoal), goal))
+    const [filledGlyph, emptyGlyph] = walletStampGlyphMap[form.stamp_icon] || walletStampGlyphMap.star
+    const tokens = Array.from({length:goal}, (_,i) => i < current ? filledGlyph : emptyGlyph)
+    const lines = []
+    for(let i=0;i<tokens.length;i+=10) lines.push(tokens.slice(i,i+10).join(''))
+    return lines
+  })()
+  const walletPrimaryIsStamps = (!isHybrid && effectiveLoyaltyType==='stamp') || (isHybrid && hybridStampsEnabled && !hybridPointsEnabled)
+  const walletStampNativeValue = stampDisplayStyle==='icon' && walletPrimaryIsStamps && rawStampGoal<=10 && walletStampLines.length
+    ? walletStampLines[0]
+    : `${Math.min(5,rawStampGoal)} / ${rawStampGoal}`
+  const walletShowStampBelow = stampDisplayStyle==='icon' && walletStampLines.length > 0 && (
+    rawStampGoal > 10 || (isHybrid && hybridStampsEnabled && hybridPointsEnabled)
+  )
+
   const previewResetDate = (() => {
     if (!form.card_expiration_enabled || !['stamp','points','vip'].includes(effectiveLoyaltyType)) return ''
     const d = new Date()
@@ -1607,21 +1633,29 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                 </div>
                 <span style={styles.wallet20PreviewMenu}>•••</span>
               </div>
-              {(((isHybrid && hybridStampsEnabled) || (!isHybrid && effectiveLoyaltyType==='stamp')) && stampDisplayStyle!=='number' && stampVisualSupported) && (
-                <div style={styles.walletStampVisualPreview}>{renderStampVisualPreview(Math.min(5,rawStampGoal),true)}</div>
-              )}
               <div style={styles.wallet20PreviewBottom}>
                 <div style={styles.wallet20PreviewInfo}>
                   <div><small>CUSTOMER</small><strong>John Customer</strong></div>
                   <div style={styles.wallet20PreviewMetric}>
                     <small>{form.card_type==='hybrid'?(hybridPointsEnabled?'POINTS':'STAMPS'):form.card_type==='points'?'POINTS':form.card_type==='multipass'?'SESSIONS LEFT':form.card_type==='membership'?'STATUS':form.card_type==='vip'?'TIER':'STAMPS'}</small>
-                    <strong>{form.card_type==='hybrid'?(effectiveLoyaltyType==='points'?'2,850':`${Math.min(5,rawStampGoal)} / ${rawStampGoal}`):form.card_type==='points'?'2,850':form.card_type==='multipass'?'5 / 10':form.card_type==='membership'?'ACTIVE':form.card_type==='vip'?'GOLD':`${Math.min(5,rawStampGoal)} / ${rawStampGoal}`}</strong>
+                    <strong style={(walletPrimaryIsStamps && stampDisplayStyle==='icon' && rawStampGoal<=10)?{fontSize:previewSurface==='apple'?18:17,letterSpacing:1.1,whiteSpace:'nowrap'}:{}}>{form.card_type==='hybrid'?(hybridPointsEnabled?'2,850':walletStampNativeValue):form.card_type==='points'?'2,850':form.card_type==='multipass'?'5 / 10':form.card_type==='membership'?'ACTIVE':form.card_type==='vip'?'GOLD':walletStampNativeValue}</strong>
                   </div>
                 </div>
                 <div style={styles.wallet20PreviewQrBox}>
                   <img style={styles.wallet20PreviewQr} alt="QR preview" src={`https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(`${API_BASE}/join/${user?.business_slug||'preview'}`)}`}/>
                 </div>
               </div>
+              {walletShowStampBelow && (
+                <div style={{margin:'0 16px 9px',padding:'10px 12px',borderRadius:12,background:'rgba(255,255,255,.10)',border:'1px solid rgba(255,255,255,.14)'}}>
+                  <div style={{fontSize:9,fontWeight:900,letterSpacing:.9,opacity:.78,marginBottom:5}}>{isHybrid&&hybridPointsEnabled?'REWARD STAMPS':'STAMP PROGRESS'}</div>
+                  <div style={{display:'grid',gridTemplateColumns:walletStampLines.length>1?'1fr 1fr':'1fr',gap:8}}>
+                    {walletStampLines.map((line,idx)=><div key={idx} style={{minWidth:0}}>
+                      {walletStampLines.length>1&&<div style={{fontSize:8,opacity:.64,marginBottom:2}}>{idx===0?'1–10':`11–${rawStampGoal}`}</div>}
+                      <div style={{fontSize:previewSurface==='apple'?15:14,fontWeight:800,letterSpacing:.8,whiteSpace:'nowrap'}}>{line}</div>
+                    </div>)}
+                  </div>
+                </div>
+              )}
               {isHybrid && (
                 <div style={{...styles.wallet20ResetPreview,marginBottom:8}}>
                   <span>☕ SUBSCRIPTION</span><strong>ACTIVE · {Number(form.membership_duration_days)||30} DAYS</strong>
@@ -1863,7 +1897,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
 
               <div style={{...styles.fieldGroup,padding:14,border:'1px solid #dbeafe',borderRadius:14,background:'#f8fbff'}}>
                 <label style={styles.label}>Stamp appearance</label>
-                <p style={{...styles.hint,margin:'0 0 12px'}}>Choose how customers see progress. Number Only keeps the current Wallet layout. Visual rows are exact for goals up to 20 stamps.</p>
+                <p style={{...styles.hint,margin:'0 0 12px'}}>Choose how customers see progress. Icon Stamps use a compact native Wallet layout: up to 10 replace the STAMPS count; 11–20 appear in a dedicated progress row below. The cover photo stays clean.</p>
                 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:8}}>
                   {[
                     ['number','4 / 10','Number Only','Clean numeric progress'],
@@ -1900,8 +1934,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                 {stampDisplayStyle === 'logo' && (
                   <div style={{...styles.hint,marginTop:10,color:form.program_logo_url?'#0f766e':'#92400e'}}>
                     {form.program_logo_url
-                      ? '✓ Uses the Business / card logo uploaded in Branding.'
-                      : 'Upload a Business / card logo in Branding. Until then, Wallet safely falls back to a simple filled stamp.'}
+                      ? '✓ Uses your logo on the LoyaltyTree web card. Apple Wallet and Google Wallet keep a clean numeric stamp count because native Wallet fields cannot contain repeated custom images.'
+                      : 'Upload a Business / card logo in Branding. The LoyaltyTree web card can use it as the stamp; native Apple/Google Wallet fields stay numeric.'}
                   </div>
                 )}
                 {!stampVisualSupported && stampDisplayStyle !== 'number' && (

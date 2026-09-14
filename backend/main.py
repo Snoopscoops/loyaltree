@@ -3570,6 +3570,75 @@ def _draw_stamp_progress_row(
     return True
 
 
+def _stamp_icon_symbols(icon: str) -> tuple[str, str]:
+    """Compact, text-safe glyphs for native Wallet fields.
+
+    Native Wallet balance fields are text-only and can be narrow. Use compact
+    monochrome equivalents so rows stay legible and professional on both iOS
+    and Android instead of relying on wide/color emoji rendering.
+    """
+    icon = str(icon or 'star').strip().lower()
+    return {
+        'circle': ('●', '○'),
+        'star': ('★', '☆'),
+        'heart': ('♥', '♡'),
+        'coffee': ('☕︎', '○'),
+        'gift': ('◆', '◇'),
+        'leaf': ('❧', '○'),
+    }.get(icon, ('★', '☆'))
+
+
+def wallet_stamp_icon_lines(stamps: int, stamp_goal: int, icon: str = 'star') -> list[str]:
+    """Return one compact line per 10 stamps, max 20 total.
+
+    Examples:
+      6/8  -> ['★★★★★★☆☆']
+      6/20 -> ['★★★★★★☆☆☆☆', '☆☆☆☆☆☆☆☆☆☆']
+    """
+    try:
+        goal = int(stamp_goal or 0)
+        current = max(0, min(int(stamps or 0), goal))
+    except Exception:
+        return []
+    if goal < 1 or goal > 20:
+        return []
+    filled, empty = _stamp_icon_symbols(icon)
+    tokens = [filled if i < current else empty for i in range(goal)]
+    return [''.join(tokens[i:i + 10]) for i in range(0, goal, 10)]
+
+
+def wallet_stamp_icon_row(stamps: int, stamp_goal: int, icon: str = 'star') -> Optional[str]:
+    lines = wallet_stamp_icon_lines(stamps, stamp_goal, icon)
+    return '\n'.join(lines) if lines else None
+
+
+def wallet_stamp_balance_and_module(program: Optional[dict], stamps: int, stamp_goal: int, *, primary_is_stamps: bool) -> tuple[str, Optional[str]]:
+    """Return native Wallet balance text + optional detail-row visual.
+
+    Product rule:
+    - Icon Stamps + goal <=10: icons replace the native STAMPS value itself.
+    - Icon Stamps + goal 11..20: native value stays numeric and the icon rows
+      appear below in the Wallet details/front auxiliary area.
+    - Business Logo remains numeric in native Wallet fields because Apple and
+      Google do not allow arbitrary per-stamp images inside those text fields.
+    """
+    try:
+        current = int(stamps or 0)
+        goal = int(stamp_goal or 0)
+    except Exception:
+        current, goal = 0, 0
+    numeric = f'{current}/{goal}' if goal > 0 else str(current)
+    style = normalize_stamp_display_style(program)
+    if style != 'icon':
+        return numeric, None
+    lines = wallet_stamp_icon_lines(current, goal, normalize_stamp_icon(program))
+    if not lines:
+        return numeric, None
+    if primary_is_stamps and goal <= 10:
+        return lines[0], None
+    return numeric, '\n'.join(lines)
+
+
 def _wrap_text(draw, text: str, font, max_width: int, max_lines: int) -> List[str]:
     """Greedy word-wrap using actual glyph widths, truncating with an
     ellipsis if the text still doesn't fit in max_lines."""
@@ -3858,7 +3927,8 @@ def wallet_20_short_status(customer: dict, business: dict, program: dict) -> tup
         if loyalty_type == 'points':
             return 'POINTS', f"{int(customer.get('points_balance') or 0):,}"
         goal = int((program or {}).get('stamp_goal') or 8)
-        return 'STAMPS', f"{int(customer.get('stamp_count') or 0)} / {goal}"
+        value, _ = wallet_stamp_balance_and_module(program, int(customer.get('stamp_count') or 0), goal, primary_is_stamps=True)
+        return 'STAMPS', value
     if card_type == 'points':
         return 'POINTS', f"{int(customer.get('points_balance') or 0):,}"
     if card_type == 'multipass':
@@ -3871,8 +3941,9 @@ def wallet_20_short_status(customer: dict, business: dict, program: dict) -> tup
         tier = get_vip_tier(customer, program or {})
         return 'VIP TIER', str(tier.get('name') or 'VIP').upper()
     goal = int((program or {}).get('stamp_goal') or 8)
-    stamps = int(customer.get('stamp_count') or 0)
-    return 'STAMPS', f'{stamps} / {goal}'
+    value, _ = wallet_stamp_balance_and_module(program, int(customer.get('stamp_count') or 0), goal, primary_is_stamps=True)
+    return 'STAMPS', value
+
 
 def get_google_wallet_credentials():
     creds_json = os.getenv('GOOGLE_WALLET_CREDENTIALS', '')
@@ -4303,7 +4374,13 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
             details.append(('points_next_reward', 'NEXT POINTS REWARD', _points_next_reward_value()))
             details.append(('points_earning', 'HOW TO EARN POINTS', _points_earning_rule()))
         if has_stamps:
-            details.append(('stamp_progress', 'REWARD STAMPS', f'{stamps}/{full_stamp_goal}'))
+            stamp_primary_text, stamp_progress_visual = wallet_stamp_balance_and_module(
+                program,
+                stamps,
+                full_stamp_goal,
+                primary_is_stamps=(not has_points),
+            )
+            details.append(('stamp_progress', 'REWARD STAMPS', stamp_progress_visual or stamp_primary_text))
             details.append(('stamp_next_reward', 'NEXT STAMP REWARD', _stamp_next_reward_value()))
             stamp_rule = '1 stamp per qualifying visit'
             if bool((program or {}).get('stamp_once_per_day')):
@@ -4404,7 +4481,14 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
 
     else:
         loyalty_points_label = 'STAMPS'
-        loyalty_points_balance = f'{stamps}/{full_stamp_goal}'
+        loyalty_points_balance, stamp_progress_visual = wallet_stamp_balance_and_module(
+            program,
+            stamps,
+            full_stamp_goal,
+            primary_is_stamps=True,
+        )
+        if stamp_progress_visual:
+            details.append(('stamp_progress', 'STAMP PROGRESS', stamp_progress_visual))
         details.append(('next_reward', 'NEXT REWARD', _stamp_next_reward_value()))
         how_to_earn = '1 stamp per qualifying visit'
         if bool((program or {}).get('stamp_once_per_day')):
@@ -4424,6 +4508,16 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         details.insert(0, ('available_now', 'AVAILABLE NOW', available_text))
 
     order_ahead_action = order_ahead_wallet_action(customer, business)
+
+    primary_is_stamps = loyalty_points_label == 'STAMPS'
+    wallet_stamp_balance_text, wallet_stamp_progress_row = wallet_stamp_balance_and_module(
+        program,
+        stamps,
+        full_stamp_goal,
+        primary_is_stamps=primary_is_stamps,
+    )
+    if primary_is_stamps:
+        loyalty_points_balance = wallet_stamp_balance_text
 
     loyalty_object = {
         'id': object_id,
@@ -4482,11 +4576,9 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     # customer - used to burn live progress onto the generated gradient.
     # When the business uploads a custom hero photo, keep that photo clean and
     # inherit it from the class instead.
-    stamp_visual_requested = (
-        program_reward_uses_stamps(program)
-        and stamp_display_style in ('icon', 'logo')
-        and int(full_stamp_goal or 0) <= 20
-    )
+    # Requested UX change: do not burn Stamp progress into the hero/cover image.
+    # Up to 10 stamps use the native STAMPS value; 11-20 use a text-module row below.
+    stamp_visual_requested = False
     # Keep uploaded hero photos clean for Number Only. If visual stamps are
     # selected, render a per-customer composite using that uploaded photo as
     # the base so branding is preserved while progress stays dynamic.
@@ -5807,6 +5899,50 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         _sr_left = max(full_stamp_goal - current_stamps, 0)
         stamp_next_reward_value = reward_name if _sr_left == 0 else f'{reward_name} · {_sr_left} stamps to go'
 
+    apple_stamp_style = normalize_stamp_display_style(program)
+    apple_stamp_main, apple_stamp_visual = wallet_stamp_balance_and_module(
+        program,
+        current_stamps,
+        full_stamp_goal,
+        primary_is_stamps=True,
+    )
+    apple_stamp_lines = wallet_stamp_icon_lines(
+        current_stamps,
+        full_stamp_goal,
+        normalize_stamp_icon(program),
+    ) if apple_stamp_style == 'icon' else []
+    apple_stamp_inline = bool(apple_stamp_style == 'icon' and 1 <= int(full_stamp_goal or 0) <= 10 and apple_stamp_lines)
+    apple_stamp_long = bool(apple_stamp_style == 'icon' and 10 < int(full_stamp_goal or 0) <= 20 and apple_stamp_lines)
+
+    def _apple_stamp_progress_fields(prefix: str = 'stamp_progress') -> list:
+        if not apple_stamp_lines:
+            return []
+        if len(apple_stamp_lines) == 1:
+            return [{
+                'key': prefix,
+                'label': 'STAMP PROGRESS',
+                'value': apple_stamp_lines[0],
+                'textAlignment': 'PKTextAlignmentCenter',
+                'changeMessage': 'Stamp progress updated: %@',
+            }]
+        first_end = min(10, int(full_stamp_goal or 0))
+        second_end = int(full_stamp_goal or 0)
+        return [
+            {
+                'key': f'{prefix}_1',
+                'label': f'STAMPS 1–{first_end}',
+                'value': apple_stamp_lines[0],
+                'textAlignment': 'PKTextAlignmentCenter',
+                'changeMessage': 'Stamp progress updated: %@',
+            },
+            {
+                'key': f'{prefix}_2',
+                'label': f'STAMPS 11–{second_end}',
+                'value': apple_stamp_lines[1],
+                'textAlignment': 'PKTextAlignmentCenter',
+            },
+        ]
+
     # Same per-type detail rows as build_loyalty_object (Google) and
     # WalletPass.jsx (website) - kept in sync so flipping to the back of the
     # Apple pass shows the same Active Until / Member Since / Membership
@@ -5821,7 +5957,11 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
             apple_details.append(('points_balance', 'REWARD POINTS', f'{current_points:,}'))
             apple_details.append(('points_next_reward', 'NEXT POINTS REWARD', points_next_reward_value))
         if hybrid_stamps_enabled(program):
-            apple_details.append(('stamp_progress', 'REWARD STAMPS', f'{current_stamps}/{full_stamp_goal}'))
+            hybrid_stamp_primary = not hybrid_points_enabled(program)
+            hybrid_stamp_value, hybrid_stamp_visual = wallet_stamp_balance_and_module(
+                program, current_stamps, full_stamp_goal, primary_is_stamps=hybrid_stamp_primary
+            )
+            apple_details.append(('stamp_progress', 'REWARD STAMPS', hybrid_stamp_visual or hybrid_stamp_value))
             apple_details.append(('stamp_next_reward', 'NEXT STAMP REWARD', stamp_next_reward_value))
         if hybrid_tier_enabled(program):
             tier_progress = tier_progress_value(customer, program)
@@ -5891,7 +6031,13 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         apple_details.append(('membership_type', 'MEMBERSHIP TYPE', (program.get('membership_name') if program else None) or (program.get('card_name') if program else None) or design['card_label']))
         apple_details.append(('next_benefit', 'NEXT BENEFIT', services[0] if services else 'Rewards'))
     else:
-        apple_details.append(('stamp_progress', 'STAMPS', f'{current_stamps}/{full_stamp_goal}'))
+        apple_stamp_value, apple_stamp_visual = wallet_stamp_balance_and_module(
+            program,
+            current_stamps,
+            full_stamp_goal,
+            primary_is_stamps=True,
+        )
+        apple_details.append(('stamp_progress', 'STAMPS', apple_stamp_visual or apple_stamp_value))
         apple_details.append(('next_reward_detail', 'NEXT REWARD', stamp_next_reward_value))
 
     current_redeemables = get_current_card_redeemables(business, customer, program)
@@ -6019,6 +6165,92 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         if ann_message.strip() and ann_message.strip() != announcement_value:
             back_fields.append({'key': 'announcement_detail', 'label': ' ', 'value': ann_message.strip()[:400]})
 
+    stamp_next_reward_front = {
+        'key': 'next_reward',
+        'label': 'NEXT REWARD',
+        'value': (
+            f"{next_stamp_reward.get('reward_name')} · {next_stamp_reward.get('stamps')} stamps"
+            if next_stamp_reward else
+            f"{reward_name} · {full_stamp_goal} stamps"
+        ),
+        'changeMessage': 'Next reward: %@',
+    }
+    stamp_balance_front = {
+        'key': 'stamps',
+        'label': 'STAMPS',
+        'value': apple_stamp_main,
+        'textAlignment': 'PKTextAlignmentCenter' if apple_stamp_inline else 'PKTextAlignmentRight',
+        'changeMessage': 'Stamp progress: %@',
+    }
+    if apple_stamp_inline:
+        # Give the native icon row the full secondary width; keep the reward
+        # summary one row lower so iOS does not squeeze 8-10 icons into a
+        # cramped half-width column.
+        stamp_front_secondary_fields = [stamp_balance_front]
+        stamp_front_auxiliary_fields = [
+            {**stamp_next_reward_front, 'textAlignment': 'PKTextAlignmentLeft'},
+            *cycle_auxiliary_fields,
+        ]
+    elif apple_stamp_long:
+        # 11-20 stamps: numeric balance stays native; two groups of up to ten
+        # icons sit below, which is much more readable than one 20-icon line.
+        stamp_front_secondary_fields = [stamp_balance_front]
+        stamp_front_auxiliary_fields = _apple_stamp_progress_fields('stamp_front_progress')
+    else:
+        stamp_front_secondary_fields = [stamp_next_reward_front, stamp_balance_front]
+        stamp_front_auxiliary_fields = cycle_auxiliary_fields
+
+    hybrid_has_points = card_type == 'hybrid' and hybrid_points_enabled(program)
+    hybrid_has_stamps = card_type == 'hybrid' and hybrid_stamps_enabled(program)
+    hybrid_membership_live = card_type == 'hybrid' and membership_effective_status(customer).lower() in ('active', 'lifetime')
+    hybrid_reward_front = {
+        'key': 'hybrid_loyalty',
+        'label': 'POINTS' if loyalty_type == 'points' else 'STAMPS',
+        'value': str(int(points_balance or 0)) if loyalty_type == 'points' else apple_stamp_main,
+        'textAlignment': 'PKTextAlignmentCenter' if (not hybrid_has_points and apple_stamp_inline) else 'PKTextAlignmentLeft',
+        'changeMessage': 'Points updated: %@' if loyalty_type == 'points' else 'Stamp progress: %@',
+    }
+    hybrid_membership_front = (
+        {
+            'key': 'membership_status',
+            'label': 'MEMBERSHIP',
+            'value': '✓',
+            'textAlignment': 'PKTextAlignmentRight',
+            'changeMessage': 'Membership status updated.',
+        }
+        if hybrid_membership_live else
+        {
+            'key': 'membership_spacer',
+            'label': '\u00a0',
+            'value': '\u00a0',
+            'textAlignment': 'PKTextAlignmentRight',
+        }
+    )
+    hybrid_stamp_auxiliary_fields = []
+    if hybrid_has_stamps:
+        # When Points is also active, stamps are the supporting metric below
+        # the main POINTS row. 11-20 stamp goals also use the lower progress
+        # row. Stamp-only Hybrid <=10 gets the full secondary width so the
+        # compact icon row never gets squeezed beside membership status.
+        if hybrid_has_points or apple_stamp_long:
+            hybrid_stamp_auxiliary_fields = _apple_stamp_progress_fields('hybrid_stamp_progress')
+
+    if hybrid_has_stamps and not hybrid_has_points and apple_stamp_inline:
+        hybrid_front_secondary_fields = [hybrid_reward_front]
+        hybrid_front_auxiliary_fields = ([hybrid_membership_front] if hybrid_membership_live else [])
+    else:
+        hybrid_front_secondary_fields = [hybrid_reward_front, hybrid_membership_front]
+        hybrid_front_auxiliary_fields = (
+            hybrid_stamp_auxiliary_fields
+            if hybrid_stamp_auxiliary_fields else
+            ([{
+                'key': 'order_ahead_hint',
+                'label': 'ORDER AHEAD',
+                'value': 'ᴛᴀᴘ ⋯ ᴀʙᴏᴠᴇ',
+                'textAlignment': 'PKTextAlignmentCenter',
+            }] if order_ahead_action else [])
+        )
+
     pass_dict = {
         'formatVersion': 1,
         'passTypeIdentifier': APPLE_PASS_TYPE_IDENTIFIER,
@@ -6040,53 +6272,12 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                     {'key': 'card_name', 'label': 'CARD', 'value': card_title[:32]}
                 ],
                 'primaryFields': [],
-                'secondaryFields': (
-                    [{
-                        'key': 'hybrid_loyalty',
-                        'label': 'POINTS' if loyalty_type == 'points' else 'STAMPS',
-                        'value': (
-                            str(int(points_balance or 0))
-                            if loyalty_type == 'points' else
-                            f"{int(stamps or 0)}/{int(full_stamp_goal)}"
-                        ),
-                        'changeMessage': ('Points updated: %@' if loyalty_type == 'points' else 'Stamp progress: %@'),
-                    }]
-                    + ([{
-                        'key': 'membership_status',
-                        # Keep the front clean: show the membership label
-                        # only for live memberships, with a checkmark as the value.
-                        'label': 'MEMBERSHIP',
-                        'value': '✓',
-                        'textAlignment': 'PKTextAlignmentRight',
-                        'changeMessage': 'Membership status updated.',
-                    }] if membership_effective_status(customer).lower() in ('active', 'lifetime') else [{
-                        # Apple Wallet does not expose a font-size property for
-                        # pass fields. Reserve the second column invisibly when
-                        # membership is inactive so the points/stamps field keeps
-                        # the compact two-column secondary-field sizing instead
-                        # of expanding across the full card.
-                        'key': 'membership_spacer',
-                        'label': '\u00a0',
-                        'value': '\u00a0',
-                        'textAlignment': 'PKTextAlignmentRight',
-                    }])
-                ),
+                'secondaryFields': hybrid_front_secondary_fields,
                 # Current iOS Store Cards cannot make arbitrary front fields
                 # open a URL. Use a clean visual cue pointing to Apple's real
                 # system ellipsis button. The first field in Pass Details is the
                 # actual tappable Order Ahead link.
-                'auxiliaryFields': (
-                    [{
-                        'key': 'order_ahead_hint',
-                        'label': 'ORDER AHEAD',
-                        # Apple Wallet does not expose an exact font-size control.
-                        # Use Unicode small-cap glyphs so the all-caps instruction
-                        # stays visually smaller while preserving the intended wording.
-                        'value': 'ᴛᴀᴘ ⋯ ᴀʙᴏᴠᴇ',
-                        'textAlignment': 'PKTextAlignmentCenter',
-                    }]
-                    if order_ahead_action else []
-                ),
+                'auxiliaryFields': hybrid_front_auxiliary_fields,
                 'backFields': back_fields,
             }
             if card_type == 'hybrid' else
@@ -6134,26 +6325,8 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                     {'key': 'card_name', 'label': 'CARD', 'value': card_title[:32]}
                 ],
                 'primaryFields': [],
-                'secondaryFields': [
-                    {
-                        'key': 'next_reward',
-                        'label': 'NEXT REWARD',
-                        'value': (
-                            f"{next_stamp_reward.get('reward_name')} · {next_stamp_reward.get('stamps')} stamps"
-                            if next_stamp_reward else
-                            f"{reward_name} · {full_stamp_goal} stamps"
-                        ),
-                        'changeMessage': 'Next reward: %@',
-                    },
-                    {
-                        'key': 'stamps',
-                        'label': 'STAMPS',
-                        'value': f"{int(stamps or 0)}/{int(full_stamp_goal)}",
-                        'textAlignment': 'PKTextAlignmentRight',
-                        'changeMessage': 'Stamp progress: %@',
-                    },
-                ],
-                'auxiliaryFields': cycle_auxiliary_fields,
+                'secondaryFields': stamp_front_secondary_fields,
+                'auxiliaryFields': stamp_front_auxiliary_fields,
                 'backFields': back_fields,
             }
             if card_type == 'stamp' else
