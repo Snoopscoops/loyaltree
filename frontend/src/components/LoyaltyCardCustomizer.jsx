@@ -2,6 +2,15 @@ import React, { useState, useEffect } from 'react'
 
 const DESCRIPTION_LIMIT = 140
 
+const STAMP_ICON_OPTIONS = [
+  { value: 'circle', symbol: '●', label: 'Circle' },
+  { value: 'star', symbol: '★', label: 'Star' },
+  { value: 'heart', symbol: '♥', label: 'Heart' },
+  { value: 'coffee', symbol: '☕', label: 'Coffee' },
+  { value: 'gift', symbol: '🎁', label: 'Gift' },
+  { value: 'leaf', symbol: '🌿', label: 'Leaf' },
+]
+
 function cleanVipBenefits(benefits, discountPercent = 0) {
   const discount = Number(discountPercent || 0)
   const out = []
@@ -47,6 +56,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
     primary_color: '#0d9488',
     reward_name: '',
     stamp_goal: 8,
+    stamp_display_style: 'number',
+    stamp_icon: 'star',
     stamp_rewards: [{ id: 'legacy-final', stamps: 8, reward_name: 'Free Service' }],
     stamp_once_per_day: false,
     stamp_reset_after_final: true,
@@ -168,6 +179,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
           primary_color: data.primary_color || '#0d9488',
           reward_name: data.reward_name || '',
           stamp_goal: data.stamp_goal || 8,
+          stamp_display_style: ['number','icon','logo'].includes(data.stamp_display_style) ? data.stamp_display_style : 'number',
+          stamp_icon: STAMP_ICON_OPTIONS.some(opt => opt.value === data.stamp_icon) ? data.stamp_icon : 'star',
           stamp_rewards: Array.isArray(data.stamp_rewards) && data.stamp_rewards.length
             ? data.stamp_rewards
             : [{ id: 'legacy-final', stamps: data.stamp_goal || 8, reward_name: data.reward_name || 'Free Service' }],
@@ -452,6 +465,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
     primary_color: form.primary_color,
     reward_name: form.reward_name || 'Free Service',
     stamp_goal: Number(form.stamp_goal) || 8,
+    stamp_display_style: ['number','icon','logo'].includes(form.stamp_display_style) ? form.stamp_display_style : 'number',
+    stamp_icon: STAMP_ICON_OPTIONS.some(opt => opt.value === form.stamp_icon) ? form.stamp_icon : 'star',
     stamp_rewards: (form.stamp_rewards || []).map(r => ({
       id: r.id || Math.random().toString(16).slice(2, 14),
       stamps: Number(r.stamps) || 1,
@@ -684,8 +699,12 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
     return <div style={styles.loading}>Loading your card settings...</div>
   }
 
-  const stampGoal = Math.min(20, Math.max(3, Number(form.stamp_goal) || 8))
-  const previewFilled = Math.ceil(stampGoal / 2)
+  const rawStampGoal = Math.max(1, Number(form.stamp_goal) || 8)
+  const stampGoal = Math.min(20, Math.max(3, rawStampGoal))
+  const previewFilled = Math.min(stampGoal, Math.ceil(stampGoal / 2))
+  const stampDisplayStyle = ['number','icon','logo'].includes(form.stamp_display_style) ? form.stamp_display_style : 'number'
+  const selectedStampIcon = STAMP_ICON_OPTIONS.find(opt => opt.value === form.stamp_icon) || STAMP_ICON_OPTIONS[1]
+  const stampVisualSupported = rawStampGoal <= 20
   const multipassSessionCount = Math.min(200, Math.max(2, Number(form.multipass_session_count) || 12))
   const multipassPreviewUsed = Math.ceil(multipassSessionCount / 3)
   const displayName = form.card_name || `${user?.business_name || 'Your Business'} Rewards`
@@ -710,6 +729,41 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
     : walletPreset === 'premium'
     ? `linear-gradient(135deg,#050505 0%,${previewPrimary} 135%)`
     : `linear-gradient(135deg,${previewPrimary} 0%,${previewSecondary} 100%)`
+  const renderStampVisualPreview = (filled = previewFilled, compact = false) => {
+    if (stampDisplayStyle === 'number' || !stampVisualSupported) return null
+    const goal = Math.min(20, Math.max(1, rawStampGoal))
+    const current = Math.max(0, Math.min(Number(filled) || 0, goal))
+    return (
+      <div style={{
+        ...styles.stampVisualRow,
+        ...(compact ? {gap:4,margin:'6px 0 0',justifyContent:'flex-start',maxWidth:330} : {}),
+      }}>
+        {Array.from({ length: goal }).map((_, i) => {
+          const isFilled = i < current
+          if (stampDisplayStyle === 'logo' && isFilled && form.program_logo_url) {
+            return <span key={i} style={{...styles.visualStampCell,...(compact?styles.visualStampCellCompact:{}),borderColor:compact?'rgba(255,255,255,.85)':'#cbd5e1',background:'#fff'}}>
+              <img src={form.program_logo_url} alt="" style={styles.visualStampLogo}/>
+            </span>
+          }
+          if (isFilled) {
+            return <span key={i} style={{
+              ...styles.visualStampCell,...(compact?styles.visualStampCellCompact:{}),
+              background:compact?'#fff':(form.primary_color||'#0d9488'),
+              color:compact?(form.primary_color||'#0d9488'):'#fff',
+              borderColor:compact?'rgba(255,255,255,.9)':(form.primary_color||'#0d9488'),
+            }}>
+              {stampDisplayStyle === 'logo' ? '●' : selectedStampIcon.symbol}
+            </span>
+          }
+          return <span key={i} style={{
+            ...styles.visualStampCell,...(compact?styles.visualStampCellCompact:{}),
+            background:compact?'rgba(255,255,255,.08)':'#f8fafc',
+            borderColor:compact?'rgba(255,255,255,.35)':'#cbd5e1',
+          }} />
+        })}
+      </div>
+    )
+  }
   const previewResetDate = (() => {
     if (!form.card_expiration_enabled || !['stamp','points','vip'].includes(effectiveLoyaltyType)) return ''
     const d = new Date()
@@ -1393,6 +1447,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                       <div style={{...styles.previewPrizeRow,display:'block',textAlign:'center'}}><small style={{display:'block',color:'#64748b'}}>{effectiveLoyaltyType==='points'?'REWARD POINTS':'REWARD STAMPS'}</small><b style={{color:form.primary_color||'#0d9488'}}>{effectiveLoyaltyType==='points'?'240':`5 / ${stampGoal}`}</b></div>
                       {hybridTierEnabled && <div style={{...styles.previewPrizeRow,display:'block',textAlign:'center',borderColor:previewVipTier.color||'#fde68a'}}><small style={{display:'block',color:'#64748b'}}>TIER</small><b style={{color:previewVipTier.color||'#ca8a04'}}>{String(previewVipTier.name||'Gold').toUpperCase()}</b></div>}
                     </div>
+                    {effectiveLoyaltyType==='stamp' && renderStampVisualPreview(previewFilled)}
                     <div style={styles.cardFoot}>
                       {Number(form.membership_price)>0?`₱${Number(form.membership_price).toLocaleString()} / ${Number(form.membership_duration_days)||30} days · `:''}
                       {effectiveLoyaltyType==='points'?`Earn ${Number(form.points_per_amount)||0} pts per ₱${Number(form.points_amount_pesos)||0}`:`${stampGoal} stamps to final reward`}
@@ -1477,18 +1532,10 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                   </>
                 ) : (
                   <>
-                    <div style={styles.stampGrid}>
-                      {Array.from({ length: stampGoal }).map((_, i) => (
-                        <div
-                          key={i}
-                          style={{
-                            ...styles.stampDot,
-                            background: i < previewFilled ? (form.primary_color || '#0d9488') : '#e2e8f0',
-                          }}
-                        />
-                      ))}
-                    </div>
-                    <div style={styles.cardFoot}>{previewFilled} of {stampGoal} stamps</div>
+                    {(stampDisplayStyle === 'number' || !stampVisualSupported) ? (
+                      <div style={styles.previewPointsBalance}><span style={{color:form.primary_color||'#0d9488'}}>{previewFilled} / {rawStampGoal}</span> stamps</div>
+                    ) : renderStampVisualPreview(previewFilled)}
+                    <div style={styles.cardFoot}>{previewFilled} of {rawStampGoal} stamps</div>
                   </>
                 )}
               </div>
@@ -1514,12 +1561,15 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                 </div>
                 <span style={styles.wallet20PreviewMenu}>•••</span>
               </div>
+              {(effectiveLoyaltyType==='stamp' && stampDisplayStyle!=='number' && stampVisualSupported) && (
+                <div style={styles.walletStampVisualPreview}>{renderStampVisualPreview(Math.min(5,rawStampGoal),true)}</div>
+              )}
               <div style={styles.wallet20PreviewBottom}>
                 <div style={styles.wallet20PreviewInfo}>
                   <div><small>CUSTOMER</small><strong>John Customer</strong></div>
                   <div style={styles.wallet20PreviewMetric}>
                     <small>{form.card_type==='hybrid'?(effectiveLoyaltyType==='points'?'POINTS':'STAMPS'):form.card_type==='points'?'POINTS':form.card_type==='multipass'?'SESSIONS LEFT':form.card_type==='membership'?'STATUS':form.card_type==='vip'?'TIER':'STAMPS'}</small>
-                    <strong>{form.card_type==='hybrid'?(effectiveLoyaltyType==='points'?'2,850':'5 / 8'):form.card_type==='points'?'2,850':form.card_type==='multipass'?'5 / 10':form.card_type==='membership'?'ACTIVE':form.card_type==='vip'?'GOLD':'5 / 8'}</strong>
+                    <strong>{form.card_type==='hybrid'?(effectiveLoyaltyType==='points'?'2,850':`${Math.min(5,rawStampGoal)} / ${rawStampGoal}`):form.card_type==='points'?'2,850':form.card_type==='multipass'?'5 / 10':form.card_type==='membership'?'ACTIVE':form.card_type==='vip'?'GOLD':`${Math.min(5,rawStampGoal)} / ${rawStampGoal}`}</strong>
                   </div>
                 </div>
                 <div style={styles.wallet20PreviewQrBox}>
@@ -1757,6 +1807,54 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                     setStampRewardDraft({stamps:'',reward_name:''})
                   }}>+ Add Stamp Reward</button>
                 </div>
+              </div>
+
+              <div style={{...styles.fieldGroup,padding:14,border:'1px solid #dbeafe',borderRadius:14,background:'#f8fbff'}}>
+                <label style={styles.label}>Stamp appearance</label>
+                <p style={{...styles.hint,margin:'0 0 12px'}}>Choose how customers see progress. Number Only keeps the current Wallet layout. Visual rows are exact for goals up to 20 stamps.</p>
+                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:8}}>
+                  {[
+                    ['number','4 / 10','Number Only','Clean numeric progress'],
+                    ['icon',selectedStampIcon.symbol,'Icon Stamps','Repeated reward icons'],
+                    ['logo',form.program_logo_url ? 'logo' : '◉','Business Logo','Your logo as each earned stamp'],
+                  ].map(([value,preview,label,desc]) => (
+                    <button key={value} type="button" onClick={()=>update('stamp_display_style',value)}
+                      style={{...styles.stampAppearanceOption,...(stampDisplayStyle===value?{borderColor:form.primary_color||'#0d9488',boxShadow:`0 0 0 2px ${(form.primary_color||'#0d9488')}18`,background:'#fff'}:{})}}>
+                      <span style={styles.stampAppearancePreview}>
+                        {value==='logo' && form.program_logo_url
+                          ? <img src={form.program_logo_url} alt="" style={styles.stampAppearanceLogo}/>
+                          : preview}
+                      </span>
+                      <span style={styles.stampAppearanceLabel}>{label}</span>
+                      <span style={styles.stampAppearanceDesc}>{desc}</span>
+                    </button>
+                  ))}
+                </div>
+
+                {stampDisplayStyle === 'icon' && (
+                  <div style={{marginTop:14}}>
+                    <label style={styles.miniLabel}>Choose stamp icon</label>
+                    <div style={{display:'flex',gap:7,flexWrap:'wrap',marginTop:7}}>
+                      {STAMP_ICON_OPTIONS.map(opt => (
+                        <button key={opt.value} type="button" onClick={()=>update('stamp_icon',opt.value)} title={opt.label}
+                          style={{...styles.stampIconOption,...(form.stamp_icon===opt.value?{borderColor:form.primary_color||'#0d9488',background:'#fff',boxShadow:`0 0 0 2px ${(form.primary_color||'#0d9488')}18`}:{})}}>
+                          <span>{opt.symbol}</span><small>{opt.label}</small>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {stampDisplayStyle === 'logo' && (
+                  <div style={{...styles.hint,marginTop:10,color:form.program_logo_url?'#0f766e':'#92400e'}}>
+                    {form.program_logo_url
+                      ? '✓ Uses the Business / card logo uploaded in Branding.'
+                      : 'Upload a Business / card logo in Branding. Until then, Wallet safely falls back to a simple filled stamp.'}
+                  </div>
+                )}
+                {!stampVisualSupported && stampDisplayStyle !== 'number' && (
+                  <div style={{...styles.hint,marginTop:10,color:'#92400e'}}>Your final milestone is {rawStampGoal} stamps. Visual rows support up to 20, so customers will see numeric progress until the goal is 20 or less.</div>
+                )}
               </div>
 
               <div style={styles.fieldGroup}>
@@ -2427,6 +2525,46 @@ const styles = {
     width: '100%',
     aspectRatio: '1',
     borderRadius: '50%',
+  },
+  stampVisualRow: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 7,
+    margin: '10px 0 12px',
+  },
+  visualStampCell: {
+    width: 34,
+    height: 34,
+    borderRadius: 999,
+    border: '1px solid rgba(255,255,255,.45)',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: 18,
+    fontWeight: 900,
+    overflow: 'hidden',
+    boxSizing: 'border-box',
+  },
+  visualStampCellCompact: { width: 22, height: 22, fontSize: 12 },
+  visualStampLogo: { width: '100%', height: '100%', objectFit: 'cover', display: 'block' },
+  stampAppearanceOption: {
+    border: '1px solid #dbe3ef', background: '#f8fafc', borderRadius: 12,
+    padding: '12px 10px', cursor: 'pointer', textAlign: 'left', display: 'flex',
+    flexDirection: 'column', gap: 4, minHeight: 108,
+  },
+  stampAppearancePreview: { fontSize: 24, fontWeight: 900, minHeight: 30, display: 'flex', alignItems: 'center' },
+  stampAppearanceLogo: { width: 30, height: 30, borderRadius: 999, objectFit: 'cover', border: '1px solid #e2e8f0' },
+  stampAppearanceLabel: { fontSize: 12, fontWeight: 900, color: '#0f172a' },
+  stampAppearanceDesc: { fontSize: 10.5, lineHeight: 1.35, color: '#64748b' },
+  stampIconOption: {
+    border: '1px solid #dbe3ef', background: '#f8fafc', borderRadius: 10,
+    padding: '8px 9px', minWidth: 62, cursor: 'pointer', display: 'flex',
+    flexDirection: 'column', alignItems: 'center', gap: 2,
+  },
+  walletStampVisualPreview: {
+    position: 'absolute', zIndex: 2, left: 18, right: 92, top: 86,
+    display: 'flex', alignItems: 'center', minHeight: 34,
   },
   cardFoot: {
     fontSize: 11,

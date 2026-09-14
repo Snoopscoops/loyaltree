@@ -1856,6 +1856,10 @@ class LoyaltyConfig(BaseModel):
     hybrid_tier_progression_type: Literal['points', 'stamps'] = 'stamps'
     tier_stamp_once_per_day: bool = False
     stamp_goal: int = Field(default=8, ge=1, le=500)
+    # Optional Stamp progress appearance. Existing programs default to Number
+    # Only, so this feature never changes a live card until the owner opts in.
+    stamp_display_style: Literal['number', 'icon', 'logo'] = 'number'
+    stamp_icon: Literal['circle', 'star', 'heart', 'coffee', 'gift', 'leaf'] = 'star'
     reward_name: str = 'Free Service'
     stamp_rewards: Optional[List[StampRewardMilestone]] = None
     stamp_once_per_day: bool = False
@@ -3337,6 +3341,195 @@ def _hero_to_png(img: "Image.Image") -> bytes:
     img.save(buffer, format='PNG')
     return buffer.getvalue()
 
+def normalize_stamp_display_style(program: Optional[dict]) -> str:
+    value = str((program or {}).get('stamp_display_style') or 'number').strip().lower()
+    return value if value in ('number', 'icon', 'logo') else 'number'
+
+
+def normalize_stamp_icon(program: Optional[dict]) -> str:
+    value = str((program or {}).get('stamp_icon') or 'star').strip().lower()
+    return value if value in ('circle', 'star', 'heart', 'coffee', 'gift', 'leaf') else 'star'
+
+
+_STAMP_REMOTE_IMAGE_CACHE = {}
+_STAMP_REMOTE_IMAGE_CACHE_MAX = 24
+
+
+def _load_remote_wallet_image(url: Optional[str]) -> Optional["Image.Image"]:
+    """Best-effort fetch/cache for owner-uploaded Wallet artwork.
+
+    Failures always fall back to the generated gradient/simple stamp so a
+    Cloudinary/CDN issue can never break a customer's pass.
+    """
+    url = str(url or '').strip()
+    if not url or not url.startswith(('https://', 'http://')):
+        return None
+    cached = _STAMP_REMOTE_IMAGE_CACHE.get(url)
+    if cached is not None:
+        try:
+            return cached.copy()
+        except Exception:
+            _STAMP_REMOTE_IMAGE_CACHE.pop(url, None)
+    try:
+        import httpx
+        response = httpx.get(url, timeout=3.5, follow_redirects=True)
+        response.raise_for_status()
+        if len(response.content) > 5 * 1024 * 1024:
+            return None
+        image = Image.open(BytesIO(response.content)).convert('RGBA')
+        if len(_STAMP_REMOTE_IMAGE_CACHE) >= _STAMP_REMOTE_IMAGE_CACHE_MAX:
+            _STAMP_REMOTE_IMAGE_CACHE.pop(next(iter(_STAMP_REMOTE_IMAGE_CACHE)), None)
+        _STAMP_REMOTE_IMAGE_CACHE[url] = image.copy()
+        return image
+    except Exception as exc:
+        print(f"WALLET ART image fetch fallback: {exc}")
+        return None
+
+
+def _cover_image_to_size(image: "Image.Image", size: tuple[int, int]) -> "Image.Image":
+    image = image.convert('RGBA')
+    target_w, target_h = size
+    src_ratio = image.width / max(image.height, 1)
+    dst_ratio = target_w / max(target_h, 1)
+    if src_ratio > dst_ratio:
+        new_w = max(1, int(image.height * dst_ratio))
+        left = max(0, (image.width - new_w) // 2)
+        image = image.crop((left, 0, left + new_w, image.height))
+    else:
+        new_h = max(1, int(image.width / dst_ratio))
+        top = max(0, (image.height - new_h) // 2)
+        image = image.crop((0, top, image.width, top + new_h))
+    return image.resize(size, Image.LANCZOS)
+
+
+def _render_wallet_hero_base(primary_color: str, background_image_url: Optional[str] = None) -> "Image.Image":
+    remote = _load_remote_wallet_image(background_image_url)
+    if remote is None:
+        return _render_hero(primary_color).convert('RGBA')
+    base = _cover_image_to_size(remote, HERO_SIZE)
+    shade = Image.new('RGBA', HERO_SIZE, (0, 0, 0, 48))
+    return Image.alpha_composite(base, shade)
+
+
+def _star_points(cx: float, cy: float, outer: float, inner: float) -> list[tuple[float, float]]:
+    import math
+    points = []
+    for i in range(10):
+        angle = -math.pi / 2 + i * math.pi / 5
+        radius = outer if i % 2 == 0 else inner
+        points.append((cx + math.cos(angle) * radius, cy + math.sin(angle) * radius))
+    return points
+
+
+def _draw_stamp_symbol(draw, icon: str, box: tuple[int, int, int, int], fill) -> None:
+    """Draw small vector symbols without depending on emoji fonts on Render."""
+    x0, y0, x1, y1 = box
+    w, h = x1 - x0, y1 - y0
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    pad = max(2, int(min(w, h) * .20))
+    if icon == 'star':
+        draw.polygon(_star_points(cx, cy, min(w, h) * .30, min(w, h) * .13), fill=fill)
+    elif icon == 'heart':
+        r = min(w, h) * .16
+        draw.ellipse((cx-r*1.75, cy-r*1.4, cx-r*.05, cy+r*.3), fill=fill)
+        draw.ellipse((cx+r*.05, cy-r*1.4, cx+r*1.75, cy+r*.3), fill=fill)
+        draw.polygon([(cx-r*1.7, cy-r*.15), (cx+r*1.7, cy-r*.15), (cx, cy+r*2.0)], fill=fill)
+    elif icon == 'coffee':
+        cup_w, cup_h = w*.42, h*.30
+        ux0, uy0 = cx-cup_w/2, cy-cup_h/2
+        ux1, uy1 = cx+cup_w/2, cy+cup_h/2
+        draw.rounded_rectangle((ux0, uy0, ux1, uy1), radius=max(2, int(h*.05)), fill=fill)
+        draw.arc((ux1-w*.03, uy0+h*.03, ux1+w*.20, uy1-h*.02), start=270, end=90, fill=fill, width=max(2, int(w*.07)))
+        draw.line((cx-w*.18, uy1+h*.08, cx+w*.18, uy1+h*.08), fill=fill, width=max(2, int(h*.05)))
+        draw.arc((cx-w*.14, y0+pad*.55, cx-w*.02, cy-h*.05), start=190, end=350, fill=fill, width=max(1, int(w*.04)))
+        draw.arc((cx+w*.01, y0+pad*.45, cx+w*.13, cy-h*.05), start=190, end=350, fill=fill, width=max(1, int(w*.04)))
+    elif icon == 'gift':
+        gx0, gy0, gx1, gy1 = x0+pad, y0+pad*1.35, x1-pad, y1-pad
+        draw.rounded_rectangle((gx0, gy0, gx1, gy1), radius=max(2, int(w*.05)), fill=fill)
+        ribbon = max(2, int(w*.08))
+        draw.rectangle((cx-ribbon/2, gy0, cx+ribbon/2, gy1), fill=(255,255,255,210))
+        draw.rectangle((gx0, gy0+h*.17, gx1, gy0+h*.17+ribbon), fill=(255,255,255,210))
+        draw.ellipse((cx-w*.18, y0+pad*.45, cx-w*.01, gy0+h*.05), outline=fill, width=max(2, int(w*.05)))
+        draw.ellipse((cx+w*.01, y0+pad*.45, cx+w*.18, gy0+h*.05), outline=fill, width=max(2, int(w*.05)))
+    elif icon == 'leaf':
+        draw.ellipse((x0+pad, y0+pad*.7, x1-pad*.7, y1-pad), fill=fill)
+        draw.line((x0+w*.34, y1-h*.23, x1-w*.23, y0+h*.29), fill=(255,255,255,210), width=max(2, int(w*.05)))
+    else:
+        r = min(w, h) * .24
+        draw.ellipse((cx-r, cy-r, cx+r, cy+r), fill=fill)
+
+
+def _circular_logo_tile(logo: "Image.Image", size: int) -> "Image.Image":
+    tile = _cover_image_to_size(logo, (size, size))
+    mask = Image.new('L', (size, size), 0)
+    from PIL import ImageDraw
+    ImageDraw.Draw(mask).ellipse((0, 0, size-1, size-1), fill=255)
+    tile.putalpha(mask)
+    return tile
+
+
+def _draw_stamp_progress_row(
+    img: "Image.Image",
+    stamps: int,
+    stamp_goal: int,
+    display_style: str,
+    icon: str,
+    logo_url: Optional[str],
+    center_y: int,
+    primary_color: str,
+) -> bool:
+    """Draw exact visual Stamp progress for goals up to 20."""
+    from PIL import ImageDraw
+
+    style = display_style if display_style in ('icon', 'logo') else 'number'
+    try:
+        goal = int(stamp_goal or 0)
+        current = max(0, min(int(stamps or 0), goal))
+    except Exception:
+        return False
+    if style == 'number' or goal < 1 or goal > 20:
+        return False
+
+    draw_layer = Image.new('RGBA', HERO_SIZE, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(draw_layer)
+    gap = 9
+    available = HERO_SIZE[0] - 100
+    size = max(28, min(48, int((available - gap * (goal - 1)) / goal)))
+    total_w = goal * size + gap * (goal - 1)
+    start_x = (HERO_SIZE[0] - total_w) // 2
+    y0 = int(center_y - size / 2)
+    y1 = y0 + size
+
+    draw.rounded_rectangle(
+        (start_x-16, y0-10, start_x+total_w+16, y1+10),
+        radius=max(16, size//2),
+        fill=(0, 0, 0, 62),
+        outline=(255, 255, 255, 35),
+        width=1,
+    )
+
+    logo = _load_remote_wallet_image(logo_url) if style == 'logo' else None
+    logo_tile = _circular_logo_tile(logo, size) if logo is not None else None
+    accent = _hex_to_rgb(primary_color)
+
+    for i in range(goal):
+        x0 = start_x + i * (size + gap)
+        x1 = x0 + size
+        filled = i < current
+        if filled and style == 'logo' and logo_tile is not None:
+            draw.ellipse((x0, y0, x1, y1), fill=(255,255,255,245))
+            draw_layer.alpha_composite(logo_tile, (x0, y0))
+            draw.ellipse((x0, y0, x1, y1), outline=(255,255,255,220), width=max(1, size//18))
+        elif filled:
+            draw.ellipse((x0, y0, x1, y1), fill=(255,255,255,238), outline=(255,255,255,255), width=max(1, size//18))
+            _draw_stamp_symbol(draw, icon, (x0, y0, x1, y1), fill=(*accent, 255))
+        else:
+            draw.ellipse((x0, y0, x1, y1), fill=(255,255,255,22), outline=(255,255,255,115), width=max(1, size//16))
+
+    img.alpha_composite(draw_layer)
+    return True
+
+
 def _wrap_text(draw, text: str, font, max_width: int, max_lines: int) -> List[str]:
     """Greedy word-wrap using actual glyph widths, truncating with an
     ellipsis if the text still doesn't fit in max_lines."""
@@ -3385,6 +3578,10 @@ def generate_personalized_hero_image_bytes(
     business_name: Optional[str] = None,
     card_label: Optional[str] = None,
     include_text_overlay: bool = True,
+    stamp_display_style: str = 'number',
+    stamp_icon: str = 'star',
+    stamp_logo_url: Optional[str] = None,
+    background_image_url: Optional[str] = None,
 ) -> bytes:
     """Same gradient as generate_hero_image_bytes, but with a bottom banner
     burned in showing the reward/progress and short description - the
@@ -3397,7 +3594,7 @@ def generate_personalized_hero_image_bytes(
     the points balance instead of a stamp count."""
     # Wallet 2.0 branded hero. Keep the image static (Google requirement)
     # but make it look like a deliberate digital card instead of a plain gradient.
-    img = _render_hero(primary_color).convert('RGBA')
+    img = _render_wallet_hero_base(primary_color, background_image_url)
     from PIL import ImageDraw, ImageFont
 
     if secondary_color:
@@ -3434,6 +3631,25 @@ def generate_personalized_hero_image_bytes(
         label = str(card_label).upper()
         bbox = draw.textbbox((0,0), label, font=font_label)
         draw.text((HERO_SIZE[0]-40-(bbox[2]-bbox[0]), 30), label, font=font_label, fill=(255,255,255,185))
+
+    stamp_visual_active = (
+        stamp_display_style in ('icon', 'logo')
+        and (
+            card_type == 'stamp'
+            or (card_type == 'hybrid' and hybrid_loyalty_type == 'stamp')
+        )
+    )
+    if stamp_visual_active:
+        _draw_stamp_progress_row(
+            img,
+            stamps=stamps,
+            stamp_goal=stamp_goal,
+            display_style=stamp_display_style,
+            icon=stamp_icon,
+            logo_url=stamp_logo_url,
+            center_y=168 if include_text_overlay else 170,
+            primary_color=primary_color,
+        )
 
     if not include_text_overlay:
         # Apple's storeCard already overlays organization name (logoText),
@@ -3897,6 +4113,13 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
     stamps = int(customer.get('stamp_count', 0) or 0)
     points_balance = int(customer.get('points_balance', 0) or 0)
+    stamp_display_style = normalize_stamp_display_style(program)
+    stamp_icon = normalize_stamp_icon(program)
+    stamp_logo_url = (
+        (program or {}).get('program_logo_url')
+        or (business or {}).get('logo_url')
+        or DEFAULT_LOGO_URL
+    )
 
     points_prizes = []
     if loyalty_type == 'points':
@@ -4206,7 +4429,18 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     # customer - used to burn live progress onto the generated gradient.
     # When the business uploads a custom hero photo, keep that photo clean and
     # inherit it from the class instead.
-    if design['show_background'] and not (program and program.get('hero_image_url')):
+    stamp_visual_requested = (
+        loyalty_type == 'stamp'
+        and stamp_display_style in ('icon', 'logo')
+        and int(full_stamp_goal or 0) <= 20
+    )
+    # Keep uploaded hero photos clean for Number Only. If visual stamps are
+    # selected, render a per-customer composite using that uploaded photo as
+    # the base so branding is preserved while progress stays dynamic.
+    if design['show_background'] and (
+        not (program and program.get('hero_image_url'))
+        or stamp_visual_requested
+    ):
         primary_color = (
             get_vip_tier(customer, program or {}).get('color') or '#111827'
             if program_has_tier(program)
@@ -4223,9 +4457,12 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
             progress_key = vip_progress_value(customer, program)
         else:
             progress_key = stamps
+        visual_key = hashlib.sha256(
+            f"{stamp_display_style}|{stamp_icon}|{stamp_logo_url}|{(program or {}).get('hero_image_url') or ''}".encode()
+        ).hexdigest()[:12]
         hero_url = (
             f'{BASE_URL}/api/v1/customer/{cust_public_id}/hero-image.png'
-            f'?s={progress_key}&g={stamp_goal}&c={color_key}'
+            f'?s={progress_key}&g={stamp_goal}&c={color_key}&sv={visual_key}'
         )
         loyalty_object['heroImage'] = {'sourceUri': {'uri': hero_url}}
 
@@ -6032,6 +6269,10 @@ def generate_apple_strip_bytes(customer: dict, business: dict, program: dict, wi
         business_name=business.get('name'),
         card_label=design['card_label'],
         include_text_overlay=False,
+        stamp_display_style=normalize_stamp_display_style(program),
+        stamp_icon=normalize_stamp_icon(program),
+        stamp_logo_url=(program or {}).get('program_logo_url') or (business or {}).get('logo_url') or DEFAULT_LOGO_URL,
+        background_image_url=(program or {}).get('hero_image_url'),
     )
     img = Image.open(BytesIO(raw)).convert('RGB')
     src_ratio = img.width / img.height
@@ -14345,6 +14586,8 @@ async def get_loyalty_config(public_id: str, response: Response):
             "tier_stamp_once_per_day": False,
             "subscription_enrollment_mode": "manual",
             "stamp_goal": 8,
+            "stamp_display_style": "number",
+            "stamp_icon": "star",
             "reward_name": "Free Service",
             "stamp_rewards": [{"id": "legacy-final", "stamps": 8, "reward_name": "Free Service"}],
             "stamp_once_per_day": False,
@@ -14467,6 +14710,8 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
         'membership_benefits_unlock_enabled': bool(config.membership_benefits_unlock_enabled),
         'membership_benefits_unlock_threshold': int(config.membership_benefits_unlock_threshold or 7),
         'stamp_goal': config.stamp_goal,
+        'stamp_display_style': config.stamp_display_style,
+        'stamp_icon': config.stamp_icon,
         'reward_name': config.reward_name,
         'stamp_once_per_day': bool(config.stamp_once_per_day),
         'stamp_reset_after_final': bool(config.stamp_reset_after_final),
@@ -20231,6 +20476,10 @@ async def get_customer_hero_image(customer_public_id: str, s: Optional[str] = No
         wallet_style=design['style'],
         business_name=business.get('name'),
         card_label=design['card_label'],
+        stamp_display_style=normalize_stamp_display_style(program),
+        stamp_icon=normalize_stamp_icon(program),
+        stamp_logo_url=(program or {}).get('program_logo_url') or business.get('logo_url') or DEFAULT_LOGO_URL,
+        background_image_url=(program or {}).get('hero_image_url'),
     )
     return Response(
         content=png_bytes,
@@ -24658,6 +24907,37 @@ async def customer_wallet_page(customer_public_id: str):
 
     active_class = ' active' if metric_value in ('ACTIVE', 'LIFETIME') else ''
 
+    # Optional visual Stamp row on the LoyaltyTree web card. The numeric metric
+    # remains visible for accessibility and for goals above 20.
+    stamp_visual_html = ''
+    visual_style = normalize_stamp_display_style(program)
+    if loyalty_type == 'stamp' and visual_style in ('icon', 'logo'):
+        visual_goal = max(1, int(program.get('stamp_goal') or 8))
+        visual_current = max(0, min(int(customer.get('stamp_count') or 0), visual_goal))
+        if visual_goal <= 20:
+            icon_map = {
+                'circle': '●',
+                'star': '★',
+                'heart': '♥',
+                'coffee': '☕',
+                'gift': '🎁',
+                'leaf': '🌿',
+            }
+            selected_icon = icon_map.get(normalize_stamp_icon(program), '★')
+            cells = []
+            for i in range(visual_goal):
+                if visual_style == 'logo' and i < visual_current and logo_url:
+                    cells.append(
+                        '<span class="stamp-cell filled logo-stamp"><img src="'
+                        + html_lib.escape(str(logo_url))
+                        + '" alt=""></span>'
+                    )
+                elif i < visual_current:
+                    cells.append('<span class="stamp-cell filled">' + html_lib.escape(selected_icon) + '</span>')
+                else:
+                    cells.append('<span class="stamp-cell empty"></span>')
+            stamp_visual_html = '<div class="stamp-visual">' + ''.join(cells) + '</div>'
+
     html = f'''<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html_lib.escape(business_name)}</title>
@@ -24675,6 +24955,11 @@ async def customer_wallet_page(customer_public_id: str):
 .biz{{font-size:clamp(20px,3vw,34px);font-weight:850;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}.type{{font-size:10px;letter-spacing:1.4px;font-weight:800;color:rgba(255,255,255,.62);margin-top:6px}}
 .member{{margin-top:auto}}.eyebrow{{font-size:9px;letter-spacing:1.3px;font-weight:800;color:rgba(255,255,255,.58)}}.name{{font-size:clamp(25px,4.5vw,48px);font-weight:720;line-height:1.06;margin:7px 0 20px}}
 .metric{{font-size:clamp(30px,5vw,54px);font-weight:850;line-height:.95;margin-top:6px}}.metric.active{{color:#4ade80}}.sub{{font-size:11px;color:rgba(255,255,255,.72);margin-top:7px}}
+.stamp-visual{{display:flex;flex-wrap:wrap;gap:6px;max-width:520px;margin:12px 0 2px}}
+.stamp-cell{{width:30px;height:30px;border-radius:999px;display:grid;place-items:center;border:1px solid rgba(255,255,255,.38);font-size:16px;line-height:1;overflow:hidden}}
+.stamp-cell.filled{{background:rgba(255,255,255,.94);color:{design["background"]};border-color:#fff;box-shadow:0 5px 14px rgba(0,0,0,.18)}}
+.stamp-cell.empty{{background:rgba(255,255,255,.07)}}
+.logo-stamp img{{display:block;width:100%;height:100%;object-fit:cover}}
 .right{{display:flex;flex-direction:column;justify-content:center;align-items:flex-end}}.qrbox{{width:min(100%,260px);padding:11px;background:#fff;border-radius:19px;box-shadow:0 14px 35px rgba(0,0,0,.28)}}.qrbox img{{display:block;width:100%;aspect-ratio:1/1}}.scan{{font-size:9px;letter-spacing:1.2px;font-weight:800;color:rgba(255,255,255,.62);margin:10px auto 0}}
 .details{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:14px}}.detail{{background:#111827;border:1px solid #202a3b;border-radius:13px;padding:12px 13px;min-width:0}}.detail span{{display:block;color:#75839a;font-size:9px;text-transform:uppercase;letter-spacing:.7px;margin-bottom:5px}}.detail strong{{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}}
 .available{{margin-top:14px;background:#111827;border:1px solid #263247;border-radius:16px;padding:15px}}.available-head{{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}}.available-head span{{font-size:9px;letter-spacing:1px;color:#8390a5;font-weight:800}}.available-head h2{{font-size:16px;margin:3px 0 0}}.available-head b{{display:grid;place-items:center;min-width:30px;height:30px;padding:0 8px;border-radius:999px;background:#172033;color:#fff;font-size:12px}}.available-list{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}}.available-item{{display:flex;gap:10px;align-items:flex-start;background:#0d1420;border:1px solid #202a3b;border-radius:12px;padding:11px}}.available-icon{{font-size:18px;line-height:1.1}}.available-item strong{{display:block;font-size:12px;color:#f8fafc}}.available-item span{{display:block;font-size:10px;color:#8fa0b8;margin-top:4px;line-height:1.35}}.available.empty p{{margin:0;color:#8390a5;font-size:12px}}
@@ -24695,7 +24980,7 @@ async def customer_wallet_page(customer_public_id: str):
 <div class="top"><b>🌳 LoyaltyTree</b><span>{html_lib.escape(card_label)}</span></div>
 <section class="card">{hero_html}<div class="grid">
 <div class="left"><div class="brand">{logo_html}<div><div class="biz">{html_lib.escape(business_name)}</div><div class="type">{html_lib.escape(card_label)}</div></div></div>
-<div class="member"><div class="eyebrow">MEMBER</div><div class="name">{html_lib.escape(customer_name)}</div><div class="eyebrow">{html_lib.escape(metric_label)}</div><div class="metric{active_class}">{html_lib.escape(metric_value)}</div><div class="sub">{html_lib.escape(metric_sub)}</div></div></div>
+<div class="member"><div class="eyebrow">MEMBER</div><div class="name">{html_lib.escape(customer_name)}</div><div class="eyebrow">{html_lib.escape(metric_label)}</div><div class="metric{active_class}">{html_lib.escape(metric_value)}</div>{stamp_visual_html}<div class="sub">{html_lib.escape(metric_sub)}</div></div></div>
 <div class="right"><div class="qrbox"><img src="{qr_image}" alt="Member QR"></div><div class="scan">PRESENT TO CHECK IN</div></div>
 </div></section>
 <section class="details">{details_html}</section>
