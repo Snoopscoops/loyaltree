@@ -194,7 +194,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
           primary_color: data.primary_color || '#0d9488',
           reward_name: data.reward_name || '',
           stamp_goal: data.stamp_goal || 8,
-          stamp_display_style: ['number','icon','logo'].includes(data.stamp_display_style) ? data.stamp_display_style : 'number',
+          stamp_display_style: data.stamp_display_style === 'logo' ? 'icon' : (['number','icon'].includes(data.stamp_display_style) ? data.stamp_display_style : 'number'),
           stamp_icon: STAMP_ICON_OPTIONS.some(opt => opt.value === data.stamp_icon) ? data.stamp_icon : 'star',
           stamp_rewards: Array.isArray(data.stamp_rewards) && data.stamp_rewards.length
             ? data.stamp_rewards
@@ -499,7 +499,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
     primary_color: form.primary_color,
     reward_name: form.reward_name || 'Free Service',
     stamp_goal: Number(form.stamp_goal) || 8,
-    stamp_display_style: ['number','icon','logo'].includes(form.stamp_display_style) ? form.stamp_display_style : 'number',
+    stamp_display_style: ['number','icon'].includes(form.stamp_display_style) ? form.stamp_display_style : 'number',
     stamp_icon: STAMP_ICON_OPTIONS.some(opt => opt.value === form.stamp_icon) ? form.stamp_icon : 'star',
     stamp_rewards: (form.stamp_rewards || []).map(r => ({
       id: r.id || Math.random().toString(16).slice(2, 14),
@@ -739,7 +739,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
   const rawStampGoal = Math.max(1, Number(form.stamp_goal) || 8)
   const stampGoal = Math.min(20, Math.max(3, rawStampGoal))
   const previewFilled = Math.min(stampGoal, Math.ceil(stampGoal / 2))
-  const stampDisplayStyle = ['number','icon','logo'].includes(form.stamp_display_style) ? form.stamp_display_style : 'number'
+  const stampDisplayStyle = ['number','icon'].includes(form.stamp_display_style) ? form.stamp_display_style : 'number'
   const selectedStampIcon = STAMP_ICON_OPTIONS.find(opt => opt.value === form.stamp_icon) || STAMP_ICON_OPTIONS[1]
   const stampVisualSupported = rawStampGoal <= 20
   const multipassSessionCount = Math.min(200, Math.max(2, Number(form.multipass_session_count) || 12))
@@ -781,11 +781,6 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
       }}>
         {Array.from({ length: goal }).map((_, i) => {
           const isFilled = i < current
-          if (stampDisplayStyle === 'logo' && isFilled && form.program_logo_url) {
-            return <span key={i} style={{...styles.visualStampCell,...(compact?styles.visualStampCellCompact:{}),borderColor:compact?'rgba(255,255,255,.85)':'#cbd5e1',background:'#fff'}}>
-              <img src={form.program_logo_url} alt="" style={styles.visualStampLogo}/>
-            </span>
-          }
           if (isFilled) {
             return <span key={i} style={{
               ...styles.visualStampCell,...(compact?styles.visualStampCellCompact:{}),
@@ -793,7 +788,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
               color:compact?(form.primary_color||'#0d9488'):'#fff',
               borderColor:compact?'rgba(255,255,255,.9)':(form.primary_color||'#0d9488'),
             }}>
-              {stampDisplayStyle === 'logo' ? '●' : selectedStampIcon.symbol}
+              {selectedStampIcon.symbol}
             </span>
           }
           return <span key={i} style={{
@@ -830,13 +825,6 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
   const walletShowStampBelow = stampDisplayStyle==='icon' && walletStampLines.length > 0 && (
     rawStampGoal > 10 || (isHybrid && hybridStampsEnabled && hybridPointsEnabled)
   )
-
-  const previewResetDate = (() => {
-    if (!form.card_expiration_enabled || !['stamp','points','vip'].includes(effectiveLoyaltyType)) return ''
-    const d = new Date()
-    d.setDate(d.getDate() + Math.max(1, Number(form.card_validity_days) || 365) + 1)
-    return d.toLocaleDateString(undefined, { year:'numeric', month:'short', day:'numeric' })
-  })()
 
   const guidedCardLabel = form.card_type === 'hybrid'
     ? `Hybrid Card · Subscription + ${hybridRewardLabel}${hybridTierEnabled ? ` + Tier ${tierUsesStamps ? 'Stamps' : 'Points'}` : ''}`
@@ -1656,16 +1644,18 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                   </div>
                 </div>
               )}
-              {isHybrid && (
-                <div style={{...styles.wallet20ResetPreview,marginBottom:8}}>
-                  <span>☕ SUBSCRIPTION</span><strong>ACTIVE · {Number(form.membership_duration_days)||30} DAYS</strong>
-                </div>
-              )}
-              {previewResetDate && (
-                <div style={styles.wallet20ResetPreview}>
-                  <span>🔄 RESET ON</span>
-                  <strong>{previewResetDate}</strong>
-                </div>
+              {(isHybrid || form.card_type==='membership') && (
+                <>
+                  {isHybrid && (
+                    <div style={{...styles.wallet20ResetPreview,marginBottom:8}}>
+                      <span>MEMBERSHIP STATUS</span><strong>ACTIVE</strong>
+                    </div>
+                  )}
+                  <div style={styles.wallet20ResetPreview}>
+                    <span>VALID UNTIL</span>
+                    <strong>{Number(form.membership_duration_days)||30} DAYS AFTER ACTIVATION</strong>
+                  </div>
+                </>
               )}
             </div>
             <p style={styles.hint}>Preview is intentionally approximate: Apple and Google control parts of their native layout. LoyaltyTree keeps your logo, colors and customer information as consistent as each platform allows.</p>
@@ -1902,15 +1892,10 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                   {[
                     ['number','4 / 10','Number Only','Clean numeric progress'],
                     ['icon',selectedStampIcon.symbol,'Icon Stamps','Repeated reward icons'],
-                    ['logo',form.program_logo_url ? 'logo' : '◉','Business Logo','Your logo as each earned stamp'],
                   ].map(([value,preview,label,desc]) => (
                     <button key={value} type="button" onClick={()=>update('stamp_display_style',value)}
                       style={{...styles.stampAppearanceOption,...(stampDisplayStyle===value?{borderColor:form.primary_color||'#0d9488',boxShadow:`0 0 0 2px ${(form.primary_color||'#0d9488')}18`,background:'#fff'}:{})}}>
-                      <span style={styles.stampAppearancePreview}>
-                        {value==='logo' && form.program_logo_url
-                          ? <img src={form.program_logo_url} alt="" style={styles.stampAppearanceLogo}/>
-                          : preview}
-                      </span>
+                      <span style={styles.stampAppearancePreview}>{preview}</span>
                       <span style={styles.stampAppearanceLabel}>{label}</span>
                       <span style={styles.stampAppearanceDesc}>{desc}</span>
                     </button>
@@ -1931,13 +1916,6 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
                   </div>
                 )}
 
-                {stampDisplayStyle === 'logo' && (
-                  <div style={{...styles.hint,marginTop:10,color:form.program_logo_url?'#0f766e':'#92400e'}}>
-                    {form.program_logo_url
-                      ? '✓ Uses your logo on the LoyaltyTree web card. Apple Wallet and Google Wallet keep a clean numeric stamp count because native Wallet fields cannot contain repeated custom images.'
-                      : 'Upload a Business / card logo in Branding. The LoyaltyTree web card can use it as the stamp; native Apple/Google Wallet fields stay numeric.'}
-                  </div>
-                )}
                 {!stampVisualSupported && stampDisplayStyle !== 'number' && (
                   <div style={{...styles.hint,marginTop:10,color:'#92400e'}}>Your final milestone is {rawStampGoal} stamps. Visual rows support up to 20, so customers will see numeric progress until the goal is 20 or less.</div>
                 )}

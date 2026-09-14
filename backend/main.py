@@ -1862,7 +1862,7 @@ class LoyaltyConfig(BaseModel):
     stamp_goal: int = Field(default=8, ge=1, le=500)
     # Optional Stamp progress appearance. Existing programs default to Number
     # Only, so this feature never changes a live card until the owner opts in.
-    stamp_display_style: Literal['number', 'icon', 'logo'] = 'number'
+    stamp_display_style: Literal['number', 'icon'] = 'number'
     stamp_icon: Literal['circle', 'star', 'heart', 'coffee', 'gift', 'leaf'] = 'star'
     reward_name: str = 'Free Service'
     stamp_rewards: Optional[List[StampRewardMilestone]] = None
@@ -3383,7 +3383,11 @@ def _hero_to_png(img: "Image.Image") -> bytes:
 
 def normalize_stamp_display_style(program: Optional[dict]) -> str:
     value = str((program or {}).get('stamp_display_style') or 'number').strip().lower()
-    return value if value in ('number', 'icon', 'logo') else 'number'
+    # Business Logo stamps were removed from the product. Treat legacy logo
+    # configurations as Icon Stamps so existing cards keep a visual style.
+    if value == 'logo':
+        return 'icon'
+    return value if value in ('number', 'icon') else 'number'
 
 
 def normalize_stamp_icon(program: Optional[dict]) -> str:
@@ -3521,7 +3525,7 @@ def _draw_stamp_progress_row(
     """Draw exact visual Stamp progress for goals up to 20."""
     from PIL import ImageDraw
 
-    style = display_style if display_style in ('icon', 'logo') else 'number'
+    style = display_style if display_style == 'icon' else 'number'
     try:
         goal = int(stamp_goal or 0)
         current = max(0, min(int(stamps or 0), goal))
@@ -3548,19 +3552,13 @@ def _draw_stamp_progress_row(
         width=1,
     )
 
-    logo = _load_remote_wallet_image(logo_url) if style == 'logo' else None
-    logo_tile = _circular_logo_tile(logo, size) if logo is not None else None
     accent = _hex_to_rgb(primary_color)
 
     for i in range(goal):
         x0 = start_x + i * (size + gap)
         x1 = x0 + size
         filled = i < current
-        if filled and style == 'logo' and logo_tile is not None:
-            draw.ellipse((x0, y0, x1, y1), fill=(255,255,255,245))
-            draw_layer.alpha_composite(logo_tile, (x0, y0))
-            draw.ellipse((x0, y0, x1, y1), outline=(255,255,255,220), width=max(1, size//18))
-        elif filled:
+        if filled:
             draw.ellipse((x0, y0, x1, y1), fill=(255,255,255,238), outline=(255,255,255,255), width=max(1, size//18))
             _draw_stamp_symbol(draw, icon, (x0, y0, x1, y1), fill=(*accent, 255))
         else:
@@ -3619,8 +3617,6 @@ def wallet_stamp_balance_and_module(program: Optional[dict], stamps: int, stamp_
     - Icon Stamps + goal <=10: icons replace the native STAMPS value itself.
     - Icon Stamps + goal 11..20: native value stays numeric and the icon rows
       appear below in the Wallet details/front auxiliary area.
-    - Business Logo remains numeric in native Wallet fields because Apple and
-      Google do not allow arbitrary per-stamp images inside those text fields.
     """
     try:
         current = int(stamps or 0)
@@ -3744,7 +3740,7 @@ def generate_personalized_hero_image_bytes(
         draw.text((HERO_SIZE[0]-40-(bbox[2]-bbox[0]), 30), label, font=font_label, fill=(255,255,255,185))
 
     stamp_visual_active = (
-        stamp_display_style in ('icon', 'logo')
+        stamp_display_style == 'icon'
         and (
             card_type == 'stamp'
             or (card_type == 'hybrid' and (hybrid_stamps_enabled_flag or hybrid_loyalty_type == 'stamp'))
@@ -4386,7 +4382,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
             if bool((program or {}).get('stamp_once_per_day')):
                 stamp_rule += ' · max 1/day'
             details.append(('stamp_earning', 'HOW TO EARN STAMPS', stamp_rule))
-        details.append(('active_until', 'ACTIVE UNTIL', 'Lifetime' if status == 'lifetime' else (expiry or 'Not activated')))
+        details.append(('valid_until', 'VALID UNTIL', 'Lifetime' if status == 'lifetime' else (expiry or 'Not activated')))
         if hybrid_tier_enabled(program):
             current_tier = get_vip_tier(customer, program or {})
             next_tier = get_next_vip_tier(customer, program or {})
@@ -4420,8 +4416,6 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         loyalty_points_balance = str(points_balance)
         details.append(('next_reward', 'NEXT REWARD', _points_next_reward_value()))
         details.append(('how_to_earn', 'HOW TO EARN', _points_earning_rule()))
-        if card_cycle_reset_on:
-            details.append(('reset_on', 'RESET ON', card_cycle_reset_on))
 
     elif card_type == 'multipass':
         loyalty_points_label = 'SESSIONS'
@@ -4464,8 +4458,6 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
             details.append(('next_tier_benefits', 'BENEFITS YOU UNLOCK', ' · '.join(next_benefits) if next_benefits else 'Tier benefits'))
             details.append(('next_tier_coupons', 'COUPONS YOU RECEIVE', ' · '.join(next_coupons) if next_coupons else 'No one-time coupons for this tier'))
         details.append(('how_to_earn', 'HOW TO EARN', _tier_earning_rule()))
-        if card_cycle_reset_on:
-            details.append(('reset_on', 'RESET ON', card_cycle_reset_on))
 
     elif card_type == 'membership':
         status = membership_effective_status(customer)
@@ -4473,7 +4465,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         services = (program.get('membership_services') if program else None) or []
         loyalty_points_label = 'STATUS'
         loyalty_points_balance = status.upper()
-        details.append(('active_until', 'ACTIVE UNTIL', 'Lifetime' if status == 'lifetime' else (expiry or 'Not activated')))
+        details.append(('valid_until', 'VALID UNTIL', 'Lifetime' if status == 'lifetime' else (expiry or 'Not activated')))
         if customer.get('membership_start_date'):
             details.append(('member_since', 'MEMBER SINCE', customer.get('membership_start_date')))
         if services:
@@ -4494,8 +4486,6 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         if bool((program or {}).get('stamp_once_per_day')):
             how_to_earn += ' · max 1/day'
         details.append(('how_to_earn', 'HOW TO EARN', how_to_earn))
-        if card_cycle_reset_on:
-            details.append(('reset_on', 'RESET ON', card_cycle_reset_on))
 
     current_redeemables = get_current_card_redeemables(business, customer, program)
     if current_redeemables:
@@ -5870,15 +5860,10 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         announcement_change_message = f"{ann_notification_header}: %@"
 
     card_cycle_reset_on = card_cycle_reset_on_date(customer, program)
-    cycle_auxiliary_fields = (
-        [{
-            'key': 'card_reset_on',
-            'label': 'RESET ON',
-            'value': card_cycle_reset_on,
-            'changeMessage': 'Card resets on %@',
-        }]
-        if card_cycle_reset_on else []
-    )
+    # Keep cycle/reset calculations in the backend, but do not expose RESET ON
+    # on the Wallet face. The customer-facing card should focus on rewards and
+    # membership validity rather than internal cycle mechanics.
+    cycle_auxiliary_fields = []
 
     current_points = int(points_balance or 0)
     if next_points_prize:
@@ -5985,10 +5970,11 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                 f"{unlock.get('current', 0)}/{unlock.get('threshold', 7)} Tier {unlock.get('unit', 'stamps')} · {unlock.get('remaining', 0)} to go"
             )
             apple_details.append(('benefits_unlock', 'MEMBERSHIP BENEFITS', unlock_value))
-        if membership_is_live:
-            apple_details.append(('membership_status', ((program.get('membership_name') if program else None) or 'MEMBERSHIP').upper(), '✓'))
-            if membership_benefits_unlocked(customer, program):
-                apple_details.append(('next_benefit', 'MEMBERSHIP BENEFIT', services[0] if services else 'Membership perks'))
+        expiry = customer.get('membership_expires_at')
+        apple_details.append(('membership_status', 'STATUS', str(status or 'inactive').upper()))
+        apple_details.append(('membership_valid_until', 'VALID UNTIL', 'Lifetime' if status == 'lifetime' else (expiry or 'Not activated')))
+        if membership_is_live and membership_benefits_unlocked(customer, program):
+            apple_details.append(('next_benefit', 'MEMBERSHIP BENEFIT', services[0] if services else 'Membership perks'))
     elif card_type == 'points':
         apple_details.append(('points_balance', 'POINTS BALANCE', f'{current_points:,} points'))
         apple_details.append(('next_reward_detail', 'NEXT REWARD', points_next_reward_value))
@@ -6026,7 +6012,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         status = membership_effective_status(customer)
         expiry = customer.get('membership_expires_at')
         services = (program.get('membership_services') if program else None) or []
-        apple_details.append(('active_until', 'ACTIVE UNTIL', 'Lifetime' if status == 'lifetime' else (expiry or 'Not activated')))
+        apple_details.append(('valid_until', 'VALID UNTIL', 'Lifetime' if status == 'lifetime' else (expiry or 'Not activated')))
         apple_details.append(('member_since', 'MEMBER SINCE', customer.get('membership_start_date') or '—'))
         apple_details.append(('membership_type', 'MEMBERSHIP TYPE', (program.get('membership_name') if program else None) or (program.get('card_name') if program else None) or design['card_label']))
         apple_details.append(('next_benefit', 'NEXT BENEFIT', services[0] if services else 'Rewards'))
@@ -6050,13 +6036,8 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
             available_text += f"\n• +{len(current_redeemables) - 8} more in LoyaltyTree"
         apple_details.append(('available_now', 'AVAILABLE NOW', available_text))
 
-    # RESET ON is already shown as an auxiliary field on Points, Stamp and
-    # Tier/VIP cards. PassKit requires field keys to be unique across the
-    # entire pass, so do not repeat the same `card_reset_on` key in backFields.
-    # Hybrid, Membership and Multipass do not use cycle_auxiliary_fields on the
-    # front, so keep RESET ON in Pass Details for those card types.
-    if card_cycle_reset_on and card_type not in ('points', 'stamp', 'vip'):
-        apple_details.append(('card_reset_on', 'RESET ON', card_cycle_reset_on))
+    # RESET ON is intentionally hidden from Apple Wallet, including Pass Details.
+    # The reset schedule still runs normally in backend logic.
 
     # Recent Activity: one backField per movement (stamp added, points
     # earned/redeemed, session used, VIP tier change, membership visit -
@@ -6202,7 +6183,9 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
 
     hybrid_has_points = card_type == 'hybrid' and hybrid_points_enabled(program)
     hybrid_has_stamps = card_type == 'hybrid' and hybrid_stamps_enabled(program)
-    hybrid_membership_live = card_type == 'hybrid' and membership_effective_status(customer).lower() in ('active', 'lifetime')
+    hybrid_membership_status = membership_effective_status(customer) if card_type == 'hybrid' else 'inactive'
+    hybrid_membership_live = card_type == 'hybrid' and str(hybrid_membership_status).lower() in ('active', 'lifetime')
+    hybrid_membership_expiry = customer.get('membership_expires_at') if card_type == 'hybrid' else None
     hybrid_reward_front = {
         'key': 'hybrid_loyalty',
         'label': 'POINTS' if loyalty_type == 'points' else 'STAMPS',
@@ -6210,22 +6193,24 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         'textAlignment': 'PKTextAlignmentCenter' if (not hybrid_has_points and apple_stamp_inline) else 'PKTextAlignmentLeft',
         'changeMessage': 'Points updated: %@' if loyalty_type == 'points' else 'Stamp progress: %@',
     }
-    hybrid_membership_front = (
-        {
-            'key': 'membership_status',
-            'label': 'MEMBERSHIP',
-            'value': '✓',
-            'textAlignment': 'PKTextAlignmentRight',
-            'changeMessage': 'Membership status updated.',
-        }
-        if hybrid_membership_live else
-        {
-            'key': 'membership_spacer',
-            'label': '\u00a0',
-            'value': '\u00a0',
-            'textAlignment': 'PKTextAlignmentRight',
-        }
-    )
+    hybrid_membership_front = {
+        'key': 'membership_status',
+        'label': 'STATUS',
+        'value': str(hybrid_membership_status or 'inactive').upper(),
+        'textAlignment': 'PKTextAlignmentRight',
+        'changeMessage': 'Membership status: %@',
+    }
+    hybrid_membership_valid_until_front = {
+        'key': 'membership_valid_until',
+        'label': 'VALID UNTIL',
+        'value': (
+            'Lifetime'
+            if str(hybrid_membership_status or '').lower() == 'lifetime'
+            else (hybrid_membership_expiry or 'Not activated')
+        ),
+        'textAlignment': 'PKTextAlignmentRight',
+        'changeMessage': 'Membership valid until: %@',
+    }
     hybrid_stamp_auxiliary_fields = []
     if hybrid_has_stamps:
         # When Points is also active, stamps are the supporting metric below
@@ -6236,8 +6221,10 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
             hybrid_stamp_auxiliary_fields = _apple_stamp_progress_fields('hybrid_stamp_progress')
 
     if hybrid_has_stamps and not hybrid_has_points and apple_stamp_inline:
+        # Keep the stamp icon row full-width, then show membership status and
+        # validity cleanly on the row below.
         hybrid_front_secondary_fields = [hybrid_reward_front]
-        hybrid_front_auxiliary_fields = ([hybrid_membership_front] if hybrid_membership_live else [])
+        hybrid_front_auxiliary_fields = [hybrid_membership_front, hybrid_membership_valid_until_front]
     else:
         hybrid_front_secondary_fields = [hybrid_reward_front, hybrid_membership_front]
         hybrid_front_auxiliary_fields = (
@@ -6250,6 +6237,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                 'textAlignment': 'PKTextAlignmentCenter',
             }] if order_ahead_action else [])
         )
+        hybrid_front_auxiliary_fields = [*hybrid_front_auxiliary_fields, hybrid_membership_valid_until_front]
 
     pass_dict = {
         'formatVersion': 1,
@@ -6356,28 +6344,29 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
             }
             if card_type == 'multipass' else
             {
-                # MEMBERSHIP: expiry/status info left, status right.
+                # MEMBERSHIP: explicit status + validity. Avoid icon-only
+                # status indicators so the pass is immediately understandable.
                 'headerFields': [
                     {'key': 'card_name', 'label': 'CARD', 'value': card_title[:32]}
                 ],
                 'primaryFields': [],
                 'secondaryFields': [
                     {
-                        'key': 'active_until',
-                        'label': 'ACTIVE UNTIL',
+                        'key': 'membership_status',
+                        'label': 'STATUS',
+                        'value': membership_effective_status(customer).upper(),
+                        'changeMessage': 'Membership status: %@',
+                    },
+                    {
+                        'key': 'membership_valid_until',
+                        'label': 'VALID UNTIL',
                         'value': (
                             'Lifetime'
                             if membership_effective_status(customer) == 'lifetime'
                             else (customer.get('membership_expires_at') or 'Not activated')
                         ),
-                        'changeMessage': 'Active until: %@',
-                    },
-                    {
-                        'key': 'membership_status',
-                        'label': 'MEMBERSHIP',
-                        'value': membership_effective_status(customer).upper(),
                         'textAlignment': 'PKTextAlignmentRight',
-                        'changeMessage': 'Membership status: %@',
+                        'changeMessage': 'Membership valid until: %@',
                     },
                 ],
                 'auxiliaryFields': [],
@@ -25231,7 +25220,7 @@ async def customer_wallet_page(customer_public_id: str):
     # remains visible for accessibility and for goals above 20.
     stamp_visual_html = ''
     visual_style = normalize_stamp_display_style(program)
-    if program_reward_uses_stamps(program) and visual_style in ('icon', 'logo'):
+    if program_reward_uses_stamps(program) and visual_style == 'icon':
         visual_goal = max(1, int(program.get('stamp_goal') or 8))
         visual_current = max(0, min(int(customer.get('stamp_count') or 0), visual_goal))
         if visual_goal <= 20:
@@ -25246,13 +25235,7 @@ async def customer_wallet_page(customer_public_id: str):
             selected_icon = icon_map.get(normalize_stamp_icon(program), '★')
             cells = []
             for i in range(visual_goal):
-                if visual_style == 'logo' and i < visual_current and logo_url:
-                    cells.append(
-                        '<span class="stamp-cell filled logo-stamp"><img src="'
-                        + html_lib.escape(str(logo_url))
-                        + '" alt=""></span>'
-                    )
-                elif i < visual_current:
+                if i < visual_current:
                     cells.append('<span class="stamp-cell filled">' + html_lib.escape(selected_icon) + '</span>')
                 else:
                     cells.append('<span class="stamp-cell empty"></span>')
@@ -25279,7 +25262,6 @@ async def customer_wallet_page(customer_public_id: str):
 .stamp-cell{{width:30px;height:30px;border-radius:999px;display:grid;place-items:center;border:1px solid rgba(255,255,255,.38);font-size:16px;line-height:1;overflow:hidden}}
 .stamp-cell.filled{{background:rgba(255,255,255,.94);color:{design["background"]};border-color:#fff;box-shadow:0 5px 14px rgba(0,0,0,.18)}}
 .stamp-cell.empty{{background:rgba(255,255,255,.07)}}
-.logo-stamp img{{display:block;width:100%;height:100%;object-fit:cover}}
 .right{{display:flex;flex-direction:column;justify-content:center;align-items:flex-end}}.qrbox{{width:min(100%,260px);padding:11px;background:#fff;border-radius:19px;box-shadow:0 14px 35px rgba(0,0,0,.28)}}.qrbox img{{display:block;width:100%;aspect-ratio:1/1}}.scan{{font-size:9px;letter-spacing:1.2px;font-weight:800;color:rgba(255,255,255,.62);margin:10px auto 0}}
 .details{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:14px}}.detail{{background:#111827;border:1px solid #202a3b;border-radius:13px;padding:12px 13px;min-width:0}}.detail span{{display:block;color:#75839a;font-size:9px;text-transform:uppercase;letter-spacing:.7px;margin-bottom:5px}}.detail strong{{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}}
 .available{{margin-top:14px;background:#111827;border:1px solid #263247;border-radius:16px;padding:15px}}.available-head{{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}}.available-head span{{font-size:9px;letter-spacing:1px;color:#8390a5;font-weight:800}}.available-head h2{{font-size:16px;margin:3px 0 0}}.available-head b{{display:grid;place-items:center;min-width:30px;height:30px;padding:0 8px;border-radius:999px;background:#172033;color:#fff;font-size:12px}}.available-list{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}}.available-item{{display:flex;gap:10px;align-items:flex-start;background:#0d1420;border:1px solid #202a3b;border-radius:12px;padding:11px}}.available-icon{{font-size:18px;line-height:1.1}}.available-item strong{{display:block;font-size:12px;color:#f8fafc}}.available-item span{{display:block;font-size:10px;color:#8fa0b8;margin-top:4px;line-height:1.35}}.available.empty p{{margin:0;color:#8390a5;font-size:12px}}
