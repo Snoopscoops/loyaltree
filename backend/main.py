@@ -114,6 +114,13 @@ ORDER_AHEAD_PAYMONGO_SECRET_KEY = os.getenv('ORDER_AHEAD_PAYMONGO_SECRET_KEY', '
 ORDER_AHEAD_PAYMONGO_WEBHOOK_SECRET = os.getenv('ORDER_AHEAD_PAYMONGO_WEBHOOK_SECRET', '')
 PAYMONGO_API_BASE = 'https://api.paymongo.com/v1'
 
+# StoreHub POS connector. StoreHub merchant credentials are entered by each
+# Pro business owner in the Owner Dashboard and encrypted before persistence.
+# Only this platform-level encryption secret belongs in Render. Never put it in
+# React or Supabase browser/client environment variables.
+STOREHUB_API_BASE = os.getenv('STOREHUB_API_BASE', 'https://api.storehubhq.com').rstrip('/')
+POS_CREDENTIALS_ENCRYPTION_KEY = os.getenv('POS_CREDENTIALS_ENCRYPTION_KEY', '').strip()
+
 # Cloudinary (vehicle photo uploads from the Inventory / AddVehicleModal).
 # Upload preset is SIGNED, so the browser can't upload straight to
 # Cloudinary on its own - it first calls
@@ -2033,6 +2040,20 @@ class POSStoreHubTestTransaction(BaseModel):
 class POSGoLiveRequest(BaseModel):
     provider: Literal['storehub'] = 'storehub'
 
+
+class POSStoreHubConnectRequest(BaseModel):
+    store_name: str = Field(min_length=1, max_length=160)
+    api_token: str = Field(min_length=6, max_length=2000)
+
+
+class POSStoreHubConnectionTestRequest(BaseModel):
+    provider: Literal['storehub'] = 'storehub'
+
+
+class POSStoreHubPreviewRequest(BaseModel):
+    days: int = Field(default=1, ge=1, le=14)
+    limit: int = Field(default=10, ge=1, le=50)
+
 class VIPSaleRequest(BaseModel):
     customer_public_id: str
     amount_spent: float = Field(gt=0)
@@ -2499,6 +2520,19 @@ def _get_pos_integration(business_id: int, provider: str = 'storehub') -> Option
         raise _pos_schema_error(exc)
 
 
+def _pos_public_integration(integration: Optional[dict]) -> Optional[dict]:
+    """Return integration metadata safe for the browser.
+
+    Provider credentials are never returned, even encrypted. The owner UI only
+    receives connection status plus non-secret configuration/outlet metadata.
+    """
+    if not integration:
+        return None
+    public = dict(integration)
+    public.pop('credentials_ciphertext', None)
+    return public
+
+
 def _pos_branch_rows(business_id: int, integration_id) -> list:
     try:
         rows = (
@@ -2578,6 +2612,267 @@ def _pos_attach_audit_context(transaction_id, branch_id, provider: str, external
         supabase.table('transaction_audit').update(patch).eq('transaction_id', transaction_id).execute()
     except Exception as exc:
         print(f'POS AUDIT enrichment warning: {exc}')
+
+def _pos_credentials_cipher():
+    """Create a Fernet cipher from the platform master secret.
+
+    The Render secret may be any long random string. SHA-256 normalizes it into
+    the 32-byte key format required by Fernet. The raw master secret is never
+    stored in Supabase.
+    """
+    if not POS_CREDENTIALS_ENCRYPTION_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                'POS credential encryption is not configured. Add one long random '
+                'POS_CREDENTIALS_ENCRYPTION_KEY to the backend environment.'
+            ),
+        )
+    try:
+        from cryptography.fernet import Fernet
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail='The backend cryptography package is required for POS credential encryption.',
+        )
+    key = base64.urlsafe_b64encode(
+        hashlib.sha256(POS_CREDENTIALS_ENCRYPTION_KEY.encode('utf-8')).digest()
+    )
+    return Fernet(key)
+
+
+def _encrypt_pos_credentials(payload: dict) -> str:
+    raw = json.dumps(payload, separators=(',', ':'), sort_keys=True).encode('utf-8')
+    return _pos_credentials_cipher().encrypt(raw).decode('utf-8')
+
+
+def _decrypt_pos_credentials(integration: dict) -> dict:
+    ciphertext = str((integration or {}).get('credentials_ciphertext') or '').strip()
+    if not ciphertext:
+        raise HTTPException(status_code=409, detail='StoreHub credentials are not connected yet.')
+    try:
+        raw = _pos_credentials_cipher().decrypt(ciphertext.encode('utf-8'))
+        payload = json.loads(raw.decode('utf-8'))
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                'Stored StoreHub credentials could not be decrypted. If the platform '
+                'encryption key was changed, reconnect the StoreHub account.'
+            ),
+        )
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=500, detail='Stored StoreHub credentials are invalid.')
+    return payload
+
+
+def _normalize_storehub_store_name(value: str) -> str:
+    raw = str(value or '').strip()
+    raw = re.sub(r'^https?://', '', raw, flags=re.IGNORECASE)
+    raw = raw.split('/')[0].strip()
+    raw = re.sub(r'\.storehubhq\.com$', '', raw, flags=re.IGNORECASE)
+    return raw.strip()
+
+
+def _storehub_basic_auth_header(store_name: str, api_token: str) -> str:
+    token = base64.b64encode(
+        f"{store_name}:{api_token}".encode('utf-8')
+    ).decode('ascii')
+    return f"Basic {token}"
+
+
+def _storehub_request_with_credentials(
+    store_name: str,
+    api_token: str,
+    path: str,
+    params: Optional[dict] = None,
+):
+    """Experimental read-only StoreHub request using explicit credentials.
+
+    Authentication/endpoint shape remains isolated here so it can be replaced
+    quickly when StoreHub supplies official partner documentation.
+    """
+    store_name = _normalize_storehub_store_name(store_name)
+    api_token = str(api_token or '').strip()
+    if not store_name or not api_token:
+        raise HTTPException(status_code=400, detail='StoreHub store name and API token are required.')
+
+    import httpx
+
+    safe_path = '/' + str(path or '').lstrip('/')
+    url = f"{STOREHUB_API_BASE}{safe_path}"
+    headers = {
+        'Accept': 'application/json',
+        'Authorization': _storehub_basic_auth_header(store_name, api_token),
+    }
+
+    try:
+        with httpx.Client(timeout=20) as client:
+            res = client.get(url, headers=headers, params=params or {})
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f'Could not reach StoreHub API: {exc}',
+        )
+
+    if res.status_code >= 400:
+        provider_text = (res.text or '').strip()
+        if len(provider_text) > 500:
+            provider_text = provider_text[:500] + '…'
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f'StoreHub API returned HTTP {res.status_code} for {safe_path}. '
+                f'{provider_text or "No response body."}'
+            ),
+        )
+
+    try:
+        return res.json()
+    except Exception:
+        raise HTTPException(
+            status_code=502,
+            detail=f'StoreHub API returned a non-JSON response for {safe_path}.',
+        )
+
+
+def _storehub_get(integration: dict, path: str, params: Optional[dict] = None):
+    credentials = _decrypt_pos_credentials(integration)
+    return _storehub_request_with_credentials(
+        credentials.get('store_name'),
+        credentials.get('api_token'),
+        path,
+        params=params,
+    )
+
+
+def _storehub_list(value) -> list:
+    """Normalize common API list envelopes without inventing provider fields."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        for key in ('data', 'items', 'results', 'stores', 'transactions'):
+            child = value.get(key)
+            if isinstance(child, list):
+                return child
+    return []
+
+
+def _storehub_store_summary(row: dict) -> dict:
+    if not isinstance(row, dict):
+        return {'raw': row}
+    return {
+        'id': row.get('id') or row.get('_id') or row.get('storeId') or row.get('store_id') or row.get('refId'),
+        'name': row.get('name') or row.get('storeName') or row.get('store_name') or row.get('outletName') or row.get('branchName') or row.get('title'),
+    }
+
+
+def _storehub_transaction_summary(row: dict) -> dict:
+    if not isinstance(row, dict):
+        return {'raw': row}
+    return {
+        'ref_id': row.get('refId') or row.get('id'),
+        'invoice_number': row.get('invoiceNumber'),
+        'store_id': row.get('storeId'),
+        'customer_ref_id': row.get('customerRefId'),
+        'transaction_type': row.get('transactionType'),
+        'transaction_time': row.get('transactionTime'),
+        'total': row.get('total'),
+        'is_cancelled': row.get('isCancelled'),
+    }
+
+
+def _pos_loyalty_contract(business: dict) -> dict:
+    """Normalized, non-secret view of the saved Loyalty Tree rules.
+
+    StoreHub consumes this contract; Loyalty Tree remains the source of truth.
+    The contract represents both reward engines when a Hybrid card has Points
+    and Stamp Rewards enabled together.
+    """
+    program = safe_get_loyalty_program(business.get('id')) or {}
+    card_type = str(program.get('card_type') or 'stamp').lower()
+    effective_type = effective_loyalty_type(program)
+    points_active = bool(program and program_reward_uses_points(program))
+    stamps_active = bool(program and program_reward_uses_stamps(program))
+
+    points_earning = {
+        'type': 'points',
+        'points_per_amount': program.get('points_per_amount'),
+        'amount_pesos': program.get('points_amount_pesos'),
+        'points_cap_limit': program.get('points_cap_limit'),
+    }
+    stamp_earning = {
+        'type': 'stamp',
+        'stamp_goal': program.get('stamp_goal'),
+        'stamp_once_per_day': bool(program.get('stamp_once_per_day')),
+        'stamp_reset_after_final': program.get('stamp_reset_after_final') is not False,
+    }
+    points_redemption = {
+        'type': 'points_prizes',
+        'prizes': program.get('points_prizes') or [],
+    }
+    stamp_redemption = {
+        'type': 'stamp_rewards',
+        'reward_name': program.get('reward_name'),
+        'stamp_rewards': program.get('stamp_rewards') or [],
+        'reward_expiry_days': program.get('reward_expiry_days'),
+    }
+
+    if points_active and stamps_active:
+        earning = {
+            'type': 'hybrid',
+            'engines': ['points', 'stamp'],
+            'points': points_earning,
+            'stamp': stamp_earning,
+        }
+        redemption = {
+            'type': 'hybrid',
+            'points': points_redemption,
+            'stamp': stamp_redemption,
+        }
+    elif points_active:
+        earning = points_earning
+        redemption = points_redemption
+    elif stamps_active:
+        earning = stamp_earning
+        redemption = stamp_redemption
+    else:
+        earning = {'type': effective_type}
+        redemption = {'type': 'program_specific'}
+
+    contract = {
+        'configured': bool(program),
+        'card_type': card_type,
+        'effective_loyalty_type': effective_type,
+        'source': 'loyaltytree',
+        'earning': earning,
+        'redemption': redemption,
+    }
+
+    if card_type in ('membership', 'hybrid'):
+        contract['membership'] = {
+            'name': program.get('membership_name'),
+            'duration_days': program.get('membership_duration_days'),
+            'benefits': program.get('membership_benefits') or [],
+            'benefits_unlock_enabled': bool(program.get('membership_benefits_unlock_enabled')),
+            'benefits_unlock_threshold': program.get('membership_benefits_unlock_threshold'),
+        }
+
+    if card_type in ('vip', 'hybrid'):
+        contract['tiers'] = {
+            'enabled': bool(program.get('hybrid_tier_enabled')) if card_type == 'hybrid' else True,
+            'progression_type': (
+                program.get('hybrid_tier_progression_type')
+                if card_type == 'hybrid'
+                else program.get('vip_progression_type') or ('stamps' if program.get('vip_stamps_enabled') else 'points')
+            ),
+            'tiers': program.get('vip_tiers') or [],
+        }
+
+    return contract
+
 
 def safe_get_cl_customer(public_id: str):
     if not supabase:
@@ -18562,7 +18857,15 @@ async def get_pos_integration_status(public_id: str, authorization: str = Header
     return {
         'feature': 'pos_integration',
         'plan': business.get('plan'),
-        'integration': integration,
+        'integration': _pos_public_integration(integration),
+        'storehub_connection': {
+            'credentials_saved': bool((integration or {}).get('credentials_ciphertext')),
+            'encryption_configured': bool(POS_CREDENTIALS_ENCRYPTION_KEY),
+            'store_name': (integration or {}).get('external_account_name'),
+            'base_url': STOREHUB_API_BASE,
+            'outlets': ((integration or {}).get('config') or {}).get('storehub_outlets') or [],
+        },
+        'loyalty_contract': _pos_loyalty_contract(business),
         'branch_mappings': mappings,
         'recent_transactions': recent,
         'providers': [
@@ -18621,7 +18924,7 @@ async def start_pos_integration(public_id: str, req: POSIntegrationCreate, autho
         else:
             res = supabase.table('pos_integrations').insert(payload).execute()
         integration = (res.data or [None])[0] or {**(existing or {}), **payload}
-        return {'integration': integration, 'message': 'StoreHub Test Mode is ready.'}
+        return {'integration': _pos_public_integration(integration), 'message': 'StoreHub Test Mode is ready.'}
     except Exception as exc:
         raise _pos_schema_error(exc)
 
@@ -18657,6 +18960,13 @@ async def save_pos_branch_mappings(public_id: str, req: POSBranchMappingsUpdate,
             external_id = f'test-{item.branch_public_id}'
         if external_id in seen_external:
             raise HTTPException(status_code=400, detail=f'StoreHub outlet is mapped more than once: {external_id}')
+        known_outlets = ((integration.get('config') or {}).get('storehub_outlets') or [])
+        known_ids = {str(row.get('id')) for row in known_outlets if isinstance(row, dict) and row.get('id') is not None}
+        if known_ids and external_id not in known_ids:
+            raise HTTPException(
+                status_code=400,
+                detail=f'StoreHub outlet ID is not part of the connected account: {external_id}',
+            )
         seen_external.add(external_id)
         prepared.append((branch, external_id, external_name))
 
@@ -18723,9 +19033,251 @@ async def update_pos_settings(public_id: str, req: POSSettingsUpdate, authorizat
     try:
         res = supabase.table('pos_integrations').update({'config': config}).eq('id', integration.get('id')).execute()
         updated = (res.data or [None])[0] or {**integration, 'config': config}
-        return {'integration': updated, 'message': 'POS settings saved.'}
+        return {'integration': _pos_public_integration(updated), 'message': 'POS settings saved.'}
     except Exception as exc:
         raise _pos_schema_error(exc)
+
+
+@app.post('/api/v1/business/{public_id}/pos/storehub/connect')
+async def connect_storehub_account(
+    public_id: str,
+    req: POSStoreHubConnectRequest,
+    authorization: str = Header(default=''),
+):
+    """Validate and securely save one business owner's StoreHub credentials.
+
+    The token is tested before persistence, encrypted at the application layer,
+    and never returned to the browser after this request.
+    """
+    business = _require_pos_pro_business(public_id, authorization)
+    store_name = _normalize_storehub_store_name(req.store_name)
+    api_token = req.api_token.strip()
+
+    # Fail before making the provider request if the platform cannot safely
+    # persist credentials.
+    _pos_credentials_cipher()
+
+    stores_payload = _storehub_request_with_credentials(
+        store_name,
+        api_token,
+        '/stores',
+    )
+    stores = [_storehub_store_summary(row) for row in _storehub_list(stores_payload)]
+    encrypted = _encrypt_pos_credentials({
+        'store_name': store_name,
+        'api_token': api_token,
+    })
+
+    now = datetime.utcnow().isoformat()
+    existing = _get_pos_integration(business.get('id'), 'storehub')
+    config = _merge_pos_config(existing or {}, {
+        'member_identification': 'qr',
+        'loyalty_source': 'existing_loyaltytree_program',
+        'earning_enabled': True,
+        # Keep real redemption off until StoreHub confirms its discount/tender write-back.
+        'redemption_enabled': False,
+        'simulator': True,
+        'real_api_tested': True,
+        'real_api_tested_at': now,
+        'storehub_outlets': stores[:200],
+        'setup_step': max(int(((existing or {}).get('config') or {}).get('setup_step') or 1), 2),
+    })
+    capabilities = {
+        **(((existing or {}).get('capabilities') or {}) if isinstance((existing or {}).get('capabilities'), dict) else {}),
+        'api_read': True,
+        'stores_read': True,
+        'transactions': True,
+        'redemption': False,
+        'simulator': True,
+        'real_api_tested': True,
+    }
+    payload = {
+        'business_id': business.get('id'),
+        'provider': 'storehub',
+        'status': 'connected',
+        'mode': 'test',
+        'external_account_name': store_name,
+        'credentials_ciphertext': encrypted,
+        'config': config,
+        'capabilities': capabilities,
+        'last_error': None,
+        'connected_at': (existing or {}).get('connected_at') or now,
+        'disconnected_at': None,
+        'last_sync_at': now,
+    }
+    try:
+        if existing:
+            res = supabase.table('pos_integrations').update(payload).eq('id', existing.get('id')).execute()
+        else:
+            res = supabase.table('pos_integrations').insert(payload).execute()
+        saved = (res.data or [None])[0] or {**(existing or {}), **payload}
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+
+    return {
+        'ok': True,
+        'provider': 'storehub',
+        'store_name': store_name,
+        'store_count': len(stores),
+        'stores': stores[:200],
+        'integration': _pos_public_integration(saved),
+        'loyalty_contract': _pos_loyalty_contract(business),
+        'message': 'StoreHub account connected securely. API token was encrypted and saved.',
+    }
+
+
+@app.post('/api/v1/business/{public_id}/pos/storehub/disconnect')
+async def disconnect_storehub_account(
+    public_id: str,
+    authorization: str = Header(default=''),
+):
+    business = _require_pos_pro_business(public_id, authorization)
+    integration = _get_pos_integration(business.get('id'), 'storehub')
+    if not integration:
+        return {'ok': True, 'message': 'StoreHub is already disconnected.'}
+    now = datetime.utcnow().isoformat()
+    config = _merge_pos_config(integration, {
+        'real_api_tested': False,
+        'storehub_outlets': [],
+    })
+    try:
+        res = supabase.table('pos_integrations').update({
+            'status': 'disconnected',
+            'credentials_ciphertext': None,
+            'external_account_name': None,
+            'config': config,
+            'last_error': None,
+            'disconnected_at': now,
+        }).eq('id', integration.get('id')).execute()
+        updated = (res.data or [None])[0] or {
+            **integration,
+            'status': 'disconnected',
+            'credentials_ciphertext': None,
+            'external_account_name': None,
+            'config': config,
+            'disconnected_at': now,
+        }
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    return {
+        'ok': True,
+        'integration': _pos_public_integration(updated),
+        'message': 'StoreHub credentials disconnected. Saved branch mappings were preserved.',
+    }
+
+
+@app.post('/api/v1/business/{public_id}/pos/storehub/connection-test')
+async def storehub_connection_test(
+    public_id: str,
+    req: POSStoreHubConnectionTestRequest,
+    authorization: str = Header(default=''),
+):
+    """Read-only first handshake with ANGKAN's real StoreHub API.
+
+    This verifies backend credentials by requesting StoreHub outlets/stores.
+    It never awards loyalty points and never returns the API token.
+    """
+    business = _require_pos_pro_business(public_id, authorization)
+    integration = _get_pos_integration(business.get('id'), req.provider)
+    if not integration:
+        raise HTTPException(status_code=409, detail='Set up StoreHub Test Mode first.')
+
+    stores_payload = _storehub_get(integration, '/stores')
+    stores = [_storehub_store_summary(row) for row in _storehub_list(stores_payload)]
+
+    now = datetime.utcnow().isoformat()
+    config = _merge_pos_config(integration, {
+        'real_api_tested': True,
+        'real_api_tested_at': now,
+        'storehub_store_name': integration.get('external_account_name'),
+        'storehub_outlets': stores[:200],
+        'simulator': True,  # Keep loyalty writes simulated until transaction matching is proven.
+    })
+    capabilities = integration.get('capabilities') if isinstance(integration.get('capabilities'), dict) else {}
+    capabilities = {
+        **capabilities,
+        'api_read': True,
+        'stores_read': True,
+        'real_api_tested': True,
+    }
+
+    try:
+        res = supabase.table('pos_integrations').update({
+            'status': 'connected',
+            'external_account_name': integration.get('external_account_name'),
+            'config': config,
+            'capabilities': capabilities,
+            'last_sync_at': now,
+            'last_error': None,
+        }).eq('id', integration.get('id')).execute()
+        updated = (res.data or [None])[0] or {
+            **integration,
+            'status': 'connected',
+            'external_account_name': integration.get('external_account_name'),
+            'config': config,
+            'capabilities': capabilities,
+            'last_sync_at': now,
+        }
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+
+    return {
+        'ok': True,
+        'provider': 'storehub',
+        'mode': 'read_only_test',
+        'store_name': integration.get('external_account_name'),
+        'stores': stores[:100],
+        'store_count': len(stores),
+        'integration': _pos_public_integration(updated),
+        'loyalty_contract': _pos_loyalty_contract(business),
+        'message': 'StoreHub API authentication succeeded. No loyalty transaction was created.',
+    }
+
+
+@app.post('/api/v1/business/{public_id}/pos/storehub/transactions-preview')
+async def storehub_transactions_preview(
+    public_id: str,
+    req: POSStoreHubPreviewRequest,
+    authorization: str = Header(default=''),
+):
+    """Read recent StoreHub sales without applying any LoyaltyTree rewards."""
+    business = _require_pos_pro_business(public_id, authorization)
+    integration = _get_pos_integration(business.get('id'), 'storehub')
+    if not integration:
+        raise HTTPException(status_code=409, detail='Set up StoreHub first.')
+    if not (integration.get('config') or {}).get('real_api_tested'):
+        raise HTTPException(status_code=409, detail='Test the StoreHub API connection first.')
+
+    end = datetime.utcnow()
+    start = end - timedelta(days=int(req.days))
+    payload = _storehub_get(
+        integration,
+        '/transactions',
+        params={
+            'startDate': start.strftime('%Y-%m-%d'),
+            'endDate': end.strftime('%Y-%m-%d'),
+        },
+    )
+    rows = _storehub_list(payload)
+    summaries = [_storehub_transaction_summary(row) for row in rows[: int(req.limit)]]
+
+    try:
+        supabase.table('pos_integrations').update({
+            'last_sync_at': datetime.utcnow().isoformat(),
+            'last_error': None,
+        }).eq('id', integration.get('id')).execute()
+    except Exception as exc:
+        print(f'STOREHUB preview sync timestamp warning: {exc}')
+
+    return {
+        'ok': True,
+        'provider': 'storehub',
+        'read_only': True,
+        'days': int(req.days),
+        'returned': len(summaries),
+        'transactions': summaries,
+        'message': 'Read-only StoreHub transaction preview. No LoyaltyTree balances were changed.',
+    }
 
 
 @app.post('/api/v1/business/{public_id}/pos/storehub/test-transaction')

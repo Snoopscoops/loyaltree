@@ -76,6 +76,13 @@ function POSIntegration({
   const [branchMappings, setBranchMappings] = useState({})
   const [testForm, setTestForm] = useState(EMPTY_TEST)
   const [testResult, setTestResult] = useState(null)
+  const [storeHubConnection, setStoreHubConnection] = useState(null)
+  const [storeHubCredentials, setStoreHubCredentials] = useState({ store_name: '', api_token: '' })
+  const [storeHubOutlets, setStoreHubOutlets] = useState([])
+  const [loyaltyContract, setLoyaltyContract] = useState(null)
+  const [showReconnect, setShowReconnect] = useState(false)
+  const [storeHubRealResult, setStoreHubRealResult] = useState(null)
+  const [storeHubTransactions, setStoreHubTransactions] = useState([])
 
   const activeProvider = useMemo(
     () => PROVIDERS.find(item => item.id === provider) || PROVIDERS[0],
@@ -83,7 +90,8 @@ function POSIntegration({
   )
 
   const integrationStatus = String(integration?.status || 'not_connected').toLowerCase()
-  const isConnected = ['connected', 'testing', 'live'].includes(integrationStatus)
+  const hasSavedStoreHubCredentials = Boolean(storeHubConnection?.credentials_saved || integration?.config?.real_api_tested)
+  const isConnected = ['connected', 'testing', 'live'].includes(integrationStatus) && (integrationStatus === 'live' || hasSavedStoreHubCredentials)
   const isLive = integrationStatus === 'live'
 
   const call = async (url, options = {}) => {
@@ -113,6 +121,12 @@ function POSIntegration({
 
       setApiAvailable(true)
       setIntegration(data.integration || null)
+      setStoreHubConnection(data.storehub_connection || null)
+      setStoreHubOutlets(data.storehub_connection?.outlets || data.integration?.config?.storehub_outlets || [])
+      setLoyaltyContract(data.loyalty_contract || null)
+      if (data.storehub_connection?.store_name) {
+        setStoreHubCredentials(current => ({ ...current, store_name: data.storehub_connection.store_name }))
+      }
 
       const mappings = {}
       ;(data.branch_mappings || []).forEach(row => {
@@ -127,7 +141,9 @@ function POSIntegration({
       if (data.integration?.provider) setProvider(data.integration.provider)
 
       const status = String(data.integration?.status || '').toLowerCase()
+      const credentialsSaved = Boolean(data.storehub_connection?.credentials_saved || data.integration?.config?.real_api_tested)
       if (status === 'live') setSetupStep(7)
+      else if (!credentialsSaved) setSetupStep(1)
       else if (status === 'testing') setSetupStep(6)
       else if (data.branch_mappings?.length) setSetupStep(3)
       else if (data.integration) setSetupStep(2)
@@ -143,33 +159,113 @@ function POSIntegration({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isPro, slug])
 
-  const startStoreHubSetup = async () => {
+  const connectStoreHub = async () => {
+    if (!slug) return
+    const storeName = storeHubCredentials.store_name.trim()
+    const apiToken = storeHubCredentials.api_token.trim()
+    if (!storeName || !apiToken) {
+      setError('Enter the StoreHub store name and API token.')
+      return
+    }
+    setSaving(true)
+    setError('')
+    setMessage('')
+    setStoreHubRealResult(null)
+    try {
+      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/storehub/connect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ store_name: storeName, api_token: apiToken }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not connect StoreHub.')
+      setIntegration(data.integration || null)
+      setStoreHubRealResult(data)
+      setStoreHubOutlets(data.stores || [])
+      setLoyaltyContract(data.loyalty_contract || null)
+      setStoreHubCredentials({ store_name: storeName, api_token: '' })
+      setShowReconnect(false)
+      setSetupStep(2)
+      setMessage(`StoreHub connected securely. ${data.store_count ?? 0} outlet(s) detected.`)
+      await loadPOS()
+    } catch (err) {
+      setError(err.message || 'Could not connect StoreHub.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const testSavedStoreHubConnection = async () => {
+    if (!slug) return
+    setSaving(true)
+    setError('')
+    setMessage('')
+    setStoreHubRealResult(null)
+    try {
+      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/storehub/connection-test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'storehub' }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'StoreHub API connection test failed.')
+      setStoreHubRealResult(data)
+      setIntegration(data.integration || integration)
+      setStoreHubOutlets(data.stores || [])
+      setLoyaltyContract(data.loyalty_contract || loyaltyContract)
+      setMessage(`StoreHub API connected. ${data.store_count ?? 0} outlet(s) detected.`)
+      await loadPOS()
+    } catch (err) {
+      setError(err.message || 'StoreHub API connection test failed.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const disconnectStoreHub = async () => {
+    if (!slug) return
+    if (!window.confirm('Disconnect StoreHub credentials? Saved branch mappings will be preserved.')) return
+    setSaving(true)
+    setError('')
+    setMessage('')
+    try {
+      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/storehub/disconnect`, {
+        method: 'POST',
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not disconnect StoreHub.')
+      setIntegration(data.integration || null)
+      setStoreHubOutlets([])
+      setStoreHubTransactions([])
+      setStoreHubRealResult(null)
+      setStoreHubCredentials({ store_name: '', api_token: '' })
+      setSetupStep(1)
+      setMessage('StoreHub disconnected. Branch mappings were preserved for reconnecting later.')
+      await loadPOS()
+    } catch (err) {
+      setError(err.message || 'Could not disconnect StoreHub.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const previewStoreHubTransactions = async () => {
     if (!slug) return
     setSaving(true)
     setError('')
     setMessage('')
     try {
-      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/integrations`, {
+      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/storehub/transactions-preview`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          provider: 'storehub',
-          mode: 'test',
-        }),
+        body: JSON.stringify({ days: 1, limit: 10 }),
       })
       const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.detail || 'Could not start StoreHub setup.')
-
-      setApiAvailable(true)
-      setIntegration(data.integration || data)
-      setProvider('storehub')
-      setSetupStep(2)
-      setMessage('StoreHub test setup started.')
+      if (!res.ok) throw new Error(data.detail || 'Could not read StoreHub transactions.')
+      setStoreHubTransactions(data.transactions || [])
+      setMessage(`Read ${data.returned ?? 0} recent StoreHub transaction(s). No loyalty balances changed.`)
     } catch (err) {
-      if (String(err.message || '').toLowerCase().includes('not found')) {
-        setApiAvailable(false)
-      }
-      setError(err.message || 'Could not start StoreHub setup.')
+      setError(err.message || 'Could not read StoreHub transactions.')
     } finally {
       setSaving(false)
     }
@@ -410,22 +506,145 @@ function POSIntegration({
             </div>
 
             {activeProvider.id === 'storehub' && !isConnected && (
-              <div style={s.actionRow}>
-                <button
-                  type="button"
-                  style={s.primaryButton}
-                  disabled={saving || !apiAvailable}
-                  onClick={startStoreHubSetup}
-                >
-                  {saving ? 'Starting…' : 'Set up StoreHub'}
-                </button>
-                <span style={s.smallMuted}>
-                  We start in Test Mode. Live StoreHub credentials can be connected
-                  after API access is available.
-                </span>
+              <div style={{marginTop:18,display:'grid',gap:12}}>
+                <div style={s.ruleBox}>
+                  <b>Connect your own StoreHub account</b>
+                  <div style={s.smallMuted}>
+                    The API token is sent only to the Loyalty Tree backend, encrypted, and never shown again.
+                  </div>
+                </div>
+                {!storeHubConnection?.encryption_configured && (
+                  <div style={s.infoBanner}>
+                    Platform setup required: add <code>POS_CREDENTIALS_ENCRYPTION_KEY</code> once to the Loyalty Tree backend environment.
+                  </div>
+                )}
+                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:10}}>
+                  <label style={{display:'grid',gap:6}}>
+                    <span style={s.smallMuted}>StoreHub store name</span>
+                    <input
+                      style={s.input}
+                      placeholder="e.g. angkan"
+                      autoComplete="off"
+                      value={storeHubCredentials.store_name}
+                      onChange={e => setStoreHubCredentials(current => ({ ...current, store_name: e.target.value }))}
+                    />
+                  </label>
+                  <label style={{display:'grid',gap:6}}>
+                    <span style={s.smallMuted}>StoreHub API token</span>
+                    <input
+                      style={s.input}
+                      type="password"
+                      placeholder="Paste API token"
+                      autoComplete="new-password"
+                      value={storeHubCredentials.api_token}
+                      onChange={e => setStoreHubCredentials(current => ({ ...current, api_token: e.target.value }))}
+                    />
+                  </label>
+                </div>
+                <div style={s.actionRow}>
+                  <button
+                    type="button"
+                    style={s.primaryButton}
+                    disabled={saving || !apiAvailable || !storeHubConnection?.encryption_configured}
+                    onClick={connectStoreHub}
+                  >
+                    {saving ? 'Testing…' : 'Test & connect StoreHub'}
+                  </button>
+                  <span style={s.smallMuted}>Credentials are saved only after StoreHub authentication succeeds.</span>
+                </div>
               </div>
             )}
           </section>
+
+          {isConnected && (
+            <section style={s.card}>
+              <div style={s.sectionHeader}>
+                <div>
+                  <div style={s.stepLabel}>STOREHUB ACCOUNT</div>
+                  <h3 style={s.sectionTitle}>Connected securely</h3>
+                </div>
+                <span style={s.connectedPill}>Connected</span>
+              </div>
+              <div style={s.ruleBox}>
+                <b>{integration?.external_account_name || storeHubConnection?.store_name || 'StoreHub'}</b>
+                <div style={s.smallMuted}>
+                  API token: •••••••••••• · Stored encrypted on Loyalty Tree's backend
+                </div>
+              </div>
+
+              {showReconnect && (
+                <div style={{marginTop:12,display:'grid',gap:10}}>
+                  <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:10}}>
+                    <input
+                      style={s.input}
+                      placeholder="StoreHub store name"
+                      value={storeHubCredentials.store_name}
+                      onChange={e => setStoreHubCredentials(current => ({ ...current, store_name: e.target.value }))}
+                    />
+                    <input
+                      style={s.input}
+                      type="password"
+                      placeholder="New API token"
+                      autoComplete="new-password"
+                      value={storeHubCredentials.api_token}
+                      onChange={e => setStoreHubCredentials(current => ({ ...current, api_token: e.target.value }))}
+                    />
+                  </div>
+                  <button type="button" style={s.primaryButton} disabled={saving} onClick={connectStoreHub}>
+                    {saving ? 'Testing…' : 'Test & replace credentials'}
+                  </button>
+                </div>
+              )}
+
+              <div style={s.actionRow}>
+                <button type="button" style={s.secondaryButton} disabled={saving} onClick={testSavedStoreHubConnection}>
+                  Test saved connection
+                </button>
+                <button type="button" style={s.secondaryButton} disabled={saving} onClick={previewStoreHubTransactions}>
+                  Preview recent transactions
+                </button>
+                <button type="button" style={s.secondaryButton} disabled={saving} onClick={() => setShowReconnect(value => !value)}>
+                  {showReconnect ? 'Cancel reconnect' : 'Reconnect / change token'}
+                </button>
+                <button type="button" style={s.secondaryButton} disabled={saving} onClick={disconnectStoreHub}>
+                  Disconnect
+                </button>
+              </div>
+
+              {!!storeHubOutlets.length && (
+                <div style={{marginTop:14}}>
+                  <b style={{fontSize:13}}>Detected StoreHub outlets</b>
+                  <div style={{marginTop:8,display:'grid',gap:6}}>
+                    {storeHubOutlets.slice(0,20).map((store, index) => (
+                      <div key={store.id || index} style={s.resultItem}>
+                        <b>{store.name || store.id || `Outlet ${index + 1}`}</b>
+                        {store.id && <div style={s.smallMuted}>ID: {store.id}</div>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {!!storeHubTransactions.length && (
+                <div style={{marginTop:14}}>
+                  <b style={{fontSize:13}}>Recent StoreHub transactions · read-only</b>
+                  <div style={{marginTop:8,display:'grid',gap:7}}>
+                    {storeHubTransactions.map((tx, index) => (
+                      <div key={tx.ref_id || index} style={s.resultItem}>
+                        <div style={{display:'flex',justifyContent:'space-between',gap:10,flexWrap:'wrap'}}>
+                          <b>{tx.invoice_number || tx.ref_id || `Transaction ${index + 1}`}</b>
+                          <b>{tx.total === null || tx.total === undefined ? '—' : `₱${Number(tx.total).toFixed(2)}`}</b>
+                        </div>
+                        <div style={s.smallMuted}>
+                          Store: {tx.store_id || '—'} · Customer ref: {tx.customer_ref_id || 'none'} · {tx.transaction_time || ''}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
 
           {isConnected && (
             <>
@@ -446,22 +665,39 @@ function POSIntegration({
                         </div>
                         <div style={s.arrow}>↔</div>
                         <div style={s.mappingFields}>
-                          <input
-                            style={s.input}
-                            placeholder="StoreHub outlet ID"
-                            value={branchMappings[branch.public_id]?.external_branch_id || ''}
-                            onChange={e =>
-                              updateMapping(branch.public_id, 'external_branch_id', e.target.value)
-                            }
-                          />
-                          <input
-                            style={s.input}
-                            placeholder="StoreHub outlet name"
-                            value={branchMappings[branch.public_id]?.external_branch_name || ''}
-                            onChange={e =>
-                              updateMapping(branch.public_id, 'external_branch_name', e.target.value)
-                            }
-                          />
+                          {storeHubOutlets.length ? (
+                            <select
+                              style={s.input}
+                              value={branchMappings[branch.public_id]?.external_branch_id || ''}
+                              onChange={e => {
+                                const selected = storeHubOutlets.find(item => String(item.id) === e.target.value)
+                                updateMapping(branch.public_id, 'external_branch_id', e.target.value)
+                                updateMapping(branch.public_id, 'external_branch_name', selected?.name || '')
+                              }}
+                            >
+                              <option value="">Choose StoreHub outlet…</option>
+                              {storeHubOutlets.map((outlet, index) => (
+                                <option key={outlet.id || index} value={String(outlet.id || '')}>
+                                  {outlet.name || outlet.id || `Outlet ${index + 1}`}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <>
+                              <input
+                                style={s.input}
+                                placeholder="StoreHub outlet ID"
+                                value={branchMappings[branch.public_id]?.external_branch_id || ''}
+                                onChange={e => updateMapping(branch.public_id, 'external_branch_id', e.target.value)}
+                              />
+                              <input
+                                style={s.input}
+                                placeholder="StoreHub outlet name"
+                                value={branchMappings[branch.public_id]?.external_branch_name || ''}
+                                onChange={e => updateMapping(branch.public_id, 'external_branch_name', e.target.value)}
+                              />
+                            </>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -520,10 +756,32 @@ function POSIntegration({
                   <div style={s.ruleBox}>
                     <b>No duplicate loyalty configuration.</b>
                     <div style={s.smallMuted}>
-                      StoreHub supplies the purchase transaction. Loyalty Tree keeps
-                      calculating points, stamps, tiers and rewards using the business's
-                      existing card configuration.
+                      StoreHub supplies the purchase transaction. Loyalty Tree remains the
+                      source of truth for earning, rewards and redemption rules.
                     </div>
+                    {loyaltyContract?.configured && (
+                      <div style={{marginTop:8,fontSize:12}}>
+                        Saved card: <b>{loyaltyContract.card_type}</b> · Engine: <b>{loyaltyContract.earning?.type || loyaltyContract.effective_loyalty_type}</b>
+                        {loyaltyContract.earning?.type === 'points' && (
+                          <div style={s.smallMuted}>
+                            {loyaltyContract.earning.points_per_amount ?? '—'} point(s) per ₱{loyaltyContract.earning.amount_pesos ?? '—'}
+                          </div>
+                        )}
+                        {loyaltyContract.earning?.type === 'stamp' && (
+                          <div style={s.smallMuted}>
+                            Stamp goal: {loyaltyContract.earning.stamp_goal ?? '—'}
+                          </div>
+                        )}
+                        {loyaltyContract.earning?.type === 'hybrid' && (
+                          <div style={s.smallMuted}>
+                            Points: {loyaltyContract.earning.points?.points_per_amount ?? '—'} per ₱{loyaltyContract.earning.points?.amount_pesos ?? '—'} · Stamp goal: {loyaltyContract.earning.stamp?.stamp_goal ?? '—'}
+                          </div>
+                        )}
+                        <div style={s.smallMuted}>
+                          Redemption rules stay in Loyalty Tree and are exposed to the POS connector from the saved card configuration.
+                        </div>
+                      </div>
+                    )}
                   </div>
                   <ChoiceRow
                     checked
@@ -553,11 +811,12 @@ function POSIntegration({
                 <div style={s.stepLabel}>5 · REDEMPTION</div>
                 <h3 style={s.sectionTitle}>Redemption through POS</h3>
                 <p style={s.muted}>
-                  We can launch StoreHub earning first, then enable POS redemption once
-                  StoreHub's live API permissions and discount workflow are confirmed.
+                  Loyalty Tree already remains the source of truth for redemption rules.
+                  Automatic StoreHub redemption will be enabled after StoreHub confirms the
+                  discount/tender write-back needed to apply an approved redemption to checkout.
                 </p>
                 <ChoiceRow
-                  checked={integration?.redemption_enabled === true}
+                  checked={integration?.config?.redemption_enabled === true}
                   disabled
                   label="StoreHub redemption"
                   description="Prepared in the integration model, but keep disabled during the first earning-only test."
