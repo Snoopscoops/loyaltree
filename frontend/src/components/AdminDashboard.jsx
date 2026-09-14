@@ -43,6 +43,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const [showOrderAheadDesign, setShowOrderAheadDesign] = useState(false)
   const [orderAheadDesignSaving, setOrderAheadDesignSaving] = useState(false)
   const [message, setMessage] = useState('')
+  const [passwordResetSending, setPasswordResetSending] = useState('')
   const [confirmDelete, setConfirmDelete] = useState(null)
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [createForm, setCreateForm] = useState({ name: '', email: '', password: '', phone: '', business_type: 'car_lending', address: '', branch_count: 1 })
@@ -229,6 +230,25 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
       setMessage(err.message)
     }
     setTimeout(() => setMessage(''), 3000)
+  }
+
+  const sendBusinessPasswordReset = async (business) => {
+    if (!business?.public_id || !business?.email) return
+    const ok = window.confirm(`Send a password reset link to ${business.email}?\n\nThe link will only be sent to the registered business email.`)
+    if (!ok) return
+    setPasswordResetSending(business.public_id)
+    try {
+      const res = await authedFetch(`/api/v1/admin/businesses/${business.public_id}/password-reset-email`, { method: 'POST' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not send password reset email')
+      setMessage(data.message || `Password reset email sent to ${business.email}`)
+      if (selected?.public_id === business.public_id) await openDetail(business)
+    } catch (err) {
+      setMessage(err.message || 'Could not send password reset email')
+    } finally {
+      setPasswordResetSending('')
+      setTimeout(() => setMessage(''), 4500)
+    }
   }
 
   const approveApplication = (public_id) => updateBusiness(public_id, { status: 'ACTIVE' })
@@ -987,6 +1007,33 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                     }}
                     style={styles.addressInput}
                   />
+                </div>
+                <div style={{...styles.detailRow, alignItems:'flex-start'}}>
+                  <span style={styles.detailLabel}>Password security</span>
+                  <div style={{width:'100%',maxWidth:260,textAlign:'right'}}>
+                    <button
+                      type="button"
+                      onClick={() => sendBusinessPasswordReset(detail)}
+                      disabled={passwordResetSending === detail.public_id || !detail.email}
+                      style={{...styles.viewBtn,width:'100%',padding:'9px 10px',fontWeight:800,background:'#f0fdfa',color:'#0f766e',border:'1px solid #99f6e4'}}
+                    >
+                      {passwordResetSending === detail.public_id ? 'Sending…' : '🔐 Send Password Reset Email'}
+                    </button>
+                    <div style={{fontSize:10.5,color:'#64748b',lineHeight:1.45,marginTop:6}}>
+                      Sent only to <strong>{detail.email || 'the registered business email'}</strong>. Super Admin never sees or sets the owner’s password.
+                    </div>
+                    {detail.password_reset_requested_at && (
+                      <div style={{fontSize:10.5,color:'#64748b',marginTop:5}}>
+                        Last reset email: {new Date(detail.password_reset_requested_at).toLocaleString()}
+                        {detail.password_reset_requested_by ? ` · ${detail.password_reset_requested_by === 'super_admin' ? 'Super Admin' : 'Owner'}` : ''}
+                      </div>
+                    )}
+                    {detail.password_changed_at && (
+                      <div style={{fontSize:10.5,color:'#047857',marginTop:4}}>
+                        Password last changed: {new Date(detail.password_changed_at).toLocaleString()}
+                      </div>
+                    )}
+                  </div>
                 </div>
                 <div style={styles.detailRow}>
                   <span style={styles.detailLabel}>Phone</span>

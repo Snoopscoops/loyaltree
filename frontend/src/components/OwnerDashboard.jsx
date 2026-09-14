@@ -466,9 +466,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   // Once a card has been published, Setup Guide becomes a revisitable guide and
   // the owner can return to the dashboard at any time.
   const cardSetUp = !!program?.google_wallet_class_id
-  const onboardingSeenInBrowser = typeof window !== 'undefined' && !!onboardingKey && window.localStorage.getItem(onboardingKey) === '1'
-  const onboardingPreviouslyCompleted = business?.onboarding_completed === true || onboardingSeenInBrowser
-  const canExitSetupGuide = cardSetUp || onboardingPreviouslyCompleted
+  const canExitSetupGuide = cardSetUp
   const cashierSetUp = staff.some(member => String(member?.role || '').toLowerCase() === 'cashier')
 
   useEffect(()=>{

@@ -141,6 +141,13 @@ SUBSCRIPTION_REMINDER_FROM = os.getenv('SUBSCRIPTION_REMINDER_FROM', 'billing@lo
 FRONTEND_URL = os.getenv('FRONTEND_URL', '')
 SUBSCRIPTION_REMINDER_RESEND_DAYS = 3  # don't re-email more often than this while still expiring_soon/expired
 
+# Business-owner password recovery. Reset links are one-time, stored only as
+# SHA-256 token hashes in the database, and expire quickly. The frontend URL
+# can be overridden independently from subscription emails when needed.
+PASSWORD_RESET_TTL_MINUTES = max(10, min(120, int(os.getenv('PASSWORD_RESET_TTL_MINUTES', '30') or '30')))
+PASSWORD_RESET_RESEND_COOLDOWN_SECONDS = max(30, min(900, int(os.getenv('PASSWORD_RESET_RESEND_COOLDOWN_SECONDS', '60') or '60')))
+PASSWORD_RESET_FRONTEND_URL = (os.getenv('PASSWORD_RESET_FRONTEND_URL', '') or FRONTEND_URL or 'https://theloyaltytree.com').rstrip('/')
+
 # Subscription tiers available to businesses. This is the single source of
 # truth the admin dashboard AND the API's feature gates read from - nothing
 # else needs to change to introduce a new plan or adjust a limit.
@@ -763,6 +770,81 @@ def send_email(to_email: str, subject: str, html_body: str) -> bool:
         print(f"EMAIL send error: {e}")
         return False
 
+def _password_reset_token_hash(token: str) -> str:
+    return hashlib.sha256(str(token or '').encode('utf-8')).hexdigest()
+
+def _password_reset_parse_ts(value) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        raw = str(value).replace('Z', '+00:00')
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+    except Exception:
+        return None
+
+def _password_reset_audit(business: dict, event_type: str, actor: str):
+    """Best-effort audit trail; password reset must not fail because logging failed."""
+    if not supabase or not business:
+        return
+    try:
+        supabase.table('password_reset_audit').insert({
+            'business_id': business.get('id'),
+            'business_public_id': business.get('public_id'),
+            'event_type': event_type,
+            'actor': actor,
+            'target_email': (business.get('email') or '').strip().lower(),
+            'created_at': datetime.utcnow().isoformat(),
+        }).execute()
+    except Exception as exc:
+        print(f"PASSWORD RESET audit warning: {exc}")
+
+def _password_reset_email(business: dict, reset_link: str) -> tuple:
+    business_name = html_lib.escape(business.get('name') or 'there')
+    safe_link = html_lib.escape(reset_link, quote=True)
+    subject = 'Reset your LoyaltyTree password'
+    body = (
+        f"<p>Hi {business_name},</p>"
+        "<p>We received a request to reset the password for your LoyaltyTree business account.</p>"
+        f"<p><a href='{safe_link}' style='display:inline-block;background:#0d9488;color:#ffffff;text-decoration:none;font-weight:700;padding:12px 18px;border-radius:10px;'>Reset password</a></p>"
+        f"<p>This link expires in {PASSWORD_RESET_TTL_MINUTES} minutes and can be used only once.</p>"
+        "<p>If you did not request this, you can ignore this email. Your current password will continue to work.</p>"
+        "<p style='color:#64748b;font-size:12px;'>LoyaltyTree will never ask you to send your password by email or chat.</p>"
+    )
+    return subject, body
+
+def _issue_business_password_reset(business: dict, actor: str, respect_cooldown: bool = True) -> bool:
+    """Create one fresh one-time token, invalidate any previous unused link, then email it."""
+    if not business or not business.get('id') or not (business.get('email') or '').strip():
+        return False
+
+    now = datetime.utcnow()
+    if respect_cooldown:
+        previous = _password_reset_parse_ts(business.get('password_reset_requested_at'))
+        if previous and (now - previous).total_seconds() < PASSWORD_RESET_RESEND_COOLDOWN_SECONDS:
+            # Public forgot-password must stay enumeration-safe and quiet during cooldown.
+            return True
+
+    raw_token = secrets.token_urlsafe(48)
+    token_hash = _password_reset_token_hash(raw_token)
+    expires_at = now + timedelta(minutes=PASSWORD_RESET_TTL_MINUTES)
+    update = {
+        'password_reset_token_hash': token_hash,
+        'password_reset_expires_at': expires_at.isoformat(),
+        'password_reset_requested_at': now.isoformat(),
+        'password_reset_requested_by': actor,
+        'updated_at': now.isoformat(),
+    }
+    supabase.table('businesses').update(update).eq('id', business.get('id')).execute()
+
+    reset_link = f"{PASSWORD_RESET_FRONTEND_URL}/login?reset={quote(raw_token, safe='')}"
+    subject, body = _password_reset_email(business, reset_link)
+    sent = send_email((business.get('email') or '').strip().lower(), subject, body)
+    _password_reset_audit(business, 'reset_email_sent' if sent else 'reset_email_failed', actor)
+    return sent
+
 def build_subscription_reminder_email(business: dict, days_left: Optional[int], price: float) -> tuple:
     """Returns (subject, html_body) for a subscription reminder, worded
     differently depending on whether access has already lapsed."""
@@ -1334,6 +1416,13 @@ class SetupKitAdminUpdate(BaseModel):
 class LoginRequest(BaseModel):
     email: str
     password: str
+
+class PasswordResetRequest(BaseModel):
+    email: str
+
+class PasswordResetConfirm(BaseModel):
+    token: str = Field(min_length=20, max_length=512)
+    new_password: str = Field(min_length=8, max_length=128)
 
 class StaffInvite(BaseModel):
     name: str
@@ -3165,6 +3254,9 @@ def business_summary(biz: dict) -> dict:
         "last_paid_at": biz.get("last_paid_at"),
         "subscription_expires_at": subscription_expires_at,
         "subscription_status": subscription_status,
+        "password_reset_requested_at": biz.get("password_reset_requested_at"),
+        "password_reset_requested_by": biz.get("password_reset_requested_by"),
+        "password_changed_at": biz.get("password_changed_at"),
         "customer_count": customer_count,
         "staff_count": staff_count,
         "card_type": card_type,
@@ -7743,6 +7835,8 @@ def _api_limit_for_path(path: str, method: str):
     p = path.lower()
     if p in ("/api/v1/login", "/api/v1/auth/login"):
         return "owner-login", API_LOGIN_PER_MINUTE
+    if p in ("/api/v1/auth/password-reset/request", "/api/v1/auth/password-reset/confirm"):
+        return "password-reset", 6
     if p.endswith("/staff/verify-pin"):
         return "cashier-login", API_CASHIER_LOGIN_PER_MINUTE
     if any(token in p for token in (
@@ -7850,6 +7944,74 @@ async def check_env(request: Request, call_next):
     return await call_next(request)
 
 # AUTH ROUTES
+
+@app.post('/api/v1/auth/password-reset/request')
+async def request_business_password_reset(req: PasswordResetRequest):
+    """Enumeration-safe owner self-service password reset request."""
+    generic = {
+        'success': True,
+        'message': 'If that email belongs to a LoyaltyTree business account, a password reset link has been sent.'
+    }
+    email = (req.email or '').strip().lower()
+    if not email or '@' not in email or not supabase:
+        return generic
+    try:
+        rows = supabase.table('businesses').select('*').ilike('email', email).limit(5).execute().data or []
+        business = next((row for row in rows if str(row.get('email') or '').strip().lower() == email), None)
+        if business:
+            try:
+                _issue_business_password_reset(business, 'owner_self_service', respect_cooldown=True)
+            except Exception as exc:
+                # Never reveal whether an account exists or whether the mail provider failed.
+                print(f"PASSWORD RESET request warning: {exc}")
+        return generic
+    except Exception as exc:
+        print(f"PASSWORD RESET lookup warning: {exc}")
+        return generic
+
+@app.post('/api/v1/auth/password-reset/confirm')
+async def confirm_business_password_reset(req: PasswordResetConfirm):
+    if not supabase:
+        raise HTTPException(status_code=503, detail='Password reset is temporarily unavailable')
+    token_hash = _password_reset_token_hash(req.token)
+    try:
+        rows = supabase.table('businesses').select('*').eq('password_reset_token_hash', token_hash).limit(1).execute().data or []
+        business = rows[0] if rows else None
+    except Exception:
+        business = None
+    if not business:
+        raise HTTPException(status_code=400, detail='This reset link is invalid or has already been used.')
+
+    expires = _password_reset_parse_ts(business.get('password_reset_expires_at'))
+    if not expires or expires < datetime.utcnow():
+        try:
+            supabase.table('businesses').update({
+                'password_reset_token_hash': None,
+                'password_reset_expires_at': None,
+                'updated_at': datetime.utcnow().isoformat(),
+            }).eq('id', business.get('id')).execute()
+        except Exception:
+            pass
+        _password_reset_audit(business, 'reset_link_expired', 'owner_self_service')
+        raise HTTPException(status_code=400, detail='This reset link has expired. Please request a new one.')
+
+    new_password = req.new_password.strip()
+    if len(new_password) < 8:
+        raise HTTPException(status_code=400, detail='Password must be at least 8 characters.')
+    now = datetime.utcnow().isoformat()
+    try:
+        supabase.table('businesses').update({
+            'password_hash': hash_password(new_password),
+            'password_reset_token_hash': None,
+            'password_reset_expires_at': None,
+            'password_changed_at': now,
+            'updated_at': now,
+        }).eq('id', business.get('id')).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f'Could not update password: {friendly_db_error(exc)}')
+
+    _password_reset_audit(business, 'password_changed', 'owner_self_service')
+    return {'success': True, 'message': 'Password updated. You can now sign in with your new password.'}
 
 @app.post("/api/v1/login")
 @app.post("/api/v1/auth/login")
@@ -11758,6 +11920,27 @@ async def admin_set_nfc_trial(public_id: str, update: AdminNfcTrialUpdate, backg
         'google_smart_tap_configured': bool(GOOGLE_SMART_TAP_ENABLED and GOOGLE_SMART_TAP_REDEMPTION_ISSUER_ID),
         'apple_nfc_configured': bool(APPLE_NFC_ENABLED and APPLE_NFC_ENCRYPTION_PUBLIC_KEY),
         'message': 'NFC membership trial enabled' if update.enabled else 'NFC membership trial disabled',
+    }
+
+@app.post("/api/v1/admin/businesses/{public_id}/password-reset-email")
+async def admin_send_business_password_reset(public_id: str, _: bool = Depends(require_admin)):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    email = (business.get('email') or '').strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="This business has no registered login email")
+    try:
+        sent = _issue_business_password_reset(business, 'super_admin', respect_cooldown=False)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Could not prepare password reset: {friendly_db_error(exc)}")
+    if not sent:
+        raise HTTPException(status_code=502, detail="Reset email could not be sent. Check the Resend configuration and verified sender domain.")
+    return {
+        "success": True,
+        "message": "Password reset email sent to the registered business email.",
+        "email": email,
+        "expires_in_minutes": PASSWORD_RESET_TTL_MINUTES,
     }
 
 @app.patch("/api/v1/admin/businesses/{public_id}")

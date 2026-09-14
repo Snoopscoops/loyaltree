@@ -6,6 +6,11 @@ function LoginPage({ API_BASE, onLogin }) {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const sessionExpired = searchParams.get('expired') === '1'
+  const resetToken = searchParams.get('reset') || ''
+  const [forgotMode, setForgotMode] = useState(false)
+  const [resetEmail, setResetEmail] = useState('')
+  const [resetNotice, setResetNotice] = useState('')
+  const [resetForm, setResetForm] = useState({ password: '', confirmPassword: '' })
   const [form, setForm] = useState({
     email: '',
     password: '',
@@ -50,6 +55,55 @@ function LoginPage({ API_BASE, onLogin }) {
     setLoading(false)
   }
 
+  const requestPasswordReset = async (e) => {
+    e.preventDefault()
+    setLoading(true)
+    setError('')
+    setResetNotice('')
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/auth/password-reset/request`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: resetEmail.trim() }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not send reset email')
+      setResetNotice(data.message || 'If that email belongs to a LoyaltyTree business account, a reset link has been sent.')
+    } catch (err) {
+      setError(err.message || 'Network error')
+    }
+    setLoading(false)
+  }
+
+  const confirmPasswordReset = async (e) => {
+    e.preventDefault()
+    setError('')
+    setResetNotice('')
+    if (resetForm.password.length < 8) {
+      setError('Password must be at least 8 characters.')
+      return
+    }
+    if (resetForm.password !== resetForm.confirmPassword) {
+      setError('Passwords do not match.')
+      return
+    }
+    setLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/auth/password-reset/confirm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: resetToken, new_password: resetForm.password }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not reset password')
+      setResetNotice(data.message || 'Password updated. You can now sign in.')
+      setResetForm({ password: '', confirmPassword: '' })
+    } catch (err) {
+      setError(err.message || 'Network error')
+    }
+    setLoading(false)
+  }
+
   return (
     <div style={styles.container}>
       <div style={styles.card}>
@@ -59,36 +113,95 @@ function LoginPage({ API_BASE, onLogin }) {
           <p style={styles.tagline}>Where businesses grow with customers</p>
         </div>
 
-        {sessionExpired && !error && !pendingNotice && (
+        {!resetToken && !forgotMode && sessionExpired && !error && !pendingNotice && (
           <div style={styles.sessionNotice}>Your session expired. Please sign in again.</div>
         )}
         {error && <div style={styles.error}>{error}</div>}
-        {pendingNotice && <div style={styles.pendingNotice}>⏳ {pendingNotice}</div>}
+        {pendingNotice && !resetToken && !forgotMode && <div style={styles.pendingNotice}>⏳ {pendingNotice}</div>}
+        {resetNotice && <div style={styles.sessionNotice}>{resetNotice}</div>}
 
-        <form onSubmit={handleLogin} style={styles.form}>
-          <input
-            style={styles.input}
-            type="email"
-            placeholder="Email"
-            value={form.email}
-            onChange={e => setForm({...form, email: e.target.value})}
-            required
-          />
-          <input
-            style={styles.input}
-            type="password"
-            placeholder="Password"
-            value={form.password}
-            onChange={e => setForm({...form, password: e.target.value})}
-            required
-          />
-          <button type="submit" style={styles.btn} disabled={loading}>
-            {loading ? 'Growing...' : '🌱 Sign In'}
-          </button>
-          <p style={styles.switch}>
-            New here? <Link to="/signup" style={styles.link}>Plant your tree</Link>
-          </p>
-        </form>
+        {resetToken ? (
+          <form onSubmit={confirmPasswordReset} style={styles.form}>
+            <div style={styles.resetHeading}>Create a new password</div>
+            <p style={styles.resetCopy}>Use at least 8 characters. This reset link can only be used once.</p>
+            <input
+              style={styles.input}
+              type="password"
+              placeholder="New password"
+              value={resetForm.password}
+              onChange={e => setResetForm({...resetForm, password: e.target.value})}
+              minLength={8}
+              autoComplete="new-password"
+              required
+            />
+            <input
+              style={styles.input}
+              type="password"
+              placeholder="Confirm new password"
+              value={resetForm.confirmPassword}
+              onChange={e => setResetForm({...resetForm, confirmPassword: e.target.value})}
+              minLength={8}
+              autoComplete="new-password"
+              required
+            />
+            <button type="submit" style={styles.btn} disabled={loading}>
+              {loading ? 'Updating...' : 'Reset Password'}
+            </button>
+            <button type="button" style={styles.textButton} onClick={() => navigate('/login', { replace: true })}>
+              Back to sign in
+            </button>
+          </form>
+        ) : forgotMode ? (
+          <form onSubmit={requestPasswordReset} style={styles.form}>
+            <div style={styles.resetHeading}>Forgot your password?</div>
+            <p style={styles.resetCopy}>Enter the registered business email. We’ll send a secure reset link if the account exists.</p>
+            <input
+              style={styles.input}
+              type="email"
+              placeholder="Registered business email"
+              value={resetEmail}
+              onChange={e => setResetEmail(e.target.value)}
+              autoComplete="email"
+              required
+            />
+            <button type="submit" style={styles.btn} disabled={loading}>
+              {loading ? 'Sending...' : 'Send Reset Link'}
+            </button>
+            <button type="button" style={styles.textButton} onClick={() => { setForgotMode(false); setError(''); setResetNotice('') }}>
+              Back to sign in
+            </button>
+          </form>
+        ) : (
+          <form onSubmit={handleLogin} style={styles.form}>
+            <input
+              style={styles.input}
+              type="email"
+              placeholder="Email"
+              value={form.email}
+              onChange={e => setForm({...form, email: e.target.value})}
+              autoComplete="email"
+              required
+            />
+            <input
+              style={styles.input}
+              type="password"
+              placeholder="Password"
+              value={form.password}
+              onChange={e => setForm({...form, password: e.target.value})}
+              autoComplete="current-password"
+              required
+            />
+            <button type="button" style={styles.forgotButton} onClick={() => { setForgotMode(true); setResetEmail(form.email); setError(''); setPendingNotice(''); setResetNotice('') }}>
+              Forgot password?
+            </button>
+            <button type="submit" style={styles.btn} disabled={loading}>
+              {loading ? 'Growing...' : '🌱 Sign In'}
+            </button>
+            <p style={styles.switch}>
+              New here? <Link to="/signup" style={styles.link}>Plant your tree</Link>
+            </p>
+          </form>
+        )}
       </div>
     </div>
   )
@@ -190,6 +303,38 @@ const styles = {
     fontWeight: 600,
     cursor: 'pointer',
     marginTop: 4,
+  },
+  forgotButton: {
+    alignSelf: 'flex-end',
+    background: 'none',
+    border: 'none',
+    color: '#0d9488',
+    fontSize: 13,
+    fontWeight: 650,
+    cursor: 'pointer',
+    padding: '0 2px 2px',
+  },
+  textButton: {
+    background: 'none',
+    border: 'none',
+    color: '#64748b',
+    fontSize: 13,
+    fontWeight: 600,
+    cursor: 'pointer',
+    padding: '6px 0 0',
+  },
+  resetHeading: {
+    fontSize: 20,
+    fontWeight: 750,
+    color: '#0f172a',
+    textAlign: 'center',
+  },
+  resetCopy: {
+    margin: '-2px 0 4px',
+    color: '#64748b',
+    fontSize: 13,
+    lineHeight: 1.5,
+    textAlign: 'center',
   },
   switch: {
     textAlign: 'center',
