@@ -1849,9 +1849,13 @@ class MembershipBenefitConfig(BaseModel):
 class LoyaltyConfig(BaseModel):
     card_type: Literal['stamp', 'points', 'multipass', 'membership', 'vip', 'hybrid'] = 'stamp'
     # Hybrid keeps one Wallet card/customer identity while combining Membership
-    # with one redeemable rewards engine (Points OR Stamps). A separate optional
-    # Tier engine can run in parallel and may itself progress by points or stamps.
+    # with one or both redeemable reward engines. `hybrid_loyalty_type` stays as a
+    # backward-compatible primary/native Wallet metric for older clients; the two
+    # explicit flags are the source of truth for whether Points and Stamp Rewards
+    # are actually enabled.
     hybrid_loyalty_type: Literal['points', 'stamp'] = 'points'
+    hybrid_points_enabled: Optional[bool] = None
+    hybrid_stamps_enabled: Optional[bool] = None
     hybrid_tier_enabled: bool = False
     hybrid_tier_progression_type: Literal['points', 'stamps'] = 'stamps'
     tier_stamp_once_per_day: bool = False
@@ -2674,20 +2678,49 @@ def safe_get_loyalty_program(business_id: int):
         return None
 
 def hybrid_loyalty_type(program: Optional[dict]) -> str:
-    """Selected redeemable-rewards engine for a Hybrid card."""
+    """Backward-compatible primary/native Wallet metric for a Hybrid card."""
     value = str((program or {}).get('hybrid_loyalty_type') or 'points').lower()
     return value if value in ('points', 'stamp') else 'points'
 
 
-def effective_loyalty_type(program: Optional[dict]) -> str:
-    """Return the *redeemable rewards* engine used by a program.
+def hybrid_points_enabled(program: Optional[dict]) -> bool:
+    """Whether the independent redeemable Points engine is enabled on Hybrid."""
+    if str((program or {}).get('card_type') or '').lower() != 'hybrid':
+        return False
+    raw = (program or {}).get('hybrid_points_enabled')
+    if raw is not None:
+        return bool(raw)
+    # Legacy Hybrid rows predate the explicit flags and used one mutually
+    # exclusive hybrid_loyalty_type. Preserve their exact behavior after deploy.
+    return hybrid_loyalty_type(program) == 'points'
 
-    Hybrid may also run a separate Tier engine; this helper deliberately ignores
-    that Tier engine so points redemptions and stamp milestones never consume
-    cumulative Tier progress.
+
+def hybrid_stamps_enabled(program: Optional[dict]) -> bool:
+    """Whether the independent redeemable Stamp Rewards engine is enabled on Hybrid."""
+    if str((program or {}).get('card_type') or '').lower() != 'hybrid':
+        return False
+    raw = (program or {}).get('hybrid_stamps_enabled')
+    if raw is not None:
+        return bool(raw)
+    return hybrid_loyalty_type(program) == 'stamp'
+
+
+def effective_loyalty_type(program: Optional[dict]) -> str:
+    """Return one primary reward metric for legacy/native single-metric surfaces.
+
+    A Hybrid card can now run BOTH Points and Stamp Rewards. New feature gates
+    must use program_reward_uses_points()/program_reward_uses_stamps(); this
+    helper intentionally returns Points when both are enabled because Google and
+    some legacy views expose only one native loyalty-balance slot.
     """
     card_type = str((program or {}).get('card_type') or 'stamp').lower()
-    return hybrid_loyalty_type(program) if card_type == 'hybrid' else card_type
+    if card_type != 'hybrid':
+        return card_type
+    if hybrid_points_enabled(program):
+        return 'points'
+    if hybrid_stamps_enabled(program):
+        return 'stamp'
+    return hybrid_loyalty_type(program)
 
 
 def program_has_membership(program: Optional[dict]) -> bool:
@@ -2764,11 +2797,13 @@ def vip_progress_value(customer: Optional[dict], program: Optional[dict]) -> int
 
 
 def program_reward_uses_stamps(program: Optional[dict]) -> bool:
-    return effective_loyalty_type(program) == 'stamp'
+    card_type = str((program or {}).get('card_type') or '').lower()
+    return card_type == 'stamp' or (card_type == 'hybrid' and hybrid_stamps_enabled(program))
 
 
 def program_reward_uses_points(program: Optional[dict]) -> bool:
-    return effective_loyalty_type(program) == 'points'
+    card_type = str((program or {}).get('card_type') or '').lower()
+    return card_type == 'points' or (card_type == 'hybrid' and hybrid_points_enabled(program))
 
 
 def program_uses_stamps(program: Optional[dict]) -> bool:
@@ -2896,7 +2931,12 @@ def apply_card_cycle_expiration_if_needed(customer: dict, business: Optional[dic
     # Reset each independent engine instead of treating a Composite/Hybrid
     # card as one mutually-exclusive balance. This is what makes Tier Stamps +
     # Reward Points and Tier Points + Reward Stamps safe on the same card.
-    if loyalty_type == 'stamp':
+    if card_type == 'hybrid':
+        if hybrid_stamps_enabled(program):
+            update_data.update({'stamp_count': 0, 'reward_unlocked': False})
+        if hybrid_points_enabled(program):
+            update_data['points_balance'] = 0
+    elif loyalty_type == 'stamp':
         update_data.update({'stamp_count': 0, 'reward_unlocked': False})
     elif loyalty_type == 'points':
         update_data['points_balance'] = 0
@@ -3563,6 +3603,8 @@ def generate_personalized_hero_image_bytes(
     description: Optional[str] = None,
     card_type: str = 'stamp',
     hybrid_loyalty_type: str = 'points',
+    hybrid_points_enabled_flag: bool = False,
+    hybrid_stamps_enabled_flag: bool = False,
     points_balance: int = 0,
     sessions_remaining: int = 0,
     sessions_total: int = 0,
@@ -3636,7 +3678,7 @@ def generate_personalized_hero_image_bytes(
         stamp_display_style in ('icon', 'logo')
         and (
             card_type == 'stamp'
-            or (card_type == 'hybrid' and hybrid_loyalty_type == 'stamp')
+            or (card_type == 'hybrid' and (hybrid_stamps_enabled_flag or hybrid_loyalty_type == 'stamp'))
         )
     )
     if stamp_visual_active:
@@ -3679,11 +3721,12 @@ def generate_personalized_hero_image_bytes(
 
     if card_type == 'hybrid':
         reward_line = f'Membership · {membership_status.upper() if membership_status else "INACTIVE"}'
-        progress_line = (
-            f'{points_balance} points'
-            if hybrid_loyalty_type == 'points' else
-            f'{stamps} of {stamp_goal} stamps'
-        )
+        if hybrid_points_enabled_flag and hybrid_stamps_enabled_flag:
+            progress_line = f'{points_balance} points · {stamps}/{stamp_goal} stamps'
+        elif hybrid_points_enabled_flag or hybrid_loyalty_type == 'points':
+            progress_line = f'{points_balance} points'
+        else:
+            progress_line = f'{stamps} of {stamp_goal} stamps'
     elif card_type == 'points':
         reward_line = f'{points_balance} points'
         progress_line = 'Redeem prizes in-store'
@@ -4122,7 +4165,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     )
 
     points_prizes = []
-    if loyalty_type == 'points':
+    if program_reward_uses_points(program):
         for prize in ((program or {}).get('points_prizes') or []):
             if not isinstance(prize, dict):
                 continue
@@ -4143,7 +4186,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         )
 
     stamp_rewards = []
-    if loyalty_type == 'stamp':
+    if program_reward_uses_stamps(program):
         for reward in ((program or {}).get('stamp_rewards') or []):
             if not isinstance(reward, dict):
                 continue
@@ -4243,19 +4286,29 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         status = membership_effective_status(customer)
         expiry = customer.get('membership_expires_at')
         services = (program.get('membership_services') if program else None) or []
-        if loyalty_type == 'points':
+        has_points = hybrid_points_enabled(program)
+        has_stamps = hybrid_stamps_enabled(program)
+        if has_points:
             loyalty_points_label = 'POINTS'
             loyalty_points_balance = str(points_balance)
-            next_reward_value = _points_next_reward_value()
         else:
             loyalty_points_label = 'STAMPS'
             loyalty_points_balance = f'{stamps}/{full_stamp_goal}'
-            next_reward_value = _stamp_next_reward_value()
         secondary_points = {
             'label': 'STATUS',
             'balance': {'string': status.upper()},
         }
-        details.append(('next_reward', 'NEXT REWARD', next_reward_value))
+        if has_points:
+            details.append(('points_balance', 'REWARD POINTS', f'{points_balance:,}'))
+            details.append(('points_next_reward', 'NEXT POINTS REWARD', _points_next_reward_value()))
+            details.append(('points_earning', 'HOW TO EARN POINTS', _points_earning_rule()))
+        if has_stamps:
+            details.append(('stamp_progress', 'REWARD STAMPS', f'{stamps}/{full_stamp_goal}'))
+            details.append(('stamp_next_reward', 'NEXT STAMP REWARD', _stamp_next_reward_value()))
+            stamp_rule = '1 stamp per qualifying visit'
+            if bool((program or {}).get('stamp_once_per_day')):
+                stamp_rule += ' · max 1/day'
+            details.append(('stamp_earning', 'HOW TO EARN STAMPS', stamp_rule))
         details.append(('active_until', 'ACTIVE UNTIL', 'Lifetime' if status == 'lifetime' else (expiry or 'Not activated')))
         if hybrid_tier_enabled(program):
             current_tier = get_vip_tier(customer, program or {})
@@ -4430,7 +4483,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     # When the business uploads a custom hero photo, keep that photo clean and
     # inherit it from the class instead.
     stamp_visual_requested = (
-        loyalty_type == 'stamp'
+        program_reward_uses_stamps(program)
         and stamp_display_style in ('icon', 'logo')
         and int(full_stamp_goal or 0) <= 20
     )
@@ -4447,7 +4500,9 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
             else design['background']
         )
         color_key = primary_color.lstrip('#')
-        if loyalty_type == 'points':
+        if stamp_visual_requested:
+            progress_key = f'{points_balance}-{stamps}' if program_reward_uses_points(program) else stamps
+        elif loyalty_type == 'points':
             progress_key = points_balance
         elif card_type == 'multipass':
             progress_key = sessions_remaining
@@ -5592,7 +5647,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     # builder: the similarly named values in build_loyalty_object() belong
     # to the Google Wallet builder and are not visible in this function.
     points_prizes = []
-    if loyalty_type == 'points':
+    if program_reward_uses_points(program):
         for prize in ((program or {}).get('points_prizes') or []):
             if not isinstance(prize, dict):
                 continue
@@ -5614,7 +5669,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         )
 
     stamp_rewards = []
-    if loyalty_type == 'stamp':
+    if program_reward_uses_stamps(program):
         for reward in ((program or {}).get('stamp_rewards') or []):
             if not isinstance(reward, dict):
                 continue
@@ -5762,10 +5817,12 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         status = membership_effective_status(customer)
         membership_is_live = str(status or '').lower() in ('active', 'lifetime')
         services = (program.get('membership_services') if program else None) or []
-        if loyalty_type == 'points':
+        if hybrid_points_enabled(program):
             apple_details.append(('points_balance', 'REWARD POINTS', f'{current_points:,}'))
-        else:
+            apple_details.append(('points_next_reward', 'NEXT POINTS REWARD', points_next_reward_value))
+        if hybrid_stamps_enabled(program):
             apple_details.append(('stamp_progress', 'REWARD STAMPS', f'{current_stamps}/{full_stamp_goal}'))
+            apple_details.append(('stamp_next_reward', 'NEXT STAMP REWARD', stamp_next_reward_value))
         if hybrid_tier_enabled(program):
             tier_progress = tier_progress_value(customer, program)
             tier_unit = 'stamps' if tier_stamps_enabled(program) else 'points'
@@ -6250,6 +6307,8 @@ def generate_apple_strip_bytes(customer: dict, business: dict, program: dict, wi
         (program or {}).get('description'),
         card_type=card_type,
         hybrid_loyalty_type=hybrid_loyalty_type(program),
+        hybrid_points_enabled_flag=hybrid_points_enabled(program),
+        hybrid_stamps_enabled_flag=hybrid_stamps_enabled(program),
         points_balance=int(customer.get('points_balance') or 0),
         sessions_remaining=int(customer.get('multipass_sessions_remaining') or 0),
         sessions_total=int(customer.get('multipass_total_sessions') or (program or {}).get('multipass_session_count') or 0),
@@ -7925,16 +7984,22 @@ def get_recent_activity(business_id: int, customer_id: int, card_type: str, limi
     # Hybrid merges reward activity, membership activity, and (when enabled)
     # the independent Tier engine into one chronological history.
     if card_type == 'hybrid':
-        loyalty_entries = get_recent_activity(
-            business_id, customer_id, effective_loyalty_type(program), limit=limit, program=program
-        )
+        reward_entries = []
+        if hybrid_points_enabled(program):
+            reward_entries += get_recent_activity(
+                business_id, customer_id, 'points', limit=limit, program=program
+            )
+        if hybrid_stamps_enabled(program):
+            reward_entries += get_recent_activity(
+                business_id, customer_id, 'stamp', limit=limit, program=program
+            )
         membership_entries = get_recent_activity(
             business_id, customer_id, 'membership', limit=limit, program=program
         )
         tier_entries = get_recent_activity(
             business_id, customer_id, 'vip', limit=limit, program=program
         ) if hybrid_tier_enabled(program) else []
-        combined = loyalty_entries + membership_entries + tier_entries
+        combined = reward_entries + membership_entries + tier_entries
         combined.sort(key=lambda item: str(item[0] or ''), reverse=True)
         return combined[:limit]
 
@@ -9615,7 +9680,7 @@ async def admin_get_business(public_id: str, _: bool = Depends(require_admin)):
         summary["redemptions_30d"] = redemptions_res.count or 0
     except Exception:
         summary["redemptions_30d"] = 0
-    if effective_loyalty_type(program) == 'points':
+    if program_reward_uses_points(program):
         try:
             since = (datetime.utcnow() - timedelta(days=30)).isoformat()
             pe_res = supabase.table("points_events").select("points_earned").eq("business_id", business.get('id')).gte("created_at", since).execute()
@@ -13486,7 +13551,7 @@ async def get_customers(public_id: str):
             c.setdefault('last_stamp_at', None)
 
     # Points cards (including Hybrid + Points) have points activity, not stamps.
-    if program and effective_loyalty_type(program) == 'points':
+    if program and program_reward_uses_points(program):
         try:
             point_events = (supabase.table('points_events').select('customer_id,created_at')
                             .eq('business_id', business.get('id')).execute().data or [])
@@ -14581,6 +14646,8 @@ async def get_loyalty_config(public_id: str, response: Response):
         return {
             "card_type": "stamp",
             "hybrid_loyalty_type": "points",
+            "hybrid_points_enabled": True,
+            "hybrid_stamps_enabled": False,
             "hybrid_tier_enabled": False,
             "hybrid_tier_progression_type": "stamps",
             "tier_stamp_once_per_day": False,
@@ -14637,6 +14704,8 @@ async def get_loyalty_config(public_id: str, response: Response):
         }
     return {
         **program,
+        "hybrid_points_enabled": hybrid_points_enabled(program) if program.get('card_type') == 'hybrid' else False,
+        "hybrid_stamps_enabled": hybrid_stamps_enabled(program) if program.get('card_type') == 'hybrid' else False,
         "vip_progression_type": vip_progression_type(program),
         "hybrid_tier_progression_type": hybrid_tier_progression_type(program),
         "is_configured": True,
@@ -14680,6 +14749,8 @@ async def get_cashier_program(public_id: str, response: Response):
     return {
         **program,
         "card_type": card_type,
+        "hybrid_points_enabled": hybrid_points_enabled(program) if card_type == 'hybrid' else False,
+        "hybrid_stamps_enabled": hybrid_stamps_enabled(program) if card_type == 'hybrid' else False,
         "vip_progression_type": vip_progression_type(program) if card_type == 'vip' else 'points',
         "hybrid_tier_progression_type": hybrid_tier_progression_type(program) if card_type == 'hybrid' else 'stamps',
         "tier_progression_type": tier_progression_type(program) if program_has_tier(program) else None,
@@ -14700,10 +14771,33 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
             detail="Hybrid Card is available on the Growth and Pro plans. Upgrade to Growth to create or edit a Hybrid Card.",
         )
 
+    hybrid_points = False
+    hybrid_stamps = False
+    hybrid_primary = config.hybrid_loyalty_type
+    if config.card_type == 'hybrid':
+        hybrid_points = (
+            bool(config.hybrid_points_enabled)
+            if config.hybrid_points_enabled is not None
+            else config.hybrid_loyalty_type == 'points'
+        )
+        hybrid_stamps = (
+            bool(config.hybrid_stamps_enabled)
+            if config.hybrid_stamps_enabled is not None
+            else config.hybrid_loyalty_type == 'stamp'
+        )
+        if not hybrid_points and not hybrid_stamps:
+            raise HTTPException(status_code=400, detail="Enable Points, Stamp Rewards, or both for a Hybrid Card")
+        # Keep the legacy/native primary deterministic. When both are enabled,
+        # Points occupies the one native loyalty-balance slot while Stamps are
+        # shown as an additional Wallet detail/progress surface.
+        hybrid_primary = 'points' if hybrid_points else 'stamp'
+
     data = {
         'business_id': business.get('id'),
         'card_type': config.card_type,
-        'hybrid_loyalty_type': config.hybrid_loyalty_type,
+        'hybrid_loyalty_type': hybrid_primary,
+        'hybrid_points_enabled': hybrid_points if config.card_type == 'hybrid' else False,
+        'hybrid_stamps_enabled': hybrid_stamps if config.card_type == 'hybrid' else False,
         'hybrid_tier_enabled': bool(config.hybrid_tier_enabled) if config.card_type == 'hybrid' else False,
         'hybrid_tier_progression_type': config.hybrid_tier_progression_type if config.card_type == 'hybrid' else 'stamps',
         'tier_stamp_once_per_day': bool(config.tier_stamp_once_per_day),
@@ -14729,7 +14823,7 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
 
     if (
         config.card_type == 'stamp'
-        or (config.card_type == 'hybrid' and config.hybrid_loyalty_type == 'stamp')
+        or (config.card_type == 'hybrid' and hybrid_stamps)
     ):
         milestones = []
         seen = set()
@@ -14763,7 +14857,7 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
         data['card_name'] = config.card_name
     if config.description is not None:
         data['description'] = config.description
-    if config.card_type == 'points' or (config.card_type == 'hybrid' and config.hybrid_loyalty_type == 'points'):
+    if config.card_type == 'points' or (config.card_type == 'hybrid' and hybrid_points):
         data['points_per_amount'] = config.points_per_amount
         data['points_amount_pesos'] = config.points_amount_pesos
         data['points_cap_limit'] = config.points_cap_limit
@@ -17187,7 +17281,7 @@ def get_current_card_redeemables(business: dict, customer: dict, program: Option
 
     # Stamp rewards are milestone claims. Tier-by-Stamps deliberately does not
     # use this branch because VIP stamps are cumulative progression, not rewards.
-    if loyalty_type == 'stamp' and card_type != 'vip':
+    if program_reward_uses_stamps(program) and card_type != 'vip':
         for reward in get_available_stamp_rewards(customer, program):
             required = int(reward.get('stamps') or 0)
             add(
@@ -17199,7 +17293,7 @@ def get_current_card_redeemables(business: dict, customer: dict, program: Option
 
     # Points prizes are choices the member can currently afford. Listing all
     # affordable prizes is more useful than only showing the next target.
-    if loyalty_type == 'points':
+    if program_reward_uses_points(program):
         balance = int(customer.get('points_balance') or 0)
         affordable = []
         for prize in (program.get('points_prizes') or []):
@@ -18142,8 +18236,8 @@ async def add_points_sale(public_id: str, req: PointsSaleRequest, background_tas
     if previous_response is not None:
         return previous_response
     program = safe_get_loyalty_program(business.get('id'))
-    if not program or effective_loyalty_type(program) != 'points':
-        raise HTTPException(status_code=400, detail="This business is not on a points card - use /stamp instead")
+    if not program or not program_reward_uses_points(program):
+        raise HTTPException(status_code=400, detail="Points rewards are not enabled for this card")
 
     sale_staff_id = None
     sale_branch_id = None
@@ -18212,7 +18306,7 @@ async def add_points_sale(public_id: str, req: PointsSaleRequest, background_tas
         delta=points_earned,
         balance_before=old_balance,
         metadata={
-            'card_type':'points',
+            'card_type': (program or {}).get('card_type') or 'points',
             'amount_spent':float(req.amount_spent),
             'raw_points_earned':raw_points_earned,
             'points_cap_limit':points_cap_limit,
@@ -18579,13 +18673,29 @@ async def storehub_test_transaction(
             if not pos_row:
                 raise _pos_schema_error(exc)
 
-    idempotency_key = f'pos:storehub:{integration.get("id")}:{external_tx}'[:240]
+    idempotency_key = f'pos:storehub:{integration.get("id")}:{external_tx}'[:220]
     program = safe_get_loyalty_program(business.get('id')) or {}
     loyalty_type = effective_loyalty_type(program)
+    points_active = program_reward_uses_points(program)
+    stamps_active = program_reward_uses_stamps(program)
 
     try:
-        if loyalty_type == 'points':
-            loyalty_result = await add_points_sale(
+        if not points_active and not stamps_active:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    'StoreHub V1 simulator currently supports Points, Stamps, and Hybrid cards with at least one reward program enabled. '
+                    f'This business currently uses {program.get("card_type") or loyalty_type}.'
+                ),
+            )
+
+        points_result = None
+        stamp_result = None
+        # A Hybrid sale can now feed BOTH reward engines from one POS transaction.
+        # Distinct idempotency keys let a retry safely complete whichever side did
+        # not finish the first time without double-crediting the other side.
+        if points_active:
+            points_result = await add_points_sale(
                 public_id,
                 PointsSaleRequest(
                     customer_public_id=req.customer_public_id,
@@ -18594,38 +18704,67 @@ async def storehub_test_transaction(
                 ),
                 background_tasks,
                 authorization='',
-                x_idempotency_key=idempotency_key,
-            )
-        elif loyalty_type == 'stamp':
-            loyalty_result = await add_stamp(
-                public_id,
-                StampRequest(
-                    customer_public_id=req.customer_public_id,
-                    as_owner=True,
-                    stamp_kind='reward',
-                ),
-                background_tasks,
-                authorization='',
-                x_idempotency_key=idempotency_key,
-            )
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f'StoreHub V1 simulator currently supports Points, Stamps, and Hybrid cards whose reward engine is Points or Stamps. '
-                    f'This business currently uses {program.get("card_type") or loyalty_type}.'
-                ),
+                x_idempotency_key=(f'{idempotency_key}:points' if stamps_active else idempotency_key),
             )
 
-        audit_ref = loyalty_result.get('transaction_id') if isinstance(loyalty_result, dict) else None
-        _pos_attach_audit_context(audit_ref, mapping.get('branch_id'), 'storehub', external_tx)
+        if stamps_active:
+            try:
+                stamp_result = await add_stamp(
+                    public_id,
+                    StampRequest(
+                        customer_public_id=req.customer_public_id,
+                        as_owner=True,
+                        stamp_kind='reward',
+                    ),
+                    background_tasks,
+                    authorization='',
+                    x_idempotency_key=(f'{idempotency_key}:stamp' if points_active else idempotency_key),
+                )
+            except HTTPException as stamp_exc:
+                # If 1-stamp-per-day is enabled, a later purchase should still earn
+                # its Points. Treat the stamp as intentionally skipped, not as a
+                # failed POS sale. Other stamp errors remain real failures.
+                if points_active and stamp_exc.status_code == 409:
+                    stamp_result = {
+                        'message': str(stamp_exc.detail),
+                        'duplicate_prevented': True,
+                        'stamp_skipped': True,
+                    }
+                else:
+                    raise
 
-        points_earned = int((loyalty_result or {}).get('points_earned') or 0)
-        stamps_earned = 1 if loyalty_type == 'stamp' and not (loyalty_result or {}).get('duplicate_prevented') else 0
-        wallet_status = ((loyalty_result or {}).get('wallet_sync') or {}).get('status') or 'queued'
+        loyalty_result = points_result or stamp_result or {}
+        if points_active and stamps_active:
+            loyalty_result = {
+                'message': 'Points and Stamp rewards processed',
+                'points': points_result or {},
+                'stamps': stamp_result or {},
+                'points_earned': int((points_result or {}).get('points_earned') or 0),
+                'stamp_count': (stamp_result or {}).get('stamp_count'),
+                'duplicate_prevented': bool((stamp_result or {}).get('duplicate_prevented')),
+            }
+
+        audit_refs = []
+        for result in (points_result, stamp_result):
+            audit_ref = result.get('transaction_id') if isinstance(result, dict) else None
+            if audit_ref:
+                audit_refs.append(audit_ref)
+                _pos_attach_audit_context(audit_ref, mapping.get('branch_id'), 'storehub', external_tx)
+        audit_ref = audit_refs[0] if audit_refs else None
+
+        points_earned = int((points_result or {}).get('points_earned') or 0)
+        stamps_earned = 1 if stamps_active and stamp_result and not stamp_result.get('duplicate_prevented') else 0
+        wallet_statuses = [
+            ((result or {}).get('wallet_sync') or {}).get('status')
+            for result in (points_result, stamp_result) if isinstance(result, dict)
+        ]
+        wallet_status = next((status for status in wallet_statuses if status), 'queued')
         processing_metadata = {
             'loyalty_type': loyalty_type,
-            'loyalty_result': loyalty_result or {},
+            'hybrid_points_enabled': bool(points_active),
+            'hybrid_stamps_enabled': bool(stamps_active),
+            'loyalty_result': loyalty_result,
+            'transaction_audit_refs': [str(x) for x in audit_refs],
             'wallet_sync_status': wallet_status,
             'branch_public_id': mapping.get('branch_public_id'),
             'storehub_outlet_id': mapping.get('external_branch_id'),
@@ -18732,8 +18871,8 @@ async def redeem_points_prize(public_id: str, req: PointsRedeemRequest, backgrou
     if previous_response is not None:
         return previous_response
     program = safe_get_loyalty_program(business.get('id'))
-    if not program or effective_loyalty_type(program) != 'points':
-        raise HTTPException(status_code=400, detail="This business is not on a points card")
+    if not program or not program_reward_uses_points(program):
+        raise HTTPException(status_code=400, detail="Points rewards are not enabled for this card")
 
     prize = next((p for p in (program.get('points_prizes') or []) if p.get('id') == req.prize_id), None)
     if not prize:
@@ -20464,7 +20603,8 @@ async def get_customer_hero_image(customer_public_id: str, s: Optional[str] = No
     rendered_primary_color = (vip_tier or {}).get('color') or design['background']
     png_bytes = generate_personalized_hero_image_bytes(
         rendered_primary_color, reward_name, stamps, stamp_goal, description,
-        card_type=card_type, hybrid_loyalty_type=hybrid_loyalty_type(program), points_balance=points_balance,
+        card_type=card_type, hybrid_loyalty_type=hybrid_loyalty_type(program),
+        hybrid_points_enabled_flag=hybrid_points_enabled(program), hybrid_stamps_enabled_flag=hybrid_stamps_enabled(program), points_balance=points_balance,
         sessions_remaining=sessions_remaining, sessions_total=sessions_total,
         total_visits=(membership_summary['total_visits'] if membership_summary else 0),
         last_service_name=(membership_summary['last_service_name'] if membership_summary else None),
@@ -21007,7 +21147,10 @@ async def customer_join_page(business_public_id: str):
         earning_rule_html = ''
         earning_rule_text = ''
 
-        if loyalty_type == 'points':
+        points_reward_active = program_reward_uses_points(program)
+        stamp_reward_active = program_reward_uses_stamps(program)
+
+        if points_reward_active:
             prizes = [
                 p for p in ((program or {}).get('points_prizes') or [])
                 if isinstance(p, dict) and str(p.get('name') or '').strip()
@@ -21047,7 +21190,7 @@ async def customer_join_page(business_public_id: str):
                     '<p class="earning-rule">' + earning_rule_text + '</p>'
                 )
 
-        elif loyalty_type == 'stamp':
+        if stamp_reward_active:
             milestones = [
                 r for r in ((program or {}).get('stamp_rewards') or [])
                 if isinstance(r, dict) and str(r.get('reward_name') or '').strip()
@@ -21059,7 +21202,7 @@ async def customer_join_page(business_public_id: str):
                 stamp_goal = int(first_reward.get('stamps') or stamp_goal)
                 reward_name = str(first_reward.get('reward_name') or reward_name)
 
-            reward_preview_html = (
+            reward_preview_html += (
                 '<div class="reward-preview">'
                 '<h3>&#127873; ' + html_lib.escape(str(reward_name)) + '</h3>'
                 '<p>Collect ' + str(stamp_goal) + ' stamps to unlock your reward</p>'
@@ -21070,7 +21213,7 @@ async def customer_join_page(business_public_id: str):
         # settings above, suppress the description only when it is the same
         # sentence, preventing duplicated text on the Join page.
         display_description = description
-        if loyalty_type == 'points' and description and earning_rule_text:
+        if points_reward_active and description and earning_rule_text:
             normalize = lambda s: ' '.join(str(s or '').strip().lower().split()).rstrip('.')
             if normalize(description) == normalize(earning_rule_text):
                 display_description = None
@@ -24748,14 +24891,18 @@ async def customer_wallet_page(customer_public_id: str):
     if card_type == 'hybrid':
         status = membership_effective_status(customer).upper()
         expiry = customer.get('membership_expires_at') or ('Lifetime' if status == 'LIFETIME' else '—')
-        if loyalty_type == 'points':
-            points = int(customer.get('points_balance') or 0)
+        points = int(customer.get('points_balance') or 0)
+        goal = int(program.get('stamp_goal') or 8)
+        current = min(int(customer.get('stamp_count') or 0), goal)
+        if hybrid_points_enabled(program):
             metric_label, metric_value, metric_sub = 'REWARD POINTS', f'{points:,}', 'points'
         else:
-            goal = int(program.get('stamp_goal') or 8)
-            current = min(int(customer.get('stamp_count') or 0), goal)
             metric_label, metric_value, metric_sub = 'REWARD STAMPS', f'{current} / {goal}', 'stamps'
         details = [('Membership', status), ('Active until', expiry)]
+        if hybrid_points_enabled(program):
+            details.append(('Reward points', f'{points:,} points'))
+        if hybrid_stamps_enabled(program):
+            details.append(('Reward stamps', f'{current} / {goal} stamps'))
         if hybrid_tier_enabled(program):
             tier = get_vip_tier(customer, program)
             next_tier = get_next_vip_tier(customer, program)
@@ -24911,7 +25058,7 @@ async def customer_wallet_page(customer_public_id: str):
     # remains visible for accessibility and for goals above 20.
     stamp_visual_html = ''
     visual_style = normalize_stamp_display_style(program)
-    if loyalty_type == 'stamp' and visual_style in ('icon', 'logo'):
+    if program_reward_uses_stamps(program) and visual_style in ('icon', 'logo'):
         visual_goal = max(1, int(program.get('stamp_goal') or 8))
         visual_current = max(0, min(int(customer.get('stamp_count') or 0), visual_goal))
         if visual_goal <= 20:
@@ -25354,6 +25501,8 @@ async def cashier_stamp_page(customer_public_id: str):
         'business_name': business.get('name', ''),
         'card_type': card_type,
         'hybrid_loyalty_type': loyalty_type if card_type == 'hybrid' else None,
+        'hybrid_points_enabled': hybrid_points_enabled(program) if card_type == 'hybrid' else False,
+        'hybrid_stamps_enabled': hybrid_stamps_enabled(program) if card_type == 'hybrid' else False,
         'stamp_count': customer.get('stamp_count', 0),
         'stamp_goal': stamp_goal,
         'reward_name': reward_name,
@@ -25388,8 +25537,13 @@ async def cashier_stamp_page(customer_public_id: str):
         'membership_unlock': membership_unlock_summary(customer, program) if program_has_membership(program) else {'enabled':False,'unlocked':True},
     }
     data_json = json.dumps(data)
+    hybrid_reward_names = []
+    if card_type == 'hybrid' and hybrid_points_enabled(program):
+        hybrid_reward_names.append('Points')
+    if card_type == 'hybrid' and hybrid_stamps_enabled(program):
+        hybrid_reward_names.append('Stamps')
     page_title = (
-        f"Membership + {'Points' if loyalty_type == 'points' else 'Stamps'}"
+        f"Membership + {' + '.join(hybrid_reward_names) or 'Rewards'}"
         if card_type == 'hybrid' else
         ('Add Tier Stamp' if card_type == 'vip' and vip_stamps_enabled(program) else
          {'points': 'Add Points', 'multipass': 'Use Session', 'vip': 'Add VIP Sale', 'membership': 'Log Visit'}.get(card_type, 'Add Stamp'))
@@ -25439,6 +25593,8 @@ async def cashier_stamp_page(customer_public_id: str):
         'const DATA=' + data_json + ';'
         'const cardType=DATA.card_type;'
         'const hybridLoyaltyType=DATA.hybrid_loyalty_type==="stamp"?"stamp":"points";'
+        'const hybridPointsEnabled=cardType==="hybrid"&&DATA.hybrid_points_enabled===true;'
+        'const hybridStampsEnabled=cardType==="hybrid"&&DATA.hybrid_stamps_enabled===true;'
         'const hybridTierEnabled=cardType==="hybrid"&&DATA.hybrid_tier_enabled===true;'
         'const tierProgressionType=DATA.tier_progression_type==="stamps"?"stamps":"points";'
         'const tierUsesStamps=(cardType==="vip"||hybridTierEnabled)&&tierProgressionType==="stamps";'
@@ -25632,7 +25788,9 @@ async def cashier_stamp_page(customer_public_id: str):
         'const until=membershipStatus==="lifetime"?"Lifetime":(DATA.membership_expires_at||"Not activated");'
         'const membershipHtml="<div class=\'"+(active?"msg msg-ok":"msg msg-err")+"\'><b>"+escapeHtml(DATA.membership_name||"Membership")+": "+escapeHtml(String(membershipStatus||"inactive").toUpperCase())+"</b><br><span style=\'font-size:12px\'>Valid until: "+escapeHtml(until)+"</span></div>";'
         'let unlockHtml="";if(membershipUnlock&&membershipUnlock.enabled){unlockHtml="<div class=\'"+(membershipUnlock.unlocked?"msg msg-ok":"msg")+"\' style=\'background:"+(membershipUnlock.unlocked?"#dcfce7":"#eff6ff")+";color:"+(membershipUnlock.unlocked?"#166534":"#1d4ed8")+"\'><b>MEMBERSHIP BENEFITS: "+(membershipUnlock.unlocked?"UNLOCKED ✓":"LOCKED")+"</b>"+(membershipUnlock.unlocked?"":("<br><span style=\'font-size:12px\'>"+membershipUnlock.current+"/"+membershipUnlock.threshold+" Tier "+escapeHtml(String(membershipUnlock.unit||"stamps"))+" · "+membershipUnlock.remaining+" to go</span>"))+"</div>";}'
-        'const loyaltyHtml=hybridLoyaltyType==="points"?renderPointsBody():renderStampBody();'
+        'let loyaltyHtml="";'
+        'if(hybridPointsEnabled){loyaltyHtml+="<div style=\'margin-top:14px;padding-top:14px;border-top:1px solid #e2e8f0\'><div style=\'font-size:11px;font-weight:900;letter-spacing:.7px;color:#1d4ed8;margin-bottom:9px\'>REWARD POINTS</div>"+renderPointsBody()+"</div>";}'
+        'if(hybridStampsEnabled){loyaltyHtml+="<div style=\'margin-top:14px;padding-top:14px;border-top:1px solid #e2e8f0\'><div style=\'font-size:11px;font-weight:900;letter-spacing:.7px;color:#0f766e;margin-bottom:9px\'>STAMP REWARDS</div>"+renderStampBody()+"</div>";}'
         'const visitHtml=(active&&membershipVisitLoggingEnabled)?("<div style=\'margin-top:14px;padding-top:14px;border-top:1px solid #e2e8f0\'><input id=\'serviceName\' type=\'text\' placeholder=\'Visit / service\'><input id=\'serviceNote\' type=\'text\' placeholder=\'Note (optional)\'><button class=\'btn-primary\' id=\'membershipBtn\'>Log Membership Visit</button></div>"):"";'
         'return membershipHtml+unlockHtml+loyaltyHtml+renderHybridTierBody()+visitHtml+renderHybridBenefits();'
         '}'
@@ -25649,13 +25807,8 @@ async def cashier_stamp_page(customer_public_id: str):
 
         'function attachBodyListeners(){'
         'if(cardType==="hybrid"){'
-        'if(hybridLoyaltyType==="points"){'
-        'const pointsBtn=document.getElementById("pointsBtn");if(pointsBtn)pointsBtn.addEventListener("click",doPoints);'
-        'const prizeBtns=document.querySelectorAll(".prizeRedeemBtn");for(let i=0;i<prizeBtns.length;i++){prizeBtns[i].addEventListener("click",function(e){doRedeemPrize(e.currentTarget.getAttribute("data-prize-id"));});}'
-        '}else{'
-        'const stampBtn=document.getElementById("stampBtn");if(stampBtn)stampBtn.addEventListener("click",doStamp);'
-        'const redeemBtn=document.getElementById("redeemBtn");if(redeemBtn)redeemBtn.addEventListener("click",doRedeem);'
-        '}'
+        'if(hybridPointsEnabled){const pointsBtn=document.getElementById("pointsBtn");if(pointsBtn)pointsBtn.addEventListener("click",doPoints);const prizeBtns=document.querySelectorAll(".prizeRedeemBtn");for(let i=0;i<prizeBtns.length;i++){prizeBtns[i].addEventListener("click",function(e){doRedeemPrize(e.currentTarget.getAttribute("data-prize-id"));});}}'
+        'if(hybridStampsEnabled){const stampBtn=document.getElementById("stampBtn");if(stampBtn)stampBtn.addEventListener("click",doStamp);const redeemBtn=document.getElementById("redeemBtn");if(redeemBtn)redeemBtn.addEventListener("click",doRedeem);}'
         'if(hybridTierEnabled){if(tierUsesStamps){const tierStampBtn=document.getElementById("tierStampBtn");if(tierStampBtn)tierStampBtn.addEventListener("click",doTierStamp);}else{const vipBtn=document.getElementById("vipBtn");if(vipBtn)vipBtn.addEventListener("click",doVip);}}'
         'const membershipBtn=document.getElementById("membershipBtn");if(membershipBtn)membershipBtn.addEventListener("click",doMembershipNote);'
         'const benefitBtns=document.querySelectorAll(".benefitRedeemBtn");for(let i=0;i<benefitBtns.length;i++){benefitBtns[i].addEventListener("click",function(e){doMembershipBenefit(e.currentTarget.getAttribute("data-benefit-id"));});}'
@@ -25692,7 +25845,8 @@ async def cashier_stamp_page(customer_public_id: str):
         'const bodyHtml=cardType==="hybrid"?renderHybridBody():cardType==="points"?renderPointsBody():cardType==="multipass"?renderMultipassBody():cardType==="vip"?renderVipBody():cardType==="membership"?renderMembershipBody():renderStampBody();'
         'const couponHtml=renderActiveCoupons();'
         'const hybridTierStats=hybridTierEnabled?(" &bull; "+escapeHtml((vipTier&&vipTier.name)||"Tier")+" · "+(tierUsesStamps?tierStampCount:vipPoints)+" Tier "+(tierUsesStamps?"stamps":"pts")):"";'
-        'const statsHtml=cardType==="hybrid"?((hybridLoyaltyType==="points"?(pointsBalance+" reward points"):(stampCount+" / "+DATA.stamp_goal+" reward stamps"))+" &bull; "+escapeHtml(String(membershipStatus||"inactive").toUpperCase())+hybridTierStats):cardType==="points"?(pointsBalance+" points"):cardType==="multipass"?(multipassRemaining+" / "+multipassTotal+" sessions"):cardType==="vip"?(escapeHtml((vipTier&&vipTier.name)||"VIP")+" &bull; "+(tierUsesStamps?(tierStampCount+" Tier stamps"):(vipPoints+" Tier pts"))):cardType==="membership"?("Membership: "+escapeHtml(membershipStatus)):(stampCount+" / "+DATA.stamp_goal+" stamps");'
+        'const hybridRewardStats=[];if(hybridPointsEnabled)hybridRewardStats.push(pointsBalance+" reward points");if(hybridStampsEnabled)hybridRewardStats.push(stampCount+" / "+DATA.stamp_goal+" reward stamps");'
+        'const statsHtml=cardType==="hybrid"?(hybridRewardStats.join(" &bull; ")+" &bull; "+escapeHtml(String(membershipStatus||"inactive").toUpperCase())+hybridTierStats):cardType==="points"?(pointsBalance+" points"):cardType==="multipass"?(multipassRemaining+" / "+multipassTotal+" sessions"):cardType==="vip"?(escapeHtml((vipTier&&vipTier.name)||"VIP")+" &bull; "+(tierUsesStamps?(tierStampCount+" Tier stamps"):(vipPoints+" Tier pts"))):cardType==="membership"?("Membership: "+escapeHtml(membershipStatus)):(stampCount+" / "+DATA.stamp_goal+" stamps");'
         'app.innerHTML='
         '(msg?"<div class=\'msg "+(msg.ok?"msg-ok":"msg-err")+"\'>"+escapeHtml(msg.text)+"</div>":"")+'
         '"<div class=\'customer-box\'>"+'
@@ -26074,6 +26228,8 @@ async def public_business_join_config(public_id: str):
         'category': category,
         'card_type': program.get('card_type', 'stamp'),
         'hybrid_loyalty_type': hybrid_loyalty_type(program),
+        'hybrid_points_enabled': hybrid_points_enabled(program),
+        'hybrid_stamps_enabled': hybrid_stamps_enabled(program),
         'vip_stamps_enabled': vip_stamps_enabled(program),
         'primary_color': program.get('primary_color') or category['color'],
         'card_name': program.get('card_name'),
