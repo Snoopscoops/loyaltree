@@ -1015,13 +1015,25 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                       type="button"
                       onClick={() => sendBusinessPasswordReset(detail)}
                       disabled={passwordResetSending === detail.public_id || !detail.email}
-                      style={{...styles.viewBtn,width:'100%',padding:'9px 10px',fontWeight:800,background:'#f0fdfa',color:'#0f766e',border:'1px solid #99f6e4'}}
+                      style={{
+                        ...styles.viewBtn, width:'100%', padding:'9px 10px', fontWeight:800,
+                        background: detail.email ? '#f0fdfa' : '#f8fafc',
+                        color: detail.email ? '#0f766e' : '#94a3b8',
+                        border: `1px solid ${detail.email ? '#99f6e4' : '#e2e8f0'}`,
+                        cursor: detail.email ? 'pointer' : 'not-allowed',
+                      }}
                     >
                       {passwordResetSending === detail.public_id ? 'Sending…' : '🔐 Send Password Reset Email'}
                     </button>
-                    <div style={{fontSize:10.5,color:'#64748b',lineHeight:1.45,marginTop:6}}>
-                      Sent only to <strong>{detail.email || 'the registered business email'}</strong>. Super Admin never sees or sets the owner’s password.
-                    </div>
+                    {detail.email ? (
+                      <div style={{fontSize:10.5,color:'#64748b',lineHeight:1.45,marginTop:6}}>
+                        Sent only to <strong>{detail.email}</strong>. Super Admin never sees or sets the owner’s password.
+                      </div>
+                    ) : (
+                      <div style={{fontSize:10.5,color:'#b45309',lineHeight:1.45,marginTop:6,fontWeight:700}}>
+                        No registered login email — add a valid business login email above first.
+                      </div>
+                    )}
                     {detail.password_reset_requested_at && (
                       <div style={{fontSize:10.5,color:'#64748b',marginTop:5}}>
                         Last reset email: {new Date(detail.password_reset_requested_at).toLocaleString()}

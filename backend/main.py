@@ -138,6 +138,13 @@ CARD_EXPIRATION_CRON_SECRET = os.getenv('CARD_EXPIRATION_CRON_SECRET', '')
 # "log in to pay" link in the email; if unset, the email just omits the link.
 RESEND_API_KEY = os.getenv('RESEND_API_KEY', '')
 SUBSCRIPTION_REMINDER_FROM = os.getenv('SUBSCRIPTION_REMINDER_FROM', 'billing@loyaltytree.app')
+# General account/security sender. Recommended Render value after verifying
+# theloyaltytree.com in Resend:
+#   LoyaltyTree <accounts@theloyaltytree.com>
+# Until configured, fall back to the existing verified subscription sender so
+# password recovery does not break during rollout.
+TRANSACTIONAL_EMAIL_FROM = (os.getenv('TRANSACTIONAL_EMAIL_FROM', '') or SUBSCRIPTION_REMINDER_FROM).strip()
+TRANSACTIONAL_REPLY_TO = os.getenv('TRANSACTIONAL_REPLY_TO', 'theloyaltytree@gmail.com').strip()
 FRONTEND_URL = os.getenv('FRONTEND_URL', '')
 SUBSCRIPTION_REMINDER_RESEND_DAYS = 3  # don't re-email more often than this while still expiring_soon/expired
 
@@ -742,13 +749,18 @@ def create_order_ahead_qrph_checkout(
 
 # --- Email helper (Resend) --------------------------------------------------
 
-def send_email(to_email: str, subject: str, html_body: str) -> bool:
+def send_email(to_email: str, subject: str, html_body: str, from_email: Optional[str] = None, reply_to: Optional[str] = None) -> bool:
     """Sends a transactional email via Resend's API. Returns False (never
     raises) on any failure so a mail hiccup never breaks the caller - same
-    best-effort pattern as send_wallet_object_message elsewhere in this file."""
+    best-effort pattern as send_wallet_object_message elsewhere in this file.
+
+    Account/security emails default to TRANSACTIONAL_EMAIL_FROM. Callers that
+    are specifically billing-related can pass SUBSCRIPTION_REMINDER_FROM.
+    """
     import httpx
 
-    if not RESEND_API_KEY or not to_email:
+    sender = (from_email or TRANSACTIONAL_EMAIL_FROM or SUBSCRIPTION_REMINDER_FROM).strip()
+    if not RESEND_API_KEY or not to_email or not sender:
         return False
     try:
         with httpx.Client(timeout=15) as client:
@@ -759,10 +771,11 @@ def send_email(to_email: str, subject: str, html_body: str) -> bool:
                     "Content-Type": "application/json",
                 },
                 json={
-                    "from": SUBSCRIPTION_REMINDER_FROM,
+                    "from": sender,
                     "to": [to_email],
                     "subject": subject,
                     "html": html_body,
+                    **({"reply_to": [reply_to.strip()]} if reply_to and reply_to.strip() else {}),
                 },
             )
             return res.status_code < 300
@@ -808,10 +821,11 @@ def _password_reset_email(business: dict, reset_link: str) -> tuple:
     body = (
         f"<p>Hi {business_name},</p>"
         "<p>We received a request to reset the password for your LoyaltyTree business account.</p>"
-        f"<p><a href='{safe_link}' style='display:inline-block;background:#0d9488;color:#ffffff;text-decoration:none;font-weight:700;padding:12px 18px;border-radius:10px;'>Reset password</a></p>"
-        f"<p>This link expires in {PASSWORD_RESET_TTL_MINUTES} minutes and can be used only once.</p>"
-        "<p>If you did not request this, you can ignore this email. Your current password will continue to work.</p>"
-        "<p style='color:#64748b;font-size:12px;'>LoyaltyTree will never ask you to send your password by email or chat.</p>"
+        f"<p><a href='{safe_link}' style='display:inline-block;background:#0d9488;color:#ffffff;text-decoration:none;font-weight:700;padding:12px 18px;border-radius:10px;'>Reset Password</a></p>"
+        f"<p>This secure link expires in {PASSWORD_RESET_TTL_MINUTES} minutes and can only be used once.</p>"
+        "<p>If you did not request a password reset, you can safely ignore this email. Your current password will continue to work.</p>"
+        "<p style='color:#64748b;font-size:12px;'>For your security, LoyaltyTree will never ask you to send your password through email, Messenger, SMS, or chat.</p>"
+        "<p style='margin-top:20px;'>— <strong>LoyaltyTree</strong><br><span style='color:#64748b;font-size:12px;'>Where businesses grow with customers</span></p>"
     )
     return subject, body
 
@@ -841,7 +855,7 @@ def _issue_business_password_reset(business: dict, actor: str, respect_cooldown:
 
     reset_link = f"{PASSWORD_RESET_FRONTEND_URL}/login?reset={quote(raw_token, safe='')}"
     subject, body = _password_reset_email(business, reset_link)
-    sent = send_email((business.get('email') or '').strip().lower(), subject, body)
+    sent = send_email((business.get('email') or '').strip().lower(), subject, body, from_email=TRANSACTIONAL_EMAIL_FROM, reply_to=TRANSACTIONAL_REPLY_TO)
     _password_reset_audit(business, 'reset_email_sent' if sent else 'reset_email_failed', actor)
     return sent
 
@@ -26526,7 +26540,7 @@ async def run_subscription_reminders(_: bool = Depends(require_cron)):
         price = get_price_for_plan(business.get('plan'), branch_count)
 
         subject, html_body = build_subscription_reminder_email(business, days_left, price)
-        ok = send_email(business.get('email'), subject, html_body)
+        ok = send_email(business.get('email'), subject, html_body, from_email=SUBSCRIPTION_REMINDER_FROM)
         if ok:
             sent += 1
             try:
