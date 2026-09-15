@@ -5,7 +5,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 // Only shows the raw scan/debug panel in local dev - never in a production
 // build, since it prints internal API paths and response codes on-screen.
 const DEBUG = import.meta.env.DEV
-const CASHIER_BUILD = 'HYBRID-V19-UNIFIED-TRANSACTION'
+const CASHIER_BUILD = 'COMPOSITE-V19-EMPLOYEE-CARD'
 const BUSINESS_ICONS={spa:'🌿',salon:'✂️',fitness:'🏋️',restaurant:'🍽️',coffee:'☕',retail:'🛍️',clinic:'🩺',laundry:'🧺',gas_station:'⛽',car_wash:'🚿',pharmacy:'💊',bakery:'🥐',hotel:'🏨',other:'🏪',car_lending:'🚗',cockpit:'🏆'}
 
 // Accept both the new direct Cashier URL and older Gift Card QR formats so
@@ -263,7 +263,7 @@ function CashierApp({ API_BASE }) {
         // Use the same program object returned with the scanned customer.
         // This is the exact source already used successfully by the Points flow.
         const program = data.program || {}
-        const allowedCardTypes = ['stamp', 'points', 'membership', 'vip', 'multipass', 'hybrid']
+        const allowedCardTypes = ['stamp', 'points', 'membership', 'vip', 'multipass', 'hybrid', 'employee']
         // The saved loyalty program is authoritative for Hybrid. This prevents
         // any stale/legacy current_card_type value from making a Points-based
         // Hybrid card fall through to the Stamp UI.
@@ -279,8 +279,8 @@ function CashierApp({ API_BASE }) {
 
         const cardType = returnedCardType
         const goal = program.stamp_goal || 8
-        let membershipBenefitState = { benefits: [], membership_name: program.membership_name || 'Subscription', benefits_unlocked: true, unlock: { enabled:false, unlocked:true } }
-        if (cardType === 'membership' || cardType === 'hybrid') {
+        let membershipBenefitState = { benefits: [], membership_name: program.membership_name || 'Membership', benefits_unlocked: true, unlock: { enabled:false, unlocked:true } }
+        if (cardType === 'membership' || cardType === 'hybrid' || cardType === 'employee') {
           try {
             const benefitRes = await fetch(`${API_BASE}/api/v1/business/${scannedBusinessSlug || businessSlug}/customers/${c.public_id}/membership-benefits`, { cache:'no-store' })
             const benefitData = await benefitRes.json().catch(() => ({}))
@@ -297,6 +297,11 @@ function CashierApp({ API_BASE }) {
           public_id: c.public_id,
           name: c.name,
           phone: c.phone,
+          birthday: c.birthday || null,
+          employee_id_number: c.employee_id_number || '',
+          employee_start_date: c.employee_start_date || null,
+          employee_time_tracking_enabled: program.employee_time_tracking_enabled === true,
+          employee_attendance: c.employee_attendance || data.employee_attendance || { last_action: null, last_at: null, is_clocked_in: false },
           business_name: data.business?.name || '',
           business_type: data.business?.business_type || 'other',
           card_type: cardType,
@@ -334,7 +339,7 @@ function CashierApp({ API_BASE }) {
           membership_status: c.membership_effective_status || c.membership_status || 'inactive',
           membership_start_date: c.membership_start_date || null,
           membership_expires_at: c.membership_expires_at || null,
-          membership_name: membershipBenefitState.membership_name || program.membership_name || program.card_name || 'Subscription',
+          membership_name: membershipBenefitState.membership_name || program.membership_name || program.card_name || (cardType === 'employee' ? 'Employee Benefits' : 'Membership'),
           membership_services: Array.isArray(program.membership_services) ? program.membership_services : [],
           membership_benefits: Array.isArray(membershipBenefitState.benefits) ? membershipBenefitState.benefits : [],
           membership_benefits_unlocked: c.membership_benefits_unlocked ?? membershipBenefitState.benefits_unlocked ?? true,
@@ -398,7 +403,7 @@ function CashierApp({ API_BASE }) {
           ? `✅ Tier stamp added! ${customerData.name} now has ${updatedTierStamps} Tier stamps`
           : `✅ Reward stamp added! ${customerData.name} now has ${data.stamp_count} reward stamps`
         if (tierStamp && data.upgraded && data.tier?.name) msg += ` 🎉 Upgraded to ${data.tier.name}!`
-        if (tierStamp && data.membership_unlock?.enabled && data.membership_unlock?.unlocked) msg += ' 🔓 Subscription benefits unlocked!'
+        if (tierStamp && data.membership_unlock?.enabled && data.membership_unlock?.unlocked) msg += ' 🔓 Membership benefits unlocked!'
         if (!tierStamp && data.reward_unlocked) msg += ' 🎉 REWARD UNLOCKED!'
         if (data.warning) msg += ` (${data.warning})`
         setMessage(msg)
@@ -485,97 +490,12 @@ function CashierApp({ API_BASE }) {
   }
 
 
-  const recordHybridTransaction = async () => {
-    if (!customerData || customerData.card_type !== 'hybrid' || !businessSlug || (!isOwner && !staffPin && !sessionToken)) {
-      setMessage('Missing info - scan again')
-      return
-    }
-
-    const rewardType = customerData.hybrid_loyalty_type === 'stamp' ? 'stamp' : 'points'
-    const tierOn = customerData.hybrid_tier_enabled === true
-    const tierType = customerData.tier_progression_type === 'points' ? 'points' : 'stamps'
-    const needsAmount = rewardType === 'points' || (tierOn && tierType === 'points')
-    const amount = parseFloat(saleAmount)
-    if (needsAmount && (!amount || amount <= 0)) {
-      setMessage('Enter the customer purchase amount first')
-      return
-    }
-
-    const authHeaders = {
-      'Content-Type': 'application/json',
-      ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
-    }
-    const authBody = sessionToken ? {} : { staff_pin: staffPin }
-    const completed = []
-    const failed = []
-
-    setLoading(true)
-    setMessage('Recording transaction...')
-
-    const post = async (path, payload) => {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/${path}`, {
-        method: 'POST',
-        headers: authHeaders,
-        body: JSON.stringify({ customer_public_id: customerData.public_id, ...payload, ...authBody, as_owner: isOwner }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.detail || `Could not complete ${path}`)
-      return data
-    }
-
-    try {
-      try {
-        if (rewardType === 'points') {
-          const data = await post('points-sale', { amount_spent: amount })
-          completed.push(`+${Number(data.points_earned || 0).toLocaleString()} Reward Points`)
-        } else {
-          const data = await post('stamp', { stamp_kind: 'reward' })
-          completed.push('+1 Reward Stamp')
-          if (data.reward_unlocked) completed.push('Reward unlocked')
-        }
-      } catch (err) {
-        failed.push(`Rewards: ${err.message}`)
-      }
-
-      if (tierOn) {
-        try {
-          if (tierType === 'points') {
-            const data = await post('vip-sale', { amount_spent: amount })
-            completed.push(`+${Number(data.points_earned || data.vip_points_earned || 0).toLocaleString()} Tier Points`)
-            if (data.upgraded && data.tier?.name) completed.push(`Tier upgraded to ${data.tier.name}`)
-          } else {
-            const data = await post('stamp', { stamp_kind: 'tier' })
-            completed.push('+1 Tier Stamp')
-            if (data.upgraded && data.tier?.name) completed.push(`Tier upgraded to ${data.tier.name}`)
-          }
-        } catch (err) {
-          failed.push(`Tier: ${err.message}`)
-        }
-      }
-
-      await fetchCustomer(customerData.public_id)
-      setSaleAmount('')
-
-      if (failed.length === 0) {
-        setMessage(`✅ Transaction recorded · ${completed.join(' · ')}`)
-      } else if (completed.length > 0) {
-        setMessage(`⚠️ Partially recorded · ${completed.join(' · ')} · ${failed.join(' · ')}`)
-      } else {
-        setMessage(`❌ Transaction failed · ${failed.join(' · ')}`)
-      }
-    } catch (err) {
-      setMessage(`❌ ${err.message || 'Could not record transaction'}`)
-    } finally {
-      setLoading(false)
-    }
-  }
-
   const recordVipPurchase = async () => {
     if (!customerData || !businessSlug || (!isOwner && !staffPin && !sessionToken)) {
       setMessage('Missing info - scan again')
       return
     }
-    const amount = parseFloat(customerData.card_type === 'hybrid' ? saleAmount : vipSaleAmount)
+    const amount = parseFloat(vipSaleAmount)
     if (!amount || amount <= 0) {
       setMessage('Enter a purchase amount first')
       return
@@ -629,12 +549,12 @@ function CashierApp({ API_BASE }) {
   const logMembershipVisit = async () => {
     if (!customerData || !businessSlug) return
     if (customerData.membership_visit_logging_enabled === false) {
-      setMessage('Subscription visit logging is disabled by the business owner')
+      setMessage('Membership visit logging is disabled by the business owner')
       return
     }
     const serviceName = customerData.membership_quick_checkin
       ? null
-      : window.prompt('Visit or service', customerData.membership_services?.[0] || 'Subscriber check-in')
+      : window.prompt('Visit or service', customerData.membership_services?.[0] || 'Member check-in')
     if (!customerData.membership_quick_checkin && !serviceName) return
     setLoading(true)
     try {
@@ -678,8 +598,8 @@ function CashierApp({ API_BASE }) {
 
   const redeemMembershipBenefit = async (benefit) => {
     if (!customerData || !businessSlug || !benefit?.id) return
-    if (!['active','lifetime'].includes(customerData.membership_status)) {
-      setMessage(`❌ Subscription is ${customerData.membership_status}`); return
+    if (customerData.card_type !== 'employee' && !['active','lifetime'].includes(customerData.membership_status)) {
+      setMessage(`❌ Membership is ${customerData.membership_status}`); return
     }
     const ok = window.confirm(`Redeem “${benefit.name}” for ${customerData.name}?`)
     if (!ok) return
@@ -696,6 +616,36 @@ function CashierApp({ API_BASE }) {
       setCustomerData(prev => prev ? {...prev,membership_benefits:Array.isArray(data.benefits)?data.benefits:prev.membership_benefits} : prev)
       setMessage(`✅ ${benefit.name} redeemed for ${customerData.name}`)
     } catch (err) { setMessage(`❌ ${err.message}`) }
+    setLoading(false)
+  }
+
+  const recordEmployeeAttendance = async (action) => {
+    if (!customerData?.public_id || !businessSlug || customerData.card_type !== 'employee') return
+    const label = action === 'time_in' ? 'Time In' : 'Time Out'
+    const ok = window.confirm(`${label} ${customerData.name}?`)
+    if (!ok) return
+    setLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/employee/attendance`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+        },
+        body: JSON.stringify({
+          customer_public_id: customerData.public_id,
+          action,
+          ...(sessionToken ? {} : { staff_pin: staffPin }),
+          as_owner: isOwner,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || `Could not ${label.toLowerCase()}`)
+      setCustomerData(prev => prev ? { ...prev, employee_attendance: data.state || prev.employee_attendance } : prev)
+      setMessage(`✅ ${data.message || label}: ${customerData.name}`)
+    } catch (err) {
+      setMessage(`❌ ${err.message || `Could not ${label.toLowerCase()}`}`)
+    }
     setLoading(false)
   }
 
@@ -1202,7 +1152,7 @@ function CashierApp({ API_BASE }) {
     const tierEnabled = customerData.card_type === 'vip' || (customerData.card_type === 'hybrid' && customerData.hybrid_tier_enabled === true)
     const progression = customerData.tier_progression_type || (customerData.card_type === 'hybrid' ? customerData.hybrid_tier_progression_type : (customerData.vip_stamps_enabled ? 'stamps' : 'points'))
     if (!tierEnabled || progression === 'stamps') return 0
-    const amount = parseFloat(customerData.card_type === 'hybrid' ? saleAmount : vipSaleAmount)
+    const amount = parseFloat(vipSaleAmount)
     if (!amount || amount <= 0) return 0
     const rate = customerData.vip_points_per_amount || 0
     const pesos = customerData.vip_amount_pesos || 1
@@ -1210,6 +1160,7 @@ function CashierApp({ API_BASE }) {
   })()
 
   const isHybrid = customerData?.card_type === 'hybrid'
+  const isEmployee = customerData?.card_type === 'employee'
   const hybridLoyaltyType = customerData?.hybrid_loyalty_type === 'stamp' ? 'stamp' : 'points'
   const usesPoints = customerData?.card_type === 'points' || (isHybrid && hybridLoyaltyType === 'points')
   const usesStamps = customerData?.card_type === 'stamp' || (isHybrid && hybridLoyaltyType === 'stamp')
@@ -1229,8 +1180,17 @@ function CashierApp({ API_BASE }) {
         soft: '#f0fdfa',
         border: '#99f6e4',
         icon: '✨',
-        label: `Hybrid Card · Subscription + Reward ${hybridLoyaltyType === 'points' ? 'Points' : 'Stamps'}${hybridTierEnabled ? ` + Tier ${tierUsesStamps ? 'Stamps' : 'Points'}` : ''}`,
-        actionTitle: 'Record Customer Transaction',
+        label: `Composite Card · Membership + ${hybridLoyaltyType === 'points' ? 'Reward Points' : 'Reward Stamps'}${hybridTierEnabled ? ` + Tier ${tierUsesStamps ? 'Stamps' : 'Points'}` : ''}`,
+        actionTitle: hybridTierEnabled ? 'Membership, Rewards & Tier Actions' : 'Membership & Reward Actions',
+      }
+    : isEmployee
+    ? {
+        accent: '#1d4ed8',
+        soft: '#eff6ff',
+        border: '#bfdbfe',
+        icon: '🪪',
+        label: 'Employee Card',
+        actionTitle: 'Employee Benefits & Attendance',
       }
     : customerData?.card_type === 'points'
     ? {
@@ -1247,8 +1207,8 @@ function CashierApp({ API_BASE }) {
         soft: '#fafaf9',
         border: '#d6d3d1',
         icon: '🏋️',
-        label: 'Subscription Card',
-        actionTitle: 'Verify Subscription & Log Visit',
+        label: 'Membership Card',
+        actionTitle: 'Verify Access & Log Visit',
       }
     : customerData?.card_type === 'multipass'
     ? {
@@ -1293,11 +1253,9 @@ function CashierApp({ API_BASE }) {
             <span style={styles.headerTitle}>
               {isOwner ? 'Card Scanner' : 'Cashier Scanner'}{staffName ? ` · ${staffName}` : ''}
             </span>
-            {DEBUG && (
-              <div style={{fontSize: 9, color: '#94a3b8', marginTop: 2}}>
-                {CASHIER_BUILD}
-              </div>
-            )}
+            <div style={{fontSize: 9, color: '#94a3b8', marginTop: 2}}>
+              {CASHIER_BUILD}
+            </div>
           </div>
         </div>
         <button style={styles.resetBtn} onClick={() => {
@@ -1423,6 +1381,8 @@ function CashierApp({ API_BASE }) {
               <p style={styles.customerMeta}>
                 {customerData.card_type === 'hybrid'
                   ? `${customerData.membership_status.toUpperCase()}${customerData.membership_expires_at ? ` • until ${customerData.membership_expires_at}` : ''} • ${hybridLoyaltyType === 'points' ? `${customerData.points_balance} reward points` : `${customerData.stamp_count}/${customerData.reward_threshold} reward stamps`}${hybridTierEnabled ? ` • ${customerData.vip_tier?.name || 'Tier'} (${tierProgress} Tier ${tierUsesStamps ? 'stamps' : 'points'})` : ''}`
+                  : customerData.card_type === 'employee'
+                  ? `ID ${customerData.employee_id_number || '—'}${customerData.employee_start_date ? ` • Started ${customerData.employee_start_date}` : ''}`
                   : customerData.card_type === 'points'
                   ? `${customerData.points_balance} points`
                   : customerData.card_type === 'multipass'
@@ -1431,26 +1391,24 @@ function CashierApp({ API_BASE }) {
                   ? `${customerData.vip_tier?.name || 'Tier'} · ${vipUsesStamps ? `${customerData.tier_stamp_count || 0} Tier stamps` : `${customerData.vip_points || 0} Tier points`}`
                   : customerData.card_type === 'membership'
                   ? `${customerData.membership_status.toUpperCase()}${customerData.membership_expires_at ? ` • until ${customerData.membership_expires_at}` : ''}`
-                  : `${customerData.stamp_count} stamps • ${Math.max(0, customerData.reward_threshold - (customerData.stamp_count % customerData.reward_threshold))} to reward`}
+                  : `${customerData.stamp_count} rings • ${customerData.reward_threshold - (customerData.stamp_count % customerData.reward_threshold)} to fruit`}
               </p>
             </div>
           </div>
 
-          {DEBUG && (
-            <div style={{
-              margin: '10px 0 2px',
-              padding: '7px 10px',
-              borderRadius: 8,
-              background: '#f8fafc',
-              border: '1px solid #e2e8f0',
-              color: '#475569',
-              fontSize: 11,
-              fontWeight: 800,
-              textAlign: 'center',
-            }}>
-              SERVER CARD TYPE: {String(customerData.card_type || 'none').toUpperCase()}
-            </div>
-          )}
+          <div style={{
+            margin: '10px 0 2px',
+            padding: '7px 10px',
+            borderRadius: 8,
+            background: '#f8fafc',
+            border: '1px solid #e2e8f0',
+            color: '#475569',
+            fontSize: 11,
+            fontWeight: 800,
+            textAlign: 'center',
+          }}>
+            SERVER CARD TYPE: {String(customerData.card_type || 'none').toUpperCase()}
+          </div>
 
           {customerData.card_type === 'hybrid' ? (
             <>
@@ -1464,10 +1422,10 @@ function CashierApp({ API_BASE }) {
                 </span>
                 <span style={styles.pointsBalanceLabel}>
                   {customerData.membership_status === 'lifetime'
-                    ? 'Lifetime subscription'
+                    ? 'Lifetime membership'
                     : customerData.membership_expires_at
-                    ? `Subscription until ${customerData.membership_expires_at}`
-                    : 'No active subscription'}
+                    ? `Membership until ${customerData.membership_expires_at}`
+                    : 'No active membership'}
                 </span>
               </div>
               {hybridLoyaltyType === 'points' ? (
@@ -1506,13 +1464,13 @@ function CashierApp({ API_BASE }) {
               )}
               {customerData.membership_unlock?.enabled && (
                 <div style={{margin:'10px 0 12px',padding:'11px 12px',borderRadius:12,background:customerData.membership_unlock.unlocked?'#ecfdf5':'#fff7ed',border:`1px solid ${customerData.membership_unlock.unlocked?'#a7f3d0':'#fed7aa'}`}}>
-                  <div style={{fontSize:10,fontWeight:900,color:customerData.membership_unlock.unlocked?'#047857':'#9a3412',letterSpacing:.6}}>SUBSCRIPTION BENEFITS</div>
+                  <div style={{fontSize:10,fontWeight:900,color:customerData.membership_unlock.unlocked?'#047857':'#9a3412',letterSpacing:.6}}>MEMBERSHIP BENEFITS</div>
                   <div style={{fontSize:13,fontWeight:800,color:'#334155',marginTop:4}}>{customerData.membership_unlock.unlocked ? '🔓 Full benefits unlocked' : `🔒 Challenge progress ${customerData.membership_unlock.current || 0}/${customerData.membership_unlock.threshold || 7}`}</div>
                   {!customerData.membership_unlock.unlocked && <div style={{fontSize:11,color:'#78716c',marginTop:3}}>{customerData.membership_unlock.remaining || 0} more Tier {customerData.membership_unlock.unit || (tierUsesStamps?'stamps':'points')} to unlock full benefits</div>}
                 </div>
               )}
               {customerData.membership_benefits?.length > 0 && <div style={{margin:'14px 0'}}>
-                <div style={{fontSize:12,fontWeight:900,color:'#334155',marginBottom:8}}>SUBSCRIPTION BENEFITS · {customerData.membership_name}</div>
+                <div style={{fontSize:12,fontWeight:900,color:'#334155',marginBottom:8}}>MEMBER BENEFITS · {customerData.membership_name}</div>
                 <div style={styles.prizeList}>
                   {customerData.membership_benefits.map(benefit => {
                     const remaining = benefit.remaining_in_window
@@ -1525,6 +1483,45 @@ function CashierApp({ API_BASE }) {
                   })}
                 </div>
               </div>}
+            </>
+          ) : customerData.card_type === 'employee' ? (
+            <>
+              <div style={{...styles.pointsBalanceBox,background:'#eff6ff',border:'1px solid #bfdbfe'}}>
+                <span style={{...styles.pointsBalanceNumber,fontSize:24}}>🪪 {customerData.employee_id_number || 'No ID'}</span>
+                <span style={styles.pointsBalanceLabel}>{customerData.name}</span>
+              </div>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:8,margin:'12px 0'}}>
+                <div style={{padding:'10px 11px',borderRadius:10,background:'#f8fafc',border:'1px solid #e2e8f0'}}>
+                  <div style={{fontSize:9.5,fontWeight:900,color:'#64748b',letterSpacing:.55}}>BIRTHDAY</div>
+                  <div style={{fontSize:12.5,fontWeight:800,color:'#334155',marginTop:4}}>{customerData.birthday || '—'}</div>
+                </div>
+                <div style={{padding:'10px 11px',borderRadius:10,background:'#f8fafc',border:'1px solid #e2e8f0'}}>
+                  <div style={{fontSize:9.5,fontWeight:900,color:'#64748b',letterSpacing:.55}}>STARTED</div>
+                  <div style={{fontSize:12.5,fontWeight:800,color:'#334155',marginTop:4}}>{customerData.employee_start_date || '—'}</div>
+                </div>
+              </div>
+              {customerData.employee_time_tracking_enabled && (
+                <div style={{padding:'11px 12px',borderRadius:12,background:customerData.employee_attendance?.is_clocked_in?'#dcfce7':'#f8fafc',border:`1px solid ${customerData.employee_attendance?.is_clocked_in?'#86efac':'#e2e8f0'}`,marginBottom:12}}>
+                  <div style={{fontSize:10,fontWeight:900,color:customerData.employee_attendance?.is_clocked_in?'#047857':'#64748b',letterSpacing:.6}}>ATTENDANCE</div>
+                  <div style={{fontSize:13,fontWeight:850,color:'#334155',marginTop:4}}>{customerData.employee_attendance?.is_clocked_in ? '🟢 TIMED IN' : '⚪ TIMED OUT'}</div>
+                  {customerData.employee_attendance?.last_at && <div style={{fontSize:10.5,color:'#64748b',marginTop:3}}>Last activity: {new Date(customerData.employee_attendance.last_at).toLocaleString()}</div>}
+                </div>
+              )}
+              {customerData.membership_benefits?.length > 0 ? (
+                <div style={{margin:'14px 0'}}>
+                  <div style={{fontSize:12,fontWeight:900,color:'#334155',marginBottom:8}}>EMPLOYEE BENEFITS · {customerData.membership_name}</div>
+                  <div style={styles.prizeList}>{customerData.membership_benefits.map(benefit => {
+                    const remaining = benefit.remaining_in_window
+                    return <div key={benefit.id} style={{...styles.prizeRow,opacity:benefit.available?1:.58}}>
+                      <div style={{minWidth:0}}>
+                        <div style={styles.prizeName}>{benefit.name}</div>
+                        <div style={styles.prizeCost}>{benefit.available ? (remaining == null ? 'Unlimited' : `${remaining} remaining`) : (benefit.unavailable_reason || 'Unavailable')}{benefit.next_available_at ? ` · resets ${new Date(benefit.next_available_at).toLocaleString()}` : ''}</div>
+                      </div>
+                      <button style={{...styles.prizeRedeemBtn,background:benefit.available?'#1d4ed8':'#cbd5e1',cursor:benefit.available?'pointer':'not-allowed'}} disabled={!benefit.available||loading} onClick={()=>redeemMembershipBenefit(benefit)}>{benefit.benefit_type?.includes('discount')?'Apply':'Redeem'}</button>
+                    </div>
+                  })}</div>
+                </div>
+              ) : <div style={{fontSize:12,color:'#94a3b8',textAlign:'center',padding:'12px 0'}}>No employee benefits configured for this card.</div>}
             </>
           ) : customerData.card_type === 'points' ? (
             <>
@@ -1625,7 +1622,7 @@ function CashierApp({ API_BASE }) {
               </div>
               {customerData.membership_benefits?.length > 0 && (
                 <div style={{margin:'14px 0'}}>
-                  <div style={{fontSize:12,fontWeight:900,color:'#334155',marginBottom:8}}>SUBSCRIPTION BENEFITS · {customerData.membership_name}</div>
+                  <div style={{fontSize:12,fontWeight:900,color:'#334155',marginBottom:8}}>MEMBER BENEFITS · {customerData.membership_name}</div>
                   <div style={styles.prizeList}>{customerData.membership_benefits.map(benefit => <div key={benefit.id} style={{...styles.prizeRow,opacity:benefit.available?1:.58}}>
                     <div><div style={styles.prizeName}>{benefit.name}</div><div style={styles.prizeCost}>{benefit.remaining_in_window==null?'Unlimited':`${benefit.remaining_in_window} remaining`}{benefit.unavailable_reason?` · ${benefit.unavailable_reason}`:''}</div></div>
                     <button style={{...styles.prizeRedeemBtn,background:benefit.available?'#0d9488':'#cbd5e1'}} disabled={!benefit.available||loading} onClick={()=>redeemMembershipBenefit(benefit)}>{benefit.benefit_type?.includes('discount')?'Apply':'Redeem'}</button>
@@ -1634,14 +1631,14 @@ function CashierApp({ API_BASE }) {
               )}
             </>
           ) : (
-            /* Stamp progress */
+            /* Stamp Rings */
             <div style={styles.stampVisual}>
               {Array.from({length: customerData.reward_threshold || 8}).map((_, i) => (
                 <div key={i} style={{
                   ...styles.stampDot,
                   background: i < (customerData.stamp_count % (customerData.reward_threshold || 8)) ? '#0d9488' : '#e2e8f0',
                 }}>
-                  {i < (customerData.stamp_count % (customerData.reward_threshold || 8)) ? '✓' : ''}
+                  {i < (customerData.stamp_count % (customerData.reward_threshold || 8)) ? '🍃' : ''}
                 </div>
               ))}
             </div>
@@ -1650,8 +1647,8 @@ function CashierApp({ API_BASE }) {
           {/* Reward Banner (stamp cards only) */}
           {usesStamps && customerData.reward_unlocked && (
             <div style={styles.rewardBanner}>
-              <span style={styles.rewardEmoji}>🎁</span>
-              <span style={styles.rewardText}>Reward Ready!</span>
+              <span style={styles.rewardEmoji}>🍎</span>
+              <span style={styles.rewardText}>Fruit Ready!</span>
             </div>
           )}
 
@@ -1697,58 +1694,32 @@ function CashierApp({ API_BASE }) {
             {cardExperience.actionTitle}
           </div>
 
-          {isHybrid && (
-            <div style={{...styles.pointsSaleSection,background:'#f8fafc',border:'1px solid #cbd5e1'}}>
-              {(hybridLoyaltyType === 'points' || tierUsesPoints) && (
-                <div style={styles.pointsSaleRow}>
-                  <input
-                    type="number"
-                    inputMode="decimal"
-                    min="0"
-                    placeholder="Customer purchase amount (₱)"
-                    value={saleAmount}
-                    onChange={e => setSaleAmount(e.target.value)}
-                    style={styles.pointsSaleInput}
-                  />
-                  <button
-                    style={{...styles.actionBtn, background:'#0d9488', flex:'none', padding:'14px 20px'}}
-                    onClick={recordHybridTransaction}
-                    disabled={loading || !saleAmount}
-                  >
-                    {loading ? 'Recording...' : 'Record Transaction'}
-                  </button>
-                </div>
-              )}
-              {hybridLoyaltyType === 'stamp' && !tierUsesPoints && (
+          {/* Actions */}
+          {isEmployee && customerData.employee_time_tracking_enabled && (
+            <div style={{...styles.pointsSaleSection,background:'#eff6ff',border:'1px solid #bfdbfe'}}>
+              <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
                 <button
-                  style={{...styles.actionBtn, background:'#0d9488', width:'100%'}}
-                  onClick={recordHybridTransaction}
-                  disabled={loading}
+                  style={{...styles.actionBtn,background:'#16a34a',flex:1,minWidth:140}}
+                  onClick={()=>recordEmployeeAttendance('time_in')}
+                  disabled={loading || customerData.employee_attendance?.is_clocked_in}
                 >
-                  {loading ? 'Recording...' : 'Record Visit'}
+                  {loading ? '...' : '🕒 Time In'}
                 </button>
-              )}
-              <div style={{marginTop:10,display:'grid',gap:6}}>
-                <div style={{fontSize:11,fontWeight:900,color:'#64748b',letterSpacing:.5}}>THIS TRANSACTION WILL ADD</div>
-                <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
-                  <span style={{padding:'7px 9px',borderRadius:999,background:'#eff6ff',color:'#1d4ed8',fontSize:11,fontWeight:800}}>
-                    {hybridLoyaltyType === 'points' ? `${saleAmount && previewPoints > 0 ? `+${previewPoints} ` : ''}Reward Points` : '+1 Reward Stamp'}
-                  </span>
-                  {hybridTierEnabled && (
-                    <span style={{padding:'7px 9px',borderRadius:999,background:'#fefce8',color:'#92400e',fontSize:11,fontWeight:800}}>
-                      {tierUsesPoints ? `${saleAmount && previewVipPoints > 0 ? `+${previewVipPoints} ` : ''}Tier Points` : '+1 Tier Stamp'}
-                    </span>
-                  )}
-                </div>
-                {(hybridLoyaltyType === 'points' || tierUsesPoints) && !saleAmount && (
-                  <p style={{...styles.pointsPreview,margin:0}}>Enter the purchase amount once. LoyaltyTree applies both Reward and Tier earning rules automatically.</p>
-                )}
+                <button
+                  style={{...styles.actionBtn,background:'#334155',flex:1,minWidth:140}}
+                  onClick={()=>recordEmployeeAttendance('time_out')}
+                  disabled={loading || !customerData.employee_attendance?.is_clocked_in}
+                >
+                  {loading ? '...' : '🕒 Time Out'}
+                </button>
               </div>
+              <p style={styles.pointsPreview}>{customerData.employee_attendance?.is_clocked_in ? 'Employee is currently timed in.' : 'Employee is currently timed out.'}</p>
             </div>
           )}
-
-          {/* Actions */}
-          {!isHybrid && usesPoints ? (
+          {isEmployee && !customerData.employee_time_tracking_enabled && (
+            <div style={{fontSize:11.5,color:'#64748b',textAlign:'center',padding:'6px 0 12px'}}>Time In / Time Out is disabled for this Employee Card. Benefits can still be redeemed above.</div>
+          )}
+          {usesPoints ? (
             <div style={styles.pointsSaleSection}>
               <div style={styles.pointsSaleRow}>
                 <input
@@ -1777,7 +1748,7 @@ function CashierApp({ API_BASE }) {
               )}
             </div>
           ) : null}
-          {!isHybrid && tierUsesPoints ? (
+          {tierUsesPoints ? (
             <div style={{
               ...styles.pointsSaleSection,
               background: '#fefce8',
@@ -1862,7 +1833,7 @@ function CashierApp({ API_BASE }) {
             </div>
           ) : null}
           <div style={styles.actions}>
-            {!isHybrid && usesStamps && (
+            {usesStamps && (
               <button
                 style={{...styles.actionBtn, background: '#0d9488'}}
                 onClick={() => addStamp('reward')}
@@ -1871,7 +1842,7 @@ function CashierApp({ API_BASE }) {
                 {loading ? '...' : '🎟️ Add Reward Stamp'}
               </button>
             )}
-            {!isHybrid && tierUsesStamps && (
+            {tierUsesStamps && (
               <button
                 style={{...styles.actionBtn, background: '#ca8a04'}}
                 onClick={() => addStamp('tier')}
@@ -1886,12 +1857,12 @@ function CashierApp({ API_BASE }) {
                 onClick={logMembershipVisit}
                 disabled={loading || !['active','lifetime'].includes(customerData.membership_status)}
               >
-                {loading ? '...' : entrySource === 'nfc' ? '📡 Log NFC Activity' : '✓ Log Subscription Visit'}
+                {loading ? '...' : entrySource === 'nfc' ? '📡 Log NFC Activity' : '🏋️ Check In Member'}
               </button>
             )}
             {canLogMembershipVisit && !['active','lifetime'].includes(customerData.membership_status) && (
               <div style={{width: '100%', color: '#991b1b', fontWeight: 700, textAlign: 'center'}}>
-                Access denied — subscription is {customerData.membership_status}.
+                Access denied — membership is {customerData.membership_status}.
               </div>
             )}
             {customerData.card_type === 'multipass' && (
@@ -1909,7 +1880,7 @@ function CashierApp({ API_BASE }) {
                 onClick={redeemReward}
                 disabled={loading}
               >
-                {loading ? '...' : '🎁 Redeem Reward'}
+                {loading ? '...' : '🍎 Harvest'}
               </button>
             )}
           </div>

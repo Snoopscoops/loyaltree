@@ -92,6 +92,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     membership_quick_checkin: false,
     membership_benefits_unlock_enabled: false,
     membership_benefits_unlock_threshold: 7,
+    // Employee card only
+    employee_time_tracking_enabled: false,
+    employee_benefits: [],
     // VIP / Tier card only
     vip_points_per_amount: 10,
     vip_amount_pesos: 100,
@@ -185,7 +188,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
         })
         setForm(f => ({
           ...f,
-          card_type: ['stamp', 'points', 'membership', 'multipass', 'vip', 'hybrid'].includes(data.card_type) ? data.card_type : 'stamp',
+          card_type: ['stamp', 'points', 'membership', 'multipass', 'vip', 'hybrid', 'employee'].includes(data.card_type) ? data.card_type : 'stamp',
           hybrid_loyalty_type: ['points','stamp'].includes(data.hybrid_loyalty_type) ? data.hybrid_loyalty_type : 'points',
           hybrid_points_enabled: typeof data.hybrid_points_enabled === 'boolean' ? data.hybrid_points_enabled : data.hybrid_loyalty_type !== 'stamp',
           hybrid_stamps_enabled: typeof data.hybrid_stamps_enabled === 'boolean' ? data.hybrid_stamps_enabled : data.hybrid_loyalty_type === 'stamp',
@@ -233,6 +236,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
           membership_quick_checkin: data.membership_quick_checkin === true,
           membership_benefits_unlock_enabled: data.membership_benefits_unlock_enabled === true,
           membership_benefits_unlock_threshold: data.membership_benefits_unlock_threshold ?? 7,
+          employee_time_tracking_enabled: data.employee_time_tracking_enabled === true,
+          employee_benefits: Array.isArray(data.employee_benefits) ? data.employee_benefits : [],
           vip_points_per_amount: data.vip_points_per_amount ?? 10,
           vip_amount_pesos: data.vip_amount_pesos ?? 100,
           vip_progression_type: ['points','stamps'].includes(data.vip_progression_type)
@@ -548,6 +553,16 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     membership_quick_checkin: form.membership_quick_checkin === true,
     membership_benefits_unlock_enabled: form.card_type === 'hybrid' && form.hybrid_tier_enabled === true && form.membership_benefits_unlock_enabled === true,
     membership_benefits_unlock_threshold: Math.max(1, Number(form.membership_benefits_unlock_threshold) || 7),
+    employee_time_tracking_enabled: form.card_type === 'employee' && form.employee_time_tracking_enabled === true,
+    employee_benefits: (form.employee_benefits || []).map(b => ({
+      id: b.id || Math.random().toString(16).slice(2, 14),
+      name: (b.name || 'Benefit').trim(), benefit_type: b.benefit_type || 'custom',
+      value: b.value === '' || b.value == null ? null : Number(b.value),
+      description: b.description || null,
+      usage_limit: b.usage_limit == null ? null : Math.max(1, Number(b.usage_limit) || 1),
+      reset_period: ['daily','weekly','monthly','never'].includes(b.reset_period) ? b.reset_period : 'never',
+      active: b.active !== false,
+    })),
     vip_points_per_amount: Number(form.vip_points_per_amount) || 0,
     vip_amount_pesos: Number(form.vip_amount_pesos) || 100,
     vip_progression_type: form.card_type === 'vip'
@@ -600,12 +615,13 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
   }
 
   const benefitRuleLabel = (benefit) => {
-    if (benefit.usage_limit == null) return 'Unlimited while subscription is active'
+    const employeeCard = form.card_type === 'employee'
+    if (benefit.usage_limit == null) return employeeCard ? 'Unlimited while Employee Card is active' : 'Unlimited while subscription is active'
     const unit = benefit.reset_period === 'daily' ? 'day'
       : benefit.reset_period === 'weekly' ? 'week'
       : benefit.reset_period === 'monthly' ? 'month'
-      : benefit.reset_period === 'membership_cycle' ? 'subscription cycle'
-      : 'subscription'
+      : benefit.reset_period === 'membership_cycle' ? (employeeCard ? 'employment cycle' : 'subscription cycle')
+      : (employeeCard ? 'Employee Card' : 'subscription')
     return `${benefit.usage_limit} use${Number(benefit.usage_limit) === 1 ? '' : 's'} per ${unit}`
   }
 
@@ -632,6 +648,29 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
   }
 
   const removeMembershipBenefit = (id) => update('membership_benefits', (form.membership_benefits || []).filter(b => b.id !== id))
+
+  const addEmployeeBenefit = () => {
+    setBenefitError('')
+    const name = benefitDraft.name.trim()
+    if (!name) { setBenefitError('Enter a benefit name'); return }
+    const needsValue = ['percentage_discount','fixed_discount'].includes(benefitDraft.benefit_type)
+    const value = benefitDraft.value === '' ? null : Number(benefitDraft.value)
+    if (needsValue && (!(value >= 0) || (benefitDraft.benefit_type === 'percentage_discount' && value > 100))) {
+      setBenefitError(benefitDraft.benefit_type === 'percentage_discount' ? 'Enter a percentage from 0 to 100' : 'Enter a valid discount amount')
+      return
+    }
+    const benefit = {
+      id: Math.random().toString(16).slice(2, 14), name,
+      benefit_type: benefitDraft.benefit_type, value,
+      description: benefitDraft.description.trim() || null,
+      usage_limit: benefitDraft.unlimited ? null : Math.max(1, Number(benefitDraft.usage_limit) || 1),
+      reset_period: benefitDraft.unlimited ? 'never' : (benefitDraft.reset_period === 'membership_cycle' ? 'never' : benefitDraft.reset_period),
+      active: true,
+    }
+    update('employee_benefits', [...(form.employee_benefits || []), benefit])
+    setBenefitDraft({ name:'', benefit_type:'free_item', value:'', description:'', usage_limit:'1', reset_period:'daily', unlimited:false })
+  }
+  const removeEmployeeBenefit = (id) => update('employee_benefits', (form.employee_benefits || []).filter(b => b.id !== id))
 
   const postConfig = async () => {
     if (form.card_type === 'hybrid' && !hybridAllowed) {
@@ -756,6 +795,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
   const rewardEditorType = isHybrid ? hybridRewardEditorType : effectiveLoyaltyType
   const hybridRewardLabel = [hybridPointsEnabled ? 'Points' : '', hybridStampsEnabled ? 'Stamps' : ''].filter(Boolean).join(' + ') || 'Rewards'
   const hasMembership = form.card_type === 'membership' || isHybrid
+  const isEmployee = form.card_type === 'employee'
   const hybridTierEnabled = isHybrid && form.hybrid_tier_enabled === true
   const tierConfigActive = form.card_type === 'vip' || hybridTierEnabled
   const tierUsesStamps = form.card_type === 'vip'
@@ -835,6 +875,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     ? 'Points Card'
     : form.card_type === 'membership'
     ? 'Subscription Card'
+    : form.card_type === 'employee'
+    ? 'Employee Card'
     : form.card_type === 'vip'
     ? 'Tier Card'
     : form.card_type === 'multipass'
@@ -908,6 +950,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                   ['stamp','🎟️','Stamp Card','Customers collect stamps and unlock rewards at milestones.'],
                   ['points','💎','Points Card','Customers earn points from spending and redeem them for prizes.'],
                   ['membership','🏋️','Subscription Card','For recurring subscriptions, access plans, and included benefits.'],
+                  ['employee','🪪','Employee Card','Employee ID card with start date, birthday, redeemable benefits, and optional Time In / Time Out.'],
                   ['hybrid','✨','Hybrid Card','Subscription + Points, Stamp Rewards, and optional Tier on one Wallet card. Enable Points, Stamps, or both.'],
                   ['vip','👑','Tier Card','Customers build tier progress and automatically move through reward levels.'],
                   ['multipass','🎫','Multi-Pass','Customers receive a fixed number of sessions or visits that count down.'],
@@ -1196,6 +1239,13 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                   placeholder={'Free monthly service\n10% member discount\nPriority booking'}/>
               </>}
 
+              {form.card_type==='employee' && <>
+                <label style={styles.label}>Employee fields</label>
+                <div style={{padding:12,border:'1px solid #dbeafe',background:'#eff6ff',borderRadius:12,fontSize:12,color:'#1e3a8a'}}>Each employee card stores <b>ID number, name, birthday, and employment start date</b>. Those values are entered when the employee is enrolled.</div>
+                <label style={{...styles.label,marginTop:16,display:'flex',gap:9,alignItems:'center'}}><input type="checkbox" checked={form.employee_time_tracking_enabled===true} onChange={e=>update('employee_time_tracking_enabled',e.target.checked)}/> Enable Time In / Time Out when the card is scanned</label>
+                <p style={styles.hint}>Optional attendance events are logged with branch/staff attribution.</p>
+              </>}
+
               {form.card_type==='vip' && <>
                 <label style={styles.label}>How should customers move up tiers?</label>
                 <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'1fr 1fr',gap:10,marginBottom:16}}>
@@ -1393,6 +1443,20 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
 
           <button
             type="button"
+            onClick={() => update('card_type', 'employee')}
+            style={{
+              ...styles.pickerCard,
+              ...(form.card_type === 'employee' ? { borderColor: form.primary_color || '#0d9488', background: '#f0fdfa' } : {}),
+            }}
+          >
+            <span style={styles.pickerCardIcon}>🪪</span>
+            <span style={styles.pickerCardLabel}>Employee Card</span>
+            <span style={styles.pickerCardDesc}>Employee identity card with ID number, birthday, start date, redeemable benefits, and optional Time In / Time Out.</span>
+            {form.card_type === 'employee' && <span style={styles.pickerCardBadge}>Selected</span>}
+          </button>
+
+          <button
+            type="button"
             onClick={() => {
               if (!hybridAllowed) {
                 setError('Hybrid Card is a Growth feature. Upgrade to Growth to unlock it.')
@@ -1438,7 +1502,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
           }
           setStep('form')
         }} style={styles.pickerContinueBtn}>
-          Continue with {form.card_type === 'hybrid' ? 'Hybrid Card' : form.card_type === 'points' ? 'Points Card' : form.card_type === 'membership' ? 'Subscription Card' : form.card_type === 'vip' ? 'Tier Card' : form.card_type === 'multipass' ? 'Multi-Pass' : 'Stamp Card'} →
+          Continue with {form.card_type === 'hybrid' ? 'Hybrid Card' : form.card_type === 'points' ? 'Points Card' : form.card_type === 'membership' ? 'Subscription Card' : form.card_type === 'employee' ? 'Employee Card' : form.card_type === 'vip' ? 'Tier Card' : form.card_type === 'multipass' ? 'Multi-Pass' : 'Stamp Card'} →
         </button>
       </div>
     )
@@ -1628,8 +1692,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                 <div style={styles.wallet20PreviewInfo}>
                   <div><small>CUSTOMER</small><strong>John Customer</strong></div>
                   <div style={styles.wallet20PreviewMetric}>
-                    <small>{form.card_type==='hybrid'?(hybridPointsEnabled?'POINTS':'STAMPS'):form.card_type==='points'?'POINTS':form.card_type==='multipass'?'SESSIONS LEFT':form.card_type==='membership'?'STATUS':form.card_type==='vip'?'TIER':'STAMPS'}</small>
-                    <strong style={(walletPrimaryIsStamps && stampDisplayStyle==='icon' && rawStampGoal<=10)?{fontSize:previewSurface==='apple'?18:17,letterSpacing:1.1,whiteSpace:'nowrap'}:{}}>{form.card_type==='hybrid'?(hybridPointsEnabled?'2,850':walletStampNativeValue):form.card_type==='points'?'2,850':form.card_type==='multipass'?'5 / 10':form.card_type==='membership'?'ACTIVE':form.card_type==='vip'?'GOLD':walletStampNativeValue}</strong>
+                    <small>{form.card_type==='hybrid'?(hybridPointsEnabled?'POINTS':'STAMPS'):form.card_type==='points'?'POINTS':form.card_type==='multipass'?'SESSIONS LEFT':form.card_type==='membership'?'STATUS':form.card_type==='employee'?'EMPLOYEE ID':form.card_type==='vip'?'TIER':'STAMPS'}</small>
+                    <strong style={(walletPrimaryIsStamps && stampDisplayStyle==='icon' && rawStampGoal<=10)?{fontSize:previewSurface==='apple'?18:17,letterSpacing:1.1,whiteSpace:'nowrap'}:{}}>{form.card_type==='hybrid'?(hybridPointsEnabled?'2,850':walletStampNativeValue):form.card_type==='points'?'2,850':form.card_type==='multipass'?'5 / 10':form.card_type==='membership'?'ACTIVE':form.card_type==='employee'?'EMP-001':form.card_type==='vip'?'GOLD':walletStampNativeValue}</strong>
                   </div>
                 </div>
                 <div style={styles.wallet20PreviewQrBox}>
@@ -1645,6 +1709,14 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                       <div style={{fontSize:previewSurface==='apple'?15:14,fontWeight:800,letterSpacing:.8,whiteSpace:'nowrap'}}>{line}</div>
                     </div>)}
                   </div>
+                </div>
+              )}
+              {form.card_type==='employee' && (
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginTop:10}}>
+                  <div><small>NAME</small><strong>EMPLOYEE NAME</strong></div>
+                  <div><small>BIRTHDAY</small><strong>JAN 01</strong></div>
+                  <div><small>STARTED</small><strong>SEP 16, 2026</strong></div>
+                  <div><small>BENEFITS</small><strong>{(form.employee_benefits||[]).length || '—'}</strong></div>
                 </div>
               )}
               {(isHybrid || form.card_type==='membership') && (
@@ -1680,7 +1752,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
 
           <div style={styles.typeSummary}>
             <span style={styles.typeSummaryText}>
-              {form.card_type === 'hybrid' ? `✨ Hybrid Card · Subscription + ${hybridRewardLabel}${hybridTierEnabled ? ` + Tier ${tierUsesStamps ? 'Stamps' : 'Points'}` : ''}` : form.card_type === 'points' ? '💎 Points Card' : form.card_type === 'membership' ? '🏋️ Subscription Card' : form.card_type === 'vip' ? '👑 Tier Card' : form.card_type === 'multipass' ? '🎫 Multi-Pass' : '🎟️ Stamp Card'}
+              {form.card_type === 'hybrid' ? `✨ Hybrid Card · Subscription + ${hybridRewardLabel}${hybridTierEnabled ? ` + Tier ${tierUsesStamps ? 'Stamps' : 'Points'}` : ''}` : form.card_type === 'points' ? '💎 Points Card' : form.card_type === 'membership' ? '🏋️ Subscription Card' : form.card_type === 'employee' ? '🪪 Employee Card' : form.card_type === 'vip' ? '👑 Tier Card' : form.card_type === 'multipass' ? '🎫 Multi-Pass' : '🎟️ Stamp Card'}
             </span>
             <button type="button" onClick={() => setStep('picker')} style={styles.typeChangeBtn}>
               Change card type
@@ -1699,7 +1771,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
             </div>
             <div style={{...styles.fieldGroup,marginTop:14}}>
               <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'center'}}><label style={styles.label}>Description</label><span style={{fontSize:11,fontWeight:800,color:form.description.length>=DESCRIPTION_LIMIT?'#ef4444':'#94a3b8'}}>{form.description.length}/{DESCRIPTION_LIMIT}</span></div>
-              <textarea style={styles.textarea} placeholder={hasMembership ? 'e.g. Monthly subscription benefits plus loyalty rewards.' : 'e.g. Collect rewards every time you visit.'} value={form.description} maxLength={DESCRIPTION_LIMIT} onChange={e => update('description', e.target.value)} rows={3}/>
+              <textarea style={styles.textarea} placeholder={isEmployee ? 'e.g. Official employee card and staff benefits.' : hasMembership ? 'e.g. Monthly subscription benefits plus loyalty rewards.' : 'e.g. Collect rewards every time you visit.'} value={form.description} maxLength={DESCRIPTION_LIMIT} onChange={e => update('description', e.target.value)} rows={3}/>
               <p style={styles.hint}>Keep this short; Wallet details can carry the deeper reward information.</p>
             </div>
           </section>
@@ -1995,6 +2067,44 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                   onChange={e => update('membership_terms', e.target.value)}
                   placeholder="Optional rules, renewal terms, and usage conditions."
                 />
+              </div>
+            </div>
+          ) : form.card_type === 'employee' ? (
+            <div style={styles.pointsSection}>
+              <div style={{...styles.fieldGroup,padding:14,background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:12}}>
+                <label style={styles.label}>Employee profile on each card</label>
+                <p style={{...styles.hint,margin:0}}>Employee enrollment collects <b>ID number, name, birthday, and employment start date</b>. These details are stored per employee and shown on the digital card.</p>
+              </div>
+              <div style={styles.fieldGroup}>
+                <label style={{display:'flex',gap:10,alignItems:'flex-start',fontSize:13,fontWeight:750}}>
+                  <input type="checkbox" checked={form.employee_time_tracking_enabled===true} onChange={e=>update('employee_time_tracking_enabled',e.target.checked)} style={{marginTop:2}}/>
+                  <span>Enable Time In / Time Out when Employee Card is scanned<br/><small style={{fontWeight:500,color:'#64748b'}}>Optional. Attendance events are logged with time, branch and staff account.</small></span>
+                </label>
+              </div>
+              <div style={styles.fieldGroup}>
+                <label style={styles.label}>Redeemable employee benefits</label>
+                <p style={styles.hint}>When the Employee Card is scanned, staff can redeem these benefits. Limits reset daily, weekly, monthly, or never.</p>
+                {(form.employee_benefits || []).map((b,i)=><div key={b.id||i} style={styles.prizeRow}>
+                  <div style={{flex:1,minWidth:0}}><b>{b.name}</b><div style={{fontSize:11,color:'#64748b',marginTop:3}}>{benefitRuleLabel(b)}{b.description?` · ${b.description}`:''}</div></div>
+                  <button type="button" style={styles.prizeRemoveBtn} onClick={()=>removeEmployeeBenefit(b.id)}>✕</button>
+                </div>)}
+                <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'1.1fr .9fr .6fr',gap:8,marginTop:12}}>
+                  <input style={styles.input} placeholder="Benefit, e.g. Free drink" value={benefitDraft.name} onChange={e=>setBenefitDraft({...benefitDraft,name:e.target.value})}/>
+                  <select style={styles.input} value={benefitDraft.benefit_type} onChange={e=>setBenefitDraft({...benefitDraft,benefit_type:e.target.value})}>
+                    <option value="free_item">Free item / service</option><option value="percentage_discount">% discount</option><option value="fixed_discount">Fixed discount</option><option value="custom">Custom</option>
+                  </select>
+                  {['percentage_discount','fixed_discount'].includes(benefitDraft.benefit_type)?<input style={styles.input} type="number" min="0" placeholder="Value" value={benefitDraft.value} onChange={e=>setBenefitDraft({...benefitDraft,value:e.target.value})}/>:<div/>}
+                </div>
+                <input style={{...styles.input,marginTop:8}} placeholder="Description (optional)" value={benefitDraft.description} onChange={e=>setBenefitDraft({...benefitDraft,description:e.target.value})}/>
+                <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'1fr 1fr',gap:8,marginTop:8}}>
+                  <input style={styles.input} type="number" min="1" disabled={benefitDraft.unlimited} placeholder="Uses" value={benefitDraft.usage_limit} onChange={e=>setBenefitDraft({...benefitDraft,usage_limit:e.target.value})}/>
+                  <select style={styles.input} disabled={benefitDraft.unlimited} value={benefitDraft.reset_period==='membership_cycle'?'never':benefitDraft.reset_period} onChange={e=>setBenefitDraft({...benefitDraft,reset_period:e.target.value})}>
+                    <option value="daily">Per day</option><option value="weekly">Per week</option><option value="monthly">Per month</option><option value="never">Never resets</option>
+                  </select>
+                </div>
+                <label style={{display:'flex',gap:8,alignItems:'center',fontSize:12,marginTop:8}}><input type="checkbox" checked={benefitDraft.unlimited} onChange={e=>setBenefitDraft({...benefitDraft,unlimited:e.target.checked})}/> Unlimited uses</label>
+                {benefitError && <div style={{...styles.error,marginTop:8}}>{benefitError}</div>}
+                <button type="button" onClick={addEmployeeBenefit} style={{...styles.addPrizeBtn,marginTop:10}}>+ Add Employee Benefit</button>
               </div>
             </div>
           ) : form.card_type === 'vip' ? (

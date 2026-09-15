@@ -2164,11 +2164,11 @@ class MembershipBenefitConfig(BaseModel):
 
 class LoyaltyProgramCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    card_type: Literal['stamp', 'points', 'multipass', 'membership', 'vip', 'hybrid'] = 'stamp'
+    card_type: Literal['stamp', 'points', 'multipass', 'membership', 'vip', 'hybrid', 'employee'] = 'stamp'
 
 
 class LoyaltyConfig(BaseModel):
-    card_type: Literal['stamp', 'points', 'multipass', 'membership', 'vip', 'hybrid'] = 'stamp'
+    card_type: Literal['stamp', 'points', 'multipass', 'membership', 'vip', 'hybrid', 'employee'] = 'stamp'
     # Hybrid keeps one Wallet card/customer identity while combining Membership
     # with one or both redeemable reward engines. `hybrid_loyalty_type` stays as a
     # backward-compatible primary/native Wallet metric for older clients; the two
@@ -2228,6 +2228,9 @@ class LoyaltyConfig(BaseModel):
     # benefits stay locked until the member reaches this Tier-progress threshold.
     membership_benefits_unlock_enabled: bool = False
     membership_benefits_unlock_threshold: int = Field(default=7, ge=1, le=100000000)
+    # --- Employee card only ---
+    employee_time_tracking_enabled: bool = False
+    employee_benefits: Optional[List[MembershipBenefitConfig]] = None
     # --- VIP card only ---
     vip_points_per_amount: Optional[float] = Field(default=10, ge=0)
     vip_amount_pesos: Optional[float] = Field(default=100, ge=1)
@@ -2250,6 +2253,8 @@ class CustomerSignup(BaseModel):
     last_order_date: Optional[str] = None  # 'YYYY-MM-DD'
     privacy_consent: bool = False
     privacy_consent_version: Optional[str] = Field(default=None, max_length=40)
+    employee_id_number: Optional[str] = Field(default=None, max_length=80)
+    employee_start_date: Optional[str] = None  # YYYY-MM-DD
 
 class PlatformAnalyticsEventCreate(BaseModel):
     event_name: str = Field(min_length=1, max_length=80)
@@ -2284,6 +2289,8 @@ class CustomerUpdate(BaseModel):
     vip_points: Optional[int] = Field(default=None, ge=0)
     tier_stamp_count: Optional[int] = Field(default=None, ge=0)
     vip_manual_tier_id: Optional[str] = None
+    employee_id_number: Optional[str] = Field(default=None, max_length=80)
+    employee_start_date: Optional[str] = None
 
 class StampRequest(BaseModel):
     customer_public_id: str
@@ -2431,6 +2438,13 @@ class MembershipBenefitRedeemRequest(BaseModel):
     staff_pin: Optional[str] = None
     as_owner: Optional[bool] = False
 
+class EmployeeAttendanceRequest(BaseModel):
+    customer_public_id: str
+    action: Literal['time_in', 'time_out']
+    note: Optional[str] = Field(default=None, max_length=300)
+    staff_pin: Optional[str] = None
+    as_owner: Optional[bool] = False
+
 class MembershipNoteRequest(BaseModel):
     # Membership-card equivalent of a stamp/session: the cashier logs what
     # service the member came in for today, so the owner can later pull up
@@ -2462,6 +2476,7 @@ class AnnouncementCreate(BaseModel):
     is_active: Optional[bool] = True
     target_scope: Literal['business', 'branch'] = 'business'
     branch_public_id: Optional[str] = None
+    program_public_id: Optional[str] = None
 
 
 
@@ -2488,6 +2503,7 @@ class AnnouncementUpdate(BaseModel):
     is_active: Optional[bool] = None
     target_scope: Optional[Literal['business', 'branch']] = None
     branch_public_id: Optional[str] = None
+    program_public_id: Optional[str] = None
 
 
 class PartnerCreate(BaseModel):
@@ -4101,6 +4117,8 @@ def business_summary(biz: dict) -> dict:
             activity_table = "points_events"
         elif card_type == 'multipass':
             activity_table = "multipass_events"
+        elif card_type == 'employee':
+            activity_table = "employee_attendance_events"
         else:
             activity_table = "stamp_events"
         activity_q = supabase.table(activity_table).select("id", count="exact").eq("business_id", biz_id).gte("created_at", since)
@@ -4722,6 +4740,7 @@ WALLET_CARD_LABELS = {
     'multipass': 'MULTIPASS',
     'vip': 'VIP MEMBER',
     'hybrid': 'HYBRID REWARDS',
+    'employee': 'EMPLOYEE CARD',
 }
 
 def _normalize_hex_color(value: Optional[str], fallback: str = '#0d9488') -> str:
@@ -4811,6 +4830,8 @@ def wallet_20_short_status(customer: dict, business: dict, program: dict) -> tup
         return 'SESSIONS LEFT', f'{remaining} / {total}'
     if card_type == 'membership':
         return 'STATUS', membership_effective_status(customer).upper()
+    if card_type == 'employee':
+        return 'EMPLOYEE ID', str(customer.get('employee_id_number') or '—')
     if card_type == 'vip':
         tier = get_vip_tier(customer, program or {})
         return 'VIP TIER', str(tier.get('name') or 'VIP').upper()
@@ -5342,6 +5363,20 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
             details.append(('next_tier_benefits', 'BENEFITS YOU UNLOCK', ' · '.join(next_benefits) if next_benefits else 'Tier benefits'))
             details.append(('next_tier_coupons', 'COUPONS YOU RECEIVE', ' · '.join(next_coupons) if next_coupons else 'No one-time coupons for this tier'))
         details.append(('how_to_earn', 'HOW TO EARN', _tier_earning_rule()))
+
+    elif card_type == 'employee':
+        loyalty_points_label = 'EMPLOYEE ID'
+        loyalty_points_balance = str(customer.get('employee_id_number') or '—')
+        secondary_points = {'label': 'STATUS', 'balance': {'string': 'ACTIVE'}}
+        details.append(('employee_name', 'NAME', str(customer.get('name') or 'Employee')))
+        details.append(('birthday', 'BIRTHDAY', str(customer.get('birthday') or '—')))
+        details.append(('started', 'STARTED', str(customer.get('employee_start_date') or '—')))
+        if bool((program or {}).get('employee_time_tracking_enabled')):
+            attendance = get_employee_attendance_state(customer.get('id'))
+            details.append(('attendance', 'TIME STATUS', 'TIMED IN' if attendance.get('is_clocked_in') else 'TIMED OUT'))
+        benefits = normalize_employee_benefits(program)
+        if benefits:
+            details.append(('benefit', 'EMPLOYEE BENEFIT', str(benefits[0].get('name') or 'Benefit')))
 
     elif card_type == 'membership':
         status = membership_effective_status(customer)
@@ -6394,6 +6429,11 @@ def _enrich_announcement_target(business: dict, announcement: dict) -> dict:
         if branch:
             enriched['branch_public_id'] = branch.get('public_id')
             enriched['branch_name'] = branch.get('name')
+    if enriched.get('program_id') is not None:
+        target_program = safe_get_loyalty_program(business.get('id'), program_id=enriched.get('program_id'))
+        if target_program:
+            enriched['program_public_id'] = target_program.get('public_id')
+            enriched['program_name'] = target_program.get('program_name') or target_program.get('card_name') or 'Program'
     enriched['_notification_header'] = _announcement_notification_header(business, enriched)
     return enriched
 
@@ -6432,6 +6472,7 @@ def _send_announcement_notification(business: dict, announcement: dict, resend: 
     """Send either a whole-business broadcast or a branch-targeted push."""
     ann = _enrich_announcement_target(business, announcement)
     scope = ann.get('target_scope') or 'business'
+    target_program_id = ann.get('program_id')
     header = ann.get('_notification_header') or business.get('name') or 'LoyaltyTree'
     body = ann.get('message') or ''
     message_id = f"ann-{ann.get('id')}-{int(datetime.utcnow().timestamp())}" if resend else f"ann-{ann.get('id')}"
@@ -6445,6 +6486,8 @@ def _send_announcement_notification(business: dict, announcement: dict, resend: 
     if scope == 'branch':
         branch_id = ann.get('branch_id')
         customers = _customers_for_branch_audience(business.get('id'), branch_id)
+        if target_program_id is not None:
+            customers = [c for c in customers if c.get('program_id') == target_program_id]
         target_count = len(customers)
         if not customers:
             return {
@@ -6455,6 +6498,8 @@ def _send_announcement_notification(business: dict, announcement: dict, resend: 
                 'google_failed': 0,
                 'apple_sent': 0,
                 'header': header,
+                'program_public_id': ann.get('program_public_id'),
+                'program_name': ann.get('program_name'),
                 'error': f"No customers have recorded activity at {ann.get('branch_name') or 'this branch'} yet.",
             }
 
@@ -6486,45 +6531,47 @@ def _send_announcement_notification(business: dict, announcement: dict, resend: 
             'google_failed': google_failed,
             'apple_sent': apple_sent,
             'header': header,
+            'program_public_id': ann.get('program_public_id'),
+            'program_name': ann.get('program_name'),
             'error': None if (google_sent or apple_sent) else 'No Wallet notification could be delivered to this branch audience.',
         }
 
-    # Whole-business Google Wallet remains one efficient class-level send.
-    # Do NOT fan out once per branch. The Google loyalty class is business-wide,
-    # so a business with 2, 5, or 20 branches still gets exactly one class-level
-    # announcement send here.
-    program = safe_get_loyalty_program(business.get('id'))
-    class_id = program.get('google_wallet_class_id') if program else None
-    class_sent = False
-    if class_id:
-        class_sent = send_wallet_class_message(
-            class_id,
-            header=header,
-            body=body,
-            message_id=message_id,
-            detail_url=detail_url,
-        )
-    else:
-        google_failed = 1
+    # Business broadcast can target one loyalty program or every active program.
+    try:
+        q = supabase.table('loyalty_programs').select('*').eq('business_id', business.get('id')).eq('is_active', True)
+        if target_program_id is not None:
+            q = q.eq('id', target_program_id)
+        target_programs = q.execute().data or []
+    except Exception:
+        fallback = safe_get_loyalty_program(business.get('id'), program_id=target_program_id) if target_program_id is not None else safe_get_loyalty_program(business.get('id'))
+        target_programs = [fallback] if fallback else []
+
+    class_sent_count = 0
+    for target_program in target_programs:
+        class_id = target_program.get('google_wallet_class_id')
+        if not class_id:
+            google_failed += 1
+            continue
+        if send_wallet_class_message(class_id, header=header, body=body, message_id=f"{message_id}-{target_program.get('id')}", detail_url=detail_url):
+            class_sent_count += 1
+        else:
+            google_failed += 1
 
     try:
-        apple_sent = push_apple_wallet_announcement(business.get('id'))
-    except Exception as e:
-        print(f"APPLE WALLET announcement push error: {e}")
+        q = supabase.table('customers').select('public_id').eq('business_id', business.get('id'))
+        if target_program_id is not None:
+            q = q.eq('program_id', target_program_id)
+        target_customers = q.execute().data or []
+        target_count = len(target_customers)
+        apple_sent = _push_apple_wallet_to_customer_public_ids([c.get('public_id') for c in target_customers if c.get('public_id')])
+    except Exception as exc:
+        print(f"APPLE WALLET announcement push error: {exc}")
         apple_sent = 0
 
-    return {
-        'sent': bool(class_sent or apple_sent),
-        'scope': 'business',
-        'target_count': None,
-        'google_sent': 1 if class_sent else 0,
-        'google_failed': 0 if class_sent else google_failed,
-        'apple_sent': apple_sent,
-        'header': header,
-        'error': None if (class_sent or apple_sent) else (
-            'Publish your card design / verify Wallet credentials before sending notifications.'
-        ),
-    }
+    return {'sent': bool(class_sent_count or apple_sent), 'scope': 'business', 'target_count': target_count,
+            'google_sent': class_sent_count, 'google_failed': google_failed, 'apple_sent': apple_sent, 'header': header,
+            'program_public_id': ann.get('program_public_id'), 'program_name': ann.get('program_name'),
+            'error': None if (class_sent_count or apple_sent) else 'Publish the selected card design / verify Wallet credentials before sending notifications.'}
 
 
 def get_latest_active_announcement(business_id: int) -> Optional[dict]:
@@ -6587,6 +6634,8 @@ def get_latest_active_announcement_for_customer(business: dict, customer: dict) 
         return get_latest_active_announcement(business.get('id'))
 
     for ann in rows:
+        if ann.get('program_id') is not None and customer.get('program_id') != ann.get('program_id'):
+            continue
         scope = str(ann.get('target_scope') or 'business')
         if scope == 'business':
             return _enrich_announcement_target(business, ann)
@@ -6893,6 +6942,17 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
             unlock_coupons = [str(c.get('reward_text') or '').strip() for c in (vip_next_tier.get('coupons') or []) if str(c.get('reward_text') or '').strip()]
             apple_details.append(('next_tier_benefits', 'BENEFITS YOU UNLOCK', ' · '.join(unlock_benefits) if unlock_benefits else 'Tier benefits'))
             apple_details.append(('next_tier_coupons', 'COUPONS YOU RECEIVE', ' · '.join(unlock_coupons) if unlock_coupons else 'No one-time coupons for this tier'))
+    elif card_type == 'employee':
+        apple_details.append(('employee_name', 'NAME', customer.get('name') or 'Employee'))
+        apple_details.append(('employee_id', 'ID NUMBER', customer.get('employee_id_number') or '—'))
+        apple_details.append(('birthday', 'BIRTHDAY', customer.get('birthday') or '—'))
+        apple_details.append(('started', 'STARTED', customer.get('employee_start_date') or '—'))
+        if bool((program or {}).get('employee_time_tracking_enabled')):
+            attendance = get_employee_attendance_state(customer.get('id'))
+            apple_details.append(('attendance', 'TIME STATUS', 'TIMED IN' if attendance.get('is_clocked_in') else 'TIMED OUT'))
+        benefits = normalize_employee_benefits(program)
+        if benefits:
+            apple_details.append(('employee_benefit', 'EMPLOYEE BENEFIT', benefits[0].get('name') or 'Benefit'))
     elif card_type == 'membership':
         status = membership_effective_status(customer)
         expiry = customer.get('membership_expires_at')
@@ -7228,6 +7288,21 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                 'backFields': back_fields,
             }
             if card_type == 'multipass' else
+            {
+                # EMPLOYEE: identity-first front. Redemption stays on the scanner.
+                'headerFields': [{'key': 'card_name', 'label': 'CARD', 'value': card_title[:32]}],
+                'primaryFields': [],
+                'secondaryFields': [
+                    {'key': 'employee_name', 'label': 'EMPLOYEE', 'value': customer.get('name') or 'Employee'},
+                    {'key': 'employee_id', 'label': 'ID NUMBER', 'value': customer.get('employee_id_number') or '—', 'textAlignment': 'PKTextAlignmentRight'},
+                ],
+                'auxiliaryFields': [
+                    {'key': 'started', 'label': 'STARTED', 'value': customer.get('employee_start_date') or '—'},
+                    {'key': 'birthday', 'label': 'BIRTHDAY', 'value': customer.get('birthday') or '—', 'textAlignment': 'PKTextAlignmentRight'},
+                ],
+                'backFields': back_fields,
+            }
+            if card_type == 'employee' else
             {
                 # MEMBERSHIP: explicit status + validity. Avoid icon-only
                 # status indicators so the pass is immediately understandable.
@@ -14820,7 +14895,7 @@ async def get_customer_api(public_id: str, response: Response):
     program = safe_get_customer_program(customer, customer.get('business_id')) if business else None
     current_card_type = (
         program.get('card_type')
-        if program and program.get('card_type') in ('stamp', 'points', 'membership', 'vip', 'multipass', 'hybrid')
+        if program and program.get('card_type') in ('stamp', 'points', 'membership', 'vip', 'multipass', 'hybrid', 'employee')
         else None
     )
 
@@ -14837,6 +14912,9 @@ async def get_customer_api(public_id: str, response: Response):
         customer['tier_progression_type'] = tier_progression_type(program)
         customer['tier_progress_value'] = tier_progress_value(customer, program)
         customer['tier_stamp_count'] = tier_stamp_value(customer, program)
+    if program and program.get('card_type') == 'employee':
+        customer['employee_benefits'] = get_employee_benefit_statuses(business, customer, program) if business else []
+        customer['employee_attendance'] = get_employee_attendance_state(customer.get('id'))
 
     return {
         "current_card_type": current_card_type,
@@ -14865,8 +14943,9 @@ async def get_customers(public_id: str, program_id: Optional[str] = Query(defaul
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
-    program = safe_get_loyalty_program(business.get('id'), program_public_id=program_id)
-    if program_id and not program:
+    all_programs = str(program_id or '').lower() == 'all'
+    program = None if all_programs else safe_get_loyalty_program(business.get('id'), program_public_id=program_id)
+    if program_id and not all_programs and not program:
         raise HTTPException(status_code=404, detail='Program not found for this business')
     try:
         query = supabase.table('customers').select('*').eq('business_id', business.get('id'))
@@ -14879,6 +14958,18 @@ async def get_customers(public_id: str, program_id: Optional[str] = Query(defaul
 
     if program and program.get('card_expiration_enabled'):
         customers = [apply_card_cycle_expiration_if_needed(c, business, program) for c in customers]
+    if all_programs:
+        try:
+            program_rows = (supabase.table('loyalty_programs').select('id,public_id,program_name,card_name,card_type')
+                            .eq('business_id', business.get('id')).execute().data or [])
+            by_id = {row.get('id'): row for row in program_rows}
+            for customer in customers:
+                row = by_id.get(customer.get('program_id')) or {}
+                customer['program_public_id'] = row.get('public_id')
+                customer['program_name'] = row.get('program_name') or row.get('card_name') or 'Loyalty Program'
+                customer['program_card_type'] = row.get('card_type')
+        except Exception:
+            pass
 
     # Attach last_stamp_at from stamp_events (most recent stamp per customer),
     # so the owner dashboard can show "last stamped" instead of only the
@@ -15486,7 +15577,7 @@ async def get_branch_manager_dashboard(
             ts = _parse_ts(row.get('created_at'))
             if ts and ts.astimezone(LOYALTY_TIMEZONE).date() == today_local:
                 activity_today += 1
-            if kind == 'redemption':
+            if kind in ('redemption', 'employee_benefit'):
                 redemptions_30d += 1
             customer = customer_by_id.get(cid) or {}
             staff = staff_by_id.get(row.get('staff_id')) or {}
@@ -15507,6 +15598,10 @@ async def get_branch_manager_dashboard(
                 detail = 'Stamp added'
             elif kind == 'redemption':
                 detail = 'Reward redeemed'
+            elif kind == 'employee_attendance':
+                detail = 'Timed in' if str(row.get('action') or '').lower() == 'time_in' else 'Timed out'
+            elif kind == 'employee_benefit':
+                detail = str(row.get('benefit_name') or 'Employee benefit redeemed')
             recent.append({
                 'id': f"{kind}-{row.get('id')}",
                 'type': kind,
@@ -15525,6 +15620,8 @@ async def get_branch_manager_dashboard(
     add_rows('membership_events', 'membership', 'service_name')
     add_rows('multipass_events', 'multipass', 'action,sessions_remaining')
     add_rows('vip_events', 'vip', 'action,points_delta')
+    add_rows('employee_attendance_events', 'employee_attendance', 'action')
+    add_rows('membership_benefit_redemptions', 'employee_benefit', 'benefit_name')
 
     recent.sort(key=lambda item: _parse_ts(item.get('created_at')) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     recent = recent[:40]
@@ -15698,8 +15795,9 @@ async def get_stats(public_id: str, program_id: Optional[str] = Query(default=No
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
     try:
-        program = safe_get_loyalty_program(business.get('id'), program_public_id=program_id)
-        if program_id and not program:
+        all_programs = str(program_id or '').lower() == 'all'
+        program = None if all_programs else safe_get_loyalty_program(business.get('id'), program_public_id=program_id)
+        if program_id and not all_programs and not program:
             raise HTTPException(status_code=404, detail='Program not found for this business')
         query = supabase.table('customers').select('*').eq('business_id', business.get('id'))
         if program:
@@ -15869,8 +15967,9 @@ async def get_analytics(public_id: str, range: str = '30d', program_id: Optional
             detail="Analytics is available on the Growth and Pro plans. Upgrade to unlock it."
         )
 
-    program = safe_get_loyalty_program(business_id, program_public_id=program_id)
-    if program_id and not program:
+    all_programs = str(program_id or '').lower() == 'all'
+    program = None if all_programs else safe_get_loyalty_program(business_id, program_public_id=program_id)
+    if program_id and not all_programs and not program:
         raise HTTPException(status_code=404, detail='Program not found for this business')
 
     try:
@@ -15884,6 +15983,14 @@ async def get_analytics(public_id: str, range: str = '30d', program_id: Optional
         redemption_events = supabase.table("redemption_events").select("*").eq("business_id", business_id).execute().data or []
         points_events = supabase.table("points_events").select("*").eq("business_id", business_id).execute().data or []
         multipass_events = supabase.table("multipass_events").select("*").eq("business_id", business_id).execute().data or []
+        try:
+            employee_attendance_events = supabase.table("employee_attendance_events").select("*").eq("business_id", business_id).execute().data or []
+        except Exception:
+            employee_attendance_events = []
+        try:
+            benefit_redemption_events = supabase.table("membership_benefit_redemptions").select("*").eq("business_id", business_id).execute().data or []
+        except Exception:
+            benefit_redemption_events = []
 
         # Event tables predate multi-program and are customer-linked. Filtering
         # by the selected program's customer IDs keeps analytics correct without
@@ -15893,10 +16000,12 @@ async def get_analytics(public_id: str, range: str = '30d', program_id: Optional
             redemption_events = [e for e in redemption_events if e.get('customer_id') in customer_ids]
             points_events = [e for e in points_events if e.get('customer_id') in customer_ids]
             multipass_events = [e for e in multipass_events if e.get('customer_id') in customer_ids]
+            employee_attendance_events = [e for e in employee_attendance_events if e.get('customer_id') in customer_ids]
+            benefit_redemption_events = [e for e in benefit_redemption_events if e.get('customer_id') in customer_ids]
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
-    card_type = program.get('card_type', 'stamp') if program else 'stamp'
+    card_type = 'all' if all_programs else (program.get('card_type', 'stamp') if program else 'stamp')
     loyalty_type = effective_loyalty_type(program)
     # Points-card businesses never generate stamp_events (add_stamp rejects
     # them - see the card_type guard there), so all "activity" metrics below
@@ -15920,14 +16029,21 @@ async def get_analytics(public_id: str, range: str = '30d', program_id: Optional
     # multipass businesses.
     multipass_completed_events = [e for e in multipass_used_events if (e.get('sessions_remaining') or 0) <= 0]
 
-    if loyalty_type == 'points':
+    if all_programs:
+        activity_events = stamp_events + points_events + multipass_used_events + employee_attendance_events
+        reward_events = redemption_events + multipass_completed_events + benefit_redemption_events
+    elif card_type == 'employee':
+        activity_events = employee_attendance_events
+        reward_events = benefit_redemption_events
+    elif loyalty_type == 'points':
         activity_events = points_events
+        reward_events = redemption_events
     elif card_type == 'multipass':
         activity_events = multipass_used_events
+        reward_events = multipass_completed_events
     else:
         activity_events = stamp_events
-
-    reward_events = multipass_completed_events if card_type == 'multipass' else redemption_events
+        reward_events = redemption_events
 
     now = datetime.utcnow()
     days = _range_to_days(range)
@@ -16005,7 +16121,17 @@ async def get_analytics(public_id: str, range: str = '30d', program_id: Optional
         "peak_hours": _day_of_week_series(activity_events, 'created_at', period_start, now),
     }
 
-    if card_type == 'multipass':
+    if card_type == 'employee':
+        attendance_counts = defaultdict(int)
+        for event in employee_attendance_events:
+            if event.get('customer_id') is not None:
+                attendance_counts[event.get('customer_id')] += 1
+        top_customers = sorted(customers, key=lambda c: attendance_counts.get(c.get('id'), 0), reverse=True)[:5]
+        top_customers_out = [
+            {"name": c.get("name") or "Employee", "stamps": attendance_counts.get(c.get('id'), 0), "metric": "attendance_actions"}
+            for c in top_customers if attendance_counts.get(c.get('id'), 0) > 0
+        ]
+    elif card_type == 'multipass':
         # No single "sessions used" field on the customer row - derive it
         # from the pack size vs what's left, same arithmetic the wallet
         # pass and cashier app use to show progress.
@@ -16030,7 +16156,21 @@ async def get_analytics(public_id: str, range: str = '30d', program_id: Optional
     retention_rate = round((len(returning) / len(active_ids_prev)) * 100, 1) if active_ids_prev else 0
 
     thirty_days_ago = now - timedelta(days=30)
-    if loyalty_type == 'points':
+    if card_type == 'employee':
+        # Employee cards are operational identities rather than visit-loyalty balances.
+        # Treat an employee as inactive in analytics only when no attendance/profile
+        # activity has been recorded in the last 30 days.
+        latest_attendance = {}
+        for event in employee_attendance_events:
+            cid = event.get('customer_id')
+            ts = _parse_ts(event.get('created_at'))
+            if cid is not None and ts and (cid not in latest_attendance or ts > latest_attendance[cid]):
+                latest_attendance[cid] = ts
+        churn_risk = sum(
+            1 for c in customers
+            if (latest_attendance.get(c.get('id')) or _parse_ts(c.get('updated_at')) or _parse_ts(c.get('created_at')) or now) < thirty_days_ago
+        )
+    elif loyalty_type == 'points':
         # "At risk" for a points card is a customer sitting on an unspent
         # balance who hasn't earned or redeemed anything in 30+ days -
         # stamp_count doesn't exist for these customers, so gate on
@@ -16144,7 +16284,9 @@ async def get_analytics(public_id: str, range: str = '30d', program_id: Optional
     # and redemption events. For points cards there's no single goal, so the
     # closest equivalent is "can currently afford at least one prize" (using
     # the cheapest configured prize), plus redemptions this period.
-    if loyalty_type == 'points':
+    if card_type == 'employee':
+        currently_unlocked = 0
+    elif loyalty_type == 'points':
         prize_costs = [p.get('points_cost', 0) for p in (program.get('points_prizes') or [])]
         cheapest_prize_cost = min(prize_costs) if prize_costs else None
         currently_unlocked = (
@@ -16338,6 +16480,8 @@ async def get_loyalty_config(public_id: str, response: Response, program_id: Opt
             "membership_quick_checkin": False,
             "membership_benefits_unlock_enabled": False,
             "membership_benefits_unlock_threshold": 7,
+            "employee_time_tracking_enabled": False,
+            "employee_benefits": [],
             "vip_points_per_amount": 10,
             "vip_amount_pesos": 100,
             "vip_progression_type": "points",
@@ -16396,7 +16540,7 @@ async def get_cashier_program(public_id: str, response: Response, program_id: Op
         )
 
     card_type = program.get("card_type")
-    allowed = ("stamp", "points", "membership", "vip", "multipass", "hybrid")
+    allowed = ("stamp", "points", "membership", "vip", "multipass", "hybrid", "employee")
     if card_type not in allowed:
         raise HTTPException(
             status_code=500,
@@ -16464,6 +16608,7 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
         'tier_stamp_once_per_day': bool(config.tier_stamp_once_per_day),
         'membership_benefits_unlock_enabled': bool(config.membership_benefits_unlock_enabled),
         'membership_benefits_unlock_threshold': int(config.membership_benefits_unlock_threshold or 7),
+        'employee_time_tracking_enabled': bool(config.employee_time_tracking_enabled) if config.card_type == 'employee' else False,
         'stamp_goal': config.stamp_goal,
         'stamp_display_style': config.stamp_display_style,
         'stamp_icon': config.stamp_icon,
@@ -16652,6 +16797,27 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
         data['membership_terms'] = (config.membership_terms or '').strip() or None
         data['membership_visit_logging_enabled'] = config.membership_visit_logging_enabled is not False
         data['membership_quick_checkin'] = bool(config.membership_quick_checkin)
+
+    if config.card_type == 'employee':
+        employee_benefits = []
+        for item in (config.employee_benefits or []):
+            reset_period = item.reset_period if item.reset_period != 'membership_cycle' else 'never'
+            value = item.value
+            if item.benefit_type == 'percentage_discount' and value is not None:
+                value = max(0, min(100, float(value)))
+            employee_benefits.append({
+                'id': item.id or uuid.uuid4().hex[:12],
+                'name': item.name.strip(),
+                'benefit_type': item.benefit_type,
+                'value': value,
+                'description': (item.description or '').strip() or None,
+                'usage_limit': item.usage_limit,
+                'reset_period': reset_period,
+                'active': bool(item.active),
+            })
+        data['employee_benefits'] = employee_benefits
+        data['employee_time_tracking_enabled'] = bool(config.employee_time_tracking_enabled)
+
     if config.google_review_url is not None:
         features = get_plan_features(business.get('plan'))
         if not features.get('google_review_prompt'):
@@ -18485,6 +18651,11 @@ async def create_announcement(
         raise HTTPException(status_code=404, detail="Business not found")
 
     target_scope = ann.target_scope or 'business'
+    target_program = None
+    if ann.program_public_id:
+        target_program = safe_get_loyalty_program(business.get('id'), program_public_id=ann.program_public_id)
+        if not target_program:
+            raise HTTPException(status_code=400, detail='Choose a valid loyalty program for this announcement.')
     target_branch = None
     if target_scope == 'branch':
         target_branch = _announcement_branch_row(business.get('id'), ann.branch_public_id)
@@ -18510,6 +18681,7 @@ async def create_announcement(
         'end_date': None,
         'target_scope': target_scope,
         'branch_id': target_branch.get('id') if target_branch else None,
+        'program_id': target_program.get('id') if target_program else None,
         'created_at': now_iso,
         'updated_at': now_iso,
     }
@@ -18582,9 +18754,18 @@ async def update_announcement(
     incoming = ann.dict(exclude_unset=True)
     update_data = {
         k: v for k, v in incoming.items()
-        if k not in ('branch_public_id', 'end_date') and v is not None
+        if k not in ('branch_public_id', 'program_public_id', 'end_date') and v is not None
     }
     update_data['end_date'] = None
+
+    if 'program_public_id' in incoming:
+        if incoming.get('program_public_id'):
+            target_program = safe_get_loyalty_program(business.get('id'), program_public_id=incoming.get('program_public_id'))
+            if not target_program:
+                raise HTTPException(status_code=400, detail='Choose a valid loyalty program for this announcement.')
+            update_data['program_id'] = target_program.get('id')
+        else:
+            update_data['program_id'] = None
 
     effective_scope = incoming.get('target_scope', existing.data.get('target_scope') or 'business')
     if effective_scope == 'branch':
@@ -18682,14 +18863,19 @@ async def notify_announcement(
             "google_sent": result.get('google_sent', 0),
             "apple_sent": result.get('apple_sent', 0),
             "notification_header": result.get('header'),
+            "program_public_id": ann.get('program_public_id'),
+            "program_name": ann.get('program_name'),
         }
 
     return {
-        "message": "Notification sent to the whole business audience.",
+        "message": "Notification sent to the selected program." if ann.get('program_id') is not None else "Notification sent to the whole business audience.",
         "scope": "business",
+        "target_count": result.get('target_count'),
         "google_sent": result.get('google_sent', 0),
         "apple_sent": result.get('apple_sent', 0),
         "notification_header": result.get('header'),
+        "program_public_id": ann.get('program_public_id'),
+        "program_name": ann.get('program_name'),
     }
 
 
@@ -18891,6 +19077,81 @@ def get_available_stamp_rewards(customer: dict, program: Optional[dict]) -> List
             if count >= int(r['stamps']) and str(r['id']) not in claimed_ids]
 
 
+def normalize_employee_benefits(program: Optional[dict]) -> list:
+    raw = (program or {}).get('employee_benefits') or []
+    if not isinstance(raw, list):
+        return []
+    normalized = []
+    for idx, item in enumerate(raw):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get('name') or '').strip()
+        if not name:
+            continue
+        benefit_type = str(item.get('benefit_type') or 'free_item').lower()
+        if benefit_type not in {'free_item','percentage_discount','fixed_discount','custom'}:
+            benefit_type = 'custom'
+        reset_period = str(item.get('reset_period') or 'never').lower()
+        if reset_period not in {'daily','weekly','monthly','never'}:
+            reset_period = 'never'
+        usage_limit = item.get('usage_limit')
+        try:
+            usage_limit = None if usage_limit is None else max(1, int(usage_limit))
+        except Exception:
+            usage_limit = 1
+        value = item.get('value')
+        try:
+            value = float(value) if value is not None else None
+        except Exception:
+            value = None
+        if benefit_type == 'percentage_discount' and value is not None:
+            value = max(0.0, min(100.0, value))
+        normalized.append({
+            'id': str(item.get('id') or f'employee-benefit-{idx+1}'),
+            'name': name, 'benefit_type': benefit_type, 'value': value,
+            'description': str(item.get('description') or '').strip() or None,
+            'usage_limit': usage_limit, 'reset_period': reset_period,
+            'active': item.get('active') is not False,
+        })
+    return normalized
+
+
+def get_employee_benefit_statuses(business: dict, customer: dict, program: dict) -> list:
+    statuses = []
+    for benefit in normalize_employee_benefits(program):
+        used = 0
+        start_utc, end_utc, next_available_at = _benefit_window(benefit, business.get('id'), customer.get('id'), customer)
+        try:
+            q = (supabase.table('membership_benefit_redemptions').select('quantity')
+                 .eq('business_id', business.get('id')).eq('customer_id', customer.get('id'))
+                 .eq('benefit_id', benefit.get('id')))
+            if start_utc: q = q.gte('redeemed_at', start_utc.isoformat())
+            if end_utc: q = q.lt('redeemed_at', end_utc.isoformat())
+            rows = q.execute().data or []
+            used = sum(max(1, int(r.get('quantity') or 1)) for r in rows)
+        except Exception as exc:
+            print(f'EMPLOYEE BENEFIT STATUS error: {exc}')
+        limit = benefit.get('usage_limit')
+        remaining = None if limit is None else max(int(limit) - used, 0)
+        available = bool(benefit.get('active') and (remaining is None or remaining > 0))
+        statuses.append({**benefit, 'used_in_window': used, 'remaining_in_window': remaining,
+                         'available': available,
+                         'unavailable_reason': None if available else ('Benefit is inactive' if not benefit.get('active') else 'Usage limit reached'),
+                         'next_available_at': next_available_at if (remaining == 0 and benefit.get('reset_period') != 'never') else None})
+    return statuses
+
+
+def get_employee_attendance_state(customer_id: int) -> dict:
+    try:
+        rows = (supabase.table('employee_attendance_events').select('*')
+                .eq('customer_id', customer_id).order('created_at', desc=True).limit(1).execute().data or [])
+        last = rows[0] if rows else None
+    except Exception:
+        last = None
+    last_action = (last or {}).get('action')
+    return {'last_action': last_action, 'last_at': (last or {}).get('created_at'), 'is_clocked_in': last_action == 'time_in'}
+
+
 def get_current_card_redeemables(business: dict, customer: dict, program: Optional[dict]) -> List[dict]:
     """Return everything this customer can actually use/redeem *right now*.
 
@@ -19003,6 +19264,16 @@ def get_current_card_redeemables(business: dict, customer: dict, program: Option
                 value=benefit.get('value'), description=benefit.get('description'),
                 redeem_endpoint='membership_benefit',
             )
+
+    if card_type == 'employee':
+        for benefit in get_employee_benefit_statuses(business, customer, program):
+            if benefit.get('available'):
+                remaining = benefit.get('remaining_in_window')
+                detail = 'Unlimited' if remaining is None else f"{remaining} use{'s' if int(remaining) != 1 else ''} remaining"
+                add('employee_benefit', benefit.get('name') or 'Employee benefit', detail,
+                    id=str(benefit.get('id') or ''), remaining=remaining,
+                    reset_period=benefit.get('reset_period'), benefit_type=benefit.get('benefit_type'),
+                    value=benefit.get('value'), description=benefit.get('description'), redeem_endpoint='membership_benefit')
 
     # A Multipass session is itself the redeemable entitlement. Keep it as one
     # concise item instead of emitting one row per remaining session.
@@ -21386,15 +21657,16 @@ async def get_customer_membership_benefits(public_id: str, customer_public_id: s
     if not customer or customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail='Customer not found for this business')
     program = safe_get_customer_program(customer, business.get('id'))
-    if not program or not program_has_membership(program):
-        raise HTTPException(status_code=400, detail='This business is not using membership benefits')
+    is_employee = bool(program and program.get('card_type') == 'employee')
+    if not program or (not program_has_membership(program) and not is_employee):
+        raise HTTPException(status_code=400, detail='This program is not using redeemable benefits')
     return {
-        'membership_name': program.get('membership_name') or program.get('card_name') or 'Membership',
-        'membership_status': membership_effective_status(customer),
-        'membership_expires_at': customer.get('membership_expires_at'),
-        'benefits_unlocked': membership_benefits_unlocked(customer, program),
-        'unlock': membership_unlock_summary(customer, program),
-        'benefits': get_membership_benefit_statuses(business, customer, program),
+        'membership_name': program.get('membership_name') or program.get('card_name') or ('Employee Benefits' if is_employee else 'Membership'),
+        'membership_status': 'active' if is_employee else membership_effective_status(customer),
+        'membership_expires_at': None if is_employee else customer.get('membership_expires_at'),
+        'benefits_unlocked': True if is_employee else membership_benefits_unlocked(customer, program),
+        'unlock': {'enabled': False, 'unlocked': True} if is_employee else membership_unlock_summary(customer, program),
+        'benefits': get_employee_benefit_statuses(business, customer, program) if is_employee else get_membership_benefit_statuses(business, customer, program),
     }
 
 
@@ -21413,23 +21685,22 @@ async def redeem_membership_benefit(
     if not customer or customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail='Customer not found for this business')
     program = safe_get_customer_program(customer, business.get('id'))
-    if not program or not program_has_membership(program):
-        raise HTTPException(status_code=400, detail='This business is not using membership benefits')
-    if not membership_access_allowed(customer):
-        raise HTTPException(status_code=400, detail=f"Membership is {membership_effective_status(customer)}")
-    if not membership_benefits_unlocked(customer, program):
-        unlock = membership_unlock_summary(customer, program)
-        raise HTTPException(
-            status_code=400,
-            detail=f"Membership benefits are still locked. Complete {unlock.get('remaining', 0)} more Tier {unlock.get('unit', 'stamps')}.",
-        )
+    is_employee = bool(program and program.get('card_type') == 'employee')
+    if not program or (not program_has_membership(program) and not is_employee):
+        raise HTTPException(status_code=400, detail='This program is not using redeemable benefits')
+    if not is_employee:
+        if not membership_access_allowed(customer):
+            raise HTTPException(status_code=400, detail=f"Membership is {membership_effective_status(customer)}")
+        if not membership_benefits_unlocked(customer, program):
+            unlock = membership_unlock_summary(customer, program)
+            raise HTTPException(status_code=400, detail=f"Membership benefits are still locked. Complete {unlock.get('remaining', 0)} more Tier {unlock.get('unit', 'stamps')}.")
 
-    benefits = normalize_membership_benefits(program)
+    benefits = normalize_employee_benefits(program) if is_employee else normalize_membership_benefits(program)
     benefit = next((b for b in benefits if b.get('id') == req.benefit_id), None)
     if not benefit:
-        raise HTTPException(status_code=404, detail='Membership benefit not found')
+        raise HTTPException(status_code=404, detail='Benefit not found')
     if not benefit.get('active'):
-        raise HTTPException(status_code=400, detail='This membership benefit is inactive')
+        raise HTTPException(status_code=400, detail='This benefit is inactive')
 
     # Authenticate using the same cashier-session / owner / legacy-PIN pattern
     # used by stamp, points, multipass and membership visits.
@@ -21467,13 +21738,13 @@ async def redeem_membership_benefit(
                 return {
                     'message': 'Benefit already redeemed', 'duplicate': True,
                     'redemption': prior[0],
-                    'benefits': get_membership_benefit_statuses(business, customer, program),
+                    'benefits': get_employee_benefit_statuses(business, customer, program) if is_employee else get_membership_benefit_statuses(business, customer, program),
                 }
         except Exception:
             pass
 
     current = next(
-        (x for x in get_membership_benefit_statuses(business, customer, program) if x.get('id') == benefit.get('id')),
+        (x for x in (get_employee_benefit_statuses(business, customer, program) if is_employee else get_membership_benefit_statuses(business, customer, program)) if x.get('id') == benefit.get('id')),
         benefit,
     )
     remaining = current.get('remaining_in_window')
@@ -21517,15 +21788,57 @@ async def redeem_membership_benefit(
         sync_loyalty_wallets_background,
         dict(customer), dict(business), dict(program),
         'membership_benefit_redeemed',
-        'Membership benefit used',
+        'Employee benefit used' if is_employee else 'Membership benefit used',
         f"{benefit.get('name')} was redeemed.",
         f"membership-benefit-{customer.get('id')}-{benefit.get('id')}-{int(datetime.utcnow().timestamp())}",
     )
     return {
         'message': f"{benefit.get('name')} redeemed",
         'redemption': inserted,
-        'benefits': get_membership_benefit_statuses(business, customer, program),
+        'benefits': get_employee_benefit_statuses(business, customer, program) if is_employee else get_membership_benefit_statuses(business, customer, program),
     }
+
+
+@app.post('/api/v1/business/{public_id}/employee/attendance')
+async def record_employee_attendance(public_id: str, req: EmployeeAttendanceRequest, authorization: str = Header(default='')):
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    customer = safe_get_customer(req.customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail='Employee not found for this business')
+    program = safe_get_customer_program(customer, business.get('id'))
+    if not program or program.get('card_type') != 'employee':
+        raise HTTPException(status_code=400, detail='This card is not an Employee Card')
+    if not bool(program.get('employee_time_tracking_enabled')):
+        raise HTTPException(status_code=400, detail='Time In / Time Out is not enabled for this Employee Card')
+
+    staff_id = None
+    branch_id = None
+    claims = get_staff_session_claims(public_id, authorization)
+    if claims:
+        staff_id = claims.get('staff_id'); branch_id = claims.get('branch_id')
+    elif not req.as_owner:
+        if not req.staff_pin:
+            raise HTTPException(status_code=400, detail='Staff PIN required')
+        rows = (supabase.table('staff').select('*').eq('business_id', business.get('id')).eq('pin', req.staff_pin).execute().data or [])
+        if not rows:
+            raise HTTPException(status_code=403, detail='Invalid staff PIN')
+        staff_id = rows[0].get('id'); branch_id = rows[0].get('branch_id')
+
+    state = get_employee_attendance_state(customer.get('id'))
+    if req.action == 'time_in' and state.get('is_clocked_in'):
+        raise HTTPException(status_code=400, detail='Employee is already timed in')
+    if req.action == 'time_out' and not state.get('is_clocked_in'):
+        raise HTTPException(status_code=400, detail='Employee must time in first')
+    row = {'business_id': business.get('id'), 'program_id': program.get('id'), 'customer_id': customer.get('id'),
+           'action': req.action, 'staff_id': staff_id, 'branch_id': branch_id,
+           'note': (req.note or '').strip() or None, 'created_at': datetime.now(timezone.utc).isoformat()}
+    try:
+        saved = (supabase.table('employee_attendance_events').insert(row).execute().data or [row])[0]
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+    return {'message': 'Timed in' if req.action == 'time_in' else 'Timed out', 'attendance': saved, 'state': get_employee_attendance_state(customer.get('id'))}
 
 
 @app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/membership-benefit-history")
@@ -23546,8 +23859,14 @@ async def customer_join_page(business_public_id: str):
             '<input type="tel" id="phone" placeholder="Phone number" required>'
             '<input type="email" id="email" placeholder="Email (optional)">'
             '<label style="display:block;text-align:left;font-size:13px;color:#64748b;margin-bottom:6px;">Birthday (optional, MM/DD/YYYY)</label>'
-            '<input type="date" id="birthday" placeholder="Birthday">'
+            '<input type="date" id="birthday" placeholder="Birthday"' + (' required' if card_type == 'employee' else '') + '>'
             '<div style="font-size:11px;color:#64748b;margin:-6px 0 10px;">Birthday is used for optional greetings/rewards and can only be corrected later by the business.</div>'
+            + (
+                '<input type="text" id="employeeIdNumber" placeholder="Employee ID number" required>'
+                '<label style="display:block;text-align:left;font-size:13px;color:#64748b;margin-bottom:6px;">Employment start date</label>'
+                '<input type="date" id="employeeStartDate" required>'
+                if card_type == 'employee' else ''
+            ) +
             '<select id="occupation">'
             '<option value="">Occupation (optional)</option>'
             '<option value="working">Working</option>'
@@ -23591,13 +23910,15 @@ async def customer_join_page(business_public_id: str):
             'const phone=document.getElementById("phone").value;'
             'const email=document.getElementById("email").value;'
             'const birthday=document.getElementById("birthday").value;'
+            'const employeeIdEl=document.getElementById("employeeIdNumber");const employeeStartEl=document.getElementById("employeeStartDate");'
+            'const employeeIdNumber=employeeIdEl?employeeIdEl.value:null;const employeeStartDate=employeeStartEl?employeeStartEl.value:null;'
             'const occupation=document.getElementById("occupation").value;'
             'const gender=document.getElementById("gender").value;'
             'try{'
             'const res=await fetch(API_BASE+"/api/v1/join/"+BIZ_ID,{'
             'method:"POST",'
             'headers:{"Content-Type":"application/json"},'
-            'body:JSON.stringify({name:name,address:address||null,age:age?parseInt(age,10):null,phone:phone,email:email||null,birthday:birthday||null,occupation:occupation||null,gender:gender||null,privacy_consent:true,privacy_consent_version:"2026-08-09-v1"})'
+            'body:JSON.stringify({name:name,address:address||null,age:age?parseInt(age,10):null,phone:phone,email:email||null,birthday:birthday||null,occupation:occupation||null,gender:gender||null,employee_id_number:employeeIdNumber||null,employee_start_date:employeeStartDate||null,privacy_consent:true,privacy_consent_version:"2026-08-09-v1"})'
             '});'
             'const data=await res.json();'
             'if(res.ok){'
@@ -23694,6 +24015,14 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
     if not program:
         raise HTTPException(status_code=400, detail='This business has not configured a loyalty program yet')
 
+    if program.get('card_type') == 'employee':
+        if not (signup.employee_id_number or '').strip():
+            raise HTTPException(status_code=400, detail='Employee ID number is required.')
+        if not signup.birthday:
+            raise HTTPException(status_code=400, detail='Birthday is required for an Employee Card.')
+        if not signup.employee_start_date:
+            raise HTTPException(status_code=400, detail='Employment start date is required for an Employee Card.')
+
     dup_field = find_customer_duplicate(
         business.get('id'), signup.phone, signup.email, program_id=program.get('id')
     )
@@ -23722,6 +24051,8 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
         'privacy_consent': True,
         'privacy_consent_at': datetime.utcnow().isoformat(),
         'privacy_consent_version': signup.privacy_consent_version,
+        'employee_id_number': ((signup.employee_id_number or '').strip() or None) if program.get('card_type') == 'employee' else None,
+        'employee_start_date': signup.employee_start_date if program.get('card_type') == 'employee' else None,
         'stamp_count': 0,
         'points_balance': 0,
         'created_at': datetime.utcnow().isoformat(),
@@ -27230,6 +27561,16 @@ async def customer_wallet_page(customer_public_id: str):
         total = int(customer.get('multipass_total_sessions') or program.get('multipass_session_count') or 0)
         metric_label, metric_value, metric_sub = 'SESSIONS LEFT', f'{remaining} / {total}', 'sessions'
         details = [('Valid until', customer.get('multipass_expires_at') or 'No expiry')]
+    elif card_type == 'employee':
+        metric_label, metric_value, metric_sub = 'EMPLOYEE ID', str(customer.get('employee_id_number') or '—'), 'active employee'
+        details = [
+            ('Name', customer.get('name') or 'Employee'),
+            ('Birthday', customer.get('birthday') or '—'),
+            ('Started', customer.get('employee_start_date') or '—'),
+        ]
+        if bool((program or {}).get('employee_time_tracking_enabled')):
+            attendance = get_employee_attendance_state(customer.get('id'))
+            details.append(('Time status', 'Timed in' if attendance.get('is_clocked_in') else 'Timed out'))
     elif card_type == 'membership':
         status = membership_effective_status(customer).upper()
         summary = get_membership_summary(business.get('id'), customer.get('id'))
@@ -27275,7 +27616,7 @@ async def customer_wallet_page(customer_public_id: str):
     if current_redeemables:
         available_cards = ''.join(
             '<div class="available-item"><div class="available-icon">'
-            + ({'coupon':'🎟️','stamp_reward':'🎁','points_prize':'💎','membership_benefit':'✓','multipass_session':'🎫','tier_benefit':'👑'}.get(str(item.get('kind')), '🎁'))
+            + ({'coupon':'🎟️','stamp_reward':'🎁','points_prize':'💎','membership_benefit':'✓','employee_benefit':'🪪','multipass_session':'🎫','tier_benefit':'👑'}.get(str(item.get('kind')), '🎁'))
             + '</div><div><strong>' + html_lib.escape(str(item.get('title') or 'Reward')) + '</strong>'
             + ('<span>' + html_lib.escape(str(item.get('detail'))) + '</span>' if item.get('detail') else '')
             + '</div></div>'
@@ -27786,7 +28127,12 @@ async def cashier_stamp_page(customer_public_id: str):
         'membership_name': (program.get('membership_name') if program else None) or (program.get('card_name') if program else None) or 'Membership',
         'membership_expires_at': customer.get('membership_expires_at'),
         'membership_visit_logging_enabled': (program.get('membership_visit_logging_enabled') is not False) if program else True,
-        'membership_benefits': get_membership_benefit_statuses(business, customer, program) if program_has_membership(program) else [],
+        'membership_benefits': (get_employee_benefit_statuses(business, customer, program) if card_type == 'employee' else (get_membership_benefit_statuses(business, customer, program) if program_has_membership(program) else [])),
+        'employee_time_tracking_enabled': bool((program or {}).get('employee_time_tracking_enabled')) if card_type == 'employee' else False,
+        'employee_attendance': get_employee_attendance_state(customer.get('id')) if card_type == 'employee' else None,
+        'employee_id_number': customer.get('employee_id_number') if card_type == 'employee' else None,
+        'employee_start_date': customer.get('employee_start_date') if card_type == 'employee' else None,
+        'employee_birthday': customer.get('birthday') if card_type == 'employee' else None,
         'membership_unlock': membership_unlock_summary(customer, program) if program_has_membership(program) else {'enabled':False,'unlocked':True},
     }
     data_json = json.dumps(data)
@@ -27853,6 +28199,7 @@ async def cashier_stamp_page(customer_public_id: str):
         'const tierUsesStamps=(cardType==="vip"||hybridTierEnabled)&&tierProgressionType==="stamps";'
         'const vipUsesStamps=cardType==="vip"&&tierUsesStamps;'
         'let membershipBenefits=DATA.membership_benefits||[];'
+        'let employeeAttendance=DATA.employee_attendance||{is_clocked_in:false};'
         'let membershipUnlock=DATA.membership_unlock||{enabled:false,unlocked:true};'
         'let stampCount=DATA.stamp_count;'
         'let tierStampCount=Number(DATA.tier_stamp_count||0);'
@@ -28015,7 +28362,7 @@ async def cashier_stamp_page(customer_public_id: str):
 
         'function renderHybridBenefits(){'
         'if(!membershipBenefits.length)return "";'
-        'let html="<div style=\'margin-top:14px\'><div style=\'font-size:12px;font-weight:800;color:#334155;margin-bottom:8px\'>MEMBER BENEFITS</div>";'
+        'let html="<div style=\'margin-top:14px\'><div style=\'font-size:12px;font-weight:800;color:#334155;margin-bottom:8px\'>"+(cardType==="employee"?"EMPLOYEE BENEFITS":"MEMBER BENEFITS")+"</div>";'
         'for(let i=0;i<membershipBenefits.length;i++){'
         'const b=membershipBenefits[i]||{};const available=!!b.available;const remaining=b.remaining_in_window;'
         'const status=available?(remaining==null?"Available · Unlimited":("Available · "+remaining+" left")):(b.unavailable_reason||"Unavailable");'
@@ -28034,6 +28381,12 @@ async def cashier_stamp_page(customer_public_id: str):
         'if(vipNextTier){html+="<div style=\'font-size:12px;color:#64748b;margin-bottom:9px\'>"+Math.max(0,Number(vipNextTier.threshold||0)-Number(progress||0))+" "+unit+" to "+escapeHtml(String(vipNextTier.name||"next tier"))+"</div>";}'
         'if(tierUsesStamps){html+="<button class=\'btn-primary\' id=\'tierStampBtn\'>Add Tier Stamp</button>";}else{html+="<input id=\'vipAmount\' type=\'number\' inputmode=\'decimal\' min=\'0\' placeholder=\'Amount for Tier points\'><button class=\'btn-primary\' id=\'vipBtn\'>Add Tier Points</button>";}'
         'return html+"</div>";'
+        '}'
+
+        'function renderEmployeeBody(){'
+        'let html="<div class=\'msg msg-ok\'><b>EMPLOYEE CARD · ACTIVE</b><br><span style=\'font-size:12px\'>ID: "+escapeHtml(DATA.employee_id_number||"—")+" · Started: "+escapeHtml(DATA.employee_start_date||"—")+"</span></div>";'
+        'if(DATA.employee_time_tracking_enabled){html+="<div style=\'margin-top:14px;padding:12px;border:1px solid #dbeafe;background:#eff6ff;border-radius:12px\'><div style=\'font-size:11px;font-weight:900;color:#1d4ed8;margin-bottom:8px\'>ATTENDANCE · "+(employeeAttendance.is_clocked_in?"TIMED IN":"TIMED OUT")+"</div><div style=\'display:flex;gap:8px\'><button id=\'employeeTimeInBtn\' "+(employeeAttendance.is_clocked_in?"disabled":"")+" style=\'flex:1\'>Time In</button><button id=\'employeeTimeOutBtn\' "+(!employeeAttendance.is_clocked_in?"disabled":"")+" style=\'flex:1\'>Time Out</button></div></div>";}'
+        'return html+renderHybridBenefits();'
         '}'
 
         'function renderHybridBody(){'
@@ -28083,6 +28436,10 @@ async def cashier_stamp_page(customer_public_id: str):
         'const vipBtn=document.getElementById("vipBtn");'
         'if(vipBtn)vipBtn.addEventListener("click",doVip);'
         '}'
+        '}else if(cardType==="employee"){'
+        'const benefitBtns=document.querySelectorAll(".benefitRedeemBtn");for(let i=0;i<benefitBtns.length;i++){benefitBtns[i].addEventListener("click",function(e){doMembershipBenefit(e.currentTarget.getAttribute("data-benefit-id"));});}'
+        'const timeInBtn=document.getElementById("employeeTimeInBtn");if(timeInBtn)timeInBtn.addEventListener("click",function(){doEmployeeAttendance("time_in");});'
+        'const timeOutBtn=document.getElementById("employeeTimeOutBtn");if(timeOutBtn)timeOutBtn.addEventListener("click",function(){doEmployeeAttendance("time_out");});'
         '}else if(cardType==="membership"){'
         'const membershipBtn=document.getElementById("membershipBtn");'
         'if(membershipBtn)membershipBtn.addEventListener("click",doMembershipNote);'
@@ -28095,11 +28452,11 @@ async def cashier_stamp_page(customer_public_id: str):
         '}'
 
         'function renderCard(staffName,msg){'
-        'const bodyHtml=cardType==="hybrid"?renderHybridBody():cardType==="points"?renderPointsBody():cardType==="multipass"?renderMultipassBody():cardType==="vip"?renderVipBody():cardType==="membership"?renderMembershipBody():renderStampBody();'
+        'const bodyHtml=cardType==="hybrid"?renderHybridBody():cardType==="points"?renderPointsBody():cardType==="multipass"?renderMultipassBody():cardType==="vip"?renderVipBody():cardType==="membership"?renderMembershipBody():cardType==="employee"?renderEmployeeBody():renderStampBody();'
         'const couponHtml=renderActiveCoupons();'
         'const hybridTierStats=hybridTierEnabled?(" &bull; "+escapeHtml((vipTier&&vipTier.name)||"Tier")+" · "+(tierUsesStamps?tierStampCount:vipPoints)+" Tier "+(tierUsesStamps?"stamps":"pts")):"";'
         'const hybridRewardStats=[];if(hybridPointsEnabled)hybridRewardStats.push(pointsBalance+" reward points");if(hybridStampsEnabled)hybridRewardStats.push(stampCount+" / "+DATA.stamp_goal+" reward stamps");'
-        'const statsHtml=cardType==="hybrid"?(hybridRewardStats.join(" &bull; ")+" &bull; "+escapeHtml(String(membershipStatus||"inactive").toUpperCase())+hybridTierStats):cardType==="points"?(pointsBalance+" points"):cardType==="multipass"?(multipassRemaining+" / "+multipassTotal+" sessions"):cardType==="vip"?(escapeHtml((vipTier&&vipTier.name)||"VIP")+" &bull; "+(tierUsesStamps?(tierStampCount+" Tier stamps"):(vipPoints+" Tier pts"))):cardType==="membership"?("Membership: "+escapeHtml(membershipStatus)):(stampCount+" / "+DATA.stamp_goal+" stamps");'
+        'const statsHtml=cardType==="hybrid"?(hybridRewardStats.join(" &bull; ")+" &bull; "+escapeHtml(String(membershipStatus||"inactive").toUpperCase())+hybridTierStats):cardType==="points"?(pointsBalance+" points"):cardType==="multipass"?(multipassRemaining+" / "+multipassTotal+" sessions"):cardType==="vip"?(escapeHtml((vipTier&&vipTier.name)||"VIP")+" &bull; "+(tierUsesStamps?(tierStampCount+" Tier stamps"):(vipPoints+" Tier pts"))):cardType==="membership"?("Membership: "+escapeHtml(membershipStatus)):cardType==="employee"?("Employee ID: "+escapeHtml(DATA.employee_id_number||"—")):(stampCount+" / "+DATA.stamp_goal+" stamps");'
         'app.innerHTML='
         '(msg?"<div class=\'msg "+(msg.ok?"msg-ok":"msg-err")+"\'>"+escapeHtml(msg.text)+"</div>":"")+'
         '"<div class=\'customer-box\'>"+'
@@ -28277,6 +28634,13 @@ async def cashier_stamp_page(customer_public_id: str):
         'renderCard(s?s.name:"",{ok:false,text:"Network error - visit not logged"});'
         '}'
         '}'
+
+        'async function doEmployeeAttendance(action){'
+        'const s=getSession();try{'
+        'const res=await fetch("/api/v1/business/"+DATA.business_public_id+"/employee/attendance",{method:"POST",headers:authHeaders(),body:JSON.stringify({customer_public_id:DATA.customer_public_id,action:action,staff_pin:getSession()?undefined:cachedPin})});'
+        'const d=await res.json();if(res.ok){employeeAttendance=d.state||employeeAttendance;renderCard(s?s.name:"",{ok:true,text:d.message||"Attendance recorded"});}'
+        'else if(res.status===401){clearSession();renderLogin(d.detail||"Session expired - log in again");}else{renderCard(s?s.name:"",{ok:false,text:d.detail||"Could not record attendance"});}'
+        '}catch(e){renderCard(s?s.name:"",{ok:false,text:"Network error - attendance not recorded"});}}'
 
         'async function doMembershipBenefit(benefitId){'
         'const benefit=membershipBenefits.find(function(b){return String(b.id)===String(benefitId);});'

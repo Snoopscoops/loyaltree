@@ -529,12 +529,13 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
   const announcementsCheckedKey = user?.business_slug ? `loyaltree_checked_announcements_${user.business_slug}` : null
   const analyticsCheckedKey = user?.business_slug ? `loyaltree_checked_analytics_${user.business_slug}` : null
   const programStorageKey = user?.business_slug ? `loyaltree_selected_program_${user.business_slug}` : null
-  const selectedProgramSummary = programs.find(p => p.public_id === selectedProgramPublicId) || programs.find(p => p.is_default) || programs[0] || null
-  const selectedProgramQuery = selectedProgramPublicId ? `?program_id=${encodeURIComponent(selectedProgramPublicId)}` : ''
+  const viewingAllPrograms = selectedProgramPublicId === 'all'
+  const selectedProgramSummary = viewingAllPrograms ? null : (programs.find(p => p.public_id === selectedProgramPublicId) || programs.find(p => p.is_default) || programs[0] || null)
+  const selectedProgramQuery = selectedProgramPublicId && !viewingAllPrograms ? `?program_id=${encodeURIComponent(selectedProgramPublicId)}` : ''
   const selectedJoinSlug = selectedProgramSummary && !selectedProgramSummary.is_default && selectedProgramSummary.public_id
     ? `${user?.business_slug || ''}__p__${selectedProgramSummary.public_id}`
     : (user?.business_slug || '')
-  const selectedJoinUrl = `${FRONTEND_URL}/join/${selectedJoinSlug}`
+  const selectedJoinUrl = viewingAllPrograms ? '' : `${FRONTEND_URL}/join/${selectedJoinSlug}`
   const isActive = (business?.status || '').toUpperCase() === 'ACTIVE'
 
   const isTablet = viewportWidth >= 600 && viewportWidth <= 1100
@@ -741,11 +742,12 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
           setProgramLimit(Number(programsData.max_programs || 1))
           setCanCreateProgram(programsData.can_create === true)
           const saved = programStorageKey ? localStorage.getItem(programStorageKey) : ''
+          const wantsAll = programList.length > 1 && (scopeProgramId === 'all' || saved === 'all')
           const wanted = programList.find(p => p.public_id === scopeProgramId)
             || programList.find(p => p.public_id === saved)
             || programList.find(p => p.is_default)
             || programList[0]
-          scopeProgramId = wanted?.public_id || ''
+          scopeProgramId = wantsAll ? 'all' : (wanted?.public_id || '')
           if (scopeProgramId !== selectedProgramPublicId) setSelectedProgramPublicId(scopeProgramId)
           if (programStorageKey && scopeProgramId) localStorage.setItem(programStorageKey, scopeProgramId)
         }
@@ -754,12 +756,15 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
       }
 
       const scopeQuery = scopeProgramId ? `?program_id=${encodeURIComponent(scopeProgramId)}` : ''
+      const defaultProgram = programList.find(p => p.is_default) || programList[0] || null
+      const configProgramId = scopeProgramId === 'all' ? (defaultProgram?.public_id || '') : scopeProgramId
+      const configScopeQuery = configProgramId ? `?program_id=${encodeURIComponent(configProgramId)}` : ''
       const [bizRes, custRes, staffRes, statsRes, progRes, stampCountRes, branchRes, subRes, kitRes, deviceRes, orderAheadRes] = await Promise.all([
         authFetch(`${API_BASE}/api/v1/business/${user.business_slug}`),
         authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers${scopeQuery}`),
         authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff`),
         authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/stats${scopeQuery}`),
-        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config${scopeQuery}`),
+        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config${configScopeQuery}`),
         authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff/stamp-counts`),
         authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/branches`),
         authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/subscription`),
@@ -1311,6 +1316,8 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
       phone: c.phone || '',
       email: c.email || '',
       birthday: c.birthday || '',
+      employee_id_number: c.employee_id_number || '',
+      employee_start_date: c.employee_start_date || '',
       occupation: c.occupation || '',
       last_order_date: c.last_order_date || '',
       stamp_count: c.stamp_count ?? 0,
@@ -1391,7 +1398,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
   }
 
   const fetchMembershipBenefitStatus = async (customerPublicId) => {
-    if (!customerPublicId || !['membership','hybrid'].includes(program?.card_type)) { setMembershipBenefitStatus([]); return }
+    if (!customerPublicId || !['membership','hybrid','employee'].includes(program?.card_type)) { setMembershipBenefitStatus([]); return }
     try {
       const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${customerPublicId}/membership-benefits`)
       const data = await res.json().catch(() => ({}))
@@ -1764,6 +1771,10 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
   }
 
   const fetchQRImage = async () => {
+    if (viewingAllPrograms) {
+      setMessage('Select one program first to view or share its Join QR.')
+      return
+    }
     // Generate QR code with correct frontend URL (bypass backend wrong URL)
     const joinUrl = selectedJoinUrl
     const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(joinUrl)}`
@@ -1772,6 +1783,10 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
   }
 
   const shareQR = async () => {
+    if (viewingAllPrograms) {
+      setMessage('Select one program first to view or share its Join QR.')
+      return
+    }
     const joinUrl = selectedJoinUrl
     const shareText = `Join ${user?.business_name || 'our'} loyalty program! Scan the QR code or visit: ${joinUrl}`
 
@@ -1836,7 +1851,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
     } else {
       setMemberHistory([])
     }
-    if (['membership','hybrid'].includes(program?.card_type)) fetchMembershipBenefitStatus(customer.public_id)
+    if (['membership','hybrid','employee'].includes(program?.card_type)) fetchMembershipBenefitStatus(customer.public_id)
     else setMembershipBenefitStatus([])
     setShowCardModal(true)
   }
@@ -1865,6 +1880,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
   const isMembershipCard = program?.card_type === 'membership'
   const isVipCard = program?.card_type === 'vip'
   const isHybridCard = program?.card_type === 'hybrid'
+  const isEmployeeCard = program?.card_type === 'employee'
   const hybridLoyaltyType = program?.hybrid_loyalty_type === 'stamp' ? 'stamp' : 'points'
   const hybridUsesPoints = isHybridCard && hybridLoyaltyType === 'points'
   const hybridUsesStamps = isHybridCard && hybridLoyaltyType === 'stamp'
@@ -1876,8 +1892,22 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
   const tierUsesStamps = isVipCard ? vipUsesStamps : hybridTierUsesStamps
   const hasMembershipFeatures = isMembershipCard || isHybridCard
   const pointsExperience = isPointsCard || hybridUsesPoints
-  const stampExperience = (!isPointsCard && !isMembershipCard && !isMultipassCard && !isVipCard && !isHybridCard) || hybridUsesStamps
-  const cardExperience = isHybridCard
+  const stampExperience = (!isPointsCard && !isMembershipCard && !isMultipassCard && !isVipCard && !isHybridCard && !isEmployeeCard) || hybridUsesStamps
+  const cardExperience = viewingAllPrograms
+    ? {
+        key:'all', accent:'#0d9488', soft:'#f8fafc', border:'#cbd5e1', icon:'🪪',
+        title:'All Programs', customerLabel:'All Card Members', customerIcon:'👥', dashboardLabel:'All Programs Dashboard',
+        scanTitle:'Select a Program to Scan', scanDescription:'Choose Card 1, Card 2, or another program before recording activity',
+        recentTitle:'Recent Program Activity', editDescription:'Combined view across every active loyalty card',
+      }
+    : isEmployeeCard
+    ? {
+        key:'employee', accent:'#1d4ed8', soft:'#eff6ff', border:'#bfdbfe', icon:'🪪',
+        title:'Employee Card', customerLabel:'Employees', customerIcon:'👤', dashboardLabel:'Employee Card Dashboard',
+        scanTitle:'Scan Employee Card', scanDescription:'View employee identity, redeem benefits, and record Time In / Time Out when enabled',
+        recentTitle:'Recent Employees', editDescription:'Configure employee identity, benefits, and optional attendance tracking',
+      }
+    : isHybridCard
     ? {
         key:'hybrid', accent:'#0d9488', soft:'#f0fdfa', border:'#99f6e4', icon:'✨',
         title:`Hybrid · Subscription + Reward ${hybridLoyaltyType === 'points' ? 'Points' : 'Stamps'}${hybridTierEnabled ? ` + Tier ${hybridTierUsesStamps ? 'Stamps' : 'Points'}` : ''}`,
@@ -2156,13 +2186,16 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                 onChange={e => selectProgram(e.target.value)}
                 style={{minWidth:isMobile?'100%':260,maxWidth:420,width:isMobile?'100%':'auto',padding:'10px 34px 10px 12px',border:'1px solid #cbd5e1',borderRadius:10,background:'#fff',fontWeight:800,color:'#0f172a'}}
               >
+                {programs.length > 1 && <option value="all">All Programs · {programs.reduce((sum,item)=>sum+Number(item.member_count||0),0)} memberships</option>}
                 {programs.map(item => (
                   <option key={item.public_id} value={item.public_id}>
                     {item.program_name || item.card_name || 'Loyalty Program'} · {item.member_count || 0} members
                   </option>
                 ))}
               </select>
-              {selectedProgramSummary && (
+              {viewingAllPrograms ? (
+                <span style={{alignSelf:isMobile?'flex-start':'center',fontSize:10,fontWeight:850,color:'#1d4ed8',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:999,padding:'6px 9px',whiteSpace:'nowrap'}}>ALL CARDS</span>
+              ) : selectedProgramSummary && (
                 <span style={{alignSelf:isMobile?'flex-start':'center',fontSize:10,fontWeight:850,color:'#0f766e',background:'#ecfdf5',border:'1px solid #a7f3d0',borderRadius:999,padding:'6px 9px',whiteSpace:'nowrap'}}>
                   {String(selectedProgramSummary.card_type || 'stamp').replace('_',' ').toUpperCase()}{selectedProgramSummary.is_default ? ' · DEFAULT' : ''}
                 </span>
@@ -2198,6 +2231,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
               <option value="stamp">Stamp Card</option>
               <option value="points">Points Card</option>
               <option value="membership">Membership</option>
+              <option value="employee">Employee Card</option>
               <option value="multipass">Multi-Pass</option>
               <option value="vip">VIP / Tier</option>
               <option value="hybrid">Hybrid</option>
@@ -2237,7 +2271,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
 
           <div style={{...styles.heroQuickActions,...(isTablet?styles.heroQuickActionsTablet:{}),...(isMobile?styles.heroQuickActionsMobile:{})}}>
             <button
-              onClick={() => navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name, ownerToken: user.token, programPublicId: selectedProgramPublicId } })}
+              onClick={() => viewingAllPrograms ? setMessage('Select one program first, then scan the card for that program.') : navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name, ownerToken: user.token, programPublicId: selectedProgramPublicId } })}
               style={{...styles.primaryActionBtn, background: '#0d9488'}}
             >
               📷 {cardExperience.scanTitle}
@@ -2247,7 +2281,19 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
         </div>
 
         <div style={{...styles.metricsGrid,...(isTablet?styles.metricsGridTablet:{}),...(isMobile?styles.metricsGridMobile:{})}}>
-          {(isVipCard
+          {(viewingAllPrograms
+            ? [
+                { value: customers.length, label: 'Card Memberships', hint: 'Memberships across all active programs' },
+                { value: programs.length, label: 'Active Programs', hint: 'Cards currently configured for this business' },
+                { value: new Set(customers.map(c=>c.identity_id || c.public_id)).size, label: 'Unique People', hint: 'People deduplicated across multiple cards' },
+              ]
+            : isEmployeeCard
+            ? [
+                { value: customers.length, label: 'Employees', hint: 'Employees enrolled in this card program' },
+                { value: customers.filter(c=>c.employee_id_number).length, label: 'IDs Issued', hint: 'Employee cards with an ID number' },
+                { value: program?.employee_time_tracking_enabled ? 'ON' : 'OFF', label: 'Time Tracking', hint: 'Optional Time In / Time Out on scan' },
+              ]
+            : isVipCard
             ? [
                 {value:customers.length,label:'Tier Customers',hint:'Enrolled in your tier program'},
                 {value:vipUsesStamps ? totalTierStamps : totalVipPoints,label:vipUsesStamps?'Tier Stamps':'Tier Points',hint:'Cumulative non-spendable Tier progress across customers'},
@@ -2367,7 +2413,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                 <h3>View {cardExperience.customerLabel}</h3>
                 <p>{customers.length} connected</p>
               </div>
-              <div style={{...styles.actionCard,...(isTablet?styles.actionCardTablet:{}), borderColor: cardExperience.border}} onClick={() => navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name, ownerToken: user.token, programPublicId: selectedProgramPublicId } })}>
+              <div style={{...styles.actionCard,...(isTablet?styles.actionCardTablet:{}), borderColor: cardExperience.border}} onClick={() => viewingAllPrograms ? setMessage('Select one program first, then scan the card for that program.') : navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name, ownerToken: user.token, programPublicId: selectedProgramPublicId } })}>
                 <div style={styles.actionIcon}>📷</div>
                 <h3>{cardExperience.scanTitle}</h3>
                 <p>{cardExperience.scanDescription}</p>
@@ -2412,7 +2458,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                   <span style={styles.activityLeaf}>🍃</span>
                   <span style={styles.activityName}>{c.name}</span>
                   <span style={styles.activityStamps}>
-                    {isPointsCard ? `${c.points_balance || 0} points` : isMultipassCard ? `${c.multipass_sessions_remaining || 0}/${c.multipass_total_sessions || 0} sessions` : isVipCard ? `${c.vip_tier?.name || 'Tier'} · ${vipUsesStamps ? `${c.stamp_count || 0} stamps` : `${c.vip_points || 0} pts`}` : isMembershipCard ? `${(c.membership_effective_status || c.membership_status || 'inactive').toUpperCase()}` : `${c.stamp_count} stamps`}
+                    {viewingAllPrograms ? (c.program_card_type === 'employee' ? `Employee · ${c.employee_id_number || '—'}` : c.program_card_type === 'points' ? `${c.points_balance || 0} points` : c.program_card_type === 'multipass' ? `${c.multipass_sessions_remaining || 0}/${c.multipass_total_sessions || 0} sessions` : c.program_card_type === 'membership' ? `${(c.membership_effective_status || c.membership_status || 'inactive').toUpperCase()}` : c.program_card_type === 'vip' ? `${c.vip_tier?.name || 'Tier'}` : `${c.stamp_count || 0} stamps`) : isEmployeeCard ? `Employee · ${c.employee_id_number || '—'}` : isPointsCard ? `${c.points_balance || 0} points` : isMultipassCard ? `${c.multipass_sessions_remaining || 0}/${c.multipass_total_sessions || 0} sessions` : isVipCard ? `${c.vip_tier?.name || 'Tier'} · ${vipUsesStamps ? `${c.stamp_count || 0} stamps` : `${c.vip_points || 0} pts`}` : isMembershipCard ? `${(c.membership_effective_status || c.membership_status || 'inactive').toUpperCase()}` : `${c.stamp_count} stamps`}
                   </span>
                   {c.reward_unlocked && <span style={styles.activityFruit}>🎁</span>}
                 </div>
@@ -2453,13 +2499,22 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                   <div style={styles.customerAvatar}>{c.name?.[0]?.toUpperCase() || '?'}</div>
                   <div style={styles.customerInfo}>
                     <h4 style={styles.customerName}>{c.name}</h4>
+                    {viewingAllPrograms && c.program_name && <span style={{display:'inline-block',fontSize:9.5,fontWeight:900,color:'#1d4ed8',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:999,padding:'3px 7px',margin:'2px 0 5px'}}>{c.program_name} · {String(c.program_card_type||'card').replace('_',' ').toUpperCase()}</span>}
                     <p style={styles.customerPhone}>{c.phone}</p>
                     {(c.age || c.occupation) && (
                       <p style={{...styles.customerPhone, fontSize: 12, color: '#94a3b8'}}>
                         {c.age ? `${c.age} yrs` : ''}{c.age && c.occupation ? ' · ' : ''}{c.occupation ? c.occupation.replace('_', ' ') : ''}
                       </p>
                     )}
-                    {isHybridCard ? (
+                    {viewingAllPrograms ? (
+                      <p style={{...styles.stampText,fontWeight:800}}>{c.program_card_type === 'employee' ? `🪪 Employee ID: ${c.employee_id_number || '—'}` : c.program_card_type === 'points' ? `💎 ${c.points_balance || 0} points` : c.program_card_type === 'multipass' ? `🎫 ${c.multipass_sessions_remaining || 0}/${c.multipass_total_sessions || 0} sessions` : c.program_card_type === 'membership' ? `✓ ${(c.membership_effective_status || c.membership_status || 'inactive').toUpperCase()}` : c.program_card_type === 'vip' ? `👑 ${c.vip_points || 0} Tier points` : c.program_card_type === 'hybrid' ? `✨ ${c.points_balance || 0} pts · ${c.stamp_count || 0} stamps` : `🎟️ ${c.stamp_count || 0} stamps`}</p>
+                    ) : isEmployeeCard ? (
+                      <>
+                        <p style={{...styles.stampText,fontWeight:900,color:'#1d4ed8'}}>🪪 Employee ID: {c.employee_id_number || '—'}</p>
+                        <p style={styles.lastStampedText}>Started: {c.employee_start_date || '—'} · Birthday: {c.birthday || '—'}</p>
+                        {program?.employee_time_tracking_enabled === true && <p style={{...styles.lastStampedText,fontWeight:800,color:'#0369a1'}}>🕒 Time In / Time Out enabled</p>}
+                      </>
+                    ) : isHybridCard ? (
                       <>
                         <p style={{...styles.stampText,fontWeight:800}}>✨ {(c.membership_effective_status || c.membership_status || 'inactive').toUpperCase()} · {hybridUsesPoints ? `${c.points_balance || 0} reward points` : `${c.stamp_count || 0}/${program?.stamp_goal || 8} reward stamps`}</p>
                         {hybridTierEnabled && <p style={{...styles.lastStampedText,fontWeight:800,color:c.vip_tier?.color||'#ca8a04'}}>👑 {c.vip_tier?.name || 'Tier'} · {hybridTierUsesStamps ? `${c.tier_stamp_count || 0} Tier stamps` : `${c.vip_points || 0} Tier points`}{c.vip_next_tier ? ` · ${Math.max(0,Number(c.vip_next_tier.threshold||0)-Number(hybridTierUsesStamps?(c.tier_stamp_count||0):(c.vip_points||0)))} to ${c.vip_next_tier.name}` : ' · Highest tier'}</p>}
@@ -2548,16 +2603,30 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                   </div>
                   <div style={{display: 'flex', flexDirection: 'column', gap: 6}}>
                     <button
-                      onClick={() => viewCustomerCard(c)}
+                      onClick={() => {
+                        if (viewingAllPrograms && c.program_public_id) {
+                          selectProgram(c.program_public_id)
+                          setMessage(`Now viewing ${c.program_name || 'selected program'}.`)
+                          return
+                        }
+                        viewCustomerCard(c)
+                      }}
                       style={styles.viewCardBtn}
                     >
-                      View Card
+                      {viewingAllPrograms ? 'Open Program' : 'View Card'}
                     </button>
                     <button
-                      onClick={() => openEditCustomer(c)}
+                      onClick={() => {
+                        if (viewingAllPrograms && c.program_public_id) {
+                          selectProgram(c.program_public_id)
+                          setMessage(`Now viewing ${c.program_name || 'selected program'}. Open this employee/customer again to edit.`)
+                          return
+                        }
+                        openEditCustomer(c)
+                      }}
                       style={{...styles.viewCardBtn, background: 'transparent', color: '#0d9488', border: '1px solid #a7f3d0'}}
                     >
-                      ✏️ Edit
+                      {viewingAllPrograms ? 'Select Program' : '✏️ Edit'}
                     </button>
                   </div>
                 </div>
@@ -3114,8 +3183,12 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
 
         {activeTab === 'program' && (
           <div style={styles.programTab}>
-            <LoyaltyCardCustomizer API_BASE={API_BASE} user={user} programPublicId={selectedProgramPublicId} onSaved={loadData} />
-            {isMembershipCard && (
+            {viewingAllPrograms ? (
+              <div style={{...styles.card,padding:22,textAlign:'center'}}><h3 style={{margin:'0 0 6px'}}>Select one program to edit its card</h3><p style={{margin:0,color:'#64748b',fontSize:13}}>All Programs is for viewing customers and combined analytics. Card design, QR and Wallet settings belong to one specific program.</p></div>
+            ) : (
+              <LoyaltyCardCustomizer API_BASE={API_BASE} user={user} programPublicId={selectedProgramPublicId} onSaved={loadData} />
+            )}
+            {!viewingAllPrograms && isMembershipCard && (
               <div style={{...styles.card, marginTop: 18}}>
                 <h3 style={{marginTop: 0}}>Membership subscription settings</h3>
                 <label style={styles.label}>Default duration (days)</label>
@@ -3521,6 +3594,17 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
             )}
 
             <div style={{marginBottom:18, padding:16, border:'1px solid #ccfbf1', background:'#f0fdfa', borderRadius:14}}>
+              {isEmployeeCard && (
+                <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))',gap:10,marginBottom:14}}>
+                  {[
+                    ['Employee ID', selectedCustomer.employee_id_number || '—'],
+                    ['Name', selectedCustomer.name || '—'],
+                    ['Birthday', selectedCustomer.birthday || '—'],
+                    ['Started', selectedCustomer.employee_start_date || '—'],
+                  ].map(([label,value]) => <div key={label} style={{background:'white',border:'1px solid #bfdbfe',borderRadius:12,padding:12}}><div style={{fontSize:10.5,fontWeight:900,color:'#64748b',textTransform:'uppercase'}}>{label}</div><div style={{fontSize:15,fontWeight:900,color:'#1e3a8a',marginTop:5}}>{value}</div></div>)}
+                  {program?.employee_time_tracking_enabled === true && <div style={{gridColumn:isMobile?'auto':'1 / -1',padding:10,background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:10,fontSize:12,fontWeight:800,color:'#1d4ed8'}}>🕒 Time In / Time Out is enabled for this Employee Card. Attendance is recorded when the card is scanned.</div>}
+                </div>
+              )}
               {hasMembershipFeatures && (
                   <>
                     <div style={{display:'grid', gridTemplateColumns:'repeat(2, minmax(0, 1fr))', gap:10, marginBottom:14}}>
@@ -3578,8 +3662,8 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                   </>
                 )}
 
-                {(isMembershipCard || isHybridCard) && membershipBenefitStatus.length > 0 && <div style={{marginBottom:14,display:'grid',gap:8}}>
-                  <strong style={{fontSize:14,color:'#115e59'}}>Subscription benefits</strong>
+                {(isMembershipCard || isHybridCard || isEmployeeCard) && membershipBenefitStatus.length > 0 && <div style={{marginBottom:14,display:'grid',gap:8}}>
+                  <strong style={{fontSize:14,color:'#115e59'}}>{isEmployeeCard ? 'Employee benefits' : 'Subscription benefits'}</strong>
                   {membershipBenefitStatus.map(benefit => <div key={benefit.id} style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'center',padding:'9px 11px',border:'1px solid #e2e8f0',borderRadius:10,background:benefit.available?'#f0fdf4':'#f8fafc'}}>
                     <div><div style={{fontSize:13,fontWeight:800,color:'#0f172a'}}>{benefit.name}</div><div style={{fontSize:11,color:'#64748b'}}>{benefit.remaining_in_window==null?'Unlimited':`${benefit.remaining_in_window} remaining`}{benefit.unavailable_reason?` · ${benefit.unavailable_reason}`:''}</div></div>
                     <span style={{fontSize:10,fontWeight:900,color:benefit.available?'#15803d':'#64748b'}}>{benefit.available?'AVAILABLE':'USED / UNAVAILABLE'}</span>
@@ -3589,11 +3673,13 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                 <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:12, marginBottom:12}}>
                   <div>
                     <strong style={{fontSize:15,color:'#115e59'}}>
-                      {isHybridCard ? 'Hybrid subscription, rewards & tier activity' : isMultipassCard ? 'Multi-Pass activity' : isMembershipCard ? 'Subscription visit analytics' : isPointsCard ? 'Points activity' : isVipCard ? 'Tier activity' : 'Loyalty activity'}
+                      {isHybridCard ? 'Hybrid subscription, rewards & tier activity' : isEmployeeCard ? 'Employee card activity' : isMultipassCard ? 'Multi-Pass activity' : isMembershipCard ? 'Subscription visit analytics' : isPointsCard ? 'Points activity' : isVipCard ? 'Tier activity' : 'Loyalty activity'}
                     </strong>
                     <div style={{fontSize:12,color:'#64748b',marginTop:3}}>
                       {isHybridCard
                         ? `Subscription visits plus ${hybridUsesPoints ? 'points' : 'stamp'} activity`
+                        : isEmployeeCard
+                        ? 'Employee benefits, attendance actions, branch, staff, and date'
                         : isMembershipCard
                         ? 'Service, notes, cashier, branch, and visit date'
                         : isMultipassCard
@@ -3888,6 +3974,18 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                     <button type="button" style={{...styles.submitBtn,width:'auto',flex:'1 1 120px',background:'#334155'}} disabled={membershipActionLoading} onClick={()=>runMembershipAction('lifetime')}>Lifetime</button>
                     <button type="button" style={{...styles.submitBtn,width:'auto',flex:'1 1 120px',background:'#dc2626'}} disabled={membershipActionLoading} onClick={()=>runMembershipAction('cancel')}>Cancel</button>
                   </div>
+                </>
+              ) : isEmployeeCard ? (
+                <>
+                  <div style={{padding:12,border:'1px solid #bfdbfe',background:'#eff6ff',borderRadius:12,marginBottom:14}}>
+                    <strong style={{color:'#1e3a8a'}}>🪪 Employee Card</strong>
+                    <div style={{fontSize:12,color:'#64748b',marginTop:3}}>Employee identity and employment details. Benefits are configured in Edit Card.</div>
+                  </div>
+                  <label style={styles.label}>Employee ID Number</label>
+                  <input style={styles.input} value={editForm.employee_id_number || ''} onChange={e=>setEditForm({...editForm,employee_id_number:e.target.value})} required />
+                  <label style={styles.label}>When Started</label>
+                  <input style={styles.input} type="date" value={editForm.employee_start_date || ''} onChange={e=>setEditForm({...editForm,employee_start_date:e.target.value})} required />
+                  {program?.employee_time_tracking_enabled === true && <div style={{fontSize:11.5,color:'#1d4ed8',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:10,padding:9,marginBottom:14}}>Time In / Time Out is enabled. Attendance is recorded when this Employee Card is scanned.</div>}
                 </>
               ) : isPointsCard ? (
                 <>

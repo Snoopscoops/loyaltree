@@ -8,8 +8,10 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
     message: '',
     type: 'info',
     is_active: true,
+    end_date: '',
     target_scope: 'business',
     branch_public_id: '',
+    program_public_id: '',
   })
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -17,6 +19,7 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
   const [notifyingId, setNotifyingId] = useState(null)
   const [planInfo, setPlanInfo] = useState(null)
   const [branches, setBranches] = useState([])
+  const [programs, setPrograms] = useState([])
 
   const authHeaders = (extra={}) => ({
     ...extra,
@@ -27,6 +30,7 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
     fetchAnnouncements()
     fetchPlanInfo()
     fetchBranches()
+    fetchPrograms()
   }, [])
 
   const fetchPlanInfo = async () => {
@@ -50,6 +54,28 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
       if (res.ok) {
         const data = await res.json()
         setBranches((Array.isArray(data) ? data : []).filter(b => b.is_active !== false))
+      }
+    } catch (err) {
+      console.error(err)
+    }
+  }
+
+
+  const fetchPrograms = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/programs`, {
+        headers: authHeaders(),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        const rows = (Array.isArray(data) ? data : (Array.isArray(data?.programs) ? data.programs : [])).filter(p => p.is_active !== false)
+        setPrograms(rows)
+        try {
+          const saved = localStorage.getItem(`loyaltree_selected_program_${businessSlug}`) || 'all'
+          if (saved !== 'all' && rows.some(p => p.public_id === saved)) {
+            setForm(current => current.program_public_id ? current : { ...current, program_public_id: saved })
+          }
+        } catch (_) {}
       }
     } catch (err) {
       console.error(err)
@@ -99,18 +125,23 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
             if (data._push_scope === 'branch') {
               setBanner({
                 type: 'success',
-                text: `📣 Posted and notified ${data.branch_name || 'the selected branch'}${data._push_target_count != null ? ` · ${data._push_target_count} matching customer${data._push_target_count === 1 ? '' : 's'}` : ''}.`
+                text: `📣 Posted for ${data.branch_name || 'the selected branch'}${data._push_target_count != null ? ` · ${data._push_target_count} matching customer${data._push_target_count === 1 ? '' : 's'}` : ''}.`
               })
             } else {
-              setBanner({ type: 'success', text: '📣 Posted and notified the whole business audience.' })
+              setBanner({
+                type: 'success',
+                text: data.program_public_id
+                  ? `📣 Posted for ${data.program_name || 'the selected program'}${data._push_target_count != null ? ` · ${data._push_target_count} member${data._push_target_count === 1 ? '' : 's'}` : ''}.`
+                  : '📣 Posted for all programs / the whole business audience.'
+              })
             }
           } else if (data._push_error) {
-            setBanner({ type: 'warn', text: `Posted immediately, but notification delivery failed: ${data._push_error}` })
+            setBanner({ type: 'warn', text: `Posted, but not pushed: ${data._push_error}` })
           }
         }
         setForm({
-          title: '', message: '', type: 'info', is_active: true,
-          target_scope: 'business', branch_public_id: '',
+          title: '', message: '', type: 'info', is_active: true, end_date: '',
+          target_scope: 'business', branch_public_id: '', program_public_id: '',
         })
         setEditing(null)
         fetchAnnouncements()
@@ -132,8 +163,10 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
       message: ann.message,
       type: ann.type || 'info',
       is_active: ann.is_active !== false,
+      end_date: ann.end_date ? ann.end_date.split('T')[0] : '',
       target_scope: ann.target_scope === 'branch' ? 'branch' : 'business',
       branch_public_id: ann.branch_public_id || '',
+      program_public_id: ann.program_public_id || '',
     })
   }
 
@@ -166,7 +199,12 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
             text: `📣 Sent to ${data.target_count || 0} customer${data.target_count === 1 ? '' : 's'} with recorded activity at the selected branch.`
           })
         } else {
-          setBanner({ type: 'success', text: '📣 Sent to the whole business audience.' })
+          setBanner({
+            type: 'success',
+            text: data.program_public_id
+              ? `📣 Sent to ${data.program_name || 'the selected program'}${data.target_count != null ? ` · ${data.target_count} member${data.target_count === 1 ? '' : 's'}` : ''}.`
+              : '📣 Sent to all programs / the whole business audience.'
+          })
         }
         fetchAnnouncements()
       } else {
@@ -182,8 +220,8 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
   const handleNew = () => {
     setEditing(null)
     setForm({
-      title: '', message: '', type: 'info', is_active: true,
-      target_scope: 'business', branch_public_id: '',
+      title: '', message: '', type: 'info', is_active: true, end_date: '',
+      target_scope: 'business', branch_public_id: '', program_public_id: '',
     })
   }
 
@@ -201,9 +239,13 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
     announcementsUsed >= planInfo.usage.announcements_limit)
 
   const selectedBranch = branches.find(b => b.public_id === form.branch_public_id)
-  const notificationHeader = form.target_scope === 'branch' && selectedBranch
+  const selectedProgram = programs.find(p => p.public_id === form.program_public_id)
+  const notificationHeaderBase = form.target_scope === 'branch' && selectedBranch
     ? `${businessName || businessSlug} — ${selectedBranch.name}`
     : (businessName || businessSlug)
+  const notificationHeader = selectedProgram
+    ? `${notificationHeaderBase} · ${selectedProgram.program_name || selectedProgram.card_name || 'Selected Program'}`
+    : notificationHeaderBase
 
   return (
     <div style={styles.overlay}>
@@ -292,6 +334,25 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
                 </div>
               )}
 
+              <div style={styles.inputGroup}>
+                <label style={styles.label}>Program / Card</label>
+                <select
+                  value={form.program_public_id}
+                  onChange={e=>setForm({...form,program_public_id:e.target.value})}
+                  style={styles.select}
+                >
+                  <option value="">All Programs / Both Cards</option>
+                  {programs.map(program=>(
+                    <option key={program.public_id} value={program.public_id}>
+                      {program.program_name || program.card_name || 'Loyalty Program'} · {String(program.card_type || 'card').replace('_',' ')}
+                    </option>
+                  ))}
+                </select>
+                <div style={styles.audienceHelp}>
+                  Choose All Programs to send to every active card, or choose one program to notify only members of that card.
+                </div>
+              </div>
+
               <div style={styles.notificationPreview}>
                 <div style={styles.previewEyebrow}>NOTIFICATION PREVIEW</div>
                 <div style={styles.previewHeader}>{notificationHeader}</div>
@@ -319,24 +380,30 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
                   required
                 />
               </div>
-              <div style={styles.inputGroup}>
-                <label style={styles.label}>Type</label>
-                <select
-                  value={form.type}
-                  onChange={e => setForm({...form, type: e.target.value})}
-                  style={styles.select}
-                >
-                  <option value="info">ℹ️ Info</option>
-                  <option value="promo">🏷️ Promotion</option>
-                  <option value="event">📅 Event</option>
-                  <option value="alert">⚠️ Alert</option>
-                </select>
-              </div>
-              {!editing && (
-                <div style={{...styles.audienceHelp,marginTop:-4,marginBottom:14,color:'#0f766e',fontWeight:700}}>
-                  Posting sends the Wallet notification immediately. No schedule or end date is required.
+              <div style={styles.row}>
+                <div style={styles.inputGroup}>
+                  <label style={styles.label}>Type</label>
+                  <select
+                    value={form.type}
+                    onChange={e => setForm({...form, type: e.target.value})}
+                    style={styles.select}
+                  >
+                    <option value="info">ℹ️ Info</option>
+                    <option value="promo">🏷️ Promotion</option>
+                    <option value="event">📅 Event</option>
+                    <option value="alert">⚠️ Alert</option>
+                  </select>
                 </div>
-              )}
+                <div style={styles.inputGroup}>
+                  <label style={styles.label}>End Date (optional)</label>
+                  <input
+                    type="date"
+                    value={form.end_date}
+                    onChange={e => setForm({...form, end_date: e.target.value})}
+                    style={styles.input}
+                  />
+                </div>
+              </div>
               <div style={styles.formFooter}>
                 {editing && (
                   <button type="button" onClick={handleNew} style={styles.newBtn}>
@@ -344,7 +411,7 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
                   </button>
                 )}
                 <button type="submit" disabled={saving || (!editing && quotaReached)} style={styles.saveBtn}>
-                  {saving ? 'Saving...' : quotaReached && !editing ? 'Cycle limit reached' : (editing ? 'Save Changes' : 'Post & Notify Now')}
+                  {saving ? 'Saving...' : quotaReached && !editing ? 'Cycle limit reached' : (editing ? 'Update' : 'Post Announcement')}
                 </button>
               </div>
             </form>
@@ -370,14 +437,19 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
                         <div style={ann.target_scope==='branch' ? styles.branchAudienceBadge : styles.businessAudienceBadge}>
                           {ann.target_scope==='branch' ? `📍 ${ann.branch_name || 'Specific Branch'}` : '🏪 Whole Business'}
                         </div>
+                        <div style={styles.businessAudienceBadge}>
+                          {ann.program_public_id ? `🪪 ${ann.program_name || 'Specific Program'}` : '🪪 All Programs'}
+                        </div>
                       </div>
                       <h4 style={styles.annTitle}>{ann.title}</h4>
                       <p style={styles.annMessage}>{ann.message}</p>
                       <div style={styles.annMeta}>
                         <span style={styles.annDate}>
-                          {ann.notified_at
-                            ? <span style={styles.sentTag}>🔔 Notification sent</span>
-                            : <span style={{color:'#b45309',fontWeight:700}}>Notification not confirmed</span>}
+                          {new Date(ann.created_at).toLocaleDateString()}
+                          {ann.end_date && ` → ${new Date(ann.end_date).toLocaleDateString()}`}
+                          {ann.notified_at && (
+                            <span style={styles.sentTag}> · 🔔 sent {new Date(ann.notified_at).toLocaleDateString()}</span>
+                          )}
                         </span>
                         <div style={styles.annActions}>
                           <button
@@ -385,7 +457,7 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
                             disabled={notifyingId === ann.id}
                             style={styles.actionBtn}
                           >
-                            {notifyingId === ann.id ? 'Sending...' : (ann.notified_at ? '🔔 Resend Notification' : '🔔 Retry Notification')}
+                            {notifyingId === ann.id ? 'Sending...' : (ann.notified_at ? '🔔 Resend' : '🔔 Notify')}
                           </button>
                           <button onClick={() => handleEdit(ann)} style={styles.actionBtn}>✏️ Edit</button>
                           <button onClick={() => handleDelete(ann.id)} style={styles.actionBtn}>🗑️</button>

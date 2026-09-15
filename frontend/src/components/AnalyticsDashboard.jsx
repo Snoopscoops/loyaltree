@@ -1,12 +1,14 @@
 import React, { useState, useEffect } from 'react'
-import { formatMoney } from './currency'
 
 function AnalyticsDashboard({ API_BASE, user }) {
   const [timeRange, setTimeRange] = useState('7d')
+  const [programs, setPrograms] = useState([])
+  const [programFilter, setProgramFilter] = useState(() => {
+    try { return localStorage.getItem(`loyaltree_selected_program_${user?.business_slug || ''}`) || 'all' } catch (_) { return 'all' }
+  })
   const [analytics, setAnalytics] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [displayCurrency, setDisplayCurrency] = useState(user?.display_currency || 'PHP')
   const [branchStats, setBranchStats] = useState([])
   const [walletQueue, setWalletQueue] = useState({ jobs: [], pending: 0, failed: 0 })
   const [crmData, setCrmData] = useState({ customers: [], segments: {}, total_customers: 0 })
@@ -42,7 +44,25 @@ function AnalyticsDashboard({ API_BASE, user }) {
 
   useEffect(() => {
     fetchAnalytics()
-  }, [timeRange])
+    try { if (user?.business_slug) localStorage.setItem(`loyaltree_selected_program_${user.business_slug}`, programFilter) } catch (_) {}
+  }, [timeRange, programFilter])
+
+  useEffect(() => {
+    if (!user?.business_slug || !user?.token) return
+    fetch(`${API_BASE}/api/v1/business/${user.business_slug}/programs`, {
+      headers: { 'Authorization': `Bearer ${user.token}` }
+    })
+      .then(res => res.ok ? res.json() : [])
+      .then(data => {
+        const rows = (Array.isArray(data) ? data : (Array.isArray(data?.programs) ? data.programs : [])).filter(p => p.is_active !== false)
+        setPrograms(rows)
+        try {
+          const saved = localStorage.getItem(`loyaltree_selected_program_${user.business_slug}`) || 'all'
+          if (saved === 'all' || rows.some(p => p.public_id === saved)) setProgramFilter(saved)
+        } catch (_) {}
+      })
+      .catch(() => setPrograms([]))
+  }, [API_BASE, user.business_slug, user.token])
 
   useEffect(() => {
     // All-time, not scoped to timeRange - this is "which branch is driving
@@ -63,16 +83,6 @@ function AnalyticsDashboard({ API_BASE, user }) {
     const headers = { ...(options.headers || {}), 'Authorization': `Bearer ${user.token}` }
     return fetch(url, { ...options, headers })
   }
-
-  useEffect(() => {
-    if (!user?.business_slug || !user?.token) return
-    authFetch(`${API_BASE}/api/v1/business/${user.business_slug}`)
-      .then(res => res.json())
-      .then(data => {
-        if (data?.display_currency) setDisplayCurrency(data.display_currency)
-      })
-      .catch(() => {})
-  }, [API_BASE, user?.business_slug, user?.token])
 
   const fetchExtendedAnalytics = async () => {
     if (!user?.business_slug || !user?.token) return
@@ -149,7 +159,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
   const fetchAnalytics = async () => {
     setLoading(true)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/analytics?range=${timeRange}`, {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/analytics?range=${timeRange}&program_id=${encodeURIComponent(programFilter)}`, {
         headers: { 'Authorization': `Bearer ${user.token}` }
       })
       const data = await res.json()
@@ -186,10 +196,13 @@ function AnalyticsDashboard({ API_BASE, user }) {
     return c.in_this_month
   })
   const birthdayFilterLabel = birthdayFilter === 'today' ? 'Today' : birthdayFilter === '7d' ? 'Next 7 Days' : birthdayFilter === '30d' ? 'Next 30 Days' : 'This Month'
+  const isAllPrograms = overview.card_type === 'all' || programFilter === 'all'
   const isPoints = overview.card_type === 'points'
   const isMultipass = overview.card_type === 'multipass'
   const isMembership = overview.card_type === 'membership'
   const isVip = overview.card_type === 'vip'
+  const isEmployee = overview.card_type === 'employee'
+  const selectedProgramName = programFilter === 'all' ? 'All Programs' : (programs.find(p => p.public_id === programFilter)?.program_name || programs.find(p => p.public_id === programFilter)?.card_name || overview.program_name || 'Selected Program')
 
   return (
     <div className="an-container" style={styles.container}>
@@ -226,8 +239,25 @@ function AnalyticsDashboard({ API_BASE, user }) {
         }
       `}</style>
       <div className="an-header" style={styles.header}>
-        <h1 className="an-title" style={styles.title}>📊 Analytics Dashboard</h1>
-        <div className="an-timerange" style={styles.timeRange}>
+        <div>
+          <h1 className="an-title" style={styles.title}>📊 Analytics Dashboard</h1>
+          <div style={{fontSize:12,color:'#64748b',marginTop:4}}>Viewing: <b>{selectedProgramName}</b></div>
+        </div>
+        <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',justifyContent:'flex-end'}}>
+          <select
+            value={programFilter}
+            onChange={e => setProgramFilter(e.target.value)}
+            style={{padding:'9px 12px',border:'1px solid #cbd5e1',borderRadius:10,background:'#fff',fontSize:13,fontWeight:700,color:'#334155',maxWidth:240}}
+            aria-label="Analytics program"
+          >
+            <option value="all">All Programs</option>
+            {programs.map(program => (
+              <option key={program.public_id} value={program.public_id}>
+                {program.program_name || program.card_name || 'Loyalty Program'}
+              </option>
+            ))}
+          </select>
+          <div className="an-timerange" style={styles.timeRange}>
           {['7d', '30d', '90d', 'all'].map(range => (
             <button
               key={range}
@@ -242,13 +272,20 @@ function AnalyticsDashboard({ API_BASE, user }) {
               {range === '7d' ? 'Last 7 Days' : range === '30d' ? 'Last 30 Days' : range === '90d' ? 'Last 90 Days' : 'All Time'}
             </button>
           ))}
+          </div>
         </div>
       </div>
+
+      {programFilter !== 'all' && (
+        <div style={{margin:'-4px 0 14px',padding:'9px 12px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:10,fontSize:11.5,color:'#64748b'}}>
+          Customer, loyalty activity, redemptions, trends, and demographics below are filtered to <b>{selectedProgramName}</b>. Business-wide security/CRM operational panels remain organization-level.
+        </div>
+      )}
 
       {/* Overview Cards */}
       <div className="an-overview-grid" style={styles.overviewGrid}>
         <StatCard 
-          title="Total Customers" 
+          title={isAllPrograms ? "Card Memberships" : "Total Customers"} 
           value={overview.total_customers} 
           change={overview.customer_change}
           icon="👥" 
@@ -271,15 +308,15 @@ function AnalyticsDashboard({ API_BASE, user }) {
           />
         ) : (
           <StatCard
-            title={isVip ? 'VIP Points Issued' : isMembership ? 'Member Visits' : isMultipass ? 'Sessions Used' : 'Stamps Issued'}
+            title={isAllPrograms ? 'Loyalty Activity' : isEmployee ? 'Attendance Actions' : isVip ? 'VIP Points Issued' : isMembership ? 'Member Visits' : isMultipass ? 'Sessions Used' : 'Stamps Issued'}
             value={overview.total_stamps}
             change={overview.stamp_change}
-            icon={isVip ? '👑' : isMembership ? '✅' : isMultipass ? '🎫' : '🎯'}
+            icon={isAllPrograms ? '✨' : isEmployee ? '🕒' : isVip ? '👑' : isMembership ? '✅' : isMultipass ? '🎫' : '🎯'}
             color="#f59e0b"
           />
         )}
         <StatCard 
-          title={isVip ? 'Tier Upgrades' : isMembership ? 'Membership Actions' : isMultipass ? 'Packs Completed' : 'Rewards Redeemed'}
+          title={isAllPrograms ? 'Benefits / Rewards Redeemed' : isEmployee ? 'Benefits Redeemed' : isVip ? 'Tier Upgrades' : isMembership ? 'Membership Actions' : isMultipass ? 'Packs Completed' : 'Rewards Redeemed'}
           value={overview.total_rewards} 
           change={overview.reward_change}
           icon="🎁" 
@@ -295,7 +332,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           />
         ) : (
           <StatCard
-            title={isVip ? 'Avg. VIP Points/Customer' : isMembership ? 'Avg. Visits/Member' : isMultipass ? 'Avg. Sessions/Customer' : 'Avg. Stamps/Customer'}
+            title={isAllPrograms ? 'Avg. Activity/Member' : isEmployee ? 'Avg. Attendance Actions' : isVip ? 'Avg. VIP Points/Customer' : isMembership ? 'Avg. Visits/Member' : isMultipass ? 'Avg. Sessions/Customer' : 'Avg. Stamps/Customer'}
             value={overview.avg_stamps_per_customer}
             change={overview.avg_change}
             icon="📈"
@@ -327,7 +364,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           <LineChart data={trends.customers} color="#0d9488" />
         </div>
         <div className="an-chart-card" style={styles.chartCard}>
-          <h3 style={styles.chartTitle}>{isPoints ? '💎 Points Activity' : isMembership ? '✅ Member Visits' : isMultipass ? '🎫 Session Activity' : '🎯 Stamp Activity'}</h3>
+          <h3 style={styles.chartTitle}>{isAllPrograms ? '✨ Loyalty Activity' : isEmployee ? '🕒 Attendance Activity' : isPoints ? '💎 Points Activity' : isMembership ? '✅ Member Visits' : isMultipass ? '🎫 Session Activity' : '🎯 Stamp Activity'}</h3>
           <LineChart data={trends.stamps} color="#f59e0b" />
         </div>
       </div>
@@ -335,7 +372,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
       {/* Second Charts Row */}
       <div className="an-charts-row" style={styles.chartsRow}>
         <div className="an-chart-card" style={styles.chartCard}>
-          <h3 style={styles.chartTitle}>{isMembership ? '📅 Membership Activity' : isMultipass ? '✅ Packs Completed' : '🎁 Reward Redemptions'}</h3>
+          <h3 style={styles.chartTitle}>{isAllPrograms ? '🎁 Benefits / Reward Redemptions' : isEmployee ? '🎁 Employee Benefit Redemptions' : isMembership ? '📅 Membership Activity' : isMultipass ? '✅ Packs Completed' : '🎁 Reward Redemptions'}</h3>
           <BarChart data={trends.rewards} color="#ec4899" />
         </div>
         <div className="an-chart-card" style={styles.chartCard}>
@@ -354,7 +391,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
               <div key={i} style={styles.customerRow}>
                 <span style={styles.rank}>#{i + 1}</span>
                 <span style={styles.customerName}>{c.name}</span>
-                <span style={styles.customerStamps}>{c.stamps} {c.metric === 'points_balance' ? 'pts' : c.metric === 'sessions_used' ? 'sessions' : 'stamps'}</span>
+                <span style={styles.customerStamps}>{c.stamps} {c.metric === 'attendance_actions' ? 'attendance actions' : c.metric === 'points_balance' ? 'pts' : c.metric === 'sessions_used' ? 'sessions' : (isAllPrograms ? 'activity' : 'stamps')}</span>
               </div>
             ))}
           </div>
@@ -460,7 +497,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           <div className="an-revenue-grid" style={styles.revenueGrid}>
             <div style={styles.revenueCard}>
               <h4 style={styles.insightTitle}>{isPoints ? 'Points-Driven Revenue' : 'Stamp-Driven Revenue'}</h4>
-              <div className="an-bignumber" style={styles.bigNumber}>{formatMoney(revenue.stamp_revenue,displayCurrency)}</div>
+              <div className="an-bignumber" style={styles.bigNumber}>₱{revenue.stamp_revenue}</div>
               <p style={styles.insightDesc}>{isPoints ? 'Revenue from point-earning transactions' : 'Revenue from stamp-earning transactions'}</p>
             </div>
             <div style={styles.revenueCard}>
@@ -487,7 +524,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
             </div>
             <div style={styles.revenueCard}>
               <h4 style={styles.insightTitle}>Avg. Transaction</h4>
-              <div className="an-bignumber" style={styles.bigNumber}>{formatMoney(revenue.avg_transaction,displayCurrency)}</div>
+              <div className="an-bignumber" style={styles.bigNumber}>₱{revenue.avg_transaction}</div>
               <p style={styles.insightDesc}>{isPoints ? 'Average spend per point-earning transaction' : 'Average spend per stamp transaction'}</p>
             </div>
           </div>
