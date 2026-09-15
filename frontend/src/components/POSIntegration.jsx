@@ -45,9 +45,38 @@ const PROVIDERS = [
   },
 ]
 
+const POS_DEVICE_PROFILES = [
+  { id: 'imin_falcon_1', label: 'iMin Falcon 1', scanner: 'camera', note: 'Built-in camera. Older/slower model — keep the QR camera screen lightweight.' },
+  { id: 'imin_d4', label: 'iMin D4', scanner: 'camera', note: 'Built-in camera. Older/slower model — keep the QR camera screen lightweight.' },
+  { id: 'sunmi_d3_pro', label: 'Sunmi D3 Pro', scanner: 'hardware_scanner', note: 'Can scan but has no built-in camera. Use the terminal scanner flow.' },
+  { id: 'sunmi_t2', label: 'Sunmi T2', scanner: 'external_scanner', note: 'ANGKAN setup: use an external QR scanner.' },
+  { id: 'other', label: 'Other POS terminal', scanner: 'external_scanner', note: 'Confirm scanner/camera support during branch testing.' },
+]
+
+const CHECKOUT_MODES = [
+  { id: 'auto', label: 'Automatic · Seamless first, Companion fallback', note: 'Recommended for pilot. Try StoreHub seamless checkout first; automatically fall back to Loyalty Tree Companion if the required StoreHub write hooks are not verified.' },
+  { id: 'seamless', label: 'Seamless StoreHub only', note: 'Requires verified open-cart discount write and completed-sale confirmation from StoreHub. Redemption is blocked if the seamless test fails.' },
+  { id: 'companion', label: 'Loyalty Tree Companion', note: 'Cashier scans/redeems in Loyalty Tree, applies the displayed discount in StoreHub, then confirms it before completing the sale.' },
+]
+
+const SCANNER_METHODS = [
+  { id: 'camera', label: 'Built-in camera' },
+  { id: 'hardware_scanner', label: 'POS hardware scanner' },
+  { id: 'external_scanner', label: 'External QR scanner' },
+]
+
 const EMPTY_TEST = {
   customer_public_id: '',
   amount_spent: '',
+  external_transaction_id: '',
+  branch_public_id: '',
+}
+
+const EMPTY_REDEMPTION_TEST = {
+  customer_public_id: '',
+  gross_amount: '485',
+  points_to_redeem: '100',
+  branch_public_id: '',
   external_transaction_id: '',
 }
 
@@ -88,6 +117,18 @@ function POSIntegration({
   const [loyverseStores, setLoyverseStores] = useState([])
   const [loyverseResult, setLoyverseResult] = useState(null)
   const [loyverseReceipts, setLoyverseReceipts] = useState([])
+  const [redemptionConfig, setRedemptionConfig] = useState({
+    enabled: false,
+    value_per_point: 1,
+    min_points: 1,
+    increment_points: 1,
+    max_percent: 100,
+    hold_minutes: 10,
+    earn_on_net_amount: true,
+  })
+  const [redemptionForm, setRedemptionForm] = useState(EMPTY_REDEMPTION_TEST)
+  const [redemptionResult, setRedemptionResult] = useState(null)
+  const [redemptionStage, setRedemptionStage] = useState('idle')
 
   const activeProvider = useMemo(
     () => PROVIDERS.find(item => item.id === provider) || PROVIDERS[0],
@@ -98,7 +139,8 @@ function POSIntegration({
   const hasSavedStoreHubCredentials = Boolean(storeHubConnection?.credentials_saved || (provider === 'storehub' && integration?.config?.real_api_tested))
   const hasSavedLoyverseCredentials = Boolean(loyverseConnection?.credentials_saved || (provider === 'loyverse' && integration?.config?.real_api_tested))
   const hasSavedCredentials = provider === 'loyverse' ? hasSavedLoyverseCredentials : hasSavedStoreHubCredentials
-  const isConnected = ['connected', 'testing', 'live'].includes(integrationStatus) && (integrationStatus === 'live' || hasSavedCredentials)
+  const simulatorReady = provider === 'storehub' && integration?.mode === 'test' && integration?.config?.simulator === true
+  const isConnected = ['connected', 'testing', 'live'].includes(integrationStatus) && (integrationStatus === 'live' || hasSavedCredentials || simulatorReady)
   const isLive = integrationStatus === 'live'
   const providerLabel = provider === 'loyverse' ? 'Loyverse' : 'StoreHub'
   const providerLocations = provider === 'loyverse' ? loyverseStores : storeHubOutlets
@@ -136,6 +178,7 @@ function POSIntegration({
       setLoyverseConnection(data.loyverse_connection || null)
       setLoyverseStores(data.loyverse_connection?.stores || (provider === 'loyverse' ? data.integration?.config?.loyverse_stores : []) || [])
       setLoyaltyContract(data.loyalty_contract || null)
+      if (data.redemption_config) setRedemptionConfig(data.redemption_config)
       if (data.storehub_connection?.store_name) {
         setStoreHubCredentials(current => ({ ...current, store_name: data.storehub_connection.store_name }))
       }
@@ -146,6 +189,18 @@ function POSIntegration({
         mappings[row.branch_public_id] = {
           external_branch_id: row.external_branch_id || '',
           external_branch_name: row.external_branch_name || '',
+          saved_mapping: true,
+          device_model: row.settings?.device_model || 'other',
+          scanner_method: row.settings?.scanner_method || 'external_scanner',
+          performance_note: row.settings?.performance_note || '',
+          checkout_mode: row.settings?.checkout_mode || 'auto',
+          effective_checkout_mode: row.settings?.effective_checkout_mode || 'pending_test',
+          seamless_last_test_passed: row.settings?.seamless_last_test_passed === true,
+          seamless_simulator_passed: row.settings?.seamless_simulator_passed === true,
+          seamless_last_test_at: row.settings?.seamless_last_test_at || null,
+          seamless_last_test_reason: row.settings?.seamless_last_test_reason || '',
+          last_test_passed: row.settings?.last_test_passed === true,
+          last_test_at: row.settings?.last_test_at || null,
         }
       })
       setBranchMappings(mappings)
@@ -154,8 +209,9 @@ function POSIntegration({
       const credentialsSaved = provider === 'loyverse'
         ? Boolean(data.loyverse_connection?.credentials_saved || data.integration?.config?.real_api_tested)
         : Boolean(data.storehub_connection?.credentials_saved || data.integration?.config?.real_api_tested)
+      const simulatorConnected = provider === 'storehub' && data.integration?.mode === 'test' && data.integration?.config?.simulator === true
       if (status === 'live') setSetupStep(7)
-      else if (!credentialsSaved) setSetupStep(1)
+      else if (!credentialsSaved && !simulatorConnected) setSetupStep(1)
       else if (status === 'testing') setSetupStep(6)
       else if (data.branch_mappings?.length) setSetupStep(3)
       else if (data.integration) setSetupStep(2)
@@ -170,10 +226,31 @@ function POSIntegration({
     setMessage('')
     setError('')
     setTestResult(null)
+    setRedemptionResult(null)
+    setRedemptionStage('idle')
     setBranchMappings({})
     loadPOS()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isPro, slug, provider])
+
+  const startStoreHubSimulator = async () => {
+    if (!slug) return
+    setSaving(true); setError(''); setMessage('')
+    try {
+      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/integrations`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'storehub', mode: 'test' }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not start StoreHub simulator.')
+      setIntegration(data.integration || null)
+      setSetupStep(2)
+      setMessage('StoreHub simulator ready. Map one ANGKAN branch and run the full earning/redemption flow.')
+      await loadPOS()
+    } catch (err) {
+      setError(err.message || 'Could not start StoreHub simulator.')
+    } finally { setSaving(false) }
+  }
 
   const connectStoreHub = async () => {
     if (!slug) return
@@ -407,6 +484,10 @@ function POSIntegration({
         ...(current[branchPublicId] || {
           external_branch_id: '',
           external_branch_name: '',
+          device_model: 'other',
+          scanner_method: 'external_scanner',
+          checkout_mode: 'auto',
+          effective_checkout_mode: 'pending_test',
         }),
         [field]: value,
       },
@@ -419,6 +500,9 @@ function POSIntegration({
       branch_public_id: branch.public_id,
       external_branch_id: branchMappings[branch.public_id]?.external_branch_id?.trim() || null,
       external_branch_name: branchMappings[branch.public_id]?.external_branch_name?.trim() || null,
+      device_model: branchMappings[branch.public_id]?.device_model || 'other',
+      scanner_method: branchMappings[branch.public_id]?.scanner_method || 'external_scanner',
+      checkout_mode: branchMappings[branch.public_id]?.checkout_mode || 'auto',
     })).filter(row => row.external_branch_id || row.external_branch_name)
 
     if (!mappings.length) {
@@ -443,6 +527,49 @@ function POSIntegration({
       await loadPOS()
     } catch (err) {
       setError(err.message || 'Could not save branch mappings.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const testSeamlessCheckout = async branchPublicId => {
+    if (!slug || provider !== 'storehub') return
+    setSaving(true)
+    setError('')
+    setMessage('')
+    try {
+      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/storehub/seamless-test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          branch_public_id: branchPublicId,
+          checkout_mode: branchMappings[branchPublicId]?.checkout_mode || 'auto',
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not test seamless StoreHub checkout.')
+      const settings = data.branch_mapping?.settings || {}
+      setBranchMappings(current => ({
+        ...current,
+        [branchPublicId]: {
+          ...(current[branchPublicId] || {}),
+          checkout_mode: settings.checkout_mode || current[branchPublicId]?.checkout_mode || 'auto',
+          effective_checkout_mode: settings.effective_checkout_mode || data.effective_mode || 'pending_test',
+          seamless_last_test_passed: settings.seamless_last_test_passed === true,
+          seamless_simulator_passed: settings.seamless_simulator_passed === true,
+          seamless_last_test_at: settings.seamless_last_test_at || null,
+          seamless_last_test_reason: settings.seamless_last_test_reason || data.message || '',
+        },
+      }))
+      if (data.provider_ready) {
+        setMessage('Seamless StoreHub checkout is verified for this branch.')
+      } else if (data.simulated_ready) {
+        setMessage('Loyalty Tree seamless flow passed in simulator. Live StoreHub write access is still unverified, so Automatic mode will use Companion fallback for production.')
+      } else {
+        setMessage(data.message || 'Seamless checkout is not verified. Companion fallback is ready.')
+      }
+    } catch (err) {
+      setError(err.message || 'Could not test seamless StoreHub checkout.')
     } finally {
       setSaving(false)
     }
@@ -499,6 +626,7 @@ function POSIntegration({
           external_transaction_id:
             testForm.external_transaction_id.trim() ||
             `${provider.toUpperCase()}-TEST-${Date.now()}`,
+          branch_public_id: testForm.branch_public_id || null,
         }),
       })
       const data = await res.json().catch(() => ({}))
@@ -512,6 +640,127 @@ function POSIntegration({
     } finally {
       setSaving(false)
     }
+  }
+
+  const saveRedemptionSettings = async () => {
+    const ok = await saveSetupSettings({
+      redemption_enabled: true,
+      redemption_value_per_point: Number(redemptionConfig.value_per_point || 1),
+      redemption_min_points: Number(redemptionConfig.min_points || 1),
+      redemption_increment_points: Number(redemptionConfig.increment_points || 1),
+      redemption_max_percent: Number(redemptionConfig.max_percent || 100),
+      reservation_hold_minutes: Number(redemptionConfig.hold_minutes || 10),
+      earn_on_net_amount: redemptionConfig.earn_on_net_amount !== false,
+    })
+    if (ok) {
+      setRedemptionConfig(current => ({ ...current, enabled: true }))
+      setSetupStep(6)
+      setMessage('StoreHub redemption simulator enabled.')
+      await loadPOS()
+    }
+  }
+
+  const reserveRedemption = async () => {
+    if (!slug) return
+    const gross = Number(redemptionForm.gross_amount)
+    const points = Number(redemptionForm.points_to_redeem)
+    if (!redemptionForm.customer_public_id.trim()) {
+      setError('Enter a Loyalty Tree customer ID for redemption testing.')
+      return
+    }
+    if (!Number.isFinite(gross) || gross <= 0 || !Number.isInteger(points) || points <= 0) {
+      setError('Enter a valid gross amount and whole-number points to redeem.')
+      return
+    }
+    setSaving(true); setError(''); setMessage(''); setRedemptionResult(null)
+    try {
+      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/storehub/redemptions/reserve`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customer_public_id: redemptionForm.customer_public_id.trim(),
+          gross_amount: gross,
+          points_to_redeem: points,
+          branch_public_id: redemptionForm.branch_public_id || null,
+          reservation_key: `LT-RED-${Date.now()}`,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not reserve points.')
+      setRedemptionResult(data)
+      setRedemptionStage('reserved')
+      setMessage(data.message || 'Points reserved.')
+    } catch (err) {
+      setError(err.message || 'Could not reserve points.')
+    } finally { setSaving(false) }
+  }
+
+  const applyRedemptionDiscount = async () => {
+    const reservationId = redemptionResult?.reservation?.id
+    if (!reservationId) return
+    const txId = redemptionForm.external_transaction_id.trim() || `STOREHUB-RED-${Date.now()}`
+    setRedemptionForm(current => ({ ...current, external_transaction_id: txId }))
+    setSaving(true); setError(''); setMessage('')
+    try {
+      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/storehub/redemptions/${reservationId}/apply-discount`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ external_transaction_id: txId }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not apply StoreHub discount.')
+      setRedemptionResult(current => ({ ...(current || {}), ...data }))
+      setRedemptionStage('discount_applied')
+      setMessage(data.message || 'StoreHub discount applied in simulator.')
+    } catch (err) {
+      setError(err.message || 'Could not apply StoreHub discount.')
+    } finally { setSaving(false) }
+  }
+
+  const completeRedemptionSale = async () => {
+    const reservationId = redemptionResult?.reservation?.id
+    if (!reservationId) return
+    const txId = redemptionForm.external_transaction_id.trim() || `STOREHUB-RED-${Date.now()}`
+    setSaving(true); setError(''); setMessage(''); setTestResult(null)
+    try {
+      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/storehub/test-transaction`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customer_public_id: redemptionForm.customer_public_id.trim(),
+          amount_spent: Number(redemptionForm.gross_amount),
+          external_transaction_id: txId,
+          branch_public_id: redemptionForm.branch_public_id || null,
+          redemption_reservation_id: reservationId,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not complete StoreHub redemption test.')
+      setTestResult(data)
+      setRedemptionStage('completed')
+      setRedemptionResult(current => ({ ...(current || {}), completed_sale: data }))
+      setMessage('Redemption + net-amount earning test passed.')
+      setSetupStep(6)
+      await loadPOS()
+    } catch (err) {
+      setError(err.message || 'Could not complete StoreHub redemption test.')
+    } finally { setSaving(false) }
+  }
+
+  const releaseRedemption = async () => {
+    const reservationId = redemptionResult?.reservation?.id
+    if (!reservationId) return
+    setSaving(true); setError(''); setMessage('')
+    try {
+      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/storehub/redemptions/${reservationId}/release`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: 'checkout_cancelled_in_simulator' }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not release points.')
+      setRedemptionResult(data)
+      setRedemptionStage('released')
+      setMessage('Reserved points released. Customer balance was not deducted.')
+    } catch (err) {
+      setError(err.message || 'Could not release points.')
+    } finally { setSaving(false) }
   }
 
   const goLive = async () => {
@@ -640,6 +889,14 @@ function POSIntegration({
                   <b>Connect your own StoreHub account</b>
                   <div style={s.smallMuted}>
                     The API token is sent only to the Loyalty Tree backend, encrypted, and never shown again.
+                  </div>
+                </div>
+                <div style={s.infoBanner}>
+                  <b>Want to test before StoreHub gives API access?</b> Start Simulator Mode. It uses the same branch mapping, point reservation, net-amount earning and Wallet flow, but the StoreHub discount call is simulated.
+                  <div style={{marginTop:8}}>
+                    <button type="button" style={s.secondaryButton} disabled={saving || !apiAvailable} onClick={startStoreHubSimulator}>
+                      {saving ? 'Starting…' : 'Start StoreHub simulator'}
+                    </button>
                   </div>
                 </div>
                 {!storeHubConnection?.encryption_configured && (
@@ -914,8 +1171,12 @@ function POSIntegration({
                     {branches.map(branch => (
                       <div key={branch.public_id} style={s.mappingRow}>
                         <div>
-                          <b>{branch.name}</b>
+                          <div style={{display:'flex',gap:7,alignItems:'center',flexWrap:'wrap'}}>
+                            <b>{branch.name}</b>
+                            {branchMappings[branch.public_id]?.last_test_passed && <span style={s.connectedPill}>Test passed</span>}
+                          </div>
                           <div style={s.smallMuted}>{branch.address || 'Loyalty Tree branch'}</div>
+                          {branchMappings[branch.public_id]?.last_test_at && <div style={s.smallMuted}>Last tested: {new Date(branchMappings[branch.public_id].last_test_at).toLocaleString()}</div>}
                         </div>
                         <div style={s.arrow}>↔</div>
                         <div style={s.mappingFields}>
@@ -950,6 +1211,68 @@ function POSIntegration({
                                 value={branchMappings[branch.public_id]?.external_branch_name || ''}
                                 onChange={e => updateMapping(branch.public_id, 'external_branch_name', e.target.value)}
                               />
+                            </>
+                          )}
+                          {provider === 'storehub' && (
+                            <>
+                              <select
+                                style={s.input}
+                                value={branchMappings[branch.public_id]?.device_model || 'other'}
+                                onChange={e => {
+                                  const profile = POS_DEVICE_PROFILES.find(item => item.id === e.target.value) || POS_DEVICE_PROFILES[POS_DEVICE_PROFILES.length - 1]
+                                  updateMapping(branch.public_id, 'device_model', e.target.value)
+                                  updateMapping(branch.public_id, 'scanner_method', profile.scanner)
+                                  updateMapping(branch.public_id, 'performance_note', profile.note)
+                                }}
+                              >
+                                {POS_DEVICE_PROFILES.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
+                              </select>
+                              <select
+                                style={s.input}
+                                value={branchMappings[branch.public_id]?.scanner_method || 'external_scanner'}
+                                onChange={e => updateMapping(branch.public_id, 'scanner_method', e.target.value)}
+                              >
+                                {SCANNER_METHODS.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
+                              </select>
+                              <div style={s.smallMuted}>
+                                {(POS_DEVICE_PROFILES.find(item => item.id === (branchMappings[branch.public_id]?.device_model || 'other')) || POS_DEVICE_PROFILES[POS_DEVICE_PROFILES.length - 1]).note}
+                              </div>
+
+                              <div style={{marginTop:8,paddingTop:8,borderTop:'1px solid #e2e8f0'}}>
+                                <div style={{fontWeight:800,fontSize:12,marginBottom:6}}>Checkout integration method</div>
+                                <select
+                                  style={s.input}
+                                  value={branchMappings[branch.public_id]?.checkout_mode || 'auto'}
+                                  onChange={e => updateMapping(branch.public_id, 'checkout_mode', e.target.value)}
+                                >
+                                  {CHECKOUT_MODES.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
+                                </select>
+                                <div style={{...s.smallMuted,marginTop:5}}>
+                                  {(CHECKOUT_MODES.find(item => item.id === (branchMappings[branch.public_id]?.checkout_mode || 'auto')) || CHECKOUT_MODES[0]).note}
+                                </div>
+                                <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginTop:8}}>
+                                  <button
+                                    type="button"
+                                    style={s.secondaryButton}
+                                    disabled={saving || !branchMappings[branch.public_id]?.saved_mapping}
+                                    onClick={() => testSeamlessCheckout(branch.public_id)}
+                                  >
+                                    {saving ? 'Testing…' : 'Test seamless checkout'}
+                                  </button>
+                                  {branchMappings[branch.public_id]?.effective_checkout_mode === 'seamless' && <span style={s.connectedPill}>Seamless verified</span>}
+                                  {branchMappings[branch.public_id]?.effective_checkout_mode === 'companion' && <span style={s.warningPill}>Companion fallback</span>}
+                                  {branchMappings[branch.public_id]?.effective_checkout_mode === 'blocked' && <span style={s.errorPill}>Seamless blocked</span>}
+                                  {branchMappings[branch.public_id]?.seamless_simulator_passed && !branchMappings[branch.public_id]?.seamless_last_test_passed && <span style={s.availablePill}>LT simulator passed</span>}
+                                </div>
+                                {!branchMappings[branch.public_id]?.saved_mapping && (
+                                  <div style={{...s.smallMuted,marginTop:6}}>Save the branch mapping first, then run the seamless test.</div>
+                                )}
+                                {branchMappings[branch.public_id]?.seamless_last_test_reason && (
+                                  <div style={{...s.smallMuted,marginTop:6}}>
+                                    {branchMappings[branch.public_id].seamless_last_test_reason}
+                                  </div>
+                                )}
+                              </div>
                             </>
                           )}
                         </div>
@@ -1063,31 +1386,108 @@ function POSIntegration({
 
               <section style={s.card}>
                 <div style={s.stepLabel}>5 · REDEMPTION</div>
-                <h3 style={s.sectionTitle}>Redemption through POS</h3>
-                <p style={s.muted}>
-                  Loyalty Tree already remains the source of truth for redemption rules.
-                  Automatic {providerLabel} redemption will be enabled after the
-                  discount/tender write-back needed to apply an approved redemption to checkout.
-                </p>
-                <ChoiceRow
-                  checked={integration?.config?.redemption_enabled === true}
-                  disabled
-                  label={`${providerLabel} redemption`}
-                  description="Prepared in the integration model, but keep disabled during the first earning-only test."
-                />
-                <button
-                  type="button"
-                  style={s.secondaryButton}
-                  disabled={saving || !apiAvailable}
-                  onClick={async () => {
-                    if (await saveSetupSettings({ redemption_enabled: false })) {
-                      setSetupStep(6)
-                      setMessage('Earning-only test mode selected.')
-                    }
-                  }}
-                >
-                  Continue with earning only
-                </button>
+                <h3 style={s.sectionTitle}>Reserve → discount → complete sale</h3>
+                {provider !== 'storehub' ? (
+                  <p style={s.muted}>POS redemption simulator is currently implemented for StoreHub first.</p>
+                ) : (
+                  <>
+                    <p style={s.muted}>
+                      Loyalty Tree reserves points first. The StoreHub adapter then applies the checkout discount.
+                      Points are deducted only after the POS sale is confirmed, and new points are earned on the net paid amount.
+                    </p>
+                    <div style={s.ruleBox}>
+                      <b>ANGKAN default</b>
+                      <div style={s.smallMuted}>1 point = ₱1 · earn on net amount after redemption · reservation expires automatically.</div>
+                    </div>
+
+                    <div style={{...s.testGrid,marginTop:12}}>
+                      <label style={s.fieldLabel}>₱ value per point
+                        <input style={s.input} type="number" min="0.01" step="0.01" value={redemptionConfig.value_per_point}
+                          onChange={e => setRedemptionConfig(c => ({...c,value_per_point:e.target.value}))}/>
+                      </label>
+                      <label style={s.fieldLabel}>Minimum points
+                        <input style={s.input} type="number" min="1" step="1" value={redemptionConfig.min_points}
+                          onChange={e => setRedemptionConfig(c => ({...c,min_points:e.target.value}))}/>
+                      </label>
+                      <label style={s.fieldLabel}>Redemption increment
+                        <input style={s.input} type="number" min="1" step="1" value={redemptionConfig.increment_points}
+                          onChange={e => setRedemptionConfig(c => ({...c,increment_points:e.target.value}))}/>
+                      </label>
+                      <label style={s.fieldLabel}>Max % of bill
+                        <input style={s.input} type="number" min="1" max="100" step="1" value={redemptionConfig.max_percent}
+                          onChange={e => setRedemptionConfig(c => ({...c,max_percent:e.target.value}))}/>
+                      </label>
+                    </div>
+                    <ChoiceRow
+                      checked={redemptionConfig.earn_on_net_amount !== false}
+                      label="Earn on NET amount after redemption"
+                      description="Recommended: a ₱485 bill less ₱100 redemption earns points from ₱385."
+                    />
+                    <button type="button" style={s.secondaryButton} disabled={saving || !apiAvailable} onClick={saveRedemptionSettings}>
+                      {saving ? 'Saving…' : (redemptionConfig.enabled ? 'Save redemption rules' : 'Enable redemption simulator')}
+                    </button>
+
+                    {redemptionConfig.enabled && (
+                      <div style={{marginTop:16,borderTop:'1px solid #e2e8f0',paddingTop:16}}>
+                        <b style={{fontSize:13}}>Run the ANGKAN redemption flow</b>
+                        <div style={{...s.testGrid,marginTop:10}}>
+                          <label style={s.fieldLabel}>Customer ID
+                            <input style={s.input} placeholder="customer-public-id" value={redemptionForm.customer_public_id}
+                              onChange={e => setRedemptionForm(c => ({...c,customer_public_id:e.target.value}))}/>
+                          </label>
+                          <label style={s.fieldLabel}>Branch
+                            <select style={s.input} value={redemptionForm.branch_public_id}
+                              onChange={e => setRedemptionForm(c => ({...c,branch_public_id:e.target.value}))}>
+                              <option value="">First active mapped branch</option>
+                              {branches.map(branch => <option key={branch.public_id} value={branch.public_id}>{branch.name}</option>)}
+                            </select>
+                          </label>
+                          <label style={s.fieldLabel}>Gross StoreHub bill
+                            <input style={s.input} type="number" min="0.01" step="0.01" value={redemptionForm.gross_amount}
+                              onChange={e => setRedemptionForm(c => ({...c,gross_amount:e.target.value}))}/>
+                          </label>
+                          <label style={s.fieldLabel}>Points to redeem
+                            <input style={s.input} type="number" min="1" step="1" value={redemptionForm.points_to_redeem}
+                              onChange={e => setRedemptionForm(c => ({...c,points_to_redeem:e.target.value}))}/>
+                          </label>
+                          <label style={s.fieldLabel}>StoreHub transaction ID
+                            <input style={s.input} placeholder="Generated when discount is applied" value={redemptionForm.external_transaction_id}
+                              onChange={e => setRedemptionForm(c => ({...c,external_transaction_id:e.target.value}))}/>
+                          </label>
+                        </div>
+                        <div style={s.actionRow}>
+                          <button type="button" style={s.primaryButton} disabled={saving || !['idle','released','completed'].includes(redemptionStage)} onClick={reserveRedemption}>1 · Reserve points</button>
+                          <button type="button" style={s.secondaryButton} disabled={saving || redemptionStage !== 'reserved'} onClick={applyRedemptionDiscount}>2 · Apply StoreHub discount</button>
+                          <button type="button" style={s.primaryButton} disabled={saving || redemptionStage !== 'discount_applied'} onClick={completeRedemptionSale}>3 · Complete sale</button>
+                          <button type="button" style={s.secondaryButton} disabled={saving || !['reserved','discount_applied'].includes(redemptionStage)} onClick={releaseRedemption}>Cancel / release</button>
+                        </div>
+
+                        {redemptionResult?.reservation && (
+                          <div style={s.testResult}>
+                            <b>Redemption: {String(redemptionStage).replaceAll('_',' ')}</b>
+                            <div style={s.resultGrid}>
+                              <ResultItem label="Reserved" value={`${redemptionResult.reservation.points_reserved ?? 0} pts`} />
+                              <ResultItem label="Discount" value={`₱${Number(redemptionResult.reservation.redemption_amount || 0).toFixed(2)}`} />
+                              <ResultItem label="Gross" value={`₱${Number(redemptionResult.reservation.gross_amount || 0).toFixed(2)}`} />
+                              <ResultItem label="Net" value={`₱${Number(redemptionResult.reservation.net_amount || 0).toFixed(2)}`} />
+                            </div>
+                          </div>
+                        )}
+                        {redemptionResult?.completed_sale && (
+                          <div style={s.testResult}>
+                            <b>✓ Full redemption flow passed</b>
+                            <div style={s.resultGrid}>
+                              <ResultItem label="Points redeemed" value={redemptionResult.completed_sale.points_redeemed ?? '—'} />
+                              <ResultItem label="Points earned" value={redemptionResult.completed_sale.points_earned ?? '—'} />
+                              <ResultItem label="Final balance" value={redemptionResult.completed_sale.points_balance ?? '—'} />
+                              <ResultItem label="Wallet" value={redemptionResult.completed_sale.wallet_sync_status || 'Queued'} />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
               </section>
 
               {provider === 'storehub' ? (
@@ -1135,6 +1535,18 @@ function POSIntegration({
                   </label>
 
                   <label style={s.fieldLabel}>
+                    Loyalty Tree branch
+                    <select
+                      style={s.input}
+                      value={testForm.branch_public_id || ''}
+                      onChange={e => setTestForm(current => ({ ...current, branch_public_id: e.target.value }))}
+                    >
+                      <option value="">First active mapped branch</option>
+                      {branches.map(branch => <option key={branch.public_id} value={branch.public_id}>{branch.name}</option>)}
+                    </select>
+                  </label>
+
+                  <label style={s.fieldLabel}>
                     Test StoreHub transaction ID
                     <input
                       style={s.input}
@@ -1164,7 +1576,9 @@ function POSIntegration({
                   <div style={s.testResult}>
                     <b>✓ Test passed</b>
                     <div style={s.resultGrid}>
-                      <ResultItem label="Amount" value={`₱${Number(testResult.amount_spent || testForm.amount_spent || 0).toFixed(2)}`} />
+                      <ResultItem label="Gross" value={`₱${Number(testResult.gross_amount ?? testResult.amount_spent ?? testForm.amount_spent ?? 0).toFixed(2)}`} />
+                      <ResultItem label="Redeemed" value={testResult.points_redeemed ? `${testResult.points_redeemed} pts / ₱${Number(testResult.redemption_amount || 0).toFixed(2)}` : 'None'} />
+                      <ResultItem label="Net / eligible" value={`₱${Number(testResult.eligible_amount ?? testResult.net_amount ?? testResult.amount_spent ?? 0).toFixed(2)}`} />
                       <ResultItem label="Points earned" value={testResult.points_earned ?? '—'} />
                       <ResultItem label="Stamps" value={testResult.stamp_count ?? testResult.stamps ?? '—'} />
                       <ResultItem label="Wallet sync" value={testResult.wallet_sync_status || 'Queued'} />
@@ -1484,6 +1898,22 @@ const s = {
     borderRadius: 999,
     background: '#ecfdf5',
     color: '#047857',
+  },
+  warningPill: {
+    fontSize: 10,
+    fontWeight: 850,
+    padding: '5px 8px',
+    borderRadius: 999,
+    background: '#fff7ed',
+    color: '#c2410c',
+  },
+  errorPill: {
+    fontSize: 10,
+    fontWeight: 850,
+    padding: '5px 8px',
+    borderRadius: 999,
+    background: '#fef2f2',
+    color: '#b91c1c',
   },
   livePill: {
     fontSize: 11,

@@ -2371,6 +2371,15 @@ class POSBranchMappingInput(BaseModel):
     branch_public_id: str
     external_branch_id: Optional[str] = None
     external_branch_name: Optional[str] = None
+    # ANGKAN device profile. Stored in pos_branch_mappings.settings so each
+    # branch can use the scanning method appropriate for its actual terminal.
+    device_model: Optional[Literal['imin_falcon_1', 'imin_d4', 'sunmi_d3_pro', 'sunmi_t2', 'other']] = None
+    scanner_method: Optional[Literal['camera', 'hardware_scanner', 'external_scanner']] = None
+    # Checkout integration strategy:
+    # auto       = try seamless first; companion fallback if StoreHub write hooks are not verified
+    # seamless   = require StoreHub open-cart write + completion callback before branch can use redemption
+    # companion  = LoyaltyTree companion handles scan/redeem; cashier confirms the discount in StoreHub
+    checkout_mode: Optional[Literal['auto', 'seamless', 'companion']] = 'auto'
 
 
 class POSBranchMappingsUpdate(BaseModel):
@@ -2384,13 +2393,48 @@ class POSSettingsUpdate(BaseModel):
     loyalty_source: Optional[Literal['existing_loyaltytree_program']] = None
     earning_enabled: Optional[bool] = None
     redemption_enabled: Optional[bool] = None
+    # Cash-value redemption contract used by the POS adapter. ANGKAN starts at
+    # 1 point = PHP 1, but these stay configurable for other merchants.
+    redemption_value_per_point: Optional[float] = Field(default=None, gt=0, le=100000)
+    redemption_min_points: Optional[int] = Field(default=None, ge=1, le=100000000)
+    redemption_increment_points: Optional[int] = Field(default=None, ge=1, le=100000000)
+    redemption_max_percent: Optional[float] = Field(default=None, gt=0, le=100)
+    reservation_hold_minutes: Optional[int] = Field(default=None, ge=1, le=120)
+    earn_on_net_amount: Optional[bool] = None
+
+
+class POSStoreHubSeamlessTestRequest(BaseModel):
+    branch_public_id: str
+    checkout_mode: Optional[Literal['auto', 'seamless', 'companion']] = None
 
 
 class POSStoreHubTestTransaction(BaseModel):
     customer_public_id: str
+    # Gross StoreHub bill before the LoyaltyTree discount.
     amount_spent: float = Field(gt=0)
     external_transaction_id: str = Field(min_length=3, max_length=200)
     branch_public_id: Optional[str] = None
+    redemption_reservation_id: Optional[str] = None
+
+
+class POSRedemptionReserveRequest(BaseModel):
+    customer_public_id: str
+    gross_amount: float = Field(gt=0)
+    points_to_redeem: int = Field(gt=0)
+    branch_public_id: Optional[str] = None
+    reservation_key: Optional[str] = Field(default=None, max_length=200)
+
+
+class POSRedemptionApplyRequest(BaseModel):
+    external_transaction_id: Optional[str] = Field(default=None, max_length=200)
+
+
+class POSRedemptionReleaseRequest(BaseModel):
+    reason: Optional[str] = Field(default='checkout_cancelled', max_length=200)
+
+
+class POSRedemptionReverseRequest(BaseModel):
+    reason: Optional[str] = Field(default='storehub_void_or_refund', max_length=200)
 
 
 class POSGoLiveRequest(BaseModel):
@@ -2892,14 +2936,16 @@ def _pos_schema_error(exc) -> HTTPException:
         'pos_integrations' in raw
         or 'pos_branch_mappings' in raw
         or 'pos_transactions' in raw
+        or 'pos_redemption_reservations' in raw
         or 'schema cache' in raw
         or 'pgrst205' in raw
+        or 'pgrst202' in raw
     ):
         return HTTPException(
             status_code=503,
             detail=(
                 'POS Integration database migration is not installed or is not visible to PostgREST. '
-                'Run pos_integration.sql in Supabase and reload the schema before retrying. '
+                'Run the POS integration + redemption migrations in Supabase and reload the schema before retrying. '
                 f'Database error: {message}'
             ),
         )
@@ -3000,6 +3046,214 @@ def _merge_pos_config(integration: dict, patch: dict) -> dict:
 def _pos_first_active_mapping(business_id: int, integration_id) -> Optional[dict]:
     rows = [row for row in _pos_branch_rows(business_id, integration_id) if row.get('is_active') is not False]
     return rows[0] if rows else None
+
+
+POS_DEVICE_PROFILES = {
+    'imin_falcon_1': {
+        'label': 'iMin Falcon 1',
+        'can_scan': True,
+        'built_in_camera': True,
+        'recommended_scanner_method': 'camera',
+        'performance_note': 'Older model; keep the camera scan screen lightweight because it may lag.',
+    },
+    'imin_d4': {
+        'label': 'iMin D4',
+        'can_scan': True,
+        'built_in_camera': True,
+        'recommended_scanner_method': 'camera',
+        'performance_note': 'Older model; keep the camera scan screen lightweight because it may lag.',
+    },
+    'sunmi_d3_pro': {
+        'label': 'Sunmi D3 Pro',
+        'can_scan': True,
+        'built_in_camera': False,
+        'recommended_scanner_method': 'hardware_scanner',
+        'performance_note': 'Use the device scanning hardware / scanner flow rather than camera capture.',
+    },
+    'sunmi_t2': {
+        'label': 'Sunmi T2',
+        'can_scan': True,
+        'built_in_camera': True,
+        'recommended_scanner_method': 'external_scanner',
+        'performance_note': 'For ANGKAN deployment, use an external QR scanner for the LoyaltyTree member QR.',
+    },
+    'other': {
+        'label': 'Other POS terminal',
+        'can_scan': True,
+        'built_in_camera': None,
+        'recommended_scanner_method': 'external_scanner',
+        'performance_note': 'Confirm camera/scanner support during branch testing.',
+    },
+}
+
+
+def _pos_device_profile(device_model: Optional[str]) -> dict:
+    key = str(device_model or 'other').strip().lower()
+    return {'id': key, **POS_DEVICE_PROFILES.get(key, POS_DEVICE_PROFILES['other'])}
+
+
+def _pos_redemption_config(integration: Optional[dict]) -> dict:
+    config = (integration or {}).get('config') if isinstance((integration or {}).get('config'), dict) else {}
+    def _num(key, default, cast=float):
+        try:
+            return cast(config.get(key) if config.get(key) is not None else default)
+        except Exception:
+            return cast(default)
+    return {
+        'enabled': bool(config.get('redemption_enabled')),
+        'value_per_point': max(0.0001, _num('redemption_value_per_point', 1.0, float)),
+        'min_points': max(1, _num('redemption_min_points', 1, int)),
+        'increment_points': max(1, _num('redemption_increment_points', 1, int)),
+        'max_percent': min(100.0, max(0.01, _num('redemption_max_percent', 100.0, float))),
+        'hold_minutes': min(120, max(1, _num('reservation_hold_minutes', 10, int))),
+        'earn_on_net_amount': config.get('earn_on_net_amount') is not False,
+    }
+
+
+def _pos_redemption_row(reservation_id: str) -> Optional[dict]:
+    try:
+        rows = (
+            supabase.table('pos_redemption_reservations').select('*')
+            .eq('id', str(reservation_id)).limit(1).execute().data or []
+        )
+        return rows[0] if rows else None
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+
+
+def _pos_redemption_public(row: Optional[dict]) -> Optional[dict]:
+    if not row:
+        return None
+    return {
+        'id': str(row.get('id')),
+        'provider': row.get('provider'),
+        'reservation_key': row.get('reservation_key'),
+        'external_transaction_id': row.get('external_transaction_id'),
+        'points_reserved': int(row.get('points_reserved') or 0),
+        'value_per_point': float(row.get('value_per_point') or 0),
+        'redemption_amount': float(row.get('redemption_amount') or 0),
+        'gross_amount': float(row.get('gross_amount') or 0),
+        'net_amount': float(row.get('net_amount') or 0),
+        'balance_before': row.get('balance_before'),
+        'available_before': row.get('available_before'),
+        'balance_after': row.get('balance_after'),
+        'status': row.get('status'),
+        'expires_at': row.get('expires_at'),
+        'discount_applied_at': row.get('discount_applied_at'),
+        'committed_at': row.get('committed_at'),
+        'released_at': row.get('released_at'),
+        'reversed_at': row.get('reversed_at'),
+        'created_at': row.get('created_at'),
+    }
+
+
+def _pos_rpc_first(name: str, params: dict) -> dict:
+    try:
+        res = supabase.rpc(name, params).execute()
+        data = getattr(res, 'data', None)
+        if isinstance(data, list):
+            return data[0] if data else {}
+        return data or {}
+    except Exception as exc:
+        raw = str(exc or '')
+        low = raw.lower()
+        missing_rpc = (
+            'pgrst202' in low
+            or 'could not find the function' in low
+            or ('schema cache' in low and 'function' in low)
+            or ('does not exist' in low and 'pos_' in low)
+        )
+        if missing_rpc:
+            raise _pos_schema_error(exc)
+        # Business-rule exceptions raised inside the Postgres function (not
+        # enough points, expired hold, percentage limit, etc.) are client errors.
+        raise HTTPException(status_code=400, detail=friendly_db_error(exc))
+
+
+def _storehub_apply_redemption_discount(integration: dict, reservation: dict, external_transaction_id: Optional[str] = None) -> dict:
+    """Provider adapter boundary for checkout write-back.
+
+    Modes:
+      seamless   -> StoreHub itself receives the discount write.
+      companion  -> cashier applies/confirms the same fixed discount in StoreHub,
+                    while LoyaltyTree keeps the reservation/commit audit trail.
+      auto       -> seamless when verified; companion otherwise.
+
+    Test mode can simulate seamless behavior. Live seamless mode is NEVER reported
+    as successful unless a real StoreHub write adapter has been implemented and
+    the required capabilities have been explicitly verified.
+    """
+    config = integration.get('config') if isinstance(integration.get('config'), dict) else {}
+    simulator = integration.get('mode') == 'test' or bool(config.get('simulator'))
+
+    mapping = None
+    branch_id = reservation.get('branch_id')
+    if branch_id is not None:
+        try:
+            rows = (
+                supabase.table('pos_branch_mappings').select('*')
+                .eq('integration_id', integration.get('id'))
+                .eq('branch_id', branch_id)
+                .limit(1).execute().data or []
+            )
+            mapping = rows[0] if rows else None
+        except Exception as exc:
+            raise _pos_schema_error(exc)
+    if not mapping:
+        raise HTTPException(status_code=409, detail='StoreHub branch mapping was not found for this redemption.')
+
+    readiness = _storehub_seamless_readiness(integration, mapping)
+    requested_mode = readiness.get('requested_mode') or 'auto'
+    effective_mode = readiness.get('effective_mode') or 'companion'
+
+    # Simulator: validate our seamless state machine regardless of whether the
+    # provider's undocumented live write endpoint is available.
+    if simulator and requested_mode != 'companion':
+        return {
+            'ok': True,
+            'simulated': True,
+            'provider': 'storehub',
+            'checkout_mode': 'seamless_simulator',
+            'action': 'apply_fixed_discount',
+            'discount_amount': float(reservation.get('redemption_amount') or 0),
+            'external_transaction_id': external_transaction_id,
+            'message': 'Seamless StoreHub discount simulated. Live StoreHub write capability is still unverified.',
+        }
+
+    # Companion fallback is intentionally a manual StoreHub confirmation. The
+    # cashier must apply the displayed fixed discount in StoreHub before pressing
+    # the LT confirmation button.
+    if effective_mode == 'companion':
+        return {
+            'ok': True,
+            'simulated': False,
+            'provider': 'storehub',
+            'checkout_mode': 'companion',
+            'action': 'cashier_confirmed_fixed_discount',
+            'discount_amount': float(reservation.get('redemption_amount') or 0),
+            'external_transaction_id': external_transaction_id,
+            'message': 'Companion fallback: cashier confirmed the LoyaltyTree discount was applied in StoreHub.',
+        }
+
+    if effective_mode == 'blocked' or not readiness.get('provider_ready'):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                'Seamless StoreHub checkout is not verified for this branch yet. '
+                'Choose Automatic to allow companion fallback, or choose Companion while StoreHub write access is being confirmed.'
+            ),
+        )
+
+    # Safety stop: this build deliberately has no guessed StoreHub open-cart URL.
+    # When StoreHub supplies the real contract, replace this block with the actual
+    # authenticated write request and only then set live_discount_adapter_implemented.
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            'StoreHub reports the branch as seamless-ready, but the live open-cart write adapter '
+            'has not been installed in this build. Do not mark the discount applied until the actual StoreHub endpoint is implemented.'
+        ),
+    )
 
 
 def _pos_attach_audit_context(transaction_id, branch_id, provider: str, external_transaction_id: str):
@@ -20461,6 +20715,7 @@ async def get_pos_integration_status(
     integration = _get_pos_integration(business.get('id'), provider)
     mappings = _pos_branch_rows(business.get('id'), integration.get('id')) if integration else []
     recent = []
+    recent_redemptions = []
     if integration:
         try:
             recent_res = (
@@ -20472,6 +20727,21 @@ async def get_pos_integration_status(
                 .execute()
             )
             recent = getattr(recent_res, 'data', None) or []
+            try:
+                redemption_res = (
+                    supabase.table('pos_redemption_reservations')
+                    .select('*')
+                    .eq('integration_id', integration.get('id'))
+                    .order('created_at', desc=True)
+                    .limit(25)
+                    .execute()
+                )
+                recent_redemptions = [_pos_redemption_public(row) for row in (getattr(redemption_res, 'data', None) or [])]
+            except Exception as redemption_exc:
+                # POS earning remains usable during a rolling deploy before the
+                # new redemption migration is installed.
+                if 'pos_redemption_reservations' not in str(redemption_exc):
+                    print(f'POS redemption history warning: {redemption_exc}')
         except Exception as exc:
             raise _pos_schema_error(exc)
 
@@ -20507,6 +20777,9 @@ async def get_pos_integration_status(
         'loyalty_contract': _pos_loyalty_contract(business),
         'branch_mappings': mappings,
         'recent_transactions': recent,
+        'recent_redemptions': recent_redemptions,
+        'redemption_config': _pos_redemption_config(integration),
+        'device_profiles': [_pos_device_profile(key) for key in POS_DEVICE_PROFILES],
         'providers': [
             {'id': 'storehub', 'name': 'StoreHub', 'status': 'available', 'mode': 'test'},
             {'id': 'loyverse', 'name': 'Loyverse', 'status': 'available', 'mode': 'test'},
@@ -20537,6 +20810,12 @@ async def start_pos_integration(public_id: str, req: POSIntegrationCreate, autho
         'loyalty_source': 'existing_loyaltytree_program',
         'earning_enabled': True,
         'redemption_enabled': False,
+        'redemption_value_per_point': 1.0,
+        'redemption_min_points': 1,
+        'redemption_increment_points': 1,
+        'redemption_max_percent': 100.0,
+        'reservation_hold_minutes': 10,
+        'earn_on_net_amount': True,
         'simulator': True,
         'setup_step': 2,
     })
@@ -20551,7 +20830,9 @@ async def start_pos_integration(public_id: str, req: POSIntegrationCreate, autho
             'transactions': True,
             'refunds': False,
             'webhooks': False,
-            'redemption': False,
+            'redemption': True,
+            'redemption_simulator': True,
+            'discount_write': False,
             'simulator': True,
         },
         'last_error': None,
@@ -20610,12 +20891,16 @@ async def save_pos_branch_mappings(public_id: str, req: POSBranchMappingsUpdate,
                 detail=f'POS location ID is not part of the connected account: {external_id}',
             )
         seen_external.add(external_id)
-        prepared.append((branch, external_id, external_name))
+        device_model = item.device_model or 'other'
+        profile = _pos_device_profile(device_model)
+        scanner_method = item.scanner_method or profile.get('recommended_scanner_method') or 'external_scanner'
+        checkout_mode = item.checkout_mode or 'auto'
+        prepared.append((branch, external_id, external_name, device_model, scanner_method, checkout_mode))
 
     try:
         # Preserve history instead of deleting mappings: omitted rows become inactive.
         supabase.table('pos_branch_mappings').update({'is_active': False}).eq('integration_id', integration.get('id')).execute()
-        for branch, external_id, external_name in prepared:
+        for branch, external_id, external_name, device_model, scanner_method, checkout_mode in prepared:
             existing_res = (
                 supabase.table('pos_branch_mappings')
                 .select('*')
@@ -20626,12 +20911,28 @@ async def save_pos_branch_mappings(public_id: str, req: POSBranchMappingsUpdate,
             )
             existing_rows = getattr(existing_res, 'data', None) or []
             existing = existing_rows[0] if existing_rows else None
+            existing_settings = existing.get('settings') if existing and isinstance(existing.get('settings'), dict) else {}
+            profile = _pos_device_profile(device_model)
             row = {
                 'integration_id': integration.get('id'),
                 'business_id': business.get('id'),
                 'branch_id': branch.get('id'),
                 'external_branch_id': external_id,
                 'external_branch_name': external_name,
+                'settings': {
+                    **existing_settings,
+                    'device_model': device_model,
+                    'device_label': profile.get('label'),
+                    'scanner_method': scanner_method,
+                    'built_in_camera': profile.get('built_in_camera'),
+                    'performance_note': profile.get('performance_note'),
+                    'checkout_mode': checkout_mode,
+                    # Preserve the last seamless capability result when remapping.
+                    'effective_checkout_mode': existing_settings.get('effective_checkout_mode') or ('companion' if checkout_mode == 'companion' else 'pending_test'),
+                    'seamless_last_test_passed': bool(existing_settings.get('seamless_last_test_passed')),
+                    'seamless_last_test_at': existing_settings.get('seamless_last_test_at'),
+                    'seamless_last_test_reason': existing_settings.get('seamless_last_test_reason'),
+                },
                 'is_active': True,
             }
             if existing:
@@ -20651,6 +20952,172 @@ async def save_pos_branch_mappings(public_id: str, req: POSBranchMappingsUpdate,
         raise _pos_schema_error(exc)
 
 
+
+def _storehub_seamless_readiness(integration: dict, mapping: dict) -> dict:
+    """Report whether this branch can run without the LoyaltyTree companion.
+
+    IMPORTANT: this is deliberately conservative. Public StoreHub material confirms
+    API/custom integration/platform-extension support, but the open-cart discount
+    contract is not public. A branch is marked seamless-ready only after the
+    provider adapter explicitly records the required capabilities.
+    """
+    config = integration.get('config') if isinstance(integration.get('config'), dict) else {}
+    capabilities = integration.get('capabilities') if isinstance(integration.get('capabilities'), dict) else {}
+    settings = mapping.get('settings') if isinstance(mapping.get('settings'), dict) else {}
+
+    api_connected = bool(config.get('real_api_tested') or integration.get('mode') == 'test')
+    outlet_mapped = bool(mapping.get('external_branch_id'))
+    # These must only be set true after we have verified StoreHub's actual
+    # merchant-specific API/extension contract. Do not infer them from Pro alone.
+    open_cart_write = bool(capabilities.get('open_cart_write'))
+    discount_write = bool(capabilities.get('discount_write'))
+    transaction_confirmation = bool(
+        capabilities.get('transaction_confirmation')
+        or capabilities.get('completed_sale_callback')
+        or capabilities.get('webhooks_completed_sale')
+    )
+    live_adapter_implemented = bool(capabilities.get('live_discount_adapter_implemented'))
+
+    # Test mode can exercise the complete LT state machine as a seamless simulation.
+    simulated_ready = bool(
+        integration.get('mode') == 'test'
+        and api_connected
+        and outlet_mapped
+    )
+    provider_ready = bool(
+        api_connected
+        and outlet_mapped
+        and open_cart_write
+        and discount_write
+        and transaction_confirmation
+        and live_adapter_implemented
+    )
+
+    requested_mode = str(settings.get('checkout_mode') or 'auto')
+    if requested_mode == 'companion':
+        effective_mode = 'companion'
+    elif provider_ready:
+        effective_mode = 'seamless'
+    elif requested_mode == 'auto':
+        effective_mode = 'companion'
+    else:
+        effective_mode = 'blocked'
+
+    missing = []
+    if not api_connected: missing.append('StoreHub API connection')
+    if not outlet_mapped: missing.append('mapped StoreHub outlet')
+    if not open_cart_write: missing.append('open-cart write capability')
+    if not discount_write: missing.append('fixed-discount write capability')
+    if not transaction_confirmation: missing.append('completed-sale confirmation/webhook')
+    if not live_adapter_implemented: missing.append('verified LoyaltyTree live StoreHub write adapter')
+
+    return {
+        'requested_mode': requested_mode,
+        'effective_mode': effective_mode,
+        'provider_ready': provider_ready,
+        'simulated_ready': simulated_ready,
+        'checks': {
+            'api_connected': api_connected,
+            'outlet_mapped': outlet_mapped,
+            'open_cart_write': open_cart_write,
+            'discount_write': discount_write,
+            'transaction_confirmation': transaction_confirmation,
+            'live_adapter_implemented': live_adapter_implemented,
+        },
+        'missing': missing,
+    }
+
+
+@app.post('/api/v1/business/{public_id}/pos/storehub/seamless-test')
+async def test_storehub_seamless_checkout(
+    public_id: str,
+    req: POSStoreHubSeamlessTestRequest,
+    authorization: str = Header(default=''),
+):
+    """Test whether a mapped StoreHub branch may use seamless checkout.
+
+    This never fabricates a provider write. In Test Mode it confirms that the LT
+    reserve/apply/commit architecture can be simulated. In live mode it passes
+    only when the actual StoreHub open-cart write and completion hooks have been
+    explicitly verified by the provider adapter.
+    """
+    business = _require_pos_pro_business(public_id, authorization)
+    integration = _get_pos_integration(business.get('id'), 'storehub')
+    if not integration:
+        raise HTTPException(status_code=409, detail='Connect StoreHub first.')
+
+    mapping = next(
+        (
+            row for row in _pos_branch_rows(business.get('id'), integration.get('id'))
+            if row.get('branch_public_id') == req.branch_public_id and row.get('is_active') is not False
+        ),
+        None,
+    )
+    if not mapping:
+        raise HTTPException(status_code=404, detail='Map this Loyalty Tree branch to a StoreHub outlet first.')
+
+    settings = mapping.get('settings') if isinstance(mapping.get('settings'), dict) else {}
+    if req.checkout_mode:
+        settings = {**settings, 'checkout_mode': req.checkout_mode}
+        mapping = {**mapping, 'settings': settings}
+    readiness = _storehub_seamless_readiness(integration, mapping)
+    now = datetime.utcnow().isoformat()
+    test_passed = bool(readiness.get('provider_ready'))
+    # In simulator/test mode, expose a separate simulated pass without claiming
+    # that StoreHub's live write capability is verified.
+    if integration.get('mode') == 'test':
+        test_reason = (
+            'LoyaltyTree seamless state machine is ready in simulator. '
+            'StoreHub live open-cart write capability is still unverified.'
+        )
+    elif test_passed:
+        test_reason = 'StoreHub seamless checkout capabilities verified for this branch.'
+    else:
+        test_reason = 'Missing: ' + ', '.join(readiness.get('missing') or ['provider write capability'])
+
+    requested_mode = str(settings.get('checkout_mode') or 'auto')
+    if requested_mode == 'companion':
+        effective = 'companion'
+    elif test_passed:
+        effective = 'seamless'
+    elif requested_mode == 'auto':
+        effective = 'companion'
+    else:
+        effective = 'blocked'
+
+    updated_settings = {
+        **settings,
+        'effective_checkout_mode': effective,
+        'seamless_last_test_passed': test_passed,
+        'seamless_simulator_passed': bool(readiness.get('simulated_ready')),
+        'seamless_last_test_at': now,
+        'seamless_last_test_reason': test_reason,
+    }
+    try:
+        supabase.table('pos_branch_mappings').update({
+            'settings': updated_settings,
+        }).eq('id', mapping.get('id')).execute()
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+
+    return {
+        'ok': True,
+        'provider': 'storehub',
+        'branch_public_id': req.branch_public_id,
+        'provider_ready': test_passed,
+        'simulated_ready': bool(readiness.get('simulated_ready')),
+        'requested_mode': requested_mode,
+        'effective_mode': effective,
+        'checks': readiness.get('checks'),
+        'missing': readiness.get('missing'),
+        'message': test_reason,
+        'branch_mapping': {
+            **mapping,
+            'settings': updated_settings,
+        },
+    }
+
+
 @app.patch('/api/v1/business/{public_id}/pos/settings')
 async def update_pos_settings(public_id: str, req: POSSettingsUpdate, authorization: str = Header(default='')):
     business = _require_pos_pro_business(public_id, authorization)
@@ -20658,10 +21125,12 @@ async def update_pos_settings(public_id: str, req: POSSettingsUpdate, authorizat
     if not integration:
         raise HTTPException(status_code=409, detail=f'Set up {req.provider.title()} before changing POS settings.')
     if req.redemption_enabled is True:
-        raise HTTPException(
-            status_code=409,
-            detail=f'{req.provider.title()} POS redemption is not enabled in this rollout. Launch earning first; redemption will be enabled after the write-back flow is verified.',
-        )
+        capabilities = integration.get('capabilities') if isinstance(integration.get('capabilities'), dict) else {}
+        if integration.get('mode') != 'test' and not capabilities.get('discount_write'):
+            raise HTTPException(
+                status_code=409,
+                detail=f'{req.provider.title()} live redemption requires verified discount write-back. Use Test Mode until the provider capability is confirmed.',
+            )
 
     patch = req.dict(exclude_none=True)
     patch.pop('provider', None)
@@ -20717,8 +21186,14 @@ async def connect_storehub_account(
         'member_identification': 'qr',
         'loyalty_source': 'existing_loyaltytree_program',
         'earning_enabled': True,
-        # Keep real redemption off until StoreHub confirms its discount/tender write-back.
+        # Redemption may be exercised in simulator while live write-back remains capability-gated.
         'redemption_enabled': False,
+        'redemption_value_per_point': float(((existing or {}).get('config') or {}).get('redemption_value_per_point') or 1.0),
+        'redemption_min_points': int(((existing or {}).get('config') or {}).get('redemption_min_points') or 1),
+        'redemption_increment_points': int(((existing or {}).get('config') or {}).get('redemption_increment_points') or 1),
+        'redemption_max_percent': float(((existing or {}).get('config') or {}).get('redemption_max_percent') or 100.0),
+        'reservation_hold_minutes': int(((existing or {}).get('config') or {}).get('reservation_hold_minutes') or 10),
+        'earn_on_net_amount': ((existing or {}).get('config') or {}).get('earn_on_net_amount') is not False,
         'simulator': True,
         'real_api_tested': True,
         'real_api_tested_at': now,
@@ -20730,7 +21205,9 @@ async def connect_storehub_account(
         'api_read': True,
         'stores_read': True,
         'transactions': True,
-        'redemption': False,
+        'redemption': True,
+        'redemption_simulator': True,
+        'discount_write': False,
         'simulator': True,
         'real_api_tested': True,
     }
@@ -21201,6 +21678,159 @@ async def loyverse_receipts_preview(
     }
 
 
+@app.post('/api/v1/business/{public_id}/pos/storehub/redemptions/reserve')
+async def reserve_storehub_points_redemption(
+    public_id: str,
+    req: POSRedemptionReserveRequest,
+    authorization: str = Header(default=''),
+):
+    business = _require_pos_pro_business(public_id, authorization)
+    integration = _get_pos_integration(business.get('id'), 'storehub')
+    if not integration:
+        raise HTTPException(status_code=409, detail='Connect StoreHub before testing redemption.')
+    config = _pos_redemption_config(integration)
+    if not config.get('enabled'):
+        raise HTTPException(status_code=409, detail='Enable StoreHub redemption in POS settings first.')
+
+    customer = safe_get_customer(req.customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail='Customer not found for this business.')
+    program = safe_get_customer_program(customer, business.get('id'))
+    if not program or not program_reward_uses_points(program):
+        raise HTTPException(status_code=400, detail='POS cash-value redemption requires a Points-enabled Loyalty Tree program.')
+
+    points = int(req.points_to_redeem)
+    if points < int(config['min_points']):
+        raise HTTPException(status_code=400, detail=f"Minimum redemption is {config['min_points']} points.")
+    increment = int(config['increment_points'])
+    if points % increment != 0:
+        raise HTTPException(status_code=400, detail=f'Redemption must be in increments of {increment} points.')
+
+    mapping = None
+    if req.branch_public_id:
+        mapping = next((row for row in _pos_branch_rows(business.get('id'), integration.get('id')) if row.get('branch_public_id') == req.branch_public_id and row.get('is_active') is not False), None)
+        if not mapping:
+            raise HTTPException(status_code=404, detail='That Loyalty Tree branch is not mapped to StoreHub.')
+    else:
+        mapping = _pos_first_active_mapping(business.get('id'), integration.get('id'))
+    if not mapping:
+        raise HTTPException(status_code=409, detail='Map at least one StoreHub branch before redemption testing.')
+
+    reservation_key = (req.reservation_key or f"LT-STOREHUB-{uuid.uuid4().hex[:20]}").strip()
+    row = _pos_rpc_first('pos_reserve_points_redemption', {
+        'p_business_id': business.get('id'),
+        'p_integration_id': integration.get('id'),
+        'p_branch_id': mapping.get('branch_id'),
+        'p_customer_id': customer.get('id'),
+        'p_program_id': program.get('id'),
+        'p_provider': 'storehub',
+        'p_reservation_key': reservation_key,
+        'p_points': points,
+        'p_value_per_point': config['value_per_point'],
+        'p_gross_amount': float(req.gross_amount),
+        'p_max_percent': config['max_percent'],
+        'p_hold_minutes': config['hold_minutes'],
+    })
+    return {
+        'ok': True,
+        'reservation': _pos_redemption_public(row),
+        'customer': {
+            'public_id': customer.get('public_id'),
+            'name': customer.get('name'),
+            'points_balance': int(customer.get('points_balance') or 0),
+        },
+        'branch_public_id': mapping.get('branch_public_id'),
+        'storehub_outlet_id': mapping.get('external_branch_id'),
+        'redemption_config': config,
+        'message': f"Reserved {points} points for a PHP {float(row.get('redemption_amount') or 0):.2f} checkout discount.",
+    }
+
+
+@app.post('/api/v1/business/{public_id}/pos/storehub/redemptions/{reservation_id}/apply-discount')
+async def apply_storehub_redemption_discount(
+    public_id: str,
+    reservation_id: str,
+    req: POSRedemptionApplyRequest,
+    authorization: str = Header(default=''),
+):
+    business = _require_pos_pro_business(public_id, authorization)
+    integration = _get_pos_integration(business.get('id'), 'storehub')
+    if not integration:
+        raise HTTPException(status_code=409, detail='StoreHub integration not found.')
+    reservation = _pos_redemption_row(reservation_id)
+    if not reservation or reservation.get('business_id') != business.get('id') or str(reservation.get('integration_id')) != str(integration.get('id')):
+        raise HTTPException(status_code=404, detail='Redemption reservation not found for this StoreHub connection.')
+
+    adapter = _storehub_apply_redemption_discount(integration, reservation, req.external_transaction_id)
+    row = _pos_rpc_first('pos_mark_redemption_discount_applied', {
+        'p_reservation_id': reservation.get('id'),
+        'p_external_transaction_id': req.external_transaction_id,
+        'p_provider_payload': adapter,
+    })
+    if row.get('status') != 'discount_applied':
+        raise HTTPException(status_code=409, detail='Redemption reservation expired before the StoreHub discount could be applied. Reserve the points again.')
+    return {
+        'ok': True,
+        'adapter': adapter,
+        'reservation': _pos_redemption_public(row),
+        'message': adapter.get('message') or 'StoreHub discount applied.',
+    }
+
+
+@app.post('/api/v1/business/{public_id}/pos/storehub/redemptions/{reservation_id}/release')
+async def release_storehub_redemption(
+    public_id: str,
+    reservation_id: str,
+    req: POSRedemptionReleaseRequest,
+    authorization: str = Header(default=''),
+):
+    business = _require_pos_pro_business(public_id, authorization)
+    reservation = _pos_redemption_row(reservation_id)
+    if not reservation or reservation.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail='Redemption reservation not found.')
+    row = _pos_rpc_first('pos_release_points_redemption', {
+        'p_reservation_id': reservation.get('id'),
+        'p_reason': req.reason or 'checkout_cancelled',
+    })
+    return {'ok': True, 'reservation': _pos_redemption_public(row), 'message': 'Reserved points released.'}
+
+
+@app.post('/api/v1/business/{public_id}/pos/storehub/redemptions/{reservation_id}/reverse')
+async def reverse_storehub_redemption(
+    public_id: str,
+    reservation_id: str,
+    req: POSRedemptionReverseRequest,
+    background_tasks: BackgroundTasks,
+    authorization: str = Header(default=''),
+):
+    business = _require_pos_pro_business(public_id, authorization)
+    reservation = _pos_redemption_row(reservation_id)
+    if not reservation or reservation.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail='Redemption reservation not found.')
+    row = _pos_rpc_first('pos_reverse_points_redemption', {
+        'p_reservation_id': reservation.get('id'),
+        'p_reason': req.reason or 'storehub_void_or_refund',
+    })
+    customer = None
+    if row.get('customer_id'):
+        try:
+            customer_rows = supabase.table('customers').select('*').eq('id', row.get('customer_id')).limit(1).execute().data or []
+            customer = customer_rows[0] if customer_rows else None
+        except Exception:
+            customer = None
+    program = safe_get_loyalty_program(business.get('id'), program_id=row.get('program_id'))
+    if customer and program:
+        background_tasks.add_task(
+            sync_loyalty_wallets_background,
+            dict(customer), dict(business), dict(program),
+            'pos_redemption_reversed',
+            'Points returned',
+            f"{int(row.get('points_reserved') or 0)} points were returned after a POS void/refund.",
+            f"pos-redemption-reverse-{row.get('id')}",
+        )
+    return {'ok': True, 'reservation': _pos_redemption_public(row), 'message': 'Redemption reversed and points returned.'}
+
+
 @app.post('/api/v1/business/{public_id}/pos/storehub/test-transaction')
 async def storehub_test_transaction(
     public_id: str,
@@ -21208,6 +21838,14 @@ async def storehub_test_transaction(
     background_tasks: BackgroundTasks,
     authorization: str = Header(default=''),
 ):
+    """Simulate a completed StoreHub sale through the production loyalty pipeline.
+
+    When redemption_reservation_id is present the flow is:
+      reserved -> discount_applied -> StoreHub sale confirmed -> commit points
+      -> earn on NET amount -> Wallet refresh.
+    StoreHub's real open-cart discount call is isolated behind the provider adapter;
+    this endpoint therefore exercises the exact LoyaltyTree state machine safely.
+    """
     business = _require_pos_pro_business(public_id, authorization)
     integration = _get_pos_integration(business.get('id'), 'storehub')
     if not integration:
@@ -21224,6 +21862,7 @@ async def storehub_test_transaction(
     customer = safe_get_customer(req.customer_public_id)
     if not customer or customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail='Customer not found for this business.')
+    program = safe_get_customer_program(customer, business.get('id')) or {}
 
     mapping = None
     if req.branch_public_id:
@@ -21238,21 +21877,49 @@ async def storehub_test_transaction(
     if not mapping:
         raise HTTPException(status_code=409, detail='Map at least one branch before running a StoreHub test transaction.')
 
-    amount = float(Decimal(str(req.amount_spent)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+    gross_amount = float(Decimal(str(req.amount_spent)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
     external_tx = req.external_transaction_id.strip()
     if not external_tx:
         raise HTTPException(status_code=400, detail='StoreHub transaction ID is required.')
 
+    redemption = None
+    redemption_amount = 0.0
+    points_redeemed = 0
+    net_amount = gross_amount
+    redemption_config = _pos_redemption_config(integration)
+    if req.redemption_reservation_id:
+        redemption = _pos_redemption_row(req.redemption_reservation_id)
+        if not redemption:
+            raise HTTPException(status_code=404, detail='Redemption reservation not found.')
+        if redemption.get('business_id') != business.get('id') or str(redemption.get('integration_id')) != str(integration.get('id')):
+            raise HTTPException(status_code=404, detail='Redemption reservation does not belong to this StoreHub connection.')
+        if redemption.get('customer_id') != customer.get('id'):
+            raise HTTPException(status_code=400, detail='Redemption reservation belongs to a different customer.')
+        if redemption.get('branch_id') and mapping.get('branch_id') and redemption.get('branch_id') != mapping.get('branch_id'):
+            raise HTTPException(status_code=400, detail='Redemption reservation belongs to a different branch.')
+        if redemption.get('status') not in ('discount_applied', 'committed'):
+            raise HTTPException(status_code=409, detail='Apply the StoreHub discount before completing the test sale.')
+        reserved_gross = float(redemption.get('gross_amount') or 0)
+        if abs(reserved_gross - gross_amount) > 0.01:
+            raise HTTPException(status_code=400, detail=f'Gross amount changed after reservation. Reserved for PHP {reserved_gross:.2f}; test sale is PHP {gross_amount:.2f}.')
+        bound_tx = str(redemption.get('external_transaction_id') or '').strip()
+        if bound_tx and bound_tx != external_tx:
+            raise HTTPException(status_code=409, detail=f'Redemption is already bound to StoreHub transaction {bound_tx}.')
+        redemption_amount = float(redemption.get('redemption_amount') or 0)
+        points_redeemed = int(redemption.get('points_reserved') or 0)
+        net_amount = float(redemption.get('net_amount') or max(gross_amount - redemption_amount, 0))
+
+    eligible_amount = net_amount if redemption_config.get('earn_on_net_amount') else gross_amount
+    eligible_amount = float(Decimal(str(max(eligible_amount, 0))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+
     try:
-        existing_tx = (
-            supabase.table('pos_transactions')
-            .select('*')
+        existing_rows = (
+            supabase.table('pos_transactions').select('*')
             .eq('integration_id', integration.get('id'))
             .eq('external_transaction_id', external_tx)
-            .maybe_single()
-            .execute()
-            .data
+            .limit(1).execute().data or []
         )
+        existing_tx = existing_rows[0] if existing_rows else None
     except Exception as exc:
         raise _pos_schema_error(exc)
 
@@ -21263,53 +21930,75 @@ async def storehub_test_transaction(
             **result,
             'pos_transaction_id': str(existing_tx.get('id')),
             'external_transaction_id': external_tx,
+            'gross_amount': float(existing_tx.get('gross_amount') or gross_amount),
+            'redemption_amount': float(existing_tx.get('discount_amount') or 0),
+            'net_amount': float(existing_tx.get('net_amount') or gross_amount),
+            'eligible_amount': float(existing_tx.get('eligible_amount') or gross_amount),
+            'points_redeemed': int(existing_tx.get('points_redeemed') or 0),
             'duplicate_prevented': True,
         }
 
     pos_row = existing_tx
+    financial_patch = {
+        'branch_id': mapping.get('branch_id'),
+        'customer_id': customer.get('id'),
+        'gross_amount': gross_amount,
+        'discount_amount': redemption_amount,
+        'net_amount': net_amount,
+        'eligible_amount': eligible_amount,
+        'points_redeemed': points_redeemed,
+        'status': 'processing',
+        'error_message': None,
+        'raw_payload': {
+            'simulator': True,
+            'customer_public_id': req.customer_public_id,
+            'gross_amount': gross_amount,
+            'redemption_reservation_id': str(redemption.get('id')) if redemption else None,
+            'redemption_amount': redemption_amount,
+            'net_amount': net_amount,
+            'storehub_outlet_id': mapping.get('external_branch_id'),
+            'storehub_outlet_name': mapping.get('external_branch_name'),
+            'device': mapping.get('settings') if isinstance(mapping.get('settings'), dict) else {},
+        },
+        'transacted_at': datetime.utcnow().isoformat(),
+    }
     if not pos_row:
         try:
             inserted = supabase.table('pos_transactions').insert({
                 'integration_id': integration.get('id'),
                 'business_id': business.get('id'),
-                'branch_id': mapping.get('branch_id'),
-                'customer_id': customer.get('id'),
                 'provider': 'storehub',
                 'external_transaction_id': external_tx,
                 'external_receipt_number': external_tx,
                 'transaction_type': 'sale',
                 'source': 'simulator',
                 'currency': business_currency(business),
-                'gross_amount': amount,
-                'net_amount': amount,
-                'eligible_amount': amount,
-                'status': 'processing',
-                'raw_payload': {
-                    'simulator': True,
-                    'customer_public_id': req.customer_public_id,
-                    'amount_spent': amount,
-                    'storehub_outlet_id': mapping.get('external_branch_id'),
-                    'storehub_outlet_name': mapping.get('external_branch_name'),
-                },
-                'transacted_at': datetime.utcnow().isoformat(),
+                **financial_patch,
             }).execute()
             pos_row = (inserted.data or [None])[0]
         except Exception as exc:
             # A concurrent retry may have won the unique external ID race.
             try:
-                pos_row = (
+                rows = (
                     supabase.table('pos_transactions').select('*')
                     .eq('integration_id', integration.get('id'))
                     .eq('external_transaction_id', external_tx)
-                    .maybe_single().execute().data
+                    .limit(1).execute().data or []
                 )
+                pos_row = rows[0] if rows else None
             except Exception:
                 pos_row = None
             if not pos_row:
                 raise _pos_schema_error(exc)
+    else:
+        try:
+            updated = supabase.table('pos_transactions').update(financial_patch).eq('id', pos_row.get('id')).execute()
+            if updated.data:
+                pos_row = updated.data[0]
+        except Exception as exc:
+            raise _pos_schema_error(exc)
 
     idempotency_key = f'pos:storehub:{integration.get("id")}:{external_tx}'[:220]
-    program = safe_get_loyalty_program(business.get('id')) or {}
     loyalty_type = effective_loyalty_type(program)
     points_active = program_reward_uses_points(program)
     stamps_active = program_reward_uses_stamps(program)
@@ -21319,28 +22008,82 @@ async def storehub_test_transaction(
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    'StoreHub V1 simulator currently supports Points, Stamps, and Hybrid cards with at least one reward program enabled. '
-                    f'This business currently uses {program.get("card_type") or loyalty_type}.'
+                    'StoreHub simulator currently supports Points, Stamps, and Hybrid cards with at least one reward engine enabled. '
+                    f'This customer program currently uses {program.get("card_type") or loyalty_type}.'
                 ),
             )
+        if redemption and not points_active:
+            raise HTTPException(status_code=400, detail='Cash-value POS redemption requires a Points-enabled program.')
+
+        committed_redemption = redemption
+        redemption_audit_ref = None
+        if redemption:
+            if redemption.get('status') != 'committed':
+                committed_redemption = _pos_rpc_first('pos_commit_points_redemption', {
+                    'p_reservation_id': redemption.get('id'),
+                    'p_external_transaction_id': external_tx,
+                })
+            # Audit the actual point deduction separately from the earning event.
+            redeem_audit = start_transaction_audit(
+                business_id=business.get('id'),
+                customer_id=customer.get('id'),
+                staff_id=None,
+                branch_id=mapping.get('branch_id'),
+                actor_type='owner',
+                action='pos_points_redeem',
+                idempotency_key=f'{idempotency_key}:redeem',
+                delta=-int(committed_redemption.get('points_reserved') or 0),
+                balance_before=int(committed_redemption.get('balance_before') or 0),
+                metadata={
+                    'card_type': program.get('card_type') or 'points',
+                    'pos_provider': 'storehub',
+                    'pos_external_transaction_id': external_tx,
+                    'redemption_reservation_id': str(committed_redemption.get('id')),
+                    'redemption_amount': float(committed_redemption.get('redemption_amount') or 0),
+                    'gross_amount': gross_amount,
+                    'net_amount': net_amount,
+                },
+            )
+            if redeem_audit and not redeem_audit.get('_duplicate_response'):
+                complete_transaction_audit(
+                    redeem_audit,
+                    balance_after=int(committed_redemption.get('balance_after') or 0),
+                    response_json={
+                        'success': True,
+                        'points_spent': int(committed_redemption.get('points_reserved') or 0),
+                        'redemption_amount': float(committed_redemption.get('redemption_amount') or 0),
+                        'points_balance': int(committed_redemption.get('balance_after') or 0),
+                    },
+                )
+            if redeem_audit and redeem_audit.get('transaction_id'):
+                redemption_audit_ref = str(redeem_audit.get('transaction_id'))
+                _pos_attach_audit_context(redeem_audit.get('transaction_id'), mapping.get('branch_id'), 'storehub', external_tx)
 
         points_result = None
         stamp_result = None
-        # A Hybrid sale can now feed BOTH reward engines from one POS transaction.
-        # Distinct idempotency keys let a retry safely complete whichever side did
-        # not finish the first time without double-crediting the other side.
+        # Earn on net paid amount by default. A fully redeemed PHP 0 net sale
+        # earns zero points but may still earn a visit/stamp if that program uses it.
         if points_active:
-            points_result = await add_points_sale(
-                public_id,
-                PointsSaleRequest(
-                    customer_public_id=req.customer_public_id,
-                    amount_spent=amount,
-                    as_owner=True,
-                ),
-                background_tasks,
-                authorization='',
-                x_idempotency_key=(f'{idempotency_key}:points' if stamps_active else idempotency_key),
-            )
+            if eligible_amount > 0:
+                points_result = await add_points_sale(
+                    public_id,
+                    PointsSaleRequest(
+                        customer_public_id=req.customer_public_id,
+                        amount_spent=eligible_amount,
+                        as_owner=True,
+                    ),
+                    background_tasks,
+                    authorization='',
+                    x_idempotency_key=(f'{idempotency_key}:points' if stamps_active or redemption else idempotency_key),
+                )
+            else:
+                fresh = safe_get_customer(req.customer_public_id) or customer
+                points_result = {
+                    'message': 'Net amount is PHP 0.00; no points earned.',
+                    'amount_spent': 0,
+                    'points_earned': 0,
+                    'points_balance': int(fresh.get('points_balance') or 0),
+                }
 
         if stamps_active:
             try:
@@ -21353,12 +22096,9 @@ async def storehub_test_transaction(
                     ),
                     background_tasks,
                     authorization='',
-                    x_idempotency_key=(f'{idempotency_key}:stamp' if points_active else idempotency_key),
+                    x_idempotency_key=(f'{idempotency_key}:stamp' if points_active or redemption else idempotency_key),
                 )
             except HTTPException as stamp_exc:
-                # If 1-stamp-per-day is enabled, a later purchase should still earn
-                # its Points. Treat the stamp as intentionally skipped, not as a
-                # failed POS sale. Other stamp errors remain real failures.
                 if points_active and stamp_exc.status_code == 409:
                     stamp_result = {
                         'message': str(stamp_exc.detail),
@@ -21378,12 +22118,25 @@ async def storehub_test_transaction(
                 'stamp_count': (stamp_result or {}).get('stamp_count'),
                 'duplicate_prevented': bool((stamp_result or {}).get('duplicate_prevented')),
             }
+        if redemption:
+            loyalty_result = {
+                **(loyalty_result or {}),
+                'redemption': {
+                    'reservation_id': str((committed_redemption or {}).get('id')),
+                    'status': (committed_redemption or {}).get('status'),
+                    'points_redeemed': int((committed_redemption or {}).get('points_reserved') or 0),
+                    'redemption_amount': float((committed_redemption or {}).get('redemption_amount') or 0),
+                    'balance_after_redemption': (committed_redemption or {}).get('balance_after'),
+                },
+            }
 
         audit_refs = []
+        if redemption_audit_ref:
+            audit_refs.append(redemption_audit_ref)
         for result in (points_result, stamp_result):
             audit_ref = result.get('transaction_id') if isinstance(result, dict) else None
             if audit_ref:
-                audit_refs.append(audit_ref)
+                audit_refs.append(str(audit_ref))
                 _pos_attach_audit_context(audit_ref, mapping.get('branch_id'), 'storehub', external_tx)
         audit_ref = audit_refs[0] if audit_refs else None
 
@@ -21393,21 +22146,49 @@ async def storehub_test_transaction(
             ((result or {}).get('wallet_sync') or {}).get('status')
             for result in (points_result, stamp_result) if isinstance(result, dict)
         ]
-        wallet_status = next((status for status in wallet_statuses if status), 'queued')
+        wallet_status = next((status for status in wallet_statuses if status), None)
+
+        # If redemption changed the balance but earning did not queue a Wallet
+        # sync (e.g. net amount is zero), queue one final state refresh here.
+        if redemption and not wallet_status:
+            fresh_customer = safe_get_customer(req.customer_public_id) or customer
+            background_tasks.add_task(
+                sync_loyalty_wallets_background,
+                dict(fresh_customer), dict(business), dict(program),
+                'pos_storehub_redemption',
+                'Loyalty balance updated',
+                f"POS redemption completed. You now have {int(fresh_customer.get('points_balance') or 0)} points.",
+                f"pos-storehub-{external_tx}",
+            )
+            wallet_status = 'queued'
+        wallet_status = wallet_status or 'queued'
+
         processing_metadata = {
             'loyalty_type': loyalty_type,
             'hybrid_points_enabled': bool(points_active),
             'hybrid_stamps_enabled': bool(stamps_active),
             'loyalty_result': loyalty_result,
-            'transaction_audit_refs': [str(x) for x in audit_refs],
+            'transaction_audit_refs': audit_refs,
             'wallet_sync_status': wallet_status,
             'branch_public_id': mapping.get('branch_public_id'),
             'storehub_outlet_id': mapping.get('external_branch_id'),
             'storehub_outlet_name': mapping.get('external_branch_name'),
+            'device': mapping.get('settings') if isinstance(mapping.get('settings'), dict) else {},
+            'gross_amount': gross_amount,
+            'redemption_amount': redemption_amount,
+            'net_amount': net_amount,
+            'eligible_amount': eligible_amount,
+            'earn_on_net_amount': bool(redemption_config.get('earn_on_net_amount')),
+            'redemption_reservation_id': str(redemption.get('id')) if redemption else None,
         }
         try:
             updated = supabase.table('pos_transactions').update({
                 'status': 'loyalty_applied',
+                'gross_amount': gross_amount,
+                'discount_amount': redemption_amount,
+                'net_amount': net_amount,
+                'eligible_amount': eligible_amount,
+                'points_redeemed': points_redeemed,
                 'points_earned': points_earned,
                 'stamps_earned': stamps_earned,
                 'transaction_audit_ref': str(audit_ref) if audit_ref else None,
@@ -21417,25 +22198,47 @@ async def storehub_test_transaction(
             }).eq('id', pos_row.get('id')).execute()
             if updated.data:
                 pos_row = updated.data[0]
+            now_iso = datetime.utcnow().isoformat()
             supabase.table('pos_integrations').update({
-                'last_sync_at': datetime.utcnow().isoformat(),
+                'last_sync_at': now_iso,
                 'last_error': None,
                 'config': _merge_pos_config(integration, {'setup_step': 6, 'last_test_passed': True}),
             }).eq('id', integration.get('id')).execute()
+            # ANGKAN rolls out branch by branch. Keep a validation stamp on the
+            # exact mapping so the owner can see which outlet/device has passed.
+            branch_settings = mapping.get('settings') if isinstance(mapping.get('settings'), dict) else {}
+            branch_settings = {
+                **branch_settings,
+                'last_test_passed': True,
+                'last_test_at': now_iso,
+                'last_test_external_transaction_id': external_tx,
+                'last_test_included_redemption': bool(redemption),
+            }
+            supabase.table('pos_branch_mappings').update({
+                'settings': branch_settings,
+            }).eq('id', mapping.get('id')).execute()
         except Exception as exc:
-            # The loyalty mutation is already protected by its own idempotency key.
-            # Surface the persistence issue so a retry can safely finish the POS row.
+            # Reservation commit and loyalty mutations are idempotent. A retry of
+            # this same StoreHub transaction can safely finish the POS envelope.
             raise _pos_schema_error(exc)
 
+        fresh_customer = safe_get_customer(req.customer_public_id) or customer
         return {
             **(loyalty_result or {}),
-            'amount_spent': amount,
+            'amount_spent': gross_amount,
+            'gross_amount': gross_amount,
+            'redemption_amount': redemption_amount,
+            'net_amount': net_amount,
+            'eligible_amount': eligible_amount,
+            'points_redeemed': points_redeemed,
+            'points_balance': int(fresh_customer.get('points_balance') or 0),
             'pos_transaction_id': str(pos_row.get('id')),
             'external_transaction_id': external_tx,
             'provider': 'storehub',
             'mode': 'test',
             'branch_public_id': mapping.get('branch_public_id'),
             'storehub_outlet_id': mapping.get('external_branch_id'),
+            'device': mapping.get('settings') if isinstance(mapping.get('settings'), dict) else {},
             'wallet_sync_status': wallet_status,
         }
     except HTTPException as exc:
