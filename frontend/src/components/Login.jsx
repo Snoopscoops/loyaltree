@@ -36,7 +36,7 @@ function LoginPage({ API_BASE, onLogin }) {
       const data = await res.json()
       if (res.ok) {
         onLogin(data)
-        if (data.role === 'owner') navigate('/dashboard', { replace: true })
+        if (data.role === 'owner' || data.role === 'manager') navigate('/dashboard', { replace: true })
         else if (data.role === 'super_admin') navigate('/admin', { replace: true })
         else if (data.role === 'partner') navigate('/partner', { replace: true })
         else if (data.role === 'agent') {

@@ -1218,6 +1218,53 @@ def require_owner_session(public_id: str, authorization: str):
         raise HTTPException(status_code=403, detail='Session does not match this business')
     return claims
 
+
+def require_branch_manager_session(public_id: str, authorization: str):
+    """Require an active manager session and resolve its *current* branch.
+
+    The token carries the branch for convenience, but the database remains the
+    source of truth so an owner can move/disable a manager and the restriction
+    takes effect immediately without waiting for the token to expire.
+    """
+    if not authorization or not authorization.startswith('Bearer '):
+        raise HTTPException(status_code=401, detail='Manager authentication required')
+    claims = verify_staff_session_token(authorization.split(' ', 1)[1])
+    if not claims:
+        raise HTTPException(status_code=401, detail='Manager session expired - please log in again')
+    if claims.get('role') != 'manager':
+        raise HTTPException(status_code=403, detail='Manager access required')
+    if claims.get('business_public_id') != public_id:
+        raise HTTPException(status_code=403, detail='Session does not match this business')
+
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    staff_id = claims.get('staff_id')
+    if not staff_id:
+        raise HTTPException(status_code=401, detail='Manager account is missing from this session')
+    try:
+        staff_res = supabase.table('staff').select('*').eq('id', staff_id).maybe_single().execute()
+        staff = staff_res.data if staff_res else None
+    except Exception:
+        staff = None
+    if not staff or staff.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=401, detail='Manager account no longer exists')
+    if staff.get('is_active') is False:
+        raise HTTPException(status_code=403, detail='Manager account is disabled')
+    if str(staff.get('role') or '').lower() != 'manager':
+        raise HTTPException(status_code=403, detail='Manager access is no longer assigned')
+    branch_id = staff.get('branch_id')
+    if not branch_id:
+        raise HTTPException(status_code=403, detail='Manager must be assigned to a branch')
+    try:
+        branch_res = supabase.table('branches').select('*').eq('id', branch_id).maybe_single().execute()
+        branch = branch_res.data if branch_res else None
+    except Exception:
+        branch = None
+    if not branch or branch.get('business_id') != business.get('id') or branch.get('is_active') is False:
+        raise HTTPException(status_code=403, detail='Assigned branch is unavailable')
+    return claims, business, staff, branch
+
 def _supabase_server_key_role(key: str) -> Optional[str]:
     """Best-effort classification without logging or verifying the secret itself.
 
@@ -9493,22 +9540,54 @@ async def login(req: LoginRequest, request: Request):
                         status_code=403,
                         detail="This business's account is not active. Please contact support for details."
                     )
+                staff_role = str(staff.get("role") or "cashier").lower()
+                branch = None
+                if staff.get('branch_id'):
+                    try:
+                        branch_res = supabase.table('branches').select('id,public_id,name,address,is_active').eq('id', staff.get('branch_id')).maybe_single().execute()
+                        branch = branch_res.data if branch_res else None
+                    except Exception:
+                        branch = None
+
+                # Branch managers use the normal dashboard, so they need a real
+                # signed session token that the manager-only APIs can validate.
+                # Cashier web-login behavior stays backwards-compatible here;
+                # CashierApp still performs its own shift/PIN verification flow.
+                staff_token = (
+                    create_staff_session_token(
+                        biz.get("public_id", ""),
+                        staff.get('id'),
+                        'manager',
+                        staff.get("name", ""),
+                        staff.get('branch_id'),
+                    )
+                    if staff_role == 'manager'
+                    else "staff-token-" + staff.get("public_id", "")
+                )
                 return {
                     "success": True,
-                    "token": "staff-token-" + staff.get("public_id", ""),
+                    "token": staff_token,
                     "business_slug": biz.get("public_id", ""),
                     "business_name": biz.get("name", ""),
                     "name": staff.get("name", ""),
                     "staff_name": staff.get("name", ""),
-                    "role": staff.get("role", "cashier"),
+                    "staff_public_id": staff.get('public_id'),
+                    "role": staff_role,
                     "logo_url": biz.get("logo_url"),
+                    "branch_public_id": (branch or {}).get('public_id'),
+                    "branch_name": (branch or {}).get('name'),
+                    "branch_address": (branch or {}).get('address'),
                     "user": {
                         "business_slug": biz.get("public_id", ""),
                         "business_name": biz.get("name", ""),
                         "name": staff.get("name", ""),
                         "email": staff.get("email", ""),
-                        "role": staff.get("role", "cashier"),
+                        "role": staff_role,
                         "logo_url": biz.get("logo_url"),
+                        "token": staff_token,
+                        "branch_public_id": (branch or {}).get('public_id'),
+                        "branch_name": (branch or {}).get('name'),
+                        "branch_address": (branch or {}).get('address'),
                     }
                 }
     except HTTPException:
@@ -15311,6 +15390,201 @@ async def get_branch_stamp_counts(public_id: str, authorization: str = Header(de
         ]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/business/{public_id}/manager-dashboard")
+async def get_branch_manager_dashboard(
+    public_id: str,
+    program_id: Optional[str] = Query(default=None),
+    authorization: str = Header(default=''),
+):
+    """Read-only branch dashboard for staff whose role is ``manager``.
+
+    Managers can see only the branch currently assigned by the owner. Program
+    switching is allowed because programs belong to the same business, but all
+    activity is still filtered to this branch before it leaves the API.
+    """
+    _, business, manager, branch = require_branch_manager_session(public_id, authorization)
+
+    try:
+        programs = (
+            supabase.table('loyalty_programs').select('*')
+            .eq('business_id', business.get('id'))
+            .eq('is_active', True)
+            .order('is_default', desc=True).order('sort_order').order('created_at')
+            .execute().data or []
+        )
+    except Exception:
+        programs = (
+            supabase.table('loyalty_programs').select('*')
+            .eq('business_id', business.get('id'))
+            .order('updated_at', desc=True).execute().data or []
+        )
+    selected = None
+    if program_id:
+        selected = next((p for p in programs if p.get('public_id') == program_id), None)
+        if not selected:
+            raise HTTPException(status_code=404, detail='Program not found for this business')
+    if not selected:
+        selected = next((p for p in programs if p.get('is_default')), None) or (programs[0] if programs else None)
+
+    customer_rows = []
+    if selected:
+        try:
+            customer_rows = (
+                supabase.table('customers').select('id,public_id,name,email,phone,created_at')
+                .eq('business_id', business.get('id'))
+                .eq('program_id', selected.get('id'))
+                .execute().data or []
+            )
+        except Exception:
+            customer_rows = []
+    customer_ids = {c.get('id') for c in customer_rows if c.get('id') is not None}
+    customer_by_id = {c.get('id'): c for c in customer_rows}
+
+    try:
+        branch_staff = (
+            supabase.table('staff').select('id,public_id,name,email,role,is_active')
+            .eq('business_id', business.get('id'))
+            .eq('branch_id', branch.get('id'))
+            .order('name').execute().data or []
+        )
+    except Exception:
+        branch_staff = []
+    staff_by_id = {s.get('id'): s for s in branch_staff}
+
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(days=30)
+    today_local = datetime.now(LOYALTY_TIMEZONE).date()
+    recent = []
+    event_customer_ids = set()
+    activity_30d = 0
+    activity_today = 0
+    redemptions_30d = 0
+
+    def add_rows(table_name: str, kind: str, extra_fields: str = ''):
+        nonlocal activity_30d, activity_today, redemptions_30d
+        if not selected or not customer_ids:
+            return
+        fields = 'id,customer_id,staff_id,branch_id,created_at' + ((',' + extra_fields) if extra_fields else '')
+        try:
+            rows = (
+                supabase.table(table_name).select(fields)
+                .eq('business_id', business.get('id'))
+                .eq('branch_id', branch.get('id'))
+                .gte('created_at', since.isoformat())
+                .order('created_at', desc=True)
+                .limit(750).execute().data or []
+            )
+        except Exception:
+            rows = []
+        for row in rows:
+            cid = row.get('customer_id')
+            if cid not in customer_ids:
+                continue
+            event_customer_ids.add(cid)
+            activity_30d += 1
+            ts = _parse_ts(row.get('created_at'))
+            if ts and ts.astimezone(LOYALTY_TIMEZONE).date() == today_local:
+                activity_today += 1
+            if kind == 'redemption':
+                redemptions_30d += 1
+            customer = customer_by_id.get(cid) or {}
+            staff = staff_by_id.get(row.get('staff_id')) or {}
+            detail = ''
+            if kind == 'points':
+                detail = f"+{int(row.get('points_earned') or 0)} points"
+                if row.get('amount_spent_pesos') is not None:
+                    detail += f" · ₱{float(row.get('amount_spent_pesos') or 0):,.2f}"
+            elif kind == 'membership':
+                detail = str(row.get('service_name') or 'Visit')
+            elif kind == 'multipass':
+                action = str(row.get('action') or '').lower()
+                detail = 'Session used' if action == 'used' else 'Pass issued'
+            elif kind == 'vip':
+                delta = int(row.get('points_delta') or 0)
+                detail = f"{delta:+d} tier points" if delta else str(row.get('action') or 'Tier activity')
+            elif kind == 'stamp':
+                detail = 'Stamp added'
+            elif kind == 'redemption':
+                detail = 'Reward redeemed'
+            recent.append({
+                'id': f"{kind}-{row.get('id')}",
+                'type': kind,
+                'detail': detail,
+                'created_at': row.get('created_at'),
+                'customer_name': customer.get('name') or 'Member',
+                'customer_public_id': customer.get('public_id'),
+                'staff_name': staff.get('name') or ('Owner' if row.get('staff_id') is None else 'Staff'),
+            })
+
+    # Load all supported engines because Hybrid can legitimately generate more
+    # than one kind of loyalty event from the same purchase.
+    add_rows('stamp_events', 'stamp')
+    add_rows('points_events', 'points', 'points_earned,amount_spent_pesos')
+    add_rows('redemption_events', 'redemption')
+    add_rows('membership_events', 'membership', 'service_name')
+    add_rows('multipass_events', 'multipass', 'action,sessions_remaining')
+    add_rows('vip_events', 'vip', 'action,points_delta')
+
+    recent.sort(key=lambda item: _parse_ts(item.get('created_at')) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    recent = recent[:40]
+    branch_customers = [customer_by_id[cid] for cid in event_customer_ids if cid in customer_by_id]
+    branch_customers.sort(key=lambda c: str(c.get('name') or '').lower())
+
+    return {
+        'business': {
+            'public_id': business.get('public_id'),
+            'name': business.get('name'),
+            'logo_url': business.get('logo_url'),
+        },
+        'manager': {
+            'public_id': manager.get('public_id'),
+            'name': manager.get('name'),
+            'email': manager.get('email'),
+        },
+        'branch': {
+            'public_id': branch.get('public_id'),
+            'name': branch.get('name'),
+            'address': branch.get('address'),
+        },
+        'programs': [
+            {
+                'public_id': p.get('public_id'),
+                'name': p.get('program_name') or p.get('card_name') or 'Loyalty Program',
+                'card_type': p.get('card_type'),
+                'is_default': bool(p.get('is_default')),
+            }
+            for p in programs
+        ],
+        'selected_program': (
+            {
+                'public_id': selected.get('public_id'),
+                'name': selected.get('program_name') or selected.get('card_name') or 'Loyalty Program',
+                'card_type': selected.get('card_type'),
+            } if selected else None
+        ),
+        'stats': {
+            'program_members': len(customer_rows),
+            'branch_members_served_30d': len(event_customer_ids),
+            'loyalty_actions_today': activity_today,
+            'loyalty_actions_30d': activity_30d,
+            'redemptions_30d': redemptions_30d,
+            'active_branch_staff': sum(1 for s in branch_staff if s.get('is_active') is not False),
+        },
+        'team': [
+            {
+                'public_id': s.get('public_id'),
+                'name': s.get('name'),
+                'email': s.get('email'),
+                'role': s.get('role'),
+                'is_active': s.get('is_active') is not False,
+            }
+            for s in branch_staff
+        ],
+        'branch_customers': branch_customers[:100],
+        'recent_activity': recent,
+    }
+
 
 @app.get("/api/v1/business/{public_id}/branches")
 async def list_branches(public_id: str, authorization: str = Header(default='')):

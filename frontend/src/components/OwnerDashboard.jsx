@@ -173,7 +173,135 @@ function OrderAheadMenuBuilder({ API_BASE, user, business, branches, authFetch, 
   </div>
 }
 
-function OwnerDashboard({ API_BASE, user, onLogout }) {
+function BranchManagerDashboard({ API_BASE, user, onLogout }) {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [selectedProgramId, setSelectedProgramId] = useState('')
+  const [lastUpdated, setLastUpdated] = useState(null)
+
+  const authFetch = async (url, options = {}) => {
+    const headers = { ...(options.headers || {}) }
+    if (user?.token) headers.Authorization = `Bearer ${user.token}`
+    const res = await fetch(url, { ...options, headers })
+    if (res.status === 401) {
+      localStorage.removeItem('loyaltree_user')
+      onLogout?.()
+      window.location.replace('/login?expired=1')
+    }
+    return res
+  }
+
+  const loadManagerDashboard = async (programId = selectedProgramId) => {
+    if (!user?.business_slug) return
+    setLoading(true)
+    setError('')
+    try {
+      const qs = programId ? `?program_id=${encodeURIComponent(programId)}` : ''
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/manager-dashboard${qs}`, { cache:'no-store' })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body.detail || 'Could not load branch dashboard')
+      setData(body)
+      const resolved = body.selected_program?.public_id || ''
+      if (resolved && resolved !== selectedProgramId) setSelectedProgramId(resolved)
+      setLastUpdated(new Date())
+    } catch (err) {
+      setError(err.message || 'Could not load branch dashboard')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    loadManagerDashboard('')
+    const timer = setInterval(() => loadManagerDashboard(selectedProgramId), 30000)
+    return () => clearInterval(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.business_slug])
+
+  useEffect(() => {
+    if (!selectedProgramId || !data?.selected_program?.public_id || selectedProgramId === data.selected_program.public_id) return
+    loadManagerDashboard(selectedProgramId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedProgramId])
+
+  const s = data?.stats || {}
+  const branch = data?.branch || { name:user?.branch_name || 'Assigned Branch', address:user?.branch_address || '' }
+  const programs = data?.programs || []
+  const metricCard = {background:'#fff',border:'1px solid #e2e8f0',borderRadius:14,padding:16,boxShadow:'0 2px 10px rgba(15,23,42,.04)'}
+
+  return (
+    <div style={{minHeight:'100vh',background:'#f8fafc',color:'#0f172a'}}>
+      <header style={{background:'#fff',borderBottom:'1px solid #e2e8f0',padding:'14px clamp(16px,4vw,38px)',display:'flex',alignItems:'center',justifyContent:'space-between',gap:14,flexWrap:'wrap',position:'sticky',top:0,zIndex:20}}>
+        <div style={{display:'flex',alignItems:'center',gap:12,minWidth:0}}>
+          {data?.business?.logo_url ? <img src={data.business.logo_url} alt="" style={{width:42,height:42,borderRadius:12,objectFit:'cover'}}/> : <div style={{width:42,height:42,borderRadius:12,background:'#ccfbf1',display:'grid',placeItems:'center',fontSize:22}}>🌿</div>}
+          <div style={{minWidth:0}}>
+            <div style={{fontSize:11,fontWeight:900,letterSpacing:.8,color:'#0f766e'}}>BRANCH MANAGER</div>
+            <div style={{fontWeight:900,fontSize:18,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{data?.business?.name || user?.business_name || 'LoyaltyTree'}</div>
+          </div>
+        </div>
+        <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+          <button onClick={()=>window.location.assign('/scanner')} style={{border:'1px solid #99f6e4',background:'#f0fdfa',color:'#0f766e',borderRadius:10,padding:'9px 12px',fontWeight:850,cursor:'pointer'}}>Scan Customer</button>
+          <button onClick={onLogout} style={{border:'1px solid #e2e8f0',background:'#fff',color:'#475569',borderRadius:10,padding:'9px 12px',fontWeight:800,cursor:'pointer'}}>Log out</button>
+        </div>
+      </header>
+
+      <main style={{maxWidth:1180,margin:'0 auto',padding:'24px clamp(14px,3vw,28px) 46px'}}>
+        <section style={{background:'linear-gradient(135deg,#0f766e,#0d9488)',color:'#fff',borderRadius:20,padding:'22px clamp(18px,3vw,28px)',boxShadow:'0 14px 34px rgba(15,118,110,.16)'}}>
+          <div style={{display:'flex',justifyContent:'space-between',gap:18,alignItems:'flex-start',flexWrap:'wrap'}}>
+            <div>
+              <div style={{fontSize:12,fontWeight:900,letterSpacing:.8,opacity:.82}}>YOUR BRANCH</div>
+              <h1 style={{margin:'5px 0 5px',fontSize:'clamp(24px,4vw,34px)'}}>{branch.name}</h1>
+              <div style={{fontSize:13,opacity:.88}}>{branch.address || 'No branch address added yet'}</div>
+              <div style={{fontSize:12,opacity:.78,marginTop:8}}>Manager: {data?.manager?.name || user?.name || 'Manager'}</div>
+            </div>
+            {programs.length > 0 && (
+              <label style={{fontSize:11,fontWeight:850,minWidth:230}}>VIEWING PROGRAM
+                <select value={selectedProgramId} onChange={e=>setSelectedProgramId(e.target.value)} style={{display:'block',width:'100%',marginTop:6,padding:'10px 12px',borderRadius:10,border:'1px solid rgba(255,255,255,.45)',background:'#fff',color:'#0f172a',fontWeight:800}}>
+                  {programs.map(p=><option key={p.public_id} value={p.public_id}>{p.name}</option>)}
+                </select>
+              </label>
+            )}
+          </div>
+        </section>
+
+        {error && <div style={{marginTop:16,padding:'12px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:12,color:'#b91c1c'}}>{error}</div>}
+        {loading && !data ? <div style={{padding:40,textAlign:'center',color:'#64748b'}}>Loading branch dashboard…</div> : <>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:12,marginTop:16}}>
+            <div style={metricCard}><div style={{fontSize:10,fontWeight:900,color:'#64748b'}}>SERVED · 30 DAYS</div><strong style={{display:'block',fontSize:28,marginTop:6}}>{s.branch_members_served_30d ?? 0}</strong><span style={{fontSize:11,color:'#94a3b8'}}>unique program members</span></div>
+            <div style={metricCard}><div style={{fontSize:10,fontWeight:900,color:'#64748b'}}>TODAY</div><strong style={{display:'block',fontSize:28,marginTop:6}}>{s.loyalty_actions_today ?? 0}</strong><span style={{fontSize:11,color:'#94a3b8'}}>loyalty actions</span></div>
+            <div style={metricCard}><div style={{fontSize:10,fontWeight:900,color:'#64748b'}}>ACTIVITY · 30 DAYS</div><strong style={{display:'block',fontSize:28,marginTop:6}}>{s.loyalty_actions_30d ?? 0}</strong><span style={{fontSize:11,color:'#94a3b8'}}>stamps, points, visits & more</span></div>
+            <div style={metricCard}><div style={{fontSize:10,fontWeight:900,color:'#64748b'}}>REDEMPTIONS · 30 DAYS</div><strong style={{display:'block',fontSize:28,marginTop:6}}>{s.redemptions_30d ?? 0}</strong><span style={{fontSize:11,color:'#94a3b8'}}>rewards redeemed here</span></div>
+          </div>
+
+          <div style={{display:'grid',gridTemplateColumns:'minmax(0,1.35fr) minmax(260px,.65fr)',gap:14,marginTop:14}} className="lt-manager-grid">
+            <section style={metricCard}>
+              <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',marginBottom:10}}><div><div style={{fontSize:11,fontWeight:900,color:'#0f766e'}}>RECENT ACTIVITY</div><h3 style={{margin:'3px 0 0'}}>What happened at {branch.name}</h3></div><button onClick={()=>loadManagerDashboard(selectedProgramId)} disabled={loading} style={{border:'1px solid #e2e8f0',background:'#fff',borderRadius:9,padding:'7px 9px',cursor:'pointer'}}>↻</button></div>
+              {(data?.recent_activity || []).length === 0 ? <div style={{padding:'26px 4px',color:'#94a3b8',textAlign:'center'}}>No branch activity for this program in the last 30 days.</div> : (data.recent_activity || []).map(item=><div key={item.id} style={{display:'grid',gridTemplateColumns:'1fr auto',gap:10,padding:'10px 0',borderBottom:'1px solid #f1f5f9'}}><div><strong style={{fontSize:13}}>{item.customer_name}</strong><div style={{fontSize:11.5,color:'#475569',marginTop:2}}>{item.detail} · by {item.staff_name}</div></div><time style={{fontSize:10.5,color:'#94a3b8',whiteSpace:'nowrap'}}>{item.created_at ? new Date(item.created_at).toLocaleString('en-PH',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : ''}</time></div>)}
+            </section>
+
+            <section style={metricCard}>
+              <div style={{fontSize:11,fontWeight:900,color:'#0f766e'}}>BRANCH TEAM</div>
+              <h3 style={{margin:'3px 0 10px'}}>{s.active_branch_staff ?? 0} active staff</h3>
+              {(data?.team || []).map(member=><div key={member.public_id} style={{padding:'9px 0',borderBottom:'1px solid #f1f5f9'}}><div style={{fontWeight:800,fontSize:12.5}}>{member.name}</div><div style={{fontSize:10.5,color:'#64748b',marginTop:2}}>{String(member.role || 'cashier').toUpperCase()} · {member.is_active ? 'Active' : 'Disabled'}</div></div>)}
+              {!data?.team?.length && <div style={{color:'#94a3b8',fontSize:12}}>No staff assigned to this branch.</div>}
+            </section>
+          </div>
+
+          <section style={{...metricCard,marginTop:14}}>
+            <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}><div><div style={{fontSize:11,fontWeight:900,color:'#0f766e'}}>BRANCH CUSTOMERS</div><h3 style={{margin:'3px 0 0'}}>Customers served here in the last 30 days</h3></div><div style={{fontSize:11,color:'#94a3b8'}}>Program members overall: {s.program_members ?? 0}</div></div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',gap:8,marginTop:12}}>{(data?.branch_customers || []).slice(0,24).map(c=><div key={c.public_id} style={{padding:'10px 11px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:10}}><strong style={{fontSize:12}}>{c.name || 'Member'}</strong><div style={{fontSize:10.5,color:'#64748b',marginTop:3}}>{c.email || c.phone || 'Loyalty member'}</div></div>)}</div>
+            {!data?.branch_customers?.length && <div style={{padding:'24px 4px',color:'#94a3b8',textAlign:'center'}}>No customers have recorded activity at this branch yet.</div>}
+          </section>
+          <div style={{fontSize:10.5,color:'#94a3b8',textAlign:'right',marginTop:10}}>Read-only branch dashboard{lastUpdated ? ` · updated ${lastUpdated.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}` : ''}</div>
+        </>}
+      </main>
+      <style>{`@media(max-width:760px){.lt-manager-grid{grid-template-columns:1fr!important}}`}</style>
+    </div>
+  )
+}
+
+function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
   const [installPrompt, setInstallPrompt] = useState(null)
   const [showInstallHelp, setShowInstallHelp] = useState(false)
   const [installPlatform, setInstallPlatform] = useState('other')
@@ -321,6 +449,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [couponSaving, setCouponSaving] = useState(false)
   const [inviteForm, setInviteForm] = useState({ name: '', email: '', phone: '', role: 'cashier', branch_public_id: '' })
   const [newBranchName, setNewBranchName] = useState('')
+  const [newBranchAddress, setNewBranchAddress] = useState('')
   const [savingBranch, setSavingBranch] = useState(false)
   const [message, setMessage] = useState('')
   const [stampCounts, setStampCounts] = useState({}) // staff public_id -> stamps added
@@ -1119,10 +1248,11 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/branches`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newBranchName.trim() })
+        body: JSON.stringify({ name: newBranchName.trim(), address: newBranchAddress.trim() || null })
       })
       if (res.ok) {
         setNewBranchName('')
+        setNewBranchAddress('')
         loadData()
       } else {
         const data = await res.json().catch(() => ({}))
@@ -1146,6 +1276,30 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     } catch (err) {
       setMessage('Network error')
     }
+  }
+
+  const updateBranchAddress = async (branch, address) => {
+    const next = String(address || '').trim()
+    if (next === String(branch.address || '').trim()) return
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/branches/${branch.public_id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address: next || null })
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.detail || 'Could not update branch address')
+      }
+      loadData()
+    } catch (err) {
+      setMessage(err.message || 'Could not update branch')
+    }
+  }
+
+  const openBranchManagerInvite = (branch) => {
+    setInviteForm({ name: '', email: '', phone: '', role: 'manager', branch_public_id: branch.public_id })
+    setShowInviteModal(true)
   }
 
   const openEditCustomer = (c) => {
@@ -2435,29 +2589,39 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               <p style={styles.searchEmptyText}>No team members match "{staffSearch}".</p>
             )}
 
-            <div style={{background: '#f0fdf4', border: '1px solid #a7f3d0', borderRadius: 12, padding: '14px 16px', marginBottom: 16}}>
-              <p style={{margin: '0 0 8px 0', fontSize: 13, fontWeight: 600, color: '#0f766e'}}>
-                🏢 Branches
-              </p>
-              {branches.map(b => (
-                <div key={b.public_id} style={{display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6}}>
-                  <input
-                    defaultValue={b.name}
-                    onBlur={e => renameBranch(b, e.target.value)}
-                    style={{...styles.input, margin: 0, flex: 1, fontSize: 13, padding: '6px 10px'}}
-                  />
+            <div style={{background:'#f0fdf4',border:'1px solid #a7f3d0',borderRadius:14,padding:'16px',marginBottom:16}}>
+              <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'flex-start',flexWrap:'wrap'}}>
+                <div>
+                  <p style={{margin:0,fontSize:13,fontWeight:850,color:'#0f766e'}}>🏢 Branch Management</p>
+                  <p style={{margin:'4px 0 0',fontSize:11.5,color:'#64748b'}}>Create locations here, then assign a Manager or Cashier to each branch.</p>
                 </div>
-              ))}
-              <form onSubmit={addBranch} style={{display: 'flex', gap: 8, marginTop: 8}}>
-                <input
-                  placeholder="New branch name"
-                  value={newBranchName}
-                  onChange={e => setNewBranchName(e.target.value)}
-                  style={{...styles.input, margin: 0, flex: 1, fontSize: 13, padding: '6px 10px'}}
-                />
-                <button type="submit" disabled={savingBranch} style={{padding: '6px 12px', background: '#0d9488', color: 'white', border: 'none', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap'}}>
-                  + Add
-                </button>
+                <span style={{fontSize:10.5,fontWeight:850,color:'#047857',background:'#dcfce7',padding:'5px 8px',borderRadius:999}}>{branches.length} branch{branches.length===1?'':'es'}</span>
+              </div>
+
+              <div style={{display:'grid',gap:9,marginTop:12}}>
+                {branches.map(b => {
+                  const assigned = staff.filter(s => s.branch_id === b.id)
+                  const managers = assigned.filter(s => String(s.role || '').toLowerCase() === 'manager' && s.is_active !== false)
+                  return <div key={b.public_id} style={{background:'#fff',border:'1px solid #d1fae5',borderRadius:12,padding:11}}>
+                    <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'minmax(160px,.8fr) minmax(220px,1.2fr) auto',gap:8,alignItems:'center'}}>
+                      <input defaultValue={b.name} onBlur={e => renameBranch(b, e.target.value)} aria-label="Branch name" style={{...styles.input,margin:0,fontSize:12.5,padding:'8px 10px',fontWeight:800}} />
+                      <input defaultValue={b.address || ''} onBlur={e => updateBranchAddress(b, e.target.value)} placeholder="Branch address" aria-label="Branch address" style={{...styles.input,margin:0,fontSize:12,padding:'8px 10px'}} />
+                      <button type="button" onClick={()=>openBranchManagerInvite(b)} style={{...styles.addBtn,padding:'8px 10px',fontSize:11,whiteSpace:'nowrap'}}>+ Manager</button>
+                    </div>
+                    <div style={{display:'flex',gap:7,alignItems:'center',flexWrap:'wrap',marginTop:8,fontSize:10.5,color:'#64748b'}}>
+                      <span>{assigned.length} staff assigned</span>
+                      <span>•</span>
+                      <span style={{fontWeight:800,color:managers.length?'#047857':'#b45309'}}>{managers.length ? `Manager: ${managers.map(m=>m.name).join(', ')}` : 'No manager assigned'}</span>
+                    </div>
+                  </div>
+                })}
+                {!branches.length && <div style={{padding:13,background:'#fff',border:'1px dashed #a7f3d0',borderRadius:10,fontSize:12,color:'#64748b'}}>No branches yet. Add your first location below.</div>}
+              </div>
+
+              <form onSubmit={addBranch} style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'minmax(150px,.8fr) minmax(220px,1.2fr) auto',gap:8,marginTop:10}}>
+                <input placeholder="Branch name" value={newBranchName} onChange={e => setNewBranchName(e.target.value)} style={{...styles.input,margin:0,fontSize:12.5,padding:'8px 10px'}} required />
+                <input placeholder="Address (optional)" value={newBranchAddress} onChange={e => setNewBranchAddress(e.target.value)} style={{...styles.input,margin:0,fontSize:12.5,padding:'8px 10px'}} />
+                <button type="submit" disabled={savingBranch} style={{padding:'8px 13px',background:'#0d9488',color:'white',border:'none',borderRadius:8,fontSize:12,fontWeight:800,cursor:'pointer',whiteSpace:'nowrap'}}>{savingBranch?'Adding…':'+ Add Branch'}</button>
               </form>
             </div>
 
@@ -4356,6 +4520,11 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
       })()}
     </div>
   )
+}
+
+function OwnerDashboard(props) {
+  if (props.user?.role === 'manager') return <BranchManagerDashboard {...props} />
+  return <OwnerDashboardOwner {...props} />
 }
 
 const styles = {
