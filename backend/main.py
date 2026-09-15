@@ -33602,3 +33602,408 @@ async def admin_gift_card_print_pdf(batch_public_id: str, _: bool = Depends(requ
     safe_name = re.sub(r'[^A-Za-z0-9._-]+', '_', f"{business.get('name','Business')}_{batch.get('name','GiftCards')}_{batch_public_id}")
     return Response(content=pdf, media_type='application/pdf', headers={'Content-Disposition': f'attachment; filename="{safe_name}.pdf"'})
 
+
+# =============================================================================
+# POS COMPANION DEVICE ACTIVATION / FLOATING APK
+# Added 2026-09-16
+# =============================================================================
+
+class POSDeviceActivationCodeCreate(BaseModel):
+    provider: Literal['storehub'] = 'storehub'
+    expires_in_minutes: int = Field(default=15, ge=5, le=1440)
+    max_uses: int = Field(default=1, ge=1, le=25)
+
+
+class POSCompanionActivationPreviewRequest(BaseModel):
+    activation_code: str = Field(min_length=6, max_length=32)
+
+
+class POSCompanionActivateRequest(BaseModel):
+    activation_code: str = Field(min_length=6, max_length=32)
+    branch_public_id: str = Field(min_length=2, max_length=200)
+    external_branch_id: str = Field(min_length=1, max_length=200)
+    external_branch_name: Optional[str] = Field(default=None, max_length=200)
+    hardware_model: str = Field(default='other', min_length=2, max_length=100)
+    scanner_method: Literal['camera', 'hardware', 'external_scanner'] = 'hardware'
+    checkout_mode: Literal['direct', 'floating', 'web', 'auto'] = 'floating'
+    overlay_enabled: bool = False
+    app_version: Optional[str] = Field(default=None, max_length=50)
+
+
+class POSCompanionCustomerLookupRequest(BaseModel):
+    scan_value: str = Field(min_length=2, max_length=1000)
+
+
+def _pos_secret_hash(value: str) -> str:
+    return hashlib.sha256(str(value or '').encode('utf-8')).hexdigest()
+
+
+def _pos_parse_timestamp(value) -> Optional[datetime]:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _pos_activation_row(code: str) -> Optional[dict]:
+    code_hash = _pos_secret_hash(str(code or '').strip())
+    try:
+        rows = (
+            supabase.table('pos_device_activation_codes')
+            .select('*')
+            .eq('code_hash', code_hash)
+            .limit(1)
+            .execute()
+            .data or []
+        )
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    row = rows[0] if rows else None
+    if not row:
+        return None
+    if row.get('revoked_at'):
+        return None
+    expires_at = _pos_parse_timestamp(row.get('expires_at'))
+    if not expires_at or expires_at <= datetime.now(timezone.utc):
+        return None
+    if int(row.get('used_count') or 0) >= int(row.get('max_uses') or 1):
+        return None
+    return row
+
+
+def _pos_business_by_id(business_id: int) -> Optional[dict]:
+    try:
+        rows = supabase.table('businesses').select('*').eq('id', business_id).limit(1).execute().data or []
+        return rows[0] if rows else None
+    except Exception:
+        return None
+
+
+def _pos_companion_preview_payload(activation: dict) -> dict:
+    business = _pos_business_by_id(activation.get('business_id'))
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found for this activation code.')
+    if not business_has_plan_feature(business, 'pos_integration'):
+        raise HTTPException(status_code=403, detail='POS Integration requires the Pro plan.')
+
+    provider = activation.get('provider') or 'storehub'
+    integration = _get_pos_integration(business.get('id'), provider)
+    if not integration:
+        raise HTTPException(status_code=409, detail='Connect StoreHub in Loyalty Tree before activating a POS device.')
+
+    try:
+        branches = (
+            supabase.table('branches')
+            .select('id,public_id,name,address,is_active')
+            .eq('business_id', business.get('id'))
+            .eq('is_active', True)
+            .order('name')
+            .execute()
+            .data or []
+        )
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+
+    config = integration.get('config') if isinstance(integration.get('config'), dict) else {}
+    outlets = config.get('storehub_outlets') or []
+    if not outlets and integration.get('mode') == 'test':
+        outlets = [
+            {'id': f"test-{row.get('public_id')}", 'name': row.get('name') or row.get('public_id')}
+            for row in branches
+        ]
+
+    return {
+        'business': {
+            'id': business.get('id'),
+            'public_id': business.get('public_id'),
+            'name': business.get('name'),
+            'plan': business.get('plan'),
+        },
+        'provider': provider,
+        'integration_status': integration.get('status'),
+        'branches': branches,
+        'outlets': outlets,
+        'device_profiles': STOREHUB_DEVICE_PROFILES,
+        'default_checkout_mode': 'floating',
+    }
+
+
+def _require_pos_device(x_lt_device_token: str) -> dict:
+    token = str(x_lt_device_token or '').strip()
+    if not token:
+        raise HTTPException(status_code=401, detail='POS device token is required.')
+    token_hash = _pos_secret_hash(token)
+    try:
+        rows = (
+            supabase.table('pos_devices')
+            .select('*')
+            .eq('device_token_hash', token_hash)
+            .eq('status', 'active')
+            .limit(1)
+            .execute()
+            .data or []
+        )
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    device = rows[0] if rows else None
+    if not device:
+        raise HTTPException(status_code=401, detail='POS device token is invalid or revoked.')
+    try:
+        supabase.table('pos_devices').update({'last_seen_at': datetime.now(timezone.utc).isoformat()}).eq('id', device.get('id')).execute()
+    except Exception:
+        pass
+    return device
+
+
+def _pos_scan_customer_public_id(raw: str) -> str:
+    value = str(raw or '').strip()
+    if not value:
+        return ''
+    # Wallet / join URLs may contain a customer public id as the last path segment.
+    clean = value.split('?', 1)[0].split('#', 1)[0].rstrip('/')
+    if '/' in clean:
+        clean = clean.rsplit('/', 1)[-1]
+    if clean.lower().startswith('customer:'):
+        clean = clean.split(':', 1)[1]
+    return clean.strip()
+
+
+@app.post('/api/v1/business/{public_id}/pos/device-activation-code')
+async def create_pos_device_activation_code(
+    public_id: str,
+    req: POSDeviceActivationCodeCreate,
+    authorization: str = Header(default=''),
+):
+    business = _require_pos_pro_business(public_id, authorization)
+    integration = _get_pos_integration(business.get('id'), req.provider)
+    if not integration:
+        raise HTTPException(status_code=409, detail='Connect StoreHub before creating a device activation code.')
+
+    code = str(secrets.randbelow(900000) + 100000)
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=int(req.expires_in_minutes))
+    payload = {
+        'business_id': business.get('id'),
+        'provider': req.provider,
+        'code_hash': _pos_secret_hash(code),
+        'expires_at': expires_at.isoformat(),
+        'max_uses': int(req.max_uses),
+        'used_count': 0,
+        'metadata': {'purpose': 'pos_companion_device_activation'},
+    }
+    try:
+        row = (supabase.table('pos_device_activation_codes').insert(payload).execute().data or [None])[0]
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    return {
+        'ok': True,
+        'activation_code': code,
+        'expires_at': expires_at.isoformat(),
+        'max_uses': int(req.max_uses),
+        'activation_id': str((row or {}).get('id') or ''),
+        'message': 'Enter this one-time code in the Loyalty Tree POS Companion app.',
+    }
+
+
+@app.get('/api/v1/business/{public_id}/pos/devices')
+async def list_pos_companion_devices(public_id: str, authorization: str = Header(default='')):
+    business = _require_pos_pro_business(public_id, authorization)
+    try:
+        devices = (
+            supabase.table('pos_devices')
+            .select('*')
+            .eq('business_id', business.get('id'))
+            .order('activated_at', desc=True)
+            .execute()
+            .data or []
+        )
+        branches = supabase.table('branches').select('id,public_id,name').eq('business_id', business.get('id')).execute().data or []
+        mappings = supabase.table('pos_branch_mappings').select('*').eq('business_id', business.get('id')).execute().data or []
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    branch_map = {str(row.get('id')): row for row in branches}
+    mapping_map = {str(row.get('id')): row for row in mappings}
+    public_devices = []
+    for row in devices:
+        branch = branch_map.get(str(row.get('branch_id'))) or {}
+        mapping = mapping_map.get(str(row.get('mapping_id'))) or {}
+        public_devices.append({
+            **{k: v for k, v in row.items() if k != 'device_token_hash'},
+            'branch_public_id': branch.get('public_id'),
+            'branch_name': branch.get('name'),
+            'external_branch_id': mapping.get('external_branch_id'),
+            'external_branch_name': mapping.get('external_branch_name'),
+        })
+    return {'devices': public_devices}
+
+
+@app.post('/api/v1/pos-companion/activation-preview')
+async def pos_companion_activation_preview(req: POSCompanionActivationPreviewRequest):
+    activation = _pos_activation_row(req.activation_code)
+    if not activation:
+        raise HTTPException(status_code=401, detail='Activation code is invalid, expired, revoked, or already used.')
+    return {'ok': True, **_pos_companion_preview_payload(activation)}
+
+
+@app.post('/api/v1/pos-companion/activate')
+async def activate_pos_companion_device(req: POSCompanionActivateRequest):
+    activation = _pos_activation_row(req.activation_code)
+    if not activation:
+        raise HTTPException(status_code=401, detail='Activation code is invalid, expired, revoked, or already used.')
+    preview = _pos_companion_preview_payload(activation)
+    business = _pos_business_by_id(activation.get('business_id'))
+    integration = _get_pos_integration(business.get('id'), 'storehub')
+
+    branch = safe_get_branch(req.branch_public_id)
+    if not branch or branch.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail='Branch is not part of this business.')
+
+    known_outlets = preview.get('outlets') or []
+    known_ids = {str(row.get('id')) for row in known_outlets if isinstance(row, dict) and row.get('id') is not None}
+    if known_ids and req.external_branch_id not in known_ids:
+        raise HTTPException(status_code=400, detail='Selected StoreHub outlet is not part of the connected account.')
+
+    try:
+        mapping_rows = (
+            supabase.table('pos_branch_mappings')
+            .select('*')
+            .eq('integration_id', integration.get('id'))
+            .eq('branch_id', branch.get('id'))
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        mapping = mapping_rows[0] if mapping_rows else None
+        if mapping and str(mapping.get('external_branch_id')) != str(req.external_branch_id):
+            raise HTTPException(
+                status_code=409,
+                detail='This Loyalty Tree branch is already mapped to a different StoreHub outlet. Change the mapping from an owner-authorized setup before activating this device.',
+            )
+        external_rows = (
+            supabase.table('pos_branch_mappings')
+            .select('*')
+            .eq('integration_id', integration.get('id'))
+            .eq('external_branch_id', req.external_branch_id)
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        if external_rows and str(external_rows[0].get('branch_id')) != str(branch.get('id')):
+            raise HTTPException(status_code=409, detail='That StoreHub outlet is already mapped to another Loyalty Tree branch.')
+
+        profile = _pos_device_profile(req.hardware_model)
+        settings = (mapping or {}).get('settings') if mapping and isinstance((mapping or {}).get('settings'), dict) else {}
+        mapping_payload = {
+            'integration_id': integration.get('id'),
+            'business_id': business.get('id'),
+            'branch_id': branch.get('id'),
+            'external_branch_id': req.external_branch_id,
+            'external_branch_name': req.external_branch_name or next((str(o.get('name')) for o in known_outlets if str(o.get('id')) == req.external_branch_id), branch.get('name')),
+            'is_active': True,
+            'settings': {
+                **settings,
+                'device_model': req.hardware_model,
+                'device_label': profile.get('label') or req.hardware_model,
+                'scanner_method': req.scanner_method,
+                'checkout_mode': req.checkout_mode,
+                'effective_checkout_mode': 'companion' if req.checkout_mode in ('floating', 'web') else settings.get('effective_checkout_mode', 'pending_test'),
+            },
+        }
+        if mapping:
+            mapping = (supabase.table('pos_branch_mappings').update(mapping_payload).eq('id', mapping.get('id')).execute().data or [mapping])[0]
+        else:
+            mapping = (supabase.table('pos_branch_mappings').insert(mapping_payload).execute().data or [None])[0]
+
+        device_token = secrets.token_urlsafe(36)
+        display_name = f"{business.get('name') or 'Business'} {branch.get('name') or req.branch_public_id} POS"
+        device_payload = {
+            'business_id': business.get('id'),
+            'branch_id': branch.get('id'),
+            'integration_id': integration.get('id'),
+            'mapping_id': mapping.get('id'),
+            'provider': 'storehub',
+            'device_token_hash': _pos_secret_hash(device_token),
+            'display_name': display_name,
+            'hardware_model': req.hardware_model,
+            'scanner_method': req.scanner_method,
+            'checkout_mode': req.checkout_mode,
+            'overlay_enabled': bool(req.overlay_enabled),
+            'status': 'active',
+            'app_version': req.app_version,
+            'last_seen_at': datetime.now(timezone.utc).isoformat(),
+            'metadata': {'activation_code_id': str(activation.get('id'))},
+        }
+        device = (supabase.table('pos_devices').insert(device_payload).execute().data or [None])[0]
+        supabase.table('pos_device_activation_codes').update({
+            'used_count': int(activation.get('used_count') or 0) + 1,
+        }).eq('id', activation.get('id')).execute()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+
+    return {
+        'ok': True,
+        'device_token': device_token,
+        'device': {k: v for k, v in (device or {}).items() if k != 'device_token_hash'},
+        'business': preview.get('business'),
+        'branch': {'public_id': branch.get('public_id'), 'name': branch.get('name')},
+        'outlet': {'id': mapping.get('external_branch_id'), 'name': mapping.get('external_branch_name')},
+        'loyalty_contract': _pos_loyalty_contract(business),
+        'redemption_config': _pos_redemption_config(integration),
+        'message': 'POS device activated. Save the returned device token securely on this device.',
+    }
+
+
+@app.get('/api/v1/pos-companion/config')
+async def pos_companion_device_config(x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token')):
+    device = _require_pos_device(x_lt_device_token)
+    business = _pos_business_by_id(device.get('business_id'))
+    integration = _get_pos_integration(device.get('business_id'), device.get('provider') or 'storehub')
+    try:
+        branch_rows = supabase.table('branches').select('id,public_id,name,address').eq('id', device.get('branch_id')).limit(1).execute().data or []
+        mapping_rows = supabase.table('pos_branch_mappings').select('*').eq('id', device.get('mapping_id')).limit(1).execute().data or []
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    branch = branch_rows[0] if branch_rows else {}
+    mapping = mapping_rows[0] if mapping_rows else {}
+    return {
+        'ok': True,
+        'device': {k: v for k, v in device.items() if k != 'device_token_hash'},
+        'business': {'public_id': business.get('public_id'), 'name': business.get('name')},
+        'branch': {'public_id': branch.get('public_id'), 'name': branch.get('name')},
+        'outlet': {'id': mapping.get('external_branch_id'), 'name': mapping.get('external_branch_name')},
+        'loyalty_contract': _pos_loyalty_contract(business),
+        'redemption_config': _pos_redemption_config(integration),
+    }
+
+
+@app.post('/api/v1/pos-companion/customer/lookup')
+async def pos_companion_customer_lookup(
+    req: POSCompanionCustomerLookupRequest,
+    x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
+):
+    device = _require_pos_device(x_lt_device_token)
+    customer_public_id = _pos_scan_customer_public_id(req.scan_value)
+    customer = safe_get_customer(customer_public_id)
+    if not customer or customer.get('business_id') != device.get('business_id'):
+        raise HTTPException(status_code=404, detail='Loyalty Tree customer was not found for this business.')
+    program = safe_get_customer_program(customer, device.get('business_id')) or {}
+    return {
+        'ok': True,
+        'customer': {
+            'public_id': customer.get('public_id'),
+            'name': customer.get('name'),
+            'points_balance': int(customer.get('points_balance') or 0),
+            'program_id': program.get('id'),
+            'program_public_id': program.get('public_id'),
+            'program_name': program.get('program_name') or program.get('card_name'),
+            'card_type': program.get('card_type'),
+        },
+        'branch_id': device.get('branch_id'),
+        'message': 'Customer resolved from Loyalty Tree QR.',
+    }
