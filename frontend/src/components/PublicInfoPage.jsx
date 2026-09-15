@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import logo192 from './logo-192.png'
 import { trackEvent } from '../analytics'
+import { COUNTRY_OPTIONS, formatMoney } from './currency'
 import customerStep1Scan from '../assets/customer-step-1-scan.png'
 import customerStep2Form from '../assets/customer-step-2-form.png'
 import customerStep2WalletButtons from '../assets/customer-step-2-wallet-buttons.png'
@@ -143,6 +144,47 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
   const [pricingBranchTier, setPricingBranchTier] = useState('1')
   const [pricingBillingCycle, setPricingBillingCycle] = useState('monthly')
   const [pricingStep, setPricingStep] = useState(0)
+  const [pricingContext, setPricingContext] = useState({
+    country_code: 'PH',
+    country_name: 'Philippines',
+    currency: 'PHP',
+    symbol: '₱',
+    plans: null,
+    detected_by: 'fallback',
+  })
+
+  const loadPricingContext = async (country) => {
+    const configuredBase = (API_BASE || import.meta.env.VITE_API_BASE_URL || 'https://loyaltree-btw1.onrender.com').replace(/\/$/, '')
+    const query = country ? `?country=${encodeURIComponent(country)}` : ''
+    try {
+      const res = await fetch(`${configuredBase}/api/v1/public/pricing-context${query}`, { cache: 'no-store' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data?.detail || 'Could not load regional pricing')
+      setPricingContext(data)
+      return data
+    } catch (_) {
+      setPricingContext(context => ({ ...context, detected_by: 'fallback' }))
+      return null
+    }
+  }
+
+  useEffect(() => {
+    const requestedCountry = new URLSearchParams(window.location.search).get('country')
+    loadPricingContext(requestedCountry || undefined)
+  }, [API_BASE])
+
+  const changePricingCountry = (countryCode) => {
+    loadPricingContext(countryCode)
+    const url = new URL(window.location.href)
+    url.searchParams.set('country', countryCode)
+    window.history.replaceState(null, '', `${url.pathname}?${url.searchParams.toString()}${url.hash}`)
+  }
+
+  const regionalPriceTiers = (planKey, fallback) =>
+    pricingContext?.plans?.[planKey]?.price_tiers || fallback
+
+  const visiblePricingFeatures = (features = []) =>
+    pricingContext.country_code === 'PH' ? features : features.filter(feature => feature !== 'Gift Cards')
 
   useEffect(() => {
     setCustomerStep(0)
@@ -184,9 +226,14 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
   const applyBusiness = (placement='public_info') => {
     trackEvent(API_BASE, 'apply_business_click', {
       page_name: `Public Info - ${type}`,
-      metadata: { placement, section: type },
+      metadata: {
+        placement,
+        section: type,
+        pricing_region: pricingContext.country_code,
+        currency: pricingContext.currency,
+      },
     })
-    navigate('/signup')
+    navigate(`/signup?country=${encodeURIComponent(pricingContext.country_code || 'PH')}`)
   }
 
   const contactLoyaltyTree = (placement='public_info') => {
@@ -288,7 +335,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
     {
       key: 'starter',
       name: 'Starter',
-      prices: { '1': 350, '3': 1000, '5': 1600 },
+      prices: regionalPriceTiers('starter', { '1': 350, '3': 1000, '5': 1600 }),
       tagline: 'A complete digital loyalty system for smaller businesses getting started.',
       features: [
         'Google Wallet & Apple Wallet',
@@ -304,7 +351,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
       key: 'growth',
       name: 'Growth',
       highlight: true,
-      prices: { '1': 550, '3': 1600, '5': 2600 },
+      prices: regionalPriceTiers('growth', { '1': 550, '3': 1600, '5': 2600 }),
       tagline: 'More customer engagement and retention tools — including 2-in-1 Loyalty Cards and Gift Cards — for growing businesses.',
       features: [
         'Google Wallet & Apple Wallet',
@@ -323,8 +370,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
     {
       key: 'pro',
       name: 'Pro',
-      comingSoon: true,
-      prices: { '1': 750, '3': 2100, '5': 3600 },
+      prices: regionalPriceTiers('pro', { '1': 750, '3': 2100, '5': 3600 }),
       tagline: 'Advanced loyalty tools for businesses ready to run more complex programs.',
       features: [
         'Google Wallet & Apple Wallet',
@@ -332,6 +378,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
         'Full digital loyalty system',
         'Full loyalty card customization',
         'Analytics',
+        'POS Integration',
         'Google review prompt',
         'Birthday automated greetings',
         'Up to 3 loyalty cards in circulation',
@@ -825,6 +872,23 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
             </p>
           </div>
 
+          <div style={{display:'flex',justifyContent:'center',alignItems:'center',gap:9,flexWrap:'wrap',margin:'0 auto 14px'}}>
+            <label style={{fontSize:11,fontWeight:850,color:'#64748b'}}>Pricing region</label>
+            <select
+              value={pricingContext.country_code || 'PH'}
+              onChange={e=>changePricingCountry(e.target.value)}
+              style={{border:'1px solid #cbd5e1',background:'#fff',borderRadius:10,padding:'9px 11px',fontSize:12,fontWeight:750,color:'#334155'}}
+              aria-label="Pricing region"
+            >
+              {COUNTRY_OPTIONS.map(country => (
+                <option key={country.code} value={country.code}>{country.flag} {country.label} · {country.currency}</option>
+              ))}
+            </select>
+            <span style={{fontSize:10.5,color:'#94a3b8'}}>
+              {pricingContext.detected_by === 'selector' ? 'Selected manually' : `Detected: ${pricingContext.country_name || 'Philippines'}`}
+            </span>
+          </div>
+
           <div style={s.pricingBillingRow}>
             {Object.entries(PRICING_BILLING_TERMS).map(([key,term])=><button key={key} onClick={()=>setPricingBillingCycle(key)} style={{...s.pricingBillingBtn,...(pricingBillingCycle===key?s.pricingBillingBtnActive:{})}}>{term.label}{term.savings&&<span style={s.pricingSaveBadge}>{term.savings}</span>}</button>)}
           </div>
@@ -863,8 +927,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
 
                   {plan.prices && (
                     <div style={s.pricingPriceWrap}>
-                      <span style={s.pricingCurrency}>₱</span>
-                      <span style={s.pricingPrice}>{pricingAmount(plan.prices[pricingBranchTier], pricingBillingCycle).toLocaleString()}</span>
+                      <span style={s.pricingPrice}>{formatMoney(pricingAmount(plan.prices[pricingBranchTier], pricingBillingCycle), pricingContext.currency)}</span>
                       <span style={s.pricingUnit}>{PRICING_BILLING_TERMS[pricingBillingCycle]?.unit || '/mo'}</span>
                       {PRICING_BILLING_TERMS[pricingBillingCycle]?.note&&<span style={s.pricingAnnualNote}>{PRICING_BILLING_TERMS[pricingBillingCycle].note}</span>}
                     </div>
@@ -874,7 +937,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
                 <div style={s.pricingDivider}/>
 
                 <ul style={s.pricingFeatureList}>
-                  {plan.features.map(feature => (
+                  {visiblePricingFeatures(plan.features).map(feature => (
                     <li key={feature} style={s.pricingFeatureItem}>
                       <span style={s.pricingCheck}>✓</span>
                       <span>{feature}</span>
@@ -883,10 +946,10 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
                 </ul>
 
                 <button
-                  onClick={()=>contactLoyaltyTree('pricing_or_cta')}
+                  onClick={()=>applyBusiness(`pricing_${plan.key}`)}
                   style={plan.highlight ? s.pricingPrimaryBtn : s.pricingSecondaryBtn}
                 >
-                  {plan.comingSoon ? 'Ask About Pro' : 'Get Started'}
+                  Get Started
                 </button>
               </article>
             ))}
@@ -944,8 +1007,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
                   <h3 style={specialized?s.pricingSpecializedTitle:s.pricingPlanName}>{plan.name}</h3>
                   <p style={specialized?s.pricingSpecializedTagline:s.pricingTagline}>{plan.tagline}</p>
                   {!specialized && plan.prices && <div style={s.pricingPriceWrap}>
-                    <span style={s.pricingCurrency}>₱</span>
-                    <span style={s.pricingPrice}>{pricingAmount(plan.prices[pricingBranchTier], pricingBillingCycle).toLocaleString()}</span>
+                    <span style={s.pricingPrice}>{formatMoney(pricingAmount(plan.prices[pricingBranchTier], pricingBillingCycle), pricingContext.currency)}</span>
                     <span style={s.pricingUnit}>{PRICING_BILLING_TERMS[pricingBillingCycle]?.unit || '/mo'}</span>
                     {PRICING_BILLING_TERMS[pricingBillingCycle]?.note&&<span style={s.pricingAnnualNote}>{PRICING_BILLING_TERMS[pricingBillingCycle].note}</span>}
                   </div>}
@@ -956,15 +1018,15 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
                 </div>
 
                 <div style={specialized?s.pricingMobileSpecializedFeatures:s.pricingFeatureList}>
-                  {(specialized?plan.features.slice(0,8):plan.features).map(feature=>
+                  {(specialized?plan.features.slice(0,8):visiblePricingFeatures(plan.features)).map(feature=>
                     <div key={feature} style={specialized?s.pricingSpecializedFeature:s.pricingFeatureItem}>
                       <span style={s.pricingCheck}>✓</span><span>{feature}</span>
                     </div>
                   )}
                 </div>
 
-                <button onClick={()=>contactLoyaltyTree('pricing_or_cta')} style={specialized||plan.highlight?s.pricingPrimaryBtn:s.pricingSecondaryBtn}>
-                  {specialized?'Discuss Your System':(plan.comingSoon?'Ask About Pro':'Get Started')}
+                <button onClick={()=>specialized?contactLoyaltyTree('pricing_or_cta'):applyBusiness(`pricing_${plan.key}`)} style={specialized||plan.highlight?s.pricingPrimaryBtn:s.pricingSecondaryBtn}>
+                  {specialized?'Discuss Your System':'Get Started'}
                 </button>
 
                 <div style={s.pricingMobileDots}>
@@ -983,8 +1045,13 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
             })()}
           </div>
 
+          {pricingContext.country_code !== 'PH' && (
+            <p style={{...s.pricingNote,marginBottom:8}}>
+              International accounts are digital-first. Gift Cards and the physical QR / PR Kit are currently available only in the Philippines.
+            </p>
+          )}
           <p style={s.pricingNote}>
-            Need more than 5 branches or a custom deployment? Contact LoyaltyTree and we can discuss a specialized setup for your business.
+            Prices above are shown in {pricingContext.currency || 'PHP'} for {pricingContext.country_name || 'Philippines'}. Need more than 5 branches or a custom deployment? Contact LoyaltyTree and we can discuss a specialized setup for your business.
           </p>
         </div>
       </section>}

@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react'
+import { formatMoney } from './currency'
 
 function AnalyticsDashboard({ API_BASE, user }) {
   const [timeRange, setTimeRange] = useState('7d')
   const [analytics, setAnalytics] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [displayCurrency, setDisplayCurrency] = useState(user?.display_currency || 'PHP')
   const [branchStats, setBranchStats] = useState([])
   const [walletQueue, setWalletQueue] = useState({ jobs: [], pending: 0, failed: 0 })
   const [crmData, setCrmData] = useState({ customers: [], segments: {}, total_customers: 0 })
@@ -61,6 +63,16 @@ function AnalyticsDashboard({ API_BASE, user }) {
     const headers = { ...(options.headers || {}), 'Authorization': `Bearer ${user.token}` }
     return fetch(url, { ...options, headers })
   }
+
+  useEffect(() => {
+    if (!user?.business_slug || !user?.token) return
+    authFetch(`${API_BASE}/api/v1/business/${user.business_slug}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data?.display_currency) setDisplayCurrency(data.display_currency)
+      })
+      .catch(() => {})
+  }, [API_BASE, user?.business_slug, user?.token])
 
   const fetchExtendedAnalytics = async () => {
     if (!user?.business_slug || !user?.token) return
@@ -448,7 +460,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           <div className="an-revenue-grid" style={styles.revenueGrid}>
             <div style={styles.revenueCard}>
               <h4 style={styles.insightTitle}>{isPoints ? 'Points-Driven Revenue' : 'Stamp-Driven Revenue'}</h4>
-              <div className="an-bignumber" style={styles.bigNumber}>₱{revenue.stamp_revenue}</div>
+              <div className="an-bignumber" style={styles.bigNumber}>{formatMoney(revenue.stamp_revenue,displayCurrency)}</div>
               <p style={styles.insightDesc}>{isPoints ? 'Revenue from point-earning transactions' : 'Revenue from stamp-earning transactions'}</p>
             </div>
             <div style={styles.revenueCard}>
@@ -475,7 +487,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
             </div>
             <div style={styles.revenueCard}>
               <h4 style={styles.insightTitle}>Avg. Transaction</h4>
-              <div className="an-bignumber" style={styles.bigNumber}>₱{revenue.avg_transaction}</div>
+              <div className="an-bignumber" style={styles.bigNumber}>{formatMoney(revenue.avg_transaction,displayCurrency)}</div>
               <p style={styles.insightDesc}>{isPoints ? 'Average spend per point-earning transaction' : 'Average spend per stamp transaction'}</p>
             </div>
           </div>
