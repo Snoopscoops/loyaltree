@@ -512,7 +512,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
   const [canCreateProgram, setCanCreateProgram] = useState(false)
   const [showCreateProgram, setShowCreateProgram] = useState(false)
   const [creatingProgram, setCreatingProgram] = useState(false)
-  const [newProgram, setNewProgram] = useState({ name: '', card_type: 'stamp' })
+  const [newProgram, setNewProgram] = useState({ name: '', card_type: 'stamp', membership_employee_mode: false })
   const [subscription, setSubscription] = useState(null)
   const businessCurrency = business?.display_currency || subscription?.display_currency || 'PHP'
   const [loading, setLoading] = useState(true)
@@ -806,7 +806,11 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
       const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/programs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, card_type: newProgram.card_type || 'stamp' }),
+        body: JSON.stringify({
+          name,
+          card_type: newProgram.card_type === 'employee_membership' ? 'membership' : (newProgram.card_type || 'stamp'),
+          membership_employee_mode: newProgram.card_type === 'employee_membership' || newProgram.membership_employee_mode === true,
+        }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Could not create program')
@@ -814,7 +818,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
       if (programStorageKey && nextId) localStorage.setItem(programStorageKey, nextId)
       if (nextId) setSelectedProgramPublicId(nextId)
       setShowCreateProgram(false)
-      setNewProgram({ name: '', card_type: 'stamp' })
+      setNewProgram({ name: '', card_type: 'stamp', membership_employee_mode: false })
       setActiveTab('program')
       setPrograms(current => [...current.filter(p => p.public_id !== nextId), data])
       setMessage(`${data.program_name || name} created. Configure and publish its card.`)
@@ -2305,7 +2309,9 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                 <span style={{alignSelf:isMobile?'flex-start':'center',fontSize:10,fontWeight:850,color:'#1d4ed8',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:999,padding:'6px 9px',whiteSpace:'nowrap'}}>ALL CARDS</span>
               ) : selectedProgramSummary && (
                 <span style={{alignSelf:isMobile?'flex-start':'center',fontSize:10,fontWeight:850,color:'#0f766e',background:'#ecfdf5',border:'1px solid #a7f3d0',borderRadius:999,padding:'6px 9px',whiteSpace:'nowrap'}}>
-                  {String(selectedProgramSummary.card_type || 'stamp').replace('_',' ').toUpperCase()}{selectedProgramSummary.is_default ? ' · DEFAULT' : ''}
+                  {(selectedProgramSummary.card_type === 'membership' && selectedProgramSummary.membership_employee_mode === true
+                    ? 'EMPLOYEE MEMBERSHIP'
+                    : String(selectedProgramSummary.card_type || 'stamp').replace('_',' ').toUpperCase())}{selectedProgramSummary.is_default ? ' · DEFAULT' : ''}
                 </span>
               )}
             </div>
@@ -2339,6 +2345,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
               <option value="stamp">Stamp Card</option>
               <option value="points">Points Card</option>
               <option value="membership">Membership</option>
+              <option value="employee_membership">Employee Membership</option>
               <option value="multipass">Multi-Pass</option>
               <option value="vip">VIP / Tier</option>
               <option value="hybrid">Hybrid</option>

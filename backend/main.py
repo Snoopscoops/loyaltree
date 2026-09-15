@@ -2192,6 +2192,9 @@ class MembershipBenefitConfig(BaseModel):
 class LoyaltyProgramCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     card_type: Literal['stamp', 'points', 'multipass', 'membership', 'vip', 'hybrid'] = 'stamp'
+    # Employee Membership is still stored as card_type='membership'.
+    # This explicit flag lets Create Program persist the employee behavior immediately.
+    membership_employee_mode: bool = False
 
 
 class LoyaltyConfig(BaseModel):
@@ -3556,6 +3559,7 @@ def _program_identity_payload(program: dict, member_count: int = 0) -> dict:
         'program_name': program.get('program_name') or program.get('card_name') or 'Loyalty Program',
         'card_name': program.get('card_name'),
         'card_type': program.get('card_type') or 'stamp',
+        'membership_employee_mode': program_is_employee_membership(program),
         'is_default': bool(program.get('is_default')),
         'is_active': program.get('is_active') is not False,
         'sort_order': int(program.get('sort_order') or 0),
@@ -16510,6 +16514,9 @@ async def create_business_program(public_id: str, req: LoyaltyProgramCreate, aut
             'program_name': name,
             'card_name': name,
             'card_type': req.card_type,
+            'membership_employee_mode': bool(req.membership_employee_mode) if req.card_type == 'membership' else False,
+            'employee_attendance_enabled': False,
+            'employee_time_tracking_enabled': False,
             'is_default': len(existing) == 0,
             'is_active': True,
             'sort_order': max([int(r.get('sort_order') or 0) for r in existing] + [-1]) + 1,
@@ -29013,6 +29020,7 @@ async def public_business_join_config(public_id: str):
         'membership_price': program.get('membership_price') or 0,
         'membership_terms': program.get('membership_terms'),
         'membership_employee_mode': program_is_employee_membership(program),
+        'is_employee_membership': program_is_employee_membership(program),
         'employee_attendance_enabled': bool(program.get('employee_attendance_enabled')),
         'employee_time_tracking_enabled': bool(program.get('employee_time_tracking_enabled')),
     }

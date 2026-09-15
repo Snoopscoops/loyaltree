@@ -37,7 +37,7 @@ function CustomerJoin({ API_BASE }) {
   const [privacyConsent,setPrivacyConsent]=useState(false)
   // Legacy Employee Card records remain readable, but new employee programs now use Membership.
   const isEmployeeCard = businessInfo?.card_type === 'employee'
-  const isEmployeeMembership = businessInfo?.card_type === 'membership' && businessInfo?.membership_employee_mode === true
+  const isEmployeeMembership = businessInfo?.is_employee_membership === true || (businessInfo?.card_type === 'membership' && businessInfo?.membership_employee_mode === true)
   const isEmployeeExperience = isEmployeeCard || isEmployeeMembership
 
   const rewardSummary = (() => {

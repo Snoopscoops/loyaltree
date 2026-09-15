@@ -1020,7 +1020,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                 {[
                   ['stamp','🎟️','Stamp Card','Customers collect stamps and unlock rewards at milestones.'],
                   ['points','💎','Points Card','Customers earn points from spending and redeem them for prizes.'],
-                  ['membership','🏋️','Subscription Card','For recurring subscriptions, access plans, and included benefits.'],
+                  ['membership','🏋️','Membership Card','For customer subscriptions, access plans, and included benefits.'],
+                  ['employee_membership','🪪','Employee Membership','Employee ID + Position, employee benefits, and optional Attendance / Time In-Out.'],
                   ['hybrid','✨','Hybrid Card','Subscription + Points, Stamp Rewards, and optional Tier on one Wallet card. Enable Points, Stamps, or both.'],
                   ['vip','👑','Tier Card','Customers build tier progress and automatically move through reward levels.'],
                   ['multipass','🎫','Multi-Pass','Customers receive a fixed number of sessions or visits that count down.'],
@@ -1032,15 +1033,21 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                         return
                       }
                       setGuidedError('')
-                      update('card_type',type)
+                      if (type === 'employee_membership') {
+                        update('card_type','membership')
+                        update('membership_employee_mode',true)
+                      } else {
+                        update('card_type',type)
+                        if (type === 'membership') update('membership_employee_mode',false)
+                      }
                     }}
                     aria-disabled={type==='hybrid' && !hybridAllowed}
-                    style={{...styles.pickerCard,padding:guidedMobile?'16px 15px':'28px 24px',...(type==='hybrid'&&!hybridAllowed?{opacity:.62,cursor:'not-allowed',background:'#f8fafc'}:{}),...(form.card_type===type?{borderColor:'#0d9488',background:'#f0fdfa',boxShadow:'0 0 0 2px rgba(13,148,136,.08)'}:{})}}>
+                    style={{...styles.pickerCard,padding:guidedMobile?'16px 15px':'28px 24px',...(type==='hybrid'&&!hybridAllowed?{opacity:.62,cursor:'not-allowed',background:'#f8fafc'}:{}),...(((type==='employee_membership' && form.card_type==='membership' && form.membership_employee_mode===true) || (type==='membership' && form.card_type==='membership' && form.membership_employee_mode!==true) || (type!=='employee_membership' && type!=='membership' && form.card_type===type))?{borderColor:'#0d9488',background:'#f0fdfa',boxShadow:'0 0 0 2px rgba(13,148,136,.08)'}:{})}}>
                     <span style={styles.pickerCardIcon}>{icon}</span>
                     <span style={styles.pickerCardLabel}>{label}</span>
                     <span style={styles.pickerCardDesc}>{desc}</span>
                     {type==='hybrid'&&!hybridAllowed && <span style={styles.pickerCardBadge}>Growth</span>}
-                    {(!(type==='hybrid'&&!hybridAllowed) && form.card_type===type) && <span style={styles.pickerCardBadge}>Selected</span>}
+                    {(!(type==='hybrid'&&!hybridAllowed) && ((type==='employee_membership' && form.card_type==='membership' && form.membership_employee_mode===true) || (type==='membership' && form.card_type==='membership' && form.membership_employee_mode!==true) || (type!=='employee_membership' && type!=='membership' && form.card_type===type))) && <span style={styles.pickerCardBadge}>Selected</span>}
                   </button>
                 ))}
               </div>
@@ -1487,16 +1494,30 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
 
           <button
             type="button"
-            onClick={() => update('card_type', 'membership')}
+            onClick={() => { update('card_type', 'membership'); update('membership_employee_mode', false) }}
             style={{
               ...styles.pickerCard,
-              ...(form.card_type === 'membership' ? { borderColor: form.primary_color || '#0d9488', background: '#f0fdfa' } : {}),
+              ...(form.card_type === 'membership' && form.membership_employee_mode !== true ? { borderColor: form.primary_color || '#0d9488', background: '#f0fdfa' } : {}),
             }}
           >
             <span style={styles.pickerCardIcon}>🏋️</span>
             <span style={styles.pickerCardLabel}>Membership Card</span>
-            <span style={styles.pickerCardDesc}>For customers or employees. Supports subscriptions, benefits, access, and optional employee attendance tools.</span>
-            {form.card_type === 'membership' && <span style={styles.pickerCardBadge}>Selected</span>}
+            <span style={styles.pickerCardDesc}>Customer subscriptions, access plans, and redeemable membership benefits.</span>
+            {form.card_type === 'membership' && form.membership_employee_mode !== true && <span style={styles.pickerCardBadge}>Selected</span>}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => { update('card_type', 'membership'); update('membership_employee_mode', true) }}
+            style={{
+              ...styles.pickerCard,
+              ...(form.card_type === 'membership' && form.membership_employee_mode === true ? { borderColor: '#1d4ed8', background: '#eff6ff' } : {}),
+            }}
+          >
+            <span style={styles.pickerCardIcon}>🪪</span>
+            <span style={styles.pickerCardLabel}>Employee Membership</span>
+            <span style={styles.pickerCardDesc}>Requires Employee ID and Position, with employee benefits plus optional Attendance and Time In / Time Out.</span>
+            {form.card_type === 'membership' && form.membership_employee_mode === true && <span style={styles.pickerCardBadge}>Selected</span>}
           </button>
 
           <button
