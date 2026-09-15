@@ -132,7 +132,9 @@ CLOUDINARY_CLOUD_NAME = os.getenv('CLOUDINARY_CLOUD_NAME', 'du72linxf')
 CLOUDINARY_API_KEY = os.getenv('CLOUDINARY_API_KEY', '')
 CLOUDINARY_API_SECRET = os.getenv('CLOUDINARY_API_SECRET', '')
 CLOUDINARY_UPLOAD_PRESET = os.getenv('CLOUDINARY_UPLOAD_PRESET', 'LoyaltyTree_Images')
-SUBSCRIPTION_PERIOD_DAYS = 30  # how long a successful payment extends access for
+MONTHLY_SUBSCRIPTION_PERIOD_DAYS = 30  # existing monthly access period
+ANNUAL_BILLABLE_MONTHS = 10  # annual billing = 12 months of access for the price of 10
+SUBSCRIPTION_PERIOD_DAYS = MONTHLY_SUBSCRIPTION_PERIOD_DAYS  # backwards-compatible alias
 
 # Loyalty-card cycle dates follow Philippine local time. Database timestamps remain UTC.
 LOYALTY_TIMEZONE = ZoneInfo(os.getenv('LOYALTY_TIMEZONE', 'Asia/Manila'))
@@ -284,7 +286,7 @@ def get_announcement_cycle_start(business: dict) -> str:
         try:
             rows = (
                 supabase.table('subscription_payments')
-                .select('paid_at')
+                .select('paid_at,billing_cycle')
                 .eq('business_id', business_id)
                 .eq('status', 'paid')
                 .order('paid_at', desc=True)
@@ -295,6 +297,14 @@ def get_announcement_cycle_start(business: dict) -> str:
             if rows and rows[0].get('paid_at'):
                 parsed = _parse_ts(rows[0]['paid_at'])
                 if parsed:
+                    # Annual billing still receives the normal announcement
+                    # allowance every 30 days; paying yearly must not reduce
+                    # a 12-month entitlement to one announcement cycle.
+                    if normalize_billing_cycle(rows[0].get('billing_cycle')) == 'annual':
+                        elapsed_days = max(0, (datetime.utcnow() - parsed).days)
+                        parsed = parsed + timedelta(
+                            days=(elapsed_days // MONTHLY_SUBSCRIPTION_PERIOD_DAYS) * MONTHLY_SUBSCRIPTION_PERIOD_DAYS
+                        )
                     return parsed.isoformat()
         except Exception as e:
             # Do not take the whole dashboard down if an old database is still
@@ -418,14 +428,50 @@ def branch_price_bracket(branch_count: int) -> str:
         return '3'
     return '5'
 
-def get_price_for_plan(plan: Optional[str], branch_count: int) -> int:
-    """The actual monthly price for a plan at a given branch count, per the
-    price_tiers table. Falls back to the plan's flat price_month if a plan
-    has no price_tiers configured (shouldn't happen for the built-in plans)."""
+def normalize_billing_cycle(value: Optional[str]) -> str:
+    return 'annual' if str(value or '').strip().lower() == 'annual' else 'monthly'
+
+
+def get_price_for_plan(plan: Optional[str], branch_count: int, billing_cycle: str = 'monthly') -> int:
+    """Return the subscription price for the plan/branch package.
+
+    Monthly keeps the existing 30-day price. Annual gives one full year of
+    access for the price of 10 monthly periods (2 months free).
+    """
     features = get_plan_features(plan)
     tiers = features.get('price_tiers') or {}
     bracket = branch_price_bracket(branch_count)
-    return tiers.get(bracket, features.get('price_month', 0))
+    monthly_price = int(tiers.get(bracket, features.get('price_month', 0)) or 0)
+    if normalize_billing_cycle(billing_cycle) == 'annual':
+        return monthly_price * ANNUAL_BILLABLE_MONTHS
+    return monthly_price
+
+
+def subscription_plans_payload() -> dict:
+    """Return plan data with annual prices derived from monthly prices."""
+    payload = {}
+    for key, plan in SUBSCRIPTION_PLANS.items():
+        item = dict(plan)
+        monthly_tiers = dict(plan.get('price_tiers') or {})
+        item['price_annual'] = int(plan.get('price_month', 0) or 0) * ANNUAL_BILLABLE_MONTHS
+        item['price_tiers_annual'] = {
+            bracket: int(amount or 0) * ANNUAL_BILLABLE_MONTHS
+            for bracket, amount in monthly_tiers.items()
+        }
+        item['annual_savings_months'] = 2
+        payload[key] = item
+    return payload
+
+def subscription_expiry_from(base: datetime, billing_cycle: str) -> datetime:
+    """Return the next access expiry from an existing active expiry or now."""
+    if normalize_billing_cycle(billing_cycle) == 'annual':
+        try:
+            return base.replace(year=base.year + 1)
+        except ValueError:
+            # Feb 29 -> Feb 28 in the following non-leap year.
+            return base.replace(year=base.year + 1, month=2, day=28)
+    return base + timedelta(days=MONTHLY_SUBSCRIPTION_PERIOD_DAYS)
+
 
 def determine_plan_from_branch_count(branch_count: int) -> str:
     """Default plan suggestion when the signup form doesn't specify one
@@ -1277,12 +1323,15 @@ def _signup_dpa_sections() -> list:
     ]
 
 
-def build_signup_agreement_document(*, name: str, email: str, phone: Optional[str], address: Optional[str], contact_person: Optional[str], plan: str, branch_count: int, setup_kit_requested: bool) -> dict:
+def build_signup_agreement_document(*, name: str, email: str, phone: Optional[str], address: Optional[str], contact_person: Optional[str], plan: str, branch_count: int, billing_cycle: str, setup_kit_requested: bool) -> dict:
     plan_data = SUBSCRIPTION_PLANS.get(plan)
     if not plan_data:
         raise HTTPException(status_code=400, detail='Unknown subscription plan')
     branch_count = int(branch_count or 1)
-    price_month = int(get_price_for_plan(plan, branch_count) or 0)
+    billing_cycle = normalize_billing_cycle(billing_cycle)
+    price_month = int(get_price_for_plan(plan, branch_count, 'monthly') or 0)
+    billing_price = int(get_price_for_plan(plan, branch_count, billing_cycle) or 0)
+    billing_period_label = '12-month annual term (2 months free)' if billing_cycle == 'annual' else '30-day subscription period'
     setup_kit_amount = SETUP_KIT_PRICE_PER_BRANCH * branch_count if setup_kit_requested else 0
     sections = _signup_agreement_sections()
     dpa_sections = _signup_dpa_sections()
@@ -1305,7 +1354,9 @@ def build_signup_agreement_document(*, name: str, email: str, phone: Optional[st
         f'Primary contact: {(contact_person or "").strip()}',
         f'Plan: {plan_data.get("label", plan)}',
         f'Branches: {branch_count}',
-        f'Subscription fee: PHP {price_month} per 30-day subscription period',
+        f'Billing cycle: {"Annual" if billing_cycle == "annual" else "Monthly"}',
+        f'Subscription fee: PHP {billing_price} for the {billing_period_label}',
+        f'Monthly reference price: PHP {price_month}',
         f'Physical QR / PR Kit: {"PHP " + str(setup_kit_amount) + " one-time" if setup_kit_amount else "Not selected"}',
         f'Terms version acknowledged: {TERMS_VERSION}',
         f'Privacy Policy version acknowledged: {PRIVACY_VERSION}',
@@ -1337,6 +1388,9 @@ def build_signup_agreement_document(*, name: str, email: str, phone: Optional[st
         'dpa_sections': dpa_sections,
         'plan_label': plan_data.get('label', plan),
         'price_month': price_month,
+        'billing_cycle': billing_cycle,
+        'billing_price': billing_price,
+        'billing_period_label': billing_period_label,
         'setup_kit_amount': setup_kit_amount,
         'operator': {
             'name': LOYALTYTREE_LEGAL_NAME,
@@ -1395,6 +1449,7 @@ class SignupAgreementPreviewRequest(BaseModel):
     contact_person: Optional[str] = None
     plan: str
     branch_count: int = Field(default=1, ge=1, le=5)
+    billing_cycle: Literal['monthly', 'annual'] = 'monthly'
     setup_kit_requested: bool = False
 
 
@@ -1409,6 +1464,7 @@ class BusinessCreate(BaseModel):
     address: Optional[str] = None  # business's main address - lets super admin organize businesses by location
     branch_count: int = Field(default=1, ge=1, le=50)
     plan: Optional[str] = None  # explicit plan choice; if omitted, derived from branch_count
+    billing_cycle: Literal['monthly', 'annual'] = 'monthly'
     setup_kit_requested: bool = False
     kit_recipient_name: Optional[str] = None
     kit_contact_number: Optional[str] = None
@@ -1416,6 +1472,10 @@ class BusinessCreate(BaseModel):
     kit_delivery_instructions: Optional[str] = None
     partner_code: Optional[str] = Field(default=None, max_length=64)
     agreement: Optional[BusinessAgreementAcceptance] = None
+
+class SubscriptionCheckoutRequest(BaseModel):
+    billing_cycle: Literal['monthly', 'annual'] = 'monthly'
+
 
 class BusinessOnboardingUpdate(BaseModel):
     onboarding_step: Optional[int] = Field(default=None, ge=0, le=9)
@@ -2226,6 +2286,7 @@ class AdminLoginRequest(BaseModel):
 class AdminBusinessUpdate(BaseModel):
     status: Optional[str] = None
     plan: Optional[str] = None
+    billing_cycle: Optional[Literal['monthly', 'annual']] = None
     last_paid_at: Optional[str] = None          # 'YYYY-MM-DD' - when the business last paid
     subscription_expires_at: Optional[str] = None  # 'YYYY-MM-DD' - when access should lapse
     address: Optional[str] = None
@@ -3731,7 +3792,10 @@ def business_summary(biz: dict) -> dict:
         "announcement_limit_adjustment": biz.get("announcement_limit_adjustment") or 0,
         "announcements_per_month_effective": get_effective_announcement_limit(biz),
         "branch_count": branch_count,
-        "price_month": get_price_for_plan(plan, branch_count),
+        "billing_cycle": normalize_billing_cycle(biz.get("billing_cycle")),
+        "price_month": get_price_for_plan(plan, branch_count, 'monthly'),
+        "price_annual": get_price_for_plan(plan, branch_count, 'annual'),
+        "price_current": get_price_for_plan(plan, branch_count, normalize_billing_cycle(biz.get("billing_cycle"))),
         "business_type": biz.get("business_type", "other"),
         "address": biz.get("address"),
         "logo_url": biz.get("logo_url"),
@@ -9178,6 +9242,7 @@ async def signup_agreement_preview(req: SignupAgreementPreviewRequest):
         contact_person=req.contact_person,
         plan=req.plan,
         branch_count=req.branch_count,
+        billing_cycle=req.billing_cycle,
         setup_kit_requested=req.setup_kit_requested,
     )
     return {k: v for k, v in doc.items() if k != 'snapshot'}
@@ -9226,10 +9291,12 @@ async def register(biz: BusinessCreate, request: Request):
         plan = biz.plan
     else:
         plan = determine_plan_from_branch_count(biz.branch_count)
-    price_month = get_price_for_plan(plan, biz.branch_count)
+    price_month = get_price_for_plan(plan, biz.branch_count, 'monthly')
+    billing_price = get_price_for_plan(plan, biz.branch_count, biz.billing_cycle)
     agreement_doc = build_signup_agreement_document(
         name=biz.name, email=biz.email, phone=biz.phone, address=biz.address,
         contact_person=biz.contact_person, plan=plan, branch_count=biz.branch_count,
+        billing_cycle=biz.billing_cycle,
         setup_kit_requested=bool(biz.setup_kit_requested),
     )
     if not hmac.compare_digest(str(acceptance.agreement_sha256).lower(), agreement_doc['agreement_sha256']):
@@ -9254,6 +9321,7 @@ async def register(biz: BusinessCreate, request: Request):
         'business_type': biz.business_type,
         'address': biz.address,
         'plan': plan,
+        'billing_cycle': normalize_billing_cycle(biz.billing_cycle),
         # Self-serve businesses remain pending until PayMongo confirms the
         # first subscription payment. The payment webhook promotes PENDING
         # accounts to ACTIVE and sets the normal subscription expiry date.
@@ -9308,6 +9376,8 @@ async def register(biz: BusinessCreate, request: Request):
             'selected_plan': plan,
             'branch_count': int(biz.branch_count),
             'agreed_monthly_price': int(price_month or 0),
+            'selected_billing_cycle': normalize_billing_cycle(biz.billing_cycle),
+            'agreed_billing_price': int(billing_price or 0),
             'setup_kit_requested': bool(biz.setup_kit_requested),
             'setup_kit_amount': int(agreement_doc.get('setup_kit_amount') or 0),
             'signed_at': signed_at,
@@ -9364,6 +9434,7 @@ async def register(biz: BusinessCreate, request: Request):
                 f"<li><b>Email:</b> {html_lib.escape(biz.email or '')}</li>"
                 f"<li><b>Phone:</b> {html_lib.escape(biz.phone or '')}</li>"
                 f"<li><b>Plan:</b> {SUBSCRIPTION_PLANS.get(plan, {}).get('label', plan)}</li>"
+                f"<li><b>Billing:</b> {normalize_billing_cycle(biz.billing_cycle).title()} · ₱{int(billing_price or 0):,}</li>"
                 f"<li><b>Branches:</b> {biz.branch_count}</li>"
                 f"<li><b>Status:</b> PENDING PAYMENT</li>"
                 f"</ul>"
@@ -9403,7 +9474,9 @@ async def register(biz: BusinessCreate, request: Request):
         "business_type": biz.business_type,
         "plan": plan,
         "branch_count": biz.branch_count,
+        "billing_cycle": normalize_billing_cycle(biz.billing_cycle),
         "price_month": price_month,
+        "billing_price": billing_price,
         "agreement_signed": True,
         "agreement_version": BUSINESS_AGREEMENT_VERSION,
         "agreement_sha256": agreement_doc['agreement_sha256'],
@@ -9486,11 +9559,11 @@ async def list_plans():
     """Public (no auth) - lets the signup page show accurate tier names,
     prices, and branch limits without hardcoding a copy that can drift
     from SUBSCRIPTION_PLANS."""
-    return SUBSCRIPTION_PLANS
+    return subscription_plans_payload()
 
 @app.get("/api/v1/admin/plans")
 async def admin_list_plans(_: bool = Depends(require_admin)):
-    return SUBSCRIPTION_PLANS
+    return subscription_plans_payload()
 
 
 def setup_kit_payload(order: dict, business: dict) -> dict:
@@ -12897,6 +12970,8 @@ async def admin_update_business(public_id: str, update: AdminBusinessUpdate, _: 
         if update.plan not in SUBSCRIPTION_PLANS:
             raise HTTPException(status_code=400, detail=f"Unknown plan '{update.plan}'. Valid plans: {list(SUBSCRIPTION_PLANS.keys())}")
         data['plan'] = update.plan
+    if update.billing_cycle is not None:
+        data['billing_cycle'] = normalize_billing_cycle(update.billing_cycle)
     if update.last_paid_at is not None:
         data['last_paid_at'] = update.last_paid_at
     if update.name is not None:
@@ -13653,7 +13728,7 @@ async def get_business_api(public_id: str):
 # the moment the webhook has landed.
 
 @app.post("/api/v1/business/{public_id}/subscription/checkout")
-async def create_subscription_checkout(public_id: str):
+async def create_subscription_checkout(public_id: str, req: Optional[SubscriptionCheckoutRequest] = None):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database not connected")
     business = safe_get_business(public_id)
@@ -13667,12 +13742,16 @@ async def create_subscription_checkout(public_id: str):
         branch_count = 1
 
     plan = business.get('plan') or 'starter'
-    subscription_price = get_price_for_plan(plan, branch_count)
+    billing_cycle = normalize_billing_cycle(
+        req.billing_cycle if req is not None else business.get('billing_cycle')
+    )
+    subscription_price = get_price_for_plan(plan, branch_count, billing_cycle)
     kit_due = bool(business.get('setup_kit_requested')) and not bool(business.get('setup_kit_paid'))
     setup_kit_price = (SETUP_KIT_PRICE_PER_BRANCH * branch_count) if kit_due else 0
     price = subscription_price + setup_kit_price
     plan_label = SUBSCRIPTION_PLANS.get(plan, {}).get('label', plan)
-    description = f"LoyaltyTree {plan_label} subscription - {business.get('name', '')}"
+    cycle_label = 'Annual' if billing_cycle == 'annual' else 'Monthly'
+    description = f"LoyaltyTree {plan_label} {cycle_label} subscription - {business.get('name', '')}"
     if kit_due:
         branch_word = 'branch' if branch_count == 1 else 'branches'
         description += f" + Sintra Board QR / PR Kit ({branch_count} {branch_word})"
@@ -13695,6 +13774,8 @@ async def create_subscription_checkout(public_id: str):
         metadata={
             'business_public_id': public_id,
             'plan': plan,
+            'billing_cycle': billing_cycle,
+            'subscription_amount': str(subscription_price),
             'setup_kit_included': 'true' if kit_due else 'false',
             'setup_kit_price_per_branch': str(SETUP_KIT_PRICE_PER_BRANCH),
             'setup_kit_branch_count': str(branch_count if kit_due else 0),
@@ -13711,6 +13792,7 @@ async def create_subscription_checkout(public_id: str):
             'amount': price,
             'plan': plan,
             'branch_count': branch_count,
+            'billing_cycle': billing_cycle,
             'status': 'pending',
             'created_at': datetime.utcnow().isoformat(),
         }).execute()
@@ -13722,8 +13804,11 @@ async def create_subscription_checkout(public_id: str):
         "status": checkout['status'],
         "qr_image_url": checkout['qr_image_url'],
         "amount": price,
+        "subscription_amount": subscription_price,
         "plan": plan,
         "plan_label": plan_label,
+        "billing_cycle": billing_cycle,
+        "billing_cycle_label": cycle_label,
         "expires_in_seconds": SUBSCRIPTION_QR_EXPIRES_SECONDS,  # LoyaltyTree payment window: 15 minutes
     }
 
@@ -13761,8 +13846,25 @@ async def get_subscription_status(public_id: str):
     except Exception:
         pass
 
+    try:
+        branch_res = supabase.table("branches").select("id", count="exact").eq("business_id", business.get("id")).execute()
+        branch_count = branch_res.count or 1
+    except Exception:
+        branch_count = 1
+    plan = business.get('plan', 'starter')
+    billing_cycle = normalize_billing_cycle(
+        business.get('billing_cycle') or (latest_payment or {}).get('billing_cycle')
+    )
+
     return {
-        "plan": business.get('plan', 'starter'),
+        "plan": plan,
+        "billing_cycle": billing_cycle,
+        "branch_count": branch_count,
+        "pricing": {
+            "monthly": get_price_for_plan(plan, branch_count, 'monthly'),
+            "annual": get_price_for_plan(plan, branch_count, 'annual'),
+            "annual_savings_months": 2,
+        },
         "last_paid_at": business.get('last_paid_at'),
         "subscription_expires_at": subscription_expires_at,
         "subscription_status": subscription_status,
@@ -13959,10 +14061,19 @@ async def paymongo_webhook(request: Request):
             return {"received": True, "duplicate": True}
         if business:
             now = datetime.utcnow()
-            new_expiry = (now + timedelta(days=SUBSCRIPTION_PERIOD_DAYS)).date().isoformat()
+            billing_cycle = normalize_billing_cycle(
+                (payment_row or {}).get('billing_cycle') or metadata.get('billing_cycle') or business.get('billing_cycle')
+            )
+
+            # Renew from the later of "now" or the current paid-through date.
+            # This prevents an early renewal from throwing away already-paid days.
+            current_expiry = _parse_ts(business.get('subscription_expires_at'))
+            expiry_base = current_expiry if current_expiry and current_expiry > now else now
+            new_expiry = subscription_expiry_from(expiry_base, billing_cycle).date().isoformat()
             business_update = {
                 "last_paid_at": now.date().isoformat(),
                 "subscription_expires_at": new_expiry,
+                "billing_cycle": billing_cycle,
             }
             if str(metadata.get('setup_kit_included', '')).lower() == 'true':
                 business_update.update({
@@ -13993,6 +14104,7 @@ async def paymongo_webhook(request: Request):
                 supabase.table("subscription_payments").update({
                     "status": "paid",
                     "paymongo_payment_id": resource.get("id"),
+                    "billing_cycle": billing_cycle,
                     "paid_at": now.isoformat(),
                 }).eq("paymongo_payment_intent_id", payment_intent_id).execute()
             except Exception as e:
@@ -14037,6 +14149,7 @@ async def paymongo_webhook(request: Request):
                         f"<li><b>Business:</b> {html_lib.escape(business.get('name', ''))}</li>"
                         f"<li><b>Amount:</b> ₱{amount_php}</li>"
                         f"<li><b>Plan:</b> {SUBSCRIPTION_PLANS.get(business.get('plan'), {}).get('label', business.get('plan'))}</li>"
+                        f"<li><b>Billing:</b> {billing_cycle.title()}</li>"
                         f"</ul>"
                     ),
                 )

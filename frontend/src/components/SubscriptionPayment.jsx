@@ -46,6 +46,7 @@ function SubscriptionPayment({
   title = 'Billing',
   subtitle = 'Keep your subscription active with a QR Ph payment.',
   successMessage = '🎉 Payment received — your subscription has been extended.',
+  initialBillingCycle,
   onPaid,
 }) {
   const [subscription, setSubscription] = useState(null)
@@ -56,17 +57,24 @@ function SubscriptionPayment({
   const [checkout, setCheckout] = useState(null) // { qr_image_url, amount, payment_intent_id, ... }
   const [secondsLeft, setSecondsLeft] = useState(0)
   const [paidJustNow, setPaidJustNow] = useState(false)
+  const [billingCycle, setBillingCycle] = useState(initialBillingCycle === 'annual' ? 'annual' : 'monthly')
   const pollRef = useRef(null)
   const countdownRef = useRef(null)
 
   const loadSubscription = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/subscription`)
-      if (res.ok) setSubscription(await res.json())
+      if (res.ok) {
+        const data = await res.json()
+        setSubscription(data)
+        if (!initialBillingCycle && data?.billing_cycle) {
+          setBillingCycle(data.billing_cycle === 'annual' ? 'annual' : 'monthly')
+        }
+      }
     } catch (e) {
       // silent - the page still works, it just won't show current status
     }
-  }, [API_BASE, businessSlug])
+  }, [API_BASE, businessSlug, initialBillingCycle])
 
   const loadHistory = useCallback(async () => {
     try {
@@ -141,6 +149,7 @@ function SubscriptionPayment({
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/subscription/checkout`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ billing_cycle: billingCycle }),
       })
       const data = await res.json()
       if (!res.ok) {
@@ -193,17 +202,43 @@ function SubscriptionPayment({
         {error && <div style={styles.error}>{error}</div>}
 
         {!checkout ? (
-          <button
-            type="button"
-            onClick={handleCheckout}
-            disabled={checkingOut}
-            style={styles.button}
-          >
-            {checkingOut ? 'Preparing QR code…' : 'Pay via QR Ph'}
-          </button>
+          <>
+            <div style={styles.billingToggle}>
+              <button
+                type="button"
+                onClick={() => setBillingCycle('monthly')}
+                style={{ ...styles.billingToggleBtn, ...(billingCycle === 'monthly' ? styles.billingToggleBtnActive : {}) }}
+              >
+                Monthly
+                {subscription?.pricing?.monthly != null && <span style={styles.billingTogglePrice}>{formatMoney(subscription.pricing.monthly)}</span>}
+              </button>
+              <button
+                type="button"
+                onClick={() => setBillingCycle('annual')}
+                style={{ ...styles.billingToggleBtn, ...(billingCycle === 'annual' ? styles.billingToggleBtnActive : {}) }}
+              >
+                Annual
+                {subscription?.pricing?.annual != null && <span style={styles.billingTogglePrice}>{formatMoney(subscription.pricing.annual)}</span>}
+                <small style={styles.billingSavings}>2 months free</small>
+              </button>
+            </div>
+            <div style={styles.billingSummary}>
+              {billingCycle === 'annual'
+                ? '12 months of access for the price of 10 monthly periods.'
+                : '30 days of access per payment.'}
+            </div>
+            <button
+              type="button"
+              onClick={handleCheckout}
+              disabled={checkingOut}
+              style={styles.button}
+            >
+              {checkingOut ? 'Preparing QR code…' : `Pay ${billingCycle === 'annual' ? 'Annually' : 'Monthly'} via QR Ph`}
+            </button>
+          </>
         ) : (
           <div style={styles.qrBox}>
-            <p style={styles.qrAmount}>{formatMoney(checkout.amount)} <span style={styles.qrPlan}>· {checkout.plan_label}</span></p>
+            <p style={styles.qrAmount}>{formatMoney(checkout.amount)} <span style={styles.qrPlan}>· {checkout.plan_label} · {checkout.billing_cycle_label || (billingCycle === 'annual' ? 'Annual' : 'Monthly')}</span></p>
             {checkout.qr_image_url ? (
               <img src={checkout.qr_image_url} alt="Scan to pay via QR Ph" style={styles.qrImage} />
             ) : (
@@ -230,7 +265,7 @@ function SubscriptionPayment({
               <div key={row.public_id || row.id} style={styles.historyRow}>
                 <div>
                   <div style={styles.historyDate}>{formatDate(row.paid_at || row.created_at)}</div>
-                  <div style={styles.historyPlan}>{row.plan}</div>
+                  <div style={styles.historyPlan}>{row.plan} · {(row.billing_cycle || 'monthly')}</div>
                 </div>
                 <div style={styles.historyRight}>
                   <div style={styles.historyAmount}>{formatMoney(row.amount)}</div>
@@ -315,6 +350,47 @@ const styles = {
     borderRadius: 10,
     fontSize: 14,
     marginBottom: 16,
+  },
+  billingToggle: {
+    display: 'grid',
+    gridTemplateColumns: '1fr 1fr',
+    gap: 8,
+    marginBottom: 10,
+  },
+  billingToggleBtn: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: 2,
+    padding: '11px 10px',
+    border: '1.5px solid #e2e8f0',
+    borderRadius: 11,
+    background: '#fff',
+    color: '#64748b',
+    fontSize: 13,
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  billingToggleBtnActive: {
+    borderColor: '#0d9488',
+    background: '#f0fdfa',
+    color: '#0f766e',
+  },
+  billingTogglePrice: {
+    fontSize: 13.5,
+    fontWeight: 800,
+    color: '#0f172a',
+  },
+  billingSavings: {
+    fontSize: 10.5,
+    fontWeight: 800,
+    color: '#047857',
+  },
+  billingSummary: {
+    fontSize: 12.5,
+    color: '#64748b',
+    textAlign: 'center',
+    margin: '0 0 12px',
   },
   button: {
     width: '100%',

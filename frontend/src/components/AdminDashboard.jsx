@@ -925,8 +925,18 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                     >
                       {Object.entries(plans).map(([key, p]) => <option key={key} value={key}>{p.label}{p.price_month != null ? ` (₱${p.price_month.toLocaleString()}/mo)` : ''}</option>)}
                     </select>
-                    {b.price_month != null && (
-                      <div style={styles.rowPriceHint}>₱{b.price_month.toLocaleString()}/mo · {b.branch_count} branch{b.branch_count !== 1 ? 'es' : ''}</div>
+                    <select
+                      value={b.billing_cycle || 'monthly'}
+                      onChange={e => updateBusiness(b.public_id, { billing_cycle: e.target.value })}
+                      style={{ ...styles.planSelect, marginTop: 6 }}
+                    >
+                      <option value="monthly">Monthly billing</option>
+                      <option value="annual">Annual billing · 2 months free</option>
+                    </select>
+                    {b.price_current != null && (
+                      <div style={styles.rowPriceHint}>
+                        ₱{b.price_current.toLocaleString()}/{(b.billing_cycle || 'monthly') === 'annual' ? 'yr' : '30 days'} · {b.branch_count} branch{b.branch_count !== 1 ? 'es' : ''}
+                      </div>
                     )}
                   </td>
                   <td style={styles.td}>{b.last_paid_at ? new Date(b.last_paid_at).toLocaleDateString() : '—'}</td>

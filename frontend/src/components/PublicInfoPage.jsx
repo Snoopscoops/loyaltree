@@ -128,6 +128,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
   const [businessStep, setBusinessStep] = useState(0)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [pricingBranchTier, setPricingBranchTier] = useState('1')
+  const [pricingBillingCycle, setPricingBillingCycle] = useState('monthly')
   const [pricingStep, setPricingStep] = useState(0)
 
   useEffect(() => {
@@ -811,6 +812,11 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
             </p>
           </div>
 
+          <div style={s.pricingBillingRow}>
+            <button onClick={()=>setPricingBillingCycle('monthly')} style={{...s.pricingBillingBtn,...(pricingBillingCycle==='monthly'?s.pricingBillingBtnActive:{})}}>Monthly</button>
+            <button onClick={()=>setPricingBillingCycle('annual')} style={{...s.pricingBillingBtn,...(pricingBillingCycle==='annual'?s.pricingBillingBtnActive:{})}}>Annual <span style={s.pricingSaveBadge}>2 months free</span></button>
+          </div>
+
           <div className="overview-pricing-branches" style={s.pricingBranchRow}>
             {pricingBranches.map(branch => (
               <button
@@ -846,8 +852,9 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
                   {plan.prices && (
                     <div style={s.pricingPriceWrap}>
                       <span style={s.pricingCurrency}>₱</span>
-                      <span style={s.pricingPrice}>{plan.prices[pricingBranchTier].toLocaleString()}</span>
-                      <span style={s.pricingUnit}>/mo</span>
+                      <span style={s.pricingPrice}>{(pricingBillingCycle==='annual' ? plan.prices[pricingBranchTier] * 10 : plan.prices[pricingBranchTier]).toLocaleString()}</span>
+                      <span style={s.pricingUnit}>{pricingBillingCycle==='annual'?'/yr':'/mo'}</span>
+                      {pricingBillingCycle==='annual'&&<span style={s.pricingAnnualNote}>12 months access</span>}
                     </div>
                   )}
                 </div>
@@ -926,8 +933,9 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
                   <p style={specialized?s.pricingSpecializedTagline:s.pricingTagline}>{plan.tagline}</p>
                   {!specialized && plan.prices && <div style={s.pricingPriceWrap}>
                     <span style={s.pricingCurrency}>₱</span>
-                    <span style={s.pricingPrice}>{plan.prices[pricingBranchTier].toLocaleString()}</span>
-                    <span style={s.pricingUnit}>/mo</span>
+                    <span style={s.pricingPrice}>{(pricingBillingCycle==='annual' ? plan.prices[pricingBranchTier] * 10 : plan.prices[pricingBranchTier]).toLocaleString()}</span>
+                    <span style={s.pricingUnit}>{pricingBillingCycle==='annual'?'/yr':'/mo'}</span>
+                    {pricingBillingCycle==='annual'&&<span style={s.pricingAnnualNote}>12 months access</span>}
                   </div>}
                   {specialized && <>
                     <div style={s.pricingSpecializedBenefits}>{plan.benefits?.map(x=><span key={x} style={s.pricingSpecializedBenefit}>{x}</span>)}</div>
@@ -1151,6 +1159,10 @@ const s={
   pricingHeader:{maxWidth:720,margin:'0 auto 24px',textAlign:'center'},
   pricingTitle:{fontSize:'clamp(28px,4vw,42px)',lineHeight:1.12,fontWeight:900,color:'#0f172a',margin:'7px 0 12px'},
   pricingIntro:{fontSize:14.5,lineHeight:1.7,color:'#64748b',margin:0},
+  pricingBillingRow:{display:'flex',justifyContent:'center',gap:5,margin:'0 auto 14px',padding:4,width:'fit-content',maxWidth:'100%',borderRadius:12,background:'#f1f5f9',border:'1px solid #e2e8f0'},
+  pricingBillingBtn:{border:0,background:'transparent',color:'#64748b',padding:'9px 13px',borderRadius:9,fontSize:12,fontWeight:850,cursor:'pointer'},
+  pricingBillingBtnActive:{background:'#fff',color:'#0f766e',boxShadow:'0 2px 8px rgba(15,23,42,.08)'},
+  pricingSaveBadge:{marginLeft:5,padding:'2px 5px',borderRadius:999,background:'#dcfce7',color:'#047857',fontSize:9,fontWeight:900,whiteSpace:'nowrap'},
   pricingBranchRow:{display:'flex',justifyContent:'center',gap:8,flexWrap:'wrap',marginBottom:24},
   pricingBranchBtn:{border:'1px solid #cbd5e1',background:'#fff',color:'#475569',padding:'9px 14px',borderRadius:999,fontWeight:800,fontSize:12,cursor:'pointer'},
   pricingBranchBtnActive:{background:'#0d9488',borderColor:'#0d9488',color:'#fff',boxShadow:'0 7px 18px rgba(13,148,136,.18)'},
@@ -1166,6 +1178,7 @@ const s={
   pricingCurrency:{fontSize:16,fontWeight:850,color:'#0f766e'},
   pricingPrice:{fontSize:38,fontWeight:950,color:'#0f172a',letterSpacing:'-.045em'},
   pricingUnit:{fontSize:11,color:'#64748b',fontWeight:700},
+  pricingAnnualNote:{display:'block',width:'100%',fontSize:10,color:'#047857',fontWeight:800,marginTop:3},
   pricingCardTop:{display:'flex',flexDirection:'column'},
   pricingDivider:{height:1,background:'#eef2f7',margin:'4px 0 16px'},
   pricingDiscuss:{fontSize:21,fontWeight:900,color:'#0f766e',margin:'5px 0 10px'},
