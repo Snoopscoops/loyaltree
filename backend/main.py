@@ -107,6 +107,7 @@ SUPER_ADMIN_PASSWORD = os.getenv('SUPER_ADMIN_PASSWORD', '')
 # incoming webhook calls really came from PayMongo, and is different from
 # the API secret key above.
 PAYMONGO_SECRET_KEY = os.getenv('PAYMONGO_SECRET_KEY', '')
+PAYMONGO_PUBLIC_KEY = os.getenv('PAYMONGO_PUBLIC_KEY', '')
 PAYMONGO_WEBHOOK_SECRET = os.getenv('PAYMONGO_WEBHOOK_SECRET', '')
 # Order Ahead uses a dedicated TEST credential so beta checkout can never
 # accidentally collect live money even if subscription billing uses a live key.
@@ -249,6 +250,79 @@ SUBSCRIPTION_PLANS = {
     },
 }
 
+
+# Localized market-test pricing. Country/region is stored on each business so
+# logged-in pricing never changes merely because the owner travels or uses a VPN.
+# Multi-branch package ratios follow the existing PH package discounts.
+PRICING_REGIONS = {
+    'PH': {'country_name':'Philippines','currency':'PHP','symbol':'₱','locale':'en-PH','plans':{'starter':350,'growth':550,'pro':750}},
+    'SG': {'country_name':'Singapore','currency':'SGD','symbol':'S$','locale':'en-SG','plans':{'starter':19,'growth':39,'pro':69}},
+    'GB': {'country_name':'United Kingdom','currency':'GBP','symbol':'£','locale':'en-GB','plans':{'starter':15,'growth':35,'pro':59}},
+    'HK': {'country_name':'Hong Kong','currency':'HKD','symbol':'HK$','locale':'en-HK','plans':{'starter':99,'growth':199,'pro':349}},
+    'US': {'country_name':'United States','currency':'USD','symbol':'$','locale':'en-US','plans':{'starter':15,'growth':39,'pro':69}},
+    'NZ': {'country_name':'New Zealand','currency':'NZD','symbol':'NZ$','locale':'en-NZ','plans':{'starter':19,'growth':39,'pro':69}},
+    'MY': {'country_name':'Malaysia','currency':'MYR','symbol':'RM','locale':'en-MY','plans':{'starter':49,'growth':79,'pro':119}},
+}
+SUPPORTED_PRICING_COUNTRIES = set(PRICING_REGIONS)
+COUNTRY_ALIASES = {'UK':'GB','GBR':'GB','USA':'US','SGP':'SG','HKG':'HK','NZL':'NZ','MYS':'MY','PHL':'PH'}
+# Snapshot conversion rates are only for internal normalized reporting and for
+# a PHP-settlement fallback. Override in Render without a deploy using
+# LOYALTYTREE_FX_TO_PHP_JSON, e.g. {"SGD":49.48,"GBP":84.85}.
+DEFAULT_FX_TO_PHP = {'PHP':1.0,'SGD':49.48,'GBP':84.85,'HKD':8.01,'USD':62.89,'NZD':36.31,'MYR':15.41}
+
+def _fx_to_php_map() -> dict:
+    rates = dict(DEFAULT_FX_TO_PHP)
+    raw = (os.getenv('LOYALTYTREE_FX_TO_PHP_JSON') or '').strip()
+    if raw:
+        try:
+            custom = json.loads(raw)
+            for k,v in (custom or {}).items():
+                value=float(v)
+                if value>0: rates[str(k).upper()]=value
+        except Exception as exc:
+            print(f'FX config warning: {exc}')
+    return rates
+
+def normalize_country_code(value: Optional[str]) -> str:
+    raw = str(value or '').strip().upper()
+    raw = COUNTRY_ALIASES.get(raw, raw)
+    return raw if raw in SUPPORTED_PRICING_COUNTRIES else 'PH'
+
+def pricing_region_config(country_code: Optional[str]) -> dict:
+    code = normalize_country_code(country_code)
+    return {'country_code': code, **PRICING_REGIONS[code]}
+
+def business_pricing_region(business: Optional[dict]) -> str:
+    row = business or {}
+    return normalize_country_code(row.get('pricing_region') or row.get('country_code'))
+
+def business_currency(business: Optional[dict]) -> str:
+    row = business or {}
+    explicit = str(row.get('display_currency') or '').upper().strip()
+    if explicit in DEFAULT_FX_TO_PHP: return explicit
+    return pricing_region_config(business_pricing_region(row))['currency']
+
+def price_tiers_for_region(plan: str, region: Optional[str]) -> dict:
+    code = normalize_country_code(region)
+    ph_plan = SUBSCRIPTION_PLANS.get(plan, SUBSCRIPTION_PLANS['starter'])
+    ph_base = max(1, int(ph_plan.get('price_month') or 1))
+    local_base = int(PRICING_REGIONS[code]['plans'].get(plan, ph_base))
+    tiers = {}
+    for bracket, ph_amount in (ph_plan.get('price_tiers') or {}).items():
+        tiers[str(bracket)] = max(1, int(round(local_base * (float(ph_amount) / ph_base))))
+    tiers['1'] = local_base
+    return tiers
+
+def money_text(amount, currency='PHP') -> str:
+    symbols={'PHP':'₱','SGD':'S$','GBP':'£','HKD':'HK$','USD':'$','NZD':'NZ$','MYR':'RM'}
+    value=float(amount or 0)
+    digits=0 if value.is_integer() else 2
+    return f"{symbols.get(currency,currency+' ')}{value:,.{digits}f}"
+
+def fx_to_php(amount: float, currency: str) -> tuple[float,float]:
+    rate=float(_fx_to_php_map().get(str(currency or 'PHP').upper(),1.0))
+    return round(float(amount or 0)*rate,2), rate
+
 def get_plan_features(plan: Optional[str]) -> dict:
     """Feature/limit config for a plan name, falling back to Starter for an
     unrecognized or missing plan so a bad value never silently unlocks
@@ -261,6 +335,8 @@ def business_has_plan_feature(business: dict, feature: str) -> bool:
     Hybrid and Gift Cards are Growth-tier features. Pro inherits Growth
     features. Unknown plans fall back to Starter via get_plan_features().
     """
+    if feature == 'gift_cards' and business_pricing_region(business) != 'PH':
+        return False
     return bool(get_plan_features((business or {}).get('plan')).get(feature, False))
 
 def get_effective_announcement_limit(business: dict) -> Optional[int]:
@@ -476,34 +552,30 @@ def billing_period_label(value: Optional[str]) -> str:
     return '12-month annual term (2 months free)'
 
 
-def get_price_for_plan(plan: Optional[str], branch_count: int, billing_cycle: str = 'monthly') -> int:
-    """Return the prepaid subscription price for the plan/branch package.
-
-    Three- and six-month terms are straight monthly multiples. Annual gives
-    12 months of access for the price of 10 monthly periods (2 months free).
-    """
-    features = get_plan_features(plan)
-    tiers = features.get('price_tiers') or {}
+def get_price_for_plan(plan: Optional[str], branch_count: int, billing_cycle: str = 'monthly', pricing_region: str = 'PH') -> int:
+    """Return localized prepaid subscription price for plan/branch/package."""
+    plan_key = plan if plan in SUBSCRIPTION_PLANS else 'starter'
+    tiers = price_tiers_for_region(plan_key, pricing_region)
     bracket = branch_price_bracket(branch_count)
-    monthly_price = int(tiers.get(bracket, features.get('price_month', 0)) or 0)
+    monthly_price = int(tiers.get(bracket, tiers.get('1', 0)) or 0)
     cycle = normalize_billing_cycle(billing_cycle)
     multiplier = int(BILLING_CYCLE_CONFIG[cycle]['billable_months'])
     return monthly_price * multiplier
 
 
-def subscription_plans_payload() -> dict:
-    """Return plan data with all prepaid-term prices derived from monthly pricing."""
+def subscription_plans_payload(pricing_region: str = 'PH') -> dict:
+    """Plan data localized to one pricing region, including prepaid terms."""
+    code=normalize_country_code(pricing_region)
     payload = {}
     for key, plan in SUBSCRIPTION_PLANS.items():
         item = dict(plan)
-        monthly_tiers = dict(plan.get('price_tiers') or {})
+        monthly_tiers = price_tiers_for_region(key, code)
+        item['price_month']=monthly_tiers['1']
+        item['price_tiers']=monthly_tiers
         for cycle in ('3_months', '6_months', 'annual'):
             multiplier = int(BILLING_CYCLE_CONFIG[cycle]['billable_months'])
-            item[f'price_{cycle}'] = int(plan.get('price_month', 0) or 0) * multiplier
-            item[f'price_tiers_{cycle}'] = {
-                bracket: int(amount or 0) * multiplier
-                for bracket, amount in monthly_tiers.items()
-            }
+            item[f'price_{cycle}'] = int(monthly_tiers['1']) * multiplier
+            item[f'price_tiers_{cycle}'] = {bracket:int(amount)*multiplier for bracket,amount in monthly_tiers.items()}
         item['annual_savings_months'] = 2
         payload[key] = item
     return payload
@@ -550,6 +622,15 @@ def determine_plan_from_branch_count(branch_count: int) -> str:
 def paymongo_auth_header() -> str:
     token = base64.b64encode(f"{PAYMONGO_SECRET_KEY}:".encode()).decode()
     return f"Basic {token}"
+
+def paymongo_card_configured() -> bool:
+    if not PAYMONGO_SECRET_KEY or not PAYMONGO_PUBLIC_KEY:
+        return False
+    if PAYMONGO_SECRET_KEY.startswith('sk_test_'):
+        return PAYMONGO_PUBLIC_KEY.startswith('pk_test_')
+    if PAYMONGO_SECRET_KEY.startswith('sk_live_'):
+        return PAYMONGO_PUBLIC_KEY.startswith('pk_live_')
+    return False
 
 def create_qrph_checkout(amount_php: float, description: str, billing_name: str,
                           billing_email: str, billing_phone: Optional[str],
@@ -624,6 +705,57 @@ def create_qrph_checkout(amount_php: float, description: str, billing_name: str,
         raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Could not reach PayMongo: {e}")
+
+def create_card_payment_intent(amount_php: float, description: str, metadata: dict) -> dict:
+    """Create a PHP-denominated PayMongo card Payment Intent.
+
+    Card data is intentionally NOT accepted here. The frontend uses the
+    PayMongo public key to tokenize the card and attach the Payment Method
+    directly to this intent, keeping raw PAN/CVC data off LoyaltyTree servers.
+    """
+    import httpx
+
+    if not paymongo_card_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="PayMongo card processing is not configured. Set both PAYMONGO_SECRET_KEY and PAYMONGO_PUBLIC_KEY.",
+        )
+
+    amount_centavos = int(round(float(amount_php) * 100))
+    if amount_centavos < 100:
+        raise HTTPException(status_code=400, detail="PayMongo card charge must be at least PHP 1.00.")
+
+    headers = {"Authorization": paymongo_auth_header(), "Content-Type": "application/json"}
+    try:
+        with httpx.Client(timeout=20) as client:
+            res = client.post(
+                f"{PAYMONGO_API_BASE}/payment_intents",
+                headers=headers,
+                json={"data": {"attributes": {
+                    "amount": amount_centavos,
+                    "currency": "PHP",
+                    "payment_method_allowed": ["card"],
+                    "capture_type": "automatic",
+                    "description": description[:255],
+                    "metadata": metadata,
+                }}},
+            )
+        if res.status_code >= 400:
+            raise HTTPException(status_code=502, detail=f"PayMongo error creating card payment intent: {res.text}")
+        data = res.json().get("data") or {}
+        attrs = data.get("attributes") or {}
+        return {
+            "intent_id": data.get("id"),
+            "client_key": attrs.get("client_key"),
+            "status": attrs.get("status"),
+            # Safe to expose: PayMongo public keys are specifically intended for browser use.
+            "public_key": PAYMONGO_PUBLIC_KEY,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach PayMongo: {exc}")
+
 
 def verify_paymongo_signature(raw_body: bytes, signature_header: str) -> bool:
     """Verifies the Paymongo-Signature header per PayMongo's webhook spec:
@@ -972,13 +1104,16 @@ def build_subscription_reminder_email(business: dict, days_left: Optional[int], 
     differently depending on whether access has already lapsed."""
     name = html_lib.escape(business.get('name', 'there'))
     login_html = f'<p><a href="{html_lib.escape(FRONTEND_URL)}/login" style="color:#0d9488;font-weight:600;">Log in to pay now</a></p>' if FRONTEND_URL else ''
+    currency = business_currency(business)
+    price_text = money_text(price, currency)
+    payment_copy = 'via QR Ph' if business_pricing_region(business) == 'PH' else 'from your dashboard Billing tab once international card billing is enabled for your account'
 
     if days_left is not None and days_left < 0:
         subject = f"Your LoyaltyTree subscription has expired"
         body = (
             f"<p>Hi {name},</p>"
             f"<p>Your LoyaltyTree subscription expired on {html_lib.escape(str(business.get('subscription_expires_at') or ''))}. "
-            f"Pay ₱{price:,.2f} via QR Ph from your dashboard's Billing tab to restore access.</p>"
+            f"Pay {price_text} {payment_copy} to restore access.</p>"
             f"{login_html}"
         )
     else:
@@ -987,7 +1122,7 @@ def build_subscription_reminder_email(business: dict, days_left: Optional[int], 
             f"<p>Hi {name},</p>"
             f"<p>Your subscription expires on {html_lib.escape(str(business.get('subscription_expires_at') or ''))} "
             f"({days_left} day{'s' if days_left != 1 else ''} from now). "
-            f"Pay ₱{price:,.2f} via QR Ph from your dashboard's Billing tab to avoid any interruption.</p>"
+            f"Pay {price_text} {payment_copy} to avoid any interruption.</p>"
             f"{login_html}"
         )
     return subject, body
@@ -1377,16 +1512,19 @@ def _signup_dpa_sections() -> list:
     ]
 
 
-def build_signup_agreement_document(*, name: str, email: str, phone: Optional[str], address: Optional[str], contact_person: Optional[str], plan: str, branch_count: int, billing_cycle: str, setup_kit_requested: bool) -> dict:
+def build_signup_agreement_document(*, name: str, email: str, phone: Optional[str], address: Optional[str], contact_person: Optional[str], plan: str, branch_count: int, billing_cycle: str, setup_kit_requested: bool, pricing_region: str = 'PH') -> dict:
     plan_data = SUBSCRIPTION_PLANS.get(plan)
     if not plan_data:
         raise HTTPException(status_code=400, detail='Unknown subscription plan')
     branch_count = int(branch_count or 1)
     billing_cycle = normalize_billing_cycle(billing_cycle)
-    price_month = int(get_price_for_plan(plan, branch_count, 'monthly') or 0)
-    billing_price = int(get_price_for_plan(plan, branch_count, billing_cycle) or 0)
+    pricing_region = normalize_country_code(pricing_region)
+    region_cfg = pricing_region_config(pricing_region)
+    currency = region_cfg['currency']
+    price_month = int(get_price_for_plan(plan, branch_count, 'monthly', pricing_region) or 0)
+    billing_price = int(get_price_for_plan(plan, branch_count, billing_cycle, pricing_region) or 0)
     billing_period_label_text = billing_period_label(billing_cycle)
-    setup_kit_amount = SETUP_KIT_PRICE_PER_BRANCH * branch_count if setup_kit_requested else 0
+    setup_kit_amount = SETUP_KIT_PRICE_PER_BRANCH * branch_count if (setup_kit_requested and pricing_region == 'PH') else 0
     sections = _signup_agreement_sections()
     dpa_sections = _signup_dpa_sections()
     title = 'Business Subscription & Data Processing Agreement'
@@ -1409,8 +1547,9 @@ def build_signup_agreement_document(*, name: str, email: str, phone: Optional[st
         f'Plan: {plan_data.get("label", plan)}',
         f'Branches: {branch_count}',
         f'Billing cycle: {billing_cycle_label(billing_cycle)}',
-        f'Subscription fee: PHP {billing_price} for the {billing_period_label_text}',
-        f'Monthly reference price: PHP {price_month}',
+        f'Pricing region: {region_cfg["country_name"]} ({pricing_region})',
+        f'Subscription fee: {currency} {billing_price} for the {billing_period_label_text}',
+        f'Monthly reference price: {currency} {price_month}',
         f'Physical QR / PR Kit: {"PHP " + str(setup_kit_amount) + " one-time" if setup_kit_amount else "Not selected"}',
         f'Terms version acknowledged: {TERMS_VERSION}',
         f'Privacy Policy version acknowledged: {PRIVACY_VERSION}',
@@ -1444,6 +1583,10 @@ def build_signup_agreement_document(*, name: str, email: str, phone: Optional[st
         'price_month': price_month,
         'billing_cycle': billing_cycle,
         'billing_price': billing_price,
+        'pricing_region': pricing_region,
+        'country_code': pricing_region,
+        'currency': currency,
+        'currency_symbol': region_cfg['symbol'],
         'billing_period_label': billing_period_label_text,
         'setup_kit_amount': setup_kit_amount,
         'operator': {
@@ -1504,6 +1647,8 @@ class SignupAgreementPreviewRequest(BaseModel):
     plan: str
     branch_count: int = Field(default=1, ge=1, le=5)
     billing_cycle: Literal['monthly', '3_months', '6_months', 'annual'] = 'monthly'
+    country_code: str = Field(default='PH', min_length=2, max_length=3)
+    pricing_region: Optional[str] = Field(default=None, min_length=2, max_length=3)
     setup_kit_requested: bool = False
 
 
@@ -1519,6 +1664,8 @@ class BusinessCreate(BaseModel):
     branch_count: int = Field(default=1, ge=1, le=50)
     plan: Optional[str] = None  # explicit plan choice; if omitted, derived from branch_count
     billing_cycle: Literal['monthly', '3_months', '6_months', 'annual'] = 'monthly'
+    country_code: str = Field(default='PH', min_length=2, max_length=3)
+    pricing_region: Optional[str] = Field(default=None, min_length=2, max_length=3)
     setup_kit_requested: bool = False
     kit_recipient_name: Optional[str] = None
     kit_contact_number: Optional[str] = None
@@ -1529,6 +1676,7 @@ class BusinessCreate(BaseModel):
 
 class SubscriptionCheckoutRequest(BaseModel):
     billing_cycle: Literal['monthly', '3_months', '6_months', 'annual'] = 'monthly'
+    payment_method: Optional[Literal['qrph', 'card']] = None
 
 
 class BusinessOnboardingUpdate(BaseModel):
@@ -2509,6 +2657,8 @@ class AdminBusinessCreate(BaseModel):
     address: Optional[str] = None
     branch_count: int = Field(default=1, ge=1, le=50)
     plan: Optional[str] = None
+    country_code: str = Field(default='PH', min_length=2, max_length=3)
+    pricing_region: Optional[str] = Field(default=None, min_length=2, max_length=3)
 
 class RedeemRequest(BaseModel):
     customer_public_id: str
@@ -3847,11 +3997,14 @@ def business_summary(biz: dict) -> dict:
         "announcements_per_month_effective": get_effective_announcement_limit(biz),
         "branch_count": branch_count,
         "billing_cycle": normalize_billing_cycle(biz.get("billing_cycle")),
-        "price_month": get_price_for_plan(plan, branch_count, 'monthly'),
-        "price_3_months": get_price_for_plan(plan, branch_count, '3_months'),
-        "price_6_months": get_price_for_plan(plan, branch_count, '6_months'),
-        "price_annual": get_price_for_plan(plan, branch_count, 'annual'),
-        "price_current": get_price_for_plan(plan, branch_count, normalize_billing_cycle(biz.get("billing_cycle"))),
+        "country_code": business_pricing_region(biz),
+        "pricing_region": business_pricing_region(biz),
+        "currency": business_currency(biz),
+        "price_month": get_price_for_plan(plan, branch_count, 'monthly', business_pricing_region(biz)),
+        "price_3_months": get_price_for_plan(plan, branch_count, '3_months', business_pricing_region(biz)),
+        "price_6_months": get_price_for_plan(plan, branch_count, '6_months', business_pricing_region(biz)),
+        "price_annual": get_price_for_plan(plan, branch_count, 'annual', business_pricing_region(biz)),
+        "price_current": get_price_for_plan(plan, branch_count, normalize_billing_cycle(biz.get("billing_cycle")), business_pricing_region(biz)),
         "business_type": biz.get("business_type", "other"),
         "address": biz.get("address"),
         "logo_url": biz.get("logo_url"),
@@ -4863,7 +5016,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         if earned <= 0 or pesos <= 0:
             return 'Ask in-store how to earn points'
         point_word = 'point' if earned == 1 else 'points'
-        return f'₱{_fmt_number(pesos)} = {_fmt_number(earned)} {point_word}'
+        return f'{pricing_region_config(business_pricing_region(business)).get("symbol") or business_currency(business)}{_fmt_number(pesos)} = {_fmt_number(earned)} {point_word}'
 
     def _tier_earning_rule():
         if tier_stamps_enabled(program):
@@ -4876,7 +5029,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         if earned <= 0 or pesos <= 0:
             return 'Ask in-store how to earn Tier points'
         point_word = 'point' if earned == 1 else 'points'
-        return f'₱{_fmt_number(pesos)} = {_fmt_number(earned)} Tier {point_word}'
+        return f'{pricing_region_config(business_pricing_region(business)).get("symbol") or business_currency(business)}{_fmt_number(pesos)} = {_fmt_number(earned)} Tier {point_word}'
 
     def _points_next_reward_value():
         if next_points_prize:
@@ -6600,7 +6753,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     # get_recent_activity). Sits below the per-type summary above and
     # above the static About/link/announcement rows so flipping the pass
     # reads top-to-bottom as: status summary -> history -> about.
-    activity = get_recent_activity(business.get('id'), customer.get('id'), card_type, program=program)
+    activity = get_recent_activity(business.get('id'), customer.get('id'), card_type, program=program, currency=business_currency(business))
     activity_fields = []
     if activity:
         activity_fields.append({'key': 'activity_header', 'label': 'RECENT ACTIVITY', 'value': f'Last {len(activity)} movement{"s" if len(activity) != 1 else ""}'})
@@ -8688,7 +8841,7 @@ def format_activity_date(value) -> str:
     except Exception:
         return s[:10] or s
 
-def get_recent_activity(business_id: int, customer_id: int, card_type: str, limit: int = 15, program: Optional[dict] = None) -> List[tuple]:
+def get_recent_activity(business_id: int, customer_id: int, card_type: str, limit: int = 15, program: Optional[dict] = None, currency: Optional[str] = None) -> List[tuple]:
     """Best-effort per-customer movement log, newest first, pulled from
     whichever event table this card type actually writes to (see
     log_stamp_event/log_points_event/log_multipass_event/log_vip_event/
@@ -8698,23 +8851,26 @@ def get_recent_activity(business_id: int, customer_id: int, card_type: str, limi
     sorted/trimmed to `limit`. Never raises - a query failure (including a
     table not existing yet) just means no activity section, same tradeoff
     as get_membership_summary."""
+    currency = (currency or 'PHP').upper()
+    activity_symbol = next((cfg.get('symbol') for cfg in PRICING_REGIONS.values() if cfg.get('currency') == currency), currency + ' ')
+
     # Hybrid merges reward activity, membership activity, and (when enabled)
     # the independent Tier engine into one chronological history.
     if card_type == 'hybrid':
         reward_entries = []
         if hybrid_points_enabled(program):
             reward_entries += get_recent_activity(
-                business_id, customer_id, 'points', limit=limit, program=program
+                business_id, customer_id, 'points', limit=limit, program=program, currency=currency
             )
         if hybrid_stamps_enabled(program):
             reward_entries += get_recent_activity(
-                business_id, customer_id, 'stamp', limit=limit, program=program
+                business_id, customer_id, 'stamp', limit=limit, program=program, currency=currency
             )
         membership_entries = get_recent_activity(
-            business_id, customer_id, 'membership', limit=limit, program=program
+            business_id, customer_id, 'membership', limit=limit, program=program, currency=currency
         )
         tier_entries = get_recent_activity(
-            business_id, customer_id, 'vip', limit=limit, program=program
+            business_id, customer_id, 'vip', limit=limit, program=program, currency=currency
         ) if hybrid_tier_enabled(program) else []
         combined = reward_entries + membership_entries + tier_entries
         combined.sort(key=lambda item: str(item[0] or ''), reverse=True)
@@ -8740,7 +8896,7 @@ def get_recent_activity(business_id: int, customer_id: int, card_type: str, limi
                 pts, amt = r.get('points_earned'), r.get('amount_spent_pesos')
                 desc = f"+{pts} pts" if pts is not None else 'Points earned'
                 if amt:
-                    desc += f" (₱{float(amt):,.0f} spent)"
+                    desc += f" ({activity_symbol}{float(amt):,.0f} spent)"
                 entries.append((r.get('created_at'), desc))
             redemptions = (supabase.table('redemption_events').select('created_at,points_spent')
                     .eq('business_id', business_id).eq('customer_id', customer_id)
@@ -8776,7 +8932,7 @@ def get_recent_activity(business_id: int, customer_id: int, card_type: str, limi
                 elif delta is not None:
                     desc = f"{'+' if delta >= 0 else ''}{delta} Tier pts"
                     if r.get('amount_spent'):
-                        desc += f" (₱{float(r['amount_spent']):,.0f})"
+                        desc += f" ({activity_symbol}{float(r['amount_spent']):,.0f})"
                 else:
                     desc = action.replace('_', ' ').capitalize() or 'Update'
                 entries.append((r.get('created_at'), desc))
@@ -9300,6 +9456,7 @@ async def signup_agreement_preview(req: SignupAgreementPreviewRequest):
         branch_count=req.branch_count,
         billing_cycle=req.billing_cycle,
         setup_kit_requested=req.setup_kit_requested,
+        pricing_region=req.pricing_region or req.country_code,
     )
     return {k: v for k, v in doc.items() if k != 'snapshot'}
 
@@ -9347,13 +9504,18 @@ async def register(biz: BusinessCreate, request: Request):
         plan = biz.plan
     else:
         plan = determine_plan_from_branch_count(biz.branch_count)
-    price_month = get_price_for_plan(plan, biz.branch_count, 'monthly')
-    billing_price = get_price_for_plan(plan, biz.branch_count, biz.billing_cycle)
+    pricing_region = normalize_country_code(biz.pricing_region or biz.country_code)
+    region_cfg = pricing_region_config(pricing_region)
+    if biz.setup_kit_requested and pricing_region != 'PH':
+        raise HTTPException(status_code=400, detail='The physical QR / PR Kit is currently available only in the Philippines.')
+    price_month = get_price_for_plan(plan, biz.branch_count, 'monthly', pricing_region)
+    billing_price = get_price_for_plan(plan, biz.branch_count, biz.billing_cycle, pricing_region)
     agreement_doc = build_signup_agreement_document(
         name=biz.name, email=biz.email, phone=biz.phone, address=biz.address,
         contact_person=biz.contact_person, plan=plan, branch_count=biz.branch_count,
         billing_cycle=biz.billing_cycle,
         setup_kit_requested=bool(biz.setup_kit_requested),
+        pricing_region=pricing_region,
     )
     if not hmac.compare_digest(str(acceptance.agreement_sha256).lower(), agreement_doc['agreement_sha256']):
         raise HTTPException(status_code=409, detail='Agreement details changed. Please review the updated agreement before signing.')
@@ -9378,6 +9540,9 @@ async def register(biz: BusinessCreate, request: Request):
         'address': biz.address,
         'plan': plan,
         'billing_cycle': normalize_billing_cycle(biz.billing_cycle),
+        'country_code': pricing_region,
+        'pricing_region': pricing_region,
+        'display_currency': region_cfg['currency'],
         # Self-serve businesses remain pending until PayMongo confirms the
         # first subscription payment. The payment webhook promotes PENDING
         # accounts to ACTIVE and sets the normal subscription expiry date.
@@ -9434,6 +9599,8 @@ async def register(biz: BusinessCreate, request: Request):
             'agreed_monthly_price': int(price_month or 0),
             'selected_billing_cycle': normalize_billing_cycle(biz.billing_cycle),
             'agreed_billing_price': int(billing_price or 0),
+            'agreed_currency': region_cfg['currency'],
+            'pricing_region': pricing_region,
             'setup_kit_requested': bool(biz.setup_kit_requested),
             'setup_kit_amount': int(agreement_doc.get('setup_kit_amount') or 0),
             'signed_at': signed_at,
@@ -9490,7 +9657,7 @@ async def register(biz: BusinessCreate, request: Request):
                 f"<li><b>Email:</b> {html_lib.escape(biz.email or '')}</li>"
                 f"<li><b>Phone:</b> {html_lib.escape(biz.phone or '')}</li>"
                 f"<li><b>Plan:</b> {SUBSCRIPTION_PLANS.get(plan, {}).get('label', plan)}</li>"
-                f"<li><b>Billing:</b> {billing_cycle_label(biz.billing_cycle)} · ₱{int(billing_price or 0):,}</li>"
+                f"<li><b>Billing:</b> {billing_cycle_label(biz.billing_cycle)} · {html_lib.escape(money_text(billing_price or 0, region_cfg['currency']))}</li>"
                 f"<li><b>Branches:</b> {biz.branch_count}</li>"
                 f"<li><b>Status:</b> PENDING PAYMENT</li>"
                 f"</ul>"
@@ -9612,10 +9779,60 @@ async def admin_me(_: bool = Depends(require_admin)):
 
 @app.get("/api/v1/plans")
 async def list_plans():
-    """Public (no auth) - lets the signup page show accurate tier names,
-    prices, and branch limits without hardcoding a copy that can drift
-    from SUBSCRIPTION_PLANS."""
-    return subscription_plans_payload()
+    """Legacy/default public pricing endpoint. Philippines remains the fallback."""
+    return subscription_plans_payload('PH')
+
+@app.get("/api/v1/public/pricing-context")
+async def public_pricing_context(request: Request, country: Optional[str] = Query(default=None)):
+    """Resolve a supported pricing region for public visitors.
+
+    An explicit country selector wins. Otherwise prefer trusted hosting/CDN geo
+    headers and finally the existing best-effort IP geo lookup. Unsupported or
+    unknown locations fall back to PH. The selected region is only a display /
+    signup hint; the resulting business row locks its pricing_region at signup.
+    """
+    selected = None
+    source = 'fallback'
+    if country:
+        raw = str(country).strip().upper()
+        normalized = COUNTRY_ALIASES.get(raw, raw)
+        if normalized in SUPPORTED_PRICING_COUNTRIES:
+            selected = normalized
+            source = 'selector'
+
+    if not selected:
+        header_geo = _analytics_header_geo(dict(request.headers))
+        header_country = str(header_geo.get('country_code') or '').strip().upper()
+        header_country = COUNTRY_ALIASES.get(header_country, header_country)
+        if header_country in SUPPORTED_PRICING_COUNTRIES:
+            selected = header_country
+            source = 'edge_geo'
+        else:
+            ip = _security_client_ip(request)
+            if ip:
+                try:
+                    geo = await asyncio.to_thread(_analytics_geo_for_ip, ip, header_geo)
+                    geo_country = str((geo or {}).get('country_code') or '').strip().upper()
+                    geo_country = COUNTRY_ALIASES.get(geo_country, geo_country)
+                    if geo_country in SUPPORTED_PRICING_COUNTRIES:
+                        selected = geo_country
+                        source = 'ip_geo'
+                except Exception as exc:
+                    print(f'PRICING GEO warning: {exc}')
+
+    code = selected or 'PH'
+    cfg = pricing_region_config(code)
+    return {
+        **cfg,
+        'pricing_region': code,
+        'plans': subscription_plans_payload(code),
+        'setup_kit_available': code == 'PH',
+        'detected_by': source,
+        'supported_countries': [
+            {'country_code': k, 'country_name': v['country_name'], 'currency': v['currency'], 'symbol': v['symbol']}
+            for k, v in PRICING_REGIONS.items()
+        ],
+    }
 
 @app.get("/api/v1/admin/plans")
 async def admin_list_plans(_: bool = Depends(require_admin)):
@@ -10278,6 +10495,33 @@ async def admin_overview(_: bool = Depends(require_admin)):
         except Exception:
             pass
 
+        # Multi-currency subscription view: preserve native MRR by currency and
+        # provide a PHP-normalized estimate for founder reporting only. Never
+        # add SGD/GBP/etc directly without conversion.
+        currency_mrr = defaultdict(float)
+        normalized_mrr_php = 0.0
+        branch_counts = defaultdict(int)
+        try:
+            all_branches = supabase.table('branches').select('business_id').execute().data or []
+            for row in all_branches:
+                if row.get('business_id') is not None:
+                    branch_counts[row.get('business_id')] += 1
+        except Exception:
+            pass
+        for b in businesses:
+            if str(b.get('status') or '').upper() != 'ACTIVE':
+                continue
+            count = branch_counts.get(b.get('id')) or 1
+            region = business_pricing_region(b)
+            currency = business_currency(b)
+            cycle = normalize_billing_cycle(b.get('billing_cycle'))
+            billed_amount = get_price_for_plan(b.get('plan'), count, cycle, region)
+            access_months = max(1, int(BILLING_CYCLE_CONFIG[cycle]['access_months']))
+            monthly_equivalent = float(billed_amount) / access_months
+            currency_mrr[currency] += monthly_equivalent
+            php_value, _ = fx_to_php(monthly_equivalent, currency)
+            normalized_mrr_php += php_value
+
         return {
             "total_businesses": len(businesses),
             "total_customers": customers_res.count or 0,
@@ -10293,6 +10537,9 @@ async def admin_overview(_: bool = Depends(require_admin)):
             "card_type_breakdown": card_type_breakdown,
             "status_breakdown": status_breakdown,
             "plan_breakdown": plan_breakdown,
+            "mrr_by_currency": [{"currency": k, "amount": round(v,2)} for k,v in sorted(currency_mrr.items())],
+            "normalized_mrr_php_estimate": round(normalized_mrr_php,2),
+            "fx_rates_to_php": _fx_to_php_map(),
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load overview: {str(e)}")
@@ -10343,6 +10590,8 @@ async def admin_create_business(biz: AdminBusinessCreate, _: bool = Depends(requ
     else:
         plan = determine_plan_from_branch_count(biz.branch_count)
 
+    pricing_region = normalize_country_code(biz.pricing_region or biz.country_code)
+    region_cfg = pricing_region_config(pricing_region)
     business_data = {
         'public_id': public_id,
         'name': biz.name,
@@ -10352,6 +10601,9 @@ async def admin_create_business(biz: AdminBusinessCreate, _: bool = Depends(requ
         'business_type': biz.business_type,
         'address': biz.address,
         'plan': plan,
+        'country_code': pricing_region,
+        'pricing_region': pricing_region,
+        'display_currency': region_cfg['currency'],
         'status': 'ACTIVE',
         'subscription_expires_at': (datetime.utcnow() + timedelta(days=SUBSCRIPTION_PERIOD_DAYS)).date().isoformat(),
         'created_at': datetime.utcnow().isoformat(),
@@ -10391,6 +10643,8 @@ async def admin_create_business(biz: AdminBusinessCreate, _: bool = Depends(requ
         "email": biz.email,
         "business_type": biz.business_type,
         "plan": plan,
+        "country_code": pricing_region,
+        "currency": region_cfg['currency'],
     }
 
 @app.get("/api/v1/admin/businesses/{public_id}")
@@ -11050,6 +11304,9 @@ def _oa_effective_payment_provider(business: dict) -> tuple[str, dict]:
             **_oa_payment_config_public(business, {'provider': provider}),
             'legacy_fallback': True,
         }
+
+    if provider == 'paymongo' and business_currency(business) != 'PHP':
+        return 'mock', {**cfg, 'effective_provider':'mock', 'international_processor_required':True}
 
     if provider == 'paymongo':
         if cfg.get('paymongo_mode') != 'test':
@@ -12312,6 +12569,7 @@ def _oa_order_public_payload(order: dict, customer: Optional[dict] = None, branc
         'status': order.get('status'),
         'payment_status': order.get('payment_status'),
         'payment_mode': order.get('payment_mode'),
+        'currency': order.get('currency') or 'PHP',
         'payment_reference_created': bool(order.get('paymongo_payment_intent_id')),
         'pickup_type': order.get('pickup_type'),
         'pickup_at': order.get('pickup_at'),
@@ -12381,7 +12639,6 @@ async def customer_create_order_ahead_order(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f'Could not load pickup settings: {friendly_db_error(e)}')
     payment_mode, payment_config = _oa_effective_payment_provider(business)
-
     pickup_dt = _oa_validate_pickup_for_order(settings, hours, payload.pickup_type, payload.pickup_at, business.get('id'), branch.get('id'))
     lines, subtotal = _oa_price_cart(business, branch, payload.items)
     note = (payload.customer_note or '').strip()[:500] or None
@@ -12394,6 +12651,7 @@ async def customer_create_order_ahead_order(
         'status': 'new',
         'payment_status': 'pending',
         'payment_mode': payment_mode,
+        'currency': business_currency(business),
         'pickup_type': payload.pickup_type,
         'pickup_at': pickup_dt.astimezone(timezone.utc).isoformat(),
         'customer_note': note,
@@ -12560,6 +12818,7 @@ async def customer_order_ahead_payment_status(
     return {
         'payment_status': order.get('payment_status'),
         'payment_mode': order.get('payment_mode'),
+        'currency': order.get('currency') or 'PHP',
         'order': _oa_order_public_payload(order, customer, branch, items),
     }
 
@@ -13801,43 +14060,78 @@ async def create_subscription_checkout(public_id: str, req: Optional[Subscriptio
     billing_cycle = normalize_billing_cycle(
         req.billing_cycle if req is not None else business.get('billing_cycle')
     )
-    subscription_price = get_price_for_plan(plan, branch_count, billing_cycle)
-    kit_due = bool(business.get('setup_kit_requested')) and not bool(business.get('setup_kit_paid'))
+    pricing_region = business_pricing_region(business)
+    display_currency = business_currency(business)
+    subscription_price = get_price_for_plan(plan, branch_count, billing_cycle, pricing_region)
+
+    # Physical PR/QR kits remain Philippines-only. Existing PH businesses can
+    # still settle a requested kit together with the subscription.
+    kit_due = (
+        pricing_region == 'PH'
+        and bool(business.get('setup_kit_requested'))
+        and not bool(business.get('setup_kit_paid'))
+    )
     setup_kit_price = (SETUP_KIT_PRICE_PER_BRANCH * branch_count) if kit_due else 0
-    price = subscription_price + setup_kit_price
+    display_total = subscription_price + setup_kit_price
+    processor_amount_php, fx_rate_snapshot = fx_to_php(display_total, display_currency)
+
+    requested_method = (req.payment_method if req is not None else None)
+    if pricing_region == 'PH':
+        payment_method = requested_method if requested_method in ('qrph', 'card') else 'qrph'
+    else:
+        # International PayMongo V1: foreign-issued Visa/Mastercard. PayMongo
+        # Payment Intents are PHP-denominated, so LoyaltyTree discloses the exact
+        # PHP processor charge while continuing to show the fixed local market
+        # price everywhere else.
+        payment_method = 'card'
+
     plan_label = SUBSCRIPTION_PLANS.get(plan, {}).get('label', plan)
     cycle_label = billing_cycle_label(billing_cycle)
     description = f"LoyaltyTree {plan_label} {cycle_label} subscription - {business.get('name', '')}"
     if kit_due:
         branch_word = 'branch' if branch_count == 1 else 'branches'
         description += f" + Sintra Board QR / PR Kit ({branch_count} {branch_word})"
-        # Keep the fulfillment order amount aligned with the checkout total even
-        # if the branch count changed after registration but before payment.
         try:
             supabase.table('setup_kit_orders').update({
                 'amount': setup_kit_price,
                 'updated_at': datetime.utcnow().isoformat(),
             }).eq('business_id', business.get('id')).eq('payment_status', 'unpaid').neq('fulfillment_status', 'cancelled').execute()
-        except Exception as e:
-            print(f"SETUP KIT ORDER amount sync warning: {e}")
+        except Exception as exc:
+            print(f"SETUP KIT ORDER amount sync warning: {exc}")
 
-    checkout = create_qrph_checkout(
-        amount_php=price,
-        description=description,
-        billing_name=business.get('name') or 'Business Owner',
-        billing_email=business.get('email') or '',
-        billing_phone=business.get('phone'),
-        metadata={
-            'business_public_id': public_id,
-            'plan': plan,
-            'billing_cycle': billing_cycle,
-            'subscription_amount': str(subscription_price),
-            'setup_kit_included': 'true' if kit_due else 'false',
-            'setup_kit_price_per_branch': str(SETUP_KIT_PRICE_PER_BRANCH),
-            'setup_kit_branch_count': str(branch_count if kit_due else 0),
-            'setup_kit_amount': str(setup_kit_price),
-        },
-    )
+    metadata = {
+        'business_public_id': public_id,
+        'plan': plan,
+        'billing_cycle': billing_cycle,
+        'pricing_region': pricing_region,
+        'display_currency': display_currency,
+        'display_amount': str(display_total),
+        'processor_currency': 'PHP',
+        'processor_amount': str(processor_amount_php),
+        'payment_method': payment_method,
+        'subscription_amount': str(subscription_price),
+        'setup_kit_included': 'true' if kit_due else 'false',
+        'setup_kit_price_per_branch': str(SETUP_KIT_PRICE_PER_BRANCH),
+        'setup_kit_branch_count': str(branch_count if kit_due else 0),
+        'setup_kit_amount': str(setup_kit_price),
+    }
+
+    if payment_method == 'qrph':
+        # PH price is already PHP, but use processor_amount_php for one source of truth.
+        checkout = create_qrph_checkout(
+            amount_php=processor_amount_php,
+            description=description,
+            billing_name=business.get('name') or 'Business Owner',
+            billing_email=business.get('email') or '',
+            billing_phone=business.get('phone'),
+            metadata=metadata,
+        )
+    else:
+        checkout = create_card_payment_intent(
+            amount_php=processor_amount_php,
+            description=description,
+            metadata=metadata,
+        )
 
     payment_public_id = generate_public_id()
     try:
@@ -13845,28 +14139,59 @@ async def create_subscription_checkout(public_id: str, req: Optional[Subscriptio
             'public_id': payment_public_id,
             'business_id': business.get('id'),
             'paymongo_payment_intent_id': checkout['intent_id'],
-            'amount': price,
+            'payment_provider': 'paymongo',
+            'payment_method': payment_method,
+            # amount remains the owner-facing/native amount for backward compatibility.
+            'amount': display_total,
+            'display_amount': display_total,
+            'display_currency': display_currency,
+            'processor_amount': processor_amount_php,
+            'processor_currency': 'PHP',
+            'fx_rate_to_php': fx_rate_snapshot,
             'plan': plan,
             'branch_count': branch_count,
             'billing_cycle': billing_cycle,
             'status': 'pending',
             'created_at': datetime.utcnow().isoformat(),
         }).execute()
-    except Exception as e:
-        print(f"SUBSCRIPTION PAYMENT LOG error: {e}")  # not fatal - metadata on the intent itself is the webhook's fallback lookup
+    except Exception as exc:
+        print(f"SUBSCRIPTION PAYMENT LOG error: {exc}")
 
-    return {
-        "payment_intent_id": checkout['intent_id'],
-        "status": checkout['status'],
-        "qr_image_url": checkout['qr_image_url'],
-        "amount": price,
-        "subscription_amount": subscription_price,
-        "plan": plan,
-        "plan_label": plan_label,
-        "billing_cycle": billing_cycle,
-        "billing_cycle_label": cycle_label,
-        "expires_in_seconds": SUBSCRIPTION_QR_EXPIRES_SECONDS,  # LoyaltyTree payment window: 15 minutes
+    payload = {
+        'payment_provider': 'paymongo',
+        'payment_method': payment_method,
+        'payment_intent_id': checkout['intent_id'],
+        'status': checkout.get('status'),
+        'amount': display_total,
+        'currency': display_currency,
+        'display_amount': display_total,
+        'display_currency': display_currency,
+        'processor_amount': processor_amount_php,
+        'processor_currency': 'PHP',
+        'fx_rate_to_php': fx_rate_snapshot,
+        'subscription_amount': subscription_price,
+        'plan': plan,
+        'plan_label': plan_label,
+        'billing_cycle': billing_cycle,
+        'billing_cycle_label': cycle_label,
+        'billing_name': business.get('name') or 'Business Owner',
+        'billing_email': business.get('email') or '',
+        'billing_phone': business.get('phone') or '',
+        'billing_country': pricing_region,
+        'native_currency_checkout': display_currency == 'PHP',
+        'fx_disclosure_required': display_currency != 'PHP',
     }
+    if payment_method == 'qrph':
+        payload.update({
+            'qr_image_url': checkout.get('qr_image_url'),
+            'expires_in_seconds': SUBSCRIPTION_QR_EXPIRES_SECONDS,
+        })
+    else:
+        payload.update({
+            'client_key': checkout.get('client_key'),
+            'paymongo_public_key': checkout.get('public_key'),
+        })
+    return payload
 
 @app.get("/api/v1/business/{public_id}/subscription")
 async def get_subscription_status(public_id: str):
@@ -13908,20 +14233,37 @@ async def get_subscription_status(public_id: str):
     except Exception:
         branch_count = 1
     plan = business.get('plan', 'starter')
+    pricing_region = business_pricing_region(business)
+    currency = business_currency(business)
     billing_cycle = normalize_billing_cycle(
         business.get('billing_cycle') or (latest_payment or {}).get('billing_cycle')
     )
 
     return {
         "plan": plan,
+        "country_code": pricing_region,
+        "pricing_region": pricing_region,
+        "currency": currency,
         "billing_cycle": billing_cycle,
         "branch_count": branch_count,
         "pricing": {
-            "monthly": get_price_for_plan(plan, branch_count, 'monthly'),
-            "3_months": get_price_for_plan(plan, branch_count, '3_months'),
-            "6_months": get_price_for_plan(plan, branch_count, '6_months'),
-            "annual": get_price_for_plan(plan, branch_count, 'annual'),
+            "monthly": get_price_for_plan(plan, branch_count, 'monthly', pricing_region),
+            "3_months": get_price_for_plan(plan, branch_count, '3_months', pricing_region),
+            "6_months": get_price_for_plan(plan, branch_count, '6_months', pricing_region),
+            "annual": get_price_for_plan(plan, branch_count, 'annual', pricing_region),
             "annual_savings_months": 2,
+        },
+        "payment_capabilities": {
+            "provider": "paymongo",
+            "available": bool(PAYMONGO_SECRET_KEY and (pricing_region == 'PH' or paymongo_card_configured())),
+            "qrph_available": bool(PAYMONGO_SECRET_KEY and pricing_region == 'PH'),
+            "card_available": paymongo_card_configured(),
+            "payment_methods": (["qrph", "card"] if pricing_region == 'PH' else ["card"]),
+            "native_currency_checkout": pricing_region == 'PH',
+            "processor_required": False,
+            "processor_currency": "PHP",
+            "fx_disclosure_required": pricing_region != 'PH',
+            "international_card": pricing_region != 'PH',
         },
         "last_paid_at": business.get('last_paid_at'),
         "subscription_expires_at": subscription_expires_at,
@@ -14117,6 +14459,29 @@ async def paymongo_webhook(request: Request):
         # new subscription/announcement cycle.
         if payment_row and str(payment_row.get('status') or '').lower() == 'paid':
             return {"received": True, "duplicate": True}
+
+        # Never extend access for a PayMongo event whose settled processor
+        # amount does not match the server-side payment attempt. This matters
+        # especially for international renewals because the displayed SGD/GBP/etc
+        # price is converted to a disclosed PHP processor amount.
+        if payment_row:
+            expected_currency = str(payment_row.get('processor_currency') or 'PHP').upper()
+            expected_centavos = int(round(float(payment_row.get('processor_amount') or 0) * 100))
+            received_centavos = int(resource_attrs.get('amount') or 0)
+            received_currency = str(resource_attrs.get('currency') or expected_currency).upper()
+            if expected_centavos <= 0 or received_centavos != expected_centavos or received_currency != expected_currency:
+                print(
+                    f"SUBSCRIPTION PAYMONGO mismatch intent={payment_intent_id} "
+                    f"expected={expected_centavos} {expected_currency} received={received_centavos} {received_currency}"
+                )
+                try:
+                    supabase.table('subscription_payments').update({
+                        'status': 'failed',
+                    }).eq('paymongo_payment_intent_id', payment_intent_id).execute()
+                except Exception:
+                    pass
+                return {"received": True, "amount_mismatch": True}
+
         if business:
             now = datetime.utcnow()
             billing_cycle = normalize_billing_cycle(
@@ -14198,6 +14563,12 @@ async def paymongo_webhook(request: Request):
             if SUPER_ADMIN_EMAIL:
                 amount_centavos = resource_attrs.get("amount")
                 amount_php = f"{amount_centavos / 100:.2f}" if amount_centavos else "unknown"
+                display_amount = (payment_row or {}).get('display_amount')
+                display_currency = (payment_row or {}).get('display_currency') or business_currency(business)
+                display_line = (
+                    f"<li><b>Customer-facing price:</b> {html_lib.escape(money_text(display_amount, display_currency))}</li>"
+                    if display_amount is not None else ''
+                )
                 send_email(
                     SUPER_ADMIN_EMAIL,
                     subject=f"Payment received: {business.get('name', '')}",
@@ -14205,7 +14576,9 @@ async def paymongo_webhook(request: Request):
                         f"<p>A subscription payment just came through via PayMongo.</p>"
                         f"<ul>"
                         f"<li><b>Business:</b> {html_lib.escape(business.get('name', ''))}</li>"
-                        f"<li><b>Amount:</b> ₱{amount_php}</li>"
+                        f"{display_line}"
+                        f"<li><b>PayMongo charge:</b> ₱{amount_php}</li>"
+                        f"<li><b>Method:</b> {html_lib.escape(str((payment_row or {}).get('payment_method') or 'paymongo'))}</li>"
                         f"<li><b>Plan:</b> {SUBSCRIPTION_PLANS.get(business.get('plan'), {}).get('label', business.get('plan'))}</li>"
                         f"<li><b>Billing:</b> {billing_cycle_label(billing_cycle)}</li>"
                         f"</ul>"
@@ -19978,7 +20351,7 @@ async def storehub_test_transaction(
                 'external_receipt_number': external_tx,
                 'transaction_type': 'sale',
                 'source': 'simulator',
-                'currency': 'PHP',
+                'currency': business_currency(business),
                 'gross_amount': amount,
                 'net_amount': amount,
                 'eligible_amount': amount,
@@ -26686,6 +27059,8 @@ async def order_ahead_branch_selected(customer_public_id: str, branch_public_id:
             'paymongo_test': _oa_effective_payment_provider(business)[0] == 'paymongo',
         },
         'customer': {'name': customer.get('name') or 'Member'},
+        'currency': business_currency(business),
+        'currency_symbol': pricing_region_config(business_pricing_region(business)).get('symbol') or business_currency(business),
     }
     data_json = json.dumps(payload).replace('</', '<\\/')
     ui_json = json.dumps(ui).replace('</', '<\\/')
@@ -26704,6 +27079,7 @@ async def order_ahead_branch_selected(customer_public_id: str, branch_public_id:
         '__DATA__': data_json, '__UI__': ui_json, '__BRANCH_PICKER_URL__': html_lib.escape(branch_picker_url),
         '__ORDER_API_BASE__': json.dumps(f"{BASE_URL}/api/v1/order-ahead/{quote(customer_public_id)}/orders"),
         '__ORDER_TOKEN__': json.dumps(token),
+        '__MONEY_ZERO__': html_lib.escape(money_text(0, business_currency(business))),
         '__CAT_RADIUS__': '999px' if ui['category_style'] == 'pills' else '8px',
         '__GRID_COLS__': 'repeat(2,minmax(0,1fr))' if ui['product_layout'] == 'image_top' else '1fr',
         '__ITEM_DISPLAY__': 'block' if ui['product_layout'] == 'image_top' else 'grid',
@@ -26716,10 +27092,10 @@ async def order_ahead_branch_selected(customer_public_id: str, branch_public_id:
 
     page = r'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>__BIZ__ · Menu</title><style>
 *{box-sizing:border-box}body{margin:0;background:__BG__;color:__TEXT__;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding-bottom:96px}button,input,select,textarea{font:inherit}button{cursor:pointer}main{max-width:560px;margin:auto;padding:18px}.banner{width:100%;height:142px;object-fit:cover;border-radius:22px;margin-bottom:14px}.head{display:flex;align-items:center;gap:12px;margin-bottom:18px}.logo{width:48px;height:48px;border-radius:14px;object-fit:cover;border:1px solid #e2e8f0}.headcopy{min-width:0;flex:1}h1{font-size:21px;margin:0}.branchline{font-size:12px;color:__MUTED__;margin-top:3px;display:flex;gap:7px;align-items:center;flex-wrap:wrap}.changebranch{color:__PRIMARY__;text-decoration:none;font-weight:800}.cats{display:flex;gap:8px;overflow:auto;padding:2px 0 12px;scrollbar-width:none;position:sticky;top:0;background:__BG__;z-index:5}.cat{white-space:nowrap;border:0;background:__SURFACE__;color:__TEXT__;padding:9px 12px;border-radius:__CAT_RADIUS__;font-weight:750}.cat.on{background:__PRIMARY__;color:#fff}.grid{display:grid;grid-template-columns:__GRID_COLS__;gap:12px}.item{background:__SURFACE__;border:__CARD_BORDER__;border-radius:__CARD_RADIUS__;box-shadow:__CARD_SHADOW__;overflow:hidden;display:__ITEM_DISPLAY__;grid-template-columns:__ITEM_COLS__}.photo{width:100%;height:__PHOTO_HEIGHT__;object-fit:cover;background:#f1f5f9}.info{padding:12px;min-width:0}.name{font-weight:800;font-size:14px}.desc{font-size:11.5px;color:__MUTED__;margin-top:4px;line-height:1.35}.row{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-top:10px}.price{font-weight:850}.add{border:0;background:__PRIMARY__;color:#fff;border-radius:999px;min-width:31px;height:31px;padding:0 11px;font-weight:850}.sold{opacity:.52}.sold .add{background:#94a3b8}.empty{padding:28px;text-align:center;color:__MUTED__;background:__SURFACE__;border-radius:18px}.cartbar{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);width:min(524px,calc(100% - 28px));background:__PRIMARY__;color:#fff;border:0;border-radius:18px;padding:14px 16px;display:none;justify-content:space-between;box-shadow:0 14px 35px rgba(15,23,42,.22);font-weight:850;z-index:20}.cartbar.show{display:flex}.cartbar.inline{position:relative;left:auto;bottom:auto;transform:none;margin:0 auto 18px;width:min(524px,calc(100% - 36px))}.sheet{border:0;border-radius:24px 24px 0 0;padding:0;width:min(560px,100%);max-width:560px;margin:auto 0 0;max-height:92vh;color:__TEXT__;background:__SURFACE__}.sheet::backdrop{background:rgba(15,23,42,.48)}.sheetbox{padding:18px;max-height:92vh;overflow:auto}.sheethead{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.close{border:0;background:#f1f5f9;color:#475569;border-radius:999px;width:32px;height:32px;font-weight:900}.muted{color:__MUTED__;font-size:11.5px;line-height:1.4}.group{margin-top:18px}.group h3{font-size:13px;margin:0 0 4px}.opt{display:flex;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid #eef2f7}.opt input{margin-right:7px}.error{display:none;color:#b91c1c;background:#fef2f2;padding:9px 10px;border-radius:10px;font-size:11px;margin-top:8px}.error.show{display:block}.qty{display:flex;align-items:center;justify-content:space-between;background:#f8fafc;border-radius:14px;padding:10px 12px;margin-top:16px}.qtyctrl{display:flex;align-items:center;gap:12px}.qbtn{border:1px solid #cbd5e1;background:#fff;border-radius:999px;width:32px;height:32px;font-size:18px}.primary{width:100%;border:0;border-radius:14px;padding:13px;background:__PRIMARY__;color:#fff;font-weight:850;margin-top:16px}.secondary{width:100%;border:1px solid #cbd5e1;border-radius:14px;padding:12px;background:#fff;color:#334155;font-weight:800;margin-top:8px}.cartrow{padding:13px 0;border-bottom:1px solid #e2e8f0}.carttop{display:flex;justify-content:space-between;gap:12px}.cartname{font-weight:850}.mods{font-size:11px;color:__MUTED__;margin-top:4px;line-height:1.45}.cartactions{display:flex;gap:8px;align-items:center;margin-top:9px}.mini{border:1px solid #cbd5e1;background:#fff;border-radius:9px;padding:6px 8px;font-size:11px;font-weight:750;color:#475569}.cartsummary{display:flex;justify-content:space-between;font-weight:900;font-size:17px;padding-top:15px}.pickupbox{background:#f8fafc;border:1px solid #e2e8f0;border-radius:16px;padding:13px;margin-top:14px}.picktabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}.picktab{border:1px solid #cbd5e1;background:#fff;color:#475569;border-radius:12px;padding:10px;font-weight:800}.picktab.on{background:__PRIMARY__;border-color:__PRIMARY__;color:#fff}.picktab:disabled{opacity:.45;cursor:not-allowed}.field{width:100%;border:1px solid #cbd5e1;border-radius:12px;background:#fff;color:#0f172a;padding:11px;margin-top:8px}.notice{font-size:11.5px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:10px;margin-top:10px}.review{background:#f8fafc;border-radius:14px;padding:12px;margin-top:14px}.reviewline{display:flex;justify-content:space-between;gap:10px;padding:5px 0;font-size:12px}.reviewline.total{font-size:15px;font-weight:900;border-top:1px solid #e2e8f0;margin-top:5px;padding-top:10px}.nextnote{display:none;text-align:center;background:#ecfdf5;color:#047857;border-radius:12px;padding:11px;margin-top:10px;font-size:12px;font-weight:750}.nextnote.show{display:block}.paymentbox{display:none;background:#f8fafc;border:1px solid #e2e8f0;border-radius:16px;padding:14px;margin-top:14px}.paymentbox.show{display:block}.paymentamount{font-size:24px;font-weight:900;margin:8px 0}.successbox{display:none;text-align:center;padding:22px 10px}.successbox.show{display:block}.successicon{width:54px;height:54px;border-radius:999px;background:#dcfce7;color:#15803d;display:grid;place-items:center;font-size:28px;font-weight:900;margin:0 auto 12px}.ordercode{font-size:20px;font-weight:900;margin:7px 0}.busy{opacity:.6;pointer-events:none}@media(max-width:420px){.grid{grid-template-columns:1fr}.item{display:grid;grid-template-columns:92px 1fr}.photo{height:92px}.picktabs{grid-template-columns:1fr}}
-</style></head><body><main>__BANNER__<div class="head"><img class="logo" src="__LOGO__"><div class="headcopy"><h1>__MENU_HEADING__</h1><div class="branchline"><span>__BIZ__ · __BRANCH__</span><a class="changebranch" href="__BRANCH_PICKER_URL__">Change branch</a></div></div></div><div id="cats" class="cats"></div><div id="grid" class="grid"></div></main><button id="cartbar" class="cartbar" type="button" onclick="openCart()"><span id="cartcount">0 items</span><span id="carttotal">₱0.00 · View Cart</span></button>
+</style></head><body><main>__BANNER__<div class="head"><img class="logo" src="__LOGO__"><div class="headcopy"><h1>__MENU_HEADING__</h1><div class="branchline"><span>__BIZ__ · __BRANCH__</span><a class="changebranch" href="__BRANCH_PICKER_URL__">Change branch</a></div></div></div><div id="cats" class="cats"></div><div id="grid" class="grid"></div></main><button id="cartbar" class="cartbar" type="button" onclick="openCart()"><span id="cartcount">0 items</span><span id="carttotal">__MONEY_ZERO__ · View Cart</span></button>
 <dialog id="itemDlg" class="sheet"><div id="itemModal" class="sheetbox"></div></dialog>
-<dialog id="cartDlg" class="sheet"><div class="sheetbox"><div class="sheethead"><div><h2 style="margin:0">Your cart</h2><div class="muted">__BRANCH__ pickup</div></div><button class="close" onclick="cartDlg.close()">×</button></div><div id="cartRows"></div><div class="cartsummary"><span>Subtotal</span><span id="cartSheetTotal">₱0.00</span></div><button class="primary" onclick="openCheckout()">Choose Pickup Time</button><button class="secondary" onclick="cartDlg.close()">Add more items</button></div></dialog>
-<dialog id="checkoutDlg" class="sheet"><div class="sheetbox"><div id="checkoutFlow"><div class="sheethead"><div><h2 style="margin:0">Pickup & checkout</h2><div class="muted">Review your order before payment.</div></div><button class="close" onclick="closeCheckoutSafe()">×</button></div><div id="pickupArea"></div><label style="display:block;font-size:12px;font-weight:800;margin-top:14px">Order note<textarea id="customerNote" class="field" rows="3" maxlength="500" placeholder="Optional note for the business"></textarea></label><div id="checkoutReview" class="review"></div><div id="checkoutError" class="error"></div><button id="continuePaymentBtn" class="primary" onclick="continueToPayment()">Continue to Payment →</button><button id="backCartBtn" class="secondary" onclick="checkoutDlg.close();openCart()">Back to cart</button><div id="paymentBox" class="paymentbox"><div id="paymentModeLabel" class="muted"></div><div id="paymentAmount" class="paymentamount">₱0.00</div><div id="paymentOrderNo" style="font-weight:800"></div><div id="paymentHoldNote" class="muted" style="margin-top:6px;font-size:11.5px"></div><div id="paymongoArea" style="display:none;text-align:center;margin-top:12px"><img id="paymongoQr" alt="PayMongo QR Ph payment code" style="width:min(280px,86%);border-radius:14px;border:1px solid #e2e8f0;background:#fff;padding:8px"><div class="muted" style="margin-top:8px;font-size:11.5px">TEST MODE: Do not scan this QR using a real bank or e-wallet app.</div><a id="paymongoTestLink" class="primary" target="_blank" rel="noopener" style="display:none;text-decoration:none;margin-top:10px">Simulate PayMongo Test Payment</a><div id="paymongoStatus" class="muted" style="margin-top:10px;font-weight:750">Waiting for PayMongo TEST payment confirmation…</div><button id="checkPaymentBtn" class="secondary" type="button" onclick="checkPayMongoPaymentStatus()">Check payment status</button></div><button id="confirmTestPaymentBtn" class="primary" onclick="confirmTestPayment()">Confirm Test Payment</button><button id="paymentBackBtn" class="secondary" onclick="cancelPendingPaymentView()">Back</button></div></div><div id="orderSuccess" class="successbox"><div class="successicon">✓</div><h2 style="margin:0">Order received</h2><div id="successOrderNo" class="ordercode"></div><div id="successPickup" class="muted" style="font-size:13px"></div><div class="nextnote show" style="margin-top:15px">The business can now move your order through Preparing → Ready → Completed.</div><button class="primary" onclick="dismissRecentOrder()">Done</button></div></div></dialog>
+<dialog id="cartDlg" class="sheet"><div class="sheetbox"><div class="sheethead"><div><h2 style="margin:0">Your cart</h2><div class="muted">__BRANCH__ pickup</div></div><button class="close" onclick="cartDlg.close()">×</button></div><div id="cartRows"></div><div class="cartsummary"><span>Subtotal</span><span id="cartSheetTotal">__MONEY_ZERO__</span></div><button class="primary" onclick="openCheckout()">Choose Pickup Time</button><button class="secondary" onclick="cartDlg.close()">Add more items</button></div></dialog>
+<dialog id="checkoutDlg" class="sheet"><div class="sheetbox"><div id="checkoutFlow"><div class="sheethead"><div><h2 style="margin:0">Pickup & checkout</h2><div class="muted">Review your order before payment.</div></div><button class="close" onclick="closeCheckoutSafe()">×</button></div><div id="pickupArea"></div><label style="display:block;font-size:12px;font-weight:800;margin-top:14px">Order note<textarea id="customerNote" class="field" rows="3" maxlength="500" placeholder="Optional note for the business"></textarea></label><div id="checkoutReview" class="review"></div><div id="checkoutError" class="error"></div><button id="continuePaymentBtn" class="primary" onclick="continueToPayment()">Continue to Payment →</button><button id="backCartBtn" class="secondary" onclick="checkoutDlg.close();openCart()">Back to cart</button><div id="paymentBox" class="paymentbox"><div id="paymentModeLabel" class="muted"></div><div id="paymentAmount" class="paymentamount">__MONEY_ZERO__</div><div id="paymentOrderNo" style="font-weight:800"></div><div id="paymentHoldNote" class="muted" style="margin-top:6px;font-size:11.5px"></div><div id="paymongoArea" style="display:none;text-align:center;margin-top:12px"><img id="paymongoQr" alt="PayMongo QR Ph payment code" style="width:min(280px,86%);border-radius:14px;border:1px solid #e2e8f0;background:#fff;padding:8px"><div class="muted" style="margin-top:8px;font-size:11.5px">TEST MODE: Do not scan this QR using a real bank or e-wallet app.</div><a id="paymongoTestLink" class="primary" target="_blank" rel="noopener" style="display:none;text-decoration:none;margin-top:10px">Simulate PayMongo Test Payment</a><div id="paymongoStatus" class="muted" style="margin-top:10px;font-weight:750">Waiting for PayMongo TEST payment confirmation…</div><button id="checkPaymentBtn" class="secondary" type="button" onclick="checkPayMongoPaymentStatus()">Check payment status</button></div><button id="confirmTestPaymentBtn" class="primary" onclick="confirmTestPayment()">Confirm Test Payment</button><button id="paymentBackBtn" class="secondary" onclick="cancelPendingPaymentView()">Back</button></div></div><div id="orderSuccess" class="successbox"><div class="successicon">✓</div><h2 style="margin:0">Order received</h2><div id="successOrderNo" class="ordercode"></div><div id="successPickup" class="muted" style="font-size:13px"></div><div class="nextnote show" style="margin-top:15px">The business can now move your order through Preparing → Ready → Completed.</div><button class="primary" onclick="dismissRecentOrder()">Done</button></div></div></dialog>
 <script>
 const DATA=__DATA__; const UI=__UI__; const ORDER_API_BASE=__ORDER_API_BASE__; const ORDER_TOKEN=__ORDER_TOKEN__; let active='all'; let editIndex=null; let itemQty=1; let pickupType=null; let selectedSlot=''; let selectedDate=''; let selectedHour=''; let selectedMinute=''; let pendingOrder=null; let paymentPollTimer=null;
 const cartKey='lt_oa_cart_'+DATA.branch.public_id; const pendingKey='lt_oa_pending_'+DATA.branch.public_id; const recentOrderKey='lt_oa_recent_order_'+DATA.branch.public_id; let cart=[]; try{cart=JSON.parse(sessionStorage.getItem(cartKey)||'[]');if(!Array.isArray(cart))cart=[]}catch(e){cart=[]}
@@ -26730,25 +27106,25 @@ function updatePendingStoredOrder(order){const saved=readStored(pendingKey);if(!
 function saveRecentOrder(order){if(!order?.public_id)return;sessionStorage.setItem(recentOrderKey,JSON.stringify({branch_public_id:DATA.branch.public_id,order,saved_at:new Date().toISOString()}))}
 function clearRecentOrder(){sessionStorage.removeItem(recentOrderKey)}
 const itemDlg=document.getElementById('itemDlg'),cartDlg=document.getElementById('cartDlg'),checkoutDlg=document.getElementById('checkoutDlg');
-const peso=n=>'₱'+Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+const money=n=>(DATA.currency_symbol||DATA.currency||'')+Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
 const esc=s=>String(s||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 function saveCart(){sessionStorage.setItem(cartKey,JSON.stringify(cart));updateCartBar()}
 function drawCats(){const arr=[{public_id:'all',name:'All'},...DATA.categories];document.getElementById('cats').innerHTML=arr.map(c=>`<button class="cat ${active===c.public_id?'on':''}" onclick="active='${c.public_id}';drawCats();drawItems()">${esc(c.name)}</button>`).join('')}
 function addLabel(){return UI.add_button_style==='text'?'Add':UI.add_button_style==='filled'?'+ Add':'+'}
-function drawItems(){const xs=DATA.items.filter(i=>active==='all'||i.category_public_id===active);document.getElementById('grid').innerHTML=xs.length?xs.map(i=>{const ok=i.is_available!==false&&i.branch_available!==false;return `<div class="item ${ok?'':'sold'}">${i.image_url?`<img class="photo" src="${esc(i.image_url)}" alt="">`:`<div class="photo"></div>`}<div class="info"><div class="name">${esc(i.name)}</div>${UI.show_product_description&&i.description?`<div class="desc">${esc(i.description)}</div>`:''}<div class="row"><span class="price">${peso(i.base_price)}</span><button class="add" ${ok?'':'disabled'} onclick="openItem('${i.public_id}')">${ok?addLabel():'Sold out'}</button></div></div></div>`}).join(''):'<div class="empty">No menu items in this category yet.</div>'}
+function drawItems(){const xs=DATA.items.filter(i=>active==='all'||i.category_public_id===active);document.getElementById('grid').innerHTML=xs.length?xs.map(i=>{const ok=i.is_available!==false&&i.branch_available!==false;return `<div class="item ${ok?'':'sold'}">${i.image_url?`<img class="photo" src="${esc(i.image_url)}" alt="">`:`<div class="photo"></div>`}<div class="info"><div class="name">${esc(i.name)}</div>${UI.show_product_description&&i.description?`<div class="desc">${esc(i.description)}</div>`:''}<div class="row"><span class="price">${money(i.base_price)}</span><button class="add" ${ok?'':'disabled'} onclick="openItem('${i.public_id}')">${ok?addLabel():'Sold out'}</button></div></div></div>`}).join(''):'<div class="empty">No menu items in this category yet.</div>'}
 function selectedForGroup(groupId){return [...document.querySelectorAll(`[name="g_${groupId}"]:checked`)]}
 function itemUnitTotal(item){let extra=0;document.querySelectorAll('#itemModal input:checked').forEach(el=>extra+=Number(el.dataset.price||0));return Number(item.base_price||0)+extra}
-function updateItemPrice(id){const item=DATA.items.find(x=>x.public_id===id);if(!item)return;const el=document.getElementById('itemAddPrice');if(el)el.textContent=(editIndex===null?'Add to Cart':'Save Changes')+' · '+peso(itemUnitTotal(item)*itemQty);const q=document.getElementById('itemQty');if(q)q.textContent=itemQty}
+function updateItemPrice(id){const item=DATA.items.find(x=>x.public_id===id);if(!item)return;const el=document.getElementById('itemAddPrice');if(el)el.textContent=(editIndex===null?'Add to Cart':'Save Changes')+' · '+money(itemUnitTotal(item)*itemQty);const q=document.getElementById('itemQty');if(q)q.textContent=itemQty}
 function changeItemQty(delta,id){itemQty=Math.max(1,Math.min(99,itemQty+delta));updateItemPrice(id)}
 function modifierPriority(g){const n=String(g?.name||'').trim().toLowerCase();if(n==='size')return 0;if(n==='sugar level'||n==='sugar')return 1;return 10}
-function openItem(id,index=null){const i=DATA.items.find(x=>x.public_id===id);if(!i||i.is_available===false||i.branch_available===false)return;editIndex=index;const existing=index===null?null:cart[index];itemQty=existing?.quantity||1;const selectedIds=new Set((existing?.modifiers||[]).map(m=>m.option_public_id));const groups=[...(i.modifier_groups||[])].sort((a,b)=>modifierPriority(a)-modifierPriority(b)).map(g=>{const min=Math.max(Number(g.min_selections||0),g.is_required?1:0);const max=g.selection_type==='single'?1:Number(g.max_selections||0);const guide=g.selection_type==='single'?(min?'Choose one':'Optional'):`Choose ${min?('at least '+min):'any'}${max?' · max '+max:''}`;return `<div class="group" data-group="${g.public_id}" data-min="${min}" data-max="${max||0}" data-type="${g.selection_type}"><h3>${esc(g.name)}${min?' *':''}</h3><div class="muted">${guide}</div>${(g.options||[]).map(o=>`<label class="opt"><span><input type="${g.selection_type==='multiple'?'checkbox':'radio'}" name="g_${g.public_id}" value="${o.public_id}" data-price="${o.price_delta}" data-name="${esc(o.name)}" ${selectedIds.has(o.public_id)?'checked':''} onchange="modifierChanged('${g.public_id}','${id}',this)"> ${esc(o.name)}</span><span>${Number(o.price_delta)?'+ '+peso(o.price_delta):''}</span></label>`).join('')}<div id="err_${g.public_id}" class="error"></div></div>`}).join('');document.getElementById('itemModal').innerHTML=`<div class="sheethead"><div><h2 style="margin:0">${esc(i.name)}</h2><div class="muted" style="margin-top:4px">${esc(i.description||'')}</div></div><button class="close" onclick="itemDlg.close()">×</button></div>${groups}<div class="qty"><strong>Quantity</strong><div class="qtyctrl"><button class="qbtn" onclick="changeItemQty(-1,'${id}')">−</button><strong id="itemQty">${itemQty}</strong><button class="qbtn" onclick="changeItemQty(1,'${id}')">+</button></div></div><button class="primary" id="itemAddPrice" onclick="confirmItem('${id}')"></button>${index!==null?'<button class="secondary" onclick="removeCartItem('+index+');itemDlg.close()">Remove item</button>':''}`;updateItemPrice(id);itemDlg.showModal()}
+function openItem(id,index=null){const i=DATA.items.find(x=>x.public_id===id);if(!i||i.is_available===false||i.branch_available===false)return;editIndex=index;const existing=index===null?null:cart[index];itemQty=existing?.quantity||1;const selectedIds=new Set((existing?.modifiers||[]).map(m=>m.option_public_id));const groups=[...(i.modifier_groups||[])].sort((a,b)=>modifierPriority(a)-modifierPriority(b)).map(g=>{const min=Math.max(Number(g.min_selections||0),g.is_required?1:0);const max=g.selection_type==='single'?1:Number(g.max_selections||0);const guide=g.selection_type==='single'?(min?'Choose one':'Optional'):`Choose ${min?('at least '+min):'any'}${max?' · max '+max:''}`;return `<div class="group" data-group="${g.public_id}" data-min="${min}" data-max="${max||0}" data-type="${g.selection_type}"><h3>${esc(g.name)}${min?' *':''}</h3><div class="muted">${guide}</div>${(g.options||[]).map(o=>`<label class="opt"><span><input type="${g.selection_type==='multiple'?'checkbox':'radio'}" name="g_${g.public_id}" value="${o.public_id}" data-price="${o.price_delta}" data-name="${esc(o.name)}" ${selectedIds.has(o.public_id)?'checked':''} onchange="modifierChanged('${g.public_id}','${id}',this)"> ${esc(o.name)}</span><span>${Number(o.price_delta)?'+ '+money(o.price_delta):''}</span></label>`).join('')}<div id="err_${g.public_id}" class="error"></div></div>`}).join('');document.getElementById('itemModal').innerHTML=`<div class="sheethead"><div><h2 style="margin:0">${esc(i.name)}</h2><div class="muted" style="margin-top:4px">${esc(i.description||'')}</div></div><button class="close" onclick="itemDlg.close()">×</button></div>${groups}<div class="qty"><strong>Quantity</strong><div class="qtyctrl"><button class="qbtn" onclick="changeItemQty(-1,'${id}')">−</button><strong id="itemQty">${itemQty}</strong><button class="qbtn" onclick="changeItemQty(1,'${id}')">+</button></div></div><button class="primary" id="itemAddPrice" onclick="confirmItem('${id}')"></button>${index!==null?'<button class="secondary" onclick="removeCartItem('+index+');itemDlg.close()">Remove item</button>':''}`;updateItemPrice(id);itemDlg.showModal()}
 function modifierChanged(groupId,itemId,el){const group=document.querySelector(`[data-group="${groupId}"]`);if(group&&group.dataset.type==='multiple'){const max=Number(group.dataset.max||0);const selected=selectedForGroup(groupId);if(max&&selected.length>max){el.checked=false;const e=document.getElementById('err_'+groupId);e.textContent='Choose up to '+max+'.';e.classList.add('show');setTimeout(()=>e.classList.remove('show'),1800)}}updateItemPrice(itemId)}
 function validateModifiers(item){let ok=true;for(const g of item.modifier_groups||[]){const count=selectedForGroup(g.public_id).length;const min=Math.max(Number(g.min_selections||0),g.is_required?1:0);const max=g.selection_type==='single'?1:Number(g.max_selections||0);const err=document.getElementById('err_'+g.public_id);let msg='';if(count<min)msg=min===1?'Please choose one.':'Please choose at least '+min+'.';else if(max&&count>max)msg='Choose up to '+max+'.';if(msg){ok=false;err.textContent=msg;err.classList.add('show')}else err?.classList.remove('show')}return ok}
 function confirmItem(id){const item=DATA.items.find(x=>x.public_id===id);if(!item||!validateModifiers(item))return;const modifiers=[];let extra=0;for(const g of item.modifier_groups||[]){for(const el of selectedForGroup(g.public_id)){const price=Number(el.dataset.price||0);extra+=price;modifiers.push({group_public_id:g.public_id,group_name:g.name,option_public_id:el.value,option_name:el.dataset.name||'',price_delta:price})}}const entry={item_public_id:item.public_id,name:item.name,base_price:Number(item.base_price||0),unit_price:Number(item.base_price||0)+extra,quantity:itemQty,modifiers};if(editIndex===null)cart.push(entry);else cart[editIndex]=entry;itemDlg.close();editIndex=null;saveCart()}
 function cartSubtotal(){return cart.reduce((sum,x)=>sum+Number(x.unit_price||0)*Number(x.quantity||1),0)}
-function updateCartBar(){const qty=cart.reduce((sum,x)=>sum+Number(x.quantity||1),0),bar=document.getElementById('cartbar');document.getElementById('cartcount').textContent=qty+' item'+(qty===1?'':'s');document.getElementById('carttotal').textContent=peso(cartSubtotal())+' · View Cart';bar.classList.toggle('show',qty>0);bar.classList.toggle('inline',!UI.sticky_cart)}
-function modifierText(x){return (x.modifiers||[]).map(m=>m.group_name+': '+m.option_name+(Number(m.price_delta)?' (+'+peso(m.price_delta)+')':'')).join(' · ')}
-function drawCart(){const rows=document.getElementById('cartRows');rows.innerHTML=cart.length?cart.map((x,i)=>`<div class="cartrow"><div class="carttop"><div><div class="cartname">${x.quantity}× ${esc(x.name)}</div>${x.modifiers?.length?`<div class="mods">${esc(modifierText(x))}</div>`:''}</div><strong>${peso(Number(x.unit_price)*Number(x.quantity))}</strong></div><div class="cartactions"><button class="mini" onclick="openItem('${x.item_public_id}',${i});cartDlg.close()">Edit</button><button class="mini" onclick="changeCartQty(${i},-1)">−</button><b>${x.quantity}</b><button class="mini" onclick="changeCartQty(${i},1)">+</button><button class="mini" onclick="removeCartItem(${i})">Remove</button></div></div>`).join(''):'<div class="empty" style="margin-top:14px">Your cart is empty.</div>';document.getElementById('cartSheetTotal').textContent=peso(cartSubtotal())}
+function updateCartBar(){const qty=cart.reduce((sum,x)=>sum+Number(x.quantity||1),0),bar=document.getElementById('cartbar');document.getElementById('cartcount').textContent=qty+' item'+(qty===1?'':'s');document.getElementById('carttotal').textContent=money(cartSubtotal())+' · View Cart';bar.classList.toggle('show',qty>0);bar.classList.toggle('inline',!UI.sticky_cart)}
+function modifierText(x){return (x.modifiers||[]).map(m=>m.group_name+': '+m.option_name+(Number(m.price_delta)?' (+'+money(m.price_delta)+')':'')).join(' · ')}
+function drawCart(){const rows=document.getElementById('cartRows');rows.innerHTML=cart.length?cart.map((x,i)=>`<div class="cartrow"><div class="carttop"><div><div class="cartname">${x.quantity}× ${esc(x.name)}</div>${x.modifiers?.length?`<div class="mods">${esc(modifierText(x))}</div>`:''}</div><strong>${money(Number(x.unit_price)*Number(x.quantity))}</strong></div><div class="cartactions"><button class="mini" onclick="openItem('${x.item_public_id}',${i});cartDlg.close()">Edit</button><button class="mini" onclick="changeCartQty(${i},-1)">−</button><b>${x.quantity}</b><button class="mini" onclick="changeCartQty(${i},1)">+</button><button class="mini" onclick="removeCartItem(${i})">Remove</button></div></div>`).join(''):'<div class="empty" style="margin-top:14px">Your cart is empty.</div>';document.getElementById('cartSheetTotal').textContent=money(cartSubtotal())}
 function openCart(){if(!cart.length)return;drawCart();cartDlg.showModal()}
 function changeCartQty(index,delta){if(!cart[index])return;cart[index].quantity=Math.max(1,Math.min(99,Number(cart[index].quantity||1)+delta));saveCart();drawCart()}
 function removeCartItem(index){cart.splice(index,1);saveCart();drawCart();if(!cart.length&&cartDlg.open)cartDlg.close()}
@@ -26757,14 +27133,14 @@ function oaUniqueBy(arr,key){const seen=new Set();return arr.filter(x=>{const v=
 function ensureScheduledSelection(){const slots=DATA.pickup.slots||[];if(!slots.length){selectedDate='';selectedHour='';selectedMinute='';selectedSlot='';return}const dates=oaUniqueBy(slots,'date_key');if(!selectedDate||!dates.some(s=>s.date_key===selectedDate))selectedDate=dates[0].date_key;const hours=oaUniqueBy(slots.filter(s=>s.date_key===selectedDate),'hour_key');if(!selectedHour||!hours.some(s=>s.hour_key===selectedHour))selectedHour=hours[0]?.hour_key||'';const mins=oaUniqueBy(slots.filter(s=>s.date_key===selectedDate&&s.hour_key===selectedHour),'minute_key');if(!selectedMinute||!mins.some(s=>s.minute_key===selectedMinute))selectedMinute=mins[0]?.minute_key||'';const match=slots.find(s=>s.date_key===selectedDate&&s.hour_key===selectedHour&&s.minute_key===selectedMinute);selectedSlot=match?.value||''}
 function renderPickup(){pickupType=pickupType||pickDefault();const p=DATA.pickup;let html='';if(p.branch_paused){html+='<div class="notice"><strong>Ordering is temporarily paused for this branch.</strong><br>Your cart stays saved. Please check again later or choose another branch.</div>'}else if(!p.hours_configured){html+='<div class="notice"><strong>Pickup hours are not configured for this branch yet.</strong><br>The business needs to set its Order Ahead pickup hours before checkout can continue.</div>'}else if(!p.asap_enabled&& !p.scheduled_enabled){html+='<div class="notice"><strong>Pickup ordering is temporarily unavailable.</strong><br>Please check again later or choose another branch.</div>'}html+=`<div class="pickupbox"><strong>Pickup at ${esc(DATA.branch.name)}</strong><div class="muted" style="margin-top:3px">Minimum preparation: ${p.min_prep_minutes} min${p.prep_override_minutes!==null&&p.prep_override_minutes!==undefined?' · temporary rush setting':''}</div>`;if(p.mode==='both')html+=`<div class="picktabs"><button class="picktab ${pickupType==='asap'?'on':''}" ${p.asap_available?'':'disabled'} onclick="pickupType='asap';renderPickup();renderReview()">ASAP</button><button class="picktab ${pickupType==='scheduled'?'on':''}" ${p.slots.length?'':'disabled'} onclick="pickupType='scheduled';renderPickup();renderReview()">Scheduled</button></div>`;else if(p.mode==='asap')html+=`<div class="picktabs" style="grid-template-columns:1fr"><button class="picktab ${pickupType==='asap'?'on':''}" ${p.asap_available?'':'disabled'} onclick="pickupType='asap';renderPickup();renderReview()">ASAP</button></div>`;else html+=`<div class="picktabs" style="grid-template-columns:1fr"><button class="picktab ${pickupType==='scheduled'?'on':''}" ${p.slots.length?'':'disabled'} onclick="pickupType='scheduled';renderPickup();renderReview()">Scheduled</button></div>`;if(pickupType==='asap'&&p.asap_available)html+=`<div class="muted" style="margin-top:10px">Estimated ready around <strong>${esc(p.asap_ready_label)}</strong>.</div>`;if(pickupType==='scheduled'){if(p.slots.length){ensureScheduledSelection();const dates=oaUniqueBy(p.slots,'date_key');const hours=oaUniqueBy(p.slots.filter(s=>s.date_key===selectedDate),'hour_key');const mins=oaUniqueBy(p.slots.filter(s=>s.date_key===selectedDate&&s.hour_key===selectedHour),'minute_key');html+=`<div style="margin-top:11px"><div style="font-size:12px;font-weight:800;margin-bottom:6px">Pickup date & time</div><div style="display:grid;grid-template-columns:1.35fr .85fr .7fr;gap:7px"><select class="field" style="margin-top:0" aria-label="Pickup date" onchange="selectedDate=this.value;selectedHour='';selectedMinute='';ensureScheduledSelection();renderPickup();renderReview()">${dates.map(s=>`<option value="${esc(s.date_key)}" ${s.date_key===selectedDate?'selected':''}>${esc(s.date_label)}</option>`).join('')}</select><select class="field" style="margin-top:0" aria-label="Pickup hour" onchange="selectedHour=this.value;selectedMinute='';ensureScheduledSelection();renderPickup();renderReview()">${hours.map(s=>`<option value="${esc(s.hour_key)}" ${s.hour_key===selectedHour?'selected':''}>${esc(s.hour_label)}</option>`).join('')}</select><select class="field" style="margin-top:0" aria-label="Pickup minute" onchange="selectedMinute=this.value;ensureScheduledSelection();renderReview()">${mins.map(s=>`<option value="${esc(s.minute_key)}" ${s.minute_key===selectedMinute?'selected':''}>${esc(s.minute_key)}</option>`).join('')}</select></div><div class="muted" style="margin-top:7px">Only available pickup times are shown.</div></div>`}else html+='<div class="notice">No scheduled pickup slots are currently available.</div>'}html+='</div>';document.getElementById('pickupArea').innerHTML=html}
 function pickupLabel(){if(pickupType==='asap')return'Direct pickup · ASAP around '+DATA.pickup.asap_ready_label;if(pickupType==='scheduled'){const s=DATA.pickup.slots.find(x=>x.value===selectedSlot);return s?s.label:'Choose a scheduled time'}return'Not selected'}
-function renderReview(){const div=document.getElementById('checkoutReview');div.innerHTML=`<div class="reviewline"><span>Branch</span><strong>${esc(DATA.branch.name)}</strong></div><div class="reviewline"><span>Pickup</span><strong style="text-align:right">${esc(pickupLabel())}</strong></div><div class="reviewline"><span>Items</span><strong>${cart.reduce((s,x)=>s+Number(x.quantity||1),0)}</strong></div><div class="reviewline total"><span>Subtotal</span><span>${peso(cartSubtotal())}</span></div>`}
+function renderReview(){const div=document.getElementById('checkoutReview');div.innerHTML=`<div class="reviewline"><span>Branch</span><strong>${esc(DATA.branch.name)}</strong></div><div class="reviewline"><span>Pickup</span><strong style="text-align:right">${esc(pickupLabel())}</strong></div><div class="reviewline"><span>Items</span><strong>${cart.reduce((s,x)=>s+Number(x.quantity||1),0)}</strong></div><div class="reviewline total"><span>Subtotal</span><span>${money(cartSubtotal())}</span></div>`}
 function stopPaymentPolling(){if(paymentPollTimer){clearInterval(paymentPollTimer);paymentPollTimer=null}}
 function resetCheckoutView(){stopPaymentPolling();pendingOrder=null;document.getElementById('checkoutFlow').style.display='block';document.getElementById('orderSuccess').classList.remove('show');document.getElementById('paymentBox').classList.remove('show');document.getElementById('paymongoArea').style.display='none';document.getElementById('paymongoQr').style.display='block';document.getElementById('confirmTestPaymentBtn').style.display='block';document.getElementById('confirmTestPaymentBtn').disabled=false;document.getElementById('confirmTestPaymentBtn').textContent='Confirm Test Payment';document.getElementById('paymentBackBtn').style.display='block';document.getElementById('continuePaymentBtn').style.display='block';document.getElementById('continuePaymentBtn').disabled=false;document.getElementById('continuePaymentBtn').textContent='Continue to Payment →';document.getElementById('backCartBtn').style.display='block';document.getElementById('pickupArea').style.display='block';document.querySelector('#checkoutFlow label')?.style.removeProperty('display');document.getElementById('checkoutReview').style.display='block';document.getElementById('paymentHoldNote').textContent='';document.getElementById('checkoutError').classList.remove('show');const ps=document.getElementById('paymongoStatus');ps.style.color='';ps.textContent='Waiting for PayMongo TEST payment confirmation…'}
 function orderPickupLabel(order){if(!order)return pickupLabel();const raw=order.pickup_at;if(raw){const d=new Date(raw);if(!isNaN(d.getTime())){const label=d.toLocaleString('en-PH',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});return order.pickup_type==='asap'?'ASAP · '+label:label}}return order.pickup_type==='asap'?'ASAP':pickupLabel()}
 function paymentHoldLabel(order){if(!order?.slot_hold_expires_at)return'Pickup availability is rechecked when payment is confirmed.';const t=new Date(order.slot_hold_expires_at);if(isNaN(t.getTime()))return'Pickup availability is rechecked when payment is confirmed.';return'Pickup slot reserved until '+t.toLocaleTimeString('en-PH',{hour:'numeric',minute:'2-digit'})+'.'}
 function paymentHoldExpired(order){if(!order?.slot_hold_expires_at)return false;const t=new Date(order.slot_hold_expires_at);return !isNaN(t.getTime())&&t.getTime()<=Date.now()}
 function openCheckoutDialog(){if(!checkoutDlg.open)checkoutDlg.showModal()}
-function showPaymentView(order,payment){resetCheckoutView();pendingOrder=order;pickupType=order?.pickup_type||pickDefault();selectedSlot=order?.pickup_type==='scheduled'?(order?.pickup_at||''):'';document.getElementById('paymentHoldNote').textContent=paymentHoldLabel(order);document.getElementById('paymentAmount').textContent=peso(payment?.amount??order?.total);document.getElementById('paymentOrderNo').textContent=order?.order_number||'';document.getElementById('paymentBox').classList.add('show');document.getElementById('continuePaymentBtn').style.display='none';document.getElementById('backCartBtn').style.display='none';document.getElementById('pickupArea').style.display='none';document.querySelector('#checkoutFlow label')?.style.setProperty('display','none');document.getElementById('checkoutReview').style.display='none';if(order?.payment_mode==='paymongo'){document.getElementById('paymentModeLabel').textContent='PAYMONGO TEST · QR Ph · No live money will be collected.';document.getElementById('confirmTestPaymentBtn').style.display='none';document.getElementById('paymentBackBtn').style.display='none';document.getElementById('paymongoArea').style.display='block';const qr=document.getElementById('paymongoQr');if(payment?.qr_image_url){qr.src=payment.qr_image_url;qr.style.display='block'}else{qr.removeAttribute('src');qr.style.display='none'}const testLink=document.getElementById('paymongoTestLink');if(payment?.test_url){testLink.href=payment.test_url;testLink.style.display='block'}else{testLink.removeAttribute('href');testLink.style.display='none'}document.getElementById('paymongoStatus').textContent=payment?.test_url?'Payment restored after refresh. Continue or check the PayMongo TEST payment below.':'Payment restored after refresh. Tap Check payment status to continue.';paymentPollTimer=setInterval(checkPayMongoPaymentStatus,2500)}else{document.getElementById('paymentModeLabel').textContent='TEST PAYMENT · No real money will be collected.';document.getElementById('confirmTestPaymentBtn').style.display='block';document.getElementById('paymongoArea').style.display='none';document.getElementById('paymentBackBtn').style.display='block'}openCheckoutDialog()}
+function showPaymentView(order,payment){resetCheckoutView();pendingOrder=order;pickupType=order?.pickup_type||pickDefault();selectedSlot=order?.pickup_type==='scheduled'?(order?.pickup_at||''):'';document.getElementById('paymentHoldNote').textContent=paymentHoldLabel(order);document.getElementById('paymentAmount').textContent=money(payment?.amount??order?.total);document.getElementById('paymentOrderNo').textContent=order?.order_number||'';document.getElementById('paymentBox').classList.add('show');document.getElementById('continuePaymentBtn').style.display='none';document.getElementById('backCartBtn').style.display='none';document.getElementById('pickupArea').style.display='none';document.querySelector('#checkoutFlow label')?.style.setProperty('display','none');document.getElementById('checkoutReview').style.display='none';if(order?.payment_mode==='paymongo'){document.getElementById('paymentModeLabel').textContent='PAYMONGO TEST · QR Ph · No live money will be collected.';document.getElementById('confirmTestPaymentBtn').style.display='none';document.getElementById('paymentBackBtn').style.display='none';document.getElementById('paymongoArea').style.display='block';const qr=document.getElementById('paymongoQr');if(payment?.qr_image_url){qr.src=payment.qr_image_url;qr.style.display='block'}else{qr.removeAttribute('src');qr.style.display='none'}const testLink=document.getElementById('paymongoTestLink');if(payment?.test_url){testLink.href=payment.test_url;testLink.style.display='block'}else{testLink.removeAttribute('href');testLink.style.display='none'}document.getElementById('paymongoStatus').textContent=payment?.test_url?'Payment restored after refresh. Continue or check the PayMongo TEST payment below.':'Payment restored after refresh. Tap Check payment status to continue.';paymentPollTimer=setInterval(checkPayMongoPaymentStatus,2500)}else{document.getElementById('paymentModeLabel').textContent='TEST PAYMENT · No real money will be collected.';document.getElementById('confirmTestPaymentBtn').style.display='block';document.getElementById('paymongoArea').style.display='none';document.getElementById('paymentBackBtn').style.display='block'}openCheckoutDialog()}
 function showExpiredCheckout(message){clearPendingCheckout();pendingOrder=null;if(!cart.length){window.alert(message||'Your previous checkout expired.');return}resetCheckoutView();pickupType=pickDefault();selectedSlot='';selectedDate='';selectedHour='';selectedMinute='';renderPickup();renderReview();const err=document.getElementById('checkoutError');err.textContent=message||'Your previous checkout expired. Your cart is still here—please choose a pickup time again.';err.classList.add('show');openCheckoutDialog()}
 async function restorePendingCheckout(autoOpen=true){const saved=readStored(pendingKey);if(!saved?.order?.public_id||saved.branch_public_id!==DATA.branch.public_id){if(saved)clearPendingCheckout();return false}try{const url=ORDER_API_BASE+'/'+encodeURIComponent(saved.order.public_id)+'/payment-status?token='+encodeURIComponent(ORDER_TOKEN);const res=await fetch(url,{cache:'no-store'});const d=await res.json().catch(()=>({}));if(!res.ok){if(res.status===404){clearPendingCheckout();return false}if(res.status===409){clearPendingCheckout();showExpiredCheckout(d.detail||'That pickup slot is no longer available. Your cart is still here—please choose another time.');return true}throw new Error(d.detail||'Could not restore checkout')}const order=d.order||saved.order;const status=d.payment_status||order.payment_status;if(status==='paid'||status==='test_paid'){pendingOrder=order;finishOrderSuccess(order);if(autoOpen)openCheckoutDialog();return true}if(status==='failed'||status==='refunded'||order.status==='cancelled'){clearPendingCheckout();showExpiredCheckout('Your previous checkout is no longer active. Your cart is still here—please choose a pickup time again.');return true}if(status==='pending'&&paymentHoldExpired(order)){pendingOrder=order;if(order.payment_mode==='mock')await abandonPendingMockOrder(order);clearPendingCheckout();showExpiredCheckout('Your previous checkout expired. Your cart is still here—please choose a pickup time again.');return true}savePendingCheckout(order,saved.payment||{});if(autoOpen)showPaymentView(order,saved.payment||{});return true}catch(e){if(autoOpen){showPaymentView(saved.order,saved.payment||{});if(saved.order?.payment_mode==='paymongo')document.getElementById('paymongoStatus').textContent='Checkout restored. Payment status will be rechecked when the connection is available.'}return true}}
 function restoreRecentOrder(){const saved=readStored(recentOrderKey);if(!saved?.order?.public_id||saved.branch_public_id!==DATA.branch.public_id){if(saved)clearRecentOrder();return false}const age=Date.now()-new Date(saved.saved_at||0).getTime();if(!Number.isFinite(age)||age>2*60*60*1000){clearRecentOrder();return false}pendingOrder=saved.order;document.getElementById('checkoutFlow').style.display='none';document.getElementById('successOrderNo').textContent=pendingOrder.order_number||'';document.getElementById('successPickup').textContent='Pickup: '+orderPickupLabel(pendingOrder)+' · '+(pendingOrder.branch?.name||DATA.branch.name);document.getElementById('orderSuccess').classList.add('show');openCheckoutDialog();return true}
@@ -28329,7 +28705,7 @@ async def run_subscription_reminders(_: bool = Depends(require_cron)):
             branch_count = branch_res.count or 1
         except Exception:
             branch_count = 1
-        price = get_price_for_plan(business.get('plan'), branch_count)
+        price = get_price_for_plan(business.get('plan'), branch_count, normalize_billing_cycle(business.get('billing_cycle')), business_pricing_region(business))
 
         subject, html_body = build_subscription_reminder_email(business, days_left, price)
         ok = send_email(business.get('email'), subject, html_body, from_email=SUBSCRIPTION_REMINDER_FROM)

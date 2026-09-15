@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import SubscriptionPayment from './SubscriptionPayment'
 import logo128 from './logo-128.png'
+import { COUNTRY_OPTIONS, formatMoney } from './currency'
 
 // Mirrors the backend's branch_price_bracket(). Two branches stay on
 // per-branch pricing; the 3-branch package starts only at exactly 3 branches.
@@ -171,6 +172,7 @@ function Signup({ API_BASE }) {
   const [form, setForm] = useState({
     name:'', email:'', password:'', phone:'', address:'', contact_person:'',
     logo_url:'', business_type:'spa', branch_count:1, plan:'starter', billing_cycle:'monthly',
+    country_code:'PH', pricing_region:'PH',
     setup_kit_requested:false, kit_recipient_name:'', kit_contact_number:'',
     kit_delivery_address:'', kit_delivery_instructions:'', partner_code:''
   })
@@ -184,19 +186,46 @@ function Signup({ API_BASE }) {
   const signatureCanvasRef = useRef(null)
   const [signatureHasInk, setSignatureHasInk] = useState(false)
   const [plans,setPlans]=useState(null)
+  const [pricingContext,setPricingContext]=useState({country_code:'PH',currency:'PHP',currency_symbol:'₱',country_name:'Philippines',setup_kit_available:true})
   const [logoUpload,setLogoUpload]=useState({uploading:false,error:''})
   const [error,setError]=useState('')
   const [loading,setLoading]=useState(false)
   const [businessSlug,setBusinessSlug]=useState('')
   const [registered,setRegistered]=useState(false)
 
-  useEffect(()=>{ fetch(`${API_BASE}/api/v1/plans`).then(r=>r.json()).then(setPlans).catch(()=>{}) },[API_BASE])
+  const loadPricingContext=async(country)=>{
+    try{
+      const qs=country?`?country=${encodeURIComponent(country)}`:''
+      const r=await fetch(`${API_BASE}/api/v1/public/pricing-context${qs}`,{cache:'no-store'})
+      const data=await r.json()
+      if(!r.ok)throw new Error(data.detail||'Could not load regional pricing')
+      setPricingContext(data)
+      setPlans(data.plans||null)
+      setForm(f=>({...f,country_code:data.country_code||'PH',pricing_region:data.country_code||'PH',setup_kit_requested:data.setup_kit_available?f.setup_kit_requested:false}))
+    }catch(_){
+      fetch(`${API_BASE}/api/v1/plans`).then(r=>r.json()).then(setPlans).catch(()=>{})
+    }
+  }
+  useEffect(()=>{
+    const params=new URLSearchParams(window.location.search)
+    const requestedCountry=params.get('country')
+    let restored=null
+    if(params.get('paymongo_return')==='1'){
+      try{restored=JSON.parse(localStorage.getItem('loyaltree_pending_onboarding')||'null')}catch(_){restored=null}
+      if(restored?.business_slug){
+        setBusinessSlug(restored.business_slug);setRegistered(true);setWizardStep(6)
+        setForm(f=>({...f,billing_cycle:restored.billing_cycle||f.billing_cycle,country_code:restored.pricing_region||f.country_code,pricing_region:restored.pricing_region||f.pricing_region}))
+      }
+    }
+    loadPricingContext(restored?.pricing_region||requestedCountry||undefined)
+  },[API_BASE])
+  const chooseCountry=(code)=>loadPricingContext(code)
   const handleChange=e=>setForm(f=>({...f,[e.target.name]:e.target.value}))
   const branchCount=Number(form.branch_count)||1
   const selectedPlanData=plans?.[form.plan]
   const selectedExceedsCap=selectedPlanData?.max_branches!=null && branchCount>selectedPlanData.max_branches
   const selectedPrice=priceFor(selectedPlanData,branchCount,form.billing_cycle)
-  const kitTotal=form.setup_kit_requested ? 150 * branchCount : 0
+  const kitTotal=(form.setup_kit_requested && pricingContext.setup_kit_available) ? 150 * branchCount : 0
 
   const handleLogoUpload=async(file)=>{
     if(!file)return
@@ -220,7 +249,7 @@ function Signup({ API_BASE }) {
     if(wizardStep===3 && !form.logo_url) return setError('Please upload your business logo to continue.'),false
     if(wizardStep===4){
       if(selectedExceedsCap)return setError('Your selected plan does not support this number of branches.'),false
-      if(form.setup_kit_requested && (!form.kit_recipient_name.trim()||!form.kit_contact_number.trim()||!form.kit_delivery_address.trim())) return setError('Complete the PR Kit delivery information.'),false
+      if(pricingContext.setup_kit_available && form.setup_kit_requested && (!form.kit_recipient_name.trim()||!form.kit_contact_number.trim()||!form.kit_delivery_address.trim())) return setError('Complete the PR Kit delivery information.'),false
     }
     return true
   }
@@ -240,7 +269,8 @@ function Signup({ API_BASE }) {
           name:form.name,email:form.email,phone:form.phone,address:form.address,
           contact_person:form.contact_person,plan:form.plan,branch_count:branchCount,
           billing_cycle:form.billing_cycle,
-          setup_kit_requested:Boolean(form.setup_kit_requested),
+          country_code:form.country_code,pricing_region:form.pricing_region,
+          setup_kit_requested:Boolean(form.setup_kit_requested && pricingContext.setup_kit_available),
         })
       })
       const data=await res.json()
@@ -282,7 +312,7 @@ function Signup({ API_BASE }) {
     setLoading(true);setError('')
     try{
       const res=await fetch(`${API_BASE}/api/v1/register`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-        ...form,branch_count:branchCount,setup_kit_requested:Boolean(form.setup_kit_requested),
+        ...form,branch_count:branchCount,setup_kit_requested:Boolean(form.setup_kit_requested && pricingContext.setup_kit_available),
         agreement:{
           ...agreement,
           signature_data_url:capturedSignature,
@@ -296,7 +326,7 @@ function Signup({ API_BASE }) {
       const data=await res.json()
       if(!res.ok)throw new Error(data.detail||'Signup failed')
       setBusinessSlug(data.business_slug); setRegistered(true)
-      localStorage.setItem('loyaltree_pending_onboarding',JSON.stringify({business_slug:data.business_slug,contact_person:form.contact_person,started_at:new Date().toISOString()}))
+      localStorage.setItem('loyaltree_pending_onboarding',JSON.stringify({business_slug:data.business_slug,contact_person:form.contact_person,billing_cycle:form.billing_cycle,pricing_region:form.pricing_region||form.country_code,started_at:new Date().toISOString()}))
       setWizardStep(6)
       return true
     }catch(err){
@@ -325,6 +355,7 @@ function Signup({ API_BASE }) {
         <div className="lt-signup-two" style={styles.twoCol}><Field label="Business name"><input name="name" value={form.name} onChange={handleChange} style={styles.input}/></Field><Field label="Primary contact person"><input name="contact_person" value={form.contact_person} onChange={handleChange} style={styles.input} placeholder="Owner / manager name"/></Field></div>
         <div className="lt-signup-two" style={styles.twoCol}><Field label="Mobile number"><input name="phone" value={form.phone} onChange={handleChange} style={styles.input} placeholder="09XXXXXXXXX"/></Field><Field label="Industry"><select name="business_type" value={form.business_type} onChange={handleChange} style={styles.input}>{BUSINESS_TYPES.map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></Field></div>
         <Field label="Business address"><textarea name="address" value={form.address} onChange={handleChange} style={{...styles.input,minHeight:82,resize:'vertical'}} placeholder="Complete business address"/></Field>
+        <Field label="Business country / pricing region"><select value={form.country_code} onChange={e=>chooseCountry(e.target.value)} style={styles.input}>{COUNTRY_OPTIONS.map(c=><option key={c.code} value={c.code}>{c.flag} {c.label} · {c.currency}</option>)}</select><small style={styles.tip}>We detected your market automatically. This becomes the account's pricing and dashboard currency; change it here if the detection is wrong.</small></Field>
         <Field label="Number of branches"><input name="branch_count" type="number" min="1" max="5" value={form.branch_count} onChange={handleChange} style={styles.input}/><small style={styles.tip}>Self-serve onboarding supports up to 5 branches.</small></Field>
       </section>}
       {wizardStep===3&&<section><p style={styles.eyebrow}>3 · BRAND</p><h1 style={styles.title}>Upload your logo</h1><p style={styles.subtitle}>Your logo will appear throughout your LoyaltyTree experience and helps us prepare your PR Kit.</p>
@@ -334,17 +365,17 @@ function Signup({ API_BASE }) {
         <div style={styles.billingToggle}>
           {Object.entries(BILLING_TERMS).map(([key,term])=><button key={key} type="button" onClick={()=>setForm({...form,billing_cycle:key})} style={{...styles.billingToggleBtn,...(form.billing_cycle===key?styles.billingToggleBtnActive:{})}}>{term.label}{term.savings?` · ${term.savings}`:''}</button>)}
         </div>
-        <div className="lt-signup-plans" style={styles.planGrid}>{plans&&Object.entries(plans).map(([key,p])=>{const price=priceFor(p,branchCount,form.billing_cycle),selected=form.plan===key,cap=p.max_branches!=null&&branchCount>p.max_branches,highlights=planHighlights(p);return <button type="button" key={key} onClick={()=>setForm({...form,plan:key})} style={{...styles.planCard,...(selected?styles.planSelected:{})}}><b>{p.label}</b><strong>₱{price?.toLocaleString()}<small>{BILLING_TERMS[form.billing_cycle]?.unit || '/30 days'}</small></strong>{form.billing_cycle==='annual'&&<span style={styles.annualNote}>12 months access · 2 months free</span>}{highlights.length>0&&<span style={styles.planIncludes}>Includes {highlights.join(' + ')}</span>}{key==='growth'&&<span style={styles.planBadge}>MOST POPULAR</span>}{cap&&<span style={styles.warning}>Up to {p.max_branches} branch(es)</span>}</button>})}</div>
-        <label style={{...styles.kitCard,...(form.setup_kit_requested?styles.kitSelected:{})}}><input type="checkbox" checked={form.setup_kit_requested} onChange={e=>setForm({...form,setup_kit_requested:e.target.checked})}/><div><strong>Add Physical QR / PR Kit · ₱150 per branch one-time</strong><p>{form.setup_kit_requested ? `For ${branchCount} branch${branchCount===1?'':'es'}: ₱${kitTotal.toLocaleString()} total.` : 'Sintra board QR display prepared per branch and delivered after payment confirmation.'}</p></div></label>
-        {form.setup_kit_requested&&<div style={styles.delivery}><div className="lt-signup-two" style={styles.twoCol}><Field label="Recipient"><input name="kit_recipient_name" value={form.kit_recipient_name} onChange={handleChange} style={styles.input}/></Field><Field label="Contact number"><input name="kit_contact_number" value={form.kit_contact_number} onChange={handleChange} style={styles.input}/></Field></div><Field label="Delivery address"><textarea name="kit_delivery_address" value={form.kit_delivery_address} onChange={handleChange} style={{...styles.input,minHeight:70}}/></Field><Field label="Instructions (optional)"><input name="kit_delivery_instructions" value={form.kit_delivery_instructions} onChange={handleChange} style={styles.input}/></Field></div>}
-        <div style={styles.priceDisclosure}><strong>Agreement preview</strong><span>Billing: {BILLING_TERMS[form.billing_cycle]?.label || 'Monthly'}{form.billing_cycle==='annual'?' · 2 months free':''}</span><span>Subscription: ₱{Number(selectedPrice||0).toLocaleString()}{BILLING_TERMS[form.billing_cycle]?.unit || '/30 days'}</span>{kitTotal>0&&<span>PR Kit: ₱{kitTotal.toLocaleString()} one-time</span>}</div>
+        <div className="lt-signup-plans" style={styles.planGrid}>{plans&&Object.entries(plans).map(([key,p])=>{const price=priceFor(p,branchCount,form.billing_cycle),selected=form.plan===key,cap=p.max_branches!=null&&branchCount>p.max_branches,highlights=planHighlights(p);return <button type="button" key={key} onClick={()=>setForm({...form,plan:key})} style={{...styles.planCard,...(selected?styles.planSelected:{})}}><b>{p.label}</b><strong>{formatMoney(price,pricingContext.currency)}<small>{BILLING_TERMS[form.billing_cycle]?.unit || '/30 days'}</small></strong>{form.billing_cycle==='annual'&&<span style={styles.annualNote}>12 months access · 2 months free</span>}{highlights.length>0&&<span style={styles.planIncludes}>Includes {highlights.join(' + ')}</span>}{key==='growth'&&<span style={styles.planBadge}>MOST POPULAR</span>}{cap&&<span style={styles.warning}>Up to {p.max_branches} branch(es)</span>}</button>})}</div>
+        {pricingContext.setup_kit_available ? <><label style={{...styles.kitCard,...(form.setup_kit_requested?styles.kitSelected:{})}}><input type="checkbox" checked={form.setup_kit_requested} onChange={e=>setForm({...form,setup_kit_requested:e.target.checked})}/><div><strong>Add Physical QR / PR Kit · ₱150 per branch one-time</strong><p>{form.setup_kit_requested ? `For ${branchCount} branch${branchCount===1?'':'es'}: ₱${kitTotal.toLocaleString()} total.` : 'Sintra board QR display prepared per branch and delivered after payment confirmation.'}</p></div></label>
+        {form.setup_kit_requested&&<div style={styles.delivery}><div className="lt-signup-two" style={styles.twoCol}><Field label="Recipient"><input name="kit_recipient_name" value={form.kit_recipient_name} onChange={handleChange} style={styles.input}/></Field><Field label="Contact number"><input name="kit_contact_number" value={form.kit_contact_number} onChange={handleChange} style={styles.input}/></Field></div><Field label="Delivery address"><textarea name="kit_delivery_address" value={form.kit_delivery_address} onChange={handleChange} style={{...styles.input,minHeight:70}}/></Field><Field label="Instructions (optional)"><input name="kit_delivery_instructions" value={form.kit_delivery_instructions} onChange={handleChange} style={styles.input}/></Field></div>}</> : <div style={styles.kitCard}><div><strong>Digital launch only in {pricingContext.country_name}</strong><p>The physical QR / PR Kit is currently fulfilled only in the Philippines. You can still download and print your join QR locally.</p></div></div>}
+        <div style={styles.priceDisclosure}><strong>Agreement preview</strong><span>Billing: {BILLING_TERMS[form.billing_cycle]?.label || 'Monthly'}{form.billing_cycle==='annual'?' · 2 months free':''}</span><span>Subscription: {formatMoney(selectedPrice||0,pricingContext.currency)}{BILLING_TERMS[form.billing_cycle]?.unit || '/30 days'}</span>{kitTotal>0&&<span>PR Kit: ₱{kitTotal.toLocaleString()} one-time</span>}</div>
       </section>}
       {wizardStep===5&&<section><p style={styles.eyebrow}>5 · REVIEW + SIGN</p><h1 style={styles.title}>Review your LoyaltyTree agreement</h1><p style={styles.subtitle}>Review the Business Subscription & Data Processing Agreement below. The account will not be created until an authorized representative signs it.</p>
         <div style={styles.paymentNextNotice}><strong>Signing does not charge you.</strong><span>Payment is the next step. After the agreement is signed and recorded, you’ll continue to Pay & Activate.</span></div>
         {agreementLoading&&<div style={styles.loadingBox}>Preparing your agreement…</div>}
         {!agreementLoading&&agreementDoc&&<>
           <div className="lt-agreement-summary" style={styles.agreementSummary}>
-            <Summary label="Business" value={form.name}/><Summary label="Plan" value={agreementDoc.plan_label}/><Summary label="Branches" value={String(branchCount)}/><Summary label="Billing" value={`${BILLING_TERMS[agreementDoc.billing_cycle]?.label || 'Monthly'}${agreementDoc.billing_cycle==='annual'?' · 2 months free':''}`}/><Summary label="Subscription" value={`₱${Number(agreementDoc.billing_price||agreementDoc.price_month||0).toLocaleString()} ${BILLING_TERMS[agreementDoc.billing_cycle]?.unit || '/30 days'}`}/>{agreementDoc.setup_kit_amount>0&&<Summary label="PR Kit" value={`₱${Number(agreementDoc.setup_kit_amount).toLocaleString()} one-time`}/>}<Summary label="Agreement version" value={agreementDoc.agreement_version}/>
+            <Summary label="Business" value={form.name}/><Summary label="Plan" value={agreementDoc.plan_label}/><Summary label="Branches" value={String(branchCount)}/><Summary label="Billing" value={`${BILLING_TERMS[agreementDoc.billing_cycle]?.label || 'Monthly'}${agreementDoc.billing_cycle==='annual'?' · 2 months free':''}`}/><Summary label="Subscription" value={`${formatMoney(agreementDoc.billing_price||agreementDoc.price_month||0,agreementDoc.currency||pricingContext.currency)} ${BILLING_TERMS[agreementDoc.billing_cycle]?.unit || '/30 days'}`}/>{agreementDoc.setup_kit_amount>0&&<Summary label="PR Kit" value={`₱${Number(agreementDoc.setup_kit_amount).toLocaleString()} one-time`}/>}<Summary label="Agreement version" value={agreementDoc.agreement_version}/>
           </div>
           <div style={styles.paperHeader}><strong>{agreementDoc.title}</strong><span>{agreementDoc.operator?.name}</span><small>{agreementDoc.operator?.location} · {agreementDoc.operator?.phone} · {agreementDoc.operator?.email}</small></div>
           <div style={styles.paper} onScroll={e=>{const el=e.currentTarget;if(el.scrollTop+el.clientHeight>=el.scrollHeight-32)setAgreementRead(true)}}>
@@ -377,7 +408,7 @@ function Signup({ API_BASE }) {
         </>}
       </section>}
       {wizardStep===6&&<section><p style={styles.eyebrow}>6 · PAYMENT</p><h1 style={styles.title}>Activate your business</h1><p style={styles.subtitle}>Your signed agreement has been recorded. Complete your payment to activate the business, then sign in and continue the LoyaltyTree onboarding guide.</p>
-        {loading?<div style={styles.loadingBox}>Creating your business account…</div>:businessSlug?<SubscriptionPayment API_BASE={API_BASE} businessSlug={businessSlug} initialBillingCycle={form.billing_cycle} title="Pay & Activate" subtitle={form.setup_kit_requested?`Your total includes your ${BILLING_TERMS[form.billing_cycle]?.label || 'Monthly'} subscription plus ₱${kitTotal.toLocaleString()} for the PR Kit (${branchCount} × ₱150).`:`Pay your selected ${BILLING_TERMS[form.billing_cycle]?.label || 'Monthly'} plan to activate your business.`} successMessage="🎉 Payment received — your business is active!" onPaid={()=>{localStorage.setItem('loyaltree_continue_onboarding','1');navigate('/login?onboarding=1')}}/>:<div style={styles.error}>The account was not created. Go back to Review + Sign and try again.</div>}
+        {loading?<div style={styles.loadingBox}>Creating your business account…</div>:businessSlug?<SubscriptionPayment API_BASE={API_BASE} businessSlug={businessSlug} initialBillingCycle={form.billing_cycle} title="Pay & Activate" subtitle={(form.setup_kit_requested&&pricingContext.setup_kit_available)?`Your total includes your ${BILLING_TERMS[form.billing_cycle]?.label || 'Monthly'} subscription plus ₱${kitTotal.toLocaleString()} for the PR Kit (${branchCount} × ₱150).`:`Pay your selected ${BILLING_TERMS[form.billing_cycle]?.label || 'Monthly'} plan in ${pricingContext.currency} to activate your business.`} successMessage="🎉 Payment received — your business is active!" onPaid={()=>{localStorage.setItem('loyaltree_continue_onboarding','1');navigate('/login?onboarding=1')}}/>:<div style={styles.error}>The account was not created. Go back to Review + Sign and try again.</div>}
       </section>}
       {error&&<div style={styles.error}>{error}</div>}
       {wizardStep<5&&<div style={styles.actions}>{wizardStep>1?<button type="button" onClick={back} style={styles.secondary}>← Back</button>:<span/>}<button type="button" onClick={next} disabled={logoUpload.uploading} style={styles.primary}>Continue →</button></div>}
