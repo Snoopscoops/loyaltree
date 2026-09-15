@@ -34007,3 +34007,367 @@ async def pos_companion_customer_lookup(
         'branch_id': device.get('branch_id'),
         'message': 'Customer resolved from Loyalty Tree QR.',
     }
+
+
+# =============================================================================
+# POS COMPANION OFFLINE / DEGRADED SYNC
+# Added 2026-09-16
+# =============================================================================
+
+class POSCompanionOfflineEvent(BaseModel):
+    client_event_id: str = Field(min_length=6, max_length=120)
+    event_type: Literal['earn', 'redemption_commit_wait'] = 'earn'
+    customer_ref: str = Field(min_length=1, max_length=500)
+    external_transaction_id: Optional[str] = Field(default=None, max_length=240)
+    reservation_id: Optional[str] = Field(default=None, max_length=100)
+    gross_amount: Optional[float] = Field(default=None, ge=0)
+    currency: str = Field(default='PHP', min_length=3, max_length=3)
+    occurred_at: datetime
+    metadata: dict = Field(default_factory=dict)
+
+
+class POSCompanionOfflineSyncRequest(BaseModel):
+    events: List[POSCompanionOfflineEvent] = Field(min_length=1, max_length=50)
+
+
+class POSCompanionOfflineMatchRequest(BaseModel):
+    external_transaction_id: str = Field(min_length=1, max_length=240)
+
+
+def _pos_offline_event_public(row: dict) -> dict:
+    return {
+        'id': str(row.get('id') or ''),
+        'client_event_id': row.get('client_event_id'),
+        'event_type': row.get('event_type'),
+        'customer_public_id': row.get('customer_public_id'),
+        'external_transaction_id': row.get('external_transaction_id'),
+        'reservation_id': str(row.get('reservation_id') or '') or None,
+        'matched_pos_transaction_id': str(row.get('matched_pos_transaction_id') or '') or None,
+        'gross_amount': float(row.get('gross_amount')) if row.get('gross_amount') is not None else None,
+        'currency': row.get('currency'),
+        'status': row.get('status'),
+        'error_message': row.get('error_message'),
+        'occurred_at': row.get('occurred_at'),
+        'received_at': row.get('received_at'),
+        'matched_at': row.get('matched_at'),
+        'processed_at': row.get('processed_at'),
+    }
+
+
+def _pos_offline_resolve_and_match(device: dict, event: POSCompanionOfflineEvent, existing: Optional[dict] = None) -> dict:
+    business_id = device.get('business_id')
+    integration_id = device.get('integration_id')
+    branch_id = device.get('branch_id')
+    customer_public_id = _pos_scan_customer_public_id(event.customer_ref)
+    customer = safe_get_customer(customer_public_id) if customer_public_id else None
+
+    status = 'received'
+    error_message = None
+    matched_tx = None
+    matched_at = None
+
+    if not customer or customer.get('business_id') != business_id:
+        status = 'failed'
+        error_message = 'Customer could not be resolved for this business.'
+    else:
+        reservation = None
+        if event.event_type == 'redemption_commit_wait':
+            if not event.reservation_id:
+                status = 'failed'
+                error_message = 'A redemption_commit_wait event requires reservation_id.'
+            else:
+                reservation = _pos_redemption_row(event.reservation_id)
+                if not reservation:
+                    status = 'failed'
+                    error_message = 'Redemption reservation was not found.'
+                elif reservation.get('business_id') != business_id or str(reservation.get('integration_id')) != str(integration_id):
+                    status = 'conflict'
+                    error_message = 'Redemption reservation belongs to a different business/integration.'
+                elif reservation.get('customer_id') != customer.get('id'):
+                    status = 'conflict'
+                    error_message = 'Redemption reservation belongs to a different customer.'
+                elif reservation.get('branch_id') and branch_id and reservation.get('branch_id') != branch_id:
+                    status = 'conflict'
+                    error_message = 'Redemption reservation belongs to a different branch.'
+
+        external_tx = str(event.external_transaction_id or '').strip()
+        if not error_message:
+            if not external_tx:
+                status = 'manual_match_required'
+                error_message = 'Exact StoreHub transaction ID is required before loyalty processing.'
+            else:
+                try:
+                    rows = (
+                        supabase.table('pos_transactions').select('*')
+                        .eq('integration_id', integration_id)
+                        .eq('external_transaction_id', external_tx)
+                        .limit(1).execute().data or []
+                    )
+                except Exception as exc:
+                    raise _pos_schema_error(exc)
+                matched_tx = rows[0] if rows else None
+                if not matched_tx:
+                    status = 'received'
+                    error_message = 'Exact StoreHub transaction has not synced yet. Retry after provider sync.'
+                elif matched_tx.get('branch_id') and branch_id and matched_tx.get('branch_id') != branch_id:
+                    status = 'conflict'
+                    error_message = 'StoreHub transaction belongs to a different Loyalty Tree branch.'
+                elif matched_tx.get('customer_id') and matched_tx.get('customer_id') != customer.get('id'):
+                    status = 'conflict'
+                    error_message = 'StoreHub transaction is already linked to a different customer.'
+                elif matched_tx.get('status') == 'loyalty_applied':
+                    status = 'processed' if matched_tx.get('customer_id') == customer.get('id') else 'conflict'
+                    error_message = None if status == 'processed' else 'Loyalty was already applied to this transaction without this customer link.'
+                    matched_at = datetime.now(timezone.utc).isoformat()
+                else:
+                    processing_metadata = matched_tx.get('processing_metadata') if isinstance(matched_tx.get('processing_metadata'), dict) else {}
+                    patch = {
+                        'customer_id': customer.get('id'),
+                        'branch_id': matched_tx.get('branch_id') or branch_id,
+                        'processing_metadata': {
+                            **processing_metadata,
+                            'pos_companion_offline_match': {
+                                'device_id': str(device.get('id')),
+                                'client_event_id': event.client_event_id,
+                                'event_type': event.event_type,
+                                'reservation_id': event.reservation_id,
+                                'matched_at': datetime.now(timezone.utc).isoformat(),
+                            },
+                        },
+                    }
+                    try:
+                        updated = supabase.table('pos_transactions').update(patch).eq('id', matched_tx.get('id')).execute().data or []
+                        if updated:
+                            matched_tx = updated[0]
+                    except Exception as exc:
+                        raise _pos_schema_error(exc)
+                    status = 'matched'
+                    error_message = None
+                    matched_at = datetime.now(timezone.utc).isoformat()
+
+    payload = {
+        'device_id': device.get('id'),
+        'business_id': business_id,
+        'branch_id': branch_id,
+        'integration_id': integration_id,
+        'provider': device.get('provider') or 'storehub',
+        'client_event_id': event.client_event_id,
+        'event_type': event.event_type,
+        'customer_public_id': customer_public_id or None,
+        'customer_id': customer.get('id') if customer else None,
+        'external_transaction_id': str(event.external_transaction_id or '').strip() or None,
+        'reservation_id': event.reservation_id or None,
+        'matched_pos_transaction_id': matched_tx.get('id') if matched_tx else None,
+        'currency': (event.currency or 'PHP').upper(),
+        'gross_amount': event.gross_amount,
+        'status': status,
+        'payload': {
+            'client_metadata': event.metadata or {},
+            'device_display_name': device.get('display_name'),
+            'hardware_model': device.get('hardware_model'),
+        },
+        'error_message': error_message,
+        'occurred_at': event.occurred_at.astimezone(timezone.utc).isoformat() if event.occurred_at.tzinfo else event.occurred_at.replace(tzinfo=timezone.utc).isoformat(),
+        'matched_at': matched_at,
+        'processed_at': datetime.now(timezone.utc).isoformat() if status == 'processed' else None,
+    }
+
+    try:
+        if existing:
+            rows = supabase.table('pos_companion_offline_events').update(payload).eq('id', existing.get('id')).execute().data or []
+            return rows[0] if rows else {**existing, **payload}
+        rows = supabase.table('pos_companion_offline_events').insert(payload).execute().data or []
+        return rows[0] if rows else payload
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+
+
+@app.get('/api/v1/pos-companion/connectivity')
+async def pos_companion_connectivity(
+    probe_provider: bool = False,
+    x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
+):
+    """Return LT + provider connectivity for one activated terminal.
+
+    LT is online by definition when this endpoint returns. Provider status is
+    based on the saved integration state; probe_provider=true performs a
+    read-only StoreHub /stores probe for an explicit/manual health refresh.
+    """
+    device = _require_pos_device(x_lt_device_token)
+    integration = _get_pos_integration(device.get('business_id'), device.get('provider') or 'storehub')
+    if not integration:
+        return {
+            'ok': True,
+            'lt_online': True,
+            'provider_online': False,
+            'provider': device.get('provider') or 'storehub',
+            'state': 'storehub_offline',
+            'reason': 'POS integration not found.',
+        }
+
+    provider_online = integration.get('status') == 'connected'
+    provider_error = integration.get('last_error')
+    provider_probed = False
+
+    if probe_provider and (device.get('provider') or 'storehub') == 'storehub':
+        provider_probed = True
+        try:
+            _storehub_get(integration, '/stores')
+            provider_online = True
+            provider_error = None
+            now_iso = datetime.now(timezone.utc).isoformat()
+            try:
+                supabase.table('pos_integrations').update({
+                    'status': 'connected',
+                    'last_sync_at': now_iso,
+                    'last_error': None,
+                }).eq('id', integration.get('id')).execute()
+            except Exception:
+                pass
+        except Exception as exc:
+            provider_online = False
+            provider_error = friendly_db_error(exc)
+            try:
+                supabase.table('pos_integrations').update({
+                    'last_error': str(provider_error)[:1000],
+                }).eq('id', integration.get('id')).execute()
+            except Exception:
+                pass
+
+    state = 'online' if provider_online else 'storehub_offline'
+    return {
+        'ok': True,
+        'lt_online': True,
+        'provider_online': bool(provider_online),
+        'provider': device.get('provider') or 'storehub',
+        'state': state,
+        'provider_probed': provider_probed,
+        'provider_last_sync_at': integration.get('last_sync_at'),
+        'provider_error': provider_error,
+        'offline_policy': {
+            'redemption_requires_lt_online': True,
+            'cached_balance_redemption_allowed': False,
+            'earning_can_queue': True,
+            'exact_transaction_match_required_before_award': True,
+        },
+    }
+
+
+@app.post('/api/v1/pos-companion/offline-sync')
+async def pos_companion_offline_sync(
+    req: POSCompanionOfflineSyncRequest,
+    x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
+):
+    """Idempotently upload device-side queued loyalty events.
+
+    This endpoint deliberately does NOT award points merely because the device
+    came back online. It first requires an exact provider transaction match.
+    Once matched, the normal POS transaction processor can safely finish the
+    loyalty mutation using the provider transaction idempotency key.
+    """
+    device = _require_pos_device(x_lt_device_token)
+    results = []
+    for event in req.events:
+        try:
+            existing_rows = (
+                supabase.table('pos_companion_offline_events').select('*')
+                .eq('device_id', device.get('id'))
+                .eq('client_event_id', event.client_event_id)
+                .limit(1).execute().data or []
+            )
+            existing = existing_rows[0] if existing_rows else None
+            row = _pos_offline_resolve_and_match(device, event, existing)
+            results.append(_pos_offline_event_public(row))
+        except HTTPException as exc:
+            results.append({
+                'client_event_id': event.client_event_id,
+                'status': 'failed',
+                'error_message': str(exc.detail),
+            })
+        except Exception as exc:
+            results.append({
+                'client_event_id': event.client_event_id,
+                'status': 'failed',
+                'error_message': friendly_db_error(exc),
+            })
+
+    return {
+        'ok': True,
+        'device_id': str(device.get('id')),
+        'received': len(req.events),
+        'results': results,
+        'message': 'Offline events uploaded idempotently. Only exact StoreHub matches may proceed to loyalty processing.',
+    }
+
+
+@app.get('/api/v1/pos-companion/sync-status')
+async def pos_companion_sync_status(x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token')):
+    device = _require_pos_device(x_lt_device_token)
+    try:
+        rows = (
+            supabase.table('pos_companion_offline_events').select('*')
+            .eq('device_id', device.get('id'))
+            .order('occurred_at', desc=True)
+            .limit(100).execute().data or []
+        )
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+
+    counts = {}
+    for row in rows:
+        key = row.get('status') or 'unknown'
+        counts[key] = counts.get(key, 0) + 1
+    pending_states = {'received', 'matched', 'manual_match_required'}
+    return {
+        'ok': True,
+        'device_id': str(device.get('id')),
+        'pending': sum(v for k, v in counts.items() if k in pending_states),
+        'counts': counts,
+        'events': [_pos_offline_event_public(row) for row in rows[:30]],
+    }
+
+
+@app.post('/api/v1/business/{public_id}/pos/offline-events/{event_id}/match')
+async def owner_match_pos_offline_event(
+    public_id: str,
+    event_id: str,
+    req: POSCompanionOfflineMatchRequest,
+    authorization: str = Header(default=''),
+):
+    """Owner-side recovery for an offline event that lacked a provider id.
+
+    This only supplies the exact StoreHub transaction reference and performs the
+    same safety matching. It does not bypass branch/customer/reservation checks.
+    """
+    business = _require_pos_pro_business(public_id, authorization)
+    try:
+        rows = supabase.table('pos_companion_offline_events').select('*').eq('id', event_id).limit(1).execute().data or []
+        row = rows[0] if rows else None
+        if not row or row.get('business_id') != business.get('id'):
+            raise HTTPException(status_code=404, detail='Offline POS event not found.')
+        device_rows = supabase.table('pos_devices').select('*').eq('id', row.get('device_id')).limit(1).execute().data or []
+        device = device_rows[0] if device_rows else None
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    if not device:
+        raise HTTPException(status_code=404, detail='POS device for this event was not found.')
+
+    event = POSCompanionOfflineEvent(
+        client_event_id=row.get('client_event_id'),
+        event_type=row.get('event_type'),
+        customer_ref=row.get('customer_public_id') or '',
+        external_transaction_id=req.external_transaction_id,
+        reservation_id=str(row.get('reservation_id')) if row.get('reservation_id') else None,
+        gross_amount=float(row.get('gross_amount')) if row.get('gross_amount') is not None else None,
+        currency=row.get('currency') or 'PHP',
+        occurred_at=_pos_parse_timestamp(row.get('occurred_at')) or datetime.now(timezone.utc),
+        metadata=(row.get('payload') or {}).get('client_metadata', {}) if isinstance(row.get('payload'), dict) else {},
+    )
+    updated = _pos_offline_resolve_and_match(device, event, row)
+    return {
+        'ok': True,
+        'event': _pos_offline_event_public(updated),
+        'message': 'Offline event matched using the supplied exact StoreHub transaction ID.',
+    }
