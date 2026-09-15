@@ -628,7 +628,10 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
   const viewingAllPrograms = selectedProgramPublicId === 'all'
   const selectedProgramSummary = viewingAllPrograms ? null : (programs.find(p => p.public_id === selectedProgramPublicId) || programs.find(p => p.is_default) || programs[0] || null)
   const selectedProgramQuery = selectedProgramPublicId && !viewingAllPrograms ? `?program_id=${encodeURIComponent(selectedProgramPublicId)}` : ''
-  const selectedJoinSlug = selectedProgramSummary && !selectedProgramSummary.is_default && selectedProgramSummary.public_id
+  // Every selected program gets an explicit program-scoped Join URL, even the
+  // current default. QR codes are durable and must keep resolving to the exact
+  // program they were generated for if the business changes its default later.
+  const selectedJoinSlug = selectedProgramSummary?.public_id
     ? `${user?.business_slug || ''}__p__${selectedProgramSummary.public_id}`
     : (user?.business_slug || '')
   const selectedJoinUrl = viewingAllPrograms ? '' : `${FRONTEND_URL}/join/${selectedJoinSlug}`

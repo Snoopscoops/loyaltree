@@ -2824,7 +2824,15 @@ def split_program_join_slug(value: Optional[str]) -> tuple[str, Optional[str]]:
 
 
 def make_program_join_slug(business_public_id: str, program: Optional[dict]) -> str:
-    if not program or program.get('is_default') or not program.get('public_id'):
+    """Return a stable, program-specific customer join slug.
+
+    Multi-program businesses must not let a selected program collapse back to
+    the generic /join/<business> route merely because it is currently marked
+    default. A QR is a durable artifact and must keep pointing at the exact
+    program it was generated for even if the business changes its default later.
+    Legacy business-only links remain supported when no program is supplied.
+    """
+    if not program or not program.get('public_id'):
         return str(business_public_id or '')
     return f"{business_public_id}{PROGRAM_JOIN_SEPARATOR}{program.get('public_id')}"
 
