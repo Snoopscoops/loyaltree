@@ -2164,7 +2164,7 @@ class MembershipBenefitConfig(BaseModel):
 
 class LoyaltyProgramCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    card_type: Literal['stamp', 'points', 'multipass', 'membership', 'vip', 'hybrid', 'employee'] = 'stamp'
+    card_type: Literal['stamp', 'points', 'multipass', 'membership', 'vip', 'hybrid'] = 'stamp'
 
 
 class LoyaltyConfig(BaseModel):
@@ -2228,8 +2228,11 @@ class LoyaltyConfig(BaseModel):
     # benefits stay locked until the member reaches this Tier-progress threshold.
     membership_benefits_unlock_enabled: bool = False
     membership_benefits_unlock_threshold: int = Field(default=7, ge=1, le=100000000)
-    # --- Employee card only ---
+    # Employee Membership: stays card_type='membership' but adds employee identity + operations.
+    membership_employee_mode: bool = False
+    employee_attendance_enabled: bool = False
     employee_time_tracking_enabled: bool = False
+    # Legacy Employee Card benefit storage retained for existing employee card rows only.
     employee_benefits: Optional[List[MembershipBenefitConfig]] = None
     # --- VIP card only ---
     vip_points_per_amount: Optional[float] = Field(default=10, ge=0)
@@ -2254,7 +2257,8 @@ class CustomerSignup(BaseModel):
     privacy_consent: bool = False
     privacy_consent_version: Optional[str] = Field(default=None, max_length=40)
     employee_id_number: Optional[str] = Field(default=None, max_length=80)
-    employee_start_date: Optional[str] = None  # YYYY-MM-DD
+    employee_position: Optional[str] = Field(default=None, max_length=100)
+    employee_start_date: Optional[str] = None  # YYYY-MM-DD; optional for Employee Membership
 
 class PlatformAnalyticsEventCreate(BaseModel):
     event_name: str = Field(min_length=1, max_length=80)
@@ -2290,6 +2294,7 @@ class CustomerUpdate(BaseModel):
     tier_stamp_count: Optional[int] = Field(default=None, ge=0)
     vip_manual_tier_id: Optional[str] = None
     employee_id_number: Optional[str] = Field(default=None, max_length=80)
+    employee_position: Optional[str] = Field(default=None, max_length=100)
     employee_start_date: Optional[str] = None
 
 class StampRequest(BaseModel):
@@ -3608,6 +3613,21 @@ def effective_loyalty_type(program: Optional[dict]) -> str:
 
 def program_has_membership(program: Optional[dict]) -> bool:
     return str((program or {}).get('card_type') or '').lower() in ('membership', 'hybrid')
+
+
+def program_is_employee_membership(program: Optional[dict]) -> bool:
+    return bool(
+        str((program or {}).get('card_type') or '').lower() == 'membership'
+        and (program or {}).get('membership_employee_mode') is True
+    )
+
+
+def program_is_employee_experience(program: Optional[dict]) -> bool:
+    # Legacy Employee Card rows remain readable, but new cards use Membership + employee mode.
+    return bool(
+        str((program or {}).get('card_type') or '').lower() == 'employee'
+        or program_is_employee_membership(program)
+    )
 
 
 def hybrid_tier_enabled(program: Optional[dict]) -> bool:
@@ -5382,13 +5402,27 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         status = membership_effective_status(customer)
         expiry = customer.get('membership_expires_at')
         services = (program.get('membership_services') if program else None) or []
-        loyalty_points_label = 'STATUS'
-        loyalty_points_balance = status.upper()
-        details.append(('valid_until', 'VALID UNTIL', 'Lifetime' if status == 'lifetime' else (expiry or 'Not activated')))
-        if customer.get('membership_start_date'):
-            details.append(('member_since', 'MEMBER SINCE', customer.get('membership_start_date')))
-        if services:
-            details.append(('benefit', 'BENEFIT', str(services[0])))
+        if program_is_employee_membership(program):
+            loyalty_points_label = 'EMPLOYEE ID'
+            loyalty_points_balance = str(customer.get('employee_id_number') or '—')
+            secondary_points = {'label': 'POSITION', 'balance': {'string': str(customer.get('employee_position') or '—')}}
+            details.append(('employee_name', 'NAME', str(customer.get('name') or 'Employee')))
+            details.append(('position', 'POSITION', str(customer.get('employee_position') or '—')))
+            if customer.get('employee_start_date'):
+                details.append(('started', 'STARTED', str(customer.get('employee_start_date'))))
+            if bool((program or {}).get('employee_time_tracking_enabled')):
+                attendance = get_employee_attendance_state(customer.get('id'))
+                details.append(('attendance', 'TIME STATUS', 'TIMED IN' if attendance.get('is_clocked_in') else 'TIMED OUT'))
+            if services:
+                details.append(('benefit', 'EMPLOYEE BENEFIT', str(services[0])))
+        else:
+            loyalty_points_label = 'STATUS'
+            loyalty_points_balance = status.upper()
+            details.append(('valid_until', 'VALID UNTIL', 'Lifetime' if status == 'lifetime' else (expiry or 'Not activated')))
+            if customer.get('membership_start_date'):
+                details.append(('member_since', 'MEMBER SINCE', customer.get('membership_start_date')))
+            if services:
+                details.append(('benefit', 'BENEFIT', str(services[0])))
 
     else:
         loyalty_points_label = 'STAMPS'
@@ -6957,10 +6991,19 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         status = membership_effective_status(customer)
         expiry = customer.get('membership_expires_at')
         services = (program.get('membership_services') if program else None) or []
-        apple_details.append(('valid_until', 'VALID UNTIL', 'Lifetime' if status == 'lifetime' else (expiry or 'Not activated')))
-        apple_details.append(('member_since', 'MEMBER SINCE', customer.get('membership_start_date') or '—'))
-        apple_details.append(('membership_type', 'MEMBERSHIP TYPE', (program.get('membership_name') if program else None) or (program.get('card_name') if program else None) or design['card_label']))
-        apple_details.append(('next_benefit', 'NEXT BENEFIT', services[0] if services else 'Rewards'))
+        if program_is_employee_membership(program):
+            apple_details.append(('employee_name', 'EMPLOYEE', customer.get('name') or 'Employee'))
+            apple_details.append(('employee_id', 'ID NUMBER', customer.get('employee_id_number') or '—'))
+            apple_details.append(('position', 'POSITION', customer.get('employee_position') or '—'))
+            if customer.get('employee_start_date'):
+                apple_details.append(('started', 'STARTED', customer.get('employee_start_date')))
+            if services:
+                apple_details.append(('employee_benefit', 'EMPLOYEE BENEFIT', services[0]))
+        else:
+            apple_details.append(('valid_until', 'VALID UNTIL', 'Lifetime' if status == 'lifetime' else (expiry or 'Not activated')))
+            apple_details.append(('member_since', 'MEMBER SINCE', customer.get('membership_start_date') or '—'))
+            apple_details.append(('membership_type', 'MEMBERSHIP TYPE', (program.get('membership_name') if program else None) or (program.get('card_name') if program else None) or design['card_label']))
+            apple_details.append(('next_benefit', 'NEXT BENEFIT', services[0] if services else 'Rewards'))
     else:
         apple_stamp_value, apple_stamp_visual = wallet_stamp_balance_and_module(
             program,
@@ -14912,9 +14955,14 @@ async def get_customer_api(public_id: str, response: Response):
         customer['tier_progression_type'] = tier_progression_type(program)
         customer['tier_progress_value'] = tier_progress_value(customer, program)
         customer['tier_stamp_count'] = tier_stamp_value(customer, program)
-    if program and program.get('card_type') == 'employee':
-        customer['employee_benefits'] = get_employee_benefit_statuses(business, customer, program) if business else []
+    if program and program_is_employee_experience(program):
+        customer['employee_benefits'] = (
+            get_employee_benefit_statuses(business, customer, program)
+            if program.get('card_type') == 'employee' and business
+            else (get_membership_benefit_statuses(business, customer, program) if business else [])
+        )
         customer['employee_attendance'] = get_employee_attendance_state(customer.get('id'))
+        customer['employee_position'] = customer.get('employee_position')
 
     return {
         "current_card_type": current_card_type,
@@ -16480,6 +16528,8 @@ async def get_loyalty_config(public_id: str, response: Response, program_id: Opt
             "membership_quick_checkin": False,
             "membership_benefits_unlock_enabled": False,
             "membership_benefits_unlock_threshold": 7,
+            "membership_employee_mode": False,
+            "employee_attendance_enabled": False,
             "employee_time_tracking_enabled": False,
             "employee_benefits": [],
             "vip_points_per_amount": 10,
@@ -16608,7 +16658,9 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
         'tier_stamp_once_per_day': bool(config.tier_stamp_once_per_day),
         'membership_benefits_unlock_enabled': bool(config.membership_benefits_unlock_enabled),
         'membership_benefits_unlock_threshold': int(config.membership_benefits_unlock_threshold or 7),
-        'employee_time_tracking_enabled': bool(config.employee_time_tracking_enabled) if config.card_type == 'employee' else False,
+        'membership_employee_mode': bool(config.membership_employee_mode) if config.card_type == 'membership' else False,
+        'employee_attendance_enabled': bool(config.employee_attendance_enabled) if (config.card_type == 'membership' and config.membership_employee_mode) else False,
+        'employee_time_tracking_enabled': bool(config.employee_time_tracking_enabled) if (config.card_type == 'employee' or (config.card_type == 'membership' and config.membership_employee_mode)) else False,
         'stamp_goal': config.stamp_goal,
         'stamp_display_style': config.stamp_display_style,
         'stamp_icon': config.stamp_icon,
@@ -16795,8 +16847,12 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
         data['membership_duration_days'] = config.membership_duration_days or 30
         data['membership_price'] = config.membership_price or 0
         data['membership_terms'] = (config.membership_terms or '').strip() or None
-        data['membership_visit_logging_enabled'] = config.membership_visit_logging_enabled is not False
-        data['membership_quick_checkin'] = bool(config.membership_quick_checkin)
+        data['membership_employee_mode'] = bool(config.membership_employee_mode) if config.card_type == 'membership' else False
+        data['employee_attendance_enabled'] = bool(config.employee_attendance_enabled) if data['membership_employee_mode'] else False
+        data['employee_time_tracking_enabled'] = bool(config.employee_time_tracking_enabled) if data['membership_employee_mode'] else False
+        # Employee attendance uses the existing Membership visit ledger; ordinary memberships keep their normal visit toggle.
+        data['membership_visit_logging_enabled'] = (bool(config.employee_attendance_enabled) if data['membership_employee_mode'] else (config.membership_visit_logging_enabled is not False))
+        data['membership_quick_checkin'] = (bool(config.employee_attendance_enabled) if data['membership_employee_mode'] else bool(config.membership_quick_checkin))
 
     if config.card_type == 'employee':
         employee_benefits = []
@@ -21657,16 +21713,18 @@ async def get_customer_membership_benefits(public_id: str, customer_public_id: s
     if not customer or customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail='Customer not found for this business')
     program = safe_get_customer_program(customer, business.get('id'))
-    is_employee = bool(program and program.get('card_type') == 'employee')
-    if not program or (not program_has_membership(program) and not is_employee):
+    is_legacy_employee = bool(program and program.get('card_type') == 'employee')
+    is_employee_membership = program_is_employee_membership(program)
+    is_employee = is_legacy_employee or is_employee_membership
+    if not program or (not program_has_membership(program) and not is_legacy_employee):
         raise HTTPException(status_code=400, detail='This program is not using redeemable benefits')
     return {
         'membership_name': program.get('membership_name') or program.get('card_name') or ('Employee Benefits' if is_employee else 'Membership'),
-        'membership_status': 'active' if is_employee else membership_effective_status(customer),
+        'membership_status': 'active' if is_legacy_employee else membership_effective_status(customer),
         'membership_expires_at': None if is_employee else customer.get('membership_expires_at'),
-        'benefits_unlocked': True if is_employee else membership_benefits_unlocked(customer, program),
-        'unlock': {'enabled': False, 'unlocked': True} if is_employee else membership_unlock_summary(customer, program),
-        'benefits': get_employee_benefit_statuses(business, customer, program) if is_employee else get_membership_benefit_statuses(business, customer, program),
+        'benefits_unlocked': True if is_legacy_employee else membership_benefits_unlocked(customer, program),
+        'unlock': {'enabled': False, 'unlocked': True} if is_legacy_employee else membership_unlock_summary(customer, program),
+        'benefits': get_employee_benefit_statuses(business, customer, program) if is_legacy_employee else get_membership_benefit_statuses(business, customer, program),
     }
 
 
@@ -21685,17 +21743,19 @@ async def redeem_membership_benefit(
     if not customer or customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail='Customer not found for this business')
     program = safe_get_customer_program(customer, business.get('id'))
-    is_employee = bool(program and program.get('card_type') == 'employee')
-    if not program or (not program_has_membership(program) and not is_employee):
+    is_legacy_employee = bool(program and program.get('card_type') == 'employee')
+    is_employee_membership = program_is_employee_membership(program)
+    is_employee = is_legacy_employee or is_employee_membership
+    if not program or (not program_has_membership(program) and not is_legacy_employee):
         raise HTTPException(status_code=400, detail='This program is not using redeemable benefits')
-    if not is_employee:
+    if not is_legacy_employee:
         if not membership_access_allowed(customer):
             raise HTTPException(status_code=400, detail=f"Membership is {membership_effective_status(customer)}")
         if not membership_benefits_unlocked(customer, program):
             unlock = membership_unlock_summary(customer, program)
             raise HTTPException(status_code=400, detail=f"Membership benefits are still locked. Complete {unlock.get('remaining', 0)} more Tier {unlock.get('unit', 'stamps')}.")
 
-    benefits = normalize_employee_benefits(program) if is_employee else normalize_membership_benefits(program)
+    benefits = normalize_employee_benefits(program) if is_legacy_employee else normalize_membership_benefits(program)
     benefit = next((b for b in benefits if b.get('id') == req.benefit_id), None)
     if not benefit:
         raise HTTPException(status_code=404, detail='Benefit not found')
@@ -21738,13 +21798,13 @@ async def redeem_membership_benefit(
                 return {
                     'message': 'Benefit already redeemed', 'duplicate': True,
                     'redemption': prior[0],
-                    'benefits': get_employee_benefit_statuses(business, customer, program) if is_employee else get_membership_benefit_statuses(business, customer, program),
+                    'benefits': get_employee_benefit_statuses(business, customer, program) if is_legacy_employee else get_membership_benefit_statuses(business, customer, program),
                 }
         except Exception:
             pass
 
     current = next(
-        (x for x in (get_employee_benefit_statuses(business, customer, program) if is_employee else get_membership_benefit_statuses(business, customer, program)) if x.get('id') == benefit.get('id')),
+        (x for x in (get_employee_benefit_statuses(business, customer, program) if is_legacy_employee else get_membership_benefit_statuses(business, customer, program)) if x.get('id') == benefit.get('id')),
         benefit,
     )
     remaining = current.get('remaining_in_window')
@@ -21795,7 +21855,7 @@ async def redeem_membership_benefit(
     return {
         'message': f"{benefit.get('name')} redeemed",
         'redemption': inserted,
-        'benefits': get_employee_benefit_statuses(business, customer, program) if is_employee else get_membership_benefit_statuses(business, customer, program),
+        'benefits': get_employee_benefit_statuses(business, customer, program) if is_legacy_employee else get_membership_benefit_statuses(business, customer, program),
     }
 
 
@@ -21808,10 +21868,10 @@ async def record_employee_attendance(public_id: str, req: EmployeeAttendanceRequ
     if not customer or customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail='Employee not found for this business')
     program = safe_get_customer_program(customer, business.get('id'))
-    if not program or program.get('card_type') != 'employee':
-        raise HTTPException(status_code=400, detail='This card is not an Employee Card')
+    if not program or not program_is_employee_experience(program):
+        raise HTTPException(status_code=400, detail='This card is not configured for employees')
     if not bool(program.get('employee_time_tracking_enabled')):
-        raise HTTPException(status_code=400, detail='Time In / Time Out is not enabled for this Employee Card')
+        raise HTTPException(status_code=400, detail='Time In / Time Out is not enabled for this employee membership')
 
     staff_id = None
     branch_id = None
@@ -24015,13 +24075,16 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
     if not program:
         raise HTTPException(status_code=400, detail='This business has not configured a loyalty program yet')
 
-    if program.get('card_type') == 'employee':
+    legacy_employee_card = program.get('card_type') == 'employee'
+    employee_membership = program_is_employee_membership(program)
+    if legacy_employee_card or employee_membership:
         if not (signup.employee_id_number or '').strip():
             raise HTTPException(status_code=400, detail='Employee ID number is required.')
-        if not signup.birthday:
+        if employee_membership and not (signup.employee_position or '').strip():
+            raise HTTPException(status_code=400, detail='Position is required for an Employee Membership.')
+        # Legacy Employee Card keeps its historical birthday requirement. Employee Membership does not.
+        if legacy_employee_card and not signup.birthday:
             raise HTTPException(status_code=400, detail='Birthday is required for an Employee Card.')
-        if not signup.employee_start_date:
-            raise HTTPException(status_code=400, detail='Employment start date is required for an Employee Card.')
 
     dup_field = find_customer_duplicate(
         business.get('id'), signup.phone, signup.email, program_id=program.get('id')
@@ -24051,14 +24114,23 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
         'privacy_consent': True,
         'privacy_consent_at': datetime.utcnow().isoformat(),
         'privacy_consent_version': signup.privacy_consent_version,
-        'employee_id_number': ((signup.employee_id_number or '').strip() or None) if program.get('card_type') == 'employee' else None,
-        'employee_start_date': signup.employee_start_date if program.get('card_type') == 'employee' else None,
+        'employee_id_number': ((signup.employee_id_number or '').strip() or None) if (legacy_employee_card or employee_membership) else None,
+        'employee_position': ((signup.employee_position or '').strip() or None) if (legacy_employee_card or employee_membership) else None,
+        'employee_start_date': signup.employee_start_date if (legacy_employee_card or employee_membership) else None,
         'stamp_count': 0,
         'points_balance': 0,
         'created_at': datetime.utcnow().isoformat(),
         'updated_at': datetime.utcnow().isoformat(),
         **card_cycle_signup_fields(program),
     }
+
+    if employee_membership:
+        today = datetime.now(ZoneInfo('Asia/Manila')).date()
+        customer_data.update({
+            'membership_status': 'active',
+            'membership_start_date': today.isoformat(),
+            'membership_expires_at': None,
+        })
 
     # Hybrid can optionally auto-activate the subscription the moment the
     # customer joins. Manual is the default/safe mode for paid memberships.
@@ -28128,11 +28200,14 @@ async def cashier_stamp_page(customer_public_id: str):
         'membership_expires_at': customer.get('membership_expires_at'),
         'membership_visit_logging_enabled': (program.get('membership_visit_logging_enabled') is not False) if program else True,
         'membership_benefits': (get_employee_benefit_statuses(business, customer, program) if card_type == 'employee' else (get_membership_benefit_statuses(business, customer, program) if program_has_membership(program) else [])),
-        'employee_time_tracking_enabled': bool((program or {}).get('employee_time_tracking_enabled')) if card_type == 'employee' else False,
-        'employee_attendance': get_employee_attendance_state(customer.get('id')) if card_type == 'employee' else None,
-        'employee_id_number': customer.get('employee_id_number') if card_type == 'employee' else None,
-        'employee_start_date': customer.get('employee_start_date') if card_type == 'employee' else None,
-        'employee_birthday': customer.get('birthday') if card_type == 'employee' else None,
+        'membership_employee_mode': program_is_employee_membership(program),
+        'employee_attendance_enabled': bool((program or {}).get('employee_attendance_enabled')) if program_is_employee_membership(program) else False,
+        'employee_time_tracking_enabled': bool((program or {}).get('employee_time_tracking_enabled')) if program_is_employee_experience(program) else False,
+        'employee_attendance': get_employee_attendance_state(customer.get('id')) if program_is_employee_experience(program) else None,
+        'employee_id_number': customer.get('employee_id_number') if program_is_employee_experience(program) else None,
+        'employee_position': customer.get('employee_position') if program_is_employee_experience(program) else None,
+        'employee_start_date': customer.get('employee_start_date') if program_is_employee_experience(program) else None,
+        'employee_birthday': customer.get('birthday') if program_is_employee_experience(program) else None,
         'membership_unlock': membership_unlock_summary(customer, program) if program_has_membership(program) else {'enabled':False,'unlocked':True},
     }
     data_json = json.dumps(data)
@@ -28869,6 +28944,9 @@ async def public_business_join_config(public_id: str):
         'membership_duration_days': program.get('membership_duration_days') or 30,
         'membership_price': program.get('membership_price') or 0,
         'membership_terms': program.get('membership_terms'),
+        'membership_employee_mode': program_is_employee_membership(program),
+        'employee_attendance_enabled': bool(program.get('employee_attendance_enabled')),
+        'employee_time_tracking_enabled': bool(program.get('employee_time_tracking_enabled')),
     }
 
 @app.get("/api/v1/customer/{customer_public_id}/wallet-pass")

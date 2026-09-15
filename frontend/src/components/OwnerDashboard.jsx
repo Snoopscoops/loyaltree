@@ -1881,6 +1881,8 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
   const isVipCard = program?.card_type === 'vip'
   const isHybridCard = program?.card_type === 'hybrid'
   const isEmployeeCard = program?.card_type === 'employee'
+  const isEmployeeMembership = isMembershipCard && program?.membership_employee_mode === true
+  const isEmployeeExperience = isEmployeeCard || isEmployeeMembership
   const hybridLoyaltyType = program?.hybrid_loyalty_type === 'stamp' ? 'stamp' : 'points'
   const hybridUsesPoints = isHybridCard && hybridLoyaltyType === 'points'
   const hybridUsesStamps = isHybridCard && hybridLoyaltyType === 'stamp'
@@ -1900,12 +1902,19 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
         scanTitle:'Select a Program to Scan', scanDescription:'Choose Card 1, Card 2, or another program before recording activity',
         recentTitle:'Recent Program Activity', editDescription:'Combined view across every active loyalty card',
       }
+    : isEmployeeMembership
+    ? {
+        key:'employee-membership', accent:'#1d4ed8', soft:'#eff6ff', border:'#bfdbfe', icon:'🪪',
+        title:'Employee Membership', customerLabel:'Employees', customerIcon:'👤', dashboardLabel:'Employee Membership Dashboard',
+        scanTitle:'Scan Employee Membership', scanDescription:'View employee identity, benefits, attendance, and Time In / Time Out when enabled',
+        recentTitle:'Recent Employees', editDescription:'Membership with Employee ID, position, benefits, and optional attendance tools',
+      }
     : isEmployeeCard
     ? {
         key:'employee', accent:'#1d4ed8', soft:'#eff6ff', border:'#bfdbfe', icon:'🪪',
-        title:'Employee Card', customerLabel:'Employees', customerIcon:'👤', dashboardLabel:'Employee Card Dashboard',
+        title:'Employee Card (Legacy)', customerLabel:'Employees', customerIcon:'👤', dashboardLabel:'Employee Card Dashboard',
         scanTitle:'Scan Employee Card', scanDescription:'View employee identity, redeem benefits, and record Time In / Time Out when enabled',
-        recentTitle:'Recent Employees', editDescription:'Configure employee identity, benefits, and optional attendance tracking',
+        recentTitle:'Recent Employees', editDescription:'Legacy Employee Card. New employee programs should use Employee Membership.',
       }
     : isHybridCard
     ? {
@@ -2225,13 +2234,12 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
               <button type="button" onClick={()=>setShowCreateProgram(false)} disabled={creatingProgram} style={{border:0,background:'#f1f5f9',borderRadius:999,width:32,height:32,cursor:'pointer'}}>×</button>
             </div>
             <label style={{...styles.label,marginTop:18}}>Program name</label>
-            <input autoFocus style={styles.input} value={newProgram.name} onChange={e=>setNewProgram({...newProgram,name:e.target.value})} placeholder="e.g. Employee Card" maxLength={80}/>
+            <input autoFocus style={styles.input} value={newProgram.name} onChange={e=>setNewProgram({...newProgram,name:e.target.value})} placeholder="e.g. Team Membership" maxLength={80}/>
             <label style={styles.label}>Card type</label>
             <select style={styles.input} value={newProgram.card_type} onChange={e=>setNewProgram({...newProgram,card_type:e.target.value})}>
               <option value="stamp">Stamp Card</option>
               <option value="points">Points Card</option>
               <option value="membership">Membership</option>
-              <option value="employee">Employee Card</option>
               <option value="multipass">Multi-Pass</option>
               <option value="vip">VIP / Tier</option>
               <option value="hybrid">Hybrid</option>
@@ -2458,7 +2466,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                   <span style={styles.activityLeaf}>🍃</span>
                   <span style={styles.activityName}>{c.name}</span>
                   <span style={styles.activityStamps}>
-                    {viewingAllPrograms ? (c.program_card_type === 'employee' ? `Employee · ${c.employee_id_number || '—'}` : c.program_card_type === 'points' ? `${c.points_balance || 0} points` : c.program_card_type === 'multipass' ? `${c.multipass_sessions_remaining || 0}/${c.multipass_total_sessions || 0} sessions` : c.program_card_type === 'membership' ? `${(c.membership_effective_status || c.membership_status || 'inactive').toUpperCase()}` : c.program_card_type === 'vip' ? `${c.vip_tier?.name || 'Tier'}` : `${c.stamp_count || 0} stamps`) : isEmployeeCard ? `Employee · ${c.employee_id_number || '—'}` : isPointsCard ? `${c.points_balance || 0} points` : isMultipassCard ? `${c.multipass_sessions_remaining || 0}/${c.multipass_total_sessions || 0} sessions` : isVipCard ? `${c.vip_tier?.name || 'Tier'} · ${vipUsesStamps ? `${c.stamp_count || 0} stamps` : `${c.vip_points || 0} pts`}` : isMembershipCard ? `${(c.membership_effective_status || c.membership_status || 'inactive').toUpperCase()}` : `${c.stamp_count} stamps`}
+                    {viewingAllPrograms ? (c.program_card_type === 'employee' ? `Employee · ${c.employee_id_number || '—'}` : c.program_card_type === 'points' ? `${c.points_balance || 0} points` : c.program_card_type === 'multipass' ? `${c.multipass_sessions_remaining || 0}/${c.multipass_total_sessions || 0} sessions` : c.program_card_type === 'membership' ? `${(c.membership_effective_status || c.membership_status || 'inactive').toUpperCase()}` : c.program_card_type === 'vip' ? `${c.vip_tier?.name || 'Tier'}` : `${c.stamp_count || 0} stamps`) : isEmployeeCard ? `Employee · ${c.employee_id_number || '—'}` : isPointsCard ? `${c.points_balance || 0} points` : isMultipassCard ? `${c.multipass_sessions_remaining || 0}/${c.multipass_total_sessions || 0} sessions` : isVipCard ? `${c.vip_tier?.name || 'Tier'} · ${vipUsesStamps ? `${c.stamp_count || 0} stamps` : `${c.vip_points || 0} pts`}` : isEmployeeMembership ? `Employee · ${c.employee_id_number || '—'}${c.employee_position ? ` · ${c.employee_position}` : ''}` : isMembershipCard ? `${(c.membership_effective_status || c.membership_status || 'inactive').toUpperCase()}` : `${c.stamp_count} stamps`}
                   </span>
                   {c.reward_unlocked && <span style={styles.activityFruit}>🎁</span>}
                 </div>
@@ -3594,7 +3602,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
             )}
 
             <div style={{marginBottom:18, padding:16, border:'1px solid #ccfbf1', background:'#f0fdfa', borderRadius:14}}>
-              {isEmployeeCard && (
+              {isEmployeeExperience && (
                 <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))',gap:10,marginBottom:14}}>
                   {[
                     ['Employee ID', selectedCustomer.employee_id_number || '—'],
@@ -3602,7 +3610,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                     ['Birthday', selectedCustomer.birthday || '—'],
                     ['Started', selectedCustomer.employee_start_date || '—'],
                   ].map(([label,value]) => <div key={label} style={{background:'white',border:'1px solid #bfdbfe',borderRadius:12,padding:12}}><div style={{fontSize:10.5,fontWeight:900,color:'#64748b',textTransform:'uppercase'}}>{label}</div><div style={{fontSize:15,fontWeight:900,color:'#1e3a8a',marginTop:5}}>{value}</div></div>)}
-                  {program?.employee_time_tracking_enabled === true && <div style={{gridColumn:isMobile?'auto':'1 / -1',padding:10,background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:10,fontSize:12,fontWeight:800,color:'#1d4ed8'}}>🕒 Time In / Time Out is enabled for this Employee Card. Attendance is recorded when the card is scanned.</div>}
+                  {program?.employee_time_tracking_enabled === true && <div style={{gridColumn:isMobile?'auto':'1 / -1',padding:10,background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:10,fontSize:12,fontWeight:800,color:'#1d4ed8'}}>🕒 Time In / Time Out is enabled for this employee membership. Attendance is recorded when the card is scanned.</div>}
                 </div>
               )}
               {hasMembershipFeatures && (
@@ -3663,7 +3671,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                 )}
 
                 {(isMembershipCard || isHybridCard || isEmployeeCard) && membershipBenefitStatus.length > 0 && <div style={{marginBottom:14,display:'grid',gap:8}}>
-                  <strong style={{fontSize:14,color:'#115e59'}}>{isEmployeeCard ? 'Employee benefits' : 'Subscription benefits'}</strong>
+                  <strong style={{fontSize:14,color:'#115e59'}}>{isEmployeeExperience ? 'Employee benefits' : 'Membership benefits'}</strong>
                   {membershipBenefitStatus.map(benefit => <div key={benefit.id} style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'center',padding:'9px 11px',border:'1px solid #e2e8f0',borderRadius:10,background:benefit.available?'#f0fdf4':'#f8fafc'}}>
                     <div><div style={{fontSize:13,fontWeight:800,color:'#0f172a'}}>{benefit.name}</div><div style={{fontSize:11,color:'#64748b'}}>{benefit.remaining_in_window==null?'Unlimited':`${benefit.remaining_in_window} remaining`}{benefit.unavailable_reason?` · ${benefit.unavailable_reason}`:''}</div></div>
                     <span style={{fontSize:10,fontWeight:900,color:benefit.available?'#15803d':'#64748b'}}>{benefit.available?'AVAILABLE':'USED / UNAVAILABLE'}</span>

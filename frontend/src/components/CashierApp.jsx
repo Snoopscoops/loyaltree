@@ -299,7 +299,10 @@ function CashierApp({ API_BASE }) {
           phone: c.phone,
           birthday: c.birthday || null,
           employee_id_number: c.employee_id_number || '',
+          employee_position: c.employee_position || '',
           employee_start_date: c.employee_start_date || null,
+          membership_employee_mode: program.membership_employee_mode === true,
+          employee_attendance_enabled: program.employee_attendance_enabled === true,
           employee_time_tracking_enabled: program.employee_time_tracking_enabled === true,
           employee_attendance: c.employee_attendance || data.employee_attendance || { last_action: null, last_at: null, is_clocked_in: false },
           business_name: data.business?.name || '',
@@ -552,7 +555,9 @@ function CashierApp({ API_BASE }) {
       setMessage('Membership visit logging is disabled by the business owner')
       return
     }
-    const serviceName = customerData.membership_quick_checkin
+    const serviceName = customerData.membership_employee_mode
+      ? 'Attendance'
+      : customerData.membership_quick_checkin
       ? null
       : window.prompt('Visit or service', customerData.membership_services?.[0] || 'Member check-in')
     if (!customerData.membership_quick_checkin && !serviceName) return
@@ -574,7 +579,7 @@ function CashierApp({ API_BASE }) {
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Could not log visit')
-      setMessage(entrySource === 'nfc' ? `✅ NFC activity logged for ${customerData.name}` : `✅ Visit logged for ${customerData.name}`)
+      setMessage(customerData.membership_employee_mode ? `✅ Attendance marked for ${customerData.name}` : entrySource === 'nfc' ? `✅ NFC activity logged for ${customerData.name}` : `✅ Visit logged for ${customerData.name}`)
     } catch (err) {
       setMessage(`❌ ${err.message}`)
     }
@@ -620,7 +625,7 @@ function CashierApp({ API_BASE }) {
   }
 
   const recordEmployeeAttendance = async (action) => {
-    if (!customerData?.public_id || !businessSlug || customerData.card_type !== 'employee') return
+    if (!customerData?.public_id || !businessSlug || !isEmployeeExperience) return
     const label = action === 'time_in' ? 'Time In' : 'Time Out'
     const ok = window.confirm(`${label} ${customerData.name}?`)
     if (!ok) return
@@ -1161,6 +1166,8 @@ function CashierApp({ API_BASE }) {
 
   const isHybrid = customerData?.card_type === 'hybrid'
   const isEmployee = customerData?.card_type === 'employee'
+  const isEmployeeMembership = customerData?.card_type === 'membership' && customerData?.membership_employee_mode === true
+  const isEmployeeExperience = isEmployee || isEmployeeMembership
   const hybridLoyaltyType = customerData?.hybrid_loyalty_type === 'stamp' ? 'stamp' : 'points'
   const usesPoints = customerData?.card_type === 'points' || (isHybrid && hybridLoyaltyType === 'points')
   const usesStamps = customerData?.card_type === 'stamp' || (isHybrid && hybridLoyaltyType === 'stamp')
@@ -1183,13 +1190,22 @@ function CashierApp({ API_BASE }) {
         label: `Composite Card · Membership + ${hybridLoyaltyType === 'points' ? 'Reward Points' : 'Reward Stamps'}${hybridTierEnabled ? ` + Tier ${tierUsesStamps ? 'Stamps' : 'Points'}` : ''}`,
         actionTitle: hybridTierEnabled ? 'Membership, Rewards & Tier Actions' : 'Membership & Reward Actions',
       }
+    : isEmployeeMembership
+    ? {
+        accent: '#1d4ed8',
+        soft: '#eff6ff',
+        border: '#bfdbfe',
+        icon: '🪪',
+        label: 'Employee Membership',
+        actionTitle: 'Employee Benefits & Attendance',
+      }
     : isEmployee
     ? {
         accent: '#1d4ed8',
         soft: '#eff6ff',
         border: '#bfdbfe',
         icon: '🪪',
-        label: 'Employee Card',
+        label: 'Employee Card (Legacy)',
         actionTitle: 'Employee Benefits & Attendance',
       }
     : customerData?.card_type === 'points'
@@ -1390,7 +1406,7 @@ function CashierApp({ API_BASE }) {
                   : customerData.card_type === 'vip'
                   ? `${customerData.vip_tier?.name || 'Tier'} · ${vipUsesStamps ? `${customerData.tier_stamp_count || 0} Tier stamps` : `${customerData.vip_points || 0} Tier points`}`
                   : customerData.card_type === 'membership'
-                  ? `${customerData.membership_status.toUpperCase()}${customerData.membership_expires_at ? ` • until ${customerData.membership_expires_at}` : ''}`
+                  ? (customerData.membership_employee_mode ? `ID ${customerData.employee_id_number || '—'}${customerData.employee_position ? ` • ${customerData.employee_position}` : ''}${customerData.employee_start_date ? ` • Started ${customerData.employee_start_date}` : ''}` : `${customerData.membership_status.toUpperCase()}${customerData.membership_expires_at ? ` • until ${customerData.membership_expires_at}` : ''}`)
                   : `${customerData.stamp_count} rings • ${customerData.reward_threshold - (customerData.stamp_count % customerData.reward_threshold)} to fruit`}
               </p>
             </div>
@@ -1605,30 +1621,31 @@ function CashierApp({ API_BASE }) {
             </>
           ) : customerData.card_type === 'membership' ? (
             <>
-              <div style={{
-                ...styles.pointsBalanceBox,
-                background: ['active','lifetime'].includes(customerData.membership_status) ? '#dcfce7' : '#fee2e2'
-              }}>
-                <span style={{...styles.pointsBalanceNumber, fontSize: 28}}>
-                  {customerData.membership_status.toUpperCase()}
-                </span>
-                <span style={styles.pointsBalanceLabel}>
-                  {customerData.membership_status === 'lifetime'
-                    ? 'Lifetime access'
-                    : customerData.membership_expires_at
-                    ? `Active until ${customerData.membership_expires_at}`
-                    : 'No active subscription'}
-                </span>
-              </div>
-              {customerData.membership_benefits?.length > 0 && (
-                <div style={{margin:'14px 0'}}>
-                  <div style={{fontSize:12,fontWeight:900,color:'#334155',marginBottom:8}}>MEMBER BENEFITS · {customerData.membership_name}</div>
-                  <div style={styles.prizeList}>{customerData.membership_benefits.map(benefit => <div key={benefit.id} style={{...styles.prizeRow,opacity:benefit.available?1:.58}}>
-                    <div><div style={styles.prizeName}>{benefit.name}</div><div style={styles.prizeCost}>{benefit.remaining_in_window==null?'Unlimited':`${benefit.remaining_in_window} remaining`}{benefit.unavailable_reason?` · ${benefit.unavailable_reason}`:''}</div></div>
-                    <button style={{...styles.prizeRedeemBtn,background:benefit.available?'#0d9488':'#cbd5e1'}} disabled={!benefit.available||loading} onClick={()=>redeemMembershipBenefit(benefit)}>{benefit.benefit_type?.includes('discount')?'Apply':'Redeem'}</button>
-                  </div>)}</div>
+              {customerData.membership_employee_mode ? <>
+                <div style={{...styles.pointsBalanceBox,background:'#eff6ff',border:'1px solid #bfdbfe'}}>
+                  <span style={{...styles.pointsBalanceNumber,fontSize:24}}>🪪 {customerData.employee_id_number || 'No ID'}</span>
+                  <span style={styles.pointsBalanceLabel}>{customerData.employee_position || 'Employee'}</span>
                 </div>
-              )}
+                <div style={{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:8,margin:'12px 0'}}>
+                  <div style={{padding:'10px 11px',borderRadius:10,background:'#f8fafc',border:'1px solid #e2e8f0'}}><div style={{fontSize:9.5,fontWeight:900,color:'#64748b',letterSpacing:.55}}>STARTED WHEN</div><div style={{fontSize:12.5,fontWeight:800,color:'#334155',marginTop:4}}>{customerData.employee_start_date || '—'}</div></div>
+                  <div style={{padding:'10px 11px',borderRadius:10,background:'#f8fafc',border:'1px solid #e2e8f0'}}><div style={{fontSize:9.5,fontWeight:900,color:'#64748b',letterSpacing:.55}}>BIRTHDAY</div><div style={{fontSize:12.5,fontWeight:800,color:'#334155',marginTop:4}}>{customerData.birthday || '—'}</div></div>
+                </div>
+                {customerData.employee_time_tracking_enabled && <div style={{padding:'11px 12px',borderRadius:12,background:customerData.employee_attendance?.is_clocked_in?'#dcfce7':'#f8fafc',border:`1px solid ${customerData.employee_attendance?.is_clocked_in?'#86efac':'#e2e8f0'}`,marginBottom:12}}>
+                  <div style={{fontSize:10,fontWeight:900,color:customerData.employee_attendance?.is_clocked_in?'#047857':'#64748b',letterSpacing:.6}}>TIME STATUS</div>
+                  <div style={{fontSize:13,fontWeight:850,color:'#334155',marginTop:4}}>{customerData.employee_attendance?.is_clocked_in ? '🟢 TIMED IN' : '⚪ TIMED OUT'}</div>
+                  {customerData.employee_attendance?.last_at && <div style={{fontSize:10.5,color:'#64748b',marginTop:3}}>Last activity: {new Date(customerData.employee_attendance.last_at).toLocaleString()}</div>}
+                </div>}
+              </> : <div style={{...styles.pointsBalanceBox,background:['active','lifetime'].includes(customerData.membership_status)?'#dcfce7':'#fee2e2'}}>
+                <span style={{...styles.pointsBalanceNumber,fontSize:28}}>{customerData.membership_status.toUpperCase()}</span>
+                <span style={styles.pointsBalanceLabel}>{customerData.membership_status==='lifetime'?'Lifetime access':customerData.membership_expires_at?`Active until ${customerData.membership_expires_at}`:'No active subscription'}</span>
+              </div>}
+              {customerData.membership_benefits?.length > 0 && <div style={{margin:'14px 0'}}>
+                <div style={{fontSize:12,fontWeight:900,color:'#334155',marginBottom:8}}>{customerData.membership_employee_mode?'EMPLOYEE BENEFITS':'MEMBER BENEFITS'} · {customerData.membership_name}</div>
+                <div style={styles.prizeList}>{customerData.membership_benefits.map(benefit => <div key={benefit.id} style={{...styles.prizeRow,opacity:benefit.available?1:.58}}>
+                  <div><div style={styles.prizeName}>{benefit.name}</div><div style={styles.prizeCost}>{benefit.remaining_in_window==null?'Unlimited':`${benefit.remaining_in_window} remaining`}{benefit.unavailable_reason?` · ${benefit.unavailable_reason}`:''}</div></div>
+                  <button style={{...styles.prizeRedeemBtn,background:benefit.available?'#0d9488':'#cbd5e1'}} disabled={!benefit.available||loading} onClick={()=>redeemMembershipBenefit(benefit)}>{benefit.benefit_type?.includes('discount')?'Apply':'Redeem'}</button>
+                </div>)}</div>
+              </div>}
             </>
           ) : (
             /* Stamp Rings */
@@ -1695,7 +1712,7 @@ function CashierApp({ API_BASE }) {
           </div>
 
           {/* Actions */}
-          {isEmployee && customerData.employee_time_tracking_enabled && (
+          {isEmployeeExperience && customerData.employee_time_tracking_enabled && (
             <div style={{...styles.pointsSaleSection,background:'#eff6ff',border:'1px solid #bfdbfe'}}>
               <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
                 <button
@@ -1716,8 +1733,8 @@ function CashierApp({ API_BASE }) {
               <p style={styles.pointsPreview}>{customerData.employee_attendance?.is_clocked_in ? 'Employee is currently timed in.' : 'Employee is currently timed out.'}</p>
             </div>
           )}
-          {isEmployee && !customerData.employee_time_tracking_enabled && (
-            <div style={{fontSize:11.5,color:'#64748b',textAlign:'center',padding:'6px 0 12px'}}>Time In / Time Out is disabled for this Employee Card. Benefits can still be redeemed above.</div>
+          {isEmployeeExperience && !customerData.employee_time_tracking_enabled && (
+            <div style={{fontSize:11.5,color:'#64748b',textAlign:'center',padding:'6px 0 12px'}}>Time In / Time Out is disabled for this employee membership. Benefits can still be redeemed above.</div>
           )}
           {usesPoints ? (
             <div style={styles.pointsSaleSection}>
@@ -1857,7 +1874,7 @@ function CashierApp({ API_BASE }) {
                 onClick={logMembershipVisit}
                 disabled={loading || !['active','lifetime'].includes(customerData.membership_status)}
               >
-                {loading ? '...' : entrySource === 'nfc' ? '📡 Log NFC Activity' : '🏋️ Check In Member'}
+                {loading ? '...' : isEmployeeMembership ? '✅ Mark Present' : entrySource === 'nfc' ? '📡 Log NFC Activity' : '🏋️ Check In Member'}
               </button>
             )}
             {canLogMembershipVisit && !['active','lifetime'].includes(customerData.membership_status) && (

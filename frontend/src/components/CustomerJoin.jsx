@@ -1,5 +1,13 @@
 import React, { useState, useEffect } from 'react'
 import { useParams } from 'react-router-dom'
+import { trackEvent } from '../analytics'
+
+const EMPLOYEE_POSITION_OPTIONS = [
+  'Manager', 'Supervisor / Team Lead', 'Admin / Office Staff', 'Cashier',
+  'Service Crew', 'Barista / Beverage Staff', 'Kitchen Staff', 'Server / Waitstaff',
+  'Sales Staff', 'Receptionist / Front Desk', 'Trainer / Coach', 'Therapist / Wellness Staff',
+  'Barber / Stylist', 'Security', 'Maintenance / Utility', 'Driver / Rider', 'Other',
+]
 
 function CustomerJoin({ API_BASE }) {
   const { businessSlug } = useParams()
@@ -12,6 +20,9 @@ function CustomerJoin({ API_BASE }) {
     birthday: '',
     occupation: '',
     gender: '',
+    employee_id_number: '',
+    employee_position: '',
+    employee_start_date: '',
   })
   const [submitted, setSubmitted] = useState(false)
   const [customerId, setCustomerId] = useState('')
@@ -25,66 +36,15 @@ function CustomerJoin({ API_BASE }) {
   const [walletLoading, setWalletLoading] = useState(false)
   const [businessInfo,setBusinessInfo]=useState(null)
   const [privacyConsent,setPrivacyConsent]=useState(false)
-
-  const rewardSummary = (() => {
-    if (!businessInfo) return null
-    const rawType = businessInfo.card_type || 'stamp'
-    const type = rawType === 'hybrid' ? (businessInfo.hybrid_loyalty_type === 'stamp' ? 'stamp' : 'points') : rawType
-
-    if (type === 'points') {
-      const prizes = [...(businessInfo.points_prizes || [])]
-        .filter(p => p && p.name && Number(p.points_cost) > 0)
-        .sort((a,b) => Number(a.points_cost) - Number(b.points_cost))
-      const prize = prizes[0]
-      if (!prize) return null
-      return {
-        title: prize.name,
-        requirement: `Collect ${Number(prize.points_cost).toLocaleString()} points to unlock your reward`,
-      }
-    }
-
-    if (type === 'stamp') {
-      const milestones = [...(businessInfo.stamp_rewards || [])]
-        .filter(r => r && r.reward_name && Number(r.stamps) > 0)
-        .sort((a,b) => Number(a.stamps) - Number(b.stamps))
-      const reward = milestones[0]
-      const goal = reward ? Number(reward.stamps) : Number(businessInfo.stamp_goal || 0)
-      const name = reward?.reward_name || businessInfo.reward_name
-      if (!name || !goal) return null
-      return { title: name, requirement: `Collect ${goal} stamps to unlock your reward` }
-    }
-
-    return null
-  })()
-
-  const earningRule = (() => {
-    if (!businessInfo) return null
-    const loyaltyType = businessInfo.card_type === 'hybrid' ? (businessInfo.hybrid_loyalty_type === 'stamp' ? 'stamp' : 'points') : businessInfo.card_type
-    if (loyaltyType === 'points') {
-      const points = Number(businessInfo.points_per_amount || 0)
-      const pesos = Number(businessInfo.points_amount_pesos || 0)
-      if (points > 0 && pesos > 0) {
-        if (points === 1) return `1 point for every ${pesos.toLocaleString()} pesos`
-        return `${points.toLocaleString()} points for every ${pesos.toLocaleString()} pesos`
-      }
-    }
-    return null
-  })()
-
-  const hybridMembership = (() => {
-    if (!businessInfo || businessInfo.card_type !== 'hybrid') return null
-    return {
-      name: businessInfo.membership_name || 'Membership',
-      price: Number(businessInfo.membership_price || 0),
-      duration: Number(businessInfo.membership_duration_days || 30),
-      enrollment: businessInfo.subscription_enrollment_mode === 'automatic' ? 'automatic' : 'manual',
-      benefits: Array.isArray(businessInfo.membership_benefits) && businessInfo.membership_benefits.length
-        ? businessInfo.membership_benefits
-        : (Array.isArray(businessInfo.membership_services) ? businessInfo.membership_services.map((name,i)=>({id:`legacy-${i}`,name})) : []),
-    }
-  })()
+  const isEmployeeCard = businessInfo?.card_type === 'employee'
+  const isEmployeeMembership = businessInfo?.card_type === 'membership' && businessInfo?.membership_employee_mode === true
+  const isEmployeeExperience = isEmployeeCard || isEmployeeMembership
 
   useEffect(()=>{
+    trackEvent(API_BASE, 'customer_join_view', {
+      page_name: 'Business Join Page',
+      business_public_id: businessSlug,
+    })
     fetch(`${API_BASE}/api/v1/public/business/${businessSlug}/join-config`)
       .then(r=>r.ok?r.json():null).then(setBusinessInfo).catch(()=>setBusinessInfo(null))
   },[API_BASE,businessSlug])
@@ -106,34 +66,22 @@ function CustomerJoin({ API_BASE }) {
       })
   }, [submitted, customerId, API_BASE])
 
-  const appleWalletUrl = `${API_BASE}/api/v1/customer/${customerId}/apple-wallet-pass`
-  const [walletChoiceOpen, setWalletChoiceOpen] = useState(false)
-
-  const openGoogleWallet = () => {
+  const addToGoogleWallet = () => {
+    trackEvent(API_BASE, 'wallet_google_click', {
+      page_name: 'Customer Join Success',
+      business_public_id: businessSlug,
+    })
     if (walletData?.save_url && walletData.save_url.includes('pay.google.com')) {
-      window.location.href = walletData.save_url
-    } else if (walletLoading) {
-      alert('Your Google Wallet card is still being prepared. Please try again in a moment.')
+      window.open(walletData.save_url, '_blank')
     } else {
-      alert('Google Wallet is not available for this card right now.')
+      alert('Save this page to your home screen for quick access!')
     }
   }
 
-  const openAppleWallet = () => {
-    window.location.href = appleWalletUrl
-  }
-
-  const addToWallet = () => {
-    const ua = navigator.userAgent || ''
-    const platform = navigator.platform || ''
-    const touchPoints = navigator.maxTouchPoints || 0
-    const isAppleMobile = /iPhone|iPad|iPod/i.test(ua) || (platform === 'MacIntel' && touchPoints > 1)
-    const isAndroid = /Android/i.test(ua)
-
-    if (isAppleMobile) return openAppleWallet()
-    if (isAndroid) return openGoogleWallet()
-    setWalletChoiceOpen(true)
-  }
+  // Same reasoning as WalletPass.jsx: Apple Wallet has no JS API to
+  // trigger from, so this is a plain <a href> to the signed .pkpass file -
+  // Safari on iOS/macOS shows the native "Add to Apple Wallet" sheet.
+  const appleWalletUrl = `${API_BASE}/api/v1/customer/${customerId}/apple-wallet-pass`
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -142,6 +90,9 @@ function CustomerJoin({ API_BASE }) {
       setError('Please review and accept the Privacy & Membership Consent before continuing.')
       return
     }
+    if (isEmployeeExperience && !form.employee_id_number.trim()) { setError('Employee ID number is required.'); return }
+    if (isEmployeeMembership && !form.employee_position) { setError('Please select a position.'); return }
+    if (isEmployeeCard && !form.birthday) { setError('Birthday is required for the legacy Employee Card.'); return }
     setLoading(true)
     try {
       const res = await fetch(`${API_BASE}/api/v1/join/${businessSlug}`, {
@@ -156,12 +107,19 @@ function CustomerJoin({ API_BASE }) {
           birthday: form.birthday || null,
           occupation: form.occupation || null,
           gender: form.gender || null,
+          employee_id_number: isEmployeeExperience ? form.employee_id_number.trim() : null,
+          employee_position: isEmployeeExperience ? form.employee_position || null : null,
+          employee_start_date: isEmployeeExperience ? (form.employee_start_date || null) : null,
           privacy_consent: true,
           privacy_consent_version: '2026-08-09-v1',
         })
       })
       const data = await res.json()
       if (res.ok) {
+        trackEvent(API_BASE, 'customer_join_complete', {
+          page_name: 'Business Join Page',
+          business_public_id: businessSlug,
+        })
         setCustomerId(data.public_id)
         setSubmitted(true)
       } else {
@@ -179,10 +137,10 @@ function CustomerJoin({ API_BASE }) {
         <div style={styles.card}>
           <div style={{ fontSize: 64, marginBottom: 16 }}>🎉</div>
           <h1 style={styles.title}>You&apos;re In!</h1>
-          <p style={styles.subtitle}>Your loyalty card has been created.</p>
+          <p style={styles.subtitle}>{isEmployeeMembership ? 'Your Employee Membership has been created.' : isEmployeeCard ? 'Your Employee Card has been created.' : 'Your loyalty card has been created.'}</p>
           <div style={styles.infoBox}>
-            <p style={styles.infoLabel}>Your Member ID</p>
-            <p style={styles.infoValue}>Show this QR code on every visit</p>
+            <p style={styles.infoLabel}>{isEmployeeExperience ? 'Employee ID' : 'Your Member ID'}</p>
+            <p style={styles.infoValue}>{isEmployeeExperience ? form.employee_id_number : 'Show this QR code on every visit'}</p>
           </div>
 
           <div style={{
@@ -193,31 +151,42 @@ function CustomerJoin({ API_BASE }) {
             <div style={styles.walletPreviewMeta}>
               <small>{businessInfo?.category?.label || 'LoyaltyTree'}</small>
               <strong>{businessInfo?.name || 'Your loyalty card'}</strong>
-              <span>{businessInfo?.card_name || (businessInfo?.card_type==='hybrid'?'HYBRID CARD':`${String(businessInfo?.card_type || 'stamp').toUpperCase()} CARD`)}</span>
+              <span>{businessInfo?.card_name || `${String(businessInfo?.card_type || 'stamp').toUpperCase()} CARD`}</span>
             </div>
             <div style={styles.walletPreviewMember}>Your Wallet 2.0 card is ready</div>
           </div>
 
-          <button type="button" onClick={addToWallet} style={{ ...styles.walletBtn, ...styles.unifiedWalletBtn }}>
-            Add to Wallet
-          </button>
-          {walletChoiceOpen && (
-            <div style={styles.walletChooser}>
-              <div style={styles.walletChooserTitle}>Choose your wallet</div>
-              <button type="button" onClick={openAppleWallet} style={{ ...styles.walletChoiceBtn, ...styles.appleBtn }}>Apple Wallet</button>
-              <button type="button" onClick={openGoogleWallet} disabled={walletLoading} style={{ ...styles.walletChoiceBtn, ...styles.googleBtn, ...(walletLoading ? styles.walletChoiceDisabled : {}) }}>
-                {walletLoading ? 'Preparing Google Wallet…' : 'Google Wallet'}
-              </button>
-            </div>
-          )}
+          <a
+            href={appleWalletUrl}
+            onClick={() => trackEvent(API_BASE, 'wallet_apple_click', {
+              page_name: 'Customer Join Success',
+              business_public_id: businessSlug,
+            })}
+            style={{ ...styles.walletBtn, ...styles.appleBtn }}
+          >
+            Add to Apple Wallet
+          </a>
           <button
-            onClick={() => { window.location.href = `${API_BASE}/wallet/${customerId}` }}
+            onClick={addToGoogleWallet}
+            disabled={walletLoading}
+            style={{ ...styles.walletBtn, background: '#4285f4', marginTop: 10 }}
+          >
+            {walletLoading ? 'Preparing card...' : 'Add to Google Wallet'}
+          </button>
+          <button
+            onClick={() => {
+              trackEvent(API_BASE, 'wallet_card_view', {
+                page_name: 'Customer Join Success',
+                business_public_id: businessSlug,
+              })
+              window.location.href = `${API_BASE}/wallet/${customerId}`
+            }}
             style={{ ...styles.walletBtn, ...styles.secondaryBtn, marginTop: 10 }}
           >
             📱 View My Digital Card
           </button>
           <p style={styles.hint}>
-            We&apos;ll automatically open the wallet made for your phone.
+            Save this to your phone or add to Google Wallet
           </p>
         </div>
       </div>
@@ -230,20 +199,8 @@ function CustomerJoin({ API_BASE }) {
         <div style={{...styles.logoBox,background:businessInfo?.primary_color||styles.logoBox.background}}>
           {businessInfo?.logo_url?<img src={businessInfo.logo_url} alt="" style={styles.businessLogo}/>:<span style={styles.logoIcon}>{businessInfo?.category?.icon||'🌳'}</span>}
         </div>
-        <h1 style={styles.title}>{businessInfo?.name?`Join ${businessInfo.name}`:'Join Rewards'}</h1>
-        <p style={styles.subtitle}>{businessInfo?.category?.label?`${businessInfo.category.label} · `:''}{businessInfo?.card_type==='hybrid'?'One card for membership plus rewards.':'Add your loyalty card to your phone and use it every visit.'}</p>
-
-        {hybridMembership && <div style={{...styles.rewardBox,border:'1px solid #99f6e4',background:'#f0fdfa'}}>
-          <div style={styles.rewardTitle}>✨ {hybridMembership.name} + {businessInfo?.hybrid_loyalty_type==='stamp'?'Stamps':'Points'}</div>
-          <div style={styles.rewardRequirement}>{hybridMembership.price>0?`₱${hybridMembership.price.toLocaleString()} / ${hybridMembership.duration} days`:`${hybridMembership.duration}-day membership`}</div>
-          <div style={{fontSize:12,color:'#475569',marginTop:6,fontWeight:700}}>{hybridMembership.enrollment==='automatic'?'Your membership activates automatically when you join.':'You join the loyalty program now. The business activates membership access for approved/paid subscribers.'}</div>
-          {hybridMembership.benefits.slice(0,3).map((benefit,i)=><div key={benefit.id||i} style={{fontSize:12,color:'#0f766e',marginTop:4}}>✓ {benefit.name}</div>)}
-        </div>}
-        {rewardSummary && <div style={styles.rewardBox}>
-          <div style={styles.rewardTitle}>🎁 {rewardSummary.title}</div>
-          <div style={styles.rewardRequirement}>{rewardSummary.requirement}</div>
-        </div>}
-        {earningRule && <p style={styles.earningRule}>{earningRule}</p>}
+        <h1 style={styles.title}>{businessInfo?.name ? (isEmployeeCard ? `${businessInfo.name} Employee Card` : `Join ${businessInfo.name}`) : (isEmployeeCard ? 'Employee Card' : 'Join Rewards')}</h1>
+        <p style={styles.subtitle}>{isEmployeeMembership ? 'Enter your employee details to receive your digital Employee Membership.' : isEmployeeCard ? 'Enter your employee details to receive your official digital Employee Card.' : `${businessInfo?.category?.label ? `${businessInfo.category.label} · ` : ''}Add your loyalty card to your phone and use it every visit.`}</p>
 
         <form onSubmit={handleSubmit} style={styles.form}>
           <div style={styles.inputGroup}>
@@ -256,7 +213,13 @@ function CustomerJoin({ API_BASE }) {
               required
             />
           </div>
-          <div style={styles.inputGroup}>
+          {isEmployeeExperience && (
+            <div style={styles.inputGroup}>
+              <label style={styles.label}>Employee ID Number</label>
+              <input placeholder="e.g. ANG-00124" value={form.employee_id_number} onChange={e => setForm({...form, employee_id_number: e.target.value})} style={styles.input} required />
+            </div>
+          )}
+          {!isEmployeeExperience && <div style={styles.inputGroup}>
             <label style={styles.label}>Address <span style={styles.optional}>(optional)</span></label>
             <input
               placeholder="123 Main St"
@@ -264,8 +227,8 @@ function CustomerJoin({ API_BASE }) {
               onChange={e => setForm({...form, address: e.target.value})}
               style={styles.input}
             />
-          </div>
-          <div style={styles.inputGroup}>
+          </div>}
+          {!isEmployeeExperience && <div style={styles.inputGroup}>
             <label style={styles.label}>Age <span style={styles.optional}>(optional)</span></label>
             <input
               placeholder="25"
@@ -276,9 +239,9 @@ function CustomerJoin({ API_BASE }) {
               min="0"
               max="120"
             />
-          </div>
+          </div>}
           <div style={styles.inputGroup}>
-            <label style={styles.label}>Number</label>
+            <label style={styles.label}>{isEmployeeExperience ? 'Mobile Number' : 'Number'}</label>
             <input
               placeholder="+1 234 567 8900"
               value={form.phone}
@@ -288,15 +251,25 @@ function CustomerJoin({ API_BASE }) {
             />
           </div>
           <div style={styles.inputGroup}>
-            <label style={styles.label}>Birthday <span style={styles.optional}>(optional, MM/DD/YYYY)</span></label>
-            <input
-              value={form.birthday}
-              onChange={e => setForm({...form, birthday: e.target.value})}
-              style={styles.input}
-              type="date"
-            />
+            <label style={styles.label}>Birthday <span style={styles.optional}>(optional)</span></label>
+            <input value={form.birthday} onChange={e => setForm({...form, birthday: e.target.value})} style={styles.input} type="date" required={isEmployeeCard} />
           </div>
-          <div style={styles.inputGroup}>
+          {isEmployeeExperience && (
+            <>
+              <div style={styles.inputGroup}>
+                <label style={styles.label}>Position {isEmployeeMembership ? '' : <span style={styles.optional}>(optional)</span>}</label>
+                <select value={form.employee_position} onChange={e => setForm({...form, employee_position: e.target.value})} style={styles.input} required={isEmployeeMembership}>
+                  <option value="">Select position</option>
+                  {EMPLOYEE_POSITION_OPTIONS.map(option => <option key={option} value={option}>{option}</option>)}
+                </select>
+              </div>
+              <div style={styles.inputGroup}>
+                <label style={styles.label}>Started When <span style={styles.optional}>(optional)</span></label>
+                <input value={form.employee_start_date} onChange={e => setForm({...form, employee_start_date: e.target.value})} style={styles.input} type="date" />
+              </div>
+            </>
+          )}
+          {!isEmployeeExperience && <div style={styles.inputGroup}>
             <label style={styles.label}>Occupation <span style={styles.optional}>(optional)</span></label>
             <select
               value={form.occupation}
@@ -308,8 +281,8 @@ function CustomerJoin({ API_BASE }) {
               <option value="business_owner">Business Owner</option>
               <option value="unemployed">Unemployed</option>
             </select>
-          </div>
-          <div style={styles.inputGroup}>
+          </div>}
+          {!isEmployeeExperience && <div style={styles.inputGroup}>
             <label style={styles.label}>Gender <span style={styles.optional}>(optional)</span></label>
             <select
               value={form.gender}
@@ -321,7 +294,7 @@ function CustomerJoin({ API_BASE }) {
               <option value="female">Female</option>
               <option value="rather_not_say">Rather not say</option>
             </select>
-          </div>
+          </div>}
           <div style={styles.inputGroup}>
             <label style={styles.label}>Email <span style={styles.optional}>(optional)</span></label>
             <input
@@ -361,7 +334,7 @@ function CustomerJoin({ API_BASE }) {
               ...(loading || !privacyConsent ? styles.buttonDisabled : {}),
             }}
           >
-            {loading ? 'Creating...' : 'Get My Loyalty Card'}
+            {loading ? 'Creating...' : (isEmployeeMembership ? 'Get My Employee Membership' : isEmployeeCard ? 'Get My Employee Card' : 'Get My Loyalty Card')}
           </button>
         </form>
 
@@ -418,30 +391,6 @@ const styles = {
     color: '#64748b',
     fontSize: 15,
     margin: '0 0 32px',
-  },
-  rewardBox: {
-    background: '#f8fafc',
-    borderRadius: 14,
-    padding: '18px 16px',
-    margin: '0 0 14px',
-    textAlign: 'center',
-  },
-  rewardTitle: {
-    color: '#0f172a',
-    fontSize: 15,
-    fontWeight: 800,
-    marginBottom: 7,
-  },
-  rewardRequirement: {
-    color: '#64748b',
-    fontSize: 13,
-    lineHeight: 1.5,
-  },
-  earningRule: {
-    color: '#475569',
-    fontSize: 13,
-    textAlign: 'center',
-    margin: '0 0 24px',
   },
   form: {
     display: 'flex',
@@ -582,13 +531,9 @@ const styles = {
     textAlign: 'center',
     textDecoration: 'none',
   },
-  unifiedWalletBtn: { background: '#111827' },
-  walletChooser: { marginTop:10,padding:12,border:'1.5px solid #e2e8f0',borderRadius:12,background:'#f8fafc' },
-  walletChooserTitle: { fontSize:12,fontWeight:800,color:'#64748b',marginBottom:8 },
-  walletChoiceBtn: { display:'block',width:'100%',boxSizing:'border-box',border:'none',borderRadius:10,padding:'12px 14px',color:'#fff',fontSize:14,fontWeight:800,cursor:'pointer',marginTop:7 },
-  appleBtn: { background:'#000000' },
-  googleBtn: { background:'#4285f4' },
-  walletChoiceDisabled: { opacity:.55,cursor:'not-allowed' },
+  appleBtn: {
+    background: '#000000',
+  },
   secondaryBtn: {
     background: 'white',
     color: '#0f766e',
