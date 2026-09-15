@@ -931,11 +931,13 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                       style={{ ...styles.planSelect, marginTop: 6 }}
                     >
                       <option value="monthly">Monthly billing</option>
-                      <option value="annual">Annual billing · 2 months free</option>
+                      <option value="3_months">3-month billing</option>
+                      <option value="6_months">6-month billing</option>
+                      <option value="annual">1-year billing · 2 months free</option>
                     </select>
                     {b.price_current != null && (
                       <div style={styles.rowPriceHint}>
-                        ₱{b.price_current.toLocaleString()}/{(b.billing_cycle || 'monthly') === 'annual' ? 'yr' : '30 days'} · {b.branch_count} branch{b.branch_count !== 1 ? 'es' : ''}
+                        ₱{b.price_current.toLocaleString()}/{({monthly:'30 days','3_months':'3 months','6_months':'6 months',annual:'year'}[b.billing_cycle || 'monthly'] || '30 days')} · {b.branch_count} branch{b.branch_count !== 1 ? 'es' : ''}
                       </div>
                     )}
                   </td>

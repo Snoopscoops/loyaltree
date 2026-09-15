@@ -33,6 +33,22 @@ function formatMoney(n) {
   return `₱${Number(n).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
+
+const BILLING_TERMS = {
+  monthly: { label: 'Monthly', payLabel: 'Monthly', pricingKey: 'monthly', summary: '30 days of access per payment.' },
+  '3_months': { label: '3 Months', payLabel: '3 Months', pricingKey: '3_months', summary: 'Prepay 3 months of access at the regular monthly rate.' },
+  '6_months': { label: '6 Months', payLabel: '6 Months', pricingKey: '6_months', summary: 'Prepay 6 months of access at the regular monthly rate.' },
+  annual: { label: '1 Year', payLabel: '1 Year', pricingKey: 'annual', summary: '12 months of access for the price of 10 monthly periods.', savings: '2 months free' },
+}
+
+function normalizeBillingCycle(value) {
+  return BILLING_TERMS[value] ? value : 'monthly'
+}
+
+function billingCycleLabel(value) {
+  return BILLING_TERMS[normalizeBillingCycle(value)].label
+}
+
 const STATUS_META = {
   active: { label: 'Active', color: '#0d9488', bg: '#f0fdfa' },
   expiring_soon: { label: 'Expiring soon', color: '#d97706', bg: '#fffbeb' },
@@ -57,7 +73,7 @@ function SubscriptionPayment({
   const [checkout, setCheckout] = useState(null) // { qr_image_url, amount, payment_intent_id, ... }
   const [secondsLeft, setSecondsLeft] = useState(0)
   const [paidJustNow, setPaidJustNow] = useState(false)
-  const [billingCycle, setBillingCycle] = useState(initialBillingCycle === 'annual' ? 'annual' : 'monthly')
+  const [billingCycle, setBillingCycle] = useState(normalizeBillingCycle(initialBillingCycle))
   const pollRef = useRef(null)
   const countdownRef = useRef(null)
 
@@ -68,7 +84,7 @@ function SubscriptionPayment({
         const data = await res.json()
         setSubscription(data)
         if (!initialBillingCycle && data?.billing_cycle) {
-          setBillingCycle(data.billing_cycle === 'annual' ? 'annual' : 'monthly')
+          setBillingCycle(normalizeBillingCycle(data.billing_cycle))
         }
       }
     } catch (e) {
@@ -204,41 +220,32 @@ function SubscriptionPayment({
         {!checkout ? (
           <>
             <div style={styles.billingToggle}>
-              <button
-                type="button"
-                onClick={() => setBillingCycle('monthly')}
-                style={{ ...styles.billingToggleBtn, ...(billingCycle === 'monthly' ? styles.billingToggleBtnActive : {}) }}
-              >
-                Monthly
-                {subscription?.pricing?.monthly != null && <span style={styles.billingTogglePrice}>{formatMoney(subscription.pricing.monthly)}</span>}
-              </button>
-              <button
-                type="button"
-                onClick={() => setBillingCycle('annual')}
-                style={{ ...styles.billingToggleBtn, ...(billingCycle === 'annual' ? styles.billingToggleBtnActive : {}) }}
-              >
-                Annual
-                {subscription?.pricing?.annual != null && <span style={styles.billingTogglePrice}>{formatMoney(subscription.pricing.annual)}</span>}
-                <small style={styles.billingSavings}>2 months free</small>
-              </button>
+              {Object.entries(BILLING_TERMS).map(([key,term]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setBillingCycle(key)}
+                  style={{ ...styles.billingToggleBtn, ...(billingCycle === key ? styles.billingToggleBtnActive : {}) }}
+                >
+                  {term.label}
+                  {subscription?.pricing?.[term.pricingKey] != null && <span style={styles.billingTogglePrice}>{formatMoney(subscription.pricing[term.pricingKey])}</span>}
+                  {term.savings && <small style={styles.billingSavings}>{term.savings}</small>}
+                </button>
+              ))}
             </div>
-            <div style={styles.billingSummary}>
-              {billingCycle === 'annual'
-                ? '12 months of access for the price of 10 monthly periods.'
-                : '30 days of access per payment.'}
-            </div>
+            <div style={styles.billingSummary}>{BILLING_TERMS[billingCycle]?.summary || BILLING_TERMS.monthly.summary}</div>
             <button
               type="button"
               onClick={handleCheckout}
               disabled={checkingOut}
               style={styles.button}
             >
-              {checkingOut ? 'Preparing QR code…' : `Pay ${billingCycle === 'annual' ? 'Annually' : 'Monthly'} via QR Ph`}
+              {checkingOut ? 'Preparing QR code…' : `Pay ${BILLING_TERMS[billingCycle]?.payLabel || 'Monthly'} via QR Ph`}
             </button>
           </>
         ) : (
           <div style={styles.qrBox}>
-            <p style={styles.qrAmount}>{formatMoney(checkout.amount)} <span style={styles.qrPlan}>· {checkout.plan_label} · {checkout.billing_cycle_label || (billingCycle === 'annual' ? 'Annual' : 'Monthly')}</span></p>
+            <p style={styles.qrAmount}>{formatMoney(checkout.amount)} <span style={styles.qrPlan}>· {checkout.plan_label} · {checkout.billing_cycle_label || billingCycleLabel(billingCycle)}</span></p>
             {checkout.qr_image_url ? (
               <img src={checkout.qr_image_url} alt="Scan to pay via QR Ph" style={styles.qrImage} />
             ) : (
@@ -265,7 +272,7 @@ function SubscriptionPayment({
               <div key={row.public_id || row.id} style={styles.historyRow}>
                 <div>
                   <div style={styles.historyDate}>{formatDate(row.paid_at || row.created_at)}</div>
-                  <div style={styles.historyPlan}>{row.plan} · {(row.billing_cycle || 'monthly')}</div>
+                  <div style={styles.historyPlan}>{row.plan} · {billingCycleLabel(row.billing_cycle)}</div>
                 </div>
                 <div style={styles.historyRight}>
                   <div style={styles.historyAmount}>{formatMoney(row.amount)}</div>
@@ -353,7 +360,7 @@ const styles = {
   },
   billingToggle: {
     display: 'grid',
-    gridTemplateColumns: '1fr 1fr',
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
     gap: 8,
     marginBottom: 10,
   },

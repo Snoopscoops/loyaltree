@@ -121,6 +121,19 @@ const PAGE_CONTENT = {
   },
 }
 
+
+const PRICING_BILLING_TERMS = {
+  monthly: { label: 'Monthly', multiplier: 1, unit: '/mo' },
+  '3_months': { label: '3 Months', multiplier: 3, unit: '/3 months' },
+  '6_months': { label: '6 Months', multiplier: 6, unit: '/6 months' },
+  annual: { label: '1 Year', multiplier: 10, unit: '/yr', savings: '2 months free', note: '12 months access' },
+}
+
+function pricingAmount(monthlyAmount, billingCycle) {
+  const term = PRICING_BILLING_TERMS[billingCycle] || PRICING_BILLING_TERMS.monthly
+  return Number(monthlyAmount || 0) * term.multiplier
+}
+
 function PublicInfoPage({ type='overview', API_BASE='' }) {
   const navigate = useNavigate()
   const page = PAGE_CONTENT[type] || PAGE_CONTENT.overview
@@ -813,8 +826,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
           </div>
 
           <div style={s.pricingBillingRow}>
-            <button onClick={()=>setPricingBillingCycle('monthly')} style={{...s.pricingBillingBtn,...(pricingBillingCycle==='monthly'?s.pricingBillingBtnActive:{})}}>Monthly</button>
-            <button onClick={()=>setPricingBillingCycle('annual')} style={{...s.pricingBillingBtn,...(pricingBillingCycle==='annual'?s.pricingBillingBtnActive:{})}}>Annual <span style={s.pricingSaveBadge}>2 months free</span></button>
+            {Object.entries(PRICING_BILLING_TERMS).map(([key,term])=><button key={key} onClick={()=>setPricingBillingCycle(key)} style={{...s.pricingBillingBtn,...(pricingBillingCycle===key?s.pricingBillingBtnActive:{})}}>{term.label}{term.savings&&<span style={s.pricingSaveBadge}>{term.savings}</span>}</button>)}
           </div>
 
           <div className="overview-pricing-branches" style={s.pricingBranchRow}>
@@ -852,9 +864,9 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
                   {plan.prices && (
                     <div style={s.pricingPriceWrap}>
                       <span style={s.pricingCurrency}>₱</span>
-                      <span style={s.pricingPrice}>{(pricingBillingCycle==='annual' ? plan.prices[pricingBranchTier] * 10 : plan.prices[pricingBranchTier]).toLocaleString()}</span>
-                      <span style={s.pricingUnit}>{pricingBillingCycle==='annual'?'/yr':'/mo'}</span>
-                      {pricingBillingCycle==='annual'&&<span style={s.pricingAnnualNote}>12 months access</span>}
+                      <span style={s.pricingPrice}>{pricingAmount(plan.prices[pricingBranchTier], pricingBillingCycle).toLocaleString()}</span>
+                      <span style={s.pricingUnit}>{PRICING_BILLING_TERMS[pricingBillingCycle]?.unit || '/mo'}</span>
+                      {PRICING_BILLING_TERMS[pricingBillingCycle]?.note&&<span style={s.pricingAnnualNote}>{PRICING_BILLING_TERMS[pricingBillingCycle].note}</span>}
                     </div>
                   )}
                 </div>
@@ -933,9 +945,9 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
                   <p style={specialized?s.pricingSpecializedTagline:s.pricingTagline}>{plan.tagline}</p>
                   {!specialized && plan.prices && <div style={s.pricingPriceWrap}>
                     <span style={s.pricingCurrency}>₱</span>
-                    <span style={s.pricingPrice}>{(pricingBillingCycle==='annual' ? plan.prices[pricingBranchTier] * 10 : plan.prices[pricingBranchTier]).toLocaleString()}</span>
-                    <span style={s.pricingUnit}>{pricingBillingCycle==='annual'?'/yr':'/mo'}</span>
-                    {pricingBillingCycle==='annual'&&<span style={s.pricingAnnualNote}>12 months access</span>}
+                    <span style={s.pricingPrice}>{pricingAmount(plan.prices[pricingBranchTier], pricingBillingCycle).toLocaleString()}</span>
+                    <span style={s.pricingUnit}>{PRICING_BILLING_TERMS[pricingBillingCycle]?.unit || '/mo'}</span>
+                    {PRICING_BILLING_TERMS[pricingBillingCycle]?.note&&<span style={s.pricingAnnualNote}>{PRICING_BILLING_TERMS[pricingBillingCycle].note}</span>}
                   </div>}
                   {specialized && <>
                     <div style={s.pricingSpecializedBenefits}>{plan.benefits?.map(x=><span key={x} style={s.pricingSpecializedBenefit}>{x}</span>)}</div>
@@ -1159,7 +1171,7 @@ const s={
   pricingHeader:{maxWidth:720,margin:'0 auto 24px',textAlign:'center'},
   pricingTitle:{fontSize:'clamp(28px,4vw,42px)',lineHeight:1.12,fontWeight:900,color:'#0f172a',margin:'7px 0 12px'},
   pricingIntro:{fontSize:14.5,lineHeight:1.7,color:'#64748b',margin:0},
-  pricingBillingRow:{display:'flex',justifyContent:'center',gap:5,margin:'0 auto 14px',padding:4,width:'fit-content',maxWidth:'100%',borderRadius:12,background:'#f1f5f9',border:'1px solid #e2e8f0'},
+  pricingBillingRow:{display:'flex',flexWrap:'wrap',justifyContent:'center',gap:5,margin:'0 auto 14px',padding:4,width:'fit-content',maxWidth:'100%',borderRadius:12,background:'#f1f5f9',border:'1px solid #e2e8f0'},
   pricingBillingBtn:{border:0,background:'transparent',color:'#64748b',padding:'9px 13px',borderRadius:9,fontSize:12,fontWeight:850,cursor:'pointer'},
   pricingBillingBtnActive:{background:'#fff',color:'#0f766e',boxShadow:'0 2px 8px rgba(15,23,42,.08)'},
   pricingSaveBadge:{marginLeft:5,padding:'2px 5px',borderRadius:999,background:'#dcfce7',color:'#047857',fontSize:9,fontWeight:900,whiteSpace:'nowrap'},

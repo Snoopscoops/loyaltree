@@ -136,6 +136,16 @@ MONTHLY_SUBSCRIPTION_PERIOD_DAYS = 30  # existing monthly access period
 ANNUAL_BILLABLE_MONTHS = 10  # annual billing = 12 months of access for the price of 10
 SUBSCRIPTION_PERIOD_DAYS = MONTHLY_SUBSCRIPTION_PERIOD_DAYS  # backwards-compatible alias
 
+# Self-serve prepaid billing terms. Three- and six-month terms are exact
+# multiples of the normal monthly package price; annual keeps the 2-month-free
+# offer (10 paid monthly periods for 12 months of access).
+BILLING_CYCLE_CONFIG = {
+    'monthly': {'label': 'Monthly', 'access_months': 1, 'billable_months': 1},
+    '3_months': {'label': '3 Months', 'access_months': 3, 'billable_months': 3},
+    '6_months': {'label': '6 Months', 'access_months': 6, 'billable_months': 6},
+    'annual': {'label': '1 Year', 'access_months': 12, 'billable_months': ANNUAL_BILLABLE_MONTHS},
+}
+
 # Loyalty-card cycle dates follow Philippine local time. Database timestamps remain UTC.
 LOYALTY_TIMEZONE = ZoneInfo(os.getenv('LOYALTY_TIMEZONE', 'Asia/Manila'))
 CARD_EXPIRATION_CRON_SECRET = os.getenv('CARD_EXPIRATION_CRON_SECRET', '')
@@ -297,10 +307,10 @@ def get_announcement_cycle_start(business: dict) -> str:
             if rows and rows[0].get('paid_at'):
                 parsed = _parse_ts(rows[0]['paid_at'])
                 if parsed:
-                    # Annual billing still receives the normal announcement
-                    # allowance every 30 days; paying yearly must not reduce
-                    # a 12-month entitlement to one announcement cycle.
-                    if normalize_billing_cycle(rows[0].get('billing_cycle')) == 'annual':
+                    # Multi-month prepaid billing still receives the normal announcement
+                    # allowance every 30 days; prepaying must not reduce a
+                    # 3-, 6-, or 12-month entitlement to one announcement cycle.
+                    if normalize_billing_cycle(rows[0].get('billing_cycle')) != 'monthly':
                         elapsed_days = max(0, (datetime.utcnow() - parsed).days)
                         parsed = parsed + timedelta(
                             days=(elapsed_days // MONTHLY_SUBSCRIPTION_PERIOD_DAYS) * MONTHLY_SUBSCRIPTION_PERIOD_DAYS
@@ -429,48 +439,92 @@ def branch_price_bracket(branch_count: int) -> str:
     return '5'
 
 def normalize_billing_cycle(value: Optional[str]) -> str:
-    return 'annual' if str(value or '').strip().lower() == 'annual' else 'monthly'
+    raw = str(value or '').strip().lower().replace('-', '_').replace(' ', '_')
+    aliases = {
+        'month': 'monthly',
+        '1_month': 'monthly',
+        '3month': '3_months',
+        '3months': '3_months',
+        'three_months': '3_months',
+        'quarterly': '3_months',
+        '6month': '6_months',
+        '6months': '6_months',
+        'six_months': '6_months',
+        'semiannual': '6_months',
+        'semi_annual': '6_months',
+        'yearly': 'annual',
+        '1_year': 'annual',
+        '12_months': 'annual',
+    }
+    raw = aliases.get(raw, raw)
+    return raw if raw in BILLING_CYCLE_CONFIG else 'monthly'
+
+
+def billing_cycle_label(value: Optional[str]) -> str:
+    cycle = normalize_billing_cycle(value)
+    return BILLING_CYCLE_CONFIG[cycle]['label']
+
+
+def billing_period_label(value: Optional[str]) -> str:
+    cycle = normalize_billing_cycle(value)
+    if cycle == 'monthly':
+        return '30-day subscription period'
+    if cycle == '3_months':
+        return '3-month prepaid subscription period'
+    if cycle == '6_months':
+        return '6-month prepaid subscription period'
+    return '12-month annual term (2 months free)'
 
 
 def get_price_for_plan(plan: Optional[str], branch_count: int, billing_cycle: str = 'monthly') -> int:
-    """Return the subscription price for the plan/branch package.
+    """Return the prepaid subscription price for the plan/branch package.
 
-    Monthly keeps the existing 30-day price. Annual gives one full year of
-    access for the price of 10 monthly periods (2 months free).
+    Three- and six-month terms are straight monthly multiples. Annual gives
+    12 months of access for the price of 10 monthly periods (2 months free).
     """
     features = get_plan_features(plan)
     tiers = features.get('price_tiers') or {}
     bracket = branch_price_bracket(branch_count)
     monthly_price = int(tiers.get(bracket, features.get('price_month', 0)) or 0)
-    if normalize_billing_cycle(billing_cycle) == 'annual':
-        return monthly_price * ANNUAL_BILLABLE_MONTHS
-    return monthly_price
+    cycle = normalize_billing_cycle(billing_cycle)
+    multiplier = int(BILLING_CYCLE_CONFIG[cycle]['billable_months'])
+    return monthly_price * multiplier
 
 
 def subscription_plans_payload() -> dict:
-    """Return plan data with annual prices derived from monthly prices."""
+    """Return plan data with all prepaid-term prices derived from monthly pricing."""
     payload = {}
     for key, plan in SUBSCRIPTION_PLANS.items():
         item = dict(plan)
         monthly_tiers = dict(plan.get('price_tiers') or {})
-        item['price_annual'] = int(plan.get('price_month', 0) or 0) * ANNUAL_BILLABLE_MONTHS
-        item['price_tiers_annual'] = {
-            bracket: int(amount or 0) * ANNUAL_BILLABLE_MONTHS
-            for bracket, amount in monthly_tiers.items()
-        }
+        for cycle in ('3_months', '6_months', 'annual'):
+            multiplier = int(BILLING_CYCLE_CONFIG[cycle]['billable_months'])
+            item[f'price_{cycle}'] = int(plan.get('price_month', 0) or 0) * multiplier
+            item[f'price_tiers_{cycle}'] = {
+                bracket: int(amount or 0) * multiplier
+                for bracket, amount in monthly_tiers.items()
+            }
         item['annual_savings_months'] = 2
         payload[key] = item
     return payload
 
+
+def _add_calendar_months(base: datetime, months: int) -> datetime:
+    """Add whole calendar months while preserving the time and clamping day."""
+    total_month = (base.year * 12 + (base.month - 1)) + int(months)
+    year = total_month // 12
+    month = total_month % 12 + 1
+    day = min(base.day, calendar.monthrange(year, month)[1])
+    return base.replace(year=year, month=month, day=day)
+
+
 def subscription_expiry_from(base: datetime, billing_cycle: str) -> datetime:
     """Return the next access expiry from an existing active expiry or now."""
-    if normalize_billing_cycle(billing_cycle) == 'annual':
-        try:
-            return base.replace(year=base.year + 1)
-        except ValueError:
-            # Feb 29 -> Feb 28 in the following non-leap year.
-            return base.replace(year=base.year + 1, month=2, day=28)
-    return base + timedelta(days=MONTHLY_SUBSCRIPTION_PERIOD_DAYS)
+    cycle = normalize_billing_cycle(billing_cycle)
+    if cycle == 'monthly':
+        # Preserve LoyaltyTree's existing 30-day monthly entitlement.
+        return base + timedelta(days=MONTHLY_SUBSCRIPTION_PERIOD_DAYS)
+    return _add_calendar_months(base, BILLING_CYCLE_CONFIG[cycle]['access_months'])
 
 
 def determine_plan_from_branch_count(branch_count: int) -> str:
@@ -1331,7 +1385,7 @@ def build_signup_agreement_document(*, name: str, email: str, phone: Optional[st
     billing_cycle = normalize_billing_cycle(billing_cycle)
     price_month = int(get_price_for_plan(plan, branch_count, 'monthly') or 0)
     billing_price = int(get_price_for_plan(plan, branch_count, billing_cycle) or 0)
-    billing_period_label = '12-month annual term (2 months free)' if billing_cycle == 'annual' else '30-day subscription period'
+    billing_period_label_text = billing_period_label(billing_cycle)
     setup_kit_amount = SETUP_KIT_PRICE_PER_BRANCH * branch_count if setup_kit_requested else 0
     sections = _signup_agreement_sections()
     dpa_sections = _signup_dpa_sections()
@@ -1354,8 +1408,8 @@ def build_signup_agreement_document(*, name: str, email: str, phone: Optional[st
         f'Primary contact: {(contact_person or "").strip()}',
         f'Plan: {plan_data.get("label", plan)}',
         f'Branches: {branch_count}',
-        f'Billing cycle: {"Annual" if billing_cycle == "annual" else "Monthly"}',
-        f'Subscription fee: PHP {billing_price} for the {billing_period_label}',
+        f'Billing cycle: {billing_cycle_label(billing_cycle)}',
+        f'Subscription fee: PHP {billing_price} for the {billing_period_label_text}',
         f'Monthly reference price: PHP {price_month}',
         f'Physical QR / PR Kit: {"PHP " + str(setup_kit_amount) + " one-time" if setup_kit_amount else "Not selected"}',
         f'Terms version acknowledged: {TERMS_VERSION}',
@@ -1390,7 +1444,7 @@ def build_signup_agreement_document(*, name: str, email: str, phone: Optional[st
         'price_month': price_month,
         'billing_cycle': billing_cycle,
         'billing_price': billing_price,
-        'billing_period_label': billing_period_label,
+        'billing_period_label': billing_period_label_text,
         'setup_kit_amount': setup_kit_amount,
         'operator': {
             'name': LOYALTYTREE_LEGAL_NAME,
@@ -1449,7 +1503,7 @@ class SignupAgreementPreviewRequest(BaseModel):
     contact_person: Optional[str] = None
     plan: str
     branch_count: int = Field(default=1, ge=1, le=5)
-    billing_cycle: Literal['monthly', 'annual'] = 'monthly'
+    billing_cycle: Literal['monthly', '3_months', '6_months', 'annual'] = 'monthly'
     setup_kit_requested: bool = False
 
 
@@ -1464,7 +1518,7 @@ class BusinessCreate(BaseModel):
     address: Optional[str] = None  # business's main address - lets super admin organize businesses by location
     branch_count: int = Field(default=1, ge=1, le=50)
     plan: Optional[str] = None  # explicit plan choice; if omitted, derived from branch_count
-    billing_cycle: Literal['monthly', 'annual'] = 'monthly'
+    billing_cycle: Literal['monthly', '3_months', '6_months', 'annual'] = 'monthly'
     setup_kit_requested: bool = False
     kit_recipient_name: Optional[str] = None
     kit_contact_number: Optional[str] = None
@@ -1474,7 +1528,7 @@ class BusinessCreate(BaseModel):
     agreement: Optional[BusinessAgreementAcceptance] = None
 
 class SubscriptionCheckoutRequest(BaseModel):
-    billing_cycle: Literal['monthly', 'annual'] = 'monthly'
+    billing_cycle: Literal['monthly', '3_months', '6_months', 'annual'] = 'monthly'
 
 
 class BusinessOnboardingUpdate(BaseModel):
@@ -2286,7 +2340,7 @@ class AdminLoginRequest(BaseModel):
 class AdminBusinessUpdate(BaseModel):
     status: Optional[str] = None
     plan: Optional[str] = None
-    billing_cycle: Optional[Literal['monthly', 'annual']] = None
+    billing_cycle: Optional[Literal['monthly', '3_months', '6_months', 'annual']] = None
     last_paid_at: Optional[str] = None          # 'YYYY-MM-DD' - when the business last paid
     subscription_expires_at: Optional[str] = None  # 'YYYY-MM-DD' - when access should lapse
     address: Optional[str] = None
@@ -3794,6 +3848,8 @@ def business_summary(biz: dict) -> dict:
         "branch_count": branch_count,
         "billing_cycle": normalize_billing_cycle(biz.get("billing_cycle")),
         "price_month": get_price_for_plan(plan, branch_count, 'monthly'),
+        "price_3_months": get_price_for_plan(plan, branch_count, '3_months'),
+        "price_6_months": get_price_for_plan(plan, branch_count, '6_months'),
         "price_annual": get_price_for_plan(plan, branch_count, 'annual'),
         "price_current": get_price_for_plan(plan, branch_count, normalize_billing_cycle(biz.get("billing_cycle"))),
         "business_type": biz.get("business_type", "other"),
@@ -9434,7 +9490,7 @@ async def register(biz: BusinessCreate, request: Request):
                 f"<li><b>Email:</b> {html_lib.escape(biz.email or '')}</li>"
                 f"<li><b>Phone:</b> {html_lib.escape(biz.phone or '')}</li>"
                 f"<li><b>Plan:</b> {SUBSCRIPTION_PLANS.get(plan, {}).get('label', plan)}</li>"
-                f"<li><b>Billing:</b> {normalize_billing_cycle(biz.billing_cycle).title()} · ₱{int(billing_price or 0):,}</li>"
+                f"<li><b>Billing:</b> {billing_cycle_label(biz.billing_cycle)} · ₱{int(billing_price or 0):,}</li>"
                 f"<li><b>Branches:</b> {biz.branch_count}</li>"
                 f"<li><b>Status:</b> PENDING PAYMENT</li>"
                 f"</ul>"
@@ -13750,7 +13806,7 @@ async def create_subscription_checkout(public_id: str, req: Optional[Subscriptio
     setup_kit_price = (SETUP_KIT_PRICE_PER_BRANCH * branch_count) if kit_due else 0
     price = subscription_price + setup_kit_price
     plan_label = SUBSCRIPTION_PLANS.get(plan, {}).get('label', plan)
-    cycle_label = 'Annual' if billing_cycle == 'annual' else 'Monthly'
+    cycle_label = billing_cycle_label(billing_cycle)
     description = f"LoyaltyTree {plan_label} {cycle_label} subscription - {business.get('name', '')}"
     if kit_due:
         branch_word = 'branch' if branch_count == 1 else 'branches'
@@ -13862,6 +13918,8 @@ async def get_subscription_status(public_id: str):
         "branch_count": branch_count,
         "pricing": {
             "monthly": get_price_for_plan(plan, branch_count, 'monthly'),
+            "3_months": get_price_for_plan(plan, branch_count, '3_months'),
+            "6_months": get_price_for_plan(plan, branch_count, '6_months'),
             "annual": get_price_for_plan(plan, branch_count, 'annual'),
             "annual_savings_months": 2,
         },
@@ -14149,7 +14207,7 @@ async def paymongo_webhook(request: Request):
                         f"<li><b>Business:</b> {html_lib.escape(business.get('name', ''))}</li>"
                         f"<li><b>Amount:</b> ₱{amount_php}</li>"
                         f"<li><b>Plan:</b> {SUBSCRIPTION_PLANS.get(business.get('plan'), {}).get('label', business.get('plan'))}</li>"
-                        f"<li><b>Billing:</b> {billing_cycle.title()}</li>"
+                        f"<li><b>Billing:</b> {billing_cycle_label(billing_cycle)}</li>"
                         f"</ul>"
                     ),
                 )
