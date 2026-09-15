@@ -630,13 +630,16 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
   }
 
   const benefitRuleLabel = (benefit) => {
-    const employeeCard = form.card_type === 'employee' || (form.card_type === 'membership' && form.membership_employee_mode === true)
-    if (benefit.usage_limit == null) return employeeCard ? 'Unlimited while Employee Card is active' : 'Unlimited while subscription is active'
+    const employeeMembership = form.card_type === 'membership' && form.membership_employee_mode === true
+    const legacyEmployeeCard = form.card_type === 'employee'
+    const employeeExperience = employeeMembership || legacyEmployeeCard
+    const activeLabel = employeeMembership ? 'Employee Membership' : legacyEmployeeCard ? 'Employee Card' : 'subscription'
+    if (benefit.usage_limit == null) return `Unlimited while ${activeLabel} is active`
     const unit = benefit.reset_period === 'daily' ? 'day'
       : benefit.reset_period === 'weekly' ? 'week'
       : benefit.reset_period === 'monthly' ? 'month'
-      : benefit.reset_period === 'membership_cycle' ? (employeeCard ? 'employment cycle' : 'subscription cycle')
-      : (employeeCard ? 'Employee Card' : 'subscription')
+      : benefit.reset_period === 'membership_cycle' ? (employeeExperience ? 'employment cycle' : 'subscription cycle')
+      : activeLabel
     return `${benefit.usage_limit} use${Number(benefit.usage_limit) === 1 ? '' : 's'} per ${unit}`
   }
 
@@ -663,6 +666,57 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
   }
 
   const removeMembershipBenefit = (id) => update('membership_benefits', (form.membership_benefits || []).filter(b => b.id !== id))
+
+  const renderMembershipBenefitsEditor = ({ compact = false } = {}) => {
+    const employeeMode = form.card_type === 'membership' && form.membership_employee_mode === true
+    return (
+      <div style={{...styles.fieldGroup,marginTop:compact?14:0}}>
+        <label style={styles.label}>{employeeMode ? 'Employee Benefits' : 'Membership Benefits'}</label>
+        <p style={{...styles.hint,margin:'0 0 10px'}}>
+          Add benefits members can use when their card is scanned. Set each benefit as unlimited or give it a daily, weekly, monthly, or {employeeMode ? 'employment' : 'membership'}-cycle limit.
+        </p>
+        {(form.membership_benefits || []).map((b,i)=><div key={b.id||i} style={styles.prizeRow}>
+          <div style={{minWidth:0,flex:1}}>
+            <div style={styles.prizeName}>{b.name}</div>
+            <div style={styles.prizeDesc}>
+              {benefitRuleLabel(b)}
+              {b.benefit_type==='percentage_discount'&&b.value!=null?` · ${b.value}% discount`:b.benefit_type==='fixed_discount'&&b.value!=null?` · ₱${Number(b.value).toLocaleString()} discount`:''}
+            </div>
+            {b.description && <div style={styles.prizeDesc}>{b.description}</div>}
+          </div>
+          <button type="button" style={styles.prizeRemoveBtn} onClick={()=>removeMembershipBenefit(b.id)}>✕</button>
+        </div>)}
+
+        <div style={{...styles.prizeForm,marginTop:10}}>
+          <input style={styles.input} placeholder={employeeMode ? 'Benefit name, e.g. Free Staff Meal' : 'Benefit name, e.g. Free Monthly Service'} value={benefitDraft.name} onChange={e=>setBenefitDraft(d=>({...d,name:e.target.value}))}/>
+          <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'1fr 160px',gap:8}}>
+            <select style={styles.input} value={benefitDraft.benefit_type} onChange={e=>setBenefitDraft(d=>({...d,benefit_type:e.target.value,value:''}))}>
+              <option value="free_item">Free item / service</option>
+              <option value="percentage_discount">Percentage discount</option>
+              <option value="fixed_discount">Fixed discount</option>
+              <option value="custom">Custom benefit</option>
+            </select>
+            {['percentage_discount','fixed_discount'].includes(benefitDraft.benefit_type) && <input style={styles.input} type="number" min="0" max={benefitDraft.benefit_type==='percentage_discount'?100:undefined} step="any" placeholder={benefitDraft.benefit_type==='percentage_discount'?'Discount %':'₱ discount'} value={benefitDraft.value} onChange={e=>setBenefitDraft(d=>({...d,value:e.target.value}))}/>} 
+          </div>
+          <input style={styles.input} placeholder="Description (optional)" value={benefitDraft.description} onChange={e=>setBenefitDraft(d=>({...d,description:e.target.value}))}/>
+          <label style={{display:'flex',gap:9,alignItems:'center',fontSize:13,fontWeight:700}}><input type="checkbox" checked={benefitDraft.unlimited} onChange={e=>setBenefitDraft(d=>({...d,unlimited:e.target.checked}))}/> Unlimited uses while {employeeMode ? 'employment is active' : 'membership is active'}</label>
+          {!benefitDraft.unlimited && <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'110px auto minmax(150px,1fr)',gap:8,alignItems:'center'}}>
+            <input style={styles.input} type="number" min="1" value={benefitDraft.usage_limit} onChange={e=>setBenefitDraft(d=>({...d,usage_limit:e.target.value}))}/>
+            <span style={styles.earnRateText}>use(s) per</span>
+            <select style={styles.input} value={benefitDraft.reset_period} onChange={e=>setBenefitDraft(d=>({...d,reset_period:e.target.value}))}>
+              <option value="daily">Day</option>
+              <option value="weekly">Week</option>
+              <option value="monthly">Month</option>
+              <option value="membership_cycle">{employeeMode ? 'Employment cycle' : 'Membership cycle'}</option>
+              <option value="never">Never resets</option>
+            </select>
+          </div>}
+          {benefitError && <div style={styles.error}>{benefitError}</div>}
+          <button type="button" onClick={addMembershipBenefit} style={{...styles.addPrizeBtn,width:guidedMobile?'100%':'auto'}}>+ Add Benefit</button>
+        </div>
+      </div>
+    )
+  }
 
   const addEmployeeBenefit = () => {
     setBenefitError('')
@@ -891,7 +945,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     : form.card_type === 'points'
     ? 'Points Card'
     : form.card_type === 'membership'
-    ? 'Subscription Card'
+    ? (form.membership_employee_mode ? 'Employee Membership' : 'Membership Card')
     : form.card_type === 'employee'
     ? 'Employee Card'
     : form.card_type === 'vip'
@@ -1247,12 +1301,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                   <label style={{...styles.label,marginTop:14,display:'flex',gap:9,alignItems:'center'}}><input type="checkbox" checked={form.employee_attendance_enabled===true} onChange={e=>update('employee_attendance_enabled',e.target.checked)}/> Enable Attendance</label><p style={styles.hint}>Adds a quick Mark Present action when the membership is scanned.</p>
                   <label style={{...styles.label,marginTop:12,display:'flex',gap:9,alignItems:'center'}}><input type="checkbox" checked={form.employee_time_tracking_enabled===true} onChange={e=>update('employee_time_tracking_enabled',e.target.checked)}/> Enable Time In / Time Out</label><p style={styles.hint}>Separate optional clocking with branch/staff attribution.</p>
                 </>}
-                <label style={{...styles.label,marginTop:18}}>{form.membership_employee_mode ? 'Employee benefits' : 'Subscriber rewards / benefits'}</label>
-                <p style={{...styles.hint,margin:'0 0 10px'}}>Enter one included benefit per line.</p>
-                <textarea style={{...styles.textarea,width:'100%',boxSizing:'border-box'}} rows={guidedMobile?5:4}
-                  value={(form.membership_services || []).join('\n')}
-                  onChange={e=>update('membership_services',e.target.value.split('\n').map(v=>v.trim()).filter(Boolean))}
-                  placeholder={form.membership_employee_mode ? 'Free staff meal\n20% employee discount\nFree drink per shift' : 'Free monthly service\n10% member discount\nPriority booking'}/>
+                {renderMembershipBenefitsEditor({ compact: true })}
               </>}
 
               {form.card_type==='vip' && <>
@@ -1612,9 +1661,12 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                       valid for {Number(form.membership_duration_days) || 30} days
                       {Number(form.membership_price) > 0 ? ` · ₱${Number(form.membership_price).toLocaleString()}` : ''}
                     </div>
-                    {Array.isArray(form.membership_services) && form.membership_services.length > 0 && (
+                    {((form.membership_benefits || []).length > 0 || (form.membership_services || []).length > 0) && (
                       <div style={styles.previewPrizeList}>
-                        {form.membership_services.slice(0, 4).map((benefit, i) => (
+                        {((form.membership_benefits || []).length
+                          ? (form.membership_benefits || []).map(b => b.name).filter(Boolean)
+                          : (form.membership_services || [])
+                        ).slice(0, 4).map((benefit, i) => (
                           <div key={i} style={styles.previewPrizeRow}>
                             <span>✓ {benefit}</span>
                           </div>
@@ -2016,14 +2068,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
               </> : <>
                 <div style={styles.row}><div style={{...styles.fieldGroup,flex:1}}><label style={styles.label}>Default subscription duration</label><div style={styles.colorRow}><input style={styles.input} type="number" min={1} max={3650} value={form.membership_duration_days} onChange={e=>update('membership_duration_days',e.target.value)}/><span style={styles.unit}>days</span></div><p style={styles.hint}>Used when activating or renewing a member.</p></div><div style={{...styles.fieldGroup,flex:1}}><label style={styles.label}>Default price</label><div style={styles.colorRow}><span style={styles.unit}>₱</span><input style={styles.input} type="number" min={0} step="any" value={form.membership_price} onChange={e=>update('membership_price',e.target.value)}/></div></div></div>
               </>}
-              <div style={styles.fieldGroup}>
-                <label style={styles.label}>{form.membership_employee_mode ? 'Employee benefits' : 'Perks / benefits'}</label>
-                <textarea style={styles.textarea} rows={6}
-                  value={(form.membership_services || []).join('\n')}
-                  onChange={e=>update('membership_services',e.target.value.split('\n').map(v=>v.trim()).filter(Boolean))}
-                  placeholder={form.membership_employee_mode ? 'Free staff meal\n20% employee discount\nFree drink per shift' : 'Unlimited gym access\nLocker use\nFree fitness assessment'}/>
-                <p style={styles.hint}>Enter one benefit per line. Benefits appear on the Membership Card and cashier screen.</p>
-              </div>
+              {renderMembershipBenefitsEditor()}
               {!form.membership_employee_mode && <div style={styles.fieldGroup}><label style={styles.label}>Subscription terms</label><textarea style={styles.textarea} rows={4} value={form.membership_terms} onChange={e=>update('membership_terms',e.target.value)} placeholder="Optional rules, renewal terms, and usage conditions."/></div>}
             </div>
           ) : form.card_type === 'employee' ? (
