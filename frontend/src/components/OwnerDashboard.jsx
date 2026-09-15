@@ -282,6 +282,13 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const [orderAheadStockSearch, setOrderAheadStockSearch] = useState('')
   const [stats, setStats] = useState(null)
   const [program, setProgram] = useState(null)
+  const [programs, setPrograms] = useState([])
+  const [selectedProgramPublicId, setSelectedProgramPublicId] = useState('')
+  const [programLimit, setProgramLimit] = useState(1)
+  const [canCreateProgram, setCanCreateProgram] = useState(false)
+  const [showCreateProgram, setShowCreateProgram] = useState(false)
+  const [creatingProgram, setCreatingProgram] = useState(false)
+  const [newProgram, setNewProgram] = useState({ name: '', card_type: 'stamp' })
   const [subscription, setSubscription] = useState(null)
   const businessCurrency = business?.display_currency || subscription?.display_currency || 'PHP'
   const [loading, setLoading] = useState(true)
@@ -392,6 +399,13 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
   const onboardingKey = user?.business_slug ? `loyaltree_onboarding_seen_${user.business_slug}` : null
   const announcementsCheckedKey = user?.business_slug ? `loyaltree_checked_announcements_${user.business_slug}` : null
   const analyticsCheckedKey = user?.business_slug ? `loyaltree_checked_analytics_${user.business_slug}` : null
+  const programStorageKey = user?.business_slug ? `loyaltree_selected_program_${user.business_slug}` : null
+  const selectedProgramSummary = programs.find(p => p.public_id === selectedProgramPublicId) || programs.find(p => p.is_default) || programs[0] || null
+  const selectedProgramQuery = selectedProgramPublicId ? `?program_id=${encodeURIComponent(selectedProgramPublicId)}` : ''
+  const selectedJoinSlug = selectedProgramSummary && !selectedProgramSummary.is_default && selectedProgramSummary.public_id
+    ? `${user?.business_slug || ''}__p__${selectedProgramSummary.public_id}`
+    : (user?.business_slug || '')
+  const selectedJoinUrl = `${FRONTEND_URL}/join/${selectedJoinSlug}`
   const isActive = (business?.status || '').toUpperCase() === 'ACTIVE'
 
   const isTablet = viewportWidth >= 600 && viewportWidth <= 1100
@@ -502,7 +516,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     // asks again. Poll periodically to keep reward activity current.
     const interval = setInterval(loadData, 15000)
     return () => clearInterval(interval)
-  }, [user])
+  }, [user?.business_slug, selectedProgramPublicId])
 
   useEffect(() => {
     if (activeTab !== 'orderahead' || !business?.order_ahead_enabled) return
@@ -540,14 +554,83 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
     setShowOnboarding(false)
   }
 
+  const selectProgram = (programPublicId) => {
+    if (!programPublicId || programPublicId === selectedProgramPublicId) return
+    if (programStorageKey) localStorage.setItem(programStorageKey, programPublicId)
+    setSelectedProgramPublicId(programPublicId)
+    setSelectedCustomer(null)
+    setCustomerSearch('')
+    setShowCardModal(false)
+    setShowQRModal(false)
+  }
+
+  const createProgram = async (event) => {
+    event?.preventDefault?.()
+    if (creatingProgram) return
+    const name = String(newProgram.name || '').trim()
+    if (!name) {
+      setMessage('Enter a program name.')
+      return
+    }
+    setCreatingProgram(true)
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/programs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, card_type: newProgram.card_type || 'stamp' }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not create program')
+      const nextId = data.public_id || ''
+      if (programStorageKey && nextId) localStorage.setItem(programStorageKey, nextId)
+      if (nextId) setSelectedProgramPublicId(nextId)
+      setShowCreateProgram(false)
+      setNewProgram({ name: '', card_type: 'stamp' })
+      setActiveTab('program')
+      setPrograms(current => [...current.filter(p => p.public_id !== nextId), data])
+      setMessage(`${data.program_name || name} created. Configure and publish its card.`)
+    } catch (err) {
+      setMessage(err?.message || 'Could not create program')
+    } finally {
+      setCreatingProgram(false)
+    }
+  }
+
   const loadData = async () => {
     try {
+      // Resolve the owner-selected program first. Existing businesses keep their
+      // stable default program, while Pro businesses can switch to additional
+      // programs without leaving the dashboard.
+      let scopeProgramId = selectedProgramPublicId
+      let programList = programs
+      try {
+        const programsRes = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/programs`)
+        const programsData = await programsRes.json().catch(() => ({}))
+        if (programsRes.ok) {
+          programList = Array.isArray(programsData.programs) ? programsData.programs : []
+          setPrograms(programList)
+          setProgramLimit(Number(programsData.max_programs || 1))
+          setCanCreateProgram(programsData.can_create === true)
+          const saved = programStorageKey ? localStorage.getItem(programStorageKey) : ''
+          const wanted = programList.find(p => p.public_id === scopeProgramId)
+            || programList.find(p => p.public_id === saved)
+            || programList.find(p => p.is_default)
+            || programList[0]
+          scopeProgramId = wanted?.public_id || ''
+          if (scopeProgramId !== selectedProgramPublicId) setSelectedProgramPublicId(scopeProgramId)
+          if (programStorageKey && scopeProgramId) localStorage.setItem(programStorageKey, scopeProgramId)
+        }
+      } catch (programErr) {
+        console.warn('Program list load warning:', programErr)
+      }
+
+      const scopeQuery = scopeProgramId ? `?program_id=${encodeURIComponent(scopeProgramId)}` : ''
       const [bizRes, custRes, staffRes, statsRes, progRes, stampCountRes, branchRes, subRes, kitRes, deviceRes, orderAheadRes] = await Promise.all([
         authFetch(`${API_BASE}/api/v1/business/${user.business_slug}`),
-        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers`),
+        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers${scopeQuery}`),
         authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff`),
-        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/stats`),
-        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config`),
+        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/stats${scopeQuery}`),
+        authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config${scopeQuery}`),
         authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/staff/stamp-counts`),
         authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/branches`),
         authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/subscription`),
@@ -1293,7 +1376,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         .split('\n')
         .map(s => s.trim())
         .filter(Boolean)
-      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config`, {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config${selectedProgramQuery}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1528,14 +1611,14 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
   const fetchQRImage = async () => {
     // Generate QR code with correct frontend URL (bypass backend wrong URL)
-    const joinUrl = `${FRONTEND_URL}/join/${user.business_slug}`
+    const joinUrl = selectedJoinUrl
     const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(joinUrl)}`
     setQrImageUrl(qrApiUrl)
     setShowQRModal(true)
   }
 
   const shareQR = async () => {
-    const joinUrl = `${FRONTEND_URL}/join/${user.business_slug}`
+    const joinUrl = selectedJoinUrl
     const shareText = `Join ${user?.business_name || 'our'} loyalty program! Scan the QR code or visit: ${joinUrl}`
 
     try {
@@ -1909,6 +1992,70 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         </div>
       )}
 
+      {programs.length > 0 && (
+        <section style={{maxWidth:1180,margin:'0 auto 14px',padding:isMobile?'0 12px':'0 20px',boxSizing:'border-box'}}>
+          <div style={{display:'flex',alignItems:isMobile?'stretch':'center',justifyContent:'space-between',gap:12,flexDirection:isMobile?'column':'row',background:'#fff',border:'1px solid #dbe5e1',borderRadius:16,padding:isMobile?12:'12px 14px',boxShadow:'0 8px 24px rgba(15,23,42,0.05)'}}>
+            <div style={{display:'flex',alignItems:isMobile?'stretch':'center',gap:10,flex:1,flexDirection:isMobile?'column':'row',minWidth:0}}>
+              <div style={{fontSize:10,fontWeight:900,letterSpacing:'.09em',color:'#64748b',whiteSpace:'nowrap'}}>VIEWING PROGRAM</div>
+              <select
+                value={selectedProgramPublicId || ''}
+                onChange={e => selectProgram(e.target.value)}
+                style={{minWidth:isMobile?'100%':260,maxWidth:420,width:isMobile?'100%':'auto',padding:'10px 34px 10px 12px',border:'1px solid #cbd5e1',borderRadius:10,background:'#fff',fontWeight:800,color:'#0f172a'}}
+              >
+                {programs.map(item => (
+                  <option key={item.public_id} value={item.public_id}>
+                    {item.program_name || item.card_name || 'Loyalty Program'} · {item.member_count || 0} members
+                  </option>
+                ))}
+              </select>
+              {selectedProgramSummary && (
+                <span style={{alignSelf:isMobile?'flex-start':'center',fontSize:10,fontWeight:850,color:'#0f766e',background:'#ecfdf5',border:'1px solid #a7f3d0',borderRadius:999,padding:'6px 9px',whiteSpace:'nowrap'}}>
+                  {String(selectedProgramSummary.card_type || 'stamp').replace('_',' ').toUpperCase()}{selectedProgramSummary.is_default ? ' · DEFAULT' : ''}
+                </span>
+              )}
+            </div>
+            <div style={{display:'flex',alignItems:'center',gap:8,justifyContent:isMobile?'space-between':'flex-end'}}>
+              <span style={{fontSize:10,color:'#64748b',fontWeight:800}}>{programs.length}/{programLimit} programs</span>
+              <button
+                type="button"
+                onClick={() => canCreateProgram && setShowCreateProgram(true)}
+                disabled={!canCreateProgram}
+                title={canCreateProgram ? 'Create another loyalty program' : `Your current plan supports ${programLimit} loyalty program${programLimit === 1 ? '' : 's'}`}
+                style={{border:'1px solid #0d9488',background:canCreateProgram?'#0d9488':'#f1f5f9',color:canCreateProgram?'#fff':'#94a3b8',borderRadius:10,padding:'9px 12px',fontSize:11,fontWeight:900,cursor:canCreateProgram?'pointer':'not-allowed',whiteSpace:'nowrap'}}
+              >
+                + Create Program
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {showCreateProgram && (
+        <div style={{position:'fixed',inset:0,zIndex:2200,background:'rgba(15,23,42,.58)',display:'flex',alignItems:'center',justifyContent:'center',padding:18}} onMouseDown={e=>{if(e.target===e.currentTarget&&!creatingProgram)setShowCreateProgram(false)}}>
+          <form onSubmit={createProgram} style={{width:'100%',maxWidth:480,background:'#fff',borderRadius:18,padding:22,boxShadow:'0 24px 70px rgba(15,23,42,.28)'}}>
+            <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start'}}>
+              <div><div style={{fontSize:10,fontWeight:900,letterSpacing:'.09em',color:'#0d9488'}}>NEW PROGRAM</div><h3 style={{margin:'5px 0 4px',fontSize:21,color:'#0f172a'}}>Create another loyalty card</h3><p style={{margin:0,color:'#64748b',fontSize:12,lineHeight:1.5}}>It will have its own customers, card editor, Join QR and Wallet configuration under the same business.</p></div>
+              <button type="button" onClick={()=>setShowCreateProgram(false)} disabled={creatingProgram} style={{border:0,background:'#f1f5f9',borderRadius:999,width:32,height:32,cursor:'pointer'}}>×</button>
+            </div>
+            <label style={{...styles.label,marginTop:18}}>Program name</label>
+            <input autoFocus style={styles.input} value={newProgram.name} onChange={e=>setNewProgram({...newProgram,name:e.target.value})} placeholder="e.g. Employee Card" maxLength={80}/>
+            <label style={styles.label}>Card type</label>
+            <select style={styles.input} value={newProgram.card_type} onChange={e=>setNewProgram({...newProgram,card_type:e.target.value})}>
+              <option value="stamp">Stamp Card</option>
+              <option value="points">Points Card</option>
+              <option value="membership">Membership</option>
+              <option value="multipass">Multi-Pass</option>
+              <option value="vip">VIP / Tier</option>
+              <option value="hybrid">Hybrid</option>
+            </select>
+            <div style={{display:'flex',justifyContent:'flex-end',gap:8,marginTop:18}}>
+              <button type="button" onClick={()=>setShowCreateProgram(false)} disabled={creatingProgram} style={{...styles.secondaryActionBtn,padding:'10px 14px'}}>Cancel</button>
+              <button type="submit" disabled={creatingProgram} style={{...styles.primaryActionBtn,background:'#0d9488',padding:'10px 14px'}}>{creatingProgram?'Creating…':'Create Program'}</button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {/* Professional dashboard summary */}
       <section style={{...styles.dashboardShell,...(isTablet?styles.dashboardShellTablet:{}),...(isMobile?styles.dashboardShellMobile:{})}}>
         <div style={{...styles.dashboardHero,...(isTablet?styles.dashboardHeroTablet:{}),...(isMobile?styles.dashboardHeroMobile:{})}}>
@@ -1936,7 +2083,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
           <div style={{...styles.heroQuickActions,...(isTablet?styles.heroQuickActionsTablet:{}),...(isMobile?styles.heroQuickActionsMobile:{})}}>
             <button
-              onClick={() => navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name, ownerToken: user.token } })}
+              onClick={() => navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name, ownerToken: user.token, programPublicId: selectedProgramPublicId } })}
               style={{...styles.primaryActionBtn, background: '#0d9488'}}
             >
               📷 {cardExperience.scanTitle}
@@ -2066,7 +2213,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                 <h3>View {cardExperience.customerLabel}</h3>
                 <p>{customers.length} connected</p>
               </div>
-              <div style={{...styles.actionCard,...(isTablet?styles.actionCardTablet:{}), borderColor: cardExperience.border}} onClick={() => navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name, ownerToken: user.token } })}>
+              <div style={{...styles.actionCard,...(isTablet?styles.actionCardTablet:{}), borderColor: cardExperience.border}} onClick={() => navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name, ownerToken: user.token, programPublicId: selectedProgramPublicId } })}>
                 <div style={styles.actionIcon}>📷</div>
                 <h3>{cardExperience.scanTitle}</h3>
                 <p>{cardExperience.scanDescription}</p>
@@ -2803,7 +2950,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
 
         {activeTab === 'program' && (
           <div style={styles.programTab}>
-            <LoyaltyCardCustomizer API_BASE={API_BASE} user={user} onSaved={loadData} />
+            <LoyaltyCardCustomizer API_BASE={API_BASE} user={user} programPublicId={selectedProgramPublicId} onSaved={loadData} />
             {isMembershipCard && (
               <div style={{...styles.card, marginTop: 18}}>
                 <h3 style={{marginTop: 0}}>Membership subscription settings</h3>
@@ -2906,7 +3053,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
               />
             )}
             <p style={{fontSize: 12, color: '#94a3b8', wordBreak: 'break-all', marginBottom: 16}}>
-              {FRONTEND_URL}/join/{user.business_slug}
+              {selectedJoinUrl}
             </p>
             <div style={{display: 'flex', gap: 12, justifyContent: 'center'}}>
               <button onClick={shareQR} style={styles.submitBtn}>
@@ -3979,6 +4126,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                         <LoyaltyCardCustomizer
                           API_BASE={API_BASE}
                           user={user}
+                          programPublicId={selectedProgramPublicId}
                           onSaved={goNextAfterCard}
                           guided
                         />
@@ -4101,7 +4249,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                     </p>
 
                     <img
-                      src={`https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=${encodeURIComponent(`${FRONTEND_URL}/join/${user.business_slug}`)}`}
+                      src={`https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=${encodeURIComponent(selectedJoinUrl)}`}
                       alt="Customer join QR"
                       style={{
                         width: 240,
@@ -4121,7 +4269,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                       wordBreak: 'break-all',
                       maxWidth: 440,
                     }}>
-                      {FRONTEND_URL}/join/{user.business_slug}
+                      {selectedJoinUrl}
                     </p>
 
                     <div style={{display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap'}}>
@@ -4135,7 +4283,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
                       <button
                         type="button"
                         onClick={() => {
-                          const joinUrl = `${FRONTEND_URL}/join/${user.business_slug}`
+                          const joinUrl = selectedJoinUrl
                           navigator.clipboard.writeText(joinUrl)
                           setMessage('Join link copied!')
                         }}

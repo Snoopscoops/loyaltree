@@ -182,8 +182,7 @@ PASSWORD_RESET_FRONTEND_URL = (os.getenv('PASSWORD_RESET_FRONTEND_URL', '') or F
 #
 # announcements_per_month: legacy field name; now means announcements included per paid subscription cycle
 # max_loyalty_cards: how many concurrent loyalty_programs rows a business
-#   may run at once (multi-card support itself is not implemented yet -
-#   this limit is reserved for that follow-up feature)
+#   may run at once. Multi-program create/switch APIs enforce this limit.
 # apple_wallet: reserved for when Apple Wallet (PassKit) support is built -
 #   not implemented yet, so this flag currently has no effect anywhere
 SUBSCRIPTION_PLANS = {
@@ -2116,6 +2115,11 @@ class MembershipBenefitConfig(BaseModel):
     reset_period: Literal['daily', 'weekly', 'monthly', 'membership_cycle', 'never'] = 'daily'
     active: bool = True
 
+class LoyaltyProgramCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    card_type: Literal['stamp', 'points', 'multipass', 'membership', 'vip', 'hybrid'] = 'stamp'
+
+
 class LoyaltyConfig(BaseModel):
     card_type: Literal['stamp', 'points', 'multipass', 'membership', 'vip', 'hybrid'] = 'stamp'
     # Hybrid keeps one Wallet card/customer identity while combining Membership
@@ -2706,11 +2710,36 @@ def generate_business_public_id(name: str) -> str:
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
+PROGRAM_JOIN_SEPARATOR = '__p__'
+
+
+def split_program_join_slug(value: Optional[str]) -> tuple[str, Optional[str]]:
+    """Split a customer-facing composite join slug into business + program.
+
+    The React CustomerJoin route already treats everything after /join/ as one
+    opaque businessSlug. Encoding the program in that slug lets multiple Join
+    QR codes work without requiring a separate CustomerJoin deployment.
+    Existing /join/<business> links remain the default-program route.
+    """
+    raw = str(value or '').strip()
+    if PROGRAM_JOIN_SEPARATOR not in raw:
+        return raw, None
+    business_public_id, program_public_id = raw.split(PROGRAM_JOIN_SEPARATOR, 1)
+    return business_public_id.strip(), (program_public_id.strip() or None)
+
+
+def make_program_join_slug(business_public_id: str, program: Optional[dict]) -> str:
+    if not program or program.get('is_default') or not program.get('public_id'):
+        return str(business_public_id or '')
+    return f"{business_public_id}{PROGRAM_JOIN_SEPARATOR}{program.get('public_id')}"
+
+
 def safe_get_business(public_id: str):
     if not supabase:
         return None
     try:
-        res = supabase.table("businesses").select("*").eq("public_id", public_id).maybe_single().execute()
+        business_public_id, _ = split_program_join_slug(public_id)
+        res = supabase.table("businesses").select("*").eq("public_id", business_public_id).maybe_single().execute()
         return res.data
     except Exception:
         return None
@@ -3351,31 +3380,122 @@ def safe_get_customer_by_id(customer_id: int):
     except Exception:
         return None
 
-def safe_get_loyalty_program(business_id: int):
-    """Return the most recently saved loyalty program.
+def safe_get_loyalty_program(
+    business_id: int,
+    program_public_id: Optional[str] = None,
+    program_id: Optional[int] = None,
+):
+    """Return one loyalty program for a business.
 
-    Historical duplicate rows can exist in older databases. maybe_single()
-    returns no data when that happens, which made the cashier fall back to
-    Stamp. Reading the newest row keeps existing customer QR codes valid.
+    Explicit program selection always wins. Legacy callers that do not pass a
+    program keep using the business's default program, preserving every old QR,
+    cashier and dashboard route after multi-program is enabled.
     """
-    if not supabase:
+    if not supabase or not business_id:
         return None
     try:
-        res = (
-            supabase.table("loyalty_programs")
-            .select("*")
-            .eq("business_id", business_id)
-            .order("updated_at", desc=True)
-            .order("created_at", desc=True)
-            .order("id", desc=True)
-            .limit(1)
-            .execute()
-        )
-        rows = res.data or []
-        return rows[0] if rows else None
+        query = supabase.table('loyalty_programs').select('*').eq('business_id', business_id)
+        if program_id is not None:
+            rows = query.eq('id', int(program_id)).limit(1).execute().data or []
+            return rows[0] if rows else None
+        if program_public_id:
+            rows = query.eq('public_id', str(program_public_id)).limit(1).execute().data or []
+            return rows[0] if rows else None
+
+        # New schema: a stable default program, not "most recently edited".
+        try:
+            rows = (
+                query.order('is_default', desc=True)
+                .order('sort_order')
+                .order('created_at')
+                .order('id')
+                .limit(1)
+                .execute().data or []
+            )
+            return rows[0] if rows else None
+        except Exception:
+            # Rolling-deploy fallback while SQL migration is still being run.
+            rows = (
+                supabase.table('loyalty_programs').select('*')
+                .eq('business_id', business_id)
+                .order('updated_at', desc=True)
+                .order('created_at', desc=True)
+                .order('id', desc=True)
+                .limit(1).execute().data or []
+            )
+            return rows[0] if rows else None
     except Exception as e:
         print(f"LOYALTY PROGRAM lookup error for business {business_id}: {e}")
         return None
+
+
+def safe_get_customer_program(customer: Optional[dict], business_id: Optional[int] = None):
+    customer = customer or {}
+    bid = business_id or customer.get('business_id')
+    if not bid:
+        return None
+    pid = customer.get('program_id')
+    return safe_get_loyalty_program(bid, program_id=pid) if pid else safe_get_loyalty_program(bid)
+
+
+def _program_max_for_business(business: dict) -> int:
+    features = get_plan_features((business or {}).get('plan'))
+    try:
+        return max(1, int(features.get('max_loyalty_cards') or 1))
+    except Exception:
+        return 1
+
+
+def _program_identity_payload(program: dict, member_count: int = 0) -> dict:
+    return {
+        'id': program.get('id'),
+        'public_id': program.get('public_id'),
+        'program_name': program.get('program_name') or program.get('card_name') or 'Loyalty Program',
+        'card_name': program.get('card_name'),
+        'card_type': program.get('card_type') or 'stamp',
+        'is_default': bool(program.get('is_default')),
+        'is_active': program.get('is_active') is not False,
+        'sort_order': int(program.get('sort_order') or 0),
+        'google_wallet_class_id': program.get('google_wallet_class_id'),
+        'member_count': int(member_count or 0),
+    }
+
+
+def find_or_create_customer_identity(business_id: int, signup) -> Optional[int]:
+    """Best-effort business-level identity shared by program memberships."""
+    if not supabase or not business_id:
+        return None
+    email = str(getattr(signup, 'email', '') or '').strip().lower()
+    phone = re.sub(r'\D+', '', str(getattr(signup, 'phone', '') or ''))
+    try:
+        matches = []
+        if email:
+            matches = (supabase.table('customer_identities').select('*')
+                       .eq('business_id', business_id).eq('normalized_email', email)
+                       .limit(1).execute().data or [])
+        if not matches and phone:
+            matches = (supabase.table('customer_identities').select('*')
+                       .eq('business_id', business_id).eq('normalized_phone', phone)
+                       .limit(1).execute().data or [])
+        if matches:
+            return matches[0].get('id')
+        row = {
+            'business_id': business_id,
+            'public_id': generate_public_id(),
+            'name': getattr(signup, 'name', None),
+            'email': getattr(signup, 'email', None),
+            'phone': getattr(signup, 'phone', None),
+            'normalized_email': email or None,
+            'normalized_phone': phone or None,
+            'created_at': datetime.utcnow().isoformat(),
+            'updated_at': datetime.utcnow().isoformat(),
+        }
+        inserted = supabase.table('customer_identities').insert(row).execute().data or []
+        return inserted[0].get('id') if inserted else None
+    except Exception as exc:
+        print(f"CUSTOMER IDENTITY warning: {exc}")
+        return None
+
 
 def hybrid_loyalty_type(program: Optional[dict]) -> str:
     """Backward-compatible primary/native Wallet metric for a Hybrid card."""
@@ -3577,7 +3697,7 @@ def apply_card_cycle_expiration_if_needed(customer: dict, business: Optional[dic
     if not customer or not supabase:
         return customer
     business_id = customer.get('business_id')
-    program = program or (safe_get_loyalty_program(business_id) if business_id else None)
+    program = program or (safe_get_customer_program(customer, business_id) if business_id else None)
     if not _card_cycle_enabled(program):
         return customer
 
@@ -3798,35 +3918,38 @@ def find_business_duplicate(email: Optional[str], phone: Optional[str]) -> Optio
         return None
     return None
 
-def find_customer_duplicate(business_id: int, phone: Optional[str], email: Optional[str], exclude_id: Optional[int] = None) -> Optional[str]:
-    """Checks whether another customer already enrolled in this business
-    (same business_id) has this phone or email. exclude_id skips the
-    customer's own row, so updates only flag a collision with someone else.
-    Returns which field collided ('phone' or 'email'), or None if clear."""
+def find_customer_duplicate(
+    business_id: int,
+    phone: Optional[str],
+    email: Optional[str],
+    exclude_id: Optional[int] = None,
+    program_id: Optional[int] = None,
+) -> Optional[str]:
+    """Prevent duplicate enrollment inside the same program only."""
     if not supabase:
         return None
     phone = (phone or '').strip()
     email = (email or '').strip()
     try:
+        def scoped_query():
+            q = supabase.table('customers').select('id').eq('business_id', business_id)
+            if program_id is not None:
+                q = q.eq('program_id', int(program_id))
+            return q
         if phone:
-            res = (
-                supabase.table("customers").select("id")
-                .eq("business_id", business_id).eq("phone", phone).execute()
-            )
+            res = scoped_query().eq('phone', phone).execute()
             for row in (res.data or []):
                 if exclude_id is None or row.get('id') != exclude_id:
-                    return "phone"
+                    return 'phone'
         if email:
-            res = (
-                supabase.table("customers").select("id")
-                .eq("business_id", business_id).ilike("email", email).execute()
-            )
+            res = scoped_query().ilike('email', email).execute()
             for row in (res.data or []):
                 if exclude_id is None or row.get('id') != exclude_id:
-                    return "email"
+                    return 'email'
     except Exception:
         return None
     return None
+
 
 def find_cl_customer_duplicate(business_id: int, phone: Optional[str], email: Optional[str], exclude_id: Optional[int] = None) -> Optional[str]:
     """Same idea as find_customer_duplicate but scoped to cl_customers (Car
@@ -4720,10 +4843,16 @@ def get_google_access_token() -> str:
 
 
 def _google_wallet_base_class_id(business: dict, program: dict) -> str:
-    """Stable root Google Wallet class ID for this business."""
+    """Stable root Google Wallet class ID for this business/program."""
     if program and program.get('google_wallet_class_id'):
         return str(program.get('google_wallet_class_id'))
-    return f'{GOOGLE_WALLET_ISSUER_ID}.{business.get("public_id", "")}'
+    base = f'{GOOGLE_WALLET_ISSUER_ID}.{business.get("public_id", "")}'
+    # Keep the legacy/default class ID unchanged so installed cards continue to
+    # update. Every additional program gets a deterministic sibling class.
+    if program and not program.get('is_default') and program.get('public_id'):
+        fragment = _google_wallet_safe_fragment(program.get('public_id'), 'program')
+        return f'{base}-p-{fragment}'
+    return base
 
 
 def _google_wallet_safe_fragment(value: str, fallback: str = "tier") -> str:
@@ -5329,19 +5458,20 @@ async def refresh_existing_member_wallets(business: dict, program: dict, refresh
     PostgREST/Cloudflare pressure and duplicate Wallet traffic.
     """
     try:
-        members = (
+        member_query = (
             supabase.table('customers')
             .select('*')
             .eq('business_id', business.get('id'))
-            .execute()
-            .data or []
         )
+        if (program or {}).get('id'):
+            member_query = member_query.eq('program_id', program.get('id'))
+        members = member_query.execute().data or []
         members = [m for m in members if m.get('public_id')]
         if not members:
             print(f"WALLET SYNC: no members to refresh for {business.get('name')}")
             return
 
-        current_program = safe_get_loyalty_program(business.get('id')) or program or {}
+        current_program = program or safe_get_loyalty_program(business.get('id')) or {}
         serials = [m.get('public_id') for m in members]
 
         # Apple: find every saved registration in a few bounded queries instead
@@ -7538,7 +7668,7 @@ def push_apple_wallet_update(serial_number: str):
 APPLE_PASS_LAYOUT_RELEASE = "wallet-layout-2026-09-11-v9-unique-reset-field"
 
 
-def refresh_business_apple_wallet_passes(business_id: int, reason: str = "card_config_change"):
+def refresh_business_apple_wallet_passes(business_id: int, reason: str = "card_config_change", program_id: Optional[int] = None):
     """Wake every installed Apple Wallet pass for one business.
 
     This is Apple-only. It deliberately does not republish or PATCH Google
@@ -7549,12 +7679,14 @@ def refresh_business_apple_wallet_passes(business_id: int, reason: str = "card_c
         return {"status": "not_configured", "registered": 0, "devices_woken": 0}
 
     try:
-        customer_rows = (
+        customer_query = (
             supabase.table("customers")
             .select("public_id")
             .eq("business_id", business_id)
-            .execute()
-        ).data or []
+        )
+        if program_id is not None:
+            customer_query = customer_query.eq('program_id', int(program_id))
+        customer_rows = customer_query.execute().data or []
     except Exception as e:
         print(f"APPLE AUTO REFRESH customer lookup error: {e}")
         return {"status": "error", "detail": str(e), "registered": 0, "devices_woken": 0}
@@ -13230,7 +13362,7 @@ async def admin_set_nfc_trial(public_id: str, update: AdminNfcTrialUpdate, backg
         supabase.table('loyalty_programs').update({
             'nfc_trial_enabled': bool(update.enabled),
             'updated_at': datetime.utcnow().isoformat(),
-        }).eq('business_id', business.get('id')).execute()
+        }).eq('id', program.get('id')).execute()
     except Exception as e:
         if 'nfc_trial_enabled' in str(e):
             raise HTTPException(status_code=503, detail="NFC trial database migration has not been installed yet")
@@ -14606,7 +14738,7 @@ async def get_customer_api(public_id: str, response: Response):
         raise HTTPException(status_code=404, detail="Customer not found")
 
     business = safe_get_business_by_id(customer.get('business_id'))
-    program = safe_get_loyalty_program(customer.get('business_id')) if business else None
+    program = safe_get_customer_program(customer, customer.get('business_id')) if business else None
     current_card_type = (
         program.get('card_type')
         if program and program.get('card_type') in ('stamp', 'points', 'membership', 'vip', 'multipass', 'hybrid')
@@ -14650,17 +14782,22 @@ async def get_customer_api(public_id: str, response: Response):
     }
 
 @app.get("/api/v1/business/{public_id}/customers")
-async def get_customers(public_id: str):
+async def get_customers(public_id: str, program_id: Optional[str] = Query(default=None)):
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
+    program = safe_get_loyalty_program(business.get('id'), program_public_id=program_id)
+    if program_id and not program:
+        raise HTTPException(status_code=404, detail='Program not found for this business')
     try:
-        res = supabase.table("customers").select("*").eq("business_id", business.get("id")).execute()
+        query = supabase.table('customers').select('*').eq('business_id', business.get('id'))
+        if program:
+            query = query.eq('program_id', program.get('id'))
+        res = query.execute()
         customers = res.data or []
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    program = safe_get_loyalty_program(business.get('id'))
     if program and program.get('card_expiration_enabled'):
         customers = [apply_card_cycle_expiration_if_needed(c, business, program) for c in customers]
 
@@ -14738,7 +14875,7 @@ async def get_customer_current_redeemables(public_id: str, customer_public_id: s
     customer = safe_get_customer(customer_public_id)
     if not customer or customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
-    program = safe_get_loyalty_program(business.get('id')) or {}
+    program = safe_get_customer_program(customer, business.get('id')) or {}
     if program.get('card_expiration_enabled'):
         customer = apply_card_cycle_expiration_if_needed(customer, business, program)
     redeemables = get_current_card_redeemables(business, customer, program)
@@ -14759,11 +14896,11 @@ async def admin_sweep_card_expirations(_: bool = Depends(require_admin)):
     checked = 0
     reset = 0
     for business in businesses:
-        program = safe_get_loyalty_program(business.get('id'))
-        if not _card_cycle_enabled(program):
-            continue
         rows = supabase.table('customers').select('*').eq('business_id', business.get('id')).execute().data or []
         for customer in rows:
+            program = safe_get_customer_program(customer, business.get('id'))
+            if not _card_cycle_enabled(program):
+                continue
             checked += 1
             before = int(customer.get('card_cycle') or 1)
             updated = apply_card_cycle_expiration_if_needed(customer, business, program)
@@ -14854,6 +14991,7 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
             update_data.get('phone'),
             update_data.get('email'),
             exclude_id=customer.get('id'),
+            program_id=customer.get('program_id'),
         )
         if dup_field:
             raise HTTPException(
@@ -14869,7 +15007,7 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
     # loaded below so the wallet push has it.
     program = None
     if any(k in update_data for k in ('stamp_count', 'tier_stamp_count', 'points_balance', 'multipass_sessions_remaining', 'vip_points', 'vip_manual_tier_id')):
-        program = safe_get_loyalty_program(business.get('id'))
+        program = safe_get_customer_program(customer, business.get('id'))
     old_vip_tier = get_vip_tier(customer, program) if program and program_has_tier(program) else None
     if 'stamp_count' in update_data and (not program or program_reward_uses_stamps(program)):
         update_data['reward_unlocked'] = bool(
@@ -15281,12 +15419,18 @@ async def delete_staff(public_id: str, staff_public_id: str, authorization: str 
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/v1/business/{public_id}/stats")
-async def get_stats(public_id: str):
+async def get_stats(public_id: str, program_id: Optional[str] = Query(default=None)):
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
     try:
-        res = supabase.table("customers").select("*").eq("business_id", business.get("id")).execute()
+        program = safe_get_loyalty_program(business.get('id'), program_public_id=program_id)
+        if program_id and not program:
+            raise HTTPException(status_code=404, detail='Program not found for this business')
+        query = supabase.table('customers').select('*').eq('business_id', business.get('id'))
+        if program:
+            query = query.eq('program_id', program.get('id'))
+        res = query.execute()
         customers = res.data or []
         total_stamps = sum(c.get('stamp_count', 0) for c in customers)
         return {
@@ -15438,7 +15582,7 @@ def _day_of_week_series(rows, field, start, end):
     return [{'label': n, 'value': c} for n, c in zip(names, counts)]
 
 @app.get("/api/v1/business/{public_id}/analytics")
-async def get_analytics(public_id: str, range: str = '30d'):
+async def get_analytics(public_id: str, range: str = '30d', program_id: Optional[str] = Query(default=None)):
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -15451,16 +15595,33 @@ async def get_analytics(public_id: str, range: str = '30d'):
             detail="Analytics is available on the Growth and Pro plans. Upgrade to unlock it."
         )
 
+    program = safe_get_loyalty_program(business_id, program_public_id=program_id)
+    if program_id and not program:
+        raise HTTPException(status_code=404, detail='Program not found for this business')
+
     try:
-        customers = supabase.table("customers").select("*").eq("business_id", business_id).execute().data or []
+        customer_query = supabase.table("customers").select("*").eq("business_id", business_id)
+        if program:
+            customer_query = customer_query.eq('program_id', program.get('id'))
+        customers = customer_query.execute().data or []
+        customer_ids = {c.get('id') for c in customers if c.get('id') is not None}
+
         stamp_events = supabase.table("stamp_events").select("*").eq("business_id", business_id).execute().data or []
         redemption_events = supabase.table("redemption_events").select("*").eq("business_id", business_id).execute().data or []
         points_events = supabase.table("points_events").select("*").eq("business_id", business_id).execute().data or []
         multipass_events = supabase.table("multipass_events").select("*").eq("business_id", business_id).execute().data or []
+
+        # Event tables predate multi-program and are customer-linked. Filtering
+        # by the selected program's customer IDs keeps analytics correct without
+        # rewriting historical event rows or requiring a second migration.
+        if program:
+            stamp_events = [e for e in stamp_events if e.get('customer_id') in customer_ids]
+            redemption_events = [e for e in redemption_events if e.get('customer_id') in customer_ids]
+            points_events = [e for e in points_events if e.get('customer_id') in customer_ids]
+            multipass_events = [e for e in multipass_events if e.get('customer_id') in customer_ids]
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
-    program = safe_get_loyalty_program(business_id)
     card_type = program.get('card_type', 'stamp') if program else 'stamp'
     loyalty_type = effective_loyalty_type(program)
     # Points-card businesses never generate stamp_events (add_stamp rejects
@@ -15765,6 +15926,8 @@ async def get_analytics(public_id: str, range: str = '30d'):
 
     return {
         "range": range,
+        "program_public_id": (program or {}).get('public_id'),
+        "program_name": (program or {}).get('program_name') or (program or {}).get('card_name'),
         "overview": overview,
         "trends": trends,
         "customers": customers_block,
@@ -15774,15 +15937,91 @@ async def get_analytics(public_id: str, range: str = '30d'):
         "revenue": revenue,
     }
 
+@app.get('/api/v1/business/{public_id}/programs')
+async def get_business_programs(public_id: str, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    try:
+        rows = (supabase.table('loyalty_programs').select('*')
+                .eq('business_id', business.get('id'))
+                .order('is_default', desc=True).order('sort_order').order('created_at')
+                .execute().data or [])
+        counts = {}
+        customer_rows = (supabase.table('customers').select('program_id')
+                         .eq('business_id', business.get('id')).execute().data or [])
+        for row in customer_rows:
+            pid = row.get('program_id')
+            if pid is not None:
+                counts[pid] = counts.get(pid, 0) + 1
+        max_programs = _program_max_for_business(business)
+        return {
+            'programs': [_program_identity_payload(p, counts.get(p.get('id'), 0)) for p in rows],
+            'max_programs': max_programs,
+            'can_create': len(rows) < max_programs,
+            'plan': business.get('plan', 'starter'),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+
+@app.post('/api/v1/business/{public_id}/programs')
+async def create_business_program(public_id: str, req: LoyaltyProgramCreate, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    if req.card_type == 'hybrid' and not business_has_plan_feature(business, 'hybrid_cards'):
+        raise HTTPException(status_code=403, detail='Hybrid Card is available on Growth and Pro plans.')
+    try:
+        existing = (supabase.table('loyalty_programs').select('id,sort_order')
+                    .eq('business_id', business.get('id')).execute().data or [])
+        max_programs = _program_max_for_business(business)
+        if len(existing) >= max_programs:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Your {str(business.get('plan') or 'starter').title()} plan supports up to {max_programs} loyalty program{'s' if max_programs != 1 else ''}.",
+            )
+        name = str(req.name or '').strip()
+        now = datetime.utcnow().isoformat()
+        row = {
+            'business_id': business.get('id'),
+            'public_id': generate_public_id(),
+            'program_name': name,
+            'card_name': name,
+            'card_type': req.card_type,
+            'is_default': len(existing) == 0,
+            'is_active': True,
+            'sort_order': max([int(r.get('sort_order') or 0) for r in existing] + [-1]) + 1,
+            'stamp_goal': 8,
+            'reward_name': 'Free Service',
+            'primary_color': '#0d9488',
+            'reward_expiry_days': 30,
+            'created_at': now,
+            'updated_at': now,
+        }
+        inserted = supabase.table('loyalty_programs').insert(row).execute().data or []
+        if not inserted:
+            raise HTTPException(status_code=500, detail='Program could not be created')
+        return _program_identity_payload(inserted[0], 0)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+
 @app.get("/api/v1/business/{public_id}/loyalty-config")
-async def get_loyalty_config(public_id: str, response: Response):
+async def get_loyalty_config(public_id: str, response: Response, program_id: Optional[str] = Query(default=None)):
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
-    program = safe_get_loyalty_program(business.get('id'))
+    program = safe_get_loyalty_program(business.get('id'), program_public_id=program_id)
+    if program_id and not program:
+        raise HTTPException(status_code=404, detail='Program not found for this business')
     if not program:
         return {
             "card_type": "stamp",
@@ -15842,6 +16081,7 @@ async def get_loyalty_config(public_id: str, response: Response):
             # picker-skip logic) without guessing off field values that could
             # legitimately be defaults either way.
             "is_configured": False,
+            "program_public_id": program_id,
         }
     return {
         **program,
@@ -15850,6 +16090,8 @@ async def get_loyalty_config(public_id: str, response: Response):
         "vip_progression_type": vip_progression_type(program),
         "hybrid_tier_progression_type": hybrid_tier_progression_type(program),
         "is_configured": True,
+        "program_public_id": program.get("public_id"),
+        "program_name": program.get("program_name") or program.get("card_name"),
         "plan": business.get('plan', 'starter'),
         "plan_features": {
             "hybrid_cards": business_has_plan_feature(business, 'hybrid_cards'),
@@ -15859,7 +16101,7 @@ async def get_loyalty_config(public_id: str, response: Response):
 
 
 @app.get("/api/v1/business/{public_id}/cashier-program")
-async def get_cashier_program(public_id: str, response: Response):
+async def get_cashier_program(public_id: str, response: Response, program_id: Optional[str] = Query(default=None)):
     """Cashier-facing alias of loyalty-config.
 
     All card types use the same source that already works for Points:
@@ -15872,7 +16114,7 @@ async def get_cashier_program(public_id: str, response: Response):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
-    program = safe_get_loyalty_program(business.get("id"))
+    program = safe_get_loyalty_program(business.get('id'), program_public_id=program_id)
     if not program:
         raise HTTPException(
             status_code=404,
@@ -15898,11 +16140,15 @@ async def get_cashier_program(public_id: str, response: Response):
     }
 
 @app.post("/api/v1/business/{public_id}/loyalty-config")
-async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_tasks: BackgroundTasks, authorization: str = Header(default='')):
+async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_tasks: BackgroundTasks, program_id: Optional[str] = Query(default=None), authorization: str = Header(default='')):
     require_owner_session(public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
+
+    selected_program = safe_get_loyalty_program(business.get('id'), program_public_id=program_id)
+    if program_id and not selected_program:
+        raise HTTPException(status_code=404, detail='Program not found for this business')
 
     # Hybrid is a Growth-tier module. Keep existing live Hybrid cards usable
     # after a downgrade, but Starter owners cannot create/edit/publish Hybrid.
@@ -15996,6 +16242,8 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
         data['hero_image_url'] = config.hero_image_url
     if config.card_name is not None:
         data['card_name'] = config.card_name
+        if str(config.card_name or '').strip():
+            data['program_name'] = str(config.card_name).strip()
     if config.description is not None:
         data['description'] = config.description
     if config.card_type == 'points' or (config.card_type == 'hybrid' and hybrid_points):
@@ -16142,7 +16390,7 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
     # Do not create a new timestamp/push for an identical configuration.
     # This is especially important when the UI performs Save followed by
     # Publish: the Google publish should not cause a second Apple refresh.
-    current_before_save = safe_get_loyalty_program(business.get("id")) or {}
+    current_before_save = selected_program or safe_get_loyalty_program(business.get("id")) or {}
     prospective_program = dict(current_before_save)
     prospective_program.update(data)
 
@@ -16158,30 +16406,24 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
         }
 
     try:
-        existing = (
-            supabase.table("loyalty_programs")
-            .select("id")
-            .eq("business_id", business.get("id"))
-            .order("updated_at", desc=True)
-            .order("created_at", desc=True)
-            .order("id", desc=True)
-            .limit(1)
-            .execute()
-        )
-        rows = existing.data or []
-
-        if rows:
-            # Older deployments may have duplicate loyalty_programs rows.
-            # Synchronize all of them instead of deleting records, so every
-            # legacy lookup returns the same selected card type.
-            supabase.table("loyalty_programs").update(data).eq(
-                "business_id", business.get("id")
-            ).execute()
+        target_program = selected_program or safe_get_loyalty_program(business.get('id'))
+        if target_program and target_program.get('id'):
+            supabase.table('loyalty_programs').update(data).eq('id', target_program.get('id')).execute()
         else:
-            data['created_at'] = datetime.utcnow().isoformat()
-            supabase.table("loyalty_programs").insert(data).execute()
+            data.update({
+                'public_id': generate_public_id(),
+                'program_name': (config.card_name or 'Default Program').strip(),
+                'is_default': True,
+                'is_active': True,
+                'sort_order': 0,
+                'created_at': datetime.utcnow().isoformat(),
+            })
+            supabase.table('loyalty_programs').insert(data).execute()
 
-        persisted = safe_get_loyalty_program(business.get("id"))
+        persisted = safe_get_loyalty_program(
+            business.get('id'),
+            program_public_id=(target_program or {}).get('public_id') if target_program else None,
+        )
         persisted_type = (persisted or {}).get("card_type")
 
         # Turning card expiration on starts a fresh timer for EXISTING members
@@ -16190,11 +16432,14 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
         if bool(config.card_expiration_enabled) and not was_expiration_enabled:
             cycle_start = _loyalty_today()
             cycle_expiry = cycle_start + timedelta(days=int(config.card_validity_days or 365))
-            supabase.table('customers').update({
+            customer_cycle_update = supabase.table('customers').update({
                 'card_started_at': cycle_start.isoformat(),
                 'card_expires_at': cycle_expiry.isoformat(),
                 'updated_at': datetime.utcnow().isoformat(),
-            }).eq('business_id', business.get('id')).execute()
+            }).eq('business_id', business.get('id'))
+            if persisted and persisted.get('id'):
+                customer_cycle_update = customer_cycle_update.eq('program_id', persisted.get('id'))
+            customer_cycle_update.execute()
 
         if persisted_type != config.card_type:
             raise HTTPException(
@@ -16213,6 +16458,7 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
             refresh_business_apple_wallet_passes,
             business.get("id"),
             "loyalty_config_saved",
+            persisted.get('id') if persisted else None,
         )
 
         return {
@@ -18227,18 +18473,24 @@ async def go_live(public_id: str):
     raise HTTPException(status_code=403, detail="Your account is not active. Please contact support.")
 
 @app.get("/api/v1/business/{public_id}/qr-code")
-async def get_qr_code(public_id: str):
+async def get_qr_code(public_id: str, program_id: Optional[str] = Query(default=None)):
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
+    program = safe_get_loyalty_program(business.get('id'), program_public_id=program_id)
+    if program_id and not program:
+        raise HTTPException(status_code=404, detail='Program not found for this business')
 
     join_base = (FRONTEND_URL or BASE_URL).rstrip('/')
-    join_url = f'{join_base}/join/{public_id}'
+    join_slug = make_program_join_slug(business.get('public_id'), program)
+    join_url = f'{join_base}/join/{join_slug}'
     svg = generate_qr_svg(join_url)
     return JSONResponse({
         "svg": svg,
         "join_url": join_url,
         "business_name": business.get("name", ""),
+        "program_public_id": (program or {}).get('public_id'),
+        "program_name": (program or {}).get('program_name') or (program or {}).get('card_name'),
     })
 
 @app.post("/api/v1/business/{public_id}/nfc/resolve")
@@ -18257,12 +18509,6 @@ async def resolve_nfc_member(public_id: str, req: NfcResolveRequest, authorizati
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
-    program = safe_get_loyalty_program(business.get('id'))
-    if not program or not program_has_membership(program):
-        raise HTTPException(status_code=403, detail="NFC trial is available only for membership cards")
-    if not bool(program.get('nfc_trial_enabled')):
-        raise HTTPException(status_code=403, detail="NFC trial is not enabled for this membership card")
-
     session_claims = get_staff_session_claims(public_id, authorization)
     if not session_claims or not session_claims.get('staff_id'):
         raise HTTPException(status_code=401, detail="Cashier login required before NFC tap")
@@ -18274,6 +18520,12 @@ async def resolve_nfc_member(public_id: str, req: NfcResolveRequest, authorizati
     customer = safe_get_customer(customer_public_id)
     if not customer or customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
+
+    program = safe_get_customer_program(customer, business.get('id'))
+    if not program or not program_has_membership(program):
+        raise HTTPException(status_code=403, detail="NFC trial is available only for membership cards")
+    if not bool(program.get('nfc_trial_enabled')):
+        raise HTTPException(status_code=403, detail="NFC trial is not enabled for this membership card")
 
     source = req.source or 'terminal'
     response_payload = {
@@ -18914,7 +19166,7 @@ async def add_stamp(public_id: str, req: StampRequest, background_tasks: Backgro
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
 
-    program = safe_get_loyalty_program(business.get('id'))
+    program = safe_get_customer_program(customer, business.get('id'))
     if program and not program_uses_stamps(program):
         raise HTTPException(status_code=400, detail="This card does not use stamps. Use its configured loyalty action instead.")
 
@@ -19160,7 +19412,7 @@ async def adjust_stamp(public_id: str, req: StampAdjustRequest, background_tasks
             raise HTTPException(status_code=403, detail="Invalid staff PIN")
         staff_id = staff_res.data[0].get('id'); branch_id = staff_res.data[0].get('branch_id')
 
-    program = safe_get_loyalty_program(business.get('id')) or {}
+    program = safe_get_customer_program(customer, business.get('id')) or {}
     reward_stamp_enabled = program_reward_uses_stamps(program)
     tier_stamp_enabled = tier_stamps_enabled(program)
     if not reward_stamp_enabled and not tier_stamp_enabled:
@@ -19262,7 +19514,7 @@ async def add_vip_sale(public_id: str, req: VIPSaleRequest, background_tasks: Ba
     previous_response = get_completed_idempotent_response(business.get('id'), x_idempotency_key)
     if previous_response is not None:
         return previous_response
-    program = safe_get_loyalty_program(business.get('id'))
+    program = safe_get_customer_program(customer, business.get('id'))
     if not program or not program_has_tier(program):
         raise HTTPException(status_code=400, detail="This card does not have a Tier engine")
     if tier_stamps_enabled(program):
@@ -19332,7 +19584,7 @@ async def add_vip_sale(public_id: str, req: VIPSaleRequest, background_tasks: Ba
 async def adjust_vip_points(public_id: str, req: VIPAdjustRequest, background_tasks: BackgroundTasks):
     business=safe_get_business(public_id); customer=safe_get_customer(req.customer_public_id)
     if not business or not customer or customer.get('business_id') != business.get('id'): raise HTTPException(status_code=404, detail='Customer not found')
-    program=safe_get_loyalty_program(business.get('id'))
+    program=safe_get_customer_program(customer, business.get('id'))
     if not program or not program_has_tier(program): raise HTTPException(status_code=400, detail='Tier engine is not enabled')
     if tier_stamps_enabled(program): raise HTTPException(status_code=400, detail='This Tier engine progresses by stamps, not Tier points')
     old=get_vip_tier(customer,program); old_balance=int(customer.get('vip_points') or 0); balance=max(0,old_balance+req.points_delta)
@@ -19376,7 +19628,7 @@ async def add_points_sale(public_id: str, req: PointsSaleRequest, background_tas
     previous_response = get_completed_idempotent_response(business.get('id'), x_idempotency_key)
     if previous_response is not None:
         return previous_response
-    program = safe_get_loyalty_program(business.get('id'))
+    program = safe_get_customer_program(customer, business.get('id'))
     if not program or not program_reward_uses_points(program):
         raise HTTPException(status_code=400, detail="Points rewards are not enabled for this card")
 
@@ -20577,7 +20829,7 @@ async def redeem_points_prize(public_id: str, req: PointsRedeemRequest, backgrou
     previous_response = get_completed_idempotent_response(business.get('id'), x_idempotency_key)
     if previous_response is not None:
         return previous_response
-    program = safe_get_loyalty_program(business.get('id'))
+    program = safe_get_customer_program(customer, business.get('id'))
     if not program or not program_reward_uses_points(program):
         raise HTTPException(status_code=400, detail="Points rewards are not enabled for this card")
 
@@ -20675,7 +20927,7 @@ async def issue_multipass(public_id: str, req: MultipassIssueRequest, background
     previous_response = get_completed_idempotent_response(business.get('id'), x_idempotency_key)
     if previous_response is not None:
         return previous_response
-    program = safe_get_loyalty_program(business.get('id'))
+    program = safe_get_customer_program(customer, business.get('id'))
     if not program or program.get('card_type') != 'multipass':
         raise HTTPException(status_code=400, detail="This business is not on a multi-pass card")
 
@@ -20781,7 +21033,7 @@ async def use_multipass_session(public_id: str, req: MultipassUseRequest, backgr
     previous_response = get_completed_idempotent_response(business.get('id'), x_idempotency_key)
     if previous_response is not None:
         return previous_response
-    program = safe_get_loyalty_program(business.get('id'))
+    program = safe_get_customer_program(customer, business.get('id'))
     if not program or program.get('card_type') != 'multipass':
         raise HTTPException(status_code=400, detail="This business is not on a multi-pass card")
 
@@ -20859,7 +21111,7 @@ async def get_customer_membership_benefits(public_id: str, customer_public_id: s
     customer = safe_get_customer(customer_public_id)
     if not customer or customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail='Customer not found for this business')
-    program = safe_get_loyalty_program(business.get('id'))
+    program = safe_get_customer_program(customer, business.get('id'))
     if not program or not program_has_membership(program):
         raise HTTPException(status_code=400, detail='This business is not using membership benefits')
     return {
@@ -20886,7 +21138,7 @@ async def redeem_membership_benefit(
     customer = safe_get_customer(req.customer_public_id)
     if not customer or customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail='Customer not found for this business')
-    program = safe_get_loyalty_program(business.get('id'))
+    program = safe_get_customer_program(customer, business.get('id'))
     if not program or not program_has_membership(program):
         raise HTTPException(status_code=400, detail='This business is not using membership benefits')
     if not membership_access_allowed(customer):
@@ -21029,7 +21281,7 @@ async def membership_action(public_id: str, req: MembershipActionRequest, backgr
     customer = safe_get_customer(req.customer_public_id)
     if not customer or customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
-    program = safe_get_loyalty_program(business.get('id'))
+    program = safe_get_customer_program(customer, business.get('id'))
     if not program or not program_has_membership(program):
         raise HTTPException(status_code=400, detail="This business is not using a membership card")
 
@@ -21471,7 +21723,7 @@ async def add_membership_note(public_id: str, req: MembershipNoteRequest, backgr
     previous_response = get_completed_idempotent_response(business.get('id'), x_idempotency_key)
     if previous_response is not None:
         return previous_response
-    program = safe_get_loyalty_program(business.get('id'))
+    program = safe_get_customer_program(customer, business.get('id'))
     if not program or not program_has_membership(program):
         raise HTTPException(status_code=400, detail="This business is not on a membership card")
     if program.get('membership_visit_logging_enabled') is False:
@@ -21632,7 +21884,7 @@ async def update_membership_leaf(public_id: str, leaf_id: int, update: Membershi
         try:
             customer = safe_get_customer_by_id(existing.data.get('customer_id'))
             if customer:
-                program = safe_get_loyalty_program(business.get('id'))
+                program = safe_get_customer_program(customer, business.get('id'))
                 sync_wallet_object(customer, business, program)
                 sync_apple_wallet_pass(customer)
         except Exception as sync_err:
@@ -21658,7 +21910,7 @@ async def delete_membership_leaf(public_id: str, leaf_id: int):
         try:
             customer = safe_get_customer_by_id(existing.data.get('customer_id'))
             if customer:
-                program = safe_get_loyalty_program(business.get('id'))
+                program = safe_get_customer_program(customer, business.get('id'))
                 sync_wallet_object(customer, business, program)
                 sync_apple_wallet_pass(customer)
         except Exception as sync_err:
@@ -21919,7 +22171,7 @@ async def redeem_reward(public_id: str, req: RedeemRequest, authorization: str =
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Staff verification failed: {str(e)}")
 
-    program = safe_get_loyalty_program(business.get('id'))
+    program = safe_get_customer_program(customer, business.get('id'))
     if not program or not program_reward_uses_stamps(program):
         raise HTTPException(status_code=400, detail="Stamp reward redemption is only available when Stamp rewards are enabled")
     rewards = get_stamp_rewards(program)
@@ -22057,7 +22309,7 @@ async def create_coupon(public_id: str, customer_public_id: str, req: CouponCrea
     # AVAILABLE NOW is customer-specific on the native Wallet passes. Refresh
     # after manual coupon issuance so the new coupon appears without waiting
     # for the customer's next loyalty transaction.
-    program = safe_get_loyalty_program(business.get('id')) or {}
+    program = safe_get_customer_program(customer, business.get('id')) or {}
     background_tasks.add_task(
         sync_loyalty_wallets_background,
         dict(customer), dict(business), dict(program), 'coupon_created'
@@ -22123,7 +22375,7 @@ async def cancel_coupon(public_id: str, coupon_public_id: str, background_tasks:
 
     customer = safe_get_customer_by_id(coupon.get('customer_id'))
     if customer:
-        program = safe_get_loyalty_program(business.get('id')) or {}
+        program = safe_get_customer_program(customer, business.get('id')) or {}
         background_tasks.add_task(
             sync_loyalty_wallets_background,
             dict(customer), dict(business), dict(program), 'coupon_cancelled'
@@ -22238,7 +22490,7 @@ async def redeem_coupon(public_id: str, req: CouponRedeem, background_tasks: Bac
     )
 
     # Drop the redeemed coupon from AVAILABLE NOW on Google/Apple Wallet.
-    program = safe_get_loyalty_program(business.get('id')) or {}
+    program = safe_get_customer_program(customer, business.get('id')) or {}
     background_tasks.add_task(
         sync_loyalty_wallets_background,
         dict(customer), dict(business), dict(program), 'coupon_redeemed'
@@ -22290,7 +22542,7 @@ async def get_customer_hero_image(customer_public_id: str, s: Optional[str] = No
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
-    program = safe_get_loyalty_program(business.get('id'))
+    program = safe_get_customer_program(customer, business.get('id'))
     primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
     reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
     stamp_goal = program.get('stamp_goal', 8) if program else 8
@@ -22337,17 +22589,19 @@ async def get_customer_hero_image(customer_public_id: str, s: Optional[str] = No
 # GOOGLE WALLET CLASS MANAGEMENT
 
 @app.get("/api/v1/business/{public_id}/wallet-class")
-async def get_wallet_class(public_id: str):
+async def get_wallet_class(public_id: str, program_id: Optional[str] = Query(default=None)):
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
-    program = safe_get_loyalty_program(business.get('id'))
+    program = safe_get_loyalty_program(business.get('id'), program_public_id=program_id)
+    if program_id and not program:
+        raise HTTPException(status_code=404, detail='Program not found for this business')
     class_id = None
     if program and program.get('google_wallet_class_id'):
         class_id = program.get('google_wallet_class_id')
     else:
-        class_id = f'{GOOGLE_WALLET_ISSUER_ID}.{business.get("public_id", "")}'
+        class_id = _google_wallet_base_class_id(business, program or {})
 
     tier_class_ids = []
     if program_has_tier(program):
@@ -22390,7 +22644,7 @@ async def get_wallet_class(public_id: str):
     }
 
 @app.post("/api/v1/business/{public_id}/wallet-class")
-async def create_or_update_wallet_class(public_id: str):
+async def create_or_update_wallet_class(public_id: str, program_id: Optional[str] = Query(default=None)):
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -22401,7 +22655,9 @@ async def create_or_update_wallet_class(public_id: str):
             detail="GOOGLE_WALLET_ISSUER_ID is not set in environment variables. Set it to your Google Wallet Issuer ID and redeploy."
         )
 
-    program = safe_get_loyalty_program(business.get('id')) or {}
+    program = safe_get_loyalty_program(business.get('id'), program_public_id=program_id) or {}
+    if program_id and not program:
+        raise HTTPException(status_code=404, detail='Program not found for this business')
     if program.get('card_type') == 'hybrid' and not business_has_plan_feature(business, 'hybrid_cards'):
         raise HTTPException(
             status_code=403,
@@ -22505,10 +22761,15 @@ async def create_or_update_wallet_class(public_id: str):
             'google_wallet_class_id': base_class_id,
         }
         if program and program.get('id'):
-            supabase.table("loyalty_programs").update(db_data).eq("business_id", business.get("id")).execute()
+            supabase.table('loyalty_programs').update(db_data).eq('id', program.get('id')).execute()
         else:
             db_data.update({
                 'business_id': business.get('id'),
+                'public_id': generate_public_id(),
+                'program_name': 'Default Program',
+                'is_default': True,
+                'is_active': True,
+                'sort_order': 0,
                 'stamp_goal': 8,
                 'reward_name': 'Free Service',
                 'primary_color': '#3b82f6',
@@ -22518,7 +22779,7 @@ async def create_or_update_wallet_class(public_id: str):
             supabase.table("loyalty_programs").insert(db_data).execute()
 
         # Refresh existing objects only after every required class exists.
-        current_program = safe_get_loyalty_program(business.get('id')) or program
+        current_program = safe_get_loyalty_program(business.get('id'), program_public_id=(program or {}).get('public_id')) or program
         # Publish Card is the Google Wallet class operation. Apple already
         # refreshes when Apple-visible loyalty configuration is saved, so do
         # not wake every iPhone again here.
@@ -22837,7 +23098,10 @@ async def customer_join_page(business_public_id: str):
         if business.get('status', '').upper() != 'ACTIVE':
             return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Business not active</h1><p>This business is not accepting new members yet.</p></div>")
 
-        program = safe_get_loyalty_program(business.get('id'))
+        _, join_program_public_id = split_program_join_slug(business_public_id)
+        program = safe_get_loyalty_program(business.get('id'), program_public_id=join_program_public_id)
+        if join_program_public_id and not program:
+            return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Program not found</h1><p>This loyalty program link is invalid or no longer available.</p></div>", status_code=404)
         
         primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
         card_type = (program.get('card_type') if program else None) or 'stamp'
@@ -23149,7 +23413,16 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
     if business.get('status', '').upper() != 'ACTIVE':
         raise HTTPException(status_code=400, detail="Business not active")
 
-    dup_field = find_customer_duplicate(business.get('id'), signup.phone, signup.email)
+    _, join_program_public_id = split_program_join_slug(business_public_id)
+    program = safe_get_loyalty_program(business.get('id'), program_public_id=join_program_public_id)
+    if join_program_public_id and not program:
+        raise HTTPException(status_code=404, detail='Loyalty program not found')
+    if not program:
+        raise HTTPException(status_code=400, detail='This business has not configured a loyalty program yet')
+
+    dup_field = find_customer_duplicate(
+        business.get('id'), signup.phone, signup.email, program_id=program.get('id')
+    )
     if dup_field:
         raise HTTPException(
             status_code=400,
@@ -23157,9 +23430,11 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
         )
 
     customer_public_id = generate_public_id()
-    program = safe_get_loyalty_program(business.get('id'))
+    identity_id = find_or_create_customer_identity(business.get('id'), signup)
     customer_data = {
         'business_id': business.get('id'),
+        'program_id': program.get('id'),
+        'identity_id': identity_id,
         'public_id': customer_public_id,
         'name': signup.name,
         'address': signup.address,
@@ -23252,6 +23527,7 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
         "public_id": customer_public_id,
         "name": signup.name,
         "message": "Welcome to the loyalty program!",
+        "program_public_id": program.get("public_id") if program else None,
     }
 
 # CAR LENDING / SHOWROOM - SELF-SERVICE BUYER JOIN PAGE
@@ -26569,7 +26845,7 @@ async def customer_wallet_page(customer_public_id: str):
     if not business:
         return HTMLResponse("<div style='padding:40px;text-align:center;font-family:sans-serif'><h1>Business not found</h1></div>")
 
-    program = safe_get_loyalty_program(business.get('id')) or {}
+    program = safe_get_customer_program(customer, business.get('id')) or {}
     design = wallet_20_design(business, program)
     card_type = program.get('card_type', 'stamp')
     loyalty_type = effective_loyalty_type(program)
@@ -26907,7 +27183,7 @@ async def order_ahead_branch_page(customer_public_id: str, token: str = Query(de
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not load branches: {friendly_db_error(e)}")
 
-    program = safe_get_loyalty_program(business.get('id')) or {}
+    program = safe_get_customer_program(customer, business.get('id')) or {}
     ui = _resolve_order_ahead_ui_config(business)
     biz_name = html_lib.escape(str(business.get('name') or 'Business'))
     member_name = html_lib.escape(str(customer.get('name') or 'Member'))
@@ -27032,7 +27308,7 @@ async def order_ahead_branch_selected(customer_public_id: str, branch_public_id:
         raise HTTPException(status_code=500, detail=f'Could not load menu: {friendly_db_error(e)}')
 
     ui = _resolve_order_ahead_ui_config(business, settings)
-    program = safe_get_loyalty_program(business.get('id')) or {}
+    program = safe_get_customer_program(customer, business.get('id')) or {}
     categories = [c for c in snap['categories'] if c.get('is_active')]
     items = []
     for original in snap['items']:
@@ -27179,7 +27455,7 @@ async def cashier_stamp_page(customer_public_id: str):
     if not business:
         return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Business not found</h1></div>")
 
-    program = safe_get_loyalty_program(business.get('id'))
+    program = safe_get_customer_program(customer, business.get('id'))
     primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
     stamp_goal = program.get('stamp_goal', 8) if program else 8
     reward_name = program.get('reward_name', 'Free Service') if program else 'Free Service'
@@ -27918,13 +28194,18 @@ async def announcement_detail_page(business_public_id: str, announcement_id: str
 
 @app.get("/api/v1/public/business/{public_id}/join-config")
 async def public_business_join_config(public_id: str):
-    business = safe_get_business(public_id)
+    business_public_id, program_public_id = split_program_join_slug(public_id)
+    business = safe_get_business(business_public_id)
     if not business:
         raise HTTPException(status_code=404, detail='Business not found')
-    program = safe_get_loyalty_program(business.get('id')) or {}
+    program = safe_get_loyalty_program(business.get('id'), program_public_id=program_public_id) or {}
+    if program_public_id and not program:
+        raise HTTPException(status_code=404, detail='Program not found')
     category = business_category_meta(business.get('business_type'))
     return {
         'public_id': business.get('public_id'),
+        'program_public_id': program.get('public_id'),
+        'program_name': program.get('program_name') or program.get('card_name'),
         'name': business.get('name'),
         'logo_url': business.get('logo_url'),
         'business_type': normalize_business_type(business.get('business_type')),
@@ -27966,7 +28247,7 @@ async def get_wallet_pass(customer_public_id: str):
         print("WALLET-PASS: Business not found")
         raise HTTPException(status_code=404, detail="Business not found")
 
-    program = safe_get_loyalty_program(business.get('id'))
+    program = safe_get_customer_program(customer, business.get('id'))
     card_type = program.get('card_type', 'stamp') if program else 'stamp'
     loyalty_type = effective_loyalty_type(program)
     stamp_goal = program.get('stamp_goal', 8) if program else 8
@@ -28099,7 +28380,7 @@ async def get_apple_wallet_pass(customer_public_id: str):
     business = safe_get_business_by_id(customer.get('business_id'))
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
-    program = safe_get_loyalty_program(business.get('id'))
+    program = safe_get_customer_program(customer, business.get('id'))
     announcement = get_latest_active_announcement_for_customer(business, customer)
     t_data = time.perf_counter()
 
@@ -28452,7 +28733,7 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
         raise HTTPException(status_code=404, detail="Not found")
 
     announcement = get_latest_active_announcement_for_customer(business, customer)
-    program = safe_get_loyalty_program(business.get('id'))
+    program = safe_get_customer_program(customer, business.get('id'))
 
     # IMPORTANT: Last-Modified must represent the *whole generated pass*, not
     # only the customer row. Apple sends If-Modified-Since after an APNs wake.

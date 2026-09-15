@@ -44,7 +44,10 @@ function vipTierPerks(tier) {
 // onSaved is optional - call it (e.g. your existing loadData) to refresh any
 // parent state that depends on the program, such as OwnerDashboard's
 // `program` used for the customer card preview modal.
-function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
+function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, programPublicId = '' }) {
+  const encodedProgramId = programPublicId ? encodeURIComponent(programPublicId) : ''
+  const programQuery = encodedProgramId ? `?program_id=${encodedProgramId}` : ''
+  const configReadQuery = encodedProgramId ? `?program_id=${encodedProgramId}&` : '?'
   const [form, setForm] = useState({
     card_type: 'stamp', // Hybrid can combine Subscription + Points + Stamps + optional Tier
     hybrid_loyalty_type: 'points', // legacy/native primary metric; Points wins when both are enabled
@@ -163,14 +166,14 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
   useEffect(() => {
     fetchConfig()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [programPublicId])
 
   const fetchConfig = async () => {
     setLoading(true)
     setError('')
     try {
       const res = await fetch(
-        `${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config?_=${Date.now()}`,
+        `${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config${configReadQuery}_=${Date.now()}`,
         { cache: 'no-store' }
       )
       const data = await res.json()
@@ -643,7 +646,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
       const badCoupon = (form.vip_tiers || []).flatMap(t => (Array.isArray(t.coupons) ? t.coupons : []).map(c => ({tier:t,coupon:c}))).find(x => !String(x.coupon.reward_text || '').trim())
       if (badCoupon) throw new Error(`Enter the coupon reward for ${badCoupon.tier.name || 'this tier'}, or remove the empty coupon.`)
     }
-    const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config`, {
+    const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/loyalty-config${programQuery}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -698,7 +701,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false }) {
         }
 
         try {
-          const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/wallet-class`, {
+          const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/wallet-class${programQuery}`, {
             method: 'POST',
             headers: (user?.token ? { 'Authorization': `Bearer ${user.token}` } : {}),
           })
