@@ -209,6 +209,11 @@ function Signup({ API_BASE }) {
   useEffect(()=>{
     const params=new URLSearchParams(window.location.search)
     const requestedCountry=params.get('country')
+    const requestedBillingCycle=params.get('billing_cycle')
+    const supportedBillingCycles=new Set(['monthly','3_months','6_months','annual'])
+    if(requestedBillingCycle&&supportedBillingCycles.has(requestedBillingCycle)){
+      setForm(f=>({...f,billing_cycle:requestedBillingCycle}))
+    }
     let restored=null
     if(params.get('paymongo_return')==='1'){
       try{restored=JSON.parse(localStorage.getItem('loyaltree_pending_onboarding')||'null')}catch(_){restored=null}

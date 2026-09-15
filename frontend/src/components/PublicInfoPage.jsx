@@ -233,7 +233,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
         currency: pricingContext.currency,
       },
     })
-    navigate(`/signup?country=${encodeURIComponent(pricingContext.country_code || 'PH')}`)
+    navigate(`/signup?country=${encodeURIComponent(pricingContext.country_code || 'PH')}&billing_cycle=${encodeURIComponent(pricingBillingCycle)}`)
   }
 
   const contactLoyaltyTree = (placement='public_info') => {
