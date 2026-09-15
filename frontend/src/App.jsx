@@ -143,7 +143,8 @@ function App() {
             user.role === 'super_admin' ? <Navigate to="/admin" /> :
             user.role === 'partner' ? <Navigate to="/partner" /> :
             user.role === 'agent' ? <RedirectToBackend base={API_BASE} sub="agent" id={user.business_slug} /> :
-            ['manager', 'cashier'].includes(user.role) ? <Navigate to="/scanner" /> :
+            user.role === 'manager' ? <Navigate to="/dashboard" /> :
+            user.role === 'cashier' ? <Navigate to="/scanner" /> :
             <Navigate to="/login" />
           ) : <HomePage API_BASE={API_BASE} />
         } />
@@ -161,13 +162,16 @@ function App() {
             user.role === 'super_admin' ? <Navigate to="/admin" replace /> :
             user.role === 'partner' ? <Navigate to="/partner" replace /> :
             user.role === 'agent' ? <RedirectToBackend base={API_BASE} sub="agent" id={user.business_slug} /> :
-            ['manager', 'cashier'].includes(user.role) ? <Navigate to="/scanner" replace /> :
+            user.role === 'manager' ? <Navigate to="/dashboard" replace /> :
+            user.role === 'cashier' ? <Navigate to="/scanner" replace /> :
             <Login API_BASE={API_BASE} onLogin={setUser} />
           ) : <Login API_BASE={API_BASE} onLogin={setUser} />
         } />
         <Route path="/signup" element={<Signup API_BASE={API_BASE} />} />
         <Route path="/dashboard" element={
-          user?.role === 'owner' ? (
+          user?.role === 'manager' ? (
+            <OwnerDashboard API_BASE={API_BASE} user={user} onLogout={handleLogout} />
+          ) : user?.role === 'owner' ? (
             user.business_type === 'car_lending'
               ? <CarLendingDashboard API_BASE={API_BASE} user={user} onLogout={handleLogout} />
               : user.business_type === 'cockpit'
