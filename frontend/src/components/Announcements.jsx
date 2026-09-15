@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 
-function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClose }) {
+function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClose, managerMode = false, lockedBranch = null, availablePrograms = [] }) {
   const [announcements, setAnnouncements] = useState([])
   const [editing, setEditing] = useState(null)
   const [form, setForm] = useState({
@@ -9,8 +9,8 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
     type: 'info',
     is_active: true,
     end_date: '',
-    target_scope: 'business',
-    branch_public_id: '',
+    target_scope: managerMode ? 'branch' : 'business',
+    branch_public_id: managerMode ? (lockedBranch?.public_id || '') : '',
     program_public_id: '',
   })
   const [loading, setLoading] = useState(false)
@@ -47,6 +47,11 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
   }
 
   const fetchBranches = async () => {
+    if (managerMode) {
+      setBranches(lockedBranch ? [lockedBranch] : [])
+      setForm(current => ({ ...current, target_scope:'branch', branch_public_id:lockedBranch?.public_id || current.branch_public_id || '' }))
+      return
+    }
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/branches`, {
         headers: authHeaders(),
@@ -62,6 +67,15 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
 
 
   const fetchPrograms = async () => {
+    if (managerMode) {
+      const rows = (availablePrograms || []).map(p => ({
+        ...p,
+        program_name: p.program_name || p.name || p.card_name || 'Loyalty Program',
+        is_active: p.is_active !== false,
+      }))
+      setPrograms(rows)
+      return
+    }
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/programs`, {
         headers: authHeaders(),
@@ -141,7 +155,7 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
         }
         setForm({
           title: '', message: '', type: 'info', is_active: true, end_date: '',
-          target_scope: 'business', branch_public_id: '', program_public_id: '',
+          target_scope: managerMode ? 'branch' : 'business', branch_public_id: managerMode ? (lockedBranch?.public_id || '') : '', program_public_id: '',
         })
         setEditing(null)
         fetchAnnouncements()
@@ -164,8 +178,8 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
       type: ann.type || 'info',
       is_active: ann.is_active !== false,
       end_date: ann.end_date ? ann.end_date.split('T')[0] : '',
-      target_scope: ann.target_scope === 'branch' ? 'branch' : 'business',
-      branch_public_id: ann.branch_public_id || '',
+      target_scope: managerMode ? 'branch' : (ann.target_scope === 'branch' ? 'branch' : 'business'),
+      branch_public_id: managerMode ? (lockedBranch?.public_id || ann.branch_public_id || '') : (ann.branch_public_id || ''),
       program_public_id: ann.program_public_id || '',
     })
   }
@@ -221,7 +235,7 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
     setEditing(null)
     setForm({
       title: '', message: '', type: 'info', is_active: true, end_date: '',
-      target_scope: 'business', branch_public_id: '', program_public_id: '',
+      target_scope: managerMode ? 'branch' : 'business', branch_public_id: managerMode ? (lockedBranch?.public_id || '') : '', program_public_id: '',
     })
   }
 
@@ -288,46 +302,57 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
             <form onSubmit={handleSubmit}>
               <div style={styles.inputGroup}>
                 <label style={styles.label}>Audience</label>
-                <div style={styles.audienceGrid}>
-                  <button
-                    type="button"
-                    onClick={()=>setForm({...form,target_scope:'business',branch_public_id:''})}
-                    style={{
-                      ...styles.audienceBtn,
-                      ...(form.target_scope==='business' ? styles.audienceBtnActive : {}),
-                    }}
-                  >
-                    <strong>🏪 Whole Business</strong>
-                    <span>Notify the business-wide Wallet audience.</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={()=>setForm({...form,target_scope:'branch'})}
-                    style={{
-                      ...styles.audienceBtn,
-                      ...(form.target_scope==='branch' ? styles.audienceBtnActive : {}),
-                    }}
-                  >
-                    <strong>📍 Specific Branch</strong>
-                    <span>Notify customers with recorded activity at one branch.</span>
-                  </button>
-                </div>
+                {managerMode ? (
+                  <div style={{...styles.audienceBtn,...styles.audienceBtnActive,cursor:'default'}}>
+                    <strong>📍 {lockedBranch?.name || 'Assigned Branch'}</strong>
+                    <span>Manager announcements are locked to your assigned branch.</span>
+                  </div>
+                ) : (
+                  <div style={styles.audienceGrid}>
+                    <button
+                      type="button"
+                      onClick={()=>setForm({...form,target_scope:'business',branch_public_id:''})}
+                      style={{
+                        ...styles.audienceBtn,
+                        ...(form.target_scope==='business' ? styles.audienceBtnActive : {}),
+                      }}
+                    >
+                      <strong>🏪 Whole Business</strong>
+                      <span>Notify the business-wide Wallet audience.</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={()=>setForm({...form,target_scope:'branch'})}
+                      style={{
+                        ...styles.audienceBtn,
+                        ...(form.target_scope==='branch' ? styles.audienceBtnActive : {}),
+                      }}
+                    >
+                      <strong>📍 Specific Branch</strong>
+                      <span>Notify customers with recorded activity at one branch.</span>
+                    </button>
+                  </div>
+                )}
               </div>
 
               {form.target_scope === 'branch' && (
                 <div style={styles.inputGroup}>
                   <label style={styles.label}>Branch</label>
-                  <select
-                    value={form.branch_public_id}
-                    onChange={e=>setForm({...form,branch_public_id:e.target.value})}
-                    style={styles.select}
-                    required
-                  >
-                    <option value="">Choose a branch</option>
-                    {branches.map(branch=>(
-                      <option key={branch.public_id} value={branch.public_id}>{branch.name}</option>
-                    ))}
-                  </select>
+                  {managerMode ? (
+                    <div style={{...styles.select,background:'#f8fafc',fontWeight:800}}>{lockedBranch?.name || 'Assigned Branch'}</div>
+                  ) : (
+                    <select
+                      value={form.branch_public_id}
+                      onChange={e=>setForm({...form,branch_public_id:e.target.value})}
+                      style={styles.select}
+                      required
+                    >
+                      <option value="">Choose a branch</option>
+                      {branches.map(branch=>(
+                        <option key={branch.public_id} value={branch.public_id}>{branch.name}</option>
+                      ))}
+                    </select>
+                  )}
                   <div style={styles.audienceHelp}>
                     Customers are not permanently assigned to a branch. A customer qualifies after recorded loyalty activity or a confirmed Order Ahead purchase at that branch.
                   </div>

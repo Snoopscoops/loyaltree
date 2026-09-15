@@ -1265,6 +1265,33 @@ def require_branch_manager_session(public_id: str, authorization: str):
         raise HTTPException(status_code=403, detail='Assigned branch is unavailable')
     return claims, business, staff, branch
 
+def require_announcement_session(public_id: str, authorization: str):
+    """Allow owners or active branch managers to manage announcements.
+
+    Owners retain business-wide control. Managers are always resolved against
+    their *current* assigned branch; every manager announcement endpoint then
+    enforces that branch as the maximum audience scope.
+    """
+    if not authorization or not authorization.startswith('Bearer '):
+        raise HTTPException(status_code=401, detail='Authentication required')
+    claims = verify_staff_session_token(authorization.split(' ', 1)[1])
+    if not claims:
+        raise HTTPException(status_code=401, detail='Session expired - please log in again')
+    if claims.get('business_public_id') != public_id:
+        raise HTTPException(status_code=403, detail='Session does not match this business')
+    role = str(claims.get('role') or '').lower()
+    if role == 'owner':
+        require_owner_session(public_id, authorization)
+        business = safe_get_business(public_id)
+        if not business:
+            raise HTTPException(status_code=404, detail='Business not found')
+        return role, business, None, None
+    if role == 'manager':
+        _, business, manager, branch = require_branch_manager_session(public_id, authorization)
+        return role, business, manager, branch
+    raise HTTPException(status_code=403, detail='Owner or manager access required')
+
+
 def _supabase_server_key_role(key: str) -> Optional[str]:
     """Best-effort classification without logging or verifying the secret itself.
 
@@ -15570,7 +15597,7 @@ async def get_branch_manager_dashboard(
     if selected:
         try:
             customer_rows = (
-                supabase.table('customers').select('id,public_id,name,email,phone,created_at')
+                supabase.table('customers').select('id,public_id,name,email,phone,birthday,stamp_count,tier_stamp_count,created_at')
                 .eq('business_id', business.get('id'))
                 .eq('program_id', selected.get('id'))
                 .execute().data or []
@@ -15706,6 +15733,9 @@ async def get_branch_manager_dashboard(
                 'public_id': selected.get('public_id'),
                 'name': selected.get('program_name') or selected.get('card_name') or 'Loyalty Program',
                 'card_type': selected.get('card_type'),
+                'stamp_editable': bool(program_reward_uses_stamps(selected) or tier_stamps_enabled(selected)),
+                'stamp_kind': 'reward' if program_reward_uses_stamps(selected) else ('tier' if tier_stamps_enabled(selected) else None),
+                'stamp_goal': selected.get('stamp_goal'),
             } if selected else None
         ),
         'stats': {
@@ -15726,6 +15756,23 @@ async def get_branch_manager_dashboard(
             }
             for s in branch_staff
         ],
+        # Managers may service any member of the selected program, even when
+        # the member has not visited this branch in the last 30 days. Keep the
+        # profile intentionally narrow: identity/contact, birthday, and stamp
+        # balances only. Branch-specific activity remains separately filtered.
+        'members': [
+            {
+                'public_id': c.get('public_id'),
+                'name': c.get('name'),
+                'email': c.get('email'),
+                'phone': c.get('phone'),
+                'birthday': c.get('birthday'),
+                'stamp_count': int(c.get('stamp_count') or 0),
+                'tier_stamp_count': int(c.get('tier_stamp_count') or 0),
+                'created_at': c.get('created_at'),
+            }
+            for c in sorted(customer_rows, key=lambda row: str(row.get('name') or '').lower())
+        ][:500],
         'branch_customers': branch_customers[:100],
         'recent_activity': recent,
     }
@@ -18678,18 +18725,12 @@ async def dismiss_platform_announcement(public_id: str, announcement_id: str):
 
 @app.get("/api/v1/business/{public_id}/announcements")
 async def get_announcements(public_id: str, authorization: str = Header(default='')):
-    require_owner_session(public_id, authorization)
-    business = safe_get_business(public_id)
-    if not business:
-        raise HTTPException(status_code=404, detail="Business not found")
+    actor_role, business, _, manager_branch = require_announcement_session(public_id, authorization)
     try:
-        rows = (
-            supabase.table("announcements")
-            .select("*")
-            .eq("business_id", business.get("id"))
-            .order("created_at", desc=True)
-            .execute().data or []
-        )
+        query = supabase.table("announcements").select("*").eq("business_id", business.get("id"))
+        if actor_role == 'manager':
+            query = query.eq('target_scope', 'branch').eq('branch_id', manager_branch.get('id'))
+        rows = query.order("created_at", desc=True).execute().data or []
         return [_enrich_announcement_target(business, row) for row in rows]
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
@@ -18701,12 +18742,9 @@ async def create_announcement(
     ann: AnnouncementCreate,
     authorization: str = Header(default=''),
 ):
-    require_owner_session(public_id, authorization)
-    business = safe_get_business(public_id)
-    if not business:
-        raise HTTPException(status_code=404, detail="Business not found")
+    actor_role, business, _, manager_branch = require_announcement_session(public_id, authorization)
 
-    target_scope = ann.target_scope or 'business'
+    target_scope = 'branch' if actor_role == 'manager' else (ann.target_scope or 'business')
     target_program = None
     if ann.program_public_id:
         target_program = safe_get_loyalty_program(business.get('id'), program_public_id=ann.program_public_id)
@@ -18714,9 +18752,14 @@ async def create_announcement(
             raise HTTPException(status_code=400, detail='Choose a valid loyalty program for this announcement.')
     target_branch = None
     if target_scope == 'branch':
-        target_branch = _announcement_branch_row(business.get('id'), ann.branch_public_id)
-        if not target_branch:
-            raise HTTPException(status_code=400, detail='Choose a valid branch for this announcement.')
+        if actor_role == 'manager':
+            if ann.branch_public_id and ann.branch_public_id != manager_branch.get('public_id'):
+                raise HTTPException(status_code=403, detail='Managers can announce only to their assigned branch.')
+            target_branch = manager_branch
+        else:
+            target_branch = _announcement_branch_row(business.get('id'), ann.branch_public_id)
+            if not target_branch:
+                raise HTTPException(status_code=400, detail='Choose a valid branch for this announcement.')
 
     is_active = True
     limit = get_effective_announcement_limit(business)
@@ -18788,10 +18831,7 @@ async def update_announcement(
     ann: AnnouncementUpdate,
     authorization: str = Header(default=''),
 ):
-    require_owner_session(public_id, authorization)
-    business = safe_get_business(public_id)
-    if not business:
-        raise HTTPException(status_code=404, detail="Business not found")
+    actor_role, business, _, manager_branch = require_announcement_session(public_id, authorization)
 
     try:
         existing = (
@@ -18806,6 +18846,11 @@ async def update_announcement(
         existing = None
     if not existing or not existing.data:
         raise HTTPException(status_code=404, detail="Announcement not found")
+    if actor_role == 'manager' and (
+        existing.data.get('target_scope') != 'branch'
+        or existing.data.get('branch_id') != manager_branch.get('id')
+    ):
+        raise HTTPException(status_code=403, detail='Managers can edit only announcements for their assigned branch.')
 
     incoming = ann.dict(exclude_unset=True)
     update_data = {
@@ -18823,15 +18868,21 @@ async def update_announcement(
         else:
             update_data['program_id'] = None
 
-    effective_scope = incoming.get('target_scope', existing.data.get('target_scope') or 'business')
+    effective_scope = 'branch' if actor_role == 'manager' else incoming.get('target_scope', existing.data.get('target_scope') or 'business')
     if effective_scope == 'branch':
-        branch_public_id = incoming.get('branch_public_id')
-        if branch_public_id is None and existing.data.get('branch_id') is not None:
-            existing_branch = _announcement_branch_by_id(business.get('id'), existing.data.get('branch_id'))
-            branch_public_id = (existing_branch or {}).get('public_id')
-        branch = _announcement_branch_row(business.get('id'), branch_public_id)
-        if not branch:
-            raise HTTPException(status_code=400, detail='Choose a valid branch for this announcement.')
+        if actor_role == 'manager':
+            requested_branch = incoming.get('branch_public_id')
+            if requested_branch and requested_branch != manager_branch.get('public_id'):
+                raise HTTPException(status_code=403, detail='Managers can announce only to their assigned branch.')
+            branch = manager_branch
+        else:
+            branch_public_id = incoming.get('branch_public_id')
+            if branch_public_id is None and existing.data.get('branch_id') is not None:
+                existing_branch = _announcement_branch_by_id(business.get('id'), existing.data.get('branch_id'))
+                branch_public_id = (existing_branch or {}).get('public_id')
+            branch = _announcement_branch_row(business.get('id'), branch_public_id)
+            if not branch:
+                raise HTTPException(status_code=400, detail='Choose a valid branch for this announcement.')
         update_data['target_scope'] = 'branch'
         update_data['branch_id'] = branch.get('id')
     else:
@@ -18856,14 +18907,14 @@ async def delete_announcement(
     announcement_id: str,
     authorization: str = Header(default=''),
 ):
-    require_owner_session(public_id, authorization)
-    business = safe_get_business(public_id)
-    if not business:
-        raise HTTPException(status_code=404, detail="Business not found")
+    actor_role, business, _, manager_branch = require_announcement_session(public_id, authorization)
     try:
-        supabase.table("announcements").delete().eq("id", announcement_id).eq(
+        query = supabase.table("announcements").delete().eq("id", announcement_id).eq(
             "business_id", business.get("id")
-        ).execute()
+        )
+        if actor_role == 'manager':
+            query = query.eq('target_scope', 'branch').eq('branch_id', manager_branch.get('id'))
+        query.execute()
         return {"message": "Announcement deleted"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
@@ -18875,10 +18926,7 @@ async def notify_announcement(
     announcement_id: str,
     authorization: str = Header(default=''),
 ):
-    require_owner_session(public_id, authorization)
-    business = safe_get_business(public_id)
-    if not business:
-        raise HTTPException(status_code=404, detail="Business not found")
+    actor_role, business, _, manager_branch = require_announcement_session(public_id, authorization)
 
     try:
         ann = (
@@ -18892,6 +18940,11 @@ async def notify_announcement(
         ann = None
     if not ann:
         raise HTTPException(status_code=404, detail="Announcement not found")
+    if actor_role == 'manager' and (
+        ann.get('target_scope') != 'branch'
+        or ann.get('branch_id') != manager_branch.get('id')
+    ):
+        raise HTTPException(status_code=403, detail='Managers can notify only their assigned branch.')
 
     ann = _enrich_announcement_target(business, ann)
     result = _send_announcement_notification(business, ann, resend=True)
@@ -20002,6 +20055,13 @@ async def adjust_stamp(public_id: str, req: StampAdjustRequest, background_tasks
     claims = get_staff_session_claims(public_id, authorization)
     if claims:
         staff_id = claims.get('staff_id'); branch_id = claims.get('branch_id')
+        # Manager corrections are a dashboard-level permission. Resolve the
+        # manager's current branch from the database so a moved/disabled manager
+        # cannot keep editing with stale branch claims from an older token.
+        if str(claims.get('role') or '').lower() == 'manager':
+            _, _, current_manager, current_branch = require_branch_manager_session(public_id, authorization)
+            staff_id = current_manager.get('id')
+            branch_id = current_branch.get('id')
     elif req.as_owner:
         pass
     else:

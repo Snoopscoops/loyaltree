@@ -179,6 +179,10 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
   const [error, setError] = useState('')
   const [selectedProgramId, setSelectedProgramId] = useState('')
   const [lastUpdated, setLastUpdated] = useState(null)
+  const [showAnnouncements, setShowAnnouncements] = useState(false)
+  const [stampDrafts, setStampDrafts] = useState({})
+  const [stampSaving, setStampSaving] = useState('')
+  const [memberSearch, setMemberSearch] = useState('')
 
   const authFetch = async (url, options = {}) => {
     const headers = { ...(options.headers || {}) }
@@ -205,6 +209,7 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
       const resolved = body.selected_program?.public_id || ''
       if (resolved && resolved !== selectedProgramId) setSelectedProgramId(resolved)
       setLastUpdated(new Date())
+      setStampDrafts({})
     } catch (err) {
       setError(err.message || 'Could not load branch dashboard')
     } finally {
@@ -228,7 +233,58 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
   const s = data?.stats || {}
   const branch = data?.branch || { name:user?.branch_name || 'Assigned Branch', address:user?.branch_address || '' }
   const programs = data?.programs || []
+  const selectedProgram = data?.selected_program || null
+  const members = data?.members || []
   const metricCard = {background:'#fff',border:'1px solid #e2e8f0',borderRadius:14,padding:16,boxShadow:'0 2px 10px rgba(15,23,42,.04)'}
+
+  const currentStampCount = (member) => selectedProgram?.stamp_kind === 'tier'
+    ? Number(member?.tier_stamp_count || 0)
+    : Number(member?.stamp_count || 0)
+
+  const saveStampCount = async (member) => {
+    if (!selectedProgram?.stamp_editable || !member?.public_id) return
+    const current = currentStampCount(member)
+    const raw = stampDrafts[member.public_id]
+    const desired = raw === undefined ? current : Math.max(0, parseInt(raw, 10) || 0)
+    const delta = desired - current
+    if (!delta) return
+    setStampSaving(member.public_id)
+    setError('')
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/stamp/adjust`, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          customer_public_id: member.public_id,
+          delta,
+          reason: 'Branch manager correction',
+          stamp_kind: selectedProgram.stamp_kind || 'reward',
+        }),
+      })
+      const body = await res.json().catch(()=>({}))
+      if (!res.ok) throw new Error(body.detail || 'Could not update stamp balance')
+      await loadManagerDashboard(selectedProgramId)
+    } catch (err) {
+      setError(err.message || 'Could not update stamp balance')
+    } finally {
+      setStampSaving('')
+    }
+  }
+
+  const filteredMembers = members.filter(member => {
+    const q = memberSearch.trim().toLowerCase()
+    if (!q) return true
+    return [member.name, member.email, member.phone, member.birthday].some(v => String(v || '').toLowerCase().includes(q))
+  })
+
+  const birthdayLabel = (value) => {
+    if (!value) return 'Birthday not provided'
+    const parts = String(value).slice(0,10).split('-')
+    if (parts.length !== 3) return String(value)
+    const d = new Date(Number(parts[0]), Number(parts[1])-1, Number(parts[2]))
+    if (Number.isNaN(d.getTime())) return String(value)
+    return d.toLocaleDateString('en-PH', { month:'short', day:'numeric', year:'numeric' })
+  }
 
   return (
     <div style={{minHeight:'100vh',background:'#f8fafc',color:'#0f172a'}}>
@@ -241,6 +297,7 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
           </div>
         </div>
         <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+          <button onClick={()=>setShowAnnouncements(true)} style={{border:'1px solid #bfdbfe',background:'#eff6ff',color:'#1d4ed8',borderRadius:10,padding:'9px 12px',fontWeight:850,cursor:'pointer'}}>📣 Branch Announcement</button>
           <button onClick={()=>window.location.assign('/scanner')} style={{border:'1px solid #99f6e4',background:'#f0fdfa',color:'#0f766e',borderRadius:10,padding:'9px 12px',fontWeight:850,cursor:'pointer'}}>Scan Customer</button>
           <button onClick={onLogout} style={{border:'1px solid #e2e8f0',background:'#fff',color:'#475569',borderRadius:10,padding:'9px 12px',fontWeight:800,cursor:'pointer'}}>Log out</button>
         </div>
@@ -268,11 +325,42 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
         {error && <div style={{marginTop:16,padding:'12px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:12,color:'#b91c1c'}}>{error}</div>}
         {loading && !data ? <div style={{padding:40,textAlign:'center',color:'#64748b'}}>Loading branch dashboard…</div> : <>
           <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:12,marginTop:16}}>
-            <div style={metricCard}><div style={{fontSize:10,fontWeight:900,color:'#64748b'}}>SERVED · 30 DAYS</div><strong style={{display:'block',fontSize:28,marginTop:6}}>{s.branch_members_served_30d ?? 0}</strong><span style={{fontSize:11,color:'#94a3b8'}}>unique program members</span></div>
+            <div style={metricCard}><div style={{fontSize:10,fontWeight:900,color:'#64748b'}}>ALL PROGRAM MEMBERS</div><strong style={{display:'block',fontSize:28,marginTop:6}}>{s.program_members ?? members.length}</strong><span style={{fontSize:11,color:'#94a3b8'}}>manager can view birthdays</span></div>
+            <div style={metricCard}><div style={{fontSize:10,fontWeight:900,color:'#64748b'}}>SERVED · 30 DAYS</div><strong style={{display:'block',fontSize:28,marginTop:6}}>{s.branch_members_served_30d ?? 0}</strong><span style={{fontSize:11,color:'#94a3b8'}}>unique members at this branch</span></div>
             <div style={metricCard}><div style={{fontSize:10,fontWeight:900,color:'#64748b'}}>TODAY</div><strong style={{display:'block',fontSize:28,marginTop:6}}>{s.loyalty_actions_today ?? 0}</strong><span style={{fontSize:11,color:'#94a3b8'}}>loyalty actions</span></div>
-            <div style={metricCard}><div style={{fontSize:10,fontWeight:900,color:'#64748b'}}>ACTIVITY · 30 DAYS</div><strong style={{display:'block',fontSize:28,marginTop:6}}>{s.loyalty_actions_30d ?? 0}</strong><span style={{fontSize:11,color:'#94a3b8'}}>stamps, points, visits & more</span></div>
             <div style={metricCard}><div style={{fontSize:10,fontWeight:900,color:'#64748b'}}>REDEMPTIONS · 30 DAYS</div><strong style={{display:'block',fontSize:28,marginTop:6}}>{s.redemptions_30d ?? 0}</strong><span style={{fontSize:11,color:'#94a3b8'}}>rewards redeemed here</span></div>
           </div>
+
+          <section style={{...metricCard,marginTop:14}}>
+            <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}>
+              <div>
+                <div style={{fontSize:11,fontWeight:900,color:'#0f766e'}}>MEMBERS</div>
+                <h3 style={{margin:'3px 0 0'}}>All members in {selectedProgram?.name || 'this program'}</h3>
+                <div style={{fontSize:11,color:'#64748b',marginTop:4}}>Birthdays are visible to managers. {selectedProgram?.stamp_editable ? 'Stamp balances can be corrected here.' : 'This program does not use editable stamps.'}</div>
+              </div>
+              <input value={memberSearch} onChange={e=>setMemberSearch(e.target.value)} placeholder="Search name, phone, email, birthday" style={{minWidth:260,padding:'9px 11px',border:'1px solid #cbd5e1',borderRadius:10}} />
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(235px,1fr))',gap:9,marginTop:12}}>
+              {filteredMembers.map(member=>{
+                const current = currentStampCount(member)
+                const draft = stampDrafts[member.public_id] ?? current
+                return <div key={member.public_id} style={{padding:'12px 13px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:12}}>
+                  <div style={{display:'flex',justifyContent:'space-between',gap:8,alignItems:'flex-start'}}>
+                    <div style={{minWidth:0}}><strong style={{fontSize:13}}>{member.name || 'Member'}</strong><div style={{fontSize:10.5,color:'#64748b',marginTop:3,overflow:'hidden',textOverflow:'ellipsis'}}>{member.email || member.phone || 'Loyalty member'}</div></div>
+                    <span style={{fontSize:10,fontWeight:850,color:'#7c3aed',background:'#f5f3ff',padding:'4px 6px',borderRadius:999,whiteSpace:'nowrap'}}>🎂 {birthdayLabel(member.birthday)}</span>
+                  </div>
+                  {selectedProgram?.stamp_editable && <div style={{marginTop:10,paddingTop:10,borderTop:'1px solid #e2e8f0'}}>
+                    <div style={{fontSize:10.5,fontWeight:850,color:'#475569',marginBottom:5}}>{selectedProgram.stamp_kind === 'tier' ? 'TIER STAMPS' : 'REWARD STAMPS'}</div>
+                    <div style={{display:'flex',gap:6}}>
+                      <input type="number" min="0" value={draft} onChange={e=>setStampDrafts(prev=>({...prev,[member.public_id]:e.target.value}))} style={{width:82,padding:'8px 9px',border:'1px solid #cbd5e1',borderRadius:9}} />
+                      <button onClick={()=>saveStampCount(member)} disabled={stampSaving===member.public_id || Number(draft)===current} style={{flex:1,border:'none',borderRadius:9,background:Number(draft)===current?'#cbd5e1':'#0f766e',color:'#fff',fontWeight:850,cursor:Number(draft)===current?'default':'pointer'}}>{stampSaving===member.public_id?'Saving…':'Save stamps'}</button>
+                    </div>
+                  </div>}
+                </div>
+              })}
+            </div>
+            {!filteredMembers.length && <div style={{padding:'24px 4px',color:'#94a3b8',textAlign:'center'}}>No matching members.</div>}
+          </section>
 
           <div style={{display:'grid',gridTemplateColumns:'minmax(0,1.35fr) minmax(260px,.65fr)',gap:14,marginTop:14}} className="lt-manager-grid">
             <section style={metricCard}>
@@ -288,14 +376,22 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
             </section>
           </div>
 
-          <section style={{...metricCard,marginTop:14}}>
-            <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}><div><div style={{fontSize:11,fontWeight:900,color:'#0f766e'}}>BRANCH CUSTOMERS</div><h3 style={{margin:'3px 0 0'}}>Customers served here in the last 30 days</h3></div><div style={{fontSize:11,color:'#94a3b8'}}>Program members overall: {s.program_members ?? 0}</div></div>
-            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',gap:8,marginTop:12}}>{(data?.branch_customers || []).slice(0,24).map(c=><div key={c.public_id} style={{padding:'10px 11px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:10}}><strong style={{fontSize:12}}>{c.name || 'Member'}</strong><div style={{fontSize:10.5,color:'#64748b',marginTop:3}}>{c.email || c.phone || 'Loyalty member'}</div></div>)}</div>
-            {!data?.branch_customers?.length && <div style={{padding:'24px 4px',color:'#94a3b8',textAlign:'center'}}>No customers have recorded activity at this branch yet.</div>}
-          </section>
-          <div style={{fontSize:10.5,color:'#94a3b8',textAlign:'right',marginTop:10}}>Read-only branch dashboard{lastUpdated ? ` · updated ${lastUpdated.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}` : ''}</div>
+          <div style={{fontSize:10.5,color:'#94a3b8',textAlign:'right',marginTop:10}}>Manager controls: member birthdays + stamp corrections + assigned-branch announcements{lastUpdated ? ` · updated ${lastUpdated.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}` : ''}</div>
         </>}
       </main>
+
+      {showAnnouncements && (
+        <Announcements
+          API_BASE={API_BASE}
+          businessSlug={user.business_slug}
+          businessName={data?.business?.name || user.business_name}
+          ownerToken={user.token}
+          managerMode={true}
+          lockedBranch={branch}
+          availablePrograms={programs}
+          onClose={()=>setShowAnnouncements(false)}
+        />
+      )}
       <style>{`@media(max-width:760px){.lt-manager-grid{grid-template-columns:1fr!important}}`}</style>
     </div>
   )
