@@ -1992,7 +1992,7 @@ function OwnerDashboard({ API_BASE, user, onLogout }) {
         </div>
       )}
 
-      {programs.length > 0 && (
+      {(programs.length > 1 || programLimit > 1) && (
         <section style={{maxWidth:1180,margin:'0 auto 14px',padding:isMobile?'0 12px':'0 20px',boxSizing:'border-box'}}>
           <div style={{display:'flex',alignItems:isMobile?'stretch':'center',justifyContent:'space-between',gap:12,flexDirection:isMobile?'column':'row',background:'#fff',border:'1px solid #dbe5e1',borderRadius:16,padding:isMobile?12:'12px 14px',boxShadow:'0 8px 24px rgba(15,23,42,0.05)'}}>
             <div style={{display:'flex',alignItems:isMobile?'stretch':'center',gap:10,flex:1,flexDirection:isMobile?'column':'row',minWidth:0}}>

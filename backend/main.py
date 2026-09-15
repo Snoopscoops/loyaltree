@@ -218,7 +218,7 @@ SUBSCRIPTION_PLANS = {
         'analytics': True,
         'google_review_prompt': True,
         'birthday_greetings': True,
-        'max_loyalty_cards': 1,
+        'max_loyalty_cards': 2,
         'win_back': True,
         'max_branches': 5,
         'geofence_notifications': False,
