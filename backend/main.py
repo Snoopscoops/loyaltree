@@ -7030,19 +7030,41 @@ def _push_apple_wallet_to_customer_public_ids(customer_public_ids: list[str]) ->
 
 
 def _send_announcement_notification(business: dict, announcement: dict, resend: bool = False) -> dict:
-    """Send either a whole-business broadcast or a branch-targeted push."""
+    """Send a customer announcement and return explicit Wallet diagnostics.
+
+    Whole-business Google announcements are broadcast once per *unique active
+    loyalty-program class*. Branch announcements stay object-targeted because
+    branch eligibility is customer-specific. Apple remains registration-based.
+
+    Important: a successful Google addMessage call means Google's Wallet API
+    accepted the message for that class/object. It is not proof that every
+    handset displayed a lock-screen notification (users can disable Wallet
+    notifications and Google also applies notification quotas).
+    """
     ann = _enrich_announcement_target(business, announcement)
     scope = ann.get('target_scope') or 'business'
     target_program_id = ann.get('program_id')
     header = ann.get('_notification_header') or business.get('name') or 'LoyaltyTree'
     body = ann.get('message') or ''
-    message_id = f"ann-{ann.get('id')}-{int(datetime.utcnow().timestamp())}" if resend else f"ann-{ann.get('id')}"
-    detail_url = f"{BASE_URL}/a/{business.get('public_id')}/{ann.get('id')}"
+    ann_id = ann.get('id')
+    business_public_id = business.get('public_id')
+    message_id = f"ann-{ann_id}-{int(datetime.utcnow().timestamp())}" if resend else f"ann-{ann_id}"
+    detail_url = f"{BASE_URL}/a/{business_public_id}/{ann_id}"
 
     google_sent = 0
     google_failed = 0
+    google_missing = 0
+    google_attempted = 0
+    google_mode = 'objects' if scope == 'branch' else 'classes'
+    google_results = []
     apple_sent = 0
     target_count = None
+
+    print(
+        "ANNOUNCEMENT PUSH START: "
+        f"announcement={ann_id} business={business_public_id} scope={scope} "
+        f"program={ann.get('program_public_id') or 'all'} resend={bool(resend)}"
+    )
 
     if scope == 'branch':
         branch_id = ann.get('branch_id')
@@ -7051,24 +7073,35 @@ def _send_announcement_notification(business: dict, announcement: dict, resend: 
             customers = [c for c in customers if c.get('program_id') == target_program_id]
         target_count = len(customers)
         if not customers:
-            return {
+            result = {
                 'sent': False,
                 'scope': 'branch',
                 'target_count': 0,
+                'google_mode': google_mode,
+                'google_attempted': 0,
                 'google_sent': 0,
                 'google_failed': 0,
+                'google_missing': 0,
+                'google_results': [],
                 'apple_sent': 0,
                 'header': header,
                 'program_public_id': ann.get('program_public_id'),
                 'program_name': ann.get('program_name'),
                 'error': f"No customers have recorded activity at {ann.get('branch_name') or 'this branch'} yet.",
             }
+            print(
+                "ANNOUNCEMENT PUSH RESULT: "
+                f"announcement={ann_id} scope=branch targets=0 google=0/0 apple=0 sent=False"
+            )
+            return result
 
         for customer in customers:
             public_id = customer.get('public_id')
             if not public_id:
+                google_missing += 1
                 continue
             object_id = f"{GOOGLE_WALLET_ISSUER_ID}.{public_id}"
+            google_attempted += 1
             ok = send_wallet_object_message(
                 object_id,
                 header=header,
@@ -7080,43 +7113,110 @@ def _send_announcement_notification(business: dict, announcement: dict, resend: 
                 google_sent += 1
             else:
                 google_failed += 1
+            google_results.append({
+                'target': str(public_id)[-12:],
+                'ok': bool(ok),
+            })
 
         apple_sent = _push_apple_wallet_to_customer_public_ids(
             [c.get('public_id') for c in customers if c.get('public_id')]
         )
-        return {
-            'sent': bool(google_sent or apple_sent),
+        sent = bool(google_sent or apple_sent)
+        partial = bool((google_failed or google_missing) and sent)
+        result = {
+            'sent': sent,
+            'partial': partial,
             'scope': 'branch',
             'target_count': target_count,
+            'google_mode': google_mode,
+            'google_attempted': google_attempted,
             'google_sent': google_sent,
             'google_failed': google_failed,
+            'google_missing': google_missing,
+            'google_results': google_results,
             'apple_sent': apple_sent,
             'header': header,
             'program_public_id': ann.get('program_public_id'),
             'program_name': ann.get('program_name'),
-            'error': None if (google_sent or apple_sent) else 'No Wallet notification could be delivered to this branch audience.',
+            'error': None if sent else 'No Wallet notification could be accepted for this branch audience.',
         }
+        print(
+            "ANNOUNCEMENT PUSH RESULT: "
+            f"announcement={ann_id} scope=branch targets={target_count} "
+            f"google={google_sent}/{google_attempted} google_failed={google_failed} "
+            f"google_missing={google_missing} apple={apple_sent} sent={sent} partial={partial}"
+        )
+        return result
 
-    # Business broadcast can target one loyalty program or every active program.
+    # Whole-business/program broadcast: enumerate active programs and send once
+    # per UNIQUE Google Wallet class. This prevents duplicate notifications if
+    # two legacy program rows temporarily point at the same class during rollout.
     try:
-        q = supabase.table('loyalty_programs').select('*').eq('business_id', business.get('id')).eq('is_active', True)
+        q = (
+            supabase.table('loyalty_programs')
+            .select('*')
+            .eq('business_id', business.get('id'))
+            .eq('is_active', True)
+        )
         if target_program_id is not None:
             q = q.eq('id', target_program_id)
         target_programs = q.execute().data or []
-    except Exception:
-        fallback = safe_get_loyalty_program(business.get('id'), program_id=target_program_id) if target_program_id is not None else safe_get_loyalty_program(business.get('id'))
+    except Exception as exc:
+        print(f"ANNOUNCEMENT PROGRAM LOOKUP warning: {exc}")
+        fallback = (
+            safe_get_loyalty_program(business.get('id'), program_id=target_program_id)
+            if target_program_id is not None
+            else safe_get_loyalty_program(business.get('id'))
+        )
         target_programs = [fallback] if fallback else []
 
-    class_sent_count = 0
+    unique_classes = []
+    seen_class_ids = set()
+    missing_program_names = []
     for target_program in target_programs:
-        class_id = target_program.get('google_wallet_class_id')
-        if not class_id:
-            google_failed += 1
+        if not target_program:
             continue
-        if send_wallet_class_message(class_id, header=header, body=body, message_id=f"{message_id}-{target_program.get('id')}", detail_url=detail_url):
-            class_sent_count += 1
+        class_id = str(target_program.get('google_wallet_class_id') or '').strip()
+        program_label = (
+            target_program.get('program_name')
+            or target_program.get('card_name')
+            or target_program.get('public_id')
+            or f"Program {target_program.get('id')}"
+        )
+        if not class_id:
+            google_missing += 1
+            missing_program_names.append(str(program_label))
+            continue
+        if class_id in seen_class_ids:
+            # Same Wallet class = same audience. Send only once to avoid dupes.
+            continue
+        seen_class_ids.add(class_id)
+        unique_classes.append((class_id, target_program, str(program_label)))
+
+    google_attempted = len(unique_classes)
+    for index, (class_id, target_program, program_label) in enumerate(unique_classes, start=1):
+        ok = send_wallet_class_message(
+            class_id,
+            header=header,
+            body=body,
+            message_id=f"{message_id}-class-{index}",
+            detail_url=detail_url,
+        )
+        if ok:
+            google_sent += 1
         else:
             google_failed += 1
+        google_results.append({
+            'program_public_id': target_program.get('public_id'),
+            'program_name': program_label,
+            'class_suffix': class_id[-16:],
+            'ok': bool(ok),
+        })
+        print(
+            "ANNOUNCEMENT GOOGLE CLASS: "
+            f"announcement={ann_id} program={target_program.get('public_id') or target_program.get('id')} "
+            f"class_suffix={class_id[-16:]} accepted={bool(ok)}"
+        )
 
     try:
         q = supabase.table('customers').select('public_id').eq('business_id', business.get('id'))
@@ -7124,15 +7224,51 @@ def _send_announcement_notification(business: dict, announcement: dict, resend: 
             q = q.eq('program_id', target_program_id)
         target_customers = q.execute().data or []
         target_count = len(target_customers)
-        apple_sent = _push_apple_wallet_to_customer_public_ids([c.get('public_id') for c in target_customers if c.get('public_id')])
+        apple_sent = _push_apple_wallet_to_customer_public_ids(
+            [c.get('public_id') for c in target_customers if c.get('public_id')]
+        )
     except Exception as exc:
         print(f"APPLE WALLET announcement push error: {exc}")
+        target_count = None
         apple_sent = 0
 
-    return {'sent': bool(class_sent_count or apple_sent), 'scope': 'business', 'target_count': target_count,
-            'google_sent': class_sent_count, 'google_failed': google_failed, 'apple_sent': apple_sent, 'header': header,
-            'program_public_id': ann.get('program_public_id'), 'program_name': ann.get('program_name'),
-            'error': None if (class_sent_count or apple_sent) else 'Publish the selected card design / verify Wallet credentials before sending notifications.'}
+    sent = bool(google_sent or apple_sent)
+    partial = bool((google_failed or google_missing) and sent)
+    if not sent:
+        if google_attempted == 0 and google_missing:
+            error = 'No active target program has a published Google Wallet class, and no Apple Wallet registration accepted the push.'
+        elif google_attempted == 0:
+            error = 'No active Wallet audience is configured for this announcement.'
+        else:
+            error = 'Wallet notification providers did not accept this announcement. Check Render logs and Wallet credentials.'
+    else:
+        error = None
+
+    result = {
+        'sent': sent,
+        'partial': partial,
+        'scope': 'business',
+        'target_count': target_count,
+        'google_mode': google_mode,
+        'google_attempted': google_attempted,
+        'google_sent': google_sent,
+        'google_failed': google_failed,
+        'google_missing': google_missing,
+        'google_results': google_results,
+        'google_missing_programs': missing_program_names,
+        'apple_sent': apple_sent,
+        'header': header,
+        'program_public_id': ann.get('program_public_id'),
+        'program_name': ann.get('program_name'),
+        'error': error,
+    }
+    print(
+        "ANNOUNCEMENT PUSH RESULT: "
+        f"announcement={ann_id} scope=business targets={target_count} "
+        f"google={google_sent}/{google_attempted} google_failed={google_failed} "
+        f"google_missing={google_missing} apple={apple_sent} sent={sent} partial={partial}"
+    )
+    return result
 
 
 def get_latest_active_announcement(business_id: int) -> Optional[dict]:
@@ -19465,6 +19601,12 @@ async def create_announcement(
 ):
     actor_role, business, _, manager_branch = require_announcement_session(public_id, authorization)
 
+    print(
+        "ANNOUNCEMENT CREATE REQUEST: "
+        f"business={public_id} actor={actor_role} scope={ann.target_scope or 'business'} "
+        f"program={ann.program_public_id or 'all'} title_len={len(ann.title or '')} message_len={len(ann.message or '')}"
+    )
+
     target_scope = 'branch' if actor_role == 'manager' else (ann.target_scope or 'business')
     target_program = None
     if ann.program_public_id:
@@ -19527,8 +19669,15 @@ async def create_announcement(
     created['_push_sent'] = bool(result.get('sent'))
     created['_push_scope'] = result.get('scope')
     created['_push_target_count'] = result.get('target_count')
+    created['_push_google_mode'] = result.get('google_mode')
+    created['_push_google_attempted'] = result.get('google_attempted', 0)
     created['_push_google_sent'] = result.get('google_sent', 0)
+    created['_push_google_failed'] = result.get('google_failed', 0)
+    created['_push_google_missing'] = result.get('google_missing', 0)
+    created['_push_google_results'] = result.get('google_results', [])
+    created['_push_google_missing_programs'] = result.get('google_missing_programs', [])
     created['_push_apple_sent'] = result.get('apple_sent', 0)
+    created['_push_partial'] = bool(result.get('partial'))
     created['_notification_header'] = result.get('header')
     if result.get('error'):
         created['_push_error'] = result.get('error')
@@ -19668,6 +19817,11 @@ async def notify_announcement(
         raise HTTPException(status_code=403, detail='Managers can notify only their assigned branch.')
 
     ann = _enrich_announcement_target(business, ann)
+    print(
+        "ANNOUNCEMENT RESEND REQUEST: "
+        f"announcement={announcement_id} business={public_id} actor={actor_role} "
+        f"scope={ann.get('target_scope') or 'business'} program={ann.get('program_public_id') or 'all'}"
+    )
     result = _send_announcement_notification(business, ann, resend=True)
     if not result.get('sent'):
         raise HTTPException(
@@ -19683,26 +19837,30 @@ async def notify_announcement(
         pass
 
     if result.get('scope') == 'branch':
-        return {
-            "message": (
-                f"Notification sent to customers with recorded activity at "
-                f"{ann.get('branch_name') or 'the selected branch'}."
-            ),
-            "scope": "branch",
-            "target_count": result.get('target_count', 0),
-            "google_sent": result.get('google_sent', 0),
-            "apple_sent": result.get('apple_sent', 0),
-            "notification_header": result.get('header'),
-            "program_public_id": ann.get('program_public_id'),
-            "program_name": ann.get('program_name'),
-        }
+        message = (
+            f"Notification attempted for customers with recorded activity at "
+            f"{ann.get('branch_name') or 'the selected branch'}."
+        )
+    else:
+        message = (
+            "Notification attempted for the selected program."
+            if ann.get('program_id') is not None
+            else "Notification attempted for all active programs / the whole business audience."
+        )
 
     return {
-        "message": "Notification sent to the selected program." if ann.get('program_id') is not None else "Notification sent to the whole business audience.",
-        "scope": "business",
+        "message": message,
+        "scope": result.get('scope') or 'business',
         "target_count": result.get('target_count'),
+        "google_mode": result.get('google_mode'),
+        "google_attempted": result.get('google_attempted', 0),
         "google_sent": result.get('google_sent', 0),
+        "google_failed": result.get('google_failed', 0),
+        "google_missing": result.get('google_missing', 0),
+        "google_results": result.get('google_results', []),
+        "google_missing_programs": result.get('google_missing_programs', []),
         "apple_sent": result.get('apple_sent', 0),
+        "partial": bool(result.get('partial')),
         "notification_header": result.get('header'),
         "program_public_id": ann.get('program_public_id'),
         "program_name": ann.get('program_name'),

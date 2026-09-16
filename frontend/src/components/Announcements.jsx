@@ -112,6 +112,34 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
     setLoading(false)
   }
 
+  const deliverySummary = (data, created=false) => {
+    const get = (plain, underscored, fallback=0) => {
+      const value = created ? data?.[underscored] : data?.[plain]
+      return Number(value ?? fallback) || 0
+    }
+    const mode = (created ? data?._push_google_mode : data?.google_mode) || 'classes'
+    const attempted = get('google_attempted', '_push_google_attempted')
+    const googleSent = get('google_sent', '_push_google_sent')
+    const googleFailed = get('google_failed', '_push_google_failed')
+    const googleMissing = get('google_missing', '_push_google_missing')
+    const appleSent = get('apple_sent', '_push_apple_sent')
+    const partial = Boolean(created ? data?._push_partial : data?.partial)
+    const unit = mode === 'objects' ? 'Google card object' : 'Google card-program broadcast'
+    const googlePart = attempted > 0
+      ? `Google accepted ${googleSent}/${attempted} ${unit}${attempted === 1 ? '' : 's'}`
+      : `Google accepted 0 ${unit}s`
+    const missingPart = googleMissing > 0 ? ` · ${googleMissing} program/card target${googleMissing === 1 ? '' : 's'} missing Google Wallet setup` : ''
+    const failedPart = googleFailed > 0 ? ` · ${googleFailed} Google request${googleFailed === 1 ? '' : 's'} failed` : ''
+    const applePart = ` · Apple pushes sent: ${appleSent}`
+    return {
+      text: `${googlePart}${missingPart}${failedPart}${applePart}`,
+      partial: partial || googleFailed > 0 || googleMissing > 0,
+      googleSent,
+      attempted,
+      appleSent,
+    }
+  }
+
   const handleSubmit = async (e) => {
     e.preventDefault()
     setSaving(true)
@@ -135,22 +163,23 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
       if (res.ok) {
         const data = await res.json().catch(() => ({}))
         if (!editing) {
+          const delivery = deliverySummary(data, true)
+          const audience = data._push_scope === 'branch'
+            ? `${data.branch_name || 'the selected branch'}${data._push_target_count != null ? ` · ${data._push_target_count} matching customer${data._push_target_count === 1 ? '' : 's'}` : ''}`
+            : (data.program_public_id
+                ? `${data.program_name || 'the selected program'}${data._push_target_count != null ? ` · ${data._push_target_count} member${data._push_target_count === 1 ? '' : 's'}` : ''}`
+                : 'all active programs / the whole business audience')
+
           if (data._push_sent) {
-            if (data._push_scope === 'branch') {
-              setBanner({
-                type: 'success',
-                text: `📣 Posted for ${data.branch_name || 'the selected branch'}${data._push_target_count != null ? ` · ${data._push_target_count} matching customer${data._push_target_count === 1 ? '' : 's'}` : ''}.`
-              })
-            } else {
-              setBanner({
-                type: 'success',
-                text: data.program_public_id
-                  ? `📣 Posted for ${data.program_name || 'the selected program'}${data._push_target_count != null ? ` · ${data._push_target_count} member${data._push_target_count === 1 ? '' : 's'}` : ''}.`
-                  : '📣 Posted for all programs / the whole business audience.'
-              })
-            }
-          } else if (data._push_error) {
-            setBanner({ type: 'warn', text: `Posted, but not pushed: ${data._push_error}` })
+            setBanner({
+              type: delivery.partial ? 'warn' : 'success',
+              text: `📣 Posted for ${audience}. ${delivery.text}.`
+            })
+          } else {
+            setBanner({
+              type: 'warn',
+              text: `Announcement was posted, but Wallet notification was not accepted. ${delivery.text}.${data._push_error ? ` ${data._push_error}` : ''}`
+            })
           }
         }
         setForm({
@@ -207,19 +236,16 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
       })
       const data = await res.json().catch(() => ({}))
       if (res.ok) {
-        if (data.scope === 'branch') {
-          setBanner({
-            type: 'success',
-            text: `📣 Sent to ${data.target_count || 0} customer${data.target_count === 1 ? '' : 's'} with recorded activity at the selected branch.`
-          })
-        } else {
-          setBanner({
-            type: 'success',
-            text: data.program_public_id
-              ? `📣 Sent to ${data.program_name || 'the selected program'}${data.target_count != null ? ` · ${data.target_count} member${data.target_count === 1 ? '' : 's'}` : ''}.`
-              : '📣 Sent to all programs / the whole business audience.'
-          })
-        }
+        const delivery = deliverySummary(data, false)
+        const audience = data.scope === 'branch'
+          ? `${data.target_count || 0} customer${data.target_count === 1 ? '' : 's'} with recorded activity at the selected branch`
+          : (data.program_public_id
+              ? `${data.program_name || 'the selected program'}${data.target_count != null ? ` · ${data.target_count} member${data.target_count === 1 ? '' : 's'}` : ''}`
+              : 'all active programs / the whole business audience')
+        setBanner({
+          type: delivery.partial ? 'warn' : 'success',
+          text: `📣 Resend attempted for ${audience}. ${delivery.text}.`
+        })
         fetchAnnouncements()
       } else {
         setBanner({ type: 'warn', text: data.detail || 'Could not send notification.' })
