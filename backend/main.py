@@ -123,6 +123,17 @@ STOREHUB_API_BASE = os.getenv('STOREHUB_API_BASE', 'https://api.storehubhq.com')
 LOYVERSE_API_BASE = os.getenv('LOYVERSE_API_BASE', 'https://api.loyverse.com/v1.0').rstrip('/')
 POS_CREDENTIALS_ENCRYPTION_KEY = os.getenv('POS_CREDENTIALS_ENCRYPTION_KEY', '').strip()
 
+
+# POS Companion rush-hour tuning. The app uses the synchronous Supabase client,
+# so POS-facing FastAPI routes below are intentionally normal `def` handlers:
+# FastAPI executes them in its worker thread pool instead of blocking the asyncio
+# event loop. Short-lived device auth caching removes repeated token lookups from
+# the same checkout while keeping revocation latency bounded.
+POS_DEVICE_CACHE_TTL_SECONDS = max(1, min(60, int(os.getenv('POS_DEVICE_CACHE_TTL_SECONDS', '15') or '15')))
+POS_DEVICE_HEARTBEAT_SECONDS = max(15, min(300, int(os.getenv('POS_DEVICE_HEARTBEAT_SECONDS', '60') or '60')))
+WALLET_QUEUE_BATCH_SIZE = max(1, min(100, int(os.getenv('WALLET_QUEUE_BATCH_SIZE', '25') or '25')))
+WALLET_QUEUE_POLL_SECONDS = max(1, min(30, int(os.getenv('WALLET_QUEUE_POLL_SECONDS', '3') or '3')))
+
 # Cloudinary (vehicle photo uploads from the Inventory / AddVehicleModal).
 # Upload preset is SIGNED, so the browser can't upload straight to
 # Cloudinary on its own - it first calls
@@ -2937,6 +2948,7 @@ def _pos_schema_error(exc) -> HTTPException:
         or 'pos_branch_mappings' in raw
         or 'pos_transactions' in raw
         or 'pos_redemption_reservations' in raw
+        or 'pos_benefit_reservations' in raw
         or 'schema cache' in raw
         or 'pgrst205' in raw
         or 'pgrst202' in raw
@@ -31237,14 +31249,26 @@ def enqueue_wallet_sync(customer: dict, business: dict, reason: str = 'loyalty_u
 def process_wallet_sync_queue_once(limit: int = 10):
     """Best-effort durable queue worker. Failed jobs retry with bounded exponential backoff."""
     try:
-        jobs=(supabase.table('wallet_sync_jobs').select('*').in_('status',['pending','failed'])
-              .lte('next_attempt_at',datetime.utcnow().isoformat()).order('created_at').limit(limit).execute().data or [])
-    except Exception as e:
-        print(f'WALLET QUEUE fetch error: {e}'); return
-    for job in jobs:
-        jid=job.get('id'); attempts=int(job.get('attempts') or 0)+1
+        # claim_wallet_sync_jobs uses FOR UPDATE SKIP LOCKED so multiple API
+        # workers can drain the durable queue without processing the same job.
+        jobs=(supabase.rpc('claim_wallet_sync_jobs', {'p_limit': int(limit)}).execute().data or [])
+    except Exception as claim_error:
+        # Backwards-compatible fallback until the rush-hour migration is applied.
         try:
-            supabase.table('wallet_sync_jobs').update({'status':'processing','started_at':datetime.utcnow().isoformat(),'attempts':attempts,'updated_at':datetime.utcnow().isoformat()}).eq('id',jid).execute()
+            jobs=(supabase.table('wallet_sync_jobs').select('*').in_('status',['pending','failed'])
+                  .lte('next_attempt_at',datetime.utcnow().isoformat()).order('created_at').limit(limit).execute().data or [])
+        except Exception as e:
+            print(f'WALLET QUEUE fetch error: {e}'); return
+        if claim_error:
+            print(f'WALLET QUEUE atomic-claim fallback: {claim_error}')
+    for job in jobs:
+        jid=job.get('id'); attempts=int(job.get('attempts') or 0)
+        try:
+            # RPC-claimed rows are already processing and have attempts bumped.
+            # The fallback path may still return pending rows, so claim those here.
+            if job.get('status') != 'processing':
+                attempts += 1
+                supabase.table('wallet_sync_jobs').update({'status':'processing','started_at':datetime.utcnow().isoformat(),'attempts':attempts,'updated_at':datetime.utcnow().isoformat()}).eq('id',jid).execute()
             customer=safe_get_customer_by_id(job.get('customer_id'))
             business=safe_get_business_by_id(job.get('business_id'))
             if not customer or not business: raise RuntimeError('Customer/business no longer exists')
@@ -31266,9 +31290,9 @@ def process_wallet_sync_queue_once(limit: int = 10):
 
 async def wallet_queue_worker():
     while True:
-        try: await asyncio.to_thread(process_wallet_sync_queue_once,10)
+        try: await asyncio.to_thread(process_wallet_sync_queue_once, WALLET_QUEUE_BATCH_SIZE)
         except Exception as e: print(f'WALLET QUEUE worker error: {e}')
-        await asyncio.sleep(5)
+        await asyncio.sleep(WALLET_QUEUE_POLL_SECONDS)
 
 
 @app.on_event('startup')
@@ -33634,6 +33658,29 @@ class POSCompanionCustomerLookupRequest(BaseModel):
     scan_value: str = Field(min_length=2, max_length=1000)
 
 
+class POSCompanionPointsReserveRequest(BaseModel):
+    customer_public_id: str = Field(min_length=2, max_length=200)
+    points_to_redeem: int = Field(ge=1, le=1000000)
+    gross_amount: float = Field(gt=0)
+    reservation_key: Optional[str] = Field(default=None, max_length=220)
+
+
+class POSCompanionBenefitReserveRequest(BaseModel):
+    customer_public_id: str = Field(min_length=2, max_length=200)
+    benefit_id: str = Field(min_length=1, max_length=120)
+    quantity: int = Field(default=1, ge=1, le=100)
+    reservation_key: Optional[str] = Field(default=None, max_length=220)
+    hold_minutes: int = Field(default=15, ge=1, le=120)
+
+
+class POSCompanionReservationReleaseRequest(BaseModel):
+    reason: Optional[str] = Field(default='checkout_cancelled', max_length=200)
+
+
+class POSCompanionReservationCommitRequest(BaseModel):
+    external_transaction_id: str = Field(min_length=1, max_length=240)
+
+
 def _pos_secret_hash(value: str) -> str:
     return hashlib.sha256(str(value or '').encode('utf-8')).hexdigest()
 
@@ -33733,30 +33780,83 @@ def _pos_companion_preview_payload(activation: dict) -> dict:
     }
 
 
+
+_POS_DEVICE_AUTH_CACHE = {}
+_POS_DEVICE_HEARTBEAT_CACHE = {}
+_POS_DEVICE_CACHE_LOCK = Lock()
+
+
+def _pos_device_cache_get(token_hash: str) -> Optional[dict]:
+    now = time.monotonic()
+    with _POS_DEVICE_CACHE_LOCK:
+        item = _POS_DEVICE_AUTH_CACHE.get(token_hash)
+        if not item:
+            return None
+        expires_at, device = item
+        if expires_at <= now:
+            _POS_DEVICE_AUTH_CACHE.pop(token_hash, None)
+            return None
+        return dict(device)
+
+
+def _pos_device_cache_put(token_hash: str, device: dict):
+    if not token_hash or not device:
+        return
+    with _POS_DEVICE_CACHE_LOCK:
+        _POS_DEVICE_AUTH_CACHE[token_hash] = (
+            time.monotonic() + POS_DEVICE_CACHE_TTL_SECONDS,
+            dict(device),
+        )
+
+
+def _pos_device_heartbeat_due(device_id) -> bool:
+    if not device_id:
+        return False
+    key = str(device_id)
+    now = time.monotonic()
+    with _POS_DEVICE_CACHE_LOCK:
+        last = float(_POS_DEVICE_HEARTBEAT_CACHE.get(key) or 0.0)
+        if now - last < POS_DEVICE_HEARTBEAT_SECONDS:
+            return False
+        _POS_DEVICE_HEARTBEAT_CACHE[key] = now
+        return True
+
+
 def _require_pos_device(x_lt_device_token: str) -> dict:
     token = str(x_lt_device_token or '').strip()
     if not token:
         raise HTTPException(status_code=401, detail='POS device token is required.')
     token_hash = _pos_secret_hash(token)
-    try:
-        rows = (
-            supabase.table('pos_devices')
-            .select('*')
-            .eq('device_token_hash', token_hash)
-            .eq('status', 'active')
-            .limit(1)
-            .execute()
-            .data or []
-        )
-    except Exception as exc:
-        raise _pos_schema_error(exc)
-    device = rows[0] if rows else None
+
+    device = _pos_device_cache_get(token_hash)
     if not device:
-        raise HTTPException(status_code=401, detail='POS device token is invalid or revoked.')
-    try:
-        supabase.table('pos_devices').update({'last_seen_at': datetime.now(timezone.utc).isoformat()}).eq('id', device.get('id')).execute()
-    except Exception:
-        pass
+        try:
+            rows = (
+                supabase.table('pos_devices')
+                .select('*')
+                .eq('device_token_hash', token_hash)
+                .eq('status', 'active')
+                .limit(1)
+                .execute()
+                .data or []
+            )
+        except Exception as exc:
+            raise _pos_schema_error(exc)
+        device = rows[0] if rows else None
+        if not device:
+            raise HTTPException(status_code=401, detail='POS device token is invalid or revoked.')
+        _pos_device_cache_put(token_hash, device)
+
+    # A busy cashier can make several API calls within a few seconds. Updating
+    # last_seen_at on every call doubles the database traffic for no operational
+    # benefit, so persist a heartbeat at most once per configured interval.
+    if _pos_device_heartbeat_due(device.get('id')):
+        try:
+            supabase.table('pos_devices').update({
+                'last_seen_at': datetime.now(timezone.utc).isoformat()
+            }).eq('id', device.get('id')).execute()
+        except Exception:
+            pass
     return device
 
 
@@ -33774,7 +33874,7 @@ def _pos_scan_customer_public_id(raw: str) -> str:
 
 
 @app.post('/api/v1/business/{public_id}/pos/device-activation-code')
-async def create_pos_device_activation_code(
+def create_pos_device_activation_code(
     public_id: str,
     req: POSDeviceActivationCodeCreate,
     authorization: str = Header(default=''),
@@ -33810,7 +33910,7 @@ async def create_pos_device_activation_code(
 
 
 @app.get('/api/v1/business/{public_id}/pos/devices')
-async def list_pos_companion_devices(public_id: str, authorization: str = Header(default='')):
+def list_pos_companion_devices(public_id: str, authorization: str = Header(default='')):
     business = _require_pos_pro_business(public_id, authorization)
     try:
         devices = (
@@ -33842,7 +33942,7 @@ async def list_pos_companion_devices(public_id: str, authorization: str = Header
 
 
 @app.post('/api/v1/pos-companion/activation-preview')
-async def pos_companion_activation_preview(req: POSCompanionActivationPreviewRequest):
+def pos_companion_activation_preview(req: POSCompanionActivationPreviewRequest):
     activation = _pos_activation_row(req.activation_code)
     if not activation:
         raise HTTPException(status_code=401, detail='Activation code is invalid, expired, revoked, or already used.')
@@ -33850,7 +33950,7 @@ async def pos_companion_activation_preview(req: POSCompanionActivationPreviewReq
 
 
 @app.post('/api/v1/pos-companion/activate')
-async def activate_pos_companion_device(req: POSCompanionActivateRequest):
+def activate_pos_companion_device(req: POSCompanionActivateRequest):
     activation = _pos_activation_row(req.activation_code)
     if not activation:
         raise HTTPException(status_code=401, detail='Activation code is invalid, expired, revoked, or already used.')
@@ -33960,7 +34060,7 @@ async def activate_pos_companion_device(req: POSCompanionActivateRequest):
 
 
 @app.get('/api/v1/pos-companion/config')
-async def pos_companion_device_config(x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token')):
+def pos_companion_device_config(x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token')):
     device = _require_pos_device(x_lt_device_token)
     business = _pos_business_by_id(device.get('business_id'))
     integration = _get_pos_integration(device.get('business_id'), device.get('provider') or 'storehub')
@@ -33982,31 +34082,370 @@ async def pos_companion_device_config(x_lt_device_token: str = Header(default=''
     }
 
 
+def _pos_companion_program_rows(source_customer: dict, business_id: int) -> list:
+    """Resolve every program membership belonging to the scanned business identity.
+
+    A Wallet card/QR still identifies one concrete `customers` membership row. The
+    shared `identity_id` is then used server-side to expose sibling memberships for
+    the same human. Balances remain on each membership row and are never merged.
+    """
+    if not source_customer:
+        return []
+    rows = [source_customer]
+    identity_id = source_customer.get('identity_id')
+    if identity_id:
+        try:
+            rows = (
+                supabase.table('customers').select('*')
+                .eq('business_id', business_id)
+                .eq('identity_id', identity_id)
+                .order('created_at')
+                .execute().data or []
+            ) or [source_customer]
+        except Exception:
+            rows = [source_customer]
+    # Stable de-duplication in case the scanned row is returned twice by a legacy view.
+    seen, unique = set(), []
+    for row in rows:
+        key = row.get('id') or row.get('public_id')
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(row)
+    return unique
+
+
+def _pos_companion_program_payload(business: dict, membership: dict, source_customer: dict) -> dict:
+    program = safe_get_customer_program(membership, business.get('id')) or {}
+    is_legacy_employee = bool(program and str(program.get('card_type') or '').lower() == 'employee')
+    is_employee_membership = bool(program_is_employee_membership(program))
+    is_employee = bool(is_legacy_employee or is_employee_membership)
+    benefits = []
+    if is_legacy_employee:
+        benefits = get_employee_benefit_statuses(business, membership, program)
+    elif is_employee_membership:
+        benefits = get_membership_benefit_statuses(business, membership, program)
+
+    return {
+        'membership_customer_public_id': membership.get('public_id'),
+        'membership_customer_id': membership.get('id'),
+        'program_id': program.get('id'),
+        'program_public_id': program.get('public_id'),
+        'program_name': program.get('program_name') or program.get('card_name') or 'Loyalty Program',
+        'card_type': program.get('card_type') or 'stamp',
+        'is_source_program': str(membership.get('id')) == str(source_customer.get('id')),
+        'points_enabled': bool(program_reward_uses_points(program)),
+        'points_balance': int(membership.get('points_balance') or 0),
+        'stamps_enabled': bool(program_reward_uses_stamps(program)),
+        'stamp_count': int(membership.get('stamp_count') or 0),
+        'is_employee_program': is_employee,
+        'employee_id_number': membership.get('employee_id_number') if is_employee else None,
+        'employee_position': membership.get('employee_position') if is_employee else None,
+        'membership_status': membership_effective_status(membership) if program_has_membership(program) else None,
+        'benefits': benefits,
+    }
+
+
+def _pos_benefit_reservation_row(reservation_id: str) -> Optional[dict]:
+    try:
+        rows = (
+            supabase.table('pos_benefit_reservations').select('*')
+            .eq('id', reservation_id).limit(1).execute().data or []
+        )
+        return rows[0] if rows else None
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+
+
+def _pos_companion_exact_transaction(device: dict, external_transaction_id: str) -> Optional[dict]:
+    try:
+        rows = (
+            supabase.table('pos_transactions').select('*')
+            .eq('integration_id', device.get('integration_id'))
+            .eq('external_transaction_id', external_transaction_id)
+            .limit(1).execute().data or []
+        )
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    tx = rows[0] if rows else None
+    if tx and tx.get('branch_id') and device.get('branch_id') and str(tx.get('branch_id')) != str(device.get('branch_id')):
+        raise HTTPException(status_code=409, detail='StoreHub transaction belongs to a different Loyalty Tree branch.')
+    return tx
+
+
 @app.post('/api/v1/pos-companion/customer/lookup')
-async def pos_companion_customer_lookup(
+def pos_companion_customer_lookup(
     req: POSCompanionCustomerLookupRequest,
     x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
 ):
     device = _require_pos_device(x_lt_device_token)
     customer_public_id = _pos_scan_customer_public_id(req.scan_value)
-    customer = safe_get_customer(customer_public_id)
-    if not customer or customer.get('business_id') != device.get('business_id'):
+    source_customer = safe_get_customer(customer_public_id)
+    if not source_customer or source_customer.get('business_id') != device.get('business_id'):
         raise HTTPException(status_code=404, detail='Loyalty Tree customer was not found for this business.')
-    program = safe_get_customer_program(customer, device.get('business_id')) or {}
+
+    business = _pos_business_by_id(device.get('business_id'))
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found for this POS device.')
+
+    memberships = _pos_companion_program_rows(source_customer, device.get('business_id'))
+    programs = [_pos_companion_program_payload(business, row, source_customer) for row in memberships]
+    programs.sort(key=lambda row: (0 if row.get('is_source_program') else 1, 0 if row.get('is_employee_program') else 1, str(row.get('program_name') or '')))
+    source_program = next((row for row in programs if row.get('is_source_program')), programs[0] if programs else {})
+
+    identity = None
+    if source_customer.get('identity_id'):
+        try:
+            identity_rows = (
+                supabase.table('customer_identities').select('id,public_id,name,email,phone')
+                .eq('id', source_customer.get('identity_id')).limit(1).execute().data or []
+            )
+            identity = identity_rows[0] if identity_rows else None
+        except Exception:
+            identity = None
+
+    integration = None
+    try:
+        integration_rows = supabase.table('pos_integrations').select('*').eq('id', device.get('integration_id')).limit(1).execute().data or []
+        integration = integration_rows[0] if integration_rows else None
+    except Exception:
+        integration = None
+    config = (integration or {}).get('config') if isinstance((integration or {}).get('config'), dict) else {}
+
     return {
         'ok': True,
-        'customer': {
-            'public_id': customer.get('public_id'),
-            'name': customer.get('name'),
-            'points_balance': int(customer.get('points_balance') or 0),
-            'program_id': program.get('id'),
-            'program_public_id': program.get('public_id'),
-            'program_name': program.get('program_name') or program.get('card_name'),
-            'card_type': program.get('card_type'),
+        'identity': {
+            'public_id': (identity or {}).get('public_id'),
+            'name': (identity or {}).get('name') or source_customer.get('name'),
+            'program_count': len(programs),
         },
+        # Backward-compatible single-program shape for older companion builds.
+        'customer': {
+            'public_id': source_customer.get('public_id'),
+            'name': source_customer.get('name'),
+            'points_balance': int(source_program.get('points_balance') or 0),
+            'program_id': source_program.get('program_id'),
+            'program_public_id': source_program.get('program_public_id'),
+            'program_name': source_program.get('program_name'),
+            'card_type': source_program.get('card_type'),
+        },
+        'source_membership_customer_public_id': source_customer.get('public_id'),
+        'programs': programs,
+        'allow_benefit_point_stacking': bool(config.get('allow_benefit_point_stacking', True)),
         'branch_id': device.get('branch_id'),
-        'message': 'Customer resolved from Loyalty Tree QR.',
+        'message': 'Customer identity resolved. All eligible memberships for this business are included.',
     }
+
+
+@app.post('/api/v1/pos-companion/points/reserve')
+def pos_companion_points_reserve(
+    req: POSCompanionPointsReserveRequest,
+    x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
+):
+    device = _require_pos_device(x_lt_device_token)
+    integration_rows = supabase.table('pos_integrations').select('*').eq('id', device.get('integration_id')).limit(1).execute().data or []
+    integration = integration_rows[0] if integration_rows else None
+    if not integration:
+        raise HTTPException(status_code=409, detail='POS integration not found for this device.')
+    config = _pos_redemption_config(integration)
+    if not config.get('enabled'):
+        raise HTTPException(status_code=409, detail='POS points redemption is not enabled for this StoreHub connection.')
+
+    customer = safe_get_customer(req.customer_public_id)
+    if not customer or customer.get('business_id') != device.get('business_id'):
+        raise HTTPException(status_code=404, detail='Program membership not found for this business.')
+    program = safe_get_customer_program(customer, device.get('business_id')) or {}
+    if not program_reward_uses_points(program):
+        raise HTTPException(status_code=400, detail='Selected program does not use redeemable points.')
+
+    points = int(req.points_to_redeem)
+    if points < int(config['min_points']):
+        raise HTTPException(status_code=400, detail=f"Minimum redemption is {config['min_points']} points.")
+    if points % int(config['increment_points']) != 0:
+        raise HTTPException(status_code=400, detail=f"Redemption must be in increments of {config['increment_points']} points.")
+
+    key = (req.reservation_key or f"LT-POS-{uuid.uuid4().hex[:24]}").strip()
+    row = _pos_rpc_first('pos_reserve_points_redemption', {
+        'p_business_id': device.get('business_id'),
+        'p_integration_id': device.get('integration_id'),
+        'p_branch_id': device.get('branch_id'),
+        'p_customer_id': customer.get('id'),
+        'p_program_id': program.get('id'),
+        'p_provider': device.get('provider') or 'storehub',
+        'p_reservation_key': key,
+        'p_points': points,
+        'p_value_per_point': config['value_per_point'],
+        'p_gross_amount': float(req.gross_amount),
+        'p_max_percent': config['max_percent'],
+        'p_hold_minutes': config['hold_minutes'],
+    })
+    return {'ok': True, 'reservation': _pos_redemption_public(row), 'message': f'{points} points reserved.'}
+
+
+@app.post('/api/v1/pos-companion/points/{reservation_id}/release')
+def pos_companion_points_release(
+    reservation_id: str,
+    req: POSCompanionReservationReleaseRequest,
+    x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
+):
+    device = _require_pos_device(x_lt_device_token)
+    row = _pos_redemption_row(reservation_id)
+    if not row or row.get('business_id') != device.get('business_id') or str(row.get('integration_id')) != str(device.get('integration_id')):
+        raise HTTPException(status_code=404, detail='Points reservation not found for this device connection.')
+    released = _pos_rpc_first('pos_release_points_redemption', {'p_reservation_id': row.get('id'), 'p_reason': req.reason or 'checkout_cancelled'})
+    return {'ok': True, 'reservation': _pos_redemption_public(released), 'message': 'Reserved points released.'}
+
+
+@app.post('/api/v1/pos-companion/benefits/reserve')
+def pos_companion_benefit_reserve(
+    req: POSCompanionBenefitReserveRequest,
+    x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
+):
+    device = _require_pos_device(x_lt_device_token)
+    business = _pos_business_by_id(device.get('business_id'))
+    customer = safe_get_customer(req.customer_public_id)
+    if not business or not customer or customer.get('business_id') != device.get('business_id'):
+        raise HTTPException(status_code=404, detail='Employee/member program membership was not found for this business.')
+    program = safe_get_customer_program(customer, business.get('id')) or {}
+    is_legacy_employee = str(program.get('card_type') or '').lower() == 'employee'
+    is_employee_membership = program_is_employee_membership(program)
+    if not (is_legacy_employee or is_employee_membership):
+        raise HTTPException(status_code=400, detail='Selected program is not an Employee Benefits program.')
+    if is_employee_membership and not membership_access_allowed(customer):
+        raise HTTPException(status_code=400, detail=f"Employee membership is {membership_effective_status(customer)}")
+
+    definitions = normalize_employee_benefits(program) if is_legacy_employee else normalize_membership_benefits(program)
+    benefit = next((row for row in definitions if row.get('id') == req.benefit_id), None)
+    if not benefit:
+        raise HTTPException(status_code=404, detail='Employee benefit not found.')
+    if not benefit.get('active'):
+        raise HTTPException(status_code=400, detail='This employee benefit is inactive.')
+
+    statuses = get_employee_benefit_statuses(business, customer, program) if is_legacy_employee else get_membership_benefit_statuses(business, customer, program)
+    current = next((row for row in statuses if row.get('id') == req.benefit_id), None)
+    if current and not current.get('available'):
+        raise HTTPException(status_code=400, detail=current.get('unavailable_reason') or 'Employee benefit is not currently available.')
+
+    start_utc, end_utc, _ = _benefit_window(benefit, business.get('id'), customer.get('id'), customer)
+    key = (req.reservation_key or f"LT-BENEFIT-{uuid.uuid4().hex[:24]}").strip()
+    try:
+        rpc = supabase.rpc('pos_reserve_benefit', {
+            'p_business_id': business.get('id'),
+            'p_integration_id': device.get('integration_id'),
+            'p_branch_id': device.get('branch_id'),
+            'p_device_id': device.get('id'),
+            'p_customer_id': customer.get('id'),
+            'p_program_id': program.get('id'),
+            'p_provider': device.get('provider') or 'storehub',
+            'p_reservation_key': key,
+            'p_benefit_id': benefit.get('id'),
+            'p_benefit_name': benefit.get('name'),
+            'p_benefit_type': benefit.get('benefit_type'),
+            'p_benefit_value': benefit.get('value'),
+            'p_quantity': int(req.quantity),
+            'p_usage_limit': benefit.get('usage_limit'),
+            'p_window_start': start_utc.isoformat() if start_utc else None,
+            'p_window_end': end_utc.isoformat() if end_utc else None,
+            'p_hold_minutes': int(req.hold_minutes),
+        }).execute()
+        rows = rpc.data or []
+    except Exception as exc:
+        msg = friendly_db_error(exc)
+        if 'usage limit' in msg.lower():
+            raise HTTPException(status_code=409, detail='Employee benefit is already fully used or reserved for this period.')
+        raise _pos_schema_error(exc)
+    reservation = rows[0] if rows else None
+    if not reservation:
+        raise HTTPException(status_code=500, detail='Employee benefit reservation did not return a row.')
+    return {
+        'ok': True,
+        'reservation': reservation,
+        'program': {'public_id': program.get('public_id'), 'name': program.get('program_name') or program.get('card_name')},
+        'message': f"Reserved {benefit.get('name')} for this checkout.",
+    }
+
+
+@app.post('/api/v1/pos-companion/benefits/{reservation_id}/release')
+def pos_companion_benefit_release(
+    reservation_id: str,
+    req: POSCompanionReservationReleaseRequest,
+    x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
+):
+    device = _require_pos_device(x_lt_device_token)
+    row = _pos_benefit_reservation_row(reservation_id)
+    if not row or row.get('business_id') != device.get('business_id') or str(row.get('integration_id')) != str(device.get('integration_id')):
+        raise HTTPException(status_code=404, detail='Employee benefit reservation not found for this device connection.')
+    try:
+        result = supabase.rpc('pos_release_benefit', {'p_reservation_id': row.get('id'), 'p_reason': req.reason or 'checkout_cancelled'}).execute().data or []
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    released = result[0] if result else row
+    return {'ok': True, 'reservation': released, 'message': 'Employee benefit reservation released.'}
+
+
+@app.post('/api/v1/pos-companion/benefits/{reservation_id}/commit')
+async def pos_companion_benefit_commit(
+    reservation_id: str,
+    req: POSCompanionReservationCommitRequest,
+    background_tasks: BackgroundTasks,
+    x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
+):
+    device = _require_pos_device(x_lt_device_token)
+    row = _pos_benefit_reservation_row(reservation_id)
+    if not row or row.get('business_id') != device.get('business_id') or str(row.get('integration_id')) != str(device.get('integration_id')):
+        raise HTTPException(status_code=404, detail='Employee benefit reservation not found for this device connection.')
+    if row.get('status') == 'committed':
+        return {'ok': True, 'duplicate': True, 'reservation': row, 'message': 'Employee benefit was already committed.'}
+    if row.get('status') != 'reserved':
+        raise HTTPException(status_code=409, detail=f"Employee benefit reservation is {row.get('status') or 'not active'}.")
+    expires_at = _pos_parse_timestamp(row.get('expires_at'))
+    if expires_at and expires_at <= datetime.now(timezone.utc):
+        try:
+            supabase.table('pos_benefit_reservations').update({'status': 'expired'}).eq('id', row.get('id')).execute()
+        except Exception:
+            pass
+        raise HTTPException(status_code=409, detail='Employee benefit reservation expired. Reserve it again.')
+
+    tx = _pos_companion_exact_transaction(device, req.external_transaction_id)
+    if not tx:
+        raise HTTPException(status_code=409, detail='Exact StoreHub transaction has not synced to Loyalty Tree yet.')
+
+    customer_rows = supabase.table('customers').select('*').eq('id', row.get('customer_id')).limit(1).execute().data or []
+    customer = customer_rows[0] if customer_rows else None
+    if not customer:
+        raise HTTPException(status_code=404, detail='Employee/member record no longer exists.')
+
+    # Reuse the canonical membership-benefit ledger and Wallet refresh path.
+    redemption_result = await redeem_membership_benefit(
+        _pos_business_by_id(device.get('business_id')).get('public_id'),
+        MembershipBenefitRedeemRequest(
+            customer_public_id=customer.get('public_id'),
+            benefit_id=row.get('benefit_id'),
+            quantity=int(row.get('quantity') or 1),
+            note=f"POS {device.get('provider') or 'storehub'} transaction {req.external_transaction_id}",
+            as_owner=True,
+        ),
+        background_tasks,
+        authorization='',
+        x_idempotency_key=f"pos-benefit:{row.get('id')}",
+    )
+    redemption = (redemption_result or {}).get('redemption') or {}
+    patch = {
+        'status': 'committed',
+        'external_transaction_id': req.external_transaction_id,
+        'committed_redemption_id': redemption.get('id'),
+        'committed_at': datetime.now(timezone.utc).isoformat(),
+        'metadata': {
+            **(row.get('metadata') if isinstance(row.get('metadata'), dict) else {}),
+            'storehub_transaction_id': req.external_transaction_id,
+        },
+    }
+    try:
+        updated = supabase.table('pos_benefit_reservations').update(patch).eq('id', row.get('id')).execute().data or []
+        row = updated[0] if updated else {**row, **patch}
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    return {'ok': True, 'reservation': row, 'redemption': redemption_result, 'message': 'Employee benefit committed after StoreHub sale confirmation.'}
 
 
 # =============================================================================
@@ -34016,7 +34455,7 @@ async def pos_companion_customer_lookup(
 
 class POSCompanionOfflineEvent(BaseModel):
     client_event_id: str = Field(min_length=6, max_length=120)
-    event_type: Literal['earn', 'redemption_commit_wait'] = 'earn'
+    event_type: Literal['earn', 'redemption_commit_wait', 'benefit_commit_wait'] = 'earn'
     customer_ref: str = Field(min_length=1, max_length=500)
     external_transaction_id: Optional[str] = Field(default=None, max_length=240)
     reservation_id: Optional[str] = Field(default=None, max_length=100)
@@ -34042,6 +34481,7 @@ def _pos_offline_event_public(row: dict) -> dict:
         'customer_public_id': row.get('customer_public_id'),
         'external_transaction_id': row.get('external_transaction_id'),
         'reservation_id': str(row.get('reservation_id') or '') or None,
+        'benefit_reservation_id': ((row.get('payload') or {}).get('benefit_reservation_id') if isinstance(row.get('payload'), dict) else None),
         'matched_pos_transaction_id': str(row.get('matched_pos_transaction_id') or '') or None,
         'gross_amount': float(row.get('gross_amount')) if row.get('gross_amount') is not None else None,
         'currency': row.get('currency'),
@@ -34060,6 +34500,26 @@ def _pos_offline_resolve_and_match(device: dict, event: POSCompanionOfflineEvent
     branch_id = device.get('branch_id')
     customer_public_id = _pos_scan_customer_public_id(event.customer_ref)
     customer = safe_get_customer(customer_public_id) if customer_public_id else None
+    loyalty_customer = customer
+    # One StoreHub sale can contain actions from multiple LT program memberships
+    # (for example an Employee Benefit plus regular Loyalty points). Keep the
+    # normalized POS transaction attached to one stable/default membership: the
+    # regular non-employee points membership when available. The specific
+    # employee/points reservations retain their own customer_id separately.
+    if customer:
+        try:
+            memberships = _pos_companion_program_rows(customer, business_id)
+            candidates = []
+            for membership in memberships:
+                program = safe_get_customer_program(membership, business_id) or {}
+                if program_reward_uses_points(program):
+                    candidates.append((membership, program))
+            regular = next((pair for pair in candidates if not program_is_employee_experience(pair[1])), None)
+            chosen = regular or (candidates[0] if candidates else None)
+            if chosen:
+                loyalty_customer = chosen[0]
+        except Exception:
+            loyalty_customer = customer
 
     status = 'received'
     error_message = None
@@ -34071,24 +34531,26 @@ def _pos_offline_resolve_and_match(device: dict, event: POSCompanionOfflineEvent
         error_message = 'Customer could not be resolved for this business.'
     else:
         reservation = None
-        if event.event_type == 'redemption_commit_wait':
+        if event.event_type in ('redemption_commit_wait', 'benefit_commit_wait'):
             if not event.reservation_id:
                 status = 'failed'
-                error_message = 'A redemption_commit_wait event requires reservation_id.'
+                error_message = f'{event.event_type} requires reservation_id.'
             else:
-                reservation = _pos_redemption_row(event.reservation_id)
+                reservation = (_pos_benefit_reservation_row(event.reservation_id)
+                               if event.event_type == 'benefit_commit_wait'
+                               else _pos_redemption_row(event.reservation_id))
                 if not reservation:
                     status = 'failed'
-                    error_message = 'Redemption reservation was not found.'
+                    error_message = 'Benefit reservation was not found.' if event.event_type == 'benefit_commit_wait' else 'Redemption reservation was not found.'
                 elif reservation.get('business_id') != business_id or str(reservation.get('integration_id')) != str(integration_id):
                     status = 'conflict'
-                    error_message = 'Redemption reservation belongs to a different business/integration.'
+                    error_message = 'Reservation belongs to a different business/integration.'
                 elif reservation.get('customer_id') != customer.get('id'):
                     status = 'conflict'
-                    error_message = 'Redemption reservation belongs to a different customer.'
+                    error_message = 'Reservation belongs to a different customer.'
                 elif reservation.get('branch_id') and branch_id and reservation.get('branch_id') != branch_id:
                     status = 'conflict'
-                    error_message = 'Redemption reservation belongs to a different branch.'
+                    error_message = 'Reservation belongs to a different branch.'
 
         external_tx = str(event.external_transaction_id or '').strip()
         if not error_message:
@@ -34112,17 +34574,17 @@ def _pos_offline_resolve_and_match(device: dict, event: POSCompanionOfflineEvent
                 elif matched_tx.get('branch_id') and branch_id and matched_tx.get('branch_id') != branch_id:
                     status = 'conflict'
                     error_message = 'StoreHub transaction belongs to a different Loyalty Tree branch.'
-                elif matched_tx.get('customer_id') and matched_tx.get('customer_id') != customer.get('id'):
+                elif matched_tx.get('customer_id') and matched_tx.get('customer_id') != (loyalty_customer or customer).get('id'):
                     status = 'conflict'
-                    error_message = 'StoreHub transaction is already linked to a different customer.'
+                    error_message = 'StoreHub transaction is already linked to a different customer/program membership.'
                 elif matched_tx.get('status') == 'loyalty_applied':
-                    status = 'processed' if matched_tx.get('customer_id') == customer.get('id') else 'conflict'
+                    status = 'processed' if matched_tx.get('customer_id') == (loyalty_customer or customer).get('id') else 'conflict'
                     error_message = None if status == 'processed' else 'Loyalty was already applied to this transaction without this customer link.'
                     matched_at = datetime.now(timezone.utc).isoformat()
                 else:
                     processing_metadata = matched_tx.get('processing_metadata') if isinstance(matched_tx.get('processing_metadata'), dict) else {}
                     patch = {
-                        'customer_id': customer.get('id'),
+                        'customer_id': (loyalty_customer or customer).get('id'),
                         'branch_id': matched_tx.get('branch_id') or branch_id,
                         'processing_metadata': {
                             **processing_metadata,
@@ -34131,6 +34593,8 @@ def _pos_offline_resolve_and_match(device: dict, event: POSCompanionOfflineEvent
                                 'client_event_id': event.client_event_id,
                                 'event_type': event.event_type,
                                 'reservation_id': event.reservation_id,
+                                'source_customer_public_id': customer.get('public_id') if customer else None,
+                                'earning_customer_public_id': (loyalty_customer or customer).get('public_id') if (loyalty_customer or customer) else None,
                                 'matched_at': datetime.now(timezone.utc).isoformat(),
                             },
                         },
@@ -34156,13 +34620,14 @@ def _pos_offline_resolve_and_match(device: dict, event: POSCompanionOfflineEvent
         'customer_public_id': customer_public_id or None,
         'customer_id': customer.get('id') if customer else None,
         'external_transaction_id': str(event.external_transaction_id or '').strip() or None,
-        'reservation_id': event.reservation_id or None,
+        'reservation_id': (event.reservation_id or None) if event.event_type != 'benefit_commit_wait' else None,
         'matched_pos_transaction_id': matched_tx.get('id') if matched_tx else None,
         'currency': (event.currency or 'PHP').upper(),
         'gross_amount': event.gross_amount,
         'status': status,
         'payload': {
             'client_metadata': event.metadata or {},
+            'benefit_reservation_id': event.reservation_id if event.event_type == 'benefit_commit_wait' else None,
             'device_display_name': device.get('display_name'),
             'hardware_model': device.get('hardware_model'),
         },
@@ -34182,8 +34647,20 @@ def _pos_offline_resolve_and_match(device: dict, event: POSCompanionOfflineEvent
         raise _pos_schema_error(exc)
 
 
+@app.get('/api/v1/pos-companion/health')
+def pos_companion_health():
+    # Deliberately database/provider-free: suitable for load balancers and uptime
+    # checks without adding StoreHub/Supabase traffic during rush hour.
+    return {
+        'ok': True,
+        'service': 'loyaltytree-pos-companion',
+        'device_cache_ttl_seconds': POS_DEVICE_CACHE_TTL_SECONDS,
+        'device_heartbeat_seconds': POS_DEVICE_HEARTBEAT_SECONDS,
+    }
+
+
 @app.get('/api/v1/pos-companion/connectivity')
-async def pos_companion_connectivity(
+def pos_companion_connectivity(
     probe_provider: bool = False,
     x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
 ):
@@ -34254,7 +34731,7 @@ async def pos_companion_connectivity(
 
 
 @app.post('/api/v1/pos-companion/offline-sync')
-async def pos_companion_offline_sync(
+def pos_companion_offline_sync(
     req: POSCompanionOfflineSyncRequest,
     x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
 ):
@@ -34301,7 +34778,7 @@ async def pos_companion_offline_sync(
 
 
 @app.get('/api/v1/pos-companion/sync-status')
-async def pos_companion_sync_status(x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token')):
+def pos_companion_sync_status(x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token')):
     device = _require_pos_device(x_lt_device_token)
     try:
         rows = (
@@ -34328,7 +34805,7 @@ async def pos_companion_sync_status(x_lt_device_token: str = Header(default='', 
 
 
 @app.post('/api/v1/business/{public_id}/pos/offline-events/{event_id}/match')
-async def owner_match_pos_offline_event(
+def owner_match_pos_offline_event(
     public_id: str,
     event_id: str,
     req: POSCompanionOfflineMatchRequest,
@@ -34359,7 +34836,10 @@ async def owner_match_pos_offline_event(
         event_type=row.get('event_type'),
         customer_ref=row.get('customer_public_id') or '',
         external_transaction_id=req.external_transaction_id,
-        reservation_id=str(row.get('reservation_id')) if row.get('reservation_id') else None,
+        reservation_id=(
+            str(row.get('reservation_id')) if row.get('reservation_id')
+            else (((row.get('payload') or {}).get('benefit_reservation_id')) if isinstance(row.get('payload'), dict) else None)
+        ),
         gross_amount=float(row.get('gross_amount')) if row.get('gross_amount') is not None else None,
         currency=row.get('currency') or 'PHP',
         occurred_at=_pos_parse_timestamp(row.get('occurred_at')) or datetime.now(timezone.utc),
