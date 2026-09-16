@@ -11,7 +11,10 @@ function AnalyticsDashboard({ API_BASE, user }) {
   const [retentionData, setRetentionData] = useState({})
   const [retentionOps, setRetentionOps] = useState([])
   const [birthdayData, setBirthdayData] = useState({
-    as_of: '', counts: { today: 0, this_month: 0, next_7_days: 0, next_30_days: 0 }, customers: []
+    as_of: '',
+    counts: { today: 0, this_month: 0, next_7_days: 0, next_30_days: 0, all: 0 },
+    customers: [],
+    diagnostics: {},
   })
   const [birthdayFilter, setBirthdayFilter] = useState('month')
   const [auditTransactions, setAuditTransactions] = useState([])
@@ -100,8 +103,9 @@ function AnalyticsDashboard({ API_BASE, user }) {
       if (settingsRes.ok) setRetentionSettings(settings)
       if (birthdayRes.ok) setBirthdayData({
         as_of: birthdays.as_of || '',
-        counts: birthdays.counts || { today: 0, this_month: 0, next_7_days: 0, next_30_days: 0 },
+        counts: birthdays.counts || { today: 0, this_month: 0, next_7_days: 0, next_30_days: 0, all: 0 },
         customers: Array.isArray(birthdays.customers) ? birthdays.customers : [],
+        diagnostics: birthdays.diagnostics || {},
       })
 
       const failed = [
@@ -190,12 +194,17 @@ function AnalyticsDashboard({ API_BASE, user }) {
 
   const { overview, trends, customers, demographics, stamps, rewards, revenue } = analytics
   const birthdayRows = (birthdayData.customers || []).filter(c => {
+    if (birthdayFilter === 'all') return true
     if (birthdayFilter === 'today') return c.is_today
     if (birthdayFilter === '7d') return Number(c.days_until) >= 0 && Number(c.days_until) <= 7
     if (birthdayFilter === '30d') return Number(c.days_until) >= 0 && Number(c.days_until) <= 30
     return c.in_this_month
   })
-  const birthdayFilterLabel = birthdayFilter === 'today' ? 'Today' : birthdayFilter === '7d' ? 'Next 7 Days' : birthdayFilter === '30d' ? 'Next 30 Days' : 'This Month'
+  const birthdayFilterLabel =
+    birthdayFilter === 'all' ? 'All Saved Birthdays' :
+    birthdayFilter === 'today' ? 'Today' :
+    birthdayFilter === '7d' ? 'Next 7 Days' :
+    birthdayFilter === '30d' ? 'Next 30 Days' : 'This Month'
   const isPoints = overview.card_type === 'points'
   const isMultipass = overview.card_type === 'multipass'
   const isMembership = overview.card_type === 'membership'
@@ -349,15 +358,21 @@ function AnalyticsDashboard({ API_BASE, user }) {
           </button>
         </div>
         <div className="an-overview-grid" style={{...styles.overviewGrid,marginTop:14,marginBottom:12}}>
+          <MiniMetric label="Saved Birthdays" value={birthdayData.counts?.all || birthdayData.diagnostics?.resolved_people_with_birthday || 0} />
           <MiniMetric label="This Month" value={birthdayData.counts?.this_month || 0} />
           <MiniMetric label="Today" value={birthdayData.counts?.today || 0} />
-          <MiniMetric label="Next 7 Days" value={birthdayData.counts?.next_7_days || 0} />
           <MiniMetric label="Next 30 Days" value={birthdayData.counts?.next_30_days || 0} />
         </div>
         {extendedLoading ? (
           <div style={styles.noData}>Loading birthday celebrants…</div>
         ) : (birthdayData.customers || []).length === 0 ? (
-          <div style={styles.noData}>No birthday celebrants in this month / next 30 days.</div>
+          <div style={styles.noData}>
+            {(birthdayData.diagnostics?.membership_rows_with_birthday || 0) === 0
+              ? 'No saved customer birthdays yet. Birthday must be collected in Join or added to the customer profile.'
+              : (birthdayData.diagnostics?.unreadable_birthday_rows || 0) > 0
+                ? `${birthdayData.diagnostics.unreadable_birthday_rows} saved birthday row(s) could not be read.`
+                : 'No readable customer birthdays were returned.'}
+          </div>
         ) : (
           <div style={{display:'grid',gap:8}}>
             {(birthdayData.customers || []).slice(0,4).map(c => (
@@ -874,6 +889,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
             </div>
             <div style={styles.birthdayFilterBar}>
               {[
+                ['all','All Birthdays',birthdayData.counts?.all || birthdayData.diagnostics?.resolved_people_with_birthday || 0],
                 ['month','This Month',birthdayData.counts?.this_month || 0],
                 ['today','Today',birthdayData.counts?.today || 0],
                 ['7d','Next 7 Days',birthdayData.counts?.next_7_days || 0],
@@ -885,12 +901,17 @@ function AnalyticsDashboard({ API_BASE, user }) {
           </div>
 
           <div className="an-overview-grid" style={{...styles.overviewGrid,marginBottom:14}}>
+            <MiniMetric label="Saved Birthdays" value={birthdayData.counts?.all || birthdayData.diagnostics?.resolved_people_with_birthday || 0} />
             <MiniMetric label="This Month" value={birthdayData.counts?.this_month || 0} />
             <MiniMetric label="Today" value={birthdayData.counts?.today || 0} />
-            <MiniMetric label="Next 7 Days" value={birthdayData.counts?.next_7_days || 0} />
             <MiniMetric label="Next 30 Days" value={birthdayData.counts?.next_30_days || 0} />
           </div>
 
+          <div style={{fontSize:12,color:'#64748b',marginBottom:10}}>
+            Birthday data: {birthdayData.diagnostics?.resolved_people_with_birthday ?? birthdayData.counts?.all ?? 0} people ·
+            {' '}{birthdayData.diagnostics?.total_membership_rows ?? '—'} membership rows
+            {(birthdayData.diagnostics?.unreadable_birthday_rows || 0) > 0 ? ` · ${birthdayData.diagnostics.unreadable_birthday_rows} unreadable` : ''}
+          </div>
           <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:8}}>{birthdayFilterLabel}</div>
           {birthdayRows.length === 0 ? <div style={styles.noData}>No birthday celebrants in this view.</div> : (
             <div>

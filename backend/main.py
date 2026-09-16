@@ -32036,16 +32036,35 @@ def _render_retention_message(
 
 
 def _parse_birthday(value) -> Optional[tuple]:
+    """Return (month, day) for current DATE values plus a few legacy text formats."""
     if not value:
         return None
-    try:
-        d = datetime.fromisoformat(str(value).replace('Z', '+00:00')).date()
-    except Exception:
+    if hasattr(value, 'month') and hasattr(value, 'day'):
         try:
-            d = datetime.strptime(str(value)[:10], '%Y-%m-%d').date()
+            return int(value.month), int(value.day)
         except Exception:
-            return None
-    return d.month, d.day
+            pass
+
+    raw = str(value).strip()
+    if not raw:
+        return None
+
+    # Current Supabase DATE values arrive as YYYY-MM-DD. Keep ISO first.
+    try:
+        d = datetime.fromisoformat(raw.replace('Z', '+00:00')).date()
+        return d.month, d.day
+    except Exception:
+        pass
+
+    # Backward compatibility for older imports / manual data entry. The old
+    # LoyaltyTree join UI explicitly labelled birthday as MM/DD/YYYY.
+    for fmt in ('%Y-%m-%d', '%m/%d/%Y', '%m-%d-%Y', '%Y/%m/%d', '%m/%d/%y'):
+        try:
+            d = datetime.strptime(raw[:10], fmt).date()
+            return d.month, d.day
+        except Exception:
+            continue
+    return None
 
 
 def _birthday_date_for_year(month: int, day: int, year: int):
@@ -32272,10 +32291,33 @@ async def save_retention_settings(public_id:str, req:RetentionMessageSettings, a
 async def birthday_celebrants(public_id:str, authorization:str=Header(default='')):
     require_owner_session(public_id,authorization)
     business=safe_get_business(public_id)
-    if not business: raise HTTPException(status_code=404,detail='Business not found')
+    if not business:
+        raise HTTPException(status_code=404,detail='Business not found')
 
     settings=_retention_message_settings(business)
-    customers,tx=_crm_dataset(business.get('id'))
+    business_id=business.get('id')
+
+    # Birthday visibility must not depend on CRM / transaction-audit health.
+    # Fetch the membership rows directly, then load visit history only as an
+    # optional enrichment for reward eligibility.
+    try:
+        customers=(supabase.table('customers').select('*')
+                   .eq('business_id',business_id).execute().data or [])
+    except Exception as exc:
+        print(f'BIRTHDAY customers query failed business={business_id}: {exc}')
+        raise HTTPException(status_code=500,detail='Could not load customer birthdays')
+
+    tx=[]
+    try:
+        tx=(supabase.table('transaction_audit')
+            .select('customer_id,staff_id,branch_id,action,status,delta,created_at,metadata')
+            .eq('business_id',business_id).eq('status','success')
+            .order('created_at',desc=True).limit(10000).execute().data or [])
+    except Exception as exc:
+        # Keep birthdays visible even if an optional audit table/query is stale.
+        print(f'BIRTHDAY transaction_audit warning business={business_id}: {exc}')
+        tx=[]
+
     crm_rows=_crm_metrics(customers,tx)
     crm_by_id={str(r.get('id')):r for r in crm_rows}
     birthday_visits=_birthday_visit_metrics(tx)
@@ -32284,14 +32326,59 @@ async def birthday_celebrants(public_id:str, authorization:str=Header(default=''
     issue_rows=[]
     try:
         issue_rows=(supabase.table('birthday_reward_issues').select('*')
-                    .eq('business_id',business.get('id')).execute().data or [])
+                    .eq('business_id',business_id).execute().data or [])
     except Exception:
         issue_rows=[]
     issues={(str(r.get('customer_id')),int(r.get('occasion_year') or 0)):r for r in issue_rows}
 
-    counts={'today':0,'this_month':0,'next_7_days':0,'next_30_days':0}
-    out=[]
+    # A person may have multiple program-membership rows. Resolve one birthday
+    # per shared identity so joining another program without re-entering a
+    # birthday does not make the person disappear or show twice.
+    identity_groups={}
     for customer in customers:
+        identity_id=customer.get('identity_id')
+        key=f"identity:{identity_id}" if identity_id is not None else f"customer:{customer.get('id')}"
+        identity_groups.setdefault(key,[]).append(customer)
+
+    resolved=[]
+    raw_with_birthday=0
+    unreadable=0
+    conflicting_identity_birthdays=0
+
+    for rows in identity_groups.values():
+        parsed_rows=[]
+        raw_values=set()
+        for row in rows:
+            raw=row.get('birthday')
+            if raw:
+                raw_with_birthday += 1
+                parsed=_parse_birthday(raw)
+                if parsed:
+                    parsed_rows.append(row)
+                    raw_values.add(str(raw)[:10])
+                else:
+                    unreadable += 1
+
+        if not parsed_rows:
+            continue
+
+        if len(raw_values) > 1:
+            conflicting_identity_birthdays += 1
+
+        # Prefer the most recently updated membership that actually has a
+        # readable birthday; all rows remain independent for points/stamps.
+        parsed_rows.sort(
+            key=lambda r: str(r.get('updated_at') or r.get('created_at') or ''),
+            reverse=True
+        )
+        representative=dict(parsed_rows[0])
+        representative['_identity_membership_count']=len(rows)
+        resolved.append(representative)
+
+    counts={'today':0,'this_month':0,'next_7_days':0,'next_30_days':0,'all':0}
+    out=[]
+
+    for customer in resolved:
         parsed=_parse_birthday(customer.get('birthday'))
         if not parsed:
             continue
@@ -32299,15 +32386,20 @@ async def birthday_celebrants(public_id:str, authorization:str=Header(default=''
         next_date=_next_birthday_occurrence(customer.get('birthday'),today)
         if not next_date:
             continue
+
         days_until=(next_date-today).days
         is_today=(month,day)==(today.month,today.day)
         in_this_month=month==today.month
-        if is_today: counts['today']+=1
-        if in_this_month: counts['this_month']+=1
-        if 0 <= days_until <= 7: counts['next_7_days']+=1
-        if 0 <= days_until <= 30: counts['next_30_days']+=1
-        if not in_this_month and not (0 <= days_until <= 30):
-            continue
+
+        counts['all'] += 1
+        if is_today:
+            counts['today'] += 1
+        if in_this_month:
+            counts['this_month'] += 1
+        if 0 <= days_until <= 7:
+            counts['next_7_days'] += 1
+        if 0 <= days_until <= 30:
+            counts['next_30_days'] += 1
 
         crm=crm_by_id.get(str(customer.get('id')),{}).get('crm',{})
         visit_metrics=birthday_visits.get(str(customer.get('id')), {})
@@ -32321,6 +32413,7 @@ async def birthday_celebrants(public_id:str, authorization:str=Header(default=''
                     reward_status='expired'
             except Exception:
                 pass
+
         eligibility=_birthday_reward_eligibility(customer,settings,total_visits,today)
         out.append({
             'customer_public_id':customer.get('public_id'),
@@ -32336,6 +32429,7 @@ async def birthday_celebrants(public_id:str, authorization:str=Header(default=''
             'membership_status':customer.get('membership_status'),
             'points_balance':int(customer.get('points_balance') or 0),
             'stamp_count':int(customer.get('stamp_count') or 0),
+            'identity_membership_count':int(customer.get('_identity_membership_count') or 1),
             'reward_eligible':bool(settings.get('birthday_reward_enabled')) and eligibility['eligible'],
             'reward_eligibility_reasons':eligibility['reasons'],
             'reward_status':reward_status,
@@ -32345,7 +32439,24 @@ async def birthday_celebrants(public_id:str, authorization:str=Header(default=''
         })
 
     out.sort(key=lambda r:(0 if r['is_today'] else 1, r['days_until'], r['customer_name'].lower()))
-    return {'as_of':today.isoformat(),'counts':counts,'customers':out,'settings':settings}
+
+    return {
+        'as_of':today.isoformat(),
+        'counts':counts,
+        # Return ALL readable birthdays. The frontend can filter Today / Month /
+        # 7d / 30d without the backend silently hiding customers outside 30 days.
+        'customers':out,
+        'settings':settings,
+        'diagnostics':{
+            'total_membership_rows':len(customers),
+            'identity_groups':len(identity_groups),
+            'membership_rows_with_birthday':raw_with_birthday,
+            'resolved_people_with_birthday':len(out),
+            'unreadable_birthday_rows':unreadable,
+            'conflicting_identity_birthdays':conflicting_identity_birthdays,
+            'visit_history_available':bool(tx),
+        },
+    }
 
 
 @app.get('/api/v1/business/{public_id}/retention-opportunities')
