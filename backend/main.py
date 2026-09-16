@@ -2232,10 +2232,18 @@ class LoyaltyConfig(BaseModel):
     stamp_reset_after_final: bool = True
     primary_color: str = '#3b82f6'
     reward_expiry_days: int = Field(default=30, ge=1)
-    # Program-level card cycle. At cycle expiry: stamp/points/VIP balances reset;
-    # multipass/membership become expired. History is preserved.
+    # Standalone-card cycle. Hybrid uses isolated engine clocks below so
+    # membership, reward points, reward stamps and Tier progression never
+    # expire/reset merely because another Hybrid engine reaches its date.
     card_expiration_enabled: bool = False
     card_validity_days: int = Field(default=365, ge=1, le=3650)
+    # --- Hybrid isolated expiry/reset schedules ---
+    hybrid_points_expiration_enabled: bool = False
+    hybrid_points_validity_days: int = Field(default=365, ge=1, le=3650)
+    hybrid_stamps_expiration_enabled: bool = False
+    hybrid_stamps_validity_days: int = Field(default=365, ge=1, le=3650)
+    hybrid_tier_expiration_enabled: bool = False
+    hybrid_tier_validity_days: int = Field(default=365, ge=1, le=3650)
     program_logo_url: Optional[str] = None
     hero_image_url: Optional[str] = None
     card_name: Optional[str] = None
@@ -4042,8 +4050,71 @@ def _date_only(value):
         return None
 
 
+def _hybrid_expiry_enabled(program: Optional[dict], engine: str) -> bool:
+    if (program or {}).get('card_type') != 'hybrid':
+        return False
+    key = {
+        'points': 'hybrid_points_expiration_enabled',
+        'stamps': 'hybrid_stamps_expiration_enabled',
+        'tier': 'hybrid_tier_expiration_enabled',
+    }.get(engine)
+    return bool(key and (program or {}).get(key))
+
+
+def _hybrid_expiry_days(program: Optional[dict], engine: str) -> int:
+    key = {
+        'points': 'hybrid_points_validity_days',
+        'stamps': 'hybrid_stamps_validity_days',
+        'tier': 'hybrid_tier_validity_days',
+    }.get(engine)
+    try:
+        return max(1, min(3650, int((program or {}).get(key) or 365)))
+    except Exception:
+        return 365
+
+
+def _hybrid_engine_active(program: Optional[dict], engine: str) -> bool:
+    if (program or {}).get('card_type') != 'hybrid':
+        return False
+    if engine == 'points':
+        return hybrid_points_enabled(program)
+    if engine == 'stamps':
+        return hybrid_stamps_enabled(program)
+    if engine == 'tier':
+        return program_has_tier(program)
+    return False
+
+
+def _hybrid_expiry_fields(engine: str) -> tuple:
+    return (
+        f'hybrid_{engine}_cycle',
+        f'hybrid_{engine}_started_at',
+        f'hybrid_{engine}_expires_at',
+        f'last_hybrid_{engine}_reset_at',
+    )
+
+
+def _hybrid_expiry_signature(customer: Optional[dict]) -> tuple:
+    customer = customer or {}
+    return tuple(int(customer.get(f'hybrid_{engine}_cycle') or 1) for engine in ('points', 'stamps', 'tier'))
+
+
 def _card_cycle_enabled(program: Optional[dict]) -> bool:
-    return bool((program or {}).get('card_expiration_enabled'))
+    """Legacy/shared cycle is intentionally disabled for Hybrid cards.
+
+    Standalone Stamp/Points/VIP/Multipass/Membership cards keep the existing
+    card_expiration_enabled behavior. Hybrid engines use isolated clocks.
+    """
+    return bool((program or {}).get('card_type') != 'hybrid' and (program or {}).get('card_expiration_enabled'))
+
+
+def _program_expiry_enabled(program: Optional[dict]) -> bool:
+    if (program or {}).get('card_type') == 'hybrid':
+        return any(
+            _hybrid_engine_active(program, engine) and _hybrid_expiry_enabled(program, engine)
+            for engine in ('points', 'stamps', 'tier')
+        )
+    return _card_cycle_enabled(program)
 
 
 def _card_cycle_validity_days(program: Optional[dict]) -> int:
@@ -4054,10 +4125,10 @@ def _card_cycle_validity_days(program: Optional[dict]) -> int:
 
 
 def card_cycle_reset_on_date(customer: Optional[dict], program: Optional[dict]) -> Optional[str]:
-    """Customer-facing date when a resettable card actually rolls over.
+    """Customer-facing reset date for standalone cards only.
 
-    card_expires_at is inclusive (the card remains valid through that local
-    date), so the balance reset happens on the following Asia/Manila day.
+    Hybrid has no single reset date; each engine has its own isolated expiry.
+    card_expires_at is inclusive, so a standalone reset happens the next local day.
     """
     if not customer or not _card_cycle_enabled(program):
         return None
@@ -4067,9 +4138,34 @@ def card_cycle_reset_on_date(customer: Optional[dict], program: Optional[dict]) 
     return (expires + timedelta(days=1)).isoformat() if expires else None
 
 
-def card_cycle_signup_fields(program: Optional[dict]) -> dict:
-    """Initial per-customer card-cycle metadata. No balance changes happen here."""
+def hybrid_expiry_signup_fields(program: Optional[dict]) -> dict:
+    """Per-customer isolated Hybrid clocks initialized at enrollment."""
     today = _loyalty_today()
+    fields = {}
+    for engine in ('points', 'stamps', 'tier'):
+        cycle_field, started_field, expires_field, last_reset_field = _hybrid_expiry_fields(engine)
+        enabled = _hybrid_engine_active(program, engine) and _hybrid_expiry_enabled(program, engine)
+        fields[cycle_field] = 1
+        fields[started_field] = today.isoformat() if enabled else None
+        fields[expires_field] = (
+            (today + timedelta(days=_hybrid_expiry_days(program, engine))).isoformat()
+            if enabled else None
+        )
+        fields[last_reset_field] = None
+    return fields
+
+
+def card_cycle_signup_fields(program: Optional[dict]) -> dict:
+    """Initial expiry metadata. Hybrid gets one clock per enabled engine."""
+    today = _loyalty_today()
+    if (program or {}).get('card_type') == 'hybrid':
+        return {
+            'card_cycle': 1,
+            'card_started_at': None,
+            'card_expires_at': None,
+            'last_card_reset_at': None,
+            **hybrid_expiry_signup_fields(program),
+        }
     return {
         'card_cycle': 1,
         'card_started_at': today.isoformat(),
@@ -4081,20 +4177,151 @@ def card_cycle_signup_fields(program: Optional[dict]) -> dict:
     }
 
 
-def apply_card_cycle_expiration_if_needed(customer: dict, business: Optional[dict] = None,
-                                           program: Optional[dict] = None,
-                                           queue_wallet: bool = True) -> dict:
-    """Apply one overdue program-level card expiration atomically.
+def apply_hybrid_isolated_expirations_if_needed(
+    customer: dict,
+    business: Optional[dict] = None,
+    program: Optional[dict] = None,
+    queue_wallet: bool = True,
+) -> dict:
+    """Apply overdue Hybrid engine expiries independently.
 
-    Stamp / Points / VIP begin a fresh cycle with zero progress. Multipass and
-    Membership are forced expired. Transaction/event history is never deleted.
-    A compare-on-card_cycle update prevents two simultaneous cashier requests
-    from resetting/incrementing the same member twice.
+    Reward Points, Reward Stamps and Tier progression each own their own cycle.
+    Membership is deliberately absent from this function: membership access is
+    controlled only by membership_status + membership_expires_at / renewals.
     """
     if not customer or not supabase:
         return customer
     business_id = customer.get('business_id')
     program = program or (safe_get_customer_program(customer, business_id) if business_id else None)
+    if (program or {}).get('card_type') != 'hybrid':
+        return customer
+
+    today = _loyalty_today()
+    changed_engines = []
+
+    for engine in ('points', 'stamps', 'tier'):
+        if not (_hybrid_engine_active(program, engine) and _hybrid_expiry_enabled(program, engine)):
+            continue
+
+        cycle_field, started_field, expires_field, last_reset_field = _hybrid_expiry_fields(engine)
+        expires = _date_only(customer.get(expires_field))
+
+        # Existing Hybrid members may predate isolated-expiry columns. Start the
+        # selected engine's timer now; never infer an old date and wipe a balance.
+        if not expires:
+            init_data = {
+                cycle_field: max(1, int(customer.get(cycle_field) or 1)),
+                started_field: today.isoformat(),
+                expires_field: (today + timedelta(days=_hybrid_expiry_days(program, engine))).isoformat(),
+                'updated_at': datetime.utcnow().isoformat(),
+            }
+            try:
+                result = supabase.table('customers').update(init_data).eq('id', customer.get('id')).execute()
+                customer.update((result.data or [{**customer, **init_data}])[0])
+            except Exception as exc:
+                print(f"HYBRID EXPIRY INIT warning engine={engine} customer={customer.get('public_id')}: {exc}")
+            continue
+
+        # Valid through the displayed expiry date; reset starting the next day.
+        if expires >= today:
+            continue
+
+        old_cycle = max(1, int(customer.get(cycle_field) or 1))
+        new_cycle = old_cycle + 1
+        new_expiry = today + timedelta(days=_hybrid_expiry_days(program, engine))
+        update_data = {
+            cycle_field: new_cycle,
+            started_field: today.isoformat(),
+            expires_field: new_expiry.isoformat(),
+            last_reset_field: datetime.utcnow().isoformat(),
+            'updated_at': datetime.utcnow().isoformat(),
+        }
+
+        balance_before = None
+        if engine == 'points':
+            balance_before = int(customer.get('points_balance') or 0)
+            update_data['points_balance'] = 0
+        elif engine == 'stamps':
+            balance_before = int(customer.get('stamp_count') or 0)
+            update_data.update({'stamp_count': 0, 'reward_unlocked': False})
+        elif engine == 'tier':
+            update_data['vip_manual_tier_id'] = None
+            if tier_stamps_enabled(program):
+                balance_before = tier_stamp_value(customer, program)
+                update_data['tier_stamp_count'] = 0
+            else:
+                balance_before = int(customer.get('vip_points') or 0)
+                update_data['vip_points'] = 0
+
+        try:
+            query = supabase.table('customers').update(update_data).eq('id', customer.get('id'))
+            query = query.eq(cycle_field, old_cycle)
+            result = query.execute()
+            if not result.data:
+                fresh = supabase.table('customers').select('*').eq('id', customer.get('id')).maybe_single().execute()
+                customer = fresh.data or customer
+                continue
+            customer = result.data[0]
+        except Exception as exc:
+            print(f"HYBRID EXPIRY RESET error engine={engine} customer={customer.get('public_id')}: {exc}")
+            continue
+
+        changed_engines.append(engine)
+        try:
+            supabase.table('transaction_audit').insert({
+                'business_id': business_id,
+                'customer_id': customer.get('id'),
+                'actor_type': 'system',
+                'action': f'hybrid_{engine}_cycle_expired',
+                'status': 'success',
+                'balance_before': balance_before,
+                'balance_after': 0,
+                'metadata': {
+                    'card_type': 'hybrid',
+                    'engine': engine,
+                    'previous_cycle': old_cycle,
+                    'new_cycle': new_cycle,
+                    'expired_on': expires.isoformat(),
+                    'new_cycle_expires_on': new_expiry.isoformat(),
+                    'membership_expires_at': customer.get('membership_expires_at'),
+                    'isolated_expiry': True,
+                },
+                'completed_at': datetime.utcnow().isoformat(),
+            }).execute()
+        except Exception as exc:
+            print(f"HYBRID EXPIRY AUDIT warning engine={engine}: {exc}")
+
+        print(
+            f"HYBRID EXPIRY RESET customer={customer.get('public_id')} engine={engine} "
+            f"cycle={old_cycle}->{new_cycle} expired={expires.isoformat()}"
+        )
+
+    if changed_engines:
+        business = business or (safe_get_business_by_id(business_id) if business_id else None)
+        if queue_wallet and business:
+            try:
+                enqueue_wallet_sync(customer, business, 'hybrid_isolated_expiry')
+            except Exception as exc:
+                print(f"HYBRID EXPIRY WALLET QUEUE warning: {exc}")
+    return customer
+
+
+def apply_card_cycle_expiration_if_needed(customer: dict, business: Optional[dict] = None,
+                                           program: Optional[dict] = None,
+                                           queue_wallet: bool = True) -> dict:
+    """Apply an overdue standalone card cycle, or isolated Hybrid clocks.
+
+    Standalone Stamp / Points / VIP begin a fresh cycle with zero progress;
+    standalone Multipass / Membership retain their legacy card-cycle behavior.
+    Hybrid is delegated to apply_hybrid_isolated_expirations_if_needed(), so
+    one Hybrid engine can never expire/reset another engine or membership.
+    """
+    if not customer or not supabase:
+        return customer
+    business_id = customer.get('business_id')
+    program = program or (safe_get_customer_program(customer, business_id) if business_id else None)
+    if (program or {}).get('card_type') == 'hybrid':
+        return apply_hybrid_isolated_expirations_if_needed(customer, business, program, queue_wallet)
     if not _card_cycle_enabled(program):
         return customer
 
@@ -15667,7 +15894,7 @@ async def get_customers(public_id: str, program_id: Optional[str] = Query(defaul
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    if program and program.get('card_expiration_enabled'):
+    if program and _program_expiry_enabled(program):
         customers = [apply_card_cycle_expiration_if_needed(c, business, program) for c in customers]
     if all_programs:
         try:
@@ -15757,7 +15984,7 @@ async def get_customer_current_redeemables(public_id: str, customer_public_id: s
     if not customer or customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
     program = safe_get_customer_program(customer, business.get('id')) or {}
-    if program.get('card_expiration_enabled'):
+    if _program_expiry_enabled(program):
         customer = apply_card_cycle_expiration_if_needed(customer, business, program)
     redeemables = get_current_card_redeemables(business, customer, program)
     return {
@@ -15780,12 +16007,21 @@ async def admin_sweep_card_expirations(_: bool = Depends(require_admin)):
         rows = supabase.table('customers').select('*').eq('business_id', business.get('id')).execute().data or []
         for customer in rows:
             program = safe_get_customer_program(customer, business.get('id'))
-            if not _card_cycle_enabled(program):
+            if not _program_expiry_enabled(program):
                 continue
             checked += 1
-            before = int(customer.get('card_cycle') or 1)
+            before = (
+                _hybrid_expiry_signature(customer)
+                if (program or {}).get('card_type') == 'hybrid'
+                else (int(customer.get('card_cycle') or 1),)
+            )
             updated = apply_card_cycle_expiration_if_needed(customer, business, program)
-            if int((updated or {}).get('card_cycle') or 1) > before:
+            after = (
+                _hybrid_expiry_signature(updated)
+                if (program or {}).get('card_type') == 'hybrid'
+                else (int((updated or {}).get('card_cycle') or 1),)
+            )
+            if after != before:
                 reset += 1
     return {'checked': checked, 'expired_and_advanced': reset, 'date': _loyalty_today().isoformat()}
 
@@ -17379,6 +17615,12 @@ async def get_loyalty_config(public_id: str, response: Response, program_id: Opt
             "reward_expiry_days": 30,
             "card_expiration_enabled": False,
             "card_validity_days": 365,
+            "hybrid_points_expiration_enabled": False,
+            "hybrid_points_validity_days": 365,
+            "hybrid_stamps_expiration_enabled": False,
+            "hybrid_stamps_validity_days": 365,
+            "hybrid_tier_expiration_enabled": False,
+            "hybrid_tier_validity_days": 365,
             "program_logo_url": None,
             "hero_image_url": None,
             "card_name": None,
@@ -17554,8 +17796,16 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
         'wallet_secondary_color': config.wallet_secondary_color,
         'wallet_show_background': bool(config.wallet_show_background),
         'reward_expiry_days': config.reward_expiry_days,
-        'card_expiration_enabled': bool(config.card_expiration_enabled),
+        # Shared card expiry remains for standalone cards only. Hybrid engines
+        # persist isolated clocks below.
+        'card_expiration_enabled': bool(config.card_expiration_enabled) if config.card_type != 'hybrid' else False,
         'card_validity_days': int(config.card_validity_days or 365),
+        'hybrid_points_expiration_enabled': bool(config.hybrid_points_expiration_enabled) if (config.card_type == 'hybrid' and hybrid_points) else False,
+        'hybrid_points_validity_days': int(config.hybrid_points_validity_days or 365),
+        'hybrid_stamps_expiration_enabled': bool(config.hybrid_stamps_expiration_enabled) if (config.card_type == 'hybrid' and hybrid_stamps) else False,
+        'hybrid_stamps_validity_days': int(config.hybrid_stamps_validity_days or 365),
+        'hybrid_tier_expiration_enabled': bool(config.hybrid_tier_expiration_enabled) if (config.card_type == 'hybrid' and bool(config.hybrid_tier_enabled)) else False,
+        'hybrid_tier_validity_days': int(config.hybrid_tier_validity_days or 365),
         'updated_at': datetime.utcnow().isoformat(),
     }
 
@@ -17826,20 +18076,44 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
         )
         persisted_type = (persisted or {}).get("card_type")
 
-        # Turning card expiration on starts a fresh timer for EXISTING members
-        # from today without deleting/resetting their current balances.
-        was_expiration_enabled = bool(current_before_save.get('card_expiration_enabled'))
-        if bool(config.card_expiration_enabled) and not was_expiration_enabled:
-            cycle_start = _loyalty_today()
-            cycle_expiry = cycle_start + timedelta(days=int(config.card_validity_days or 365))
-            customer_cycle_update = supabase.table('customers').update({
-                'card_started_at': cycle_start.isoformat(),
-                'card_expires_at': cycle_expiry.isoformat(),
-                'updated_at': datetime.utcnow().isoformat(),
-            }).eq('business_id', business.get('id'))
-            if persisted and persisted.get('id'):
-                customer_cycle_update = customer_cycle_update.eq('program_id', persisted.get('id'))
-            customer_cycle_update.execute()
+        # Enabling an expiry starts a fresh timer for EXISTING members without
+        # deleting/resetting current balances. Hybrid does this independently per
+        # engine; membership is never touched by these clocks.
+        cycle_start = _loyalty_today()
+        if config.card_type == 'hybrid':
+            hybrid_expiry_specs = [
+                ('points', hybrid_points, bool(config.hybrid_points_expiration_enabled), int(config.hybrid_points_validity_days or 365)),
+                ('stamps', hybrid_stamps, bool(config.hybrid_stamps_expiration_enabled), int(config.hybrid_stamps_validity_days or 365)),
+                ('tier', bool(config.hybrid_tier_enabled), bool(config.hybrid_tier_expiration_enabled), int(config.hybrid_tier_validity_days or 365)),
+            ]
+            for engine, engine_active, now_enabled, days in hybrid_expiry_specs:
+                if not engine_active or not now_enabled:
+                    continue
+                old_enabled = bool(current_before_save.get(f'hybrid_{engine}_expiration_enabled'))
+                if old_enabled:
+                    continue
+                _, started_field, expires_field, _ = _hybrid_expiry_fields(engine)
+                expiry = cycle_start + timedelta(days=max(1, min(3650, days)))
+                q = supabase.table('customers').update({
+                    started_field: cycle_start.isoformat(),
+                    expires_field: expiry.isoformat(),
+                    'updated_at': datetime.utcnow().isoformat(),
+                }).eq('business_id', business.get('id'))
+                if persisted and persisted.get('id'):
+                    q = q.eq('program_id', persisted.get('id'))
+                q.execute()
+        else:
+            was_expiration_enabled = bool(current_before_save.get('card_expiration_enabled'))
+            if bool(config.card_expiration_enabled) and not was_expiration_enabled:
+                cycle_expiry = cycle_start + timedelta(days=int(config.card_validity_days or 365))
+                customer_cycle_update = supabase.table('customers').update({
+                    'card_started_at': cycle_start.isoformat(),
+                    'card_expires_at': cycle_expiry.isoformat(),
+                    'updated_at': datetime.utcnow().isoformat(),
+                }).eq('business_id', business.get('id'))
+                if persisted and persisted.get('id'):
+                    customer_cycle_update = customer_cycle_update.eq('program_id', persisted.get('id'))
+                customer_cycle_update.execute()
 
         if persisted_type != config.card_type:
             raise HTTPException(
@@ -30587,6 +30861,23 @@ async def get_wallet_pass(customer_public_id: str):
             "card_expires_at": customer.get('card_expires_at'),
             "card_reset_on": card_cycle_reset_on_date(customer, program),
             "last_card_reset_at": customer.get('last_card_reset_at'),
+            # Hybrid has no master expiry. Each engine exposes its own isolated
+            # schedule so web/native clients can explain exactly what resets.
+            "hybrid_points_expiration_enabled": bool((program or {}).get('hybrid_points_expiration_enabled')),
+            "hybrid_points_validity_days": int((program or {}).get('hybrid_points_validity_days') or 365),
+            "hybrid_points_cycle": int(customer.get('hybrid_points_cycle') or 1),
+            "hybrid_points_started_at": customer.get('hybrid_points_started_at'),
+            "hybrid_points_expires_at": customer.get('hybrid_points_expires_at'),
+            "hybrid_stamps_expiration_enabled": bool((program or {}).get('hybrid_stamps_expiration_enabled')),
+            "hybrid_stamps_validity_days": int((program or {}).get('hybrid_stamps_validity_days') or 365),
+            "hybrid_stamps_cycle": int(customer.get('hybrid_stamps_cycle') or 1),
+            "hybrid_stamps_started_at": customer.get('hybrid_stamps_started_at'),
+            "hybrid_stamps_expires_at": customer.get('hybrid_stamps_expires_at'),
+            "hybrid_tier_expiration_enabled": bool((program or {}).get('hybrid_tier_expiration_enabled')),
+            "hybrid_tier_validity_days": int((program or {}).get('hybrid_tier_validity_days') or 365),
+            "hybrid_tier_cycle": int(customer.get('hybrid_tier_cycle') or 1),
+            "hybrid_tier_started_at": customer.get('hybrid_tier_started_at'),
+            "hybrid_tier_expires_at": customer.get('hybrid_tier_expires_at'),
             "program_logo_url": (program.get('program_logo_url') if program else None) or business.get('logo_url'),
             "hero_image_url": program.get('hero_image_url') if program else None,
             "wallet_design": wallet_20_design(business, program),

@@ -69,6 +69,12 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     reward_expiry_days: 30,
     card_expiration_enabled: false,
     card_validity_days: 365,
+    hybrid_points_expiration_enabled: false,
+    hybrid_points_validity_days: 365,
+    hybrid_stamps_expiration_enabled: false,
+    hybrid_stamps_validity_days: 365,
+    hybrid_tier_expiration_enabled: false,
+    hybrid_tier_validity_days: 365,
     program_logo_url: '',
     hero_image_url: '',
     wallet_style: 'gradient',
@@ -222,6 +228,12 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
           reward_expiry_days: data.reward_expiry_days || 30,
           card_expiration_enabled: data.card_expiration_enabled === true,
           card_validity_days: data.card_validity_days ?? 365,
+          hybrid_points_expiration_enabled: data.hybrid_points_expiration_enabled === true,
+          hybrid_points_validity_days: data.hybrid_points_validity_days ?? 365,
+          hybrid_stamps_expiration_enabled: data.hybrid_stamps_expiration_enabled === true,
+          hybrid_stamps_validity_days: data.hybrid_stamps_validity_days ?? 365,
+          hybrid_tier_expiration_enabled: data.hybrid_tier_expiration_enabled === true,
+          hybrid_tier_validity_days: data.hybrid_tier_validity_days ?? 365,
           program_logo_url: data.program_logo_url || '',
           hero_image_url: data.hero_image_url || '',
           wallet_style: data.wallet_style === 'minimal' ? 'classic' : data.wallet_style === 'modern' ? 'gradient' : (['classic','gradient','premium'].includes(data.wallet_style) ? data.wallet_style : 'gradient'),
@@ -539,8 +551,14 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     stamp_once_per_day: form.stamp_once_per_day === true,
     stamp_reset_after_final: form.stamp_reset_after_final !== false,
     reward_expiry_days: Number(form.reward_expiry_days) || 30,
-    card_expiration_enabled: form.card_expiration_enabled === true,
+    card_expiration_enabled: form.card_type === 'hybrid' ? false : form.card_expiration_enabled === true,
     card_validity_days: Math.max(1, Math.min(3650, Number(form.card_validity_days) || 365)),
+    hybrid_points_expiration_enabled: form.card_type === 'hybrid' && form.hybrid_points_enabled !== false && form.hybrid_points_expiration_enabled === true,
+    hybrid_points_validity_days: Math.max(1, Math.min(3650, Number(form.hybrid_points_validity_days) || 365)),
+    hybrid_stamps_expiration_enabled: form.card_type === 'hybrid' && form.hybrid_stamps_enabled === true && form.hybrid_stamps_expiration_enabled === true,
+    hybrid_stamps_validity_days: Math.max(1, Math.min(3650, Number(form.hybrid_stamps_validity_days) || 365)),
+    hybrid_tier_expiration_enabled: form.card_type === 'hybrid' && form.hybrid_tier_enabled === true && form.hybrid_tier_expiration_enabled === true,
+    hybrid_tier_validity_days: Math.max(1, Math.min(3650, Number(form.hybrid_tier_validity_days) || 365)),
     program_logo_url: form.program_logo_url || null,
     hero_image_url: form.hero_image_url || null,
     // UI calls the legacy backend styles Gradient/Classic. Persist the
@@ -2596,61 +2614,93 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
           <details style={{...styles.optionalBranding,marginTop:16}}>
             <summary style={{fontWeight:900,fontSize:14,color:'#334155',cursor:'pointer'}}>Advanced Settings</summary>
             <div style={{marginTop:14}}>
-<div style={styles.wallet20Box}>
-            <div style={styles.wallet20TitleRow}>
-              <div>
-                <div style={styles.wallet20Eyebrow}>Card Cycle</div>
-                <h3 style={styles.wallet20Title}>Card expiration</h3>
-              </div>
-              <span style={styles.wallet20Badge}>{form.card_expiration_enabled ? 'Enabled' : 'Optional'}</span>
-            </div>
+              {isHybrid ? (
+                <div style={styles.wallet20Box}>
+                  <div style={styles.wallet20TitleRow}>
+                    <div>
+                      <div style={styles.wallet20Eyebrow}>Hybrid Expiry</div>
+                      <h3 style={styles.wallet20Title}>Isolated expiry &amp; reset schedules</h3>
+                    </div>
+                    <span style={styles.wallet20Badge}>Independent</span>
+                  </div>
 
-            <label style={{display:'flex',gap:10,alignItems:'flex-start',fontSize:13,fontWeight:800,cursor:'pointer',marginBottom:12}}>
-              <input
-                type="checkbox"
-                checked={form.card_expiration_enabled === true}
-                onChange={e => update('card_expiration_enabled', e.target.checked)}
-                style={{marginTop:2}}
-              />
-              <span>
-                Automatically expire each customer's card
-                <span style={{display:'block',fontWeight:500,color:'#64748b',marginTop:4,lineHeight:1.5}}>
-                  Each customer gets their own cycle starting from enrollment. Turning this on for the first time starts existing members from today.
-                </span>
-              </span>
-            </label>
+                  <p style={{...styles.hint,marginTop:0,marginBottom:14}}>
+                    Each Hybrid engine keeps its own clock. Expiring one engine never resets another engine and never expires the subscription.
+                  </p>
 
-            {form.card_expiration_enabled && (
-              <div style={styles.fieldGroup}>
-                <label style={styles.label}>Card valid for</label>
-                <div style={{...styles.colorRow,maxWidth:190}}>
-                  <input
-                    style={styles.input}
-                    type="number"
-                    min={1}
-                    max={3650}
-                    value={form.card_validity_days}
-                    onChange={e => update('card_validity_days', e.target.value)}
-                  />
-                  <span style={styles.unit}>days</span>
+                  {hybridPointsEnabled && (
+                    <div style={{padding:'13px 14px',border:'1px solid #dbeafe',background:'#eff6ff',borderRadius:12,marginBottom:10}}>
+                      <label style={{display:'flex',gap:10,alignItems:'flex-start',fontSize:13,fontWeight:800,cursor:'pointer'}}>
+                        <input type="checkbox" checked={form.hybrid_points_expiration_enabled === true} onChange={e=>update('hybrid_points_expiration_enabled',e.target.checked)} style={{marginTop:2}}/>
+                        <span style={{flex:1}}>Reward Points expiry
+                          <span style={{display:'block',fontWeight:500,color:'#64748b',marginTop:3}}>When this cycle ends, only the reward-points balance resets to 0.</span>
+                        </span>
+                      </label>
+                      {form.hybrid_points_expiration_enabled && <div style={{...styles.colorRow,maxWidth:220,marginTop:10}}><input style={styles.input} type="number" min={1} max={3650} value={form.hybrid_points_validity_days} onChange={e=>update('hybrid_points_validity_days',e.target.value)}/><span style={styles.unit}>days</span></div>}
+                    </div>
+                  )}
+
+                  {hybridStampsEnabled && (
+                    <div style={{padding:'13px 14px',border:'1px solid #ccfbf1',background:'#f0fdfa',borderRadius:12,marginBottom:10}}>
+                      <label style={{display:'flex',gap:10,alignItems:'flex-start',fontSize:13,fontWeight:800,cursor:'pointer'}}>
+                        <input type="checkbox" checked={form.hybrid_stamps_expiration_enabled === true} onChange={e=>update('hybrid_stamps_expiration_enabled',e.target.checked)} style={{marginTop:2}}/>
+                        <span style={{flex:1}}>Reward Stamps expiry
+                          <span style={{display:'block',fontWeight:500,color:'#64748b',marginTop:3}}>When this cycle ends, only reward stamps reset to 0 and stamp milestones restart.</span>
+                        </span>
+                      </label>
+                      {form.hybrid_stamps_expiration_enabled && <div style={{...styles.colorRow,maxWidth:220,marginTop:10}}><input style={styles.input} type="number" min={1} max={3650} value={form.hybrid_stamps_validity_days} onChange={e=>update('hybrid_stamps_validity_days',e.target.value)}/><span style={styles.unit}>days</span></div>}
+                    </div>
+                  )}
+
+                  {hybridTierEnabled && (
+                    <div style={{padding:'13px 14px',border:'1px solid #fde68a',background:'#fefce8',borderRadius:12,marginBottom:10}}>
+                      <label style={{display:'flex',gap:10,alignItems:'flex-start',fontSize:13,fontWeight:800,cursor:'pointer'}}>
+                        <input type="checkbox" checked={form.hybrid_tier_expiration_enabled === true} onChange={e=>update('hybrid_tier_expiration_enabled',e.target.checked)} style={{marginTop:2}}/>
+                        <span style={{flex:1}}>Tier progression expiry
+                          <span style={{display:'block',fontWeight:500,color:'#64748b',marginTop:3}}>When this cycle ends, only Tier progress resets to the starting tier. Reward Points and Reward Stamps stay untouched.</span>
+                        </span>
+                      </label>
+                      {form.hybrid_tier_expiration_enabled && <div style={{...styles.colorRow,maxWidth:220,marginTop:10}}><input style={styles.input} type="number" min={1} max={3650} value={form.hybrid_tier_validity_days} onChange={e=>update('hybrid_tier_validity_days',e.target.value)}/><span style={styles.unit}>days</span></div>}
+                    </div>
+                  )}
+
+                  <div style={{padding:'13px 14px',border:'1px solid #e2e8f0',background:'#f8fafc',borderRadius:12}}>
+                    <div style={{fontSize:13,fontWeight:800,color:'#334155'}}>Subscription / Membership</div>
+                    <div style={{fontSize:12.5,color:'#64748b',lineHeight:1.5,marginTop:4}}>
+                      Already isolated: each member uses <b>{Number(form.membership_duration_days)||30} days</b> per activation/renewal. Its <code>membership_expires_at</code> does not reset Reward Points, Reward Stamps, or Tier progress.
+                    </div>
+                  </div>
+
+                  <p style={{...styles.hint,marginTop:12,marginBottom:0}}>Changing a duration affects the next cycle. Saving these settings never wipes a current balance.</p>
                 </div>
-                <p style={styles.hint}>
-                  {isHybrid && hybridPointsEnabled && hybridStampsEnabled
-                    ? 'At expiry, reward points and reward stamps both reset to 0; Tier progress also resets when enabled, and subscription access expires for the new card cycle.'
-                    : effectiveLoyaltyType === 'stamp'
-                    ? (isHybrid ? 'At expiry, reward stamps reset to 0; Tier progress also resets when enabled, and subscription access expires for the new card cycle.' : 'At expiry, stamps reset to 0 and reward milestones become available again in the new cycle.')
-                    : effectiveLoyaltyType === 'points'
-                    ? (isHybrid ? 'At expiry, reward points reset to 0; Tier progress also resets when enabled, and subscription access expires for the new card cycle.' : 'At expiry, the current points balance resets to 0. Purchase/redemption history is kept.')
-                    : form.card_type === 'vip'
-                    ? 'At expiry, tier points reset to 0 and the customer returns to the starting tier. Tier history is kept.'
-                    : form.card_type === 'multipass'
-                    ? 'At expiry, the current multi-pass becomes unusable even if sessions remain. A new pass must be issued.'
-                    : 'At expiry, the subscription becomes EXPIRED and must be renewed or reactivated.'}
-                </p>
-                <p style={styles.hint}>Changing the number of days affects new/next cycles; it does not wipe current balances when you save.</p>
-              </div>
-            )}
-          </div>
+              ) : (
+                <div style={styles.wallet20Box}>
+                  <div style={styles.wallet20TitleRow}>
+                    <div>
+                      <div style={styles.wallet20Eyebrow}>Card Cycle</div>
+                      <h3 style={styles.wallet20Title}>Card expiration</h3>
+                    </div>
+                    <span style={styles.wallet20Badge}>{form.card_expiration_enabled ? 'Enabled' : 'Optional'}</span>
+                  </div>
+
+                  <label style={{display:'flex',gap:10,alignItems:'flex-start',fontSize:13,fontWeight:800,cursor:'pointer',marginBottom:12}}>
+                    <input type="checkbox" checked={form.card_expiration_enabled === true} onChange={e => update('card_expiration_enabled', e.target.checked)} style={{marginTop:2}}/>
+                    <span>
+                      Automatically expire each customer's card
+                      <span style={{display:'block',fontWeight:500,color:'#64748b',marginTop:4,lineHeight:1.5}}>Each customer gets their own cycle starting from enrollment. Turning this on starts existing members from today.</span>
+                    </span>
+                  </label>
+
+                  {form.card_expiration_enabled && (
+                    <div style={styles.fieldGroup}>
+                      <label style={styles.label}>Card valid for</label>
+                      <div style={{...styles.colorRow,maxWidth:190}}><input style={styles.input} type="number" min={1} max={3650} value={form.card_validity_days} onChange={e => update('card_validity_days', e.target.value)}/><span style={styles.unit}>days</span></div>
+                      <p style={styles.hint}>{effectiveLoyaltyType === 'stamp' ? 'At expiry, stamps reset to 0 and reward milestones become available again in the new cycle.' : effectiveLoyaltyType === 'points' ? 'At expiry, the current points balance resets to 0. Purchase/redemption history is kept.' : form.card_type === 'vip' ? 'At expiry, tier progress resets and the customer returns to the starting tier. Tier history is kept.' : form.card_type === 'multipass' ? 'At expiry, the current multi-pass becomes unusable even if sessions remain. A new pass must be issued.' : 'At expiry, the subscription becomes EXPIRED and must be renewed or reactivated.'}</p>
+                      <p style={styles.hint}>Changing the number of days affects new/next cycles; it does not wipe current balances when you save.</p>
+                    </div>
+                  )}
+                </div>
+              )}
               <div style={{...styles.fieldGroup,marginTop:14}}>
                 <label style={styles.label}>Google review link</label>
                 <input
