@@ -81,6 +81,15 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     points_amount_pesos: 100,
     points_cap_limit: '',
     points_prizes: [],
+    // Welcome Reward (issued once per customer identity + program)
+    welcome_reward_enabled: false,
+    welcome_reward_trigger: 'join',
+    welcome_reward_type: 'redeemable',
+    welcome_reward_name: '',
+    welcome_reward_value: '',
+    welcome_reward_validity_days: 30,
+    welcome_reward_min_purchase: 0,
+    welcome_reward_stacking_enabled: true,
     // Membership / Hybrid subscription
     membership_name: '',
     membership_duration_days: 30,
@@ -224,6 +233,14 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
           points_amount_pesos: data.points_amount_pesos ?? 100,
           points_cap_limit: data.points_cap_limit ?? '',
           points_prizes: Array.isArray(data.points_prizes) ? data.points_prizes : [],
+          welcome_reward_enabled: data.welcome_reward_enabled === true,
+          welcome_reward_trigger: data.welcome_reward_trigger === 'first_purchase' ? 'first_purchase' : 'join',
+          welcome_reward_type: ['redeemable','points','stamps','fixed_discount','percentage_discount'].includes(data.welcome_reward_type) ? data.welcome_reward_type : 'redeemable',
+          welcome_reward_name: data.welcome_reward_name || '',
+          welcome_reward_value: data.welcome_reward_value ?? '',
+          welcome_reward_validity_days: data.welcome_reward_validity_days ?? 30,
+          welcome_reward_min_purchase: data.welcome_reward_min_purchase ?? 0,
+          welcome_reward_stacking_enabled: data.welcome_reward_stacking_enabled !== false,
           membership_name: data.membership_name || '',
           membership_duration_days: data.membership_duration_days ?? 30,
           membership_price: data.membership_price ?? 0,
@@ -539,6 +556,14 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
       ? null
       : Math.max(1, Math.floor(Number(form.points_cap_limit) || 1)),
     points_prizes: form.points_prizes,
+    welcome_reward_enabled: form.welcome_reward_enabled === true,
+    welcome_reward_trigger: form.welcome_reward_trigger === 'first_purchase' ? 'first_purchase' : 'join',
+    welcome_reward_type: form.welcome_reward_type || 'redeemable',
+    welcome_reward_name: (form.welcome_reward_name || '').trim() || null,
+    welcome_reward_value: form.welcome_reward_value === '' || form.welcome_reward_value == null ? null : Number(form.welcome_reward_value),
+    welcome_reward_validity_days: Math.max(1, Math.min(3650, Number(form.welcome_reward_validity_days) || 30)),
+    welcome_reward_min_purchase: Math.max(0, Number(form.welcome_reward_min_purchase) || 0),
+    welcome_reward_stacking_enabled: form.welcome_reward_stacking_enabled !== false,
     membership_name: form.membership_name || null,
     membership_duration_days: Number(form.membership_duration_days) || 30,
     membership_price: Number(form.membership_price) || 0,
@@ -741,12 +766,61 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
   }
   const removeEmployeeBenefit = (id) => update('employee_benefits', (form.employee_benefits || []).filter(b => b.id !== id))
 
+  const renderWelcomeRewardEditor = () => {
+    const type = form.welcome_reward_type || 'redeemable'
+    const needsValue = ['points','stamps','fixed_discount','percentage_discount'].includes(type)
+    const couponLike = ['redeemable','fixed_discount','percentage_discount'].includes(type)
+    const pointsAvailable = form.card_type === 'points' || (form.card_type === 'hybrid' && form.hybrid_points_enabled !== false)
+    const stampsAvailable = form.card_type === 'stamp' || (form.card_type === 'hybrid' && form.hybrid_stamps_enabled === true) || (form.card_type === 'vip' && form.vip_progression_type === 'stamps')
+    return (
+      <section style={{...styles.editorSection,border:'1px solid #bbf7d0',background:'#f7fff9'}}>
+        <div style={styles.editorSectionHead}>
+          <div><div style={styles.editorSectionEyebrow}>WELCOME REWARD</div><h3 style={styles.editorSectionTitle}>Give new members a reason to come back</h3></div>
+          <label style={{display:'flex',gap:8,alignItems:'center',fontSize:13,fontWeight:800}}><input type="checkbox" checked={form.welcome_reward_enabled===true} onChange={e=>update('welcome_reward_enabled',e.target.checked)}/> Enable</label>
+        </div>
+        <p style={{...styles.hint,margin:'0 0 14px'}}>Issued only once per customer identity + program. Deleting or re-adding a Wallet pass will not issue it again.</p>
+        {form.welcome_reward_enabled && <div style={{display:'grid',gap:12}}>
+          <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'1fr 1fr',gap:10}}>
+            <label style={{display:'grid',gap:6}}><span style={styles.label}>Issue when</span><select style={styles.input} value={form.welcome_reward_trigger} onChange={e=>update('welcome_reward_trigger',e.target.value)}><option value="join">Immediately after joining</option><option value="first_purchase">After first successful purchase</option></select></label>
+            <label style={{display:'grid',gap:6}}><span style={styles.label}>Reward type</span><select style={styles.input} value={type} onChange={e=>{update('welcome_reward_type',e.target.value);update('welcome_reward_value','')}}>
+              <option value="redeemable">Redeemable / free item</option>
+              {pointsAvailable && <option value="points">Welcome points</option>}
+              {stampsAvailable && <option value="stamps">Welcome stamps</option>}
+              <option value="fixed_discount">Fixed ₱ discount</option>
+              <option value="percentage_discount">Percentage discount</option>
+            </select></label>
+          </div>
+          {couponLike && <label style={{display:'grid',gap:6}}><span style={styles.label}>Customer-facing reward name</span><input style={styles.input} placeholder="e.g. Free Iced Americano" value={form.welcome_reward_name} onChange={e=>update('welcome_reward_name',e.target.value)}/></label>}
+          {needsValue && <label style={{display:'grid',gap:6}}><span style={styles.label}>{type==='points'?'Points to give':type==='stamps'?'Stamps to give':type==='fixed_discount'?'Discount amount (₱)':'Discount (%)'}</span><input style={styles.input} type="number" min="0" max={type==='percentage_discount'?100:undefined} step="any" value={form.welcome_reward_value} onChange={e=>update('welcome_reward_value',e.target.value)}/></label>}
+          {couponLike && <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'1fr 1fr',gap:10}}>
+            <label style={{display:'grid',gap:6}}><span style={styles.label}>Valid for</span><div style={{display:'flex',gap:8,alignItems:'center'}}><input style={styles.input} type="number" min="1" max="3650" value={form.welcome_reward_validity_days} onChange={e=>update('welcome_reward_validity_days',e.target.value)}/><span style={styles.earnRateText}>days</span></div></label>
+            <label style={{display:'grid',gap:6}}><span style={styles.label}>Minimum purchase</span><div style={{display:'flex',gap:8,alignItems:'center'}}><span>₱</span><input style={styles.input} type="number" min="0" step="any" value={form.welcome_reward_min_purchase} onChange={e=>update('welcome_reward_min_purchase',e.target.value)}/></div></label>
+          </div>}
+          {couponLike && <label style={{display:'flex',gap:9,alignItems:'center',fontSize:13,fontWeight:700}}><input type="checkbox" checked={form.welcome_reward_stacking_enabled!==false} onChange={e=>update('welcome_reward_stacking_enabled',e.target.checked)}/> Allow this reward to be combined with points / employee benefits in the same checkout</label>}
+          <div style={{padding:12,borderRadius:12,background:'#ecfdf5',border:'1px solid #a7f3d0',fontSize:12,color:'#065f46'}}>
+            <b>Customer experience:</b> {form.welcome_reward_trigger==='first_purchase'?'Join → complete first purchase → reward unlocks for the next visit':'Join → reward is issued immediately'}.
+            {type==='redeemable' && ` ${form.welcome_reward_name||'The redeemable'} appears under Available Rewards.`}
+            {type==='points' && ` ${Number(form.welcome_reward_value||0)} points are added to the normal points balance.`}
+            {type==='stamps' && ` ${Number(form.welcome_reward_value||0)} stamp(s) are added to the normal stamp progress.`}
+          </div>
+        </div>}
+      </section>
+    )
+  }
+
   const postConfig = async () => {
     if (form.card_type === 'hybrid' && !hybridAllowed) {
       throw new Error('Hybrid Card is available on the Growth and Pro plans. Upgrade to Growth to continue.')
     }
     if (form.card_type === 'hybrid' && form.hybrid_points_enabled === false && form.hybrid_stamps_enabled !== true) {
       throw new Error('Enable Points, Stamp Rewards, or both for the Hybrid Card.')
+    }
+    if (form.welcome_reward_enabled) {
+      const wrType=form.welcome_reward_type||'redeemable'
+      const wrValue=Number(form.welcome_reward_value||0)
+      if (['points','stamps','fixed_discount','percentage_discount'].includes(wrType) && !(wrValue>0)) throw new Error('Enter a Welcome Reward value greater than zero.')
+      if (['redeemable','fixed_discount','percentage_discount'].includes(wrType) && !String(form.welcome_reward_name||'').trim()) throw new Error('Enter the Welcome Reward name customers will see.')
+      if (wrType==='percentage_discount' && wrValue>100) throw new Error('Welcome discount cannot be more than 100%.')
     }
     if (form.card_type === 'vip' || (form.card_type === 'hybrid' && form.hybrid_tier_enabled === true)) {
       const tooManyCouponTier = (form.vip_tiers || []).find(t => (Array.isArray(t.coupons) ? t.coupons.length : 0) > 20)
@@ -1020,8 +1094,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                 {[
                   ['stamp','🎟️','Stamp Card','Customers collect stamps and unlock rewards at milestones.'],
                   ['points','💎','Points Card','Customers earn points from spending and redeem them for prizes.'],
-                  ['membership','🏋️','Membership Card','For customer subscriptions, access plans, and included benefits.'],
-                  ['employee_membership','🪪','Employee Membership','Employee ID + Position, employee benefits, and optional Attendance / Time In-Out.'],
+                  ['membership','🏋️','Subscription Card','For recurring subscriptions, access plans, and included benefits.'],
                   ['hybrid','✨','Hybrid Card','Subscription + Points, Stamp Rewards, and optional Tier on one Wallet card. Enable Points, Stamps, or both.'],
                   ['vip','👑','Tier Card','Customers build tier progress and automatically move through reward levels.'],
                   ['multipass','🎫','Multi-Pass','Customers receive a fixed number of sessions or visits that count down.'],
@@ -1033,21 +1106,15 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                         return
                       }
                       setGuidedError('')
-                      if (type === 'employee_membership') {
-                        update('card_type','membership')
-                        update('membership_employee_mode',true)
-                      } else {
-                        update('card_type',type)
-                        if (type === 'membership') update('membership_employee_mode',false)
-                      }
+                      update('card_type',type)
                     }}
                     aria-disabled={type==='hybrid' && !hybridAllowed}
-                    style={{...styles.pickerCard,padding:guidedMobile?'16px 15px':'28px 24px',...(type==='hybrid'&&!hybridAllowed?{opacity:.62,cursor:'not-allowed',background:'#f8fafc'}:{}),...(((type==='employee_membership' && form.card_type==='membership' && form.membership_employee_mode===true) || (type==='membership' && form.card_type==='membership' && form.membership_employee_mode!==true) || (type!=='employee_membership' && type!=='membership' && form.card_type===type))?{borderColor:'#0d9488',background:'#f0fdfa',boxShadow:'0 0 0 2px rgba(13,148,136,.08)'}:{})}}>
+                    style={{...styles.pickerCard,padding:guidedMobile?'16px 15px':'28px 24px',...(type==='hybrid'&&!hybridAllowed?{opacity:.62,cursor:'not-allowed',background:'#f8fafc'}:{}),...(form.card_type===type?{borderColor:'#0d9488',background:'#f0fdfa',boxShadow:'0 0 0 2px rgba(13,148,136,.08)'}:{})}}>
                     <span style={styles.pickerCardIcon}>{icon}</span>
                     <span style={styles.pickerCardLabel}>{label}</span>
                     <span style={styles.pickerCardDesc}>{desc}</span>
                     {type==='hybrid'&&!hybridAllowed && <span style={styles.pickerCardBadge}>Growth</span>}
-                    {(!(type==='hybrid'&&!hybridAllowed) && ((type==='employee_membership' && form.card_type==='membership' && form.membership_employee_mode===true) || (type==='membership' && form.card_type==='membership' && form.membership_employee_mode!==true) || (type!=='employee_membership' && type!=='membership' && form.card_type===type))) && <span style={styles.pickerCardBadge}>Selected</span>}
+                    {(!(type==='hybrid'&&!hybridAllowed) && form.card_type===type) && <span style={styles.pickerCardBadge}>Selected</span>}
                   </button>
                 ))}
               </div>
@@ -1494,30 +1561,16 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
 
           <button
             type="button"
-            onClick={() => { update('card_type', 'membership'); update('membership_employee_mode', false) }}
+            onClick={() => update('card_type', 'membership')}
             style={{
               ...styles.pickerCard,
-              ...(form.card_type === 'membership' && form.membership_employee_mode !== true ? { borderColor: form.primary_color || '#0d9488', background: '#f0fdfa' } : {}),
+              ...(form.card_type === 'membership' ? { borderColor: form.primary_color || '#0d9488', background: '#f0fdfa' } : {}),
             }}
           >
             <span style={styles.pickerCardIcon}>🏋️</span>
             <span style={styles.pickerCardLabel}>Membership Card</span>
-            <span style={styles.pickerCardDesc}>Customer subscriptions, access plans, and redeemable membership benefits.</span>
-            {form.card_type === 'membership' && form.membership_employee_mode !== true && <span style={styles.pickerCardBadge}>Selected</span>}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => { update('card_type', 'membership'); update('membership_employee_mode', true) }}
-            style={{
-              ...styles.pickerCard,
-              ...(form.card_type === 'membership' && form.membership_employee_mode === true ? { borderColor: '#1d4ed8', background: '#eff6ff' } : {}),
-            }}
-          >
-            <span style={styles.pickerCardIcon}>🪪</span>
-            <span style={styles.pickerCardLabel}>Employee Membership</span>
-            <span style={styles.pickerCardDesc}>Requires Employee ID and Position, with employee benefits plus optional Attendance and Time In / Time Out.</span>
-            {form.card_type === 'membership' && form.membership_employee_mode === true && <span style={styles.pickerCardBadge}>Selected</span>}
+            <span style={styles.pickerCardDesc}>For customers or employees. Supports subscriptions, benefits, access, and optional employee attendance tools.</span>
+            {form.card_type === 'membership' && <span style={styles.pickerCardBadge}>Selected</span>}
           </button>
 
           <button
@@ -1843,6 +1896,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
               <p style={styles.hint}>Keep this short; Wallet details can carry the deeper reward information.</p>
             </div>
           </section>
+
+          {renderWelcomeRewardEditor()}
 
           {isHybrid && (
             <div style={{...styles.pointsSection,border:'1px solid #cbd5e1',background:'#f8fafc'}}>

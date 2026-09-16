@@ -25,6 +25,7 @@ function CustomerJoin({ API_BASE }) {
   })
   const [submitted, setSubmitted] = useState(false)
   const [customerId, setCustomerId] = useState('')
+  const [welcomeRewardIssued, setWelcomeRewardIssued] = useState(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   // Wallet data (Google save_url + Apple pass URL) for the two "Add to
@@ -37,7 +38,7 @@ function CustomerJoin({ API_BASE }) {
   const [privacyConsent,setPrivacyConsent]=useState(false)
   // Legacy Employee Card records remain readable, but new employee programs now use Membership.
   const isEmployeeCard = businessInfo?.card_type === 'employee'
-  const isEmployeeMembership = businessInfo?.is_employee_membership === true || (businessInfo?.card_type === 'membership' && businessInfo?.membership_employee_mode === true)
+  const isEmployeeMembership = businessInfo?.card_type === 'membership' && businessInfo?.membership_employee_mode === true
   const isEmployeeExperience = isEmployeeCard || isEmployeeMembership
 
   const rewardSummary = (() => {
@@ -69,6 +70,16 @@ function CustomerJoin({ API_BASE }) {
     }
 
     return null
+  })()
+
+  const welcomeRewardPreview = (() => {
+    const w = businessInfo?.welcome_reward
+    if (!w?.enabled) return null
+    const type = w.type || 'redeemable'
+    const value = Number(w.value || 0)
+    const title = w.name || (type==='points' ? `${value} Welcome Points` : type==='stamps' ? `${value} Welcome Stamps` : 'Welcome Reward')
+    const when = w.trigger === 'first_purchase' ? 'Unlocks after your first successful purchase' : 'Added when you join'
+    return { title, when, type, value }
   })()
 
   const earningRule = (() => {
@@ -192,6 +203,7 @@ function CustomerJoin({ API_BASE }) {
       const data = await res.json()
       if (res.ok) {
         setCustomerId(data.public_id)
+        setWelcomeRewardIssued(data.welcome_reward || null)
         setSubmitted(true)
       } else {
         setError(data.detail || 'Something went wrong')
@@ -213,6 +225,12 @@ function CustomerJoin({ API_BASE }) {
             <p style={styles.infoLabel}>{isEmployeeExperience ? 'Employee ID' : 'Your Member ID'}</p>
             <p style={styles.infoValue}>{isEmployeeExperience ? form.employee_id_number : 'Show this QR code on every visit'}</p>
           </div>
+
+          {welcomeRewardIssued?.issued && <div style={{...styles.rewardBox,border:'1px solid #86efac',background:'#f0fdf4'}}>
+            <div style={styles.rewardTitle}>🎁 Welcome Reward Added</div>
+            <div style={styles.rewardRequirement}>{welcomeRewardIssued.name || 'Welcome Reward'}{welcomeRewardIssued.points_awarded ? ` · +${welcomeRewardIssued.points_awarded} points` : welcomeRewardIssued.stamps_awarded ? ` · +${welcomeRewardIssued.stamps_awarded} stamp${welcomeRewardIssued.stamps_awarded===1?'':'s'}` : ''}</div>
+            {welcomeRewardIssued.expires_at && <div style={{...styles.rewardRequirement,marginTop:4}}>Valid until {String(welcomeRewardIssued.expires_at).slice(0,10)}</div>}
+          </div>}
 
           <div style={{
             ...styles.walletPreview,
@@ -272,7 +290,11 @@ function CustomerJoin({ API_BASE }) {
               : `${businessInfo?.category?.label ? `${businessInfo.category.label} · ` : ''}${businessInfo?.card_type === 'hybrid' ? 'One card for membership plus rewards.' : 'Add your loyalty card to your phone and use it every visit.'}`}
         </p>
 
-        {hybridMembership && <div style={{...styles.rewardBox,border:'1px solid #99f6e4',background:'#f0fdfa'}}>
+        {welcomeRewardPreview && <div style={{...styles.rewardBox,border:'1px solid #86efac',background:'#f0fdf4'}}>
+          <div style={styles.rewardTitle}>🎁 {welcomeRewardPreview.title}</div>
+          <div style={styles.rewardRequirement}>{welcomeRewardPreview.when}</div>
+        </div>}
+                {hybridMembership && <div style={{...styles.rewardBox,border:'1px solid #99f6e4',background:'#f0fdfa'}}>
           <div style={styles.rewardTitle}>✨ {hybridMembership.name} + {businessInfo?.hybrid_loyalty_type==='stamp'?'Stamps':'Points'}</div>
           <div style={styles.rewardRequirement}>{hybridMembership.price>0?`₱${hybridMembership.price.toLocaleString()} / ${hybridMembership.duration} days`:`${hybridMembership.duration}-day membership`}</div>
           <div style={{fontSize:12,color:'#475569',marginTop:6,fontWeight:700}}>{hybridMembership.enrollment==='automatic'?'Your membership activates automatically when you join.':'You join the loyalty program now. The business activates membership access for approved/paid subscribers.'}</div>

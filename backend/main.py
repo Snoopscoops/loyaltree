@@ -2250,6 +2250,15 @@ class LoyaltyConfig(BaseModel):
     points_amount_pesos: Optional[float] = Field(default=100, ge=1)  # ...per this many pesos spent
     points_cap_limit: Optional[int] = Field(default=None, ge=1)       # null = unlimited member balance
     points_prizes: Optional[List[PointsPrize]] = None                # catalog of prizes customers can redeem points for
+    # --- Welcome Reward (program-level, one issue per customer identity + program) ---
+    welcome_reward_enabled: bool = False
+    welcome_reward_trigger: Literal['join', 'first_purchase'] = 'join'
+    welcome_reward_type: Literal['redeemable', 'points', 'stamps', 'fixed_discount', 'percentage_discount'] = 'redeemable'
+    welcome_reward_name: Optional[str] = Field(default=None, max_length=200)
+    welcome_reward_value: Optional[float] = Field(default=None, ge=0)
+    welcome_reward_validity_days: int = Field(default=30, ge=1, le=3650)
+    welcome_reward_min_purchase: float = Field(default=0, ge=0)
+    welcome_reward_stacking_enabled: bool = True
     # --- Multipass card only ---
     multipass_session_count: Optional[int] = Field(default=12, ge=2, le=200)  # sessions issued per pass, e.g. 12 sessions sold at the price of 10
     multipass_validity_days: Optional[int] = Field(default=90, ge=1)          # days a freshly-issued pass stays valid before it expires unused
@@ -4284,6 +4293,219 @@ def safe_get_active_coupon(customer_id: int):
     """
     coupons = safe_get_active_coupons(customer_id)
     return coupons[0] if coupons else None
+
+def normalize_welcome_reward(program: Optional[dict]) -> dict:
+    program = program or {}
+    reward_type = str(program.get('welcome_reward_type') or 'redeemable').strip().lower()
+    if reward_type not in ('redeemable','points','stamps','fixed_discount','percentage_discount'):
+        reward_type = 'redeemable'
+    trigger = str(program.get('welcome_reward_trigger') or 'join').strip().lower()
+    if trigger not in ('join','first_purchase'):
+        trigger = 'join'
+    try:
+        value = float(program.get('welcome_reward_value')) if program.get('welcome_reward_value') is not None else None
+    except Exception:
+        value = None
+    try:
+        validity_days = max(1, min(3650, int(program.get('welcome_reward_validity_days') or 30)))
+    except Exception:
+        validity_days = 30
+    try:
+        min_purchase = max(0.0, float(program.get('welcome_reward_min_purchase') or 0))
+    except Exception:
+        min_purchase = 0.0
+    name = str(program.get('welcome_reward_name') or '').strip()
+    if not name:
+        if reward_type == 'points' and value:
+            name = f"{int(value)} Welcome Points"
+        elif reward_type == 'stamps' and value:
+            name = f"{int(value)} Welcome Stamp{'s' if int(value) != 1 else ''}"
+        elif reward_type == 'fixed_discount' and value:
+            name = f"₱{int(value)} Welcome Discount"
+        elif reward_type == 'percentage_discount' and value:
+            name = f"{int(value)}% Welcome Discount"
+        else:
+            name = 'Welcome Reward'
+    return {
+        'enabled': bool(program.get('welcome_reward_enabled')),
+        'trigger': trigger,
+        'type': reward_type,
+        'name': name[:200],
+        'value': value,
+        'validity_days': validity_days,
+        'min_purchase': min_purchase,
+        'stacking_enabled': program.get('welcome_reward_stacking_enabled') is not False,
+    }
+
+
+def _welcome_reward_public(issue: Optional[dict], coupon: Optional[dict] = None) -> Optional[dict]:
+    if not issue:
+        return None
+    return {
+        'issued': issue.get('status') == 'issued',
+        'status': issue.get('status'),
+        'type': issue.get('reward_type'),
+        'name': issue.get('reward_name'),
+        'value': float(issue.get('reward_value')) if issue.get('reward_value') is not None else None,
+        'points_awarded': int(issue.get('points_awarded') or 0),
+        'stamps_awarded': int(issue.get('stamps_awarded') or 0),
+        'coupon_public_id': issue.get('coupon_public_id'),
+        'expires_at': (coupon or {}).get('expires_at'),
+        'trigger': issue.get('trigger_type'),
+    }
+
+
+def maybe_issue_welcome_reward(business: dict, customer: dict, program: dict, trigger: str = 'join') -> Optional[dict]:
+    """Issue a program welcome reward at most once per identity + program.
+
+    Points/stamps mutate their existing ledger. Redeemables/discounts use the
+    shared coupons queue so Wallet/cashier/POS surfaces see the same reward.
+    The issuance ledger is the anti-abuse source of truth and is independent
+    of whether the customer deletes/re-adds a Wallet pass.
+    """
+    if not (business and customer and program):
+        return None
+    cfg = normalize_welcome_reward(program)
+    if not cfg['enabled'] or cfg['trigger'] != trigger:
+        return None
+    identity_key = customer.get('identity_id')
+    if not identity_key:
+        stable_contact = str(customer.get('email') or '').strip().lower() or ''.join(ch for ch in str(customer.get('phone') or '') if ch.isdigit())
+        if stable_contact:
+            identity_key = 'contact-' + hashlib.sha256(stable_contact.encode('utf-8')).hexdigest()[:24]
+        else:
+            identity_key = f"customer-{customer.get('id')}"
+    issue_key = f"welcome:{business.get('id')}:{program.get('id')}:{identity_key}"
+    existing = None
+    try:
+        rows = supabase.table('welcome_reward_issues').select('*').eq('issue_key', issue_key).limit(1).execute().data or []
+        existing = rows[0] if rows else None
+    except Exception as exc:
+        # Migration not installed yet: do not block signup/checkout.
+        print(f"WELCOME REWARD lookup warning: {exc}")
+        return None
+    if existing and existing.get('status') == 'issued':
+        coupon = None
+        if existing.get('coupon_public_id'):
+            try:
+                rows = supabase.table('coupons').select('*').eq('public_id', existing.get('coupon_public_id')).limit(1).execute().data or []
+                coupon = rows[0] if rows else None
+            except Exception:
+                coupon = None
+        return _welcome_reward_public(existing, coupon)
+
+    pending = {
+        'issue_key': issue_key,
+        'business_id': business.get('id'),
+        'program_id': program.get('id'),
+        'identity_id': customer.get('identity_id'),
+        'customer_id': customer.get('id'),
+        'reward_type': cfg['type'],
+        'reward_name': cfg['name'],
+        'reward_value': cfg['value'],
+        'trigger_type': trigger,
+        'status': 'pending',
+        'updated_at': datetime.utcnow().isoformat(),
+    }
+    try:
+        if existing:
+            rows = supabase.table('welcome_reward_issues').update({**pending, 'error_message': None}).eq('id', existing.get('id')).execute().data or []
+            issue = rows[0] if rows else {**existing, **pending}
+        else:
+            try:
+                rows = supabase.table('welcome_reward_issues').insert(pending).execute().data or []
+                issue = rows[0] if rows else pending
+            except Exception:
+                # Lost a race to the unique issue_key; reuse the winner.
+                rows = supabase.table('welcome_reward_issues').select('*').eq('issue_key', issue_key).limit(1).execute().data or []
+                issue = rows[0] if rows else None
+                if issue and issue.get('status') == 'issued':
+                    return _welcome_reward_public(issue)
+                if not issue:
+                    return None
+    except Exception as exc:
+        print(f"WELCOME REWARD pending insert warning: {exc}")
+        return None
+
+    coupon = None
+    points_awarded = 0
+    stamps_awarded = 0
+    try:
+        reward_type = cfg['type']
+        value = cfg['value'] or 0
+        if reward_type == 'points':
+            if not program_reward_uses_points(program):
+                raise ValueError('Welcome points require a Points-enabled program')
+            points_awarded = max(0, int(value))
+            old = int(customer.get('points_balance') or 0)
+            cap = program.get('points_cap_limit')
+            try:
+                cap = int(cap) if cap not in (None, '', 0, '0') else None
+            except Exception:
+                cap = None
+            if cap:
+                points_awarded = min(points_awarded, max(cap - old, 0))
+            new_balance = old + points_awarded
+            supabase.table('customers').update({'points_balance': new_balance, 'updated_at': datetime.utcnow().isoformat()}).eq('id', customer.get('id')).execute()
+            customer['points_balance'] = new_balance
+        elif reward_type == 'stamps':
+            if not program_reward_uses_stamps(program):
+                raise ValueError('Welcome stamps require a Stamp Rewards-enabled program')
+            stamps_awarded = max(0, int(value))
+            old = int(customer.get('stamp_count') or 0)
+            new_count = old + stamps_awarded
+            available = get_available_stamp_rewards({**customer, 'stamp_count': new_count}, program)
+            supabase.table('customers').update({
+                'stamp_count': new_count,
+                'reward_unlocked': bool(available),
+                'updated_at': datetime.utcnow().isoformat(),
+            }).eq('id', customer.get('id')).execute()
+            customer['stamp_count'] = new_count
+            customer['reward_unlocked'] = bool(available)
+        else:
+            coupon_public_id = generate_public_id()
+            expires_at = (_loyalty_today() + timedelta(days=cfg['validity_days'])).isoformat()
+            coupon = {
+                'public_id': coupon_public_id,
+                'business_id': business.get('id'),
+                'customer_id': customer.get('id'),
+                'reward_text': cfg['name'],
+                'reward_type': reward_type,
+                'reward_value': cfg['value'],
+                'source': 'welcome_reward',
+                'source_ref': issue_key,
+                'min_purchase_amount': cfg['min_purchase'],
+                'stacking_allowed': cfg['stacking_enabled'],
+                'metadata': {'program_id': program.get('id'), 'trigger': trigger},
+                'status': 'active',
+                'expires_at': expires_at,
+                'created_at': datetime.utcnow().isoformat(),
+            }
+            rows = supabase.table('coupons').insert(coupon).execute().data or []
+            coupon = rows[0] if rows else coupon
+
+        patch = {
+            'status': 'issued',
+            'coupon_public_id': (coupon or {}).get('public_id'),
+            'points_awarded': points_awarded,
+            'stamps_awarded': stamps_awarded,
+            'issued_at': datetime.utcnow().isoformat(),
+            'updated_at': datetime.utcnow().isoformat(),
+            'error_message': None,
+        }
+        rows = supabase.table('welcome_reward_issues').update(patch).eq('issue_key', issue_key).execute().data or []
+        issue = rows[0] if rows else {**(issue or {}), **patch}
+        return _welcome_reward_public(issue, coupon)
+    except Exception as exc:
+        print(f"WELCOME REWARD issue error: {exc}")
+        try:
+            supabase.table('welcome_reward_issues').update({
+                'status': 'failed', 'error_message': str(exc)[:1000], 'updated_at': datetime.utcnow().isoformat()
+            }).eq('issue_key', issue_key).execute()
+        except Exception:
+            pass
+        return None
+
 
 def find_business_duplicate(email: Optional[str], phone: Optional[str]) -> Optional[str]:
     """Checks whether another business already uses this email or phone.
@@ -16847,6 +17069,14 @@ async def get_loyalty_config(public_id: str, response: Response, program_id: Opt
             "points_amount_pesos": 100,
             "points_cap_limit": None,
             "points_prizes": [],
+            "welcome_reward_enabled": False,
+            "welcome_reward_trigger": "join",
+            "welcome_reward_type": "redeemable",
+            "welcome_reward_name": None,
+            "welcome_reward_value": None,
+            "welcome_reward_validity_days": 30,
+            "welcome_reward_min_purchase": 0,
+            "welcome_reward_stacking_enabled": True,
             "membership_name": None,
             "membership_services": [],
             "membership_benefits": [],
@@ -17060,6 +17290,30 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
                 'description': p.description,
             })
         data['points_prizes'] = prizes
+    # Welcome Reward is available to every loyalty program type.
+    welcome_type = config.welcome_reward_type
+    welcome_name = (config.welcome_reward_name or '').strip()
+    welcome_value = config.welcome_reward_value
+    if config.welcome_reward_enabled:
+        if welcome_type in ('points','stamps','fixed_discount','percentage_discount') and (welcome_value is None or float(welcome_value) <= 0):
+            raise HTTPException(status_code=400, detail='Enter a positive Welcome Reward value.')
+        if welcome_type == 'points' and not (config.card_type == 'points' or (config.card_type == 'hybrid' and hybrid_points)):
+            raise HTTPException(status_code=400, detail='Welcome points require Points to be enabled on this program.')
+        if welcome_type == 'stamps' and not (config.card_type == 'stamp' or (config.card_type == 'hybrid' and hybrid_stamps) or (config.card_type == 'vip' and bool(config.vip_stamps_enabled))):
+            raise HTTPException(status_code=400, detail='Welcome stamps require Stamp Rewards to be enabled on this program.')
+        if welcome_type in ('redeemable','fixed_discount','percentage_discount') and not welcome_name:
+            raise HTTPException(status_code=400, detail='Enter the Welcome Reward name customers will see.')
+    data.update({
+        'welcome_reward_enabled': bool(config.welcome_reward_enabled),
+        'welcome_reward_trigger': config.welcome_reward_trigger,
+        'welcome_reward_type': welcome_type,
+        'welcome_reward_name': welcome_name or None,
+        'welcome_reward_value': welcome_value,
+        'welcome_reward_validity_days': int(config.welcome_reward_validity_days or 30),
+        'welcome_reward_min_purchase': float(config.welcome_reward_min_purchase or 0),
+        'welcome_reward_stacking_enabled': bool(config.welcome_reward_stacking_enabled),
+    })
+
     tier_config_enabled = (
         config.card_type == 'vip'
         or (config.card_type == 'hybrid' and bool(config.hybrid_tier_enabled))
@@ -20303,12 +20557,28 @@ async def add_stamp(public_id: str, req: StampRequest, background_tasks: Backgro
     )
     print(f"STAMP FAST RESPONSE: customer={persisted.get('public_id')} count={new_count}/{goal}; wallet sync queued")
 
+    first_purchase_welcome = maybe_issue_welcome_reward(
+        business, safe_get_customer(req.customer_public_id) or persisted, program, 'first_purchase'
+    )
+    final_customer = safe_get_customer(req.customer_public_id) or persisted
+    final_stamp_count = int(final_customer.get('stamp_count') or new_count)
+    if first_purchase_welcome and first_purchase_welcome.get('issued'):
+        background_tasks.add_task(
+            sync_loyalty_wallets_background,
+            dict(final_customer), dict(business), dict(program or {}),
+            'welcome_reward_issued',
+            'Welcome reward unlocked',
+            first_purchase_welcome.get('name') or 'Your welcome reward is ready.',
+            f"welcome-first-purchase-{program.get('id')}-{final_customer.get('identity_id') or final_customer.get('id')}",
+        )
+
     response_payload = {
         "message": "Stamp added!",
-        "stamp_count": new_count,
-        "reward_unlocked": reward_unlocked,
+        "stamp_count": final_stamp_count,
+        "reward_unlocked": bool(final_customer.get('reward_unlocked')) if final_customer.get('reward_unlocked') is not None else reward_unlocked,
         "newly_reached_rewards": newly_reached,
-        "available_rewards": get_available_stamp_rewards(persisted, program),
+        "available_rewards": get_available_stamp_rewards(final_customer, program),
+        "welcome_reward": first_purchase_welcome,
         "stamp_once_per_day": bool((program or {}).get('stamp_once_per_day')),
         "active_coupon": safe_get_active_coupon(customer.get('id')),
         "wallet_sync": {"status": "queued"},
@@ -20685,6 +20955,21 @@ async def add_points_sale(public_id: str, req: PointsSaleRequest, background_tas
             )
         raise HTTPException(status_code=500, detail=error_msg)
 
+    first_purchase_welcome = maybe_issue_welcome_reward(
+        business, safe_get_customer(req.customer_public_id) or customer, program, 'first_purchase'
+    )
+    final_customer = safe_get_customer(req.customer_public_id) or customer
+    final_points_balance = int(final_customer.get('points_balance') or new_balance)
+    if first_purchase_welcome and first_purchase_welcome.get('issued'):
+        background_tasks.add_task(
+            sync_loyalty_wallets_background,
+            dict(final_customer), dict(business), dict(program),
+            'welcome_reward_issued',
+            'Welcome reward unlocked',
+            first_purchase_welcome.get('name') or 'Your welcome reward is ready.',
+            f"welcome-first-purchase-{program.get('id')}-{final_customer.get('identity_id') or final_customer.get('id')}",
+        )
+
     response_payload = {
         "message": (
             f"{points_earned} points added!"
@@ -20695,10 +20980,11 @@ async def add_points_sale(public_id: str, req: PointsSaleRequest, background_tas
         "points_earned": points_earned,
         "raw_points_earned": raw_points_earned,
         "points_discarded": points_discarded,
-        "points_balance": new_balance,
+        "points_balance": final_points_balance,
         "points_cap_limit": points_cap_limit,
         "cap_reached": cap_reached,
         "active_coupon": safe_get_active_coupon(customer.get('id')),
+        "welcome_reward": first_purchase_welcome,
     }
     if audit_row and audit_row.get('transaction_id'): response_payload['transaction_id']=str(audit_row.get('transaction_id'))
     complete_transaction_audit(audit_row,balance_after=new_balance,response_json=response_payload)
@@ -22174,6 +22460,22 @@ async def storehub_test_transaction(
             )
             wallet_status = 'queued'
         wallet_status = wallet_status or 'queued'
+
+        first_purchase_welcome = maybe_issue_welcome_reward(
+            business, safe_get_customer(req.customer_public_id) or customer, program, 'first_purchase'
+        )
+        if first_purchase_welcome and first_purchase_welcome.get('issued'):
+            loyalty_result = {**(loyalty_result or {}), 'welcome_reward': first_purchase_welcome}
+            fresh_after_welcome = safe_get_customer(req.customer_public_id) or customer
+            background_tasks.add_task(
+                sync_loyalty_wallets_background,
+                dict(fresh_after_welcome), dict(business), dict(program),
+                'welcome_reward_issued',
+                'Welcome reward unlocked',
+                first_purchase_welcome.get('name') or 'Your welcome reward is ready.',
+                f"welcome-first-purchase-{program.get('id')}-{fresh_after_welcome.get('identity_id') or fresh_after_welcome.get('id')}",
+            )
+            wallet_status = 'queued'
 
         processing_metadata = {
             'loyalty_type': loyalty_type,
@@ -25079,6 +25381,13 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
             )
         raise HTTPException(status_code=500, detail=error_msg)
 
+    welcome_reward = None
+    if inserted_customer:
+        welcome_reward = maybe_issue_welcome_reward(business, inserted_customer, program or {}, 'join')
+        # Re-read after a points/stamps welcome reward so the Wallet prewarm uses
+        # the updated starting balance/progress.
+        inserted_customer = safe_get_customer(customer_public_id) or inserted_customer
+
     # Prepare the signed Apple pass after the HTTP response is sent. The
     # success page normally gives this task enough time to finish before the
     # customer taps Add to Wallet, turning that tap into a cache hit.
@@ -25095,6 +25404,7 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
         "name": signup.name,
         "message": "Welcome to the loyalty program!",
         "program_public_id": program.get("public_id") if program else None,
+        "welcome_reward": welcome_reward,
     }
 
 # CAR LENDING / SHOWROOM - SELF-SERVICE BUYER JOIN PAGE
@@ -29827,6 +30137,7 @@ async def public_business_join_config(public_id: str):
         'points_per_amount': program.get('points_per_amount') or 0,
         'points_amount_pesos': program.get('points_amount_pesos') or 1,
         'points_prizes': program.get('points_prizes') or [],
+        'welcome_reward': normalize_welcome_reward(program),
         'membership_name': program.get('membership_name'),
         'subscription_enrollment_mode': program.get('subscription_enrollment_mode') or 'manual',
         'membership_services': program.get('membership_services') or [],
@@ -33665,6 +33976,14 @@ class POSCompanionPointsReserveRequest(BaseModel):
     reservation_key: Optional[str] = Field(default=None, max_length=220)
 
 
+class POSCompanionCouponReserveRequest(BaseModel):
+    customer_public_id: str = Field(min_length=2, max_length=200)
+    coupon_public_id: str = Field(min_length=2, max_length=200)
+    gross_amount: float = Field(gt=0)
+    reservation_key: Optional[str] = Field(default=None, max_length=220)
+    hold_minutes: int = Field(default=15, ge=1, le=120)
+
+
 class POSCompanionBenefitReserveRequest(BaseModel):
     customer_public_id: str = Field(min_length=2, max_length=200)
     benefit_id: str = Field(min_length=1, max_length=120)
@@ -34143,7 +34462,28 @@ def _pos_companion_program_payload(business: dict, membership: dict, source_cust
         'employee_position': membership.get('employee_position') if is_employee else None,
         'membership_status': membership_effective_status(membership) if program_has_membership(program) else None,
         'benefits': benefits,
+        'redeemables': [
+            {
+                'public_id': c.get('public_id'),
+                'name': c.get('reward_text') or 'Reward',
+                'reward_type': c.get('reward_type') or 'redeemable',
+                'reward_value': float(c.get('reward_value')) if c.get('reward_value') is not None else None,
+                'expires_at': c.get('expires_at'),
+                'min_purchase_amount': float(c.get('min_purchase_amount') or 0),
+                'stacking_allowed': c.get('stacking_allowed') is not False,
+                'source': c.get('source'),
+            }
+            for c in safe_get_active_coupons(membership.get('id'))
+        ],
     }
+
+
+def _pos_coupon_reservation_row(reservation_id: str) -> Optional[dict]:
+    try:
+        rows = supabase.table('pos_coupon_reservations').select('*').eq('id', reservation_id).limit(1).execute().data or []
+        return rows[0] if rows else None
+    except Exception as exc:
+        raise _pos_schema_error(exc)
 
 
 def _pos_benefit_reservation_row(reservation_id: str) -> Optional[dict]:
@@ -34294,6 +34634,100 @@ def pos_companion_points_release(
         raise HTTPException(status_code=404, detail='Points reservation not found for this device connection.')
     released = _pos_rpc_first('pos_release_points_redemption', {'p_reservation_id': row.get('id'), 'p_reason': req.reason or 'checkout_cancelled'})
     return {'ok': True, 'reservation': _pos_redemption_public(released), 'message': 'Reserved points released.'}
+
+
+@app.post('/api/v1/pos-companion/coupons/reserve')
+def pos_companion_coupon_reserve(
+    req: POSCompanionCouponReserveRequest,
+    x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
+):
+    device = _require_pos_device(x_lt_device_token)
+    customer = safe_get_customer(req.customer_public_id)
+    if not customer or customer.get('business_id') != device.get('business_id'):
+        raise HTTPException(status_code=404, detail='Program membership not found for this business.')
+    program = safe_get_customer_program(customer, device.get('business_id')) or {}
+    coupons = safe_get_active_coupons(customer.get('id'))
+    coupon = next((c for c in coupons if str(c.get('public_id')) == str(req.coupon_public_id)), None)
+    if not coupon:
+        raise HTTPException(status_code=404, detail='Redeemable reward is unavailable or expired.')
+    if float(coupon.get('min_purchase_amount') or 0) > float(req.gross_amount):
+        raise HTTPException(status_code=400, detail=f"Minimum purchase is ₱{float(coupon.get('min_purchase_amount') or 0):.2f}.")
+    key = (req.reservation_key or f"LT-COUPON-{uuid.uuid4().hex[:24]}").strip()
+    try:
+        rows = supabase.rpc('pos_reserve_coupon', {
+            'p_business_id': device.get('business_id'),
+            'p_integration_id': device.get('integration_id'),
+            'p_branch_id': device.get('branch_id'),
+            'p_device_id': device.get('id'),
+            'p_customer_id': customer.get('id'),
+            'p_program_id': program.get('id'),
+            'p_coupon_id': coupon.get('id'),
+            'p_provider': device.get('provider') or 'storehub',
+            'p_reservation_key': key,
+            'p_gross_amount': float(req.gross_amount),
+            'p_hold_minutes': int(req.hold_minutes),
+        }).execute().data or []
+    except Exception as exc:
+        msg = friendly_db_error(exc)
+        if 'already reserved' in msg.lower():
+            raise HTTPException(status_code=409, detail='This reward is already reserved on another checkout.')
+        raise _pos_schema_error(exc)
+    row = rows[0] if rows else None
+    if not row:
+        raise HTTPException(status_code=500, detail='Reward reservation did not return a row.')
+    return {'ok': True, 'reservation': row, 'coupon': coupon, 'message': f"Reserved {coupon.get('reward_text') or 'reward'} for this checkout."}
+
+
+@app.post('/api/v1/pos-companion/coupons/{reservation_id}/release')
+def pos_companion_coupon_release(
+    reservation_id: str,
+    req: POSCompanionReservationReleaseRequest,
+    x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
+):
+    device = _require_pos_device(x_lt_device_token)
+    row = _pos_coupon_reservation_row(reservation_id)
+    if not row or row.get('business_id') != device.get('business_id') or str(row.get('integration_id')) != str(device.get('integration_id')):
+        raise HTTPException(status_code=404, detail='Reward reservation not found for this device connection.')
+    try:
+        rows = supabase.rpc('pos_release_coupon', {'p_reservation_id': row.get('id'), 'p_reason': req.reason or 'checkout_cancelled'}).execute().data or []
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    return {'ok': True, 'reservation': rows[0] if rows else row, 'message': 'Redeemable reward reservation released.'}
+
+
+@app.post('/api/v1/pos-companion/coupons/{reservation_id}/commit')
+def pos_companion_coupon_commit(
+    reservation_id: str,
+    req: POSCompanionReservationCommitRequest,
+    background_tasks: BackgroundTasks,
+    x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
+):
+    device = _require_pos_device(x_lt_device_token)
+    row = _pos_coupon_reservation_row(reservation_id)
+    if not row or row.get('business_id') != device.get('business_id') or str(row.get('integration_id')) != str(device.get('integration_id')):
+        raise HTTPException(status_code=404, detail='Reward reservation not found for this device connection.')
+    if row.get('status') == 'committed':
+        return {'ok': True, 'duplicate': True, 'reservation': row, 'message': 'Reward was already committed.'}
+    if row.get('status') != 'reserved':
+        raise HTTPException(status_code=409, detail=f"Reward reservation is {row.get('status') or 'not active'}.")
+    tx = _pos_companion_exact_transaction(device, req.external_transaction_id)
+    if not tx:
+        raise HTTPException(status_code=409, detail='Exact StoreHub transaction has not synced to Loyalty Tree yet.')
+    try:
+        rows = supabase.rpc('pos_commit_coupon', {
+            'p_reservation_id': row.get('id'), 'p_external_transaction_id': req.external_transaction_id
+        }).execute().data or []
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    committed = rows[0] if rows else row
+    customer_rows = supabase.table('customers').select('*').eq('id', committed.get('customer_id')).limit(1).execute().data or []
+    customer = customer_rows[0] if customer_rows else None
+    business = _pos_business_by_id(device.get('business_id'))
+    program = safe_get_customer_program(customer, business.get('id')) if customer and business else None
+    if customer and business:
+        log_redemption_event(business.get('id'), customer.get('id'), branch_id=device.get('branch_id'))
+        background_tasks.add_task(sync_loyalty_wallets_background, dict(customer), dict(business), dict(program or {}), 'coupon_redeemed')
+    return {'ok': True, 'reservation': committed, 'message': 'Redeemable reward committed after StoreHub sale confirmation.'}
 
 
 @app.post('/api/v1/pos-companion/benefits/reserve')
@@ -34455,7 +34889,7 @@ async def pos_companion_benefit_commit(
 
 class POSCompanionOfflineEvent(BaseModel):
     client_event_id: str = Field(min_length=6, max_length=120)
-    event_type: Literal['earn', 'redemption_commit_wait', 'benefit_commit_wait'] = 'earn'
+    event_type: Literal['earn', 'redemption_commit_wait', 'benefit_commit_wait', 'coupon_commit_wait'] = 'earn'
     customer_ref: str = Field(min_length=1, max_length=500)
     external_transaction_id: Optional[str] = Field(default=None, max_length=240)
     reservation_id: Optional[str] = Field(default=None, max_length=100)
@@ -34482,6 +34916,7 @@ def _pos_offline_event_public(row: dict) -> dict:
         'external_transaction_id': row.get('external_transaction_id'),
         'reservation_id': str(row.get('reservation_id') or '') or None,
         'benefit_reservation_id': ((row.get('payload') or {}).get('benefit_reservation_id') if isinstance(row.get('payload'), dict) else None),
+        'coupon_reservation_id': ((row.get('payload') or {}).get('coupon_reservation_id') if isinstance(row.get('payload'), dict) else None),
         'matched_pos_transaction_id': str(row.get('matched_pos_transaction_id') or '') or None,
         'gross_amount': float(row.get('gross_amount')) if row.get('gross_amount') is not None else None,
         'currency': row.get('currency'),
@@ -34531,17 +34966,25 @@ def _pos_offline_resolve_and_match(device: dict, event: POSCompanionOfflineEvent
         error_message = 'Customer could not be resolved for this business.'
     else:
         reservation = None
-        if event.event_type in ('redemption_commit_wait', 'benefit_commit_wait'):
+        if event.event_type in ('redemption_commit_wait', 'benefit_commit_wait', 'coupon_commit_wait'):
             if not event.reservation_id:
                 status = 'failed'
                 error_message = f'{event.event_type} requires reservation_id.'
             else:
-                reservation = (_pos_benefit_reservation_row(event.reservation_id)
-                               if event.event_type == 'benefit_commit_wait'
-                               else _pos_redemption_row(event.reservation_id))
+                if event.event_type == 'benefit_commit_wait':
+                    reservation = _pos_benefit_reservation_row(event.reservation_id)
+                elif event.event_type == 'coupon_commit_wait':
+                    reservation = _pos_coupon_reservation_row(event.reservation_id)
+                else:
+                    reservation = _pos_redemption_row(event.reservation_id)
                 if not reservation:
                     status = 'failed'
-                    error_message = 'Benefit reservation was not found.' if event.event_type == 'benefit_commit_wait' else 'Redemption reservation was not found.'
+                    if event.event_type == 'benefit_commit_wait':
+                        error_message = 'Benefit reservation was not found.'
+                    elif event.event_type == 'coupon_commit_wait':
+                        error_message = 'Reward reservation was not found.'
+                    else:
+                        error_message = 'Redemption reservation was not found.'
                 elif reservation.get('business_id') != business_id or str(reservation.get('integration_id')) != str(integration_id):
                     status = 'conflict'
                     error_message = 'Reservation belongs to a different business/integration.'
@@ -34620,7 +35063,7 @@ def _pos_offline_resolve_and_match(device: dict, event: POSCompanionOfflineEvent
         'customer_public_id': customer_public_id or None,
         'customer_id': customer.get('id') if customer else None,
         'external_transaction_id': str(event.external_transaction_id or '').strip() or None,
-        'reservation_id': (event.reservation_id or None) if event.event_type != 'benefit_commit_wait' else None,
+        'reservation_id': (event.reservation_id or None) if event.event_type not in ('benefit_commit_wait', 'coupon_commit_wait') else None,
         'matched_pos_transaction_id': matched_tx.get('id') if matched_tx else None,
         'currency': (event.currency or 'PHP').upper(),
         'gross_amount': event.gross_amount,
@@ -34628,6 +35071,7 @@ def _pos_offline_resolve_and_match(device: dict, event: POSCompanionOfflineEvent
         'payload': {
             'client_metadata': event.metadata or {},
             'benefit_reservation_id': event.reservation_id if event.event_type == 'benefit_commit_wait' else None,
+            'coupon_reservation_id': event.reservation_id if event.event_type == 'coupon_commit_wait' else None,
             'device_display_name': device.get('display_name'),
             'hardware_model': device.get('hardware_model'),
         },
