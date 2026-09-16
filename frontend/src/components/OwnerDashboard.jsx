@@ -512,7 +512,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
   const [canCreateProgram, setCanCreateProgram] = useState(false)
   const [showCreateProgram, setShowCreateProgram] = useState(false)
   const [creatingProgram, setCreatingProgram] = useState(false)
-  const [newProgram, setNewProgram] = useState({ name: '', card_type: 'stamp', membership_employee_mode: false })
+  const [newProgram, setNewProgram] = useState({ name: '', card_type: 'stamp' })
   const [subscription, setSubscription] = useState(null)
   const businessCurrency = business?.display_currency || subscription?.display_currency || 'PHP'
   const [loading, setLoading] = useState(true)
@@ -628,10 +628,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
   const viewingAllPrograms = selectedProgramPublicId === 'all'
   const selectedProgramSummary = viewingAllPrograms ? null : (programs.find(p => p.public_id === selectedProgramPublicId) || programs.find(p => p.is_default) || programs[0] || null)
   const selectedProgramQuery = selectedProgramPublicId && !viewingAllPrograms ? `?program_id=${encodeURIComponent(selectedProgramPublicId)}` : ''
-  // Every selected program gets an explicit program-scoped Join URL, even the
-  // current default. QR codes are durable and must keep resolving to the exact
-  // program they were generated for if the business changes its default later.
-  const selectedJoinSlug = selectedProgramSummary?.public_id
+  const selectedJoinSlug = selectedProgramSummary && !selectedProgramSummary.is_default && selectedProgramSummary.public_id
     ? `${user?.business_slug || ''}__p__${selectedProgramSummary.public_id}`
     : (user?.business_slug || '')
   const selectedJoinUrl = viewingAllPrograms ? '' : `${FRONTEND_URL}/join/${selectedJoinSlug}`
@@ -806,11 +803,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
       const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/programs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name,
-          card_type: newProgram.card_type === 'employee_membership' ? 'membership' : (newProgram.card_type || 'stamp'),
-          membership_employee_mode: newProgram.card_type === 'employee_membership' || newProgram.membership_employee_mode === true,
-        }),
+        body: JSON.stringify({ name, card_type: newProgram.card_type || 'stamp' }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Could not create program')
@@ -818,7 +811,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
       if (programStorageKey && nextId) localStorage.setItem(programStorageKey, nextId)
       if (nextId) setSelectedProgramPublicId(nextId)
       setShowCreateProgram(false)
-      setNewProgram({ name: '', card_type: 'stamp', membership_employee_mode: false })
+      setNewProgram({ name: '', card_type: 'stamp' })
       setActiveTab('program')
       setPrograms(current => [...current.filter(p => p.public_id !== nextId), data])
       setMessage(`${data.program_name || name} created. Configure and publish its card.`)
@@ -1724,7 +1717,19 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
     e.preventDefault()
     setSavingCustomer(true)
     try {
-      const { public_id, ...fields } = editForm
+      // membership_status is a computed/read-only display value in this form.
+      // In particular, `expired` is derived from membership_expires_at and is
+      // not a persisted membership_status enum, so never send it through this
+      // generic profile PATCH. Activate/Renew/Suspend/etc. continue to use the
+      // dedicated membership/action endpoint.
+      const {
+        public_id,
+        membership_status: _membershipStatus,
+        membership_visit_count: _membershipVisitCount,
+        membership_last_visit_at: _membershipLastVisitAt,
+        last_points_at: _lastPointsAt,
+        ...fields
+      } = editForm
       const payload = {
         ...fields,
         age: fields.age === '' ? null : parseInt(fields.age, 10),
@@ -2309,9 +2314,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                 <span style={{alignSelf:isMobile?'flex-start':'center',fontSize:10,fontWeight:850,color:'#1d4ed8',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:999,padding:'6px 9px',whiteSpace:'nowrap'}}>ALL CARDS</span>
               ) : selectedProgramSummary && (
                 <span style={{alignSelf:isMobile?'flex-start':'center',fontSize:10,fontWeight:850,color:'#0f766e',background:'#ecfdf5',border:'1px solid #a7f3d0',borderRadius:999,padding:'6px 9px',whiteSpace:'nowrap'}}>
-                  {(selectedProgramSummary.card_type === 'membership' && selectedProgramSummary.membership_employee_mode === true
-                    ? 'EMPLOYEE MEMBERSHIP'
-                    : String(selectedProgramSummary.card_type || 'stamp').replace('_',' ').toUpperCase())}{selectedProgramSummary.is_default ? ' · DEFAULT' : ''}
+                  {String(selectedProgramSummary.card_type || 'stamp').replace('_',' ').toUpperCase()}{selectedProgramSummary.is_default ? ' · DEFAULT' : ''}
                 </span>
               )}
             </div>
@@ -2345,7 +2348,6 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
               <option value="stamp">Stamp Card</option>
               <option value="points">Points Card</option>
               <option value="membership">Membership</option>
-              <option value="employee_membership">Employee Membership</option>
               <option value="multipass">Multi-Pass</option>
               <option value="vip">VIP / Tier</option>
               <option value="hybrid">Hybrid</option>
@@ -4076,10 +4078,18 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                   </div>}
                   <label style={styles.label}>Subscription status</label>
                   <input style={styles.input} value={(editForm.membership_status || 'inactive').toUpperCase()} readOnly />
-                  <label style={styles.label}>Started</label>
+                  <label style={styles.label}>Subscription started</label>
                   <input style={styles.input} type="date" value={editForm.membership_start_date || ''} readOnly />
-                  <label style={styles.label}>Expires</label>
-                  <input style={styles.input} type="date" value={editForm.membership_expires_at || ''} readOnly />
+                  <label style={styles.label}>Subscription expires</label>
+                  <input
+                    style={styles.input}
+                    type="date"
+                    value={editForm.membership_expires_at || ''}
+                    onChange={e => setEditForm({...editForm, membership_expires_at: e.target.value})}
+                  />
+                  <div style={{fontSize:11.5,color:'#64748b',lineHeight:1.5,margin:'-4px 0 14px'}}>
+                    Owner correction only. Changing the expiry date does not reset Reward Points, Reward Stamps, or Tier progression.
+                  </div>
                   <div style={{display:'flex',flexWrap:'wrap',gap:8,marginBottom:18}}>
                     <button type="button" style={{...styles.submitBtn,width:'auto',flex:'1 1 120px'}} disabled={membershipActionLoading} onClick={()=>runMembershipAction('activate')}>Activate</button>
                     <button type="button" style={{...styles.submitBtn,width:'auto',flex:'1 1 120px'}} disabled={membershipActionLoading} onClick={()=>runMembershipAction('renew')}>Renew</button>
@@ -4136,10 +4146,18 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                 <>
                   <label style={styles.label}>Subscription status</label>
                   <input style={styles.input} value={(editForm.membership_status || 'inactive').toUpperCase()} readOnly />
-                  <label style={styles.label}>Started</label>
+                  <label style={styles.label}>Subscription started</label>
                   <input style={styles.input} type="date" value={editForm.membership_start_date || ''} readOnly />
-                  <label style={styles.label}>Expires</label>
-                  <input style={styles.input} type="date" value={editForm.membership_expires_at || ''} readOnly />
+                  <label style={styles.label}>Subscription expires</label>
+                  <input
+                    style={styles.input}
+                    type="date"
+                    value={editForm.membership_expires_at || ''}
+                    onChange={e => setEditForm({...editForm, membership_expires_at: e.target.value})}
+                  />
+                  <div style={{fontSize:11.5,color:'#64748b',lineHeight:1.5,margin:'-4px 0 14px'}}>
+                    Owner correction only. Changing the expiry date does not reset Reward Points, Reward Stamps, or Tier progression.
+                  </div>
                   <div style={{display: 'flex', flexWrap:'wrap', gap: 8, marginBottom: 18}}>
                     <button type="button" style={{...styles.submitBtn, width:'auto', flex:'1 1 120px'}} disabled={membershipActionLoading} onClick={() => runMembershipAction('activate')}>Activate</button>
                     <button type="button" style={{...styles.submitBtn, width:'auto', flex:'1 1 120px'}} disabled={membershipActionLoading} onClick={() => runMembershipAction('renew')}>Renew</button>

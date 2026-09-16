@@ -11,7 +11,7 @@ import json
 import hashlib
 import hmac
 import html as html_lib
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 from decimal import Decimal, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
 from email.utils import format_datetime, parsedate_to_datetime
@@ -16123,8 +16123,29 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
     # (no reward_unlocked equivalent for points), but still need `program`
     # loaded below so the wallet push has it.
     program = None
-    if any(k in update_data for k in ('stamp_count', 'tier_stamp_count', 'points_balance', 'multipass_sessions_remaining', 'vip_points', 'vip_manual_tier_id')):
+    membership_dates_edited = any(
+        k in update_data for k in ('membership_start_date', 'membership_expires_at')
+    )
+    if any(k in update_data for k in (
+        'stamp_count', 'tier_stamp_count', 'points_balance',
+        'multipass_sessions_remaining', 'vip_points', 'vip_manual_tier_id',
+        'membership_start_date', 'membership_expires_at',
+    )):
         program = safe_get_customer_program(customer, business.get('id'))
+
+    # Owners may manually correct subscription dates from Edit Customer. Keep
+    # Hybrid membership isolated from its Rewards/Tier clocks: this validates
+    # dates only and never touches any loyalty/tier cycle fields.
+    if membership_dates_edited:
+        start_raw = update_data.get('membership_start_date', customer.get('membership_start_date'))
+        expiry_raw = update_data.get('membership_expires_at', customer.get('membership_expires_at'))
+        try:
+            start_date = date.fromisoformat(str(start_raw)[:10]) if start_raw else None
+            expiry_date = date.fromisoformat(str(expiry_raw)[:10]) if expiry_raw else None
+        except Exception:
+            raise HTTPException(status_code=400, detail='Subscription dates must use YYYY-MM-DD.')
+        if start_date and expiry_date and expiry_date < start_date:
+            raise HTTPException(status_code=400, detail='Subscription expiry cannot be earlier than the subscription start date.')
     old_vip_tier = get_vip_tier(customer, program) if program and program_has_tier(program) else None
     if 'stamp_count' in update_data and (not program or program_reward_uses_stamps(program)):
         update_data['reward_unlocked'] = bool(
@@ -16235,6 +16256,28 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
                 # Render logs without rolling back the owner's successful edit.
                 print(f"STAMP ADJUSTMENT audit warning (owner customer edit): {e}")
 
+    if membership_dates_edited:
+        try:
+            supabase.table('transaction_audit').insert({
+                'business_id': business.get('id'),
+                'customer_id': customer.get('id'),
+                'actor_type': 'owner',
+                'action': 'membership_date_adjust',
+                'status': 'success',
+                'metadata': {
+                    'source': 'owner_customer_edit',
+                    'old_membership_start_date': customer.get('membership_start_date'),
+                    'new_membership_start_date': updated_customer.get('membership_start_date'),
+                    'old_membership_expires_at': customer.get('membership_expires_at'),
+                    'new_membership_expires_at': updated_customer.get('membership_expires_at'),
+                    'isolated_from_hybrid_engines': True,
+                },
+                'completed_at': datetime.utcnow().isoformat(),
+                'created_at': datetime.utcnow().isoformat(),
+            }).execute()
+        except Exception as exc:
+            print(f"MEMBERSHIP DATE ADJUST audit warning: {exc}")
+
     if 'points_balance' in update_data:
         old_points = int(customer.get('points_balance') or 0)
         new_points = int(updated_customer.get('points_balance') or 0)
@@ -16265,7 +16308,11 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
                 },
             )
 
-    if any(k in update_data for k in ('stamp_count', 'points_balance', 'multipass_sessions_remaining', 'vip_points', 'vip_manual_tier_id')):
+    if any(k in update_data for k in (
+        'stamp_count', 'points_balance', 'multipass_sessions_remaining',
+        'vip_points', 'vip_manual_tier_id', 'tier_stamp_count',
+        'membership_start_date', 'membership_expires_at',
+    )):
         try:
             sync_wallet_object(updated_customer, business, program)
         except Exception:
