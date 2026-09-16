@@ -16548,6 +16548,192 @@ def _day_of_week_series(rows, field, start, end):
         counts[ts.weekday()] += 1
     return [{'label': n, 'value': c} for n, c in zip(names, counts)]
 
+
+@app.get("/api/v1/business/{public_id}/analytics/redemptions")
+def analytics_redemption_details(
+    public_id: str,
+    range: str = '30d',
+    program_id: Optional[str] = Query(default=None),
+    limit: int = Query(default=300, ge=1, le=1000),
+    authorization: str = Header(default=''),
+):
+    """Owner-facing drill-down for the Analytics 'Rewards Redeemed' KPI.
+
+    Returns normalized customer / reward / branch / cashier rows using the
+    same source tables and range semantics as the main analytics endpoint.
+    """
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    business_id = business.get('id')
+
+    all_programs = str(program_id or '').lower() == 'all'
+    program = None if all_programs else safe_get_loyalty_program(business_id, program_public_id=program_id)
+    if program_id and not all_programs and not program:
+        raise HTTPException(status_code=404, detail='Program not found for this business')
+
+    customer_query = supabase.table('customers').select('id,public_id,name,program_id').eq('business_id', business_id)
+    if program:
+        customer_query = customer_query.eq('program_id', program.get('id'))
+    try:
+        customer_rows = customer_query.execute().data or []
+        branch_rows = (supabase.table('branches').select('id,public_id,name')
+                       .eq('business_id', business_id).execute().data or [])
+        staff_rows = (supabase.table('staff').select('id,public_id,name')
+                      .eq('business_id', business_id).execute().data or [])
+        program_rows = (supabase.table('loyalty_programs').select('id,public_id,program_name,card_name,card_type')
+                        .eq('business_id', business_id).execute().data or [])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+    customer_ids = {r.get('id') for r in customer_rows if r.get('id') is not None}
+    customer_map = {str(r.get('id')): r for r in customer_rows}
+    branch_map = {str(r.get('id')): r for r in branch_rows}
+    staff_map = {str(r.get('id')): r for r in staff_rows}
+    program_map = {str(r.get('id')): r for r in program_rows}
+
+    card_type = 'all' if all_programs else (program.get('card_type', 'stamp') if program else 'stamp')
+    loyalty_type = effective_loyalty_type(program)
+
+    now = datetime.utcnow()
+    days = _range_to_days(range)
+    if days:
+        period_start = now - timedelta(days=days)
+    else:
+        period_start = None
+
+    def in_period(raw):
+        dt = _parse_ts(raw)
+        if not dt:
+            return False
+        return (period_start is None or dt >= period_start) and dt <= now
+
+    # Coupons are also logged into redemption_events for the KPI. We only use
+    # redeemed coupon rows to enrich otherwise unnamed redemption events; we do
+    # not append them separately, avoiding double-counting.
+    redeemed_coupons = []
+    try:
+        redeemed_coupons = (supabase.table('coupons').select('id,public_id,customer_id,reward_text,redeemed_at,redeemed_by_staff_id')
+                            .eq('business_id', business_id).eq('status', 'redeemed')
+                            .execute().data or [])
+    except Exception:
+        redeemed_coupons = []
+    coupon_by_customer = {}
+    for c in redeemed_coupons:
+        if c.get('customer_id') not in customer_ids:
+            continue
+        if not in_period(c.get('redeemed_at')):
+            continue
+        coupon_by_customer.setdefault(str(c.get('customer_id')), []).append(c)
+
+    def matched_coupon(customer_id, event_time):
+        target = _parse_ts(event_time)
+        if not target:
+            return None
+        best = None
+        best_delta = None
+        for c in coupon_by_customer.get(str(customer_id), []):
+            cdt = _parse_ts(c.get('redeemed_at'))
+            if not cdt:
+                continue
+            delta = abs((cdt - target).total_seconds())
+            if delta <= 90 and (best_delta is None or delta < best_delta):
+                best, best_delta = c, delta
+        return best
+
+    details = []
+
+    def identity_fields(row, redeemed_at):
+        cid = row.get('customer_id')
+        customer = customer_map.get(str(cid)) or {}
+        branch = branch_map.get(str(row.get('branch_id'))) or {}
+        staff = staff_map.get(str(row.get('staff_id'))) or {}
+        customer_program = program_map.get(str(customer.get('program_id'))) or {}
+        return {
+            'customer_public_id': customer.get('public_id'),
+            'customer_name': customer.get('name') or 'Customer',
+            'branch_public_id': branch.get('public_id'),
+            'branch_name': branch.get('name'),
+            'staff_public_id': staff.get('public_id'),
+            'staff_name': staff.get('name'),
+            'program_public_id': customer_program.get('public_id'),
+            'program_name': customer_program.get('program_name') or customer_program.get('card_name'),
+            'redeemed_at': redeemed_at,
+        }
+
+    # Standard stamp / points / coupon redemption stream.
+    if all_programs or card_type not in {'multipass', 'employee'}:
+        try:
+            rows = (supabase.table('redemption_events').select('*')
+                    .eq('business_id', business_id).execute().data or [])
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+        for row in rows:
+            if row.get('customer_id') not in customer_ids or not in_period(row.get('created_at')):
+                continue
+            coupon = matched_coupon(row.get('customer_id'), row.get('created_at')) if not row.get('prize_name') else None
+            reward_name = row.get('prize_name') or (coupon or {}).get('reward_text') or 'Coupon / Redeemable reward'
+            details.append({
+                'id': f"redemption-{row.get('id') or len(details)}",
+                'source': 'coupon' if coupon else ('points' if row.get('points_spent') is not None else 'reward'),
+                'reward_name': reward_name,
+                'points_spent': row.get('points_spent'),
+                'quantity': 1,
+                **identity_fields(row, row.get('created_at')),
+            })
+
+    # Multipass completion is the reward-equivalent event for multipass cards.
+    if all_programs or card_type == 'multipass':
+        try:
+            rows = (supabase.table('multipass_events').select('*')
+                    .eq('business_id', business_id).eq('action', 'used').execute().data or [])
+        except Exception:
+            rows = []
+        for row in rows:
+            if row.get('customer_id') not in customer_ids or not in_period(row.get('created_at')):
+                continue
+            if int(row.get('sessions_remaining') or 0) > 0:
+                continue
+            details.append({
+                'id': f"multipass-{row.get('id') or len(details)}",
+                'source': 'multipass',
+                'reward_name': 'Pack completed',
+                'points_spent': None,
+                'quantity': 1,
+                **identity_fields(row, row.get('created_at')),
+            })
+
+    # Employee / membership benefits are their own audited redemption ledger.
+    if all_programs or card_type == 'employee':
+        try:
+            rows = (supabase.table('membership_benefit_redemptions').select('*')
+                    .eq('business_id', business_id).execute().data or [])
+        except Exception:
+            rows = []
+        for row in rows:
+            redeemed_at = row.get('redeemed_at') or row.get('created_at')
+            if row.get('customer_id') not in customer_ids or not in_period(redeemed_at):
+                continue
+            details.append({
+                'id': f"benefit-{row.get('id') or len(details)}",
+                'source': 'employee_benefit',
+                'reward_name': row.get('benefit_name') or 'Employee / Membership Benefit',
+                'points_spent': None,
+                'quantity': int(row.get('quantity') or 1),
+                **identity_fields(row, redeemed_at),
+            })
+
+    details.sort(key=lambda r: _parse_ts(r.get('redeemed_at')) or datetime.min, reverse=True)
+    total = len(details)
+    return {
+        'range': range,
+        'program_public_id': (program or {}).get('public_id'),
+        'total': total,
+        'redemptions': details[:limit],
+    }
+
+
 @app.get("/api/v1/business/{public_id}/analytics")
 async def get_analytics(public_id: str, range: str = '30d', program_id: Optional[str] = Query(default=None)):
     business = safe_get_business(public_id)

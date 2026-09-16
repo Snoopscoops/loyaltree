@@ -2,10 +2,6 @@ import React, { useState, useEffect } from 'react'
 
 function AnalyticsDashboard({ API_BASE, user }) {
   const [timeRange, setTimeRange] = useState('7d')
-  const [programs, setPrograms] = useState([])
-  const [programFilter, setProgramFilter] = useState(() => {
-    try { return localStorage.getItem(`loyaltree_selected_program_${user?.business_slug || ''}`) || 'all' } catch (_) { return 'all' }
-  })
   const [analytics, setAnalytics] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -41,28 +37,11 @@ function AnalyticsDashboard({ API_BASE, user }) {
   })
   const [savingRetentionSettings, setSavingRetentionSettings] = useState(false)
   const [retentionSettingsMessage, setRetentionSettingsMessage] = useState('')
+  const [redemptionDrilldown, setRedemptionDrilldown] = useState({ open: false, loading: false, error: '', rows: [], total: 0 })
 
   useEffect(() => {
     fetchAnalytics()
-    try { if (user?.business_slug) localStorage.setItem(`loyaltree_selected_program_${user.business_slug}`, programFilter) } catch (_) {}
-  }, [timeRange, programFilter])
-
-  useEffect(() => {
-    if (!user?.business_slug || !user?.token) return
-    fetch(`${API_BASE}/api/v1/business/${user.business_slug}/programs`, {
-      headers: { 'Authorization': `Bearer ${user.token}` }
-    })
-      .then(res => res.ok ? res.json() : [])
-      .then(data => {
-        const rows = (Array.isArray(data) ? data : (Array.isArray(data?.programs) ? data.programs : [])).filter(p => p.is_active !== false)
-        setPrograms(rows)
-        try {
-          const saved = localStorage.getItem(`loyaltree_selected_program_${user.business_slug}`) || 'all'
-          if (saved === 'all' || rows.some(p => p.public_id === saved)) setProgramFilter(saved)
-        } catch (_) {}
-      })
-      .catch(() => setPrograms([]))
-  }, [API_BASE, user.business_slug, user.token])
+  }, [timeRange])
 
   useEffect(() => {
     // All-time, not scoped to timeRange - this is "which branch is driving
@@ -156,10 +135,31 @@ function AnalyticsDashboard({ API_BASE, user }) {
     setSavingRetentionSettings(false)
   }
 
+  const openRedemptionDrilldown = async () => {
+    setRedemptionDrilldown({ open: true, loading: true, error: '', rows: [], total: 0 })
+    try {
+      const base = `${API_BASE}/api/v1/business/${user.business_slug}`
+      const res = await authFetch(`${base}/analytics/redemptions?range=${encodeURIComponent(timeRange)}`)
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not load redemption details')
+      setRedemptionDrilldown({
+        open: true,
+        loading: false,
+        error: '',
+        rows: Array.isArray(data.redemptions) ? data.redemptions : [],
+        total: Number(data.total || 0),
+      })
+    } catch (err) {
+      setRedemptionDrilldown({ open: true, loading: false, error: err.message || 'Could not load redemption details', rows: [], total: 0 })
+    }
+  }
+
+  const closeRedemptionDrilldown = () => setRedemptionDrilldown(current => ({ ...current, open: false }))
+
   const fetchAnalytics = async () => {
     setLoading(true)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/analytics?range=${timeRange}&program_id=${encodeURIComponent(programFilter)}`, {
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/analytics?range=${timeRange}`, {
         headers: { 'Authorization': `Bearer ${user.token}` }
       })
       const data = await res.json()
@@ -196,13 +196,10 @@ function AnalyticsDashboard({ API_BASE, user }) {
     return c.in_this_month
   })
   const birthdayFilterLabel = birthdayFilter === 'today' ? 'Today' : birthdayFilter === '7d' ? 'Next 7 Days' : birthdayFilter === '30d' ? 'Next 30 Days' : 'This Month'
-  const isAllPrograms = overview.card_type === 'all' || programFilter === 'all'
   const isPoints = overview.card_type === 'points'
   const isMultipass = overview.card_type === 'multipass'
   const isMembership = overview.card_type === 'membership'
   const isVip = overview.card_type === 'vip'
-  const isEmployee = overview.card_type === 'employee'
-  const selectedProgramName = programFilter === 'all' ? 'All Programs' : (programs.find(p => p.public_id === programFilter)?.program_name || programs.find(p => p.public_id === programFilter)?.card_name || overview.program_name || 'Selected Program')
 
   return (
     <div className="an-container" style={styles.container}>
@@ -239,25 +236,8 @@ function AnalyticsDashboard({ API_BASE, user }) {
         }
       `}</style>
       <div className="an-header" style={styles.header}>
-        <div>
-          <h1 className="an-title" style={styles.title}>📊 Analytics Dashboard</h1>
-          <div style={{fontSize:12,color:'#64748b',marginTop:4}}>Viewing: <b>{selectedProgramName}</b></div>
-        </div>
-        <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',justifyContent:'flex-end'}}>
-          <select
-            value={programFilter}
-            onChange={e => setProgramFilter(e.target.value)}
-            style={{padding:'9px 12px',border:'1px solid #cbd5e1',borderRadius:10,background:'#fff',fontSize:13,fontWeight:700,color:'#334155',maxWidth:240}}
-            aria-label="Analytics program"
-          >
-            <option value="all">All Programs</option>
-            {programs.map(program => (
-              <option key={program.public_id} value={program.public_id}>
-                {program.program_name || program.card_name || 'Loyalty Program'}
-              </option>
-            ))}
-          </select>
-          <div className="an-timerange" style={styles.timeRange}>
+        <h1 className="an-title" style={styles.title}>📊 Analytics Dashboard</h1>
+        <div className="an-timerange" style={styles.timeRange}>
           {['7d', '30d', '90d', 'all'].map(range => (
             <button
               key={range}
@@ -272,20 +252,13 @@ function AnalyticsDashboard({ API_BASE, user }) {
               {range === '7d' ? 'Last 7 Days' : range === '30d' ? 'Last 30 Days' : range === '90d' ? 'Last 90 Days' : 'All Time'}
             </button>
           ))}
-          </div>
         </div>
       </div>
-
-      {programFilter !== 'all' && (
-        <div style={{margin:'-4px 0 14px',padding:'9px 12px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:10,fontSize:11.5,color:'#64748b'}}>
-          Customer, loyalty activity, redemptions, trends, and demographics below are filtered to <b>{selectedProgramName}</b>. Business-wide security/CRM operational panels remain organization-level.
-        </div>
-      )}
 
       {/* Overview Cards */}
       <div className="an-overview-grid" style={styles.overviewGrid}>
         <StatCard 
-          title={isAllPrograms ? "Card Memberships" : "Total Customers"} 
+          title="Total Customers" 
           value={overview.total_customers} 
           change={overview.customer_change}
           icon="👥" 
@@ -308,19 +281,21 @@ function AnalyticsDashboard({ API_BASE, user }) {
           />
         ) : (
           <StatCard
-            title={isAllPrograms ? 'Loyalty Activity' : isEmployee ? 'Attendance Actions' : isVip ? 'VIP Points Issued' : isMembership ? 'Member Visits' : isMultipass ? 'Sessions Used' : 'Stamps Issued'}
+            title={isVip ? 'VIP Points Issued' : isMembership ? 'Member Visits' : isMultipass ? 'Sessions Used' : 'Stamps Issued'}
             value={overview.total_stamps}
             change={overview.stamp_change}
-            icon={isAllPrograms ? '✨' : isEmployee ? '🕒' : isVip ? '👑' : isMembership ? '✅' : isMultipass ? '🎫' : '🎯'}
+            icon={isVip ? '👑' : isMembership ? '✅' : isMultipass ? '🎫' : '🎯'}
             color="#f59e0b"
           />
         )}
         <StatCard 
-          title={isAllPrograms ? 'Benefits / Rewards Redeemed' : isEmployee ? 'Benefits Redeemed' : isVip ? 'Tier Upgrades' : isMembership ? 'Membership Actions' : isMultipass ? 'Packs Completed' : 'Rewards Redeemed'}
+          title={isVip ? 'Tier Upgrades' : isMembership ? 'Membership Actions' : isMultipass ? 'Packs Completed' : 'Rewards Redeemed'}
           value={overview.total_rewards} 
           change={overview.reward_change}
           icon="🎁" 
           color="#ec4899"
+          onClick={openRedemptionDrilldown}
+          hint="Click to see who redeemed"
         />
         {isPoints ? (
           <StatCard
@@ -332,7 +307,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           />
         ) : (
           <StatCard
-            title={isAllPrograms ? 'Avg. Activity/Member' : isEmployee ? 'Avg. Attendance Actions' : isVip ? 'Avg. VIP Points/Customer' : isMembership ? 'Avg. Visits/Member' : isMultipass ? 'Avg. Sessions/Customer' : 'Avg. Stamps/Customer'}
+            title={isVip ? 'Avg. VIP Points/Customer' : isMembership ? 'Avg. Visits/Member' : isMultipass ? 'Avg. Sessions/Customer' : 'Avg. Stamps/Customer'}
             value={overview.avg_stamps_per_customer}
             change={overview.avg_change}
             icon="📈"
@@ -357,6 +332,50 @@ function AnalyticsDashboard({ API_BASE, user }) {
         )}
       </div>
 
+      {/* Birthday Celebrants — quick visibility near the main KPIs */}
+      <div id="birthday-celebrants-quick" style={{...styles.insightCard, marginBottom:24, borderLeft:'4px solid #f59e0b'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12,flexWrap:'wrap'}}>
+          <div>
+            <h3 style={{...styles.insightTitle,marginBottom:4}}>🎉 Birthday Celebrants</h3>
+            <div style={styles.mutedText}>Always visible here; detailed birthday automation and eligibility remain in Retention Analytics.</div>
+          </div>
+          <button
+            type="button"
+            className="an-actionbtn"
+            style={styles.actionBtn}
+            onClick={() => document.getElementById('birthday-celebrants-detail')?.scrollIntoView({ behavior:'smooth', block:'start' })}
+          >
+            View birthday details
+          </button>
+        </div>
+        <div className="an-overview-grid" style={{...styles.overviewGrid,marginTop:14,marginBottom:12}}>
+          <MiniMetric label="This Month" value={birthdayData.counts?.this_month || 0} />
+          <MiniMetric label="Today" value={birthdayData.counts?.today || 0} />
+          <MiniMetric label="Next 7 Days" value={birthdayData.counts?.next_7_days || 0} />
+          <MiniMetric label="Next 30 Days" value={birthdayData.counts?.next_30_days || 0} />
+        </div>
+        {extendedLoading ? (
+          <div style={styles.noData}>Loading birthday celebrants…</div>
+        ) : (birthdayData.customers || []).length === 0 ? (
+          <div style={styles.noData}>No birthday celebrants in this month / next 30 days.</div>
+        ) : (
+          <div style={{display:'grid',gap:8}}>
+            {(birthdayData.customers || []).slice(0,4).map(c => (
+              <div key={`quick-${c.customer_public_id}-${c.birthday}`} style={styles.birthdayRow}>
+                <div>
+                  <div style={{fontWeight:800,color:'#1e293b'}}>{c.customer_name}</div>
+                  <div style={styles.mutedText}>
+                    🎂 {c.birthday ? new Date(`${c.birthday}T00:00:00`).toLocaleDateString(undefined,{month:'short',day:'numeric'}) : '—'}
+                    {c.is_today ? ' · Today!' : Number(c.days_until) >= 0 ? ` · ${c.days_until} day${Number(c.days_until)===1?'':'s'} away` : ''}
+                  </div>
+                </div>
+                <span style={styles.statusPill}>{c.is_today ? 'Celebrating today' : c.in_this_month ? 'This month' : 'Upcoming'}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* Charts Row */}
       <div className="an-charts-row" style={styles.chartsRow}>
         <div className="an-chart-card" style={styles.chartCard}>
@@ -364,7 +383,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           <LineChart data={trends.customers} color="#0d9488" />
         </div>
         <div className="an-chart-card" style={styles.chartCard}>
-          <h3 style={styles.chartTitle}>{isAllPrograms ? '✨ Loyalty Activity' : isEmployee ? '🕒 Attendance Activity' : isPoints ? '💎 Points Activity' : isMembership ? '✅ Member Visits' : isMultipass ? '🎫 Session Activity' : '🎯 Stamp Activity'}</h3>
+          <h3 style={styles.chartTitle}>{isPoints ? '💎 Points Activity' : isMembership ? '✅ Member Visits' : isMultipass ? '🎫 Session Activity' : '🎯 Stamp Activity'}</h3>
           <LineChart data={trends.stamps} color="#f59e0b" />
         </div>
       </div>
@@ -372,7 +391,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
       {/* Second Charts Row */}
       <div className="an-charts-row" style={styles.chartsRow}>
         <div className="an-chart-card" style={styles.chartCard}>
-          <h3 style={styles.chartTitle}>{isAllPrograms ? '🎁 Benefits / Reward Redemptions' : isEmployee ? '🎁 Employee Benefit Redemptions' : isMembership ? '📅 Membership Activity' : isMultipass ? '✅ Packs Completed' : '🎁 Reward Redemptions'}</h3>
+          <h3 style={styles.chartTitle}>{isMembership ? '📅 Membership Activity' : isMultipass ? '✅ Packs Completed' : '🎁 Reward Redemptions'}</h3>
           <BarChart data={trends.rewards} color="#ec4899" />
         </div>
         <div className="an-chart-card" style={styles.chartCard}>
@@ -391,7 +410,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
               <div key={i} style={styles.customerRow}>
                 <span style={styles.rank}>#{i + 1}</span>
                 <span style={styles.customerName}>{c.name}</span>
-                <span style={styles.customerStamps}>{c.stamps} {c.metric === 'attendance_actions' ? 'attendance actions' : c.metric === 'points_balance' ? 'pts' : c.metric === 'sessions_used' ? 'sessions' : (isAllPrograms ? 'activity' : 'stamps')}</span>
+                <span style={styles.customerStamps}>{c.stamps} {c.metric === 'points_balance' ? 'pts' : c.metric === 'sessions_used' ? 'sessions' : 'stamps'}</span>
               </div>
             ))}
           </div>
@@ -847,7 +866,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           {retentionSettingsMessage && <div style={{marginTop:10,fontSize:13,fontWeight:700,color:retentionSettingsMessage.includes('Saved')?'#166534':'#b91c1c'}}>{retentionSettingsMessage}</div>}
         </div>
 
-        <div style={{...styles.insightCard,marginBottom:16}}>
+        <div id="birthday-celebrants-detail" style={{...styles.insightCard,marginBottom:16,scrollMarginTop:16}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12,flexWrap:'wrap',marginBottom:14}}>
             <div>
               <h4 style={{...styles.insightTitle,marginBottom:4}}>🎉 Birthday Celebrants</h4>
@@ -933,6 +952,43 @@ function AnalyticsDashboard({ API_BASE, user }) {
         </div>
       </div>
 
+      {redemptionDrilldown.open && (
+        <div style={styles.modalBackdrop} onMouseDown={e => { if (e.target === e.currentTarget) closeRedemptionDrilldown() }}>
+          <div style={styles.modalCard} role="dialog" aria-modal="true" aria-label="Redemption details">
+            <div style={styles.modalHeader}>
+              <div>
+                <h3 style={{margin:0,color:'#1e293b'}}>🎁 Redemption Details</h3>
+                <div style={styles.mutedText}>{timeRange === 'all' ? 'All time' : `Last ${timeRange.replace('d','')} days`} · {redemptionDrilldown.total} redemption{redemptionDrilldown.total===1?'':'s'}</div>
+              </div>
+              <button type="button" onClick={closeRedemptionDrilldown} style={styles.modalClose}>×</button>
+            </div>
+
+            {redemptionDrilldown.loading ? <div style={styles.noData}>Loading redemptions…</div> :
+             redemptionDrilldown.error ? <div style={{...styles.noData,color:'#b91c1c'}}>{redemptionDrilldown.error}</div> :
+             redemptionDrilldown.rows.length === 0 ? <div style={styles.noData}>No redemptions in this period.</div> : (
+              <div style={styles.redemptionList}>
+                {redemptionDrilldown.rows.map((r,i) => (
+                  <div key={r.id || `${r.customer_public_id || 'customer'}-${r.redeemed_at || i}`} style={styles.redemptionRow}>
+                    <div style={{minWidth:0,flex:1}}>
+                      <div style={{fontWeight:850,color:'#1e293b'}}>{r.customer_name || 'Customer'}</div>
+                      <div style={{fontSize:13,color:'#475569',marginTop:2}}>{r.reward_name || 'Redeemable reward'}</div>
+                      <div style={styles.mutedText}>
+                        {[r.program_name, r.branch_name, r.staff_name ? `by ${r.staff_name}` : null].filter(Boolean).join(' · ') || 'Loyalty redemption'}
+                      </div>
+                    </div>
+                    <div style={{textAlign:'right',minWidth:120}}>
+                      {r.points_spent != null && <div style={{fontWeight:800,color:'#ec4899'}}>{Number(r.points_spent).toLocaleString()} pts</div>}
+                      {r.quantity != null && Number(r.quantity) > 1 && <div style={{fontWeight:800,color:'#ec4899'}}>×{r.quantity}</div>}
+                      <div style={styles.mutedText}>{r.redeemed_at ? new Date(r.redeemed_at).toLocaleString() : '—'}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {extendedLoading && <div style={styles.moduleNotice}>Loading extended analytics…</div>}
       {extendedError && <div style={{...styles.moduleNotice,color:'#b45309'}}>{extendedError}</div>}
 
@@ -950,18 +1006,30 @@ function MiniMetric({ label, value, danger = false }) {
   )
 }
 
-function StatCard({ title, value, change, icon, color }) {
-  const isPositive = change >= 0
+function StatCard({ title, value, change, icon, color, onClick, hint }) {
+  const hasChange = Number.isFinite(Number(change))
+  const numericChange = Number(change || 0)
+  const isPositive = numericChange >= 0
+  const clickable = typeof onClick === 'function'
   return (
-    <div className="an-statcard" style={{...styles.statCard, borderTop: `4px solid ${color}`}}>
+    <div
+      className="an-statcard"
+      role={clickable ? 'button' : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      onClick={onClick}
+      onKeyDown={clickable ? (e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick() } }) : undefined}
+      style={{...styles.statCard, borderTop: `4px solid ${color}`, cursor: clickable ? 'pointer' : 'default', transition:'transform .15s ease, box-shadow .15s ease'}}
+      title={hint || undefined}
+    >
       <div style={styles.statHeader}>
         <span className="an-stat-icon" style={styles.statIcon}>{icon}</span>
-        <span style={{...styles.change, color: isPositive ? '#10b981' : '#ef4444'}}>
-          {isPositive ? '↑' : '↓'} {Math.abs(change)}%
-        </span>
+        {hasChange && <span style={{...styles.change, color: isPositive ? '#10b981' : '#ef4444'}}>
+          {isPositive ? '↑' : '↓'} {Math.abs(numericChange)}%
+        </span>}
       </div>
       <div className="an-statvalue" style={styles.statValue}>{value}</div>
       <div style={styles.statTitle}>{title}</div>
+      {hint && <div style={{fontSize:11,color:'#0d9488',fontWeight:750,marginTop:7}}>{hint} →</div>}
     </div>
   )
 }
@@ -1556,6 +1624,28 @@ const styles = {
     fontSize: 16,
     color: '#ef4444',
   },
+  modalBackdrop: {
+    position:'fixed', inset:0, background:'rgba(15,23,42,.46)', zIndex:9999,
+    display:'grid', placeItems:'center', padding:16,
+  },
+  modalCard: {
+    width:'min(760px, 96vw)', maxHeight:'82vh', overflow:'hidden', background:'white',
+    borderRadius:16, boxShadow:'0 24px 70px rgba(15,23,42,.28)', display:'grid', gridTemplateRows:'auto 1fr',
+  },
+  modalHeader: {
+    display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:12,
+    padding:'18px 20px', borderBottom:'1px solid #e2e8f0',
+  },
+  modalClose: {
+    border:'none', background:'#f1f5f9', color:'#475569', width:36, height:36, borderRadius:10,
+    cursor:'pointer', fontSize:24, lineHeight:1,
+  },
+  redemptionList: { overflowY:'auto', padding:14, display:'grid', gap:8 },
+  redemptionRow: {
+    display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:14,
+    padding:14, border:'1px solid #e2e8f0', borderRadius:12, background:'#fff',
+  },
+
 }
 
 export default AnalyticsDashboard
