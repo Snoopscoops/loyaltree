@@ -4109,7 +4109,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                       <input style={styles.input} type="number" min="0" value={editForm.vip_points ?? 0} onChange={e=>setEditForm({...editForm,vip_points:e.target.value})}/>
                     </>}
                     <label style={styles.label}>Manual tier override</label>
-                    <select style={styles.input} value={editForm.vip_manual_tier_id||''} onChange={e=>setEditForm({...editForm,vip_manual_tier_id:e.target.value})}><option value=''>Automatic from {hybridTierUsesStamps?'Tier stamps':'Tier points'}</option>{(program?.vip_tiers||[]).map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select>
+                    <select style={styles.input} value={editForm.vip_manual_tier_id||''} onChange={e=>setEditForm({...editForm,vip_manual_tier_id:e.target.value})}><option value=''>Automatic from {hybridTierUsesStamps?'Tier stamps':'Tier points'}</option>{(program?.vip_tiers||[]).map((t,i)=><option key={t.id} value={t.id}>{`Tier ${i} · ${t.name || (i===0?'Member':`Tier ${i}`)}`}</option>)}</select>
                   </div>}
                   <label style={styles.label}>Subscription status</label>
                   <input style={styles.input} value={(editForm.membership_status || 'inactive').toUpperCase()} readOnly />
@@ -4175,7 +4175,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                   </> : <>
                     <label style={styles.label}>Tier points</label><input style={styles.input} type='number' min='0' value={editForm.vip_points||0} onChange={e=>setEditForm({...editForm,vip_points:e.target.value})}/>
                   </>}
-                  <label style={styles.label}>Manual tier override</label><select style={styles.input} value={editForm.vip_manual_tier_id||''} onChange={e=>setEditForm({...editForm,vip_manual_tier_id:e.target.value})}><option value=''>Automatic from {vipUsesStamps?'stamps':'points'}</option>{(program?.vip_tiers||[]).map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select>
+                  <label style={styles.label}>Manual tier override</label><select style={styles.input} value={editForm.vip_manual_tier_id||''} onChange={e=>setEditForm({...editForm,vip_manual_tier_id:e.target.value})}><option value=''>Automatic from {vipUsesStamps?'stamps':'points'}</option>{(program?.vip_tiers||[]).map((t,i)=><option key={t.id} value={t.id}>{`Tier ${i} · ${t.name || (i===0?'Member':`Tier ${i}`)}`}</option>)}</select>
                 </>
               ) : isMembershipCard ? (
                 <>

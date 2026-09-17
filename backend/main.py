@@ -3577,7 +3577,7 @@ def _pos_loyalty_contract(business: dict) -> dict:
                 if card_type == 'hybrid'
                 else program.get('vip_progression_type') or ('stamps' if program.get('vip_stamps_enabled') else 'points')
             ),
-            'tiers': program.get('vip_tiers') or [],
+            'tiers': normalize_vip_tiers(program) if program_has_tier(program) else (program.get('vip_tiers') or []),
         }
 
     return contract
@@ -9560,6 +9560,14 @@ def _clean_vip_benefits(raw_benefits, discount_percent=0) -> list:
 
 
 def normalize_vip_tiers(program: dict) -> list:
+    """Return active tiers with a guaranteed Tier 0 base tier.
+
+    Tier-enabled programs always have one effective base tier at threshold 0.
+    Existing businesses that already have a 0-threshold tier keep that tier's
+    id/name/color, so Wallet class IDs and manual overrides remain stable.
+    Legacy programs whose first tier starts above 0 receive a synthetic Member
+    tier until the owner next saves the editor, at which point it is persisted.
+    """
     raw = program.get('vip_tiers') or []
     tiers = []
     for i, t in enumerate(raw):
@@ -9586,6 +9594,45 @@ def normalize_vip_tiers(program: dict) -> list:
         })
     tiers = [t for t in tiers if t['active']]
     tiers.sort(key=lambda t: t['threshold'])
+
+    if program_has_tier(program):
+        zero_index = next((i for i, tier in enumerate(tiers) if int(tier.get('threshold') or 0) == 0), None)
+        if zero_index is None:
+            tiers.insert(0, {
+                'id': 'tier-0',
+                'name': 'Member',
+                'threshold': 0,
+                'color': str((program or {}).get('primary_color') or '#0d9488'),
+                'discount_percent': 0,
+                'benefits': [],
+                'coupons': [],
+                'coupon_enabled': False,
+                'coupon_reward_text': '',
+                'coupon_validity_days': 30,
+                'active': True,
+            })
+        elif zero_index != 0:
+            tiers.insert(0, tiers.pop(zero_index))
+
+        # Tier 0 is mandatory and always active. For old configurations that
+        # accidentally saved duplicate/equal thresholds, make the *effective*
+        # runtime ladder strictly increasing. The normalized values are returned
+        # by loyalty-config and become persisted on the owner's next save.
+        previous = -1
+        for i, tier in enumerate(tiers):
+            if i == 0:
+                tier['threshold'] = 0
+                tier['active'] = True
+                tier['is_base_tier'] = True
+                previous = 0
+            else:
+                threshold = max(0, int(tier.get('threshold') or 0))
+                if threshold <= previous:
+                    threshold = previous + 1
+                tier['threshold'] = threshold
+                tier['is_base_tier'] = False
+                previous = threshold
+
     return tiers
 
 
@@ -17817,6 +17864,7 @@ async def get_loyalty_config(public_id: str, response: Response, program_id: Opt
         "hybrid_stamps_enabled": hybrid_stamps_enabled(program) if program.get('card_type') == 'hybrid' else False,
         "vip_progression_type": vip_progression_type(program),
         "hybrid_tier_progression_type": hybrid_tier_progression_type(program),
+        "vip_tiers": normalize_vip_tiers(program) if program_has_tier(program) else (program.get("vip_tiers") or []),
         "is_configured": True,
         "program_public_id": program.get("public_id"),
         "program_name": program.get("program_name") or program.get("card_name"),
@@ -18046,10 +18094,36 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
         data['vip_amount_pesos'] = config.vip_amount_pesos or 100
         tiers=[]
         last=-1
-        for i,t in enumerate(config.vip_tiers or []):
-            threshold=max(0,int(t.get('threshold') or 0))
-            if threshold < last:
-                raise HTTPException(status_code=400, detail='VIP tier thresholds must increase in order')
+        raw_tiers = [dict(t) for t in (config.vip_tiers or []) if isinstance(t, dict)]
+
+        # Tier 0 is mandatory for every Tier-enabled card. Preserve an existing
+        # zero-threshold tier (and therefore its id/Wallet class) when possible;
+        # otherwise create a new editable Member base tier.
+        zero_index = next((
+            i for i, tier in enumerate(raw_tiers)
+            if max(0, int(tier.get('threshold') or 0)) == 0
+        ), None)
+        if zero_index is None:
+            raw_tiers.insert(0, {
+                'id': 'tier-0',
+                'name': 'Member',
+                'threshold': 0,
+                'color': str(data.get('primary_color') or '#0d9488'),
+                'discount_percent': 0,
+                'benefits': [],
+                'coupons': [],
+                'active': True,
+            })
+        elif zero_index != 0:
+            raw_tiers.insert(0, raw_tiers.pop(zero_index))
+
+        for i,t in enumerate(raw_tiers):
+            threshold = 0 if i == 0 else max(0, int(t.get('threshold') or 0))
+            if i > 0 and threshold <= last:
+                raise HTTPException(
+                    status_code=400,
+                    detail='Tier 1 and higher thresholds must be greater than the previous tier'
+                )
             last=threshold
             raw_coupons = t.get('coupons')
             if raw_coupons is None:
@@ -18087,10 +18161,10 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
                 })
             active_coupons = [c for c in coupons if c['active']]
             tiers.append({
-                'id': str(t.get('id') or uuid.uuid4().hex[:12]),
-                'name': str(t.get('name') or f'Tier {i+1}').strip(),
+                'id': str(t.get('id') or ('tier-0' if i == 0 else uuid.uuid4().hex[:12])),
+                'name': str(t.get('name') or ('Member' if i == 0 else f'Tier {i}')).strip(),
                 'threshold': threshold,
-                'color': str(t.get('color') or '#64748b'),
+                'color': str(t.get('color') or (data.get('primary_color') if i == 0 else '#64748b') or '#0d9488'),
                 'discount_percent': max(0,min(100,float(t.get('discount_percent') or 0))),
                 'benefits': _clean_vip_benefits(t.get('benefits') or [], t.get('discount_percent') or 0),
                 'coupons': coupons,
@@ -18098,7 +18172,7 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
                 'coupon_enabled': bool(active_coupons),
                 'coupon_reward_text': active_coupons[0]['reward_text'] if active_coupons else '',
                 'coupon_validity_days': active_coupons[0]['validity_days'] if active_coupons else 30,
-                'active': t.get('active') is not False,
+                'active': True if i == 0 else (t.get('active') is not False),
             })
         data['vip_tiers'] = tiers
     if config.membership_benefits_unlock_enabled and not (
