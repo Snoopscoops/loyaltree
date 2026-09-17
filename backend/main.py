@@ -9683,23 +9683,43 @@ def _vip_tiers_crossed_on_upgrade(old_tier: dict, new_tier: dict, program: dict)
     return tiers[old_index + 1:new_index + 1]
 
 
-def issue_vip_tier_upgrade_coupons(business: dict, customer: dict, program: dict, old_tier: dict, new_tier: dict) -> list:
-    """Issue every owner-configured coupon from each newly crossed VIP tier.
+def _issue_vip_tier_coupons_for_tiers(business: dict, customer: dict, program: dict, tiers: list) -> list:
+    """Issue configured one-time Tier coupons idempotently.
 
-    Coupons queue in the existing coupons table. safe_get_active_coupon() exposes
-    the oldest usable reward first, so a customer can receive several tier rewards
-    at once without one overwriting another.
+    The source/source_ref pair makes Tier coupon issuance safe to retry. That is
+    important for Tier 0 because it is granted immediately on enrollment rather
+    than by crossing a threshold later. Redeemed/cancelled coupons still count as
+    already issued and are never recreated.
     """
-    if not supabase or not business or not customer or not program or not program_has_tier(program):
+    if not supabase or not business or not customer or not program:
         return []
-    crossed = _vip_tiers_crossed_on_upgrade(old_tier, new_tier, program)
+
     issued = []
     order = 0
-    for tier in crossed:
+    for tier in (tiers or []):
         for coupon_config in (tier.get('coupons') or []):
             reward_text = str(coupon_config.get('reward_text') or '').strip()
             if not reward_text:
                 continue
+            coupon_config_id = str(coupon_config.get('id') or hashlib.sha256(reward_text.encode('utf-8')).hexdigest()[:12])
+            source_ref = f"tier:{program.get('id')}:{tier.get('id')}:{coupon_config_id}"
+
+            # Any prior row (active/redeemed/cancelled) means this one-time Tier
+            # reward has already been issued to this member.
+            try:
+                existing = (
+                    supabase.table('coupons').select('*')
+                    .eq('customer_id', customer.get('id'))
+                    .eq('source', 'tier_reward')
+                    .eq('source_ref', source_ref)
+                    .limit(1).execute().data or []
+                )
+                if existing:
+                    continue
+            except Exception as exc:
+                print(f"VIP TIER COUPON schema warning: {exc}")
+                return issued
+
             validity_days = max(1, min(3650, int(coupon_config.get('validity_days') or 30)))
             expires_at = (_loyalty_today() + timedelta(days=validity_days)).isoformat()
             created_at = (datetime.utcnow() + timedelta(microseconds=order)).isoformat()
@@ -9709,6 +9729,18 @@ def issue_vip_tier_upgrade_coupons(business: dict, customer: dict, program: dict
                 'business_id': business.get('id'),
                 'customer_id': customer.get('id'),
                 'reward_text': reward_text[:200],
+                'reward_type': 'redeemable',
+                'reward_value': None,
+                'source': 'tier_reward',
+                'source_ref': source_ref,
+                'min_purchase_amount': 0,
+                'stacking_allowed': True,
+                'metadata': {
+                    'program_id': program.get('id'),
+                    'tier_id': tier.get('id'),
+                    'tier_name': tier.get('name'),
+                    'tier_coupon_id': coupon_config_id,
+                },
                 'status': 'active',
                 'expires_at': expires_at,
                 'created_at': created_at,
@@ -9720,15 +9752,43 @@ def issue_vip_tier_upgrade_coupons(business: dict, customer: dict, program: dict
                     **created,
                     'tier_id': tier.get('id'),
                     'tier_name': tier.get('name'),
-                    'tier_coupon_id': coupon_config.get('id'),
+                    'tier_coupon_id': coupon_config_id,
                 })
             except Exception as exc:
-                # VIP progression is primary; a coupon write failure must not roll it back.
+                # Tier progression itself is primary; a reward-row write failure
+                # must never roll back a completed loyalty transaction.
                 print(
                     f"VIP TIER COUPON warning customer={customer.get('public_id')} "
                     f"tier={tier.get('name')} coupon={reward_text[:60]}: {exc}"
                 )
     return issued
+
+
+def issue_vip_tier_initial_coupons(business: dict, customer: dict, program: dict) -> list:
+    """Issue the member's starting-tier coupons once.
+
+    A Tier 0 member never *crosses* Tier 0, so the normal upgrade function cannot
+    award its coupons. Enrollment explicitly enters the member into Tier 0 and
+    therefore issues those configured one-time rewards here.
+    """
+    if not supabase or not business or not customer or not program or not program_has_tier(program):
+        return []
+    current = get_vip_tier(customer, program)
+    if int(current.get('threshold') or 0) != 0:
+        return []
+    return _issue_vip_tier_coupons_for_tiers(business, customer, program, [current])
+
+
+def issue_vip_tier_upgrade_coupons(business: dict, customer: dict, program: dict, old_tier: dict, new_tier: dict) -> list:
+    """Issue every owner-configured coupon from each newly crossed Tier.
+
+    Tier 0 is handled at enrollment by issue_vip_tier_initial_coupons(). The
+    shared helper keeps all Tier coupon issuance idempotent.
+    """
+    if not supabase or not business or not customer or not program or not program_has_tier(program):
+        return []
+    crossed = _vip_tiers_crossed_on_upgrade(old_tier, new_tier, program)
+    return _issue_vip_tier_coupons_for_tiers(business, customer, program, crossed)
 
 
 def log_vip_event(business_id, customer_id, action, points_delta, points_balance, amount_spent=None, old_tier=None, new_tier=None, staff_id=None, branch_id=None, note=None):
@@ -26212,11 +26272,18 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
         raise HTTPException(status_code=500, detail=error_msg)
 
     welcome_reward = None
+    tier0_coupons_issued = []
     if inserted_customer:
         welcome_reward = maybe_issue_welcome_reward(business, inserted_customer, program or {}, 'join')
-        # Re-read after a points/stamps welcome reward so the Wallet prewarm uses
-        # the updated starting balance/progress.
+        # Re-read after a points/stamps welcome reward so Tier evaluation and
+        # Wallet prewarm use the updated starting balance/progress.
         inserted_customer = safe_get_customer(customer_public_id) or inserted_customer
+
+        # A new member starts in Tier 0. Because no threshold was crossed, the
+        # normal upgrade path would never issue Tier 0's one-time coupons.
+        tier0_coupons_issued = issue_vip_tier_initial_coupons(
+            business, inserted_customer, program or {}
+        )
 
     # Prepare the signed Apple pass after the HTTP response is sent. The
     # success page normally gives this task enough time to finish before the
@@ -26235,6 +26302,7 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
         "message": "Welcome to the loyalty program!",
         "program_public_id": program.get("public_id") if program else None,
         "welcome_reward": welcome_reward,
+        "tier0_coupons_issued": tier0_coupons_issued,
     }
 
 # CAR LENDING / SHOWROOM - SELF-SERVICE BUYER JOIN PAGE
