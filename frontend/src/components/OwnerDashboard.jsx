@@ -523,6 +523,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
   const [selectedCustomer, setSelectedCustomer] = useState(null)
   const [showEditModal, setShowEditModal] = useState(false)
   const [editForm, setEditForm] = useState({})
+  const [editOriginal, setEditOriginal] = useState({})
   const [savingCustomer, setSavingCustomer] = useState(false)
   const [deletingCustomer, setDeletingCustomer] = useState(false)
   const [showStaffEditModal, setShowStaffEditModal] = useState(false)
@@ -1404,7 +1405,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
   }
 
   const openEditCustomer = (c) => {
-    setEditForm({
+    const formData = {
       public_id: c.public_id,
       name: c.name || '',
       address: c.address || '',
@@ -1428,7 +1429,9 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
       membership_expires_at: c.membership_expires_at || '',
       vip_points: c.vip_points ?? 0,
       vip_manual_tier_id: c.vip_manual_tier_id || '',
-    })
+    }
+    setEditForm(formData)
+    setEditOriginal(formData)
     setShowCouponForm(false)
     setCouponError('')
     setCouponText('')
@@ -1717,19 +1720,22 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
     e.preventDefault()
     setSavingCustomer(true)
     try {
-      // membership_status is a computed/read-only display value in this form.
-      // In particular, `expired` is derived from membership_expires_at and is
-      // not a persisted membership_status enum, so never send it through this
-      // generic profile PATCH. Activate/Renew/Suspend/etc. continue to use the
-      // dedicated membership/action endpoint.
+      // Subscription expiry has a dedicated owner-only endpoint. This keeps a
+      // simple date correction isolated from profile fields, balances and the
+      // Hybrid Rewards/Tier expiry clocks.
+      const expiryChanged = String(editForm.membership_expires_at || '') !== String(editOriginal.membership_expires_at || '')
+
       const {
         public_id,
         membership_status: _membershipStatus,
         membership_visit_count: _membershipVisitCount,
         membership_last_visit_at: _membershipLastVisitAt,
         last_points_at: _lastPointsAt,
+        membership_start_date: _membershipStartDate,
+        membership_expires_at: _membershipExpiresAt,
         ...fields
       } = editForm
+
       const payload = {
         ...fields,
         age: fields.age === '' ? null : parseInt(fields.age, 10),
@@ -1738,20 +1744,49 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
         points_balance: fields.points_balance === '' ? null : parseInt(fields.points_balance, 10),
         multipass_sessions_remaining: fields.multipass_sessions_remaining === '' ? null : parseInt(fields.multipass_sessions_remaining, 10),
       }
-      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${public_id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      })
-      if (res.ok) {
-        setShowEditModal(false)
-        loadData()
-      } else {
-        const data = await res.json().catch(() => ({}))
-        setMessage(data.detail || 'Could not save customer')
+
+      const comparableOriginal = {
+        ...editOriginal,
+        age: editOriginal.age === '' ? null : parseInt(editOriginal.age, 10),
+        stamp_count: editOriginal.stamp_count === '' ? null : parseInt(editOriginal.stamp_count, 10),
+        tier_stamp_count: editOriginal.tier_stamp_count === '' ? null : parseInt(editOriginal.tier_stamp_count, 10),
+        points_balance: editOriginal.points_balance === '' ? null : parseInt(editOriginal.points_balance, 10),
+        multipass_sessions_remaining: editOriginal.multipass_sessions_remaining === '' ? null : parseInt(editOriginal.multipass_sessions_remaining, 10),
       }
+      const profileChanged = Object.keys(payload).some(key =>
+        String(payload[key] ?? '') !== String(comparableOriginal[key] ?? '')
+      )
+
+      if (profileChanged) {
+        const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${public_id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        })
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}))
+          throw new Error(data.detail || 'Could not save customer')
+        }
+      }
+
+      if (expiryChanged) {
+        if (!editForm.membership_expires_at) {
+          throw new Error('Choose a subscription expiry date.')
+        }
+        const expiryRes = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${public_id}/membership-expiry`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ membership_expires_at: editForm.membership_expires_at })
+        })
+        const expiryData = await expiryRes.json().catch(() => ({}))
+        if (!expiryRes.ok) throw new Error(expiryData.detail || 'Could not update subscription expiry')
+      }
+
+      setShowEditModal(false)
+      setMessage(expiryChanged ? 'Subscription expiry updated' : 'Customer updated')
+      loadData()
     } catch (err) {
-      setMessage('Network error')
+      setMessage(err.message || 'Could not save customer')
     }
     setSavingCustomer(false)
   }

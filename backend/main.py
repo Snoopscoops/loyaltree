@@ -2355,6 +2355,10 @@ class CustomerUpdate(BaseModel):
     employee_position: Optional[str] = Field(default=None, max_length=100)
     employee_start_date: Optional[str] = None
 
+class MembershipExpiryAdjustRequest(BaseModel):
+    membership_expires_at: str = Field(min_length=10, max_length=10)
+
+
 class StampRequest(BaseModel):
     customer_public_id: str
     staff_pin: Optional[str] = None
@@ -16034,6 +16038,93 @@ async def maintenance_card_expiration_sweep(x_cron_secret: str = Header(default=
     if not hmac.compare_digest(str(x_cron_secret or ''), CARD_EXPIRATION_CRON_SECRET):
         raise HTTPException(status_code=401, detail='Invalid cron secret')
     return await admin_sweep_card_expirations(True)
+
+
+@app.patch("/api/v1/business/{public_id}/customers/{customer_public_id}/membership-expiry")
+async def owner_adjust_membership_expiry(
+    public_id: str,
+    customer_public_id: str,
+    req: MembershipExpiryAdjustRequest,
+    background_tasks: BackgroundTasks,
+    authorization: str = Header(default=''),
+):
+    """Owner-only correction of one customer's membership expiry date.
+
+    This intentionally bypasses the generic Edit Customer payload so unrelated
+    profile/balance fields or legacy row values cannot block a simple date fix.
+    Hybrid Rewards/Tier expiry clocks are untouched.
+    """
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+
+    customer = safe_get_customer(customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail='Customer not found for this business')
+
+    program = safe_get_customer_program(customer, business.get('id'))
+    if not program or not program_has_membership(program):
+        raise HTTPException(status_code=400, detail='This customer is not in a membership-enabled program.')
+    if program_is_employee_membership(program):
+        raise HTTPException(status_code=400, detail='Employee membership does not use a subscription expiry date.')
+
+    raw_expiry = str(req.membership_expires_at or '').strip()
+    try:
+        expiry_date = date.fromisoformat(raw_expiry)
+    except Exception:
+        raise HTTPException(status_code=400, detail='Subscription expiry must use YYYY-MM-DD.')
+
+    start_raw = customer.get('membership_start_date')
+    if start_raw:
+        try:
+            start_date = date.fromisoformat(str(start_raw)[:10])
+        except Exception:
+            start_date = None
+        if start_date and expiry_date < start_date:
+            raise HTTPException(status_code=400, detail='Subscription expiry cannot be earlier than the subscription start date.')
+
+    old_effective_status = membership_effective_status(customer)
+    old_expiry = customer.get('membership_expires_at')
+    update_data = {
+        'membership_expires_at': expiry_date.isoformat(),
+        'updated_at': datetime.utcnow().isoformat(),
+    }
+    # Assigning a finite expiry to a Lifetime membership converts it back to a
+    # normal active term; otherwise the expiry would be ignored by the status.
+    if str(customer.get('membership_status') or '').lower() == 'lifetime':
+        update_data['membership_status'] = 'active'
+
+    try:
+        res = supabase.table('customers').update(update_data).eq('id', customer.get('id')).execute()
+        updated = (res.data or [{**customer, **update_data}])[0]
+    except Exception as exc:
+        print(f"MEMBERSHIP EXPIRY UPDATE ERROR customer={customer_public_id}: {exc}")
+        raise HTTPException(status_code=500, detail='Subscription expiry could not be updated.')
+
+    new_effective_status = membership_effective_status(updated)
+    log_membership_history(
+        business.get('id'), customer.get('id'), 'manual_expiry_adjust',
+        old_effective_status, new_effective_status,
+        updated.get('membership_expires_at'), None, None,
+        f"Owner changed expiry from {old_expiry or 'none'} to {updated.get('membership_expires_at')}",
+    )
+
+    try:
+        background_tasks.add_task(
+            sync_loyalty_wallets_background,
+            dict(updated), dict(business), dict(program),
+            'membership_action',
+        )
+    except Exception as exc:
+        print(f"MEMBERSHIP EXPIRY WALLET QUEUE warning: {exc}")
+
+    return {
+        'message': 'Subscription expiry updated',
+        'customer': updated,
+        'effective_status': new_effective_status,
+        'membership_expires_at': updated.get('membership_expires_at'),
+    }
 
 
 @app.api_route("/api/v1/business/{public_id}/customers/{customer_public_id}", methods=["PUT", "PATCH"])
