@@ -130,6 +130,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     membership_services: [], // legacy display compatibility
     membership_benefits: [],
     membership_terms: '',
+    membership_expiry_reminders_enabled: true,
+    membership_expiry_reminder_days: [7, 3, 1, 0],
+    membership_expiry_reminder_message: '',
     membership_visit_logging_enabled: true,
     membership_quick_checkin: false,
     membership_benefits_unlock_enabled: false,
@@ -291,6 +294,11 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                 usage_limit: null, reset_period: 'never', active: true,
               })),
           membership_terms: data.membership_terms || '',
+          membership_expiry_reminders_enabled: data.membership_expiry_reminders_enabled !== false,
+          membership_expiry_reminder_days: Array.isArray(data.membership_expiry_reminder_days)
+            ? data.membership_expiry_reminder_days.map(Number).filter(v => [7,3,1,0].includes(v))
+            : [7,3,1,0],
+          membership_expiry_reminder_message: data.membership_expiry_reminder_message || '',
           membership_visit_logging_enabled: data.membership_visit_logging_enabled !== false,
           membership_quick_checkin: data.membership_quick_checkin === true,
           membership_benefits_unlock_enabled: data.membership_benefits_unlock_enabled === true,
@@ -655,6 +663,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
       ? (form.membership_benefits || []).map(b => (b.name || '').trim()).filter(Boolean)
       : (form.membership_services || []).map(v => (v || '').trim()).filter(Boolean),
     membership_terms: form.membership_terms || null,
+    membership_expiry_reminders_enabled: form.membership_expiry_reminders_enabled !== false,
+    membership_expiry_reminder_days: [7,3,1,0].filter(day => (form.membership_expiry_reminder_days || []).map(Number).includes(day)),
+    membership_expiry_reminder_message: (form.membership_expiry_reminder_message || '').trim() || null,
     membership_visit_logging_enabled: form.membership_visit_logging_enabled !== false,
     membership_quick_checkin: form.membership_quick_checkin === true,
     membership_benefits_unlock_enabled: form.card_type === 'hybrid' && form.hybrid_tier_enabled === true && form.membership_benefits_unlock_enabled === true,
@@ -811,6 +822,35 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     )
   }
 
+  const toggleMembershipExpiryReminderDay = (day) => {
+    const current = (form.membership_expiry_reminder_days || []).map(Number)
+    const next = current.includes(day) ? current.filter(v => v !== day) : [...current, day]
+    update('membership_expiry_reminder_days', [7,3,1,0].filter(v => next.includes(v)))
+  }
+
+  const renderMembershipExpiryReminderEditor = ({ compact = false } = {}) => (
+    <div style={{...styles.fieldGroup,marginTop:compact?14:0,padding:14,border:'1px solid #a7f3d0',borderRadius:12,background:'#ecfdf5'}}>
+      <label style={{display:'flex',gap:10,alignItems:'flex-start',fontSize:13,fontWeight:850,lineHeight:1.45,cursor:'pointer'}}>
+        <input type="checkbox" checked={form.membership_expiry_reminders_enabled !== false} onChange={e=>update('membership_expiry_reminders_enabled',e.target.checked)} style={{marginTop:3}}/>
+        <span><strong>Automatic expiry reminders</strong><span style={{display:'block',fontWeight:500,color:'#64748b',marginTop:4}}>Notify active members through their Apple / Google Wallet card before a finite subscription expires.</span></span>
+      </label>
+      {form.membership_expiry_reminders_enabled !== false && <>
+        <div style={{marginTop:12}}>
+          <label style={styles.miniLabel}>Send reminders</label>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:7}}>
+            {[[7,'7 days before'],[3,'3 days before'],[1,'1 day before'],[0,'Expiry day']].map(([day,label])=><label key={day} style={{display:'flex',gap:7,alignItems:'center',padding:'8px 10px',background:'#fff',border:'1px solid #bbf7d0',borderRadius:9,fontSize:12,fontWeight:750,cursor:'pointer'}}><input type="checkbox" checked={(form.membership_expiry_reminder_days||[]).map(Number).includes(day)} onChange={()=>toggleMembershipExpiryReminderDay(day)}/>{label}</label>)}
+          </div>
+          {(form.membership_expiry_reminder_days||[]).length===0 && <div style={{...styles.hint,color:'#b45309',marginTop:7}}>Select at least one timing, or turn automatic reminders off.</div>}
+        </div>
+        <div style={{marginTop:12}}>
+          <label style={styles.miniLabel}>Custom message <span style={{fontWeight:500,color:'#94a3b8'}}>· optional</span></label>
+          <textarea style={{...styles.textarea,width:'100%',boxSizing:'border-box'}} rows={compact?3:4} maxLength={500} value={form.membership_expiry_reminder_message||''} onChange={e=>update('membership_expiry_reminder_message',e.target.value)} placeholder={'Hi {first_name}, your {membership_name} expires {timing} on {expiry_date}. Renew to keep your benefits active.'}/>
+          <div style={{...styles.hint,marginTop:5}}>Available: {'{first_name}'} · {'{membership_name}'} · {'{business_name}'} · {'{expiry_date}'} · {'{days_left}'} · {'{timing}'}</div>
+        </div>
+      </>}
+    </div>
+  )
+
   const addEmployeeBenefit = () => {
     setBenefitError('')
     const name = benefitDraft.name.trim()
@@ -882,6 +922,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     }
     if (form.card_type === 'hybrid' && form.hybrid_points_enabled === false && form.hybrid_stamps_enabled !== true) {
       throw new Error('Enable Points, Stamp Rewards, or both for the Hybrid Card.')
+    }
+    if ((form.card_type === 'membership' || form.card_type === 'hybrid') && form.membership_expiry_reminders_enabled !== false && (form.membership_expiry_reminder_days || []).length === 0) {
+      throw new Error('Choose at least one subscription expiry reminder timing, or turn automatic reminders off.')
     }
     if (form.welcome_reward_enabled) {
       const wrType=form.welcome_reward_type||'redeemable'
@@ -2091,6 +2134,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                 </div>}
               </div>
 
+              {renderMembershipExpiryReminderEditor()}
+
               <div style={styles.fieldGroup}>
                 <label style={{display:'flex',gap:10,alignItems:'flex-start',padding:14,border:'1px solid #dbeafe',borderRadius:12,background:'#f8fafc',fontSize:13,fontWeight:700,lineHeight:1.45,cursor:'pointer'}}>
                   <input type="checkbox" checked={form.membership_visit_logging_enabled !== false} onChange={e=>update('membership_visit_logging_enabled',e.target.checked)} style={{marginTop:3}}/>
@@ -2220,6 +2265,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                 <div style={styles.row}><div style={{...styles.fieldGroup,flex:1}}><label style={styles.label}>Default subscription duration</label><div style={styles.colorRow}><input style={styles.input} type="number" min={1} max={3650} value={form.membership_duration_days} onChange={e=>update('membership_duration_days',e.target.value)}/><span style={styles.unit}>days</span></div><p style={styles.hint}>Used when activating or renewing a member.</p></div><div style={{...styles.fieldGroup,flex:1}}><label style={styles.label}>Default price</label><div style={styles.colorRow}><span style={styles.unit}>₱</span><input style={styles.input} type="number" min={0} step="any" value={form.membership_price} onChange={e=>update('membership_price',e.target.value)}/></div></div></div>
               </>}
               {renderMembershipBenefitsEditor()}
+              {!form.membership_employee_mode && renderMembershipExpiryReminderEditor()}
               {!form.membership_employee_mode && <div style={styles.fieldGroup}><label style={styles.label}>Subscription terms</label><textarea style={styles.textarea} rows={4} value={form.membership_terms} onChange={e=>update('membership_terms',e.target.value)} placeholder="Optional rules, renewal terms, and usage conditions."/></div>}
             </div>
           ) : form.card_type === 'employee' ? (

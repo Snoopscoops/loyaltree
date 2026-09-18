@@ -1138,7 +1138,7 @@ def build_subscription_reminder_email(business: dict, days_left: Optional[int], 
     return subject, body
 
 # Shared secret for the /api/v1/cron/* endpoints (birthday greetings,
-# win-back messages). These are meant to be hit by an external scheduler
+# win-back messages, membership expiry reminders, and other scheduled jobs). These are meant to be hit by an external scheduler
 # (Render Cron Job, cron-job.org, GitHub Actions, etc.) once a day, not by
 # the frontend - so they're gated by a header instead of a login.
 CRON_SECRET = os.getenv('CRON_SECRET', '')
@@ -2280,6 +2280,12 @@ class LoyaltyConfig(BaseModel):
     membership_duration_days: Optional[int] = Field(default=30, ge=1, le=3650)
     membership_price: Optional[float] = Field(default=0, ge=0)
     membership_terms: Optional[str] = Field(default=None, max_length=2000)
+    # Automatic Wallet reminders before a member's finite subscription expires.
+    # The schedule is intentionally a short list of day offsets (e.g. 7,3,1,0)
+    # rather than cron timestamps so renewals automatically start a fresh cycle.
+    membership_expiry_reminders_enabled: bool = True
+    membership_expiry_reminder_days: Optional[List[int]] = Field(default_factory=lambda: [7, 3, 1, 0])
+    membership_expiry_reminder_message: Optional[str] = Field(default=None, max_length=500)
     membership_visit_logging_enabled: Optional[bool] = True
     membership_quick_checkin: Optional[bool] = False
     # Optional challenge gate: membership can be active/paid while its recurring
@@ -3565,6 +3571,8 @@ def _pos_loyalty_contract(business: dict) -> dict:
             'name': program.get('membership_name'),
             'duration_days': program.get('membership_duration_days'),
             'benefits': program.get('membership_benefits') or [],
+            'expiry_reminders_enabled': program.get('membership_expiry_reminders_enabled') is not False,
+            'expiry_reminder_days': normalize_membership_expiry_reminder_days(program),
             'benefits_unlock_enabled': bool(program.get('membership_benefits_unlock_enabled')),
             'benefits_unlock_threshold': program.get('membership_benefits_unlock_threshold'),
         }
@@ -8028,6 +8036,24 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         if ann_message.strip() and ann_message.strip() != announcement_value:
             back_fields.append({'key': 'announcement_detail', 'label': ' ', 'value': ann_message.strip()[:400]})
 
+    # Membership expiry reminder on Apple Wallet. The daily cron marks the pass
+    # dirty and wakes the device on each exact configured stage. On non-reminder
+    # days this field is absent, so we never show a stale countdown between stages.
+    membership_reminder = membership_expiry_reminder_stage(customer, program)
+    if membership_reminder:
+        _rem_header, _rem_body = build_membership_expiry_reminder_text(
+            customer, business, program,
+            membership_reminder['stage'], membership_reminder['expiry_date']
+        )
+        reminder_field = {
+            'key': 'membership_expiry_reminder',
+            'label': 'MEMBERSHIP REMINDER',
+            'value': _rem_body,
+            'changeMessage': '%@',
+        }
+        insert_at = 1 if card_type == 'hybrid' and order_ahead_action else 0
+        back_fields.insert(insert_at, reminder_field)
+
     stamp_next_reward_front = {
         'key': 'next_reward',
         'label': 'NEXT REWARD',
@@ -9802,6 +9828,110 @@ def log_vip_event(business_id, customer_id, action, points_delta, points_balance
         }).execute()
     except Exception as e:
         print(f'VIP EVENT error: {e}')
+
+DEFAULT_MEMBERSHIP_EXPIRY_REMINDER_DAYS = [7, 3, 1, 0]
+
+
+def normalize_membership_expiry_reminder_days(program: Optional[dict]) -> list[int]:
+    """Return unique non-negative reminder offsets, highest first.
+
+    JSONB values normally arrive as a list, but tolerate a JSON string during
+    rolling deploys/imports. Existing programs created before this feature use
+    the default 7/3/1/0 schedule because the SQL migration also defaults it.
+    """
+    row = program or {}
+    raw = row.get('membership_expiry_reminder_days')
+    if raw is None:
+        raw = list(DEFAULT_MEMBERSHIP_EXPIRY_REMINDER_DAYS)
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raw = []
+    days = []
+    for value in (raw if isinstance(raw, list) else []):
+        try:
+            day = int(value)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= day <= 3650 and day not in days:
+            days.append(day)
+    days.sort(reverse=True)
+    return days[:20]
+
+
+def _membership_expiry_days_left(customer: Optional[dict], today: Optional[date] = None):
+    expiry_raw = str((customer or {}).get('membership_expires_at') or '').strip()
+    if not expiry_raw:
+        return None, None
+    try:
+        expiry_date = datetime.strptime(expiry_raw[:10], '%Y-%m-%d').date()
+    except Exception:
+        return None, None
+    today = today or _loyalty_today()
+    return (expiry_date - today).days, expiry_date
+
+
+def membership_expiry_reminder_stage(customer: Optional[dict], program: Optional[dict], today: Optional[date] = None):
+    """Return an exact configured reminder stage for the daily cron, or None."""
+    customer = customer or {}
+    program = program or {}
+    if not program_has_membership(program):
+        return None
+    if program_is_employee_membership(program):
+        return None
+    if program.get('membership_expiry_reminders_enabled') is False:
+        return None
+    if membership_effective_status(customer) != 'active':
+        return None
+    days_left, expiry_date = _membership_expiry_days_left(customer, today)
+    if days_left is None or expiry_date is None or days_left < 0:
+        return None
+    schedule = normalize_membership_expiry_reminder_days(program)
+    if days_left not in schedule:
+        return None
+    return {'days_left': days_left, 'expiry_date': expiry_date, 'stage': days_left}
+
+
+def _membership_expiry_timing(days_left: int) -> str:
+    if days_left <= 0:
+        return 'today'
+    if days_left == 1:
+        return 'tomorrow'
+    return f'in {days_left} days'
+
+
+def build_membership_expiry_reminder_text(customer: dict, business: dict, program: dict, days_left: int, expiry_date: date) -> tuple[str, str]:
+    membership_name = str(program.get('membership_name') or program.get('card_name') or 'Membership').strip()
+    business_name = str((business or {}).get('name') or 'LoyaltyTree').strip()
+    customer_name = str((customer or {}).get('name') or 'Member').strip()
+    first_name = customer_name.split()[0] if customer_name else 'Member'
+    timing = _membership_expiry_timing(int(days_left))
+    expiry_text = expiry_date.strftime('%b %d, %Y').replace(' 0', ' ')
+    template = str(program.get('membership_expiry_reminder_message') or '').strip()
+    if template:
+        replacements = {
+            '{first_name}': first_name,
+            '{customer_name}': customer_name,
+            '{membership_name}': membership_name,
+            '{business_name}': business_name,
+            '{expiry_date}': expiry_text,
+            '{days_left}': str(days_left),
+            '{timing}': timing,
+        }
+        body = template
+        for key, value in replacements.items():
+            body = body.replace(key, value)
+    else:
+        body = f"Hi {first_name}, your {membership_name} expires {timing} on {expiry_text}. Renew to keep your membership benefits active."
+    if days_left <= 0:
+        header = f"{membership_name} expires today"
+    elif days_left == 1:
+        header = f"{membership_name} expires tomorrow"
+    else:
+        header = f"{membership_name} expires in {days_left} days"
+    return header[:150], body[:500]
+
 
 def membership_effective_status(customer: dict) -> str:
     """Returns the current access status, automatically treating a past
@@ -17892,6 +18022,9 @@ async def get_loyalty_config(public_id: str, response: Response, program_id: Opt
             "membership_duration_days": 30,
             "membership_price": 0,
             "membership_terms": None,
+            "membership_expiry_reminders_enabled": True,
+            "membership_expiry_reminder_days": [7, 3, 1, 0],
+            "membership_expiry_reminder_message": None,
             "membership_quick_checkin": False,
             "membership_benefits_unlock_enabled": False,
             "membership_benefits_unlock_threshold": 7,
@@ -18273,6 +18406,18 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
         data['membership_duration_days'] = config.membership_duration_days or 30
         data['membership_price'] = config.membership_price or 0
         data['membership_terms'] = (config.membership_terms or '').strip() or None
+        reminder_days = []
+        for raw_day in (config.membership_expiry_reminder_days or []):
+            try:
+                day = int(raw_day)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= day <= 3650 and day not in reminder_days:
+                reminder_days.append(day)
+        reminder_days.sort(reverse=True)
+        data['membership_expiry_reminders_enabled'] = bool(config.membership_expiry_reminders_enabled)
+        data['membership_expiry_reminder_days'] = reminder_days
+        data['membership_expiry_reminder_message'] = (config.membership_expiry_reminder_message or '').strip()[:500] or None
         data['membership_employee_mode'] = bool(config.membership_employee_mode) if config.card_type == 'membership' else False
         data['employee_attendance_enabled'] = bool(config.employee_attendance_enabled) if data['membership_employee_mode'] else False
         data['employee_time_tracking_enabled'] = bool(config.employee_time_tracking_enabled) if data['membership_employee_mode'] else False
@@ -31043,6 +31188,8 @@ async def public_business_join_config(public_id: str):
         'membership_duration_days': program.get('membership_duration_days') or 30,
         'membership_price': program.get('membership_price') or 0,
         'membership_terms': program.get('membership_terms'),
+        'membership_expiry_reminders_enabled': program.get('membership_expiry_reminders_enabled') is not False,
+        'membership_expiry_reminder_days': normalize_membership_expiry_reminder_days(program),
         'membership_employee_mode': program_is_employee_membership(program),
         'is_employee_membership': program_is_employee_membership(program),
         'employee_attendance_enabled': bool(program.get('employee_attendance_enabled')),
@@ -31636,10 +31783,11 @@ async def apple_log(request: Request):
 # Neither of these run on their own - this app has no built-in scheduler.
 # Point an external scheduler (Render Cron Job, cron-job.org, GitHub Actions
 # on a schedule, etc.) at each of these once a day, e.g.:
-#   POST {BASE_URL}/api/v1/cron/birthday-greetings   header: X-Cron-Secret: <CRON_SECRET>
-#   POST {BASE_URL}/api/v1/cron/win-back              header: X-Cron-Secret: <CRON_SECRET>
-# Both are safe to call more than once a day - each skips customers already
-# messaged (this year for birthdays, in the last 30 days for win-back).
+#   POST {BASE_URL}/api/v1/cron/birthday-greetings           header: X-Cron-Secret: <CRON_SECRET>
+#   POST {BASE_URL}/api/v1/cron/win-back                      header: X-Cron-Secret: <CRON_SECRET>
+#   POST {BASE_URL}/api/v1/cron/membership-expiry-reminders   header: X-Cron-Secret: <CRON_SECRET>
+# These jobs are safe to call more than once a day because each uses its own
+# durable dedupe rule before delivering a customer notification.
 
 @app.post("/api/v1/cron/birthday-greetings")
 async def run_birthday_greetings(_: bool = Depends(require_cron)):
@@ -31776,6 +31924,167 @@ async def run_win_back(_: bool = Depends(require_cron)):
                 errors += 1
 
     return {"sent": sent, "skipped_recently_sent": skipped, "errors": errors}
+
+@app.post("/api/v1/cron/membership-expiry-reminders")
+async def run_membership_expiry_reminders(_: bool = Depends(require_cron)):
+    """Send member Wallet reminders at each program's configured expiry stages.
+
+    This is for CUSTOMER membership/subscription cards, not the business owner's
+    LoyaltyTree billing reminder below. It is safe to call daily (or more often):
+    membership_expiry_reminder_events deduplicates customer + program + expiry
+    date + reminder stage. Renewing changes the expiry date, naturally creating a
+    fresh reminder cycle without deleting old history.
+    """
+    today = _loyalty_today()
+    sent, skipped, errors, google_sent, apple_pushes = 0, 0, 0, 0, 0
+
+    try:
+        programs = (
+            supabase.table('loyalty_programs').select('*')
+            .in_('card_type', ['membership', 'hybrid'])
+            .eq('is_active', True)
+            .execute().data or []
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+    business_cache = {}
+    now_iso = datetime.utcnow().isoformat()
+    for program in programs:
+        if program_is_employee_membership(program):
+            continue
+        if program.get('membership_expiry_reminders_enabled') is False:
+            continue
+        if not normalize_membership_expiry_reminder_days(program):
+            continue
+
+        business_id = program.get('business_id')
+        if not business_id:
+            continue
+        business = business_cache.get(business_id)
+        if business_id not in business_cache:
+            business = safe_get_business_by_id(business_id)
+            business_cache[business_id] = business
+        if not business or str(business.get('status') or '').upper() != 'ACTIVE':
+            continue
+
+        try:
+            customers = (
+                supabase.table('customers').select('*')
+                .eq('business_id', business_id)
+                .eq('program_id', program.get('id'))
+                .eq('membership_status', 'active')
+                .execute().data or []
+            )
+        except Exception as exc:
+            print(f"MEMBERSHIP REMINDER customer lookup warning program={program.get('id')}: {exc}")
+            errors += 1
+            continue
+
+        for customer in customers:
+            stage = membership_expiry_reminder_stage(customer, program, today)
+            if not stage:
+                continue
+            days_before = int(stage['stage'])
+            expiry_date = stage['expiry_date']
+
+            # Durable dedupe. A recent pending row means another invocation is
+            # already handling this reminder. Failed/stale rows can be retried.
+            try:
+                existing_rows = (
+                    supabase.table('membership_expiry_reminder_events').select('*')
+                    .eq('customer_id', customer.get('id'))
+                    .eq('program_id', program.get('id'))
+                    .eq('expiry_date', expiry_date.isoformat())
+                    .eq('days_before', days_before)
+                    .limit(1).execute().data or []
+                )
+                existing = existing_rows[0] if existing_rows else None
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        'Membership expiry reminder migration is not installed. Run '
+                        'membership_expiry_reminders.sql in Supabase first. '
+                        f'Database error: {friendly_db_error(exc)}'
+                    ),
+                )
+
+            if existing and existing.get('status') == 'sent':
+                skipped += 1
+                continue
+            if existing and existing.get('status') == 'pending':
+                updated_at = _parse_ts(existing.get('updated_at') or existing.get('created_at'))
+                if updated_at and (datetime.utcnow() - updated_at.replace(tzinfo=None)) < timedelta(hours=2):
+                    skipped += 1
+                    continue
+
+            event_payload = {
+                'business_id': business_id,
+                'program_id': program.get('id'),
+                'customer_id': customer.get('id'),
+                'expiry_date': expiry_date.isoformat(),
+                'days_before': days_before,
+                'status': 'pending',
+                'updated_at': now_iso,
+                'error_message': None,
+            }
+            try:
+                if existing:
+                    supabase.table('membership_expiry_reminder_events').update(event_payload).eq('id', existing.get('id')).execute()
+                else:
+                    try:
+                        supabase.table('membership_expiry_reminder_events').insert(event_payload).execute()
+                    except Exception:
+                        # Concurrent cron invocation won the unique key; do not double-send.
+                        skipped += 1
+                        continue
+
+                header, body = build_membership_expiry_reminder_text(
+                    customer, business, program, days_before, expiry_date
+                )
+                message_id = (
+                    f"membership-expiry-{program.get('id')}-{customer.get('id')}-"
+                    f"{expiry_date.isoformat()}-{days_before}"
+                )
+                object_id = f"{GOOGLE_WALLET_ISSUER_ID}.{customer.get('public_id', '')}"
+                google_ok = send_wallet_object_message(object_id, header, body, message_id)
+                if google_ok:
+                    google_sent += 1
+
+                apple_result = push_apple_wallet_update(str(customer.get('public_id') or ''))
+                apple_count = int((apple_result or {}).get('pushes_sent') or 0) if isinstance(apple_result, dict) else 0
+                apple_pushes += apple_count
+
+                supabase.table('membership_expiry_reminder_events').update({
+                    'status': 'sent',
+                    'google_sent': bool(google_ok),
+                    'apple_pushes_sent': apple_count,
+                    'sent_at': datetime.utcnow().isoformat(),
+                    'updated_at': datetime.utcnow().isoformat(),
+                    'error_message': None if (google_ok or apple_count > 0) else 'No installed Wallet pass accepted the reminder.',
+                }).eq('customer_id', customer.get('id')).eq('program_id', program.get('id')).eq('expiry_date', expiry_date.isoformat()).eq('days_before', days_before).execute()
+                sent += 1
+            except Exception as exc:
+                errors += 1
+                print(f"MEMBERSHIP EXPIRY REMINDER error customer={customer.get('public_id')} stage={days_before}: {exc}")
+                try:
+                    supabase.table('membership_expiry_reminder_events').update({
+                        'status': 'failed',
+                        'error_message': str(exc)[:1000],
+                        'updated_at': datetime.utcnow().isoformat(),
+                    }).eq('customer_id', customer.get('id')).eq('program_id', program.get('id')).eq('expiry_date', expiry_date.isoformat()).eq('days_before', days_before).execute()
+                except Exception:
+                    pass
+
+    return {
+        'sent': sent,
+        'skipped_already_sent_or_processing': skipped,
+        'google_sent': google_sent,
+        'apple_pushes_sent': apple_pushes,
+        'errors': errors,
+    }
+
 
 @app.post("/api/v1/cron/subscription-reminders")
 async def run_subscription_reminders(_: bool = Depends(require_cron)):
