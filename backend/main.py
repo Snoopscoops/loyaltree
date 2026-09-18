@@ -32922,6 +32922,335 @@ def _crm_metrics(customers, tx):
     return result
 
 
+def _admin_period_change(current: int, previous: int):
+    """Percent change for admin reporting.
+
+    ``None`` means the prior period was zero, so presenting "+100%" would be
+    misleading. The frontend renders that as "new activity" instead.
+    """
+    current = int(current or 0)
+    previous = int(previous or 0)
+    if previous <= 0:
+        return 0.0 if current <= 0 else None
+    return round(((current - previous) / previous) * 100, 1)
+
+
+def _admin_client_performance_record(business: dict, days: int) -> dict:
+    """Summarize one client's loyalty/CRM movement without exposing customer PII.
+
+    This intentionally treats transaction_audit as *loyalty activity*, not
+    revenue. POS connection metadata is surfaced separately so the UI can make
+    the stronger sales-data distinction only when a provider is actually
+    connected.
+    """
+    business_id = business.get('id')
+    now = datetime.utcnow()
+    current_since = now - timedelta(days=days)
+    previous_since = current_since - timedelta(days=days)
+
+    customers, tx = _crm_dataset(business_id)
+    crm_rows = _crm_metrics(customers, tx)
+
+    parsed_tx = []
+    for row in tx or []:
+        parsed = _parse_ts(row.get('created_at'))
+        if parsed:
+            parsed_tx.append((parsed, row))
+
+    current_events = [row for dt, row in parsed_tx if dt >= current_since]
+    previous_events = [row for dt, row in parsed_tx if previous_since <= dt < current_since]
+    prior_current_ids = {
+        str(row.get('customer_id')) for dt, row in parsed_tx
+        if dt < current_since and row.get('customer_id') is not None
+    }
+    prior_previous_ids = {
+        str(row.get('customer_id')) for dt, row in parsed_tx
+        if dt < previous_since and row.get('customer_id') is not None
+    }
+    current_active_ids = {
+        str(row.get('customer_id')) for row in current_events
+        if row.get('customer_id') is not None
+    }
+    previous_active_ids = {
+        str(row.get('customer_id')) for row in previous_events
+        if row.get('customer_id') is not None
+    }
+
+    current_returning_ids = current_active_ids & prior_current_ids
+    previous_returning_ids = previous_active_ids & prior_previous_ids
+
+    def customer_created_in(start_dt, end_dt=None):
+        count = 0
+        for c in customers or []:
+            created = _parse_ts(c.get('created_at'))
+            if not created or created < start_dt:
+                continue
+            if end_dt is not None and created >= end_dt:
+                continue
+            count += 1
+        return count
+
+    new_customers = customer_created_in(current_since)
+    previous_new_customers = customer_created_in(previous_since, current_since)
+
+    total_customers = len(crm_rows)
+    repeat_customers = sum(1 for r in crm_rows if int((r.get('crm') or {}).get('total_transactions') or 0) >= 2)
+    at_risk = sum(
+        1 for r in crm_rows
+        if (r.get('crm') or {}).get('segment') in ('at_risk', 'inactive_60', 'inactive_90')
+    )
+    frequent = sum(1 for r in crm_rows if (r.get('crm') or {}).get('segment') == 'frequent')
+
+    active_members = len(current_active_ids)
+    previous_active_members = len(previous_active_ids)
+    returning_members = len(current_returning_ids)
+    previous_returning_members = len(previous_returning_ids)
+    returning_rate = round((returning_members / active_members) * 100, 1) if active_members else 0
+    previous_returning_rate = round((previous_returning_members / previous_active_members) * 100, 1) if previous_active_members else 0
+    repeat_rate = round((repeat_customers / total_customers) * 100, 1) if total_customers else 0
+    at_risk_rate = round((at_risk / total_customers) * 100, 1) if total_customers else 0
+
+    # Redemptions are safe to aggregate and strengthen the retention story.
+    current_redemptions = previous_redemptions = 0
+    try:
+        cur = (
+            supabase.table('redemption_events')
+            .select('id', count='exact')
+            .eq('business_id', business_id)
+            .gte('created_at', current_since.isoformat())
+            .execute()
+        )
+        current_redemptions = cur.count or 0
+        prev = (
+            supabase.table('redemption_events')
+            .select('id', count='exact')
+            .eq('business_id', business_id)
+            .gte('created_at', previous_since.isoformat())
+            .lt('created_at', current_since.isoformat())
+            .execute()
+        )
+        previous_redemptions = prev.count or 0
+    except Exception:
+        pass
+
+    membership_renewals = 0
+    try:
+        renewal = (
+            supabase.table('membership_history')
+            .select('id', count='exact')
+            .eq('business_id', business_id)
+            .eq('action', 'renew')
+            .gte('created_at', current_since.isoformat())
+            .execute()
+        )
+        membership_renewals = renewal.count or 0
+    except Exception:
+        pass
+
+    pos_integrations = []
+    try:
+        pos_integrations = (
+            supabase.table('pos_integrations')
+            .select('provider,status,mode,external_account_name,connected_at,last_sync_at')
+            .eq('business_id', business_id)
+            .execute()
+            .data or []
+        )
+    except Exception:
+        pos_integrations = []
+    connected_pos = [p for p in pos_integrations if str(p.get('status') or '').lower() == 'connected']
+    pos_connected = bool(connected_pos)
+    pos_live = any(str(p.get('mode') or '').lower() == 'live' for p in connected_pos)
+    pos_providers = sorted({str(p.get('provider') or '').lower() for p in connected_pos if p.get('provider')})
+
+    activity_change = _admin_period_change(len(current_events), len(previous_events))
+    active_change = _admin_period_change(active_members, previous_active_members)
+    new_customer_change = _admin_period_change(new_customers, previous_new_customers)
+    returning_rate_change = round(returning_rate - previous_returning_rate, 1)
+
+    reasons = []
+    if activity_change is None:
+        if current_events:
+            reasons.append('New loyalty activity versus a zero-activity prior period')
+    elif activity_change >= 10:
+        reasons.append(f'Loyalty activity is up {abs(activity_change):g}% versus the prior period')
+    elif activity_change <= -10:
+        reasons.append(f'Loyalty activity is down {abs(activity_change):g}% versus the prior period')
+
+    if returning_rate_change >= 5:
+        reasons.append(f'Returning-member share improved {abs(returning_rate_change):g} points')
+    elif returning_rate_change <= -5:
+        reasons.append(f'Returning-member share declined {abs(returning_rate_change):g} points')
+
+    if at_risk_rate >= 50 and total_customers >= 5:
+        reasons.append(f'{at_risk_rate:g}% of CRM customers are currently inactive / at risk')
+
+    # Transparent qualitative status. Avoid pretending sparse datasets provide a
+    # precise score.
+    if len(current_events) + len(previous_events) < 5:
+        trend = 'limited_data'
+    else:
+        positive = 0
+        negative = 0
+        if activity_change is None and len(current_events) > 0:
+            positive += 1
+        elif activity_change is not None:
+            if activity_change >= 10:
+                positive += 1
+            elif activity_change <= -10:
+                negative += 1
+        if active_change is None and active_members > 0:
+            positive += 1
+        elif active_change is not None:
+            if active_change >= 10:
+                positive += 1
+            elif active_change <= -10:
+                negative += 1
+        if returning_rate_change >= 5:
+            positive += 1
+        elif returning_rate_change <= -5:
+            negative += 1
+        if at_risk_rate >= 60 and total_customers >= 5:
+            negative += 1
+
+        if positive >= 2 and negative == 0:
+            trend = 'improving'
+        elif negative >= 2:
+            trend = 'needs_attention'
+        else:
+            trend = 'stable'
+
+    return {
+        'business_id': business_id,
+        'business_public_id': business.get('public_id'),
+        'business_name': business.get('name') or 'Business',
+        'business_type': business.get('business_type') or 'other',
+        'plan': business.get('plan') or 'starter',
+        'logo_url': business.get('logo_url'),
+        'days': days,
+        'data_source': 'loyalty_tree_plus_pos' if pos_connected else 'loyalty_tree_activity',
+        'pos': {
+            'connected': pos_connected,
+            'live': pos_live,
+            'providers': pos_providers,
+            'modes': sorted({str(p.get('mode') or 'test').lower() for p in connected_pos}),
+        },
+        'crm': {
+            'total_customers': total_customers,
+            'active_members': active_members,
+            'previous_active_members': previous_active_members,
+            'new_customers': new_customers,
+            'previous_new_customers': previous_new_customers,
+            'returning_members': returning_members,
+            'previous_returning_members': previous_returning_members,
+            'returning_rate': returning_rate,
+            'previous_returning_rate': previous_returning_rate,
+            'repeat_customers': repeat_customers,
+            'repeat_rate': repeat_rate,
+            'frequent_customers': frequent,
+            'at_risk_customers': at_risk,
+            'at_risk_rate': at_risk_rate,
+        },
+        'activity': {
+            'events': len(current_events),
+            'previous_events': len(previous_events),
+            'redemptions': int(current_redemptions or 0),
+            'previous_redemptions': int(previous_redemptions or 0),
+            'membership_renewals': int(membership_renewals or 0),
+        },
+        'movement': {
+            'activity_change_percent': activity_change,
+            'active_member_change_percent': active_change,
+            'new_customer_change_percent': new_customer_change,
+            'returning_rate_change_points': returning_rate_change,
+        },
+        'trend': trend,
+        'trend_reasons': reasons[:3],
+    }
+
+
+@app.get('/api/v1/admin/client-performance')
+async def admin_client_performance(
+    days: int = Query(default=30, ge=7, le=365),
+    _: bool = Depends(require_admin),
+):
+    """Super-admin CRM health across active, non-demo clients.
+
+    No individual customer rows or customer PII are returned. This endpoint is
+    designed for platform operations and aggregated case-study evidence.
+    """
+    if not supabase:
+        raise HTTPException(status_code=503, detail='Database not connected')
+
+    try:
+        businesses = (
+            supabase.table('businesses')
+            .select('id,public_id,name,business_type,plan,status,logo_url,is_demo')
+            .eq('status', 'ACTIVE')
+            .order('name')
+            .execute()
+            .data or []
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+    businesses = [b for b in businesses if not b.get('is_demo')]
+    rows = []
+    errors = []
+    for business in businesses:
+        try:
+            rows.append(_admin_client_performance_record(business, days))
+        except Exception as exc:
+            errors.append({
+                'business_public_id': business.get('public_id'),
+                'business_name': business.get('name'),
+                'error': friendly_db_error(exc),
+            })
+
+    total_active = sum(int((r.get('crm') or {}).get('active_members') or 0) for r in rows)
+    total_returning = sum(int((r.get('crm') or {}).get('returning_members') or 0) for r in rows)
+    total_new = sum(int((r.get('crm') or {}).get('new_customers') or 0) for r in rows)
+    total_customers = sum(int((r.get('crm') or {}).get('total_customers') or 0) for r in rows)
+    total_at_risk = sum(int((r.get('crm') or {}).get('at_risk_customers') or 0) for r in rows)
+    total_redemptions = sum(int((r.get('activity') or {}).get('redemptions') or 0) for r in rows)
+    total_activity = sum(int((r.get('activity') or {}).get('events') or 0) for r in rows)
+    total_renewals = sum(int((r.get('activity') or {}).get('membership_renewals') or 0) for r in rows)
+
+    trend_counts = {k: 0 for k in ('improving', 'stable', 'needs_attention', 'limited_data')}
+    for row in rows:
+        trend = row.get('trend') if row.get('trend') in trend_counts else 'limited_data'
+        trend_counts[trend] += 1
+
+    return {
+        'days': days,
+        'generated_at': datetime.utcnow().isoformat(),
+        'client_count': len(rows),
+        'summary': {
+            'total_customers': total_customers,
+            'active_members': total_active,
+            'new_customers': total_new,
+            'returning_members': total_returning,
+            'returning_rate': round((total_returning / total_active) * 100, 1) if total_active else 0,
+            'at_risk_customers': total_at_risk,
+            'at_risk_rate': round((total_at_risk / total_customers) * 100, 1) if total_customers else 0,
+            'activity_events': total_activity,
+            'redemptions': total_redemptions,
+            'membership_renewals': total_renewals,
+            'pos_connected_clients': sum(1 for r in rows if (r.get('pos') or {}).get('connected')),
+            'pos_live_clients': sum(1 for r in rows if (r.get('pos') or {}).get('live')),
+            'trend_counts': trend_counts,
+        },
+        'businesses': rows,
+        'errors': errors,
+        'methodology': {
+            'non_pos': 'Loyalty activity only: joins, recorded loyalty transactions, visits, rewards and redemptions. It is not presented as sales or revenue.',
+            'pos': 'POS connection status is shown separately. Sales/revenue claims should only be used when the provider is live and transaction values are verified.',
+            'returning_member': 'Active in the selected period and has earlier recorded loyalty activity.',
+            'at_risk': 'CRM segment is at_risk, inactive_60 or inactive_90 using LoyaltyTree activity history.',
+        },
+    }
+
+
 @app.get('/api/v1/business/{public_id}/crm')
 async def owner_crm(public_id:str, authorization:str=Header(default='')):
     require_owner_session(public_id,authorization)

@@ -24,6 +24,7 @@ const OA_DESIGN_DEFAULTS = {
 
 function AdminDashboard({ API_BASE, user, onLogout }) {
   const token = user?.token
+  const [activeAdminTab, setActiveAdminTab] = useState('overview')
 
   const [overview, setOverview] = useState(null)
   const [plans, setPlans] = useState({})
@@ -65,6 +66,14 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const [analyticsDays,setAnalyticsDays]=useState(30)
   const [analyticsLoading,setAnalyticsLoading]=useState(false)
   const [analyticsError,setAnalyticsError]=useState('')
+  const [clientPerformance,setClientPerformance]=useState(null)
+  const [clientPerfDays,setClientPerfDays]=useState(30)
+  const [clientPerfLoading,setClientPerfLoading]=useState(false)
+  const [clientPerfError,setClientPerfError]=useState('')
+  const [clientPerfTypeFilter,setClientPerfTypeFilter]=useState('')
+  const [clientPerfTrendFilter,setClientPerfTrendFilter]=useState('')
+  const [showClientPresentation,setShowClientPresentation]=useState(false)
+  const [presentationAnonymized,setPresentationAnonymized]=useState(true)
 
   const authedFetch = async (path, opts = {}) => {
     const res = await fetch(`${API_BASE}${path}`, {
@@ -95,6 +104,22 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
       setAnalyticsError(err.message || 'Could not load platform analytics')
     } finally {
       setAnalyticsLoading(false)
+    }
+  }
+
+  const loadClientPerformance = async () => {
+    if (!token) return
+    setClientPerfLoading(true)
+    setClientPerfError('')
+    try {
+      const res = await authedFetch(`/api/v1/admin/client-performance?days=${clientPerfDays}`, { cache:'no-store' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not load client performance')
+      setClientPerformance(data)
+    } catch (err) {
+      setClientPerfError(err.message || 'Could not load client performance')
+    } finally {
+      setClientPerfLoading(false)
     }
   }
 
@@ -142,9 +167,14 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   }, [search])
 
   useEffect(() => {
-    if (!token) return
+    if (!token || activeAdminTab !== 'platform') return
     loadPlatformAnalytics()
-  }, [token, analyticsDays])
+  }, [token, analyticsDays, activeAdminTab])
+
+  useEffect(() => {
+    if (!token || activeAdminTab !== 'performance') return
+    loadClientPerformance()
+  }, [token, clientPerfDays, activeAdminTab])
 
   const openDetail = async (biz) => {
     setSelected(biz)
@@ -429,7 +459,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const createNetworkPartner=async(e)=>{e.preventDefault();setNetworkPartnerSaving(true);try{const res=await authedFetch('/api/v1/admin/network-partners',{method:'POST',body:JSON.stringify({...networkPartnerForm,commission_value:Number(networkPartnerForm.commission_value)||0,partner_code:networkPartnerForm.partner_code.toUpperCase()})});const d=await res.json().catch(()=>({}));if(!res.ok)throw new Error(d.detail||'Could not create partner');setNetworkPartnerForm({name:'',email:'',password:'',partner_type:'city',region:'',city:'',partner_code:'',commission_type:'percent',commission_value:10,is_active:true});setMessage('City/region partner created');loadData()}catch(err){setMessage(err.message)}setNetworkPartnerSaving(false)}
   const patchNetworkPartner=async(p,patch)=>{try{const res=await authedFetch(`/api/v1/admin/network-partners/${p.public_id}`,{method:'PATCH',body:JSON.stringify(patch)});const d=await res.json().catch(()=>({}));if(!res.ok)throw new Error(d.detail||'Partner update failed');setMessage('Partner updated');loadData()}catch(err){setMessage(err.message)}}
 
-  const filteredCount = businesses.length
+  const filteredCount = businessTypeFilter ? businesses.filter(b => b.business_type === businessTypeFilter).length : businesses.length
   const latestKitByBusiness=setupKitOrders.reduce((m,o)=>{if(o.business_public_id&&!m[o.business_public_id])m[o.business_public_id]=o;return m},{})
   const businessKitStatus=b=>latestKitByBusiness[b.public_id]?.fulfillment_status||b.setup_kit_status||(b.setup_kit_requested?(b.setup_kit_paid?'paid':'requested'):'')
   const onboardingLabel=b=>b.onboarding_completed?'Live':(String(b.status||'').toUpperCase()!=='ACTIVE'?'Awaiting payment':b.onboarding_step>=8?'Ready to launch':b.onboarding_step>=7?'Dashboard intro':b.onboarding_step>=6?'Adding team':'Configuring card')
@@ -439,8 +469,57 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
     ? [...categoryBusinesses].sort((a, b) => (a.address || '\uffff').localeCompare(b.address || '\uffff'))
     : categoryBusinesses
 
+  const clientPerfRows = (clientPerformance?.businesses || []).filter(row => {
+    if (clientPerfTypeFilter && row.business_type !== clientPerfTypeFilter) return false
+    if (clientPerfTrendFilter && row.trend !== clientPerfTrendFilter) return false
+    return true
+  })
+  const presentationSummary = clientPerfRows.reduce((acc,row) => {
+    const crm=row.crm||{}, activity=row.activity||{}
+    acc.clients += 1
+    acc.total_customers += Number(crm.total_customers||0)
+    acc.active_members += Number(crm.active_members||0)
+    acc.new_customers += Number(crm.new_customers||0)
+    acc.returning_members += Number(crm.returning_members||0)
+    acc.at_risk_customers += Number(crm.at_risk_customers||0)
+    acc.redemptions += Number(activity.redemptions||0)
+    acc.activity_events += Number(activity.events||0)
+    acc.membership_renewals += Number(activity.membership_renewals||0)
+    if (row.pos?.connected) acc.pos_connected += 1
+    if (row.trend === 'improving') acc.improving += 1
+    return acc
+  }, {clients:0,total_customers:0,active_members:0,new_customers:0,returning_members:0,at_risk_customers:0,redemptions:0,activity_events:0,membership_renewals:0,pos_connected:0,improving:0})
+  presentationSummary.returning_rate = presentationSummary.active_members
+    ? Math.round((presentationSummary.returning_members / presentationSummary.active_members) * 1000) / 10
+    : 0
+
+  const adminTabs = [
+    { key:'overview', label:'Overview', icon:'⌂', description:'Platform health, applications and the few numbers that need attention.' },
+    { key:'businesses', label:'Businesses', icon:'▦', description:'Search, manage and open individual client accounts.' },
+    { key:'performance', label:'Client Performance', icon:'↗', description:'CRM and retention movement across LoyaltyTree clients.' },
+    { key:'platform', label:'Platform Analytics', icon:'◫', description:'Website traffic, acquisition, join conversion and Wallet activity.' },
+    { key:'operations', label:'Operations', icon:'⚙', description:'Announcements, print requests and QR / PR kit fulfillment.' },
+    { key:'partners', label:'Partners', icon:'◎', description:'Region / city operators and homepage partner management.' },
+  ]
+  const activeAdminTabMeta = adminTabs.find(tab => tab.key === activeAdminTab) || adminTabs[0]
+
   return (
     <div style={styles.container}>
+      <style>{`
+        .admin-tab-nav::-webkit-scrollbar { display: none; }
+        @media (max-width: 760px) {
+          .admin-shell-body { padding: 16px !important; }
+          .admin-tab-nav { margin-left: -16px !important; margin-right: -16px !important; padding-left: 16px !important; padding-right: 16px !important; }
+          .admin-tab-button { flex: 0 0 auto; }
+          .admin-tab-heading { align-items: flex-start !important; flex-direction: column !important; }
+        }
+        @media print {
+          body * { visibility: hidden !important; }
+          .client-presentation-sheet, .client-presentation-sheet * { visibility: visible !important; }
+          .client-presentation-sheet { position: absolute !important; left: 0 !important; top: 0 !important; width: 100% !important; max-width: none !important; max-height: none !important; overflow: visible !important; box-shadow: none !important; border: 0 !important; }
+          .client-presentation-actions { display: none !important; }
+        }
+      `}</style>
       <header style={styles.header}>
         <div style={styles.brand}>
           <span style={{ fontSize: 28 }}>🌳</span>
@@ -454,12 +533,42 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
 
       {message && <div style={styles.toast}>{message}</div>}
 
-      <div style={styles.body}>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
+      <div className="admin-shell-body" style={styles.body}>
+        <div style={styles.adminTopActions}>
           <button onClick={() => setShowCreateModal(true)} style={styles.approveBtn}>+ Create business</button>
         </div>
 
+        <div className="admin-tab-nav" style={styles.adminTabNav}>
+          {adminTabs.map(tab => {
+            const active = activeAdminTab === tab.key
+            const badge = tab.key === 'businesses' ? businesses.length : tab.key === 'overview' && pendingApps.length ? pendingApps.length : null
+            return (
+              <button
+                key={tab.key}
+                type="button"
+                className="admin-tab-button"
+                onClick={() => setActiveAdminTab(tab.key)}
+                style={{...styles.adminTabButton,...(active ? styles.adminTabButtonActive : {})}}
+              >
+                <span style={styles.adminTabIcon}>{tab.icon}</span>
+                <span>{tab.label}</span>
+                {badge != null && <span style={{...styles.adminTabBadge,...(active ? styles.adminTabBadgeActive : {})}}>{badge}</span>}
+              </button>
+            )
+          })}
+        </div>
 
+        <div className="admin-tab-heading" style={styles.adminTabHeading}>
+          <div>
+            <div style={styles.adminTabEyebrow}>SUPER ADMIN</div>
+            <h2 style={styles.adminTabTitle}>{activeAdminTabMeta.label}</h2>
+            <p style={styles.adminTabDescription}>{activeAdminTabMeta.description}</p>
+          </div>
+          {activeAdminTab === 'businesses' && <div style={styles.adminTabContext}>{businesses.length} loaded client{businesses.length===1?'':'s'}</div>}
+          {activeAdminTab === 'overview' && pendingApps.length > 0 && <div style={{...styles.adminTabContext,color:'#92400e',background:'#fffbeb',borderColor:'#fde68a'}}>{pendingApps.length} application{pendingApps.length===1?'':'s'} waiting</div>}
+        </div>
+
+        {activeAdminTab === 'platform' && (
         <section style={styles.analyticsSection}>
           <div style={styles.analyticsHeader}>
             <div>
@@ -601,7 +710,113 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
             {!platformAnalytics?.recent?.length && <div style={styles.analyticsEmpty}>No tracked public activity yet.</div>}
           </div>
         </section>
+        )}
 
+        {activeAdminTab === 'performance' && (
+        <section style={styles.clientPerformanceSection}>
+          <div style={styles.analyticsHeader}>
+            <div>
+              <div style={styles.analyticsEyebrow}>CLIENT PERFORMANCE</div>
+              <h2 style={styles.analyticsTitle}>CRM health across LoyaltyTree clients</h2>
+              <p style={styles.analyticsSubtitle}>
+                Internal, aggregate client evidence for operations and case studies. Non-POS clients are measured from LoyaltyTree card activity only; customer-level personal data is never shown here.
+              </p>
+            </div>
+            <div style={styles.analyticsControls}>
+              <select value={clientPerfDays} onChange={e=>setClientPerfDays(Number(e.target.value))} style={styles.select}>
+                <option value={7}>Last 7 days</option>
+                <option value={30}>Last 30 days</option>
+                <option value={90}>Last 90 days</option>
+                <option value={180}>Last 6 months</option>
+                <option value={365}>Last 12 months</option>
+              </select>
+              <button onClick={loadClientPerformance} disabled={clientPerfLoading} style={styles.viewBtn}>{clientPerfLoading?'Refreshing…':'↻ Refresh'}</button>
+              <button onClick={()=>setShowClientPresentation(true)} disabled={!clientPerfRows.length} style={styles.approveBtn}>Presentation snapshot</button>
+            </div>
+          </div>
+
+          {clientPerfError && <div style={styles.analyticsError}>{clientPerfError}</div>}
+          <div style={styles.analyticsMetricGrid}>
+            <AnalyticsMetric label="Active clients" value={(clientPerformance?.client_count ?? 0).toLocaleString()} hint={`${clientPerformance?.summary?.trend_counts?.improving ?? 0} improving`} />
+            <AnalyticsMetric label="Active members" value={(clientPerformance?.summary?.active_members ?? 0).toLocaleString()} hint={`across ${clientPerfDays} days`} />
+            <AnalyticsMetric label="Returning members" value={(clientPerformance?.summary?.returning_members ?? 0).toLocaleString()} hint={`${clientPerformance?.summary?.returning_rate ?? 0}% of active members`} />
+            <AnalyticsMetric label="New members" value={(clientPerformance?.summary?.new_customers ?? 0).toLocaleString()} hint="joined in selected period" />
+            <AnalyticsMetric label="Redemptions" value={(clientPerformance?.summary?.redemptions ?? 0).toLocaleString()} hint="recorded reward usage" />
+            <AnalyticsMetric label="POS connected" value={(clientPerformance?.summary?.pos_connected_clients ?? 0).toLocaleString()} hint={`${clientPerformance?.summary?.pos_live_clients ?? 0} live`} />
+          </div>
+
+          <div style={styles.clientPerformanceToolbar}>
+            <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+              <select value={clientPerfTypeFilter} onChange={e=>setClientPerfTypeFilter(e.target.value)} style={styles.select}>
+                <option value="">All business types</option>
+                {BUSINESS_TYPE_OPTIONS.map(([key,label])=><option key={key} value={key}>{label}</option>)}
+              </select>
+              <select value={clientPerfTrendFilter} onChange={e=>setClientPerfTrendFilter(e.target.value)} style={styles.select}>
+                <option value="">All CRM trends</option>
+                <option value="improving">Improving</option>
+                <option value="stable">Stable</option>
+                <option value="needs_attention">Needs attention</option>
+                <option value="limited_data">Limited data</option>
+              </select>
+            </div>
+            <div style={styles.analyticsSectionHeadingSub}>
+              Showing {clientPerfRows.length} client{clientPerfRows.length===1?'':'s'} · no customer PII
+            </div>
+          </div>
+
+          {clientPerfLoading && !clientPerformance ? (
+            <div style={styles.analyticsEmpty}>Loading client CRM performance…</div>
+          ) : clientPerfRows.length === 0 ? (
+            <div style={styles.analyticsEmpty}>No client performance data matches these filters yet.</div>
+          ) : (
+            <div style={styles.clientPerformanceGrid}>
+              {clientPerfRows.map(row => {
+                const crm=row.crm||{}, activity=row.activity||{}, movement=row.movement||{}
+                const source = row.pos?.connected
+                  ? `LoyaltyTree + ${(row.pos.providers||[]).map(p=>p==='storehub'?'StoreHub':p==='loyverse'?'Loyverse':p).join(' + ')}${row.pos.live?'':' · test'}`
+                  : 'LoyaltyTree Activity'
+                return <article key={row.business_public_id} style={styles.clientPerformanceCard}>
+                  <div style={styles.clientPerformanceCardHeader}>
+                    <div style={{display:'flex',alignItems:'center',gap:10,minWidth:0}}>
+                      {row.logo_url ? <img src={row.logo_url} alt="" style={styles.clientPerformanceLogo}/> : <div style={styles.clientPerformanceLogoFallback}>🏪</div>}
+                      <div style={{minWidth:0}}>
+                        <div style={styles.clientPerformanceName}>{row.business_name}</div>
+                        <div style={styles.clientPerformanceMeta}>{businessTypeLabel(row.business_type)} · {String(row.plan||'starter').toUpperCase()}</div>
+                      </div>
+                    </div>
+                    <span style={{...styles.clientTrendBadge,...clientTrendStyle(row.trend)}}>{clientTrendLabel(row.trend)}</span>
+                  </div>
+                  <div style={styles.clientSourceBadge}>● {source}</div>
+                  <div style={styles.clientMetricGrid}>
+                    <ClientMetric label="Active" value={crm.active_members||0} />
+                    <ClientMetric label="New" value={crm.new_customers||0} />
+                    <ClientMetric label="Returning" value={crm.returning_members||0} />
+                    <ClientMetric label="Returning share" value={`${crm.returning_rate||0}%`} />
+                    <ClientMetric label="Activity" value={activity.events||0} />
+                    <ClientMetric label="Redemptions" value={activity.redemptions||0} />
+                  </div>
+                  <div style={styles.clientMovementRow}>
+                    <ClientMovement label="Activity" value={movement.activity_change_percent} suffix="%" />
+                    <ClientMovement label="Active members" value={movement.active_member_change_percent} suffix="%" />
+                    <ClientMovement label="Returning share" value={movement.returning_rate_change_points} suffix=" pts" />
+                  </div>
+                  <div style={styles.clientHealthFooter}>
+                    <span>{crm.at_risk_customers||0} inactive / at-risk</span>
+                    {activity.membership_renewals > 0 && <span>{activity.membership_renewals} renewal{activity.membership_renewals===1?'':'s'}</span>}
+                  </div>
+                  {!!row.trend_reasons?.length && <div style={styles.clientReasons}>{row.trend_reasons.slice(0,2).map((reason,i)=><div key={i}>• {reason}</div>)}</div>}
+                </article>
+              })}
+            </div>
+          )}
+
+          <div style={styles.clientMethodologyNote}>
+            <b>Presentation rule:</b> without live POS data, describe these as loyalty activity, returning-member activity, redemptions and CRM movement — not sales or revenue.
+          </div>
+        </section>
+        )}
+
+        {activeAdminTab === 'partners' && (
         <section style={styles.partnerAdminSection}>
           <h2 style={styles.partnerAdminTitle}>🌎 Region / City Partner Network</h2>
           <p style={styles.partnerAdminSubtitle}>Create local LoyaltyTree operators with controlled access to assigned businesses, onboarding/setup status and commission activity. They cannot access customer personal data.</p>
@@ -619,7 +834,9 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
           </form>
           <div style={{...styles.partnerList,marginTop:16}}>{networkPartners.map(p=><div key={p.public_id} style={styles.partnerRow}><div style={{flex:1,minWidth:220}}><b>{p.name}</b><div style={{fontSize:12,color:'#64748b',marginTop:4}}>{p.partner_type==='region'?'Region':'City'} · {p.city?`${p.city}, `:''}{p.region}</div><div style={{fontSize:12,color:'#0f766e',fontWeight:700,marginTop:4}}>{p.partner_code} · {p.business_count||0} businesses</div></div><div style={{fontSize:12,minWidth:150}}>Earned <b>₱{Number(p.commission_earned||0).toLocaleString()}</b><br/>Unpaid <b>₱{Number(p.commission_unpaid||0).toLocaleString()}</b></div><button style={p.is_active?styles.rejectBtn:styles.approveBtn} onClick={()=>patchNetworkPartner(p,{is_active:!p.is_active})}>{p.is_active?'Deactivate':'Activate'}</button></div>)}{!networkPartners.length&&<div style={styles.partnerEmpty}>No city or region partners yet.</div>}</div>
         </section>
+        )}
 
+        {activeAdminTab === 'operations' && (
         <section style={styles.kitAdminSection}>
           <div style={styles.kitAdminHeader}><div><h2 style={styles.partnerAdminTitle}>📦 QR / PR Kit Orders</h2><p style={styles.partnerAdminSubtitle}>Logo, generated QR, delivery address, and fulfillment tracking.</p></div><input style={{...styles.input,maxWidth:300}} value={kitSearch} onChange={e=>setKitSearch(e.target.value)} placeholder="Search kit orders..."/></div>
           <div style={styles.kitOrderGrid}>
@@ -635,7 +852,9 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
           </div>
           {!setupKitOrders.length&&<div style={styles.partnerEmpty}>No QR / PR kit orders yet.</div>}
         </section>
+        )}
 
+        {activeAdminTab === 'partners' && (
         <section style={styles.partnerAdminSection}>
           <h2 style={styles.partnerAdminTitle}>🤝 Homepage Partners</h2>
           <p style={styles.partnerAdminSubtitle}>
@@ -770,9 +989,10 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
             })}
           </div>
         </section>
+        )}
 
         {/* Applications - pending business signups awaiting approval */}
-        {pendingApps.length > 0 && (
+        {activeAdminTab === 'overview' && pendingApps.length > 0 && (
           <div style={styles.applicationsSection}>
             <h2 style={styles.sectionTitle}>
               Applications <span style={styles.pendingCountBadge}>{pendingApps.length}</span>
@@ -800,33 +1020,24 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
           </div>
         )}
 
-        {/* Overview cards */}
-        <div style={styles.statsGrid}>
-          <StatCard label="Total businesses" value={overview?.total_businesses ?? '—'} />
-          <StatCard label="Active" value={overview?.status_breakdown?.ACTIVE ?? 0} accent="#0d9488" />
-          <StatCard label="Pending" value={overview?.status_breakdown?.PENDING ?? 0} accent="#d97706" />
-          <StatCard label="Suspended" value={overview?.status_breakdown?.SUSPENDED ?? 0} accent="#dc2626" />
-          <StatCard label="Rejected" value={overview?.status_breakdown?.REJECTED ?? 0} accent="#64748b" />
-          <StatCard label="Total customers" value={overview?.total_customers ?? 0} />
-          <StatCard label="Stamps (30d)" value={overview?.stamps_30d ?? 0} />
-          <StatCard label="Redemptions (30d)" value={overview?.redemptions_30d ?? 0} />
-          {overview?.card_type_breakdown?.points > 0 && (
-            <>
-              <StatCard label="Points businesses" value={overview.card_type_breakdown.points} accent="#7c3aed" />
-              <StatCard label="Points sales (30d)" value={overview?.points_sales_30d ?? 0} accent="#7c3aed" />
-              <StatCard label="Points issued (30d)" value={(overview?.points_issued_30d ?? 0).toLocaleString()} accent="#7c3aed" />
-              <StatCard label="Points outstanding" value={(overview?.total_points_outstanding ?? 0).toLocaleString()} accent="#7c3aed" />
-            </>
-          )}
-          {overview?.card_type_breakdown?.multipass > 0 && (
-            <>
-              <StatCard label="Multipass businesses" value={overview.card_type_breakdown.multipass} accent="#d97706" />
-              <StatCard label="Sessions issued (30d)" value={(overview?.sessions_issued_30d ?? 0).toLocaleString()} accent="#d97706" />
-              <StatCard label="Sessions used (30d)" value={(overview?.sessions_used_30d ?? 0).toLocaleString()} accent="#d97706" />
-              <StatCard label="Sessions outstanding" value={(overview?.total_sessions_outstanding ?? 0).toLocaleString()} accent="#d97706" />
-            </>
-          )}
-        </div>
+        {/* Overview cards — deliberately limited to six headline metrics */}
+        {activeAdminTab === 'overview' && (
+          <>
+            <div style={styles.statsGrid}>
+              <StatCard label="Total businesses" value={overview?.total_businesses ?? '—'} />
+              <StatCard label="Active" value={overview?.status_breakdown?.ACTIVE ?? 0} accent="#0d9488" />
+              <StatCard label="Pending" value={overview?.status_breakdown?.PENDING ?? 0} accent="#d97706" />
+              <StatCard label="Total customers" value={overview?.total_customers ?? 0} />
+              <StatCard label="Recorded activity · 30d" value={overview?.stamps_30d ?? 0} accent="#2563eb" />
+              <StatCard label="Redemptions · 30d" value={overview?.redemptions_30d ?? 0} accent="#7c3aed" />
+            </div>
+
+            <div style={styles.overviewStatusStrip}>
+              <span style={styles.overviewStatusLabel}>Account status</span>
+              <span style={styles.overviewStatusPill}>Active <b>{overview?.status_breakdown?.ACTIVE ?? 0}</b></span>
+              <span style={styles.overviewStatusPill}>Suspended <b>{overview?.status_breakdown?.SUSPENDED ?? 0}</b></span>
+              <span style={styles.overviewStatusPill}>Rejected <b>{overview?.status_breakdown?.REJECTED ?? 0}</b></span>
+            </div>
 
         {overview?.plan_breakdown && (
           <div style={styles.planBar}>
@@ -838,9 +1049,18 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
           </div>
         )}
 
-        <PlatformAnnouncementsAdmin API_BASE={API_BASE} token={token} />
-        <GiftCardPrintRequestsAdmin API_BASE={API_BASE} token={token} />
+          </>
+        )}
 
+        {activeAdminTab === 'operations' && (
+          <>
+            <PlatformAnnouncementsAdmin API_BASE={API_BASE} token={token} />
+            <GiftCardPrintRequestsAdmin API_BASE={API_BASE} token={token} />
+          </>
+        )}
+
+        {activeAdminTab === 'businesses' && (
+        <>
         {/* Filters */}
         <div style={styles.filterRow}>
           <input
@@ -982,6 +1202,8 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
             </tbody>
           </table>
         </div>
+        </>
+        )}
       </div>
 
       {/* Detail modal */}
@@ -1358,6 +1580,71 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
         </div>
       )}
 
+      {showClientPresentation && (
+        <div style={{...styles.modalOverlay,zIndex:500}} onClick={()=>setShowClientPresentation(false)}>
+          <div className="client-presentation-sheet" style={styles.clientPresentationSheet} onClick={e=>e.stopPropagation()}>
+            <div className="client-presentation-actions" style={styles.clientPresentationActions}>
+              <label style={{display:'flex',alignItems:'center',gap:7,fontSize:12,color:'#475569'}}>
+                <input type="checkbox" checked={presentationAnonymized} onChange={e=>setPresentationAnonymized(e.target.checked)} />
+                Anonymize client names
+              </label>
+              <button style={styles.viewBtn} onClick={()=>window.print()}>Print / Save PDF</button>
+              <button style={styles.closeBtn} onClick={()=>setShowClientPresentation(false)}>Close</button>
+            </div>
+
+            <div style={styles.presentationEyebrow}>LOYALTYTREE CLIENT PERFORMANCE</div>
+            <h2 style={styles.presentationTitle}>{clientPerfDays}-Day CRM & Retention Snapshot</h2>
+            <p style={styles.presentationSubtitle}>
+              Aggregated LoyaltyTree client activity. Metrics are based on recorded loyalty/card activity unless a live POS connection is explicitly identified.
+            </p>
+
+            <div style={styles.presentationMetricGrid}>
+              <PresentationMetric label="Clients in view" value={presentationSummary.clients} />
+              <PresentationMetric label="Active members" value={presentationSummary.active_members.toLocaleString()} />
+              <PresentationMetric label="Returning members" value={presentationSummary.returning_members.toLocaleString()} />
+              <PresentationMetric label="Returning-member share" value={`${presentationSummary.returning_rate}%`} />
+              <PresentationMetric label="New members" value={presentationSummary.new_customers.toLocaleString()} />
+              <PresentationMetric label="Reward redemptions" value={presentationSummary.redemptions.toLocaleString()} />
+            </div>
+
+            <div style={styles.presentationCalloutGrid}>
+              <div style={styles.presentationCallout}><strong>{presentationSummary.improving}</strong><span>clients with improving CRM movement</span></div>
+              <div style={styles.presentationCallout}><strong>{presentationSummary.pos_connected}</strong><span>clients connected to a POS provider</span></div>
+              <div style={styles.presentationCallout}><strong>{presentationSummary.membership_renewals}</strong><span>membership renewals recorded</span></div>
+            </div>
+
+            <div style={styles.presentationSectionTitle}>Client evidence</div>
+            <div style={styles.presentationClientGrid}>
+              {clientPerfRows
+                .slice()
+                .sort((a,b)=>Number(b.crm?.active_members||0)-Number(a.crm?.active_members||0))
+                .slice(0,8)
+                .map((row,index)=>{
+                  const crm=row.crm||{}, activity=row.activity||{}
+                  const name=presentationAnonymized ? `${businessTypeLabel(row.business_type).replace(/^\\S+\\s*/,'')} Client ${index+1}` : row.business_name
+                  return <div key={row.business_public_id} style={styles.presentationClientCard}>
+                    <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'flex-start'}}>
+                      <div>
+                        <div style={{fontWeight:850,color:'#0f172a'}}>{name}</div>
+                        <div style={{fontSize:10.5,color:'#64748b',marginTop:2}}>{row.pos?.connected?'LoyaltyTree + POS':'LoyaltyTree Activity'}</div>
+                      </div>
+                      <span style={{...styles.clientTrendBadge,...clientTrendStyle(row.trend)}}>{clientTrendLabel(row.trend)}</span>
+                    </div>
+                    <div style={styles.presentationEvidenceRow}><span>Active members</span><b>{crm.active_members||0}</b></div>
+                    <div style={styles.presentationEvidenceRow}><span>Returning share</span><b>{crm.returning_rate||0}%</b></div>
+                    <div style={styles.presentationEvidenceRow}><span>New members</span><b>{crm.new_customers||0}</b></div>
+                    <div style={styles.presentationEvidenceRow}><span>Redemptions</span><b>{activity.redemptions||0}</b></div>
+                  </div>
+                })}
+            </div>
+
+            <div style={styles.presentationFootnote}>
+              Methodology: “Returning member” means active during the selected period with earlier recorded LoyaltyTree activity. Client-level personal data is excluded. Non-POS metrics should not be described as sales or revenue.
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Delete confirmation */}
       {confirmDelete && (
         <div style={styles.modalOverlay} onClick={() => setConfirmDelete(null)}>
@@ -1448,6 +1735,39 @@ function DetailRow({ label, value }) {
       <span style={styles.detailValue}>{value}</span>
     </div>
   )
+}
+
+
+function ClientMetric({label,value}) {
+  return <div style={styles.clientMetric}><span style={{fontSize:9.5,color:'#94a3b8',fontWeight:750}}>{label}</span><b style={{fontSize:13,color:'#0f172a'}}>{Number.isFinite(Number(value)) && typeof value !== 'string' ? Number(value).toLocaleString() : value}</b></div>
+}
+
+function ClientMovement({label,value,suffix=''}) {
+  const missing = value == null
+  const n = Number(value || 0)
+  const positive = !missing && n > 0
+  const negative = !missing && n < 0
+  return <div style={styles.clientMovement}>
+    <span>{label}</span>
+    <b style={{color:positive?'#047857':negative?'#b91c1c':'#64748b'}}>
+      {missing ? 'New' : `${positive?'+':''}${n}${suffix}`}
+    </b>
+  </div>
+}
+
+function PresentationMetric({label,value}) {
+  return <div style={styles.presentationMetric}><div style={{fontSize:25,fontWeight:900,color:'#0f172a'}}>{value}</div><span style={{fontSize:10.5,color:'#64748b',fontWeight:750}}>{label}</span></div>
+}
+
+function clientTrendLabel(trend) {
+  return trend==='improving' ? 'Improving' : trend==='needs_attention' ? 'Needs attention' : trend==='limited_data' ? 'Limited data' : 'Stable'
+}
+
+function clientTrendStyle(trend) {
+  if (trend==='improving') return {background:'#dcfce7',color:'#166534',borderColor:'#86efac'}
+  if (trend==='needs_attention') return {background:'#fef2f2',color:'#b91c1c',borderColor:'#fecaca'}
+  if (trend==='limited_data') return {background:'#f8fafc',color:'#64748b',borderColor:'#e2e8f0'}
+  return {background:'#eff6ff',color:'#1d4ed8',borderColor:'#bfdbfe'}
 }
 
 function statusStyle(status) {
@@ -1569,6 +1889,21 @@ const styles = {
     boxShadow: '0 4px 12px rgba(0,0,0,0.15)', zIndex: 200,
   },
   body: { padding: '24px', maxWidth: 1200, margin: '0 auto' },
+  adminTopActions:{display:'flex',justifyContent:'flex-end',alignItems:'center',marginBottom:14},
+  adminTabNav:{display:'flex',gap:7,overflowX:'auto',WebkitOverflowScrolling:'touch',padding:'5px',marginBottom:16,background:'#e9eef5',border:'1px solid #dbe3ec',borderRadius:14,scrollbarWidth:'none'},
+  adminTabButton:{display:'flex',alignItems:'center',gap:7,minHeight:40,padding:'9px 12px',border:'1px solid transparent',borderRadius:10,background:'transparent',color:'#64748b',fontSize:12.5,fontWeight:800,cursor:'pointer',whiteSpace:'nowrap'},
+  adminTabButtonActive:{background:'#fff',color:'#0f172a',borderColor:'#dbe3ec',boxShadow:'0 2px 8px rgba(15,23,42,.07)'},
+  adminTabIcon:{fontSize:14,lineHeight:1,color:'inherit'},
+  adminTabBadge:{display:'inline-flex',alignItems:'center',justifyContent:'center',minWidth:20,height:20,padding:'0 6px',borderRadius:999,background:'#cbd5e1',color:'#475569',fontSize:10,fontWeight:900},
+  adminTabBadgeActive:{background:'#ccfbf1',color:'#0f766e'},
+  adminTabHeading:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:16,marginBottom:18,padding:'2px 2px 0'},
+  adminTabEyebrow:{fontSize:10,fontWeight:900,letterSpacing:'.11em',color:'#0f766e'},
+  adminTabTitle:{margin:'3px 0 3px',fontSize:22,color:'#0f172a',letterSpacing:'-.02em'},
+  adminTabDescription:{margin:0,color:'#64748b',fontSize:13,lineHeight:1.5,maxWidth:680},
+  adminTabContext:{padding:'7px 10px',border:'1px solid #dbe3ec',background:'#fff',color:'#475569',fontSize:11.5,fontWeight:800,borderRadius:999,whiteSpace:'nowrap'},
+  overviewStatusStrip:{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',padding:'12px 14px',margin:'-4px 0 14px',background:'#fff',border:'1px solid #e2e8f0',borderRadius:12},
+  overviewStatusLabel:{fontSize:11,fontWeight:900,color:'#64748b',textTransform:'uppercase',letterSpacing:'.06em',marginRight:2},
+  overviewStatusPill:{fontSize:11.5,color:'#475569',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:999,padding:'6px 9px'},
   partnerAdminSection: { background:'white', border:'1px solid #e2e8f0', borderRadius:16, padding:20, marginBottom:20, boxShadow:'0 8px 24px rgba(15,23,42,.04)' },
   partnerAdminTitle: { margin:0, fontSize:17, color:'#0f172a' },
   partnerAdminSubtitle: { margin:'5px 0 16px', color:'#64748b', fontSize:13, lineHeight:1.5 },
@@ -1793,6 +2128,38 @@ const styles = {
   analyticsRecentLocation:{color:'#475569',fontSize:11.5,fontWeight:750,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'},
   analyticsEmpty:{fontSize:12,color:'#94a3b8',padding:'12px 0'},
 
+  clientPerformanceSection:{background:'#fff',border:'1px solid #e2e8f0',borderRadius:20,padding:22,marginBottom:24,boxShadow:'0 10px 30px rgba(15,23,42,.045)'},
+  clientPerformanceToolbar:{display:'flex',justifyContent:'space-between',gap:10,alignItems:'center',flexWrap:'wrap',padding:'11px 0 14px',borderTop:'1px solid #f1f5f9',marginTop:4},
+  clientPerformanceGrid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(310px,1fr))',gap:11},
+  clientPerformanceCard:{border:'1px solid #e2e8f0',borderRadius:15,padding:15,background:'#fff',minWidth:0},
+  clientPerformanceCardHeader:{display:'flex',justifyContent:'space-between',gap:10,alignItems:'flex-start'},
+  clientPerformanceLogo:{width:38,height:38,borderRadius:9,objectFit:'contain',border:'1px solid #e2e8f0',background:'#fff'},
+  clientPerformanceLogoFallback:{width:38,height:38,borderRadius:9,display:'grid',placeItems:'center',background:'#f1f5f9',fontSize:18},
+  clientPerformanceName:{fontSize:13.5,fontWeight:900,color:'#0f172a',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'},
+  clientPerformanceMeta:{fontSize:10.5,color:'#94a3b8',marginTop:3},
+  clientTrendBadge:{display:'inline-flex',padding:'5px 8px',borderRadius:999,border:'1px solid #e2e8f0',fontSize:9.5,fontWeight:900,whiteSpace:'nowrap'},
+  clientSourceBadge:{display:'inline-flex',marginTop:10,padding:'5px 8px',borderRadius:999,background:'#f0fdfa',color:'#0f766e',fontSize:9.5,fontWeight:850},
+  clientMetricGrid:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:7,marginTop:11},
+  clientMetric:{background:'#f8fafc',borderRadius:9,padding:'8px 9px',display:'flex',flexDirection:'column',gap:3,minWidth:0},
+  clientMovementRow:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:7,marginTop:8},
+  clientMovement:{borderTop:'1px solid #f1f5f9',paddingTop:7,display:'flex',flexDirection:'column',gap:3,fontSize:9.5,color:'#94a3b8'},
+  clientHealthFooter:{display:'flex',justifyContent:'space-between',gap:8,flexWrap:'wrap',fontSize:10.5,color:'#64748b',marginTop:10},
+  clientReasons:{fontSize:10.5,color:'#475569',lineHeight:1.5,marginTop:9,paddingTop:9,borderTop:'1px dashed #e2e8f0'},
+  clientMethodologyNote:{marginTop:14,padding:'10px 12px',borderRadius:10,background:'#f8fafc',fontSize:10.5,color:'#64748b',lineHeight:1.5},
+  clientPresentationSheet:{background:'#fff',borderRadius:18,width:'min(980px,96vw)',maxHeight:'92vh',overflow:'auto',padding:28,boxShadow:'0 30px 80px rgba(15,23,42,.28)'},
+  clientPresentationActions:{display:'flex',justifyContent:'flex-end',alignItems:'center',gap:9,flexWrap:'wrap',marginBottom:18},
+  presentationEyebrow:{fontSize:10,fontWeight:900,letterSpacing:1.5,color:'#0f766e',marginBottom:6},
+  presentationTitle:{fontSize:28,fontWeight:900,color:'#0f172a',margin:'0 0 6px'},
+  presentationSubtitle:{fontSize:12.5,color:'#64748b',lineHeight:1.55,margin:'0 0 18px',maxWidth:760},
+  presentationMetricGrid:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:10,marginBottom:14},
+  presentationMetric:{padding:15,border:'1px solid #e2e8f0',borderRadius:13,background:'#f8fafc'},
+  presentationCalloutGrid:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:10,marginBottom:20},
+  presentationCallout:{padding:'12px 14px',borderRadius:12,background:'#f0fdfa',color:'#0f766e',display:'flex',alignItems:'baseline',gap:8,fontSize:11.5},
+  presentationSectionTitle:{fontSize:15,fontWeight:900,color:'#0f172a',margin:'18px 0 10px'},
+  presentationClientGrid:{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:10},
+  presentationClientCard:{border:'1px solid #e2e8f0',borderRadius:12,padding:13},
+  presentationEvidenceRow:{display:'flex',justifyContent:'space-between',gap:10,padding:'6px 0',borderBottom:'1px solid #f8fafc',fontSize:11.5,color:'#475569'},
+  presentationFootnote:{marginTop:20,paddingTop:12,borderTop:'1px solid #e2e8f0',fontSize:10,color:'#94a3b8',lineHeight:1.5},
   orderAheadDesignModal:{background:'#fff',borderRadius:20,width:'min(1080px,96vw)',maxHeight:'92vh',overflow:'auto',boxShadow:'0 30px 80px rgba(15,23,42,.25)'},
   oaDesignHeader:{display:'flex',justifyContent:'space-between',gap:16,alignItems:'flex-start',padding:'22px 24px 16px',borderBottom:'1px solid #e2e8f0',position:'sticky',top:0,background:'#fff',zIndex:2},
   oaDesignEyebrow:{fontSize:9.5,fontWeight:900,letterSpacing:1.3,color:'#0f766e',marginBottom:5},
