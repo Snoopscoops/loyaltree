@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react'
 
 function AnalyticsDashboard({ API_BASE, user }) {
   const [timeRange, setTimeRange] = useState('7d')
+  const [activeTab, setActiveTab] = useState('overview')
+  const [advancedOpen, setAdvancedOpen] = useState(false)
   const [analytics, setAnalytics] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -210,6 +212,152 @@ function AnalyticsDashboard({ API_BASE, user }) {
   const isMembership = overview.card_type === 'membership'
   const isVip = overview.card_type === 'vip'
 
+  // Keep the default owner view concise. Deeper metrics remain available in
+  // Customers / Activity / Reports instead of competing for attention at once.
+  const posEnhanced = Boolean(
+    analytics?.pos_integrated || analytics?.pos?.connected || analytics?.pos_connected ||
+    String(analytics?.data_source || '').toLowerCase().includes('pos')
+  )
+  const dataSourceLabel = posEnhanced ? 'Loyalty Tree + POS' : 'Loyalty Tree Activity'
+  const dataSourceDescription = posEnhanced
+    ? 'Enhanced transaction and loyalty analytics'
+    : 'Based on card joins, loyalty activity, redemptions and membership activity — not claimed as sales.'
+
+  const peakActivityRows = Array.isArray(trends?.peak_hours) ? trends.peak_hours.filter(row => row && Number.isFinite(Number(row.value))) : []
+  const sortedPeakActivity = [...peakActivityRows].sort((a,b) => Number(b.value || 0) - Number(a.value || 0))
+  const peakActivity = sortedPeakActivity[0] || null
+  const quietActivity = sortedPeakActivity.length ? sortedPeakActivity[sortedPeakActivity.length - 1] : null
+
+  const ageRows = demographics?.age ? [
+    ['Under 18', demographics.age.under_18 || 0],
+    ['18–24', demographics.age['18_24'] || 0],
+    ['25–34', demographics.age['25_34'] || 0],
+    ['35–44', demographics.age['35_44'] || 0],
+    ['45–54', demographics.age['45_54'] || 0],
+    ['55–64', demographics.age['55_64'] || 0],
+    ['65+', demographics.age['65_plus'] || 0],
+  ] : []
+  const largestAgeGroup = ageRows.reduce((best,row) => Number(row[1]) > Number(best?.[1] || 0) ? row : best, null)
+
+  const genderRows = demographics?.gender ? [
+    ['Female', demographics.gender.female || 0],
+    ['Male', demographics.gender.male || 0],
+    ['Rather not say', demographics.gender.rather_not_say || 0],
+  ] : []
+
+  // Location reporting intentionally uses only aggregate city/municipality/barangay
+  // fields when present. Raw street addresses are never surfaced in Analytics.
+  const areaCounts = {}
+  ;(crmData.customers || []).forEach(c => {
+    const area = [
+      c.city, c.municipality, c.customer_city, c.customer_municipality,
+      c.address_city, c.address_municipality, c.address?.city, c.address?.municipality,
+      c.barangay, c.address_barangay, c.address?.barangay,
+    ].find(value => String(value || '').trim())
+    if (!area) return
+    const label = String(area).trim()
+    areaCounts[label] = (areaCounts[label] || 0) + 1
+  })
+  const locationPrivacyMinimum = 5
+  const areaEntries = Object.entries(areaCounts).sort((a,b) => b[1] - a[1])
+  const topAreas = areaEntries.filter(([,count]) => Number(count) >= locationPrivacyMinimum).slice(0,5)
+  const hiddenSmallAreaCount = areaEntries.filter(([,count]) => Number(count) < locationPrivacyMinimum).reduce((sum,[,count]) => sum + Number(count || 0), 0)
+  if (hiddenSmallAreaCount >= locationPrivacyMinimum && topAreas.length < 5) topAreas.push(['Other / small groups', hiddenSmallAreaCount])
+  const demographicProfileCount = Math.max(
+    genderRows.reduce((sum,row)=>sum+Number(row[1]||0),0),
+    ageRows.reduce((sum,row)=>sum+Number(row[1]||0),0),
+  )
+  const demographicsSafeToShow = demographicProfileCount >= 5
+
+  const headlineActivity = isPoints
+    ? Number(overview.total_stamps || 0)
+    : Number(overview.total_stamps || 0)
+  const headlineActivityLabel = isPoints ? 'Transactions / Point Activity' : isMembership ? 'Member Visits' : isMultipass ? 'Sessions Used' : isVip ? 'Tier Activity' : 'Stamps Issued'
+
+  const insightItems = []
+  if (peakActivity) insightItems.push({
+    icon:'⏰',
+    title:`Peak activity: ${peakActivity.label}`,
+    text:`${Number(peakActivity.value || 0).toLocaleString()} recorded Loyalty Tree activit${Number(peakActivity.value || 0) === 1 ? 'y' : 'ies'} in this peak period.`,
+  })
+  if (Number(customers?.retention_rate || 0) > 0) insightItems.push({
+    icon:'🔁',
+    title:`${Number(customers.retention_rate || 0)}% 30-day retention`,
+    text:'This is the share of customers who returned within 30 days.',
+  })
+  if (Number(customers?.churn_risk || 0) > 0) insightItems.push({
+    icon:'⚠️',
+    title:`${Number(customers.churn_risk || 0).toLocaleString()} customers may need a win-back`,
+    text:'These customers have no recorded loyalty activity for 30+ days.',
+  })
+  if (largestAgeGroup && Number(largestAgeGroup[1]) > 0) insightItems.push({
+    icon:'👥',
+    title:`Largest saved age group: ${largestAgeGroup[0]}`,
+    text:`${Number(largestAgeGroup[1]).toLocaleString()} customer profiles currently fall in this age band.`,
+  })
+  if (!posEnhanced) insightItems.push({
+    icon:'ℹ️',
+    title:'Activity analytics, not sales analytics',
+    text:'Connect a supported POS to unlock stronger revenue, average-order and sales-by-time insights.',
+  })
+
+  const suggestedActions = []
+  if (Number(customers?.churn_risk || 0) > 0) suggestedActions.push({
+    title:`Review ${Number(customers.churn_risk || 0).toLocaleString()} at-risk customers`,
+    detail:'Use win-back messaging for customers with 30+ days of inactivity.',
+    action:'Review retention',
+    onClick:()=>{ setActiveTab('activity'); setAdvancedOpen(true) },
+  })
+  if (Number(birthdayData.counts?.next_30_days || 0) > 0) suggestedActions.push({
+    title:`${Number(birthdayData.counts.next_30_days).toLocaleString()} birthdays in the next 30 days`,
+    detail:'Review upcoming celebrants and birthday reward eligibility.',
+    action:'View customers',
+    onClick:()=>setActiveTab('customers'),
+  })
+  if (retentionOps.length > 0) suggestedActions.push({
+    title:`${retentionOps.length.toLocaleString()} retention opportunities detected`,
+    detail:'Loyalty Tree found customers who may benefit from a timely follow-up.',
+    action:'Review opportunities',
+    onClick:()=>{ setActiveTab('activity'); setAdvancedOpen(true) },
+  })
+  if (quietActivity && peakActivity && Number(quietActivity.value || 0) < Number(peakActivity.value || 0) * .6) suggestedActions.push({
+    title:`Consider an off-peak offer around ${quietActivity.label}`,
+    detail:'Recorded activity is materially lower here than the current peak period.',
+    action:'View activity',
+    onClick:()=>setActiveTab('activity'),
+  })
+
+  const reportRangeLabel = 'Last 7 Days'
+  const reportDate = new Date().toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'})
+  const escapeReportHtml = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[ch]))
+  const printableReportHtml = () => {
+    const metricRows = [
+      ['Total customers', overview.total_customers ?? 0],
+      ['Active members', overview.active_members ?? 0],
+      ['New customers', overview.new_customers ?? 0],
+      [headlineActivityLabel, headlineActivity],
+      ['Rewards / redemptions', overview.total_rewards ?? 0],
+      ['30-day retention', `${customers?.retention_rate || 0}%`],
+    ]
+    const ageHtml = demographicsSafeToShow && ageRows.length ? ageRows.map(([label,value])=>`<tr><td>${escapeReportHtml(label)}</td><td>${Number(value||0).toLocaleString()}</td></tr>`).join('') : '<tr><td colspan="2">No saved age data yet.</td></tr>'
+    const genderHtml = demographicsSafeToShow && genderRows.length ? genderRows.map(([label,value])=>`<tr><td>${escapeReportHtml(label)}</td><td>${Number(value||0).toLocaleString()}</td></tr>`).join('') : '<tr><td colspan="2">Not enough saved gender data to show a private aggregate yet.</td></tr>'
+    const areaHtml = topAreas.length ? topAreas.map(([label,value])=>`<tr><td>${escapeReportHtml(label)}</td><td>${Number(value||0).toLocaleString()}</td></tr>`).join('') : '<tr><td colspan="2">No aggregate city / municipality data yet.</td></tr>'
+    const insightsHtml = insightItems.slice(0,5).map(item=>`<li><strong>${escapeReportHtml(item.title)}</strong><br><span>${escapeReportHtml(item.text)}</span></li>`).join('')
+    return `<!doctype html><html><head><meta charset="utf-8"><title>Loyalty Tree Weekly Report</title><style>body{font-family:Arial,sans-serif;color:#0f172a;margin:38px;line-height:1.5}h1{margin:0}h2{margin-top:28px;border-bottom:1px solid #e2e8f0;padding-bottom:7px}small,.muted{color:#64748b}table{width:100%;border-collapse:collapse;margin:10px 0 18px}td{padding:8px 6px;border-bottom:1px solid #f1f5f9}td:last-child{text-align:right;font-weight:700}.source{display:inline-block;padding:6px 10px;border-radius:999px;background:#ecfdf5;color:#047857;font-weight:700}li{margin:9px 0}.footer{margin-top:34px;padding-top:14px;border-top:1px solid #e2e8f0;font-size:12px;color:#64748b}@media print{body{margin:18mm}.no-print{display:none}}</style></head><body><h1>Loyalty Tree Weekly Report</h1><div class="muted">${escapeReportHtml(reportRangeLabel)} · Generated ${escapeReportHtml(reportDate)}</div><p><span class="source">Data source: ${escapeReportHtml(dataSourceLabel)}</span></p><h2>Weekly Summary</h2><table>${metricRows.map(([a,b])=>`<tr><td>${escapeReportHtml(a)}</td><td>${escapeReportHtml(b)}</td></tr>`).join('')}</table><h2>Customer Demographics</h2><h3>Age</h3><table>${ageHtml}</table><h3>Gender</h3><table>${genderHtml}</table><h3>Top Customer Areas</h3><table>${areaHtml}</table><h2>Peak Activity</h2><p><strong>${escapeReportHtml(peakActivity?.label || 'No peak activity available')}</strong>${peakActivity ? ` · ${Number(peakActivity.value||0).toLocaleString()} recorded activities` : ''}</p><h2>Insights & Suggestions</h2><ul>${insightsHtml || '<li>No suggestions available yet.</li>'}</ul><div class="footer">${escapeReportHtml(dataSourceDescription)} Individual street addresses are not included in demographic reporting.</div><script>window.onload=()=>setTimeout(()=>window.print(),250)<\/script></body></html>`
+  }
+  const printWeeklyReport = () => {
+    const win = window.open('', '_blank')
+    if (!win) return
+    win.document.open()
+    win.document.write(printableReportHtml())
+    win.document.close()
+  }
+
+  const selectTab = tab => {
+    setActiveTab(tab)
+    if (tab === 'reports' && timeRange !== '7d') setTimeRange('7d')
+  }
+
   return (
     <div className="an-container" style={styles.container}>
       <style>{`
@@ -223,6 +371,8 @@ function AnalyticsDashboard({ API_BASE, user }) {
             margin: 0 -16px !important; padding-left: 16px; padding-right: 16px;
           }
           .an-timerange::-webkit-scrollbar { display: none; }
+          .an-tabs { width:100%; overflow-x:auto; flex-wrap:nowrap !important; -webkit-overflow-scrolling:touch; }
+          .an-tabs::-webkit-scrollbar { display:none; }
           .an-rangebtn { white-space: nowrap; flex-shrink: 0; padding: 9px 14px !important; font-size: 13px !important; }
           .an-overview-grid { grid-template-columns: repeat(2, 1fr) !important; gap: 10px !important; }
           .an-statcard { padding: 14px !important; }
@@ -246,299 +396,253 @@ function AnalyticsDashboard({ API_BASE, user }) {
       `}</style>
       <div className="an-header" style={styles.header}>
         <h1 className="an-title" style={styles.title}>📊 Analytics Dashboard</h1>
-        <div className="an-timerange" style={styles.timeRange}>
-          {['7d', '30d', '90d', 'all'].map(range => (
+        {activeTab === 'reports' ? (
+          <div style={{...styles.sourceBadge,background:'#ecfdf5',borderColor:'#a7f3d0',color:'#047857'}}>Weekly · Last 7 Days</div>
+        ) : (
+          <div className="an-timerange" style={styles.timeRange}>
+            {['7d', '30d', '90d', 'all'].map(range => (
+              <button
+                key={range}
+                className="an-rangebtn"
+                onClick={() => setTimeRange(range)}
+                style={{
+                  ...styles.rangeBtn,
+                  background: timeRange === range ? '#0d9488' : '#f1f5f9',
+                  color: timeRange === range ? 'white' : '#64748b'
+                }}
+              >
+                {range === '7d' ? 'Last 7 Days' : range === '30d' ? 'Last 30 Days' : range === '90d' ? 'Last 90 Days' : 'All Time'}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={styles.analyticsTopBar}>
+        <div className="an-tabs" style={styles.tabs}>
+          {[
+            ['overview','Overview'],
+            ['customers','Customers'],
+            ['activity','Activity'],
+            ['reports','Reports'],
+          ].map(([key,label]) => (
             <button
-              key={range}
-              className="an-rangebtn"
-              onClick={() => setTimeRange(range)}
-              style={{
-                ...styles.rangeBtn,
-                background: timeRange === range ? '#0d9488' : '#f1f5f9',
-                color: timeRange === range ? 'white' : '#64748b'
-              }}
+              key={key}
+              type="button"
+              onClick={() => selectTab(key)}
+              style={{...styles.tabBtn,...(activeTab===key?styles.tabBtnActive:{})}}
             >
-              {range === '7d' ? 'Last 7 Days' : range === '30d' ? 'Last 30 Days' : range === '90d' ? 'Last 90 Days' : 'All Time'}
+              {label}
             </button>
           ))}
         </div>
-      </div>
-
-      {/* Overview Cards */}
-      <div className="an-overview-grid" style={styles.overviewGrid}>
-        <StatCard 
-          title="Total Customers" 
-          value={overview.total_customers} 
-          change={overview.customer_change}
-          icon="👥" 
-          color="#0d9488"
-        />
-        <StatCard 
-          title="Active Members" 
-          value={overview.active_members} 
-          change={overview.active_change}
-          icon="⭐" 
-          color="#3b82f6"
-        />
-        {isPoints ? (
-          <StatCard
-            title="Points Issued"
-            value={overview.total_points_earned ?? 0}
-            change={overview.points_change}
-            icon="💎"
-            color="#f59e0b"
-          />
-        ) : (
-          <StatCard
-            title={isVip ? 'VIP Points Issued' : isMembership ? 'Member Visits' : isMultipass ? 'Sessions Used' : 'Stamps Issued'}
-            value={overview.total_stamps}
-            change={overview.stamp_change}
-            icon={isVip ? '👑' : isMembership ? '✅' : isMultipass ? '🎫' : '🎯'}
-            color="#f59e0b"
-          />
-        )}
-        <StatCard 
-          title={isVip ? 'Tier Upgrades' : isMembership ? 'Membership Actions' : isMultipass ? 'Packs Completed' : 'Rewards Redeemed'}
-          value={overview.total_rewards} 
-          change={overview.reward_change}
-          icon="🎁" 
-          color="#ec4899"
-          onClick={openRedemptionDrilldown}
-          hint="Click to see who redeemed"
-        />
-        {isPoints ? (
-          <StatCard
-            title="Avg. Points/Customer"
-            value={overview.active_members ? Math.round(((overview.total_points_earned ?? 0) / overview.active_members) * 10) / 10 : 0}
-            change={overview.points_change}
-            icon="📈"
-            color="#8b5cf6"
-          />
-        ) : (
-          <StatCard
-            title={isVip ? 'Avg. VIP Points/Customer' : isMembership ? 'Avg. Visits/Member' : isMultipass ? 'Avg. Sessions/Customer' : 'Avg. Stamps/Customer'}
-            value={overview.avg_stamps_per_customer}
-            change={overview.avg_change}
-            icon="📈"
-            color="#8b5cf6"
-          />
-        )}
-        <StatCard 
-          title="New Customers" 
-          value={overview.new_customers} 
-          change={overview.customer_change}
-          icon="🆕" 
-          color="#10b981"
-        />
-        {isPoints && (
-          <StatCard
-            title="Transactions"
-            value={overview.total_stamps}
-            change={overview.stamp_change}
-            icon="🧾"
-            color="#0ea5e9"
-          />
-        )}
-      </div>
-
-      {/* Birthday Celebrants — quick visibility near the main KPIs */}
-      <div id="birthday-celebrants-quick" style={{...styles.insightCard, marginBottom:24, borderLeft:'4px solid #f59e0b'}}>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12,flexWrap:'wrap'}}>
-          <div>
-            <h3 style={{...styles.insightTitle,marginBottom:4}}>🎉 Birthday Celebrants</h3>
-            <div style={styles.mutedText}>Always visible here; detailed birthday automation and eligibility remain in Retention Analytics.</div>
-          </div>
-          <button
-            type="button"
-            className="an-actionbtn"
-            style={styles.actionBtn}
-            onClick={() => document.getElementById('birthday-celebrants-detail')?.scrollIntoView({ behavior:'smooth', block:'start' })}
-          >
-            View birthday details
-          </button>
-        </div>
-        <div className="an-overview-grid" style={{...styles.overviewGrid,marginTop:14,marginBottom:12}}>
-          <MiniMetric label="Saved Birthdays" value={birthdayData.counts?.all || birthdayData.diagnostics?.resolved_people_with_birthday || 0} />
-          <MiniMetric label="This Month" value={birthdayData.counts?.this_month || 0} />
-          <MiniMetric label="Today" value={birthdayData.counts?.today || 0} />
-          <MiniMetric label="Next 30 Days" value={birthdayData.counts?.next_30_days || 0} />
-        </div>
-        {extendedLoading ? (
-          <div style={styles.noData}>Loading birthday celebrants…</div>
-        ) : (birthdayData.customers || []).length === 0 ? (
-          <div style={styles.noData}>
-            {(birthdayData.diagnostics?.membership_rows_with_birthday || 0) === 0
-              ? 'No saved customer birthdays yet. Birthday must be collected in Join or added to the customer profile.'
-              : (birthdayData.diagnostics?.unreadable_birthday_rows || 0) > 0
-                ? `${birthdayData.diagnostics.unreadable_birthday_rows} saved birthday row(s) could not be read.`
-                : 'No readable customer birthdays were returned.'}
-          </div>
-        ) : (
-          <div style={{display:'grid',gap:8}}>
-            {(birthdayData.customers || []).slice(0,4).map(c => (
-              <div key={`quick-${c.customer_public_id}-${c.birthday}`} style={styles.birthdayRow}>
-                <div>
-                  <div style={{fontWeight:800,color:'#1e293b'}}>{c.customer_name}</div>
-                  <div style={styles.mutedText}>
-                    🎂 {c.birthday ? new Date(`${c.birthday}T00:00:00`).toLocaleDateString(undefined,{month:'short',day:'numeric'}) : '—'}
-                    {c.is_today ? ' · Today!' : Number(c.days_until) >= 0 ? ` · ${c.days_until} day${Number(c.days_until)===1?'':'s'} away` : ''}
-                  </div>
-                </div>
-                <span style={styles.statusPill}>{c.is_today ? 'Celebrating today' : c.in_this_month ? 'This month' : 'Upcoming'}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Charts Row */}
-      <div className="an-charts-row" style={styles.chartsRow}>
-        <div className="an-chart-card" style={styles.chartCard}>
-          <h3 style={styles.chartTitle}>📈 Customer Growth</h3>
-          <LineChart data={trends.customers} color="#0d9488" />
-        </div>
-        <div className="an-chart-card" style={styles.chartCard}>
-          <h3 style={styles.chartTitle}>{isPoints ? '💎 Points Activity' : isMembership ? '✅ Member Visits' : isMultipass ? '🎫 Session Activity' : '🎯 Stamp Activity'}</h3>
-          <LineChart data={trends.stamps} color="#f59e0b" />
+        <div style={styles.sourceBadgeWrap}>
+          <span style={{...styles.sourceBadge,...(posEnhanced?styles.sourceBadgePos:{})}}>● {dataSourceLabel}</span>
+          <span style={styles.sourceHint}>{dataSourceDescription}</span>
         </div>
       </div>
 
-      {/* Second Charts Row */}
-      <div className="an-charts-row" style={styles.chartsRow}>
-        <div className="an-chart-card" style={styles.chartCard}>
-          <h3 style={styles.chartTitle}>{isMembership ? '📅 Membership Activity' : isMultipass ? '✅ Packs Completed' : '🎁 Reward Redemptions'}</h3>
-          <BarChart data={trends.rewards} color="#ec4899" />
+      {activeTab === 'overview' && <>
+        <div className="an-overview-grid" style={styles.overviewGrid}>
+          <StatCard title="Active Members" value={overview.active_members ?? 0} change={overview.active_change} icon="⭐" color="#0d9488" />
+          <StatCard title="New Customers" value={overview.new_customers ?? 0} change={overview.customer_change} icon="🆕" color="#10b981" />
+          <StatCard title={headlineActivityLabel} value={headlineActivity} change={overview.stamp_change} icon={isMembership?'✅':isMultipass?'🎫':isVip?'👑':isPoints?'💎':'🎯'} color="#3b82f6" />
+          <StatCard title={isVip?'Tier Upgrades':isMembership?'Membership Actions':isMultipass?'Packs Completed':'Rewards Redeemed'} value={overview.total_rewards ?? 0} change={overview.reward_change} icon="🎁" color="#ec4899" onClick={openRedemptionDrilldown} hint="View redemptions" />
+          <StatCard title="30-Day Retention" value={`${customers?.retention_rate || 0}%`} icon="🔁" color="#8b5cf6" />
+          <StatCard title="Churn Risk" value={customers?.churn_risk || 0} icon="⚠️" color={Number(customers?.churn_risk||0)>0?'#f59e0b':'#10b981'} />
         </div>
-        <div className="an-chart-card" style={styles.chartCard}>
-          <h3 style={styles.chartTitle}>📅 Activity by Day of Week</h3>
-          <Heatmap data={trends.peak_hours} />
-        </div>
-      </div>
 
-      {/* Customer Insights */}
-      <div style={styles.section}>
-        <h2 className="an-section-title" style={styles.sectionTitle}>👥 Customer Insights</h2>
-        <div className="an-insights-grid" style={styles.insightsGrid}>
-          <div style={styles.insightCard}>
-            <h4 style={styles.insightTitle}>Top Customers</h4>
-            {customers.top_customers?.map((c, i) => (
-              <div key={i} style={styles.customerRow}>
-                <span style={styles.rank}>#{i + 1}</span>
-                <span style={styles.customerName}>{c.name}</span>
-                <span style={styles.customerStamps}>{c.stamps} {c.metric === 'points_balance' ? 'pts' : c.metric === 'sessions_used' ? 'sessions' : 'stamps'}</span>
-              </div>
-            ))}
-          </div>
-          <div style={styles.insightCard}>
-            <h4 style={styles.insightTitle}>Retention Rate</h4>
-            <div className="an-bignumber" style={styles.bigNumber}>{customers.retention_rate}%</div>
-            <p style={styles.insightDesc}>of customers returned within 30 days</p>
-            <div style={styles.retentionBar}>
-              <div style={{...styles.retentionFill, width: `${customers.retention_rate}%`}}></div>
+        <div style={styles.section}>
+          <div style={styles.sectionHeadingRow}>
+            <div>
+              <h2 className="an-section-title" style={{...styles.sectionTitle,marginBottom:4}}>What matters this period</h2>
+              <div style={styles.mutedText}>A short summary instead of a wall of numbers.</div>
             </div>
           </div>
-          <div style={styles.insightCard}>
-            <h4 style={styles.insightTitle}>Churn Risk</h4>
-            <div className="an-bignumber" style={{...styles.bigNumber, color: '#ef4444'}}>{customers.churn_risk}</div>
-            <p style={styles.insightDesc}>customers haven't visited in 30+ days</p>
-            <button className="an-actionbtn" style={styles.actionBtn}>Send Win-Back Offer</button>
+          <div className="an-insights-grid" style={styles.insightsGrid}>
+            {insightItems.slice(0,3).map((item,i)=>(
+              <div key={`${item.title}-${i}`} style={styles.insightCard}>
+                <div style={{fontSize:22,marginBottom:8}}>{item.icon}</div>
+                <h4 style={styles.insightTitle}>{item.title}</h4>
+                <div style={styles.insightDesc}>{item.text}</div>
+              </div>
+            ))}
           </div>
-          {demographics?.gender && (() => {
-            const g = demographics.gender
-            const total = (g.male || 0) + (g.female || 0) + (g.rather_not_say || 0)
-            const pct = (n) => total ? Math.round((n / total) * 100) : 0
-            const rows = [
-              { label: 'Male', value: g.male || 0, color: '#3b82f6' },
-              { label: 'Female', value: g.female || 0, color: '#ec4899' },
-              { label: 'Rather not say', value: g.rather_not_say || 0, color: '#94a3b8' },
-            ]
-            return (
-              <div style={styles.insightCard}>
-                <h4 style={styles.insightTitle}>Gender Breakdown</h4>
-                {rows.map(r => (
-                  <div key={r.label} style={{ marginBottom: 10 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#475569', marginBottom: 4 }}>
-                      <span>{r.label}</span>
-                      <span>{r.value} ({pct(r.value)}%)</span>
-                    </div>
-                    <div style={styles.retentionBar}>
-                      <div style={{ ...styles.retentionFill, width: `${pct(r.value)}%`, background: r.color }}></div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )
-          })()}
-          {demographics?.age && (() => {
-            const a = demographics.age
-            const rows = [
-              { label: 'Under 18', value: a.under_18 || 0 },
-              { label: '18–24', value: a['18_24'] || 0 },
-              { label: '25–34', value: a['25_34'] || 0 },
-              { label: '35–44', value: a['35_44'] || 0 },
-              { label: '45–54', value: a['45_54'] || 0 },
-              { label: '55–64', value: a['55_64'] || 0 },
-              { label: '65+', value: a['65_plus'] || 0 },
-              { label: 'Unknown', value: a.unknown || 0 },
-            ]
-            const total = rows.reduce((sum, row) => sum + row.value, 0)
-            const pct = (n) => total ? Math.round((n / total) * 100) : 0
-            const knownRows = rows.filter(row => row.label !== 'Unknown')
-            const largestGroup = knownRows.reduce(
-              (best, row) => row.value > best.value ? row : best,
-              { label: 'No data yet', value: 0 }
-            )
-
-            return (
-              <div style={styles.insightCard}>
-                <div style={{display:'flex', justifyContent:'space-between', gap:12, alignItems:'flex-start', marginBottom:12}}>
-                  <div>
-                    <h4 style={{...styles.insightTitle, marginBottom:4}}>Age Breakdown</h4>
-                    <div style={{fontSize:12, color:'#94a3b8'}}>Based on saved age or birthday</div>
-                  </div>
-                  {largestGroup.value > 0 && (
-                    <div style={{textAlign:'right'}}>
-                      <div style={{fontSize:11, color:'#94a3b8'}}>Largest group</div>
-                      <strong style={{fontSize:13, color:'#0d9488'}}>{largestGroup.label}</strong>
-                    </div>
-                  )}
-                </div>
-                {rows.map(r => (
-                  <div key={r.label} style={{ marginBottom: 10 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#475569', marginBottom: 4 }}>
-                      <span>{r.label}</span>
-                      <span>{r.value} ({pct(r.value)}%)</span>
-                    </div>
-                    <div style={styles.retentionBar}>
-                      <div style={{
-                        ...styles.retentionFill,
-                        width: `${pct(r.value)}%`,
-                        background: r.label === 'Unknown' ? '#cbd5e1' : '#0d9488',
-                      }}></div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )
-          })()}
         </div>
-      </div>
 
+        <div style={styles.section}>
+          <div style={styles.sectionHeadingRow}>
+            <div>
+              <h2 className="an-section-title" style={{...styles.sectionTitle,marginBottom:4}}>Recommended actions</h2>
+              <div style={styles.mutedText}>Suggestions are based on recorded Loyalty Tree activity and only appear when there is something actionable.</div>
+            </div>
+          </div>
+          {suggestedActions.length === 0 ? (
+            <div style={styles.insightCard}><div style={styles.noData}>No urgent action detected for this period.</div></div>
+          ) : (
+            <div style={{display:'grid',gap:10}}>
+              {suggestedActions.slice(0,3).map((item,i)=>(
+                <div key={`${item.title}-${i}`} style={styles.actionSuggestion}>
+                  <div style={{minWidth:0}}>
+                    <div style={{fontWeight:850,color:'#1e293b'}}>{item.title}</div>
+                    <div style={{...styles.mutedText,marginTop:3}}>{item.detail}</div>
+                  </div>
+                  <button type="button" style={styles.actionBtnCompact} onClick={item.onClick}>{item.action}</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {Number(birthdayData.counts?.next_30_days || 0) > 0 && (
+          <div style={{...styles.insightCard,borderLeft:'4px solid #f59e0b',marginBottom:24}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+              <div>
+                <strong style={{color:'#1e293b'}}>🎂 {birthdayData.counts.next_30_days} upcoming birthday{Number(birthdayData.counts.next_30_days)===1?'':'s'}</strong>
+                <div style={styles.mutedText}>Birthday details stay out of the Overview until you need them.</div>
+              </div>
+              <button type="button" style={styles.actionBtnCompact} onClick={()=>setActiveTab('customers')}>View customers</button>
+            </div>
+          </div>
+        )}
+      </>}
+
+      {activeTab === 'activity' && <>
+        <div style={styles.section}>
+          <div style={styles.sectionHeadingRow}>
+            <div>
+              <h2 className="an-section-title" style={{...styles.sectionTitle,marginBottom:4}}>Peak activity</h2>
+              <div style={styles.mutedText}>{posEnhanced ? 'POS-enhanced timing view when transaction timestamps are available.' : 'Based on Loyalty Tree card activity timestamps.'}</div>
+            </div>
+          </div>
+          <div className="an-overview-grid" style={styles.overviewGrid}>
+            <MiniMetric label="Peak period" value={peakActivity?.label || '—'} />
+            <MiniMetric label="Peak activity" value={peakActivity ? Number(peakActivity.value||0).toLocaleString() : '—'} />
+            <MiniMetric label="Quiet period" value={quietActivity?.label || '—'} />
+            <MiniMetric label="Data source" value={posEnhanced ? 'POS + LT' : 'LT Activity'} />
+          </div>
+        </div>
+
+        <div className="an-charts-row" style={styles.chartsRow}>
+          <div className="an-chart-card" style={styles.chartCard}>
+            <h3 style={styles.chartTitle}>📈 Customer Growth</h3>
+            <LineChart data={trends.customers} color="#0d9488" />
+          </div>
+          <div className="an-chart-card" style={styles.chartCard}>
+            <h3 style={styles.chartTitle}>{isPoints ? '💎 Points Activity' : isMembership ? '✅ Member Visits' : isMultipass ? '🎫 Session Activity' : '🎯 Stamp Activity'}</h3>
+            <LineChart data={trends.stamps} color="#f59e0b" />
+          </div>
+        </div>
+
+        <div className="an-charts-row" style={styles.chartsRow}>
+          <div className="an-chart-card" style={styles.chartCard}>
+            <h3 style={styles.chartTitle}>{isMembership ? '📅 Membership Activity' : isMultipass ? '✅ Packs Completed' : '🎁 Reward Redemptions'}</h3>
+            <BarChart data={trends.rewards} color="#ec4899" />
+          </div>
+          <div className="an-chart-card" style={styles.chartCard}>
+            <h3 style={styles.chartTitle}>📅 Activity by recorded period</h3>
+            <Heatmap data={trends.peak_hours} />
+          </div>
+        </div>
+      </>}
+
+      {activeTab === 'customers' && <>
+        <div style={styles.section}>
+          <div style={styles.sectionHeadingRow}>
+            <div>
+              <h2 className="an-section-title" style={{...styles.sectionTitle,marginBottom:4}}>Customer profile</h2>
+              <div style={styles.mutedText}>Demographics are aggregated. Individual street addresses are never displayed here.</div>
+            </div>
+          </div>
+          <div className="an-insights-grid" style={styles.insightsGrid}>
+            <div style={styles.insightCard}>
+              <h4 style={styles.insightTitle}>New vs. returning</h4>
+              <div style={styles.customerRow}><span style={styles.customerName}>New customers</span><strong>{Number(overview.new_customers||0).toLocaleString()}</strong></div>
+              <div style={styles.customerRow}><span style={styles.customerName}>30-day retention</span><strong>{Number(customers.retention_rate||0)}%</strong></div>
+              <div style={styles.customerRow}><span style={styles.customerName}>Churn risk</span><strong>{Number(customers.churn_risk||0).toLocaleString()}</strong></div>
+            </div>
+
+            <div style={styles.insightCard}>
+              <h4 style={styles.insightTitle}>Gender</h4>
+              {!demographicsSafeToShow || genderRows.length === 0 ? <div style={styles.noData}>Not enough saved gender data to show a private aggregate yet.</div> : (()=>{
+                const total=genderRows.reduce((sum,row)=>sum+Number(row[1]||0),0)
+                return genderRows.map(([label,value])=>{
+                  const pct=total?Math.round((Number(value||0)/total)*100):0
+                  return <div key={label} style={{marginBottom:10}}><div style={styles.barLabelRow}><span>{label}</span><span>{Number(value||0).toLocaleString()} · {pct}%</span></div><div style={styles.retentionBar}><div style={{...styles.retentionFill,width:`${pct}%`}}/></div></div>
+                })
+              })()}
+            </div>
+
+            <div style={styles.insightCard}>
+              <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'flex-start'}}>
+                <h4 style={styles.insightTitle}>Age groups</h4>
+                {largestAgeGroup && Number(largestAgeGroup[1])>0 && <span style={styles.statusPill}>Largest · {largestAgeGroup[0]}</span>}
+              </div>
+              {!demographicsSafeToShow || ageRows.length === 0 ? <div style={styles.noData}>Not enough saved age / birthday data to show a private aggregate yet.</div> : (()=>{
+                const total=ageRows.reduce((sum,row)=>sum+Number(row[1]||0),0)
+                return ageRows.map(([label,value])=>{
+                  const pct=total?Math.round((Number(value||0)/total)*100):0
+                  return <div key={label} style={{marginBottom:9}}><div style={styles.barLabelRow}><span>{label}</span><span>{Number(value||0).toLocaleString()} · {pct}%</span></div><div style={styles.retentionBar}><div style={{...styles.retentionFill,width:`${pct}%`}}/></div></div>
+                })
+              })()}
+            </div>
+
+            <div style={styles.insightCard}>
+              <h4 style={styles.insightTitle}>Top customer areas</h4>
+              {topAreas.length === 0 ? (
+                <div style={styles.noData}>No aggregate city / municipality data available yet.</div>
+              ) : topAreas.map(([label,value],i)=>(
+                <div key={label} style={styles.customerRow}>
+                  <span style={styles.rank}>#{i+1}</span>
+                  <span style={styles.customerName}>{label}</span>
+                  <strong>{Number(value).toLocaleString()}</strong>
+                </div>
+              ))}
+              <div style={{...styles.mutedText,marginTop:10}}>Small location segments can be grouped later to protect customer privacy.</div>
+            </div>
+
+            <div style={styles.insightCard}>
+              <h4 style={styles.insightTitle}>Top customers by loyalty activity</h4>
+              {(customers.top_customers || []).length === 0 ? <div style={styles.noData}>No customer activity yet.</div> : (customers.top_customers || []).slice(0,5).map((c,i)=>(
+                <div key={`${c.name||'customer'}-${i}`} style={styles.customerRow}>
+                  <span style={styles.rank}>#{i+1}</span>
+                  <span style={styles.customerName}>{c.name || 'Customer'}</span>
+                  <span style={styles.customerStamps}>{c.stamps} {c.metric === 'points_balance' ? 'pts' : c.metric === 'sessions_used' ? 'sessions' : 'activity'}</span>
+                </div>
+              ))}
+            </div>
+
+            <div style={styles.insightCard}>
+              <h4 style={styles.insightTitle}>Upcoming birthdays</h4>
+              <div className="an-bignumber" style={styles.bigNumber}>{birthdayData.counts?.next_30_days || 0}</div>
+              <div style={styles.insightDesc}>saved birthdays in the next 30 days</div>
+              {(birthdayData.customers || []).slice(0,3).map(c=>(
+                <div key={`${c.customer_public_id}-${c.birthday}`} style={{...styles.customerRow,marginTop:8}}>
+                  <span style={styles.customerName}>{c.customer_name}</span>
+                  <span style={styles.mutedText}>{c.is_today?'Today':`${c.days_until}d`}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </>}
+
+      {activeTab === 'activity' && <>
       {/* Revenue Insights */}
       <div style={styles.section}>
-        <h2 className="an-section-title" style={styles.sectionTitle}>💰 Revenue Impact</h2>
+        <h2 className="an-section-title" style={styles.sectionTitle}>{posEnhanced ? '💰 POS Sales Insights' : '💰 Recorded Transaction Value'}</h2>
         {revenue.tracked ? (
           <div className="an-revenue-grid" style={styles.revenueGrid}>
             <div style={styles.revenueCard}>
-              <h4 style={styles.insightTitle}>{isPoints ? 'Points-Driven Revenue' : 'Stamp-Driven Revenue'}</h4>
+              <h4 style={styles.insightTitle}>{posEnhanced ? (isPoints ? 'Points-Linked Sales' : 'Loyalty-Linked Sales') : 'Recorded Loyalty Value'}</h4>
               <div className="an-bignumber" style={styles.bigNumber}>₱{revenue.stamp_revenue}</div>
-              <p style={styles.insightDesc}>{isPoints ? 'Revenue from point-earning transactions' : 'Revenue from stamp-earning transactions'}</p>
+              <p style={styles.insightDesc}>{posEnhanced ? 'Confirmed POS value linked to Loyalty Tree members' : 'Transaction value recorded by Loyalty Tree; this is not labeled total business sales.'}</p>
             </div>
             <div style={styles.revenueCard}>
               <h4 style={styles.insightTitle}>Reward Cost</h4>
               {revenue.reward_cost != null ? (
                 <>
-                  <div className="an-bignumber" style={{...styles.bigNumber, color: '#ef4444'}}>${revenue.reward_cost}</div>
+                  <div className="an-bignumber" style={{...styles.bigNumber, color: '#ef4444'}}>₱{revenue.reward_cost}</div>
                   <p style={styles.insightDesc}>Estimated cost of redeemed rewards</p>
                 </>
               ) : (
@@ -546,10 +650,10 @@ function AnalyticsDashboard({ API_BASE, user }) {
               )}
             </div>
             <div style={styles.revenueCard}>
-              <h4 style={styles.insightTitle}>Net Program Value</h4>
+              <h4 style={styles.insightTitle}>{posEnhanced ? 'Net Program Value' : 'Net Tracked Value'}</h4>
               {revenue.net_value != null ? (
                 <>
-                  <div className="an-bignumber" style={{...styles.bigNumber, color: '#10b981'}}>${revenue.net_value}</div>
+                  <div className="an-bignumber" style={{...styles.bigNumber, color: '#10b981'}}>₱{revenue.net_value}</div>
                   <p style={styles.insightDesc}>Revenue minus reward costs</p>
                 </>
               ) : (
@@ -557,17 +661,15 @@ function AnalyticsDashboard({ API_BASE, user }) {
               )}
             </div>
             <div style={styles.revenueCard}>
-              <h4 style={styles.insightTitle}>Avg. Transaction</h4>
+              <h4 style={styles.insightTitle}>{posEnhanced ? 'Average Order Value' : 'Avg. Recorded Transaction'}</h4>
               <div className="an-bignumber" style={styles.bigNumber}>₱{revenue.avg_transaction}</div>
-              <p style={styles.insightDesc}>{isPoints ? 'Average spend per point-earning transaction' : 'Average spend per stamp transaction'}</p>
+              <p style={styles.insightDesc}>{posEnhanced ? 'Average confirmed POS transaction linked to Loyalty Tree' : 'Average value only among transactions where an amount was recorded.'}</p>
             </div>
           </div>
         ) : (
           <div style={styles.insightCard}>
             <p style={styles.insightDesc}>
-              Revenue isn't tracked yet — {isMultipass ? 'issuing or using a pass' : 'stamping and redeeming a reward'} doesn't currently record a dollar
-              amount anywhere, so this section can't show real numbers without guessing. Add a transaction
-              amount to the {isMultipass ? 'pass' : 'stamp'} flow to unlock this.
+              Purchase value is not available for this program yet. Loyalty Tree can still report real card activity, retention, demographics and redemptions without guessing. Connect a supported POS to unlock stronger sales, average-order and sales-by-time analytics.
             </p>
           </div>
         )}
@@ -633,6 +735,15 @@ function AnalyticsDashboard({ API_BASE, user }) {
           </div>
         </div>
       )}
+      </>}
+
+      {activeTab === 'activity' && (
+        <details open={advancedOpen} onToggle={e=>setAdvancedOpen(e.currentTarget.open)} style={styles.advancedDetails}>
+          <summary style={styles.advancedSummary}>
+            <span>Advanced analytics & operations</span>
+            <span style={styles.mutedText}>Wallet health, CRM, security and retention settings</span>
+          </summary>
+          <div style={{paddingTop:18}}>
       {/* Wallet Queue — operational analytics, not an Owner Dashboard tab */}
       <div id="wallet-queue-analytics" style={styles.section}>
         <div style={styles.moduleHeading}>
@@ -973,6 +1084,64 @@ function AnalyticsDashboard({ API_BASE, user }) {
         </div>
       </div>
 
+          </div>
+        </details>
+      )}
+
+      {activeTab === 'reports' && (
+        <div style={styles.section}>
+          <div style={styles.reportHero}>
+            <div>
+              <div style={styles.eyebrow}>WEEKLY REPORT</div>
+              <h2 style={{...styles.sectionTitle,margin:'4px 0 6px'}}>Latest 7-day business report</h2>
+              <div style={styles.mutedText}>Generated from the live Analytics data. No email is sent — the owner chooses when to view or save it.</div>
+            </div>
+            <button type="button" style={styles.primaryActionBtn} onClick={printWeeklyReport}>Print / Save PDF</button>
+          </div>
+
+          <div style={{...styles.insightCard,marginBottom:16}}>
+            <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}>
+              <div>
+                <strong style={{color:'#1e293b'}}>{reportRangeLabel}</strong>
+                <div style={styles.mutedText}>Generated {reportDate}</div>
+              </div>
+              <span style={{...styles.sourceBadge,...(posEnhanced?styles.sourceBadgePos:{})}}>● {dataSourceLabel}</span>
+            </div>
+          </div>
+
+          <div className="an-overview-grid" style={styles.overviewGrid}>
+            <MiniMetric label="Active members" value={overview.active_members ?? 0} />
+            <MiniMetric label="New customers" value={overview.new_customers ?? 0} />
+            <MiniMetric label={headlineActivityLabel} value={headlineActivity} />
+            <MiniMetric label="Rewards / redemptions" value={overview.total_rewards ?? 0} />
+            <MiniMetric label="30-day retention" value={`${customers?.retention_rate || 0}%`} />
+            <MiniMetric label="Peak activity" value={peakActivity?.label || '—'} />
+          </div>
+
+          <div className="an-charts-row" style={styles.chartsRow}>
+            <div style={styles.insightCard}>
+              <h4 style={styles.insightTitle}>Customer profile snapshot</h4>
+              <div style={styles.customerRow}><span style={styles.customerName}>Largest age group</span><strong>{largestAgeGroup?.[0] || '—'}</strong></div>
+              <div style={styles.customerRow}><span style={styles.customerName}>Top customer area</span><strong>{topAreas?.[0]?.[0] || '—'}</strong></div>
+              <div style={styles.customerRow}><span style={styles.customerName}>Upcoming birthdays</span><strong>{birthdayData.counts?.next_30_days || 0}</strong></div>
+            </div>
+            <div style={styles.insightCard}>
+              <h4 style={styles.insightTitle}>Insights & suggestions</h4>
+              {insightItems.slice(0,4).map((item,i)=>(
+                <div key={`${item.title}-${i}`} style={{padding:'9px 0',borderBottom:i<Math.min(insightItems.length,4)-1?'1px solid #f1f5f9':'none'}}>
+                  <div style={{fontWeight:800,color:'#1e293b'}}>{item.icon} {item.title}</div>
+                  <div style={{...styles.mutedText,marginTop:2}}>{item.text}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div style={styles.reportNote}>
+            This report reflects the current 7-day Analytics data. Use <strong>Print / Save PDF</strong> to keep a copy for managers, partners or internal records.
+          </div>
+        </div>
+      )}
+
       {redemptionDrilldown.open && (
         <div style={styles.modalBackdrop} onMouseDown={e => { if (e.target === e.currentTarget) closeRedemptionDrilldown() }}>
           <div style={styles.modalCard} role="dialog" aria-modal="true" aria-label="Redemption details">
@@ -1058,9 +1227,10 @@ function StatCard({ title, value, change, icon, color, onClick, hint }) {
 function LineChart({ data, color }) {
   if (!data || data.length === 0) return <div style={styles.noData}>No data available</div>
 
-  const max = Math.max(...data.map(d => d.value))
-  const min = Math.min(...data.map(d => d.value))
+  const max = Math.max(...data.map(d => Number(d.value || 0)))
+  const min = Math.min(...data.map(d => Number(d.value || 0)))
   const range = max - min || 1
+  const denominator = Math.max(1, data.length - 1)
 
   return (
     <div style={styles.chartContainer}>
@@ -1070,13 +1240,13 @@ function LineChart({ data, color }) {
           stroke={color}
           strokeWidth="2"
           points={data.map((d, i) => {
-            const x = (i / (data.length - 1)) * 300
+            const x = (i / denominator) * 300
             const y = 100 - ((d.value - min) / range) * 80 - 10
             return `${x},${y}`
           }).join(' ')}
         />
         {data.map((d, i) => {
-          const x = (i / (data.length - 1)) * 300
+          const x = (i / denominator) * 300
           const y = 100 - ((d.value - min) / range) * 80 - 10
           return <circle key={i} cx={x} cy={y} r="3" fill={color} />
         })}
@@ -1093,7 +1263,7 @@ function LineChart({ data, color }) {
 function BarChart({ data, color }) {
   if (!data || data.length === 0) return <div style={styles.noData}>No data available</div>
 
-  const max = Math.max(...data.map(d => d.value))
+  const max = Math.max(1, ...data.map(d => Number(d.value || 0)))
 
   return (
     <div style={styles.chartContainer}>
@@ -1116,7 +1286,7 @@ function BarChart({ data, color }) {
 function Heatmap({ data }) {
   if (!data || data.length === 0) return <div style={styles.noData}>No data available</div>
 
-  const max = Math.max(...data.map(d => d.value))
+  const max = Math.max(1, ...data.map(d => Number(d.value || 0)))
 
   return (
     <div style={styles.heatmap}>
@@ -1665,6 +1835,67 @@ const styles = {
   redemptionRow: {
     display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:14,
     padding:14, border:'1px solid #e2e8f0', borderRadius:12, background:'#fff',
+  },
+
+  analyticsTopBar: {
+    display:'flex', justifyContent:'space-between', alignItems:'center', gap:14, flexWrap:'wrap',
+    marginBottom:22, padding:'10px 0 2px',
+  },
+  tabs: {
+    display:'flex', alignItems:'center', gap:6, padding:5, background:'#e2e8f0', borderRadius:12,
+  },
+  tabBtn: {
+    border:'none', background:'transparent', color:'#64748b', padding:'9px 14px', borderRadius:9,
+    fontSize:13, fontWeight:800, cursor:'pointer', whiteSpace:'nowrap',
+  },
+  tabBtnActive: {
+    background:'#fff', color:'#0f766e', boxShadow:'0 1px 3px rgba(15,23,42,.10)',
+  },
+  sourceBadgeWrap: {
+    display:'flex', alignItems:'center', justifyContent:'flex-end', gap:8, flexWrap:'wrap',
+  },
+  sourceBadge: {
+    display:'inline-flex', alignItems:'center', padding:'6px 10px', borderRadius:999, background:'#f1f5f9',
+    border:'1px solid #e2e8f0', color:'#475569', fontSize:11.5, fontWeight:850,
+  },
+  sourceBadgePos: { background:'#ecfdf5', borderColor:'#a7f3d0', color:'#047857' },
+  sourceHint: { fontSize:11.5, color:'#94a3b8', maxWidth:360 },
+  sectionHeadingRow: {
+    display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:12, flexWrap:'wrap', marginBottom:14,
+  },
+  actionSuggestion: {
+    display:'flex', justifyContent:'space-between', alignItems:'center', gap:14, flexWrap:'wrap',
+    background:'#fff', border:'1px solid #e2e8f0', borderRadius:12, padding:'14px 16px',
+    boxShadow:'0 1px 2px rgba(15,23,42,.04)',
+  },
+  actionBtnCompact: {
+    border:'1px solid #99f6e4', background:'#f0fdfa', color:'#0f766e', borderRadius:9,
+    padding:'8px 11px', fontSize:12, fontWeight:850, cursor:'pointer', whiteSpace:'nowrap',
+  },
+  barLabelRow: {
+    display:'flex', justifyContent:'space-between', gap:10, fontSize:12.5, color:'#475569', marginBottom:4,
+  },
+  advancedDetails: {
+    background:'#fff', border:'1px solid #e2e8f0', borderRadius:14, padding:'0 16px', marginBottom:24,
+    boxShadow:'0 1px 3px rgba(15,23,42,.05)',
+  },
+  advancedSummary: {
+    cursor:'pointer', padding:'15px 0', fontWeight:850, color:'#1e293b', display:'flex',
+    justifyContent:'space-between', alignItems:'center', gap:10, flexWrap:'wrap',
+  },
+  reportHero: {
+    display:'flex', justifyContent:'space-between', alignItems:'center', gap:16, flexWrap:'wrap',
+    padding:'18px 20px', borderRadius:16, background:'linear-gradient(135deg,#f0fdfa,#f8fafc)',
+    border:'1px solid #ccfbf1', marginBottom:16,
+  },
+  eyebrow: { fontSize:11, fontWeight:900, letterSpacing:'.12em', color:'#0f766e' },
+  primaryActionBtn: {
+    border:'none', background:'#0d9488', color:'#fff', borderRadius:10, padding:'11px 15px',
+    fontSize:13, fontWeight:850, cursor:'pointer', boxShadow:'0 4px 12px rgba(13,148,136,.18)',
+  },
+  reportNote: {
+    marginTop:8, padding:'12px 14px', borderRadius:12, background:'#fffbeb', border:'1px solid #fde68a',
+    color:'#92400e', fontSize:12.5, lineHeight:1.55,
   },
 
 }
