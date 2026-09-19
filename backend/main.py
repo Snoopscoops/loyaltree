@@ -8456,6 +8456,19 @@ def _apple_trial5_validate_pkpass_bytes(pkpass_bytes: bytes) -> dict:
             result['actions'] = [key for key in action_keys if pass_json.get(key)]
             result['barcode_present'] = bool(pass_json.get('barcodes') or pass_json.get('barcode'))
 
+            action_urls = [
+                str(pass_json.get(key) or '').strip()
+                for key in result['actions']
+                if pass_json.get(key)
+            ]
+            result['all_actions_https'] = bool(action_urls) and all(
+                url.startswith('https://') for url in action_urls
+            )
+            result['distinct_action_destinations'] = (
+                len(action_urls) >= 4 and len(set(action_urls)) == len(action_urls)
+            )
+            result['venue_coordinates_present'] = bool(semantics.get('venueLocation'))
+
             # Poster assets: record only dimensions + byte sizes.
             for base_name in ('artwork', 'primaryLogo', 'secondaryLogo'):
                 variants = {}
@@ -8512,6 +8525,13 @@ def _apple_trial5_validate_pkpass_bytes(pkpass_bytes: bytes) -> dict:
                 and poster_assets_ok
             )
             result['status'] = 'READY' if structural_ready else 'CHECK'
+            result['ticketmaster_profile_ready'] = bool(
+                structural_ready
+                and result.get('venue_coordinates_present')
+                and result.get('all_actions_https')
+                and result.get('distinct_action_destinations')
+                and len(result.get('actions') or []) >= 4
+            )
             return result
 
     except zipfile.BadZipFile:
@@ -8532,6 +8552,10 @@ def _apple_trial5_log_pkpass_diagnostics(pkpass_bytes: bytes, cache_hit: Optiona
             'barcode_present': diagnostics.get('barcode_present'),
             'missing_semantics': diagnostics.get('missing_semantics'),
             'actions': diagnostics.get('actions'),
+            'all_actions_https': diagnostics.get('all_actions_https'),
+            'distinct_action_destinations': diagnostics.get('distinct_action_destinations'),
+            'venue_coordinates_present': diagnostics.get('venue_coordinates_present'),
+            'ticketmaster_profile_ready': diagnostics.get('ticketmaster_profile_ready'),
             'assets': diagnostics.get('assets'),
             'signature_present': diagnostics.get('signature_present'),
             'manifest_ok': diagnostics.get('manifest_ok'),
@@ -8544,6 +8568,219 @@ def _apple_trial5_log_pkpass_diagnostics(pkpass_bytes: bytes, cache_hit: Optiona
     except Exception as exc:
         print(f'APPLE POSTER TRIAL5 diagnostics log error: {exc}')
     return diagnostics
+
+
+
+def _trial5_wallet_action_base_url() -> str:
+    """Owned HTTPS origin for Wallet Event Guide action destinations.
+
+    Keep this independent from BASE_URL because some Philippine mobile networks
+    have trouble reaching Render's direct hostname. The Cloudflare-proxied
+    custom API domain is the safe default.
+    """
+    return (
+        os.getenv('PUBLIC_WALLET_ACTION_BASE_URL', '').strip()
+        or 'https://api.theloyaltytree.com'
+    ).rstrip('/')
+
+
+def _trial5_event_guide_action_urls(customer: dict, business: dict) -> Optional[dict]:
+    """Create four distinct, signed, customer-specific Event Guide destinations."""
+    if not customer or not business:
+        return None
+
+    customer_public_id = str(customer.get('public_id') or '').strip()
+    business_public_id = str(business.get('public_id') or '').strip()
+    if not customer_public_id or not business_public_id:
+        return None
+
+    token = order_ahead_member_token(customer_public_id, business_public_id)
+    if not token:
+        return None
+
+    base = _trial5_wallet_action_base_url()
+    quoted_customer = quote(customer_public_id)
+    quoted_token = quote(token)
+
+    return {
+        'orderFoodURL': (
+            f'{base}/wallet-action/{quoted_customer}/order'
+            f'?token={quoted_token}'
+        ),
+        'merchandiseURL': (
+            f'{base}/wallet-action/{quoted_customer}/merchandise'
+            f'?token={quoted_token}'
+        ),
+        'bagPolicyURL': (
+            f'{base}/wallet-action/{quoted_customer}/bag-policy'
+            f'?token={quoted_token}'
+        ),
+        'purchaseParkingURL': (
+            f'{base}/wallet-action/{quoted_customer}/parking'
+            f'?token={quoted_token}'
+        ),
+    }
+
+
+def _trial5_float_or_none(value):
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _trial5_resolve_poster_venue(customer: dict, business: dict) -> dict:
+    """Resolve the most branch-like venue available without inventing data.
+
+    Priority:
+      1. Explicit Trial 5 Render env override (useful before DB schema changes).
+      2. Customer-linked branch if a branch id/public id is already stored.
+      3. First active branch for the business.
+      4. Business-level venue/address fields.
+
+    Coordinate keys accept common latitude/longitude variants so this starts
+    working automatically if those columns already exist in branches/businesses.
+    """
+    business = business or {}
+    customer = customer or {}
+    branch = None
+
+    # Try an already-linked branch first.
+    branch_public_candidates = [
+        customer.get('branch_public_id'),
+        customer.get('home_branch_public_id'),
+        customer.get('joined_branch_public_id'),
+    ]
+    branch_id_candidates = [
+        customer.get('branch_id'),
+        customer.get('home_branch_id'),
+        customer.get('joined_branch_id'),
+        customer.get('last_branch_id'),
+    ]
+
+    if supabase:
+        try:
+            for public_id in branch_public_candidates:
+                if not public_id:
+                    continue
+                row = (
+                    supabase.table('branches')
+                    .select('*')
+                    .eq('public_id', public_id)
+                    .limit(1)
+                    .execute().data or []
+                )
+                if row:
+                    branch = row[0]
+                    break
+        except Exception as exc:
+            print(f'APPLE POSTER TRIAL5 branch-public lookup warning: {exc}')
+
+        if branch is None:
+            try:
+                for branch_id in branch_id_candidates:
+                    if branch_id is None:
+                        continue
+                    row = (
+                        supabase.table('branches')
+                        .select('*')
+                        .eq('id', branch_id)
+                        .limit(1)
+                        .execute().data or []
+                    )
+                    if row:
+                        branch = row[0]
+                        break
+            except Exception as exc:
+                print(f'APPLE POSTER TRIAL5 branch-id lookup warning: {exc}')
+
+        # No customer-linked branch: use the first active branch as the poster
+        # venue rather than falling immediately back to a generic business name.
+        if branch is None and business.get('id') is not None:
+            try:
+                rows = (
+                    supabase.table('branches')
+                    .select('*')
+                    .eq('business_id', business.get('id'))
+                    .eq('is_active', True)
+                    .order('created_at')
+                    .limit(1)
+                    .execute().data or []
+                )
+                if rows:
+                    branch = rows[0]
+            except Exception as exc:
+                print(f'APPLE POSTER TRIAL5 active-branch lookup warning: {exc}')
+
+    source = branch or business
+
+    env_name = os.getenv('APPLE_POSTER_TRIAL_VENUE_NAME', '').strip()
+    env_region = os.getenv('APPLE_POSTER_TRIAL_VENUE_REGION', '').strip()
+    env_room = os.getenv('APPLE_POSTER_TRIAL_VENUE_ROOM', '').strip()
+    env_lat = _trial5_float_or_none(os.getenv('APPLE_POSTER_TRIAL_VENUE_LAT', '').strip())
+    env_lng = _trial5_float_or_none(os.getenv('APPLE_POSTER_TRIAL_VENUE_LNG', '').strip())
+
+    venue_name = (
+        env_name
+        or str((branch or {}).get('name') or business.get('venue_name') or business.get('name') or 'LoyaltyTree Venue').strip()
+    )[:80]
+
+    venue_region = (
+        env_region
+        or str(
+            source.get('city')
+            or source.get('municipality')
+            or source.get('region')
+            or source.get('address')
+            or source.get('location')
+            or business.get('address')
+            or business.get('location')
+            or 'Philippines'
+        ).strip()
+    )[:80]
+
+    venue_room = (
+        env_room
+        or str((branch or {}).get('name') or business.get('branch_name') or business.get('location_name') or 'Main Branch').strip()
+    )[:80]
+
+    if env_lat is not None and env_lng is not None:
+        venue_lat, venue_lng = env_lat, env_lng
+        coordinate_source = 'env_override'
+    else:
+        venue_lat = _trial5_float_or_none(
+            source.get('latitude')
+            if source.get('latitude') is not None
+            else source.get('lat')
+        )
+        venue_lng = _trial5_float_or_none(
+            source.get('longitude')
+            if source.get('longitude') is not None
+            else (
+                source.get('lng')
+                if source.get('lng') is not None
+                else source.get('lon')
+            )
+        )
+        coordinate_source = 'branch_or_business'
+
+    valid_coordinates = (
+        venue_lat is not None
+        and venue_lng is not None
+        and -90 <= venue_lat <= 90
+        and -180 <= venue_lng <= 180
+    )
+
+    return {
+        'venue_name': venue_name or 'LoyaltyTree Venue',
+        'venue_region': venue_region or 'Philippines',
+        'venue_room': venue_room or 'Main Branch',
+        'latitude': venue_lat if valid_coordinates else None,
+        'longitude': venue_lng if valid_coordinates else None,
+        'coordinate_source': coordinate_source if valid_coordinates else 'missing',
+        'branch_public_id': str((branch or {}).get('public_id') or '').strip() or None,
+        'branch_name': str((branch or {}).get('name') or '').strip() or None,
+    }
 
 
 def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, program: dict, announcement: Optional[dict] = None) -> dict:
@@ -8559,6 +8796,10 @@ def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, prog
     action = order_ahead_wallet_action(customer, business)
     if not action:
         raise ValueError('Order Ahead Event Ticket beta could not create member action URL')
+
+    event_guide_actions = _trial5_event_guide_action_urls(customer, business)
+    if not event_guide_actions:
+        raise ValueError('Could not create Trial 5 Event Guide action URLs')
 
     customer_public_id = str(customer.get('public_id') or '').strip()
     if not customer_public_id:
@@ -8628,29 +8869,13 @@ def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, prog
     trial_start_iso = trial_start.isoformat(timespec='seconds').replace('+00:00', 'Z')
     trial_end_iso = trial_end.isoformat(timespec='seconds').replace('+00:00', 'Z')
 
-    # Keep venue fields semantically separate instead of repeating one long
-    # address into every tag.
-    venue_name = str(
-        business.get('venue_name')
-        or business.get('branch_name')
-        or business.get('name')
-        or 'LoyaltyTree Venue'
-    ).strip()[:80] or 'LoyaltyTree Venue'
-
-    venue_region = str(
-        business.get('city')
-        or business.get('municipality')
-        or business.get('region')
-        or business.get('location')
-        or business.get('address')
-        or 'Philippines'
-    ).strip()[:80] or 'Philippines'
-
-    venue_room = str(
-        business.get('branch_name')
-        or business.get('location_name')
-        or 'Main Branch'
-    ).strip()[:80] or 'Main Branch'
+    # Ticketmaster-style venue resolution: prefer a real branch and real
+    # coordinates when available. Environment overrides allow an exact test
+    # venue before we add latitude/longitude columns to every business branch.
+    venue = _trial5_resolve_poster_venue(customer, business)
+    venue_name = venue['venue_name']
+    venue_region = venue['venue_region']
+    venue_room = venue['venue_room']
 
     event_name = f'{biz_name} Order Ahead Experience'[:80]
 
@@ -8695,38 +8920,10 @@ def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, prog
         ],
     }
 
-    # If the business already stores coordinates, provide them. Do not invent
-    # coordinates: Apple can still resolve the venue by semantic venue name.
-    def _float_or_none(value):
-        try:
-            parsed = float(value)
-            return parsed
-        except Exception:
-            return None
-
-    venue_lat = _float_or_none(
-        business.get('latitude')
-        if business.get('latitude') is not None
-        else business.get('lat')
-    )
-    venue_lng = _float_or_none(
-        business.get('longitude')
-        if business.get('longitude') is not None
-        else (
-            business.get('lng')
-            if business.get('lng') is not None
-            else business.get('lon')
-        )
-    )
-    if (
-        venue_lat is not None
-        and venue_lng is not None
-        and -90 <= venue_lat <= 90
-        and -180 <= venue_lng <= 180
-    ):
+    if venue.get('latitude') is not None and venue.get('longitude') is not None:
         semantics['venueLocation'] = {
-            'latitude': venue_lat,
-            'longitude': venue_lng,
+            'latitude': venue['latitude'],
+            'longitude': venue['longitude'],
         }
 
     # Fresh Apple-style Poster Event Ticket pass. No Store Card data is inherited.
@@ -8760,16 +8957,11 @@ def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, prog
         'suppressHeaderDarkening': False,
         'semantics': semantics,
 
-        # TRIAL 4C EVENT GUIDE PROBE:
-        # Give Apple several different documented poster-event semantic actions
-        # at the same time. For this isolated diagnostic, they intentionally all
-        # point to the same signed LoyaltyTree customer URL. The goal is not the
-        # destination yet; it is to prove that Wallet activates the Event Guide
-        # and surfaces native quick actions for this poster Event Ticket.
-        'orderFoodURL': action['url'],
-        'merchandiseURL': action['url'],
-        'bagPolicyURL': action['url'],
-        'purchaseParkingURL': action['url'],
+        # TRIAL 5 TICKETMASTER-STYLE EVENT GUIDE:
+        # Four different HTTPS routes, each signed for this member. Their test
+        # pages are deliberately simple, but Apple sees genuinely distinct
+        # destinations rather than four aliases of the same Order Ahead URL.
+        **event_guide_actions,
 
         'eventTicket': {
             'headerFields': [
@@ -8808,10 +9000,12 @@ def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, prog
             'backFields': [],
         },
         'userInfo': {
-            'loyaltreeRenderer': 'apple_clean_poster_event_ticket_trial5_diagnostics',
+            'loyaltreeRenderer': 'apple_clean_poster_event_ticket_trial5_ticketmaster_profile',
             'loyaltreeCustomerPublicId': customer_public_id,
             'loyaltreeEventDateSource': expiry_source,
             'loyaltreeEventExpiryDate': event_expiry_date.isoformat(),
+            'loyaltreeVenueCoordinateSource': venue.get('coordinate_source'),
+            'loyaltreeVenueBranchPublicId': venue.get('branch_public_id'),
         },
     }
 
@@ -9222,7 +9416,7 @@ def _apple_event_pkpass_fingerprint(customer: dict, business: dict, program: dic
         'order_ahead': {
             'enabled': bool((business or {}).get('order_ahead_enabled')),
             'button_label': (business or {}).get('order_ahead_button_label'),
-            'renderer_version': 'event-ticket-clean-poster-trial5-diagnostics-v8',
+            'renderer_version': 'event-ticket-trial5-ticketmaster-profile-v9',
         },
         # A PassKit push marks the installed Event Ticket serial dirty. Including
         # that marker means a pushed update can never accidentally reuse the
@@ -30837,6 +31031,88 @@ document.getElementById("share").onclick=async()=>{{const p={{title:{json.dumps(
     return HTMLResponse(html)
 
 
+# TRIAL 5 — Ticketmaster-style distinct Event Guide destinations.
+# These routes are real HTTPS endpoints on the LoyaltyTree API domain. They are
+# intentionally lightweight for the experiment; once Apple exposes the Event
+# Guide, each can be mapped to a real business workflow.
+_TRIAL5_WALLET_ACTION_LABELS = {
+    'order': ('Order Food', 'Continue to Order Ahead'),
+    'merchandise': ('Merchandise', 'Open LoyaltyTree Ordering'),
+    'bag-policy': ('Business Info', 'Open LoyaltyTree Ordering'),
+    'parking': ('Parking', 'Open LoyaltyTree Ordering'),
+}
+
+
+@app.get("/wallet-action/{customer_public_id}/{action_key}", response_class=HTMLResponse)
+async def trial5_wallet_event_action(
+    customer_public_id: str,
+    action_key: str,
+    token: str = Query(default=''),
+):
+    action_key = str(action_key or '').strip().lower()
+    if action_key not in _TRIAL5_WALLET_ACTION_LABELS:
+        raise HTTPException(status_code=404, detail='Wallet action not found')
+
+    customer = safe_get_customer(customer_public_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail='Member not found')
+
+    business = safe_get_business_by_id(customer.get('business_id'))
+    if not business or not bool(business.get('order_ahead_enabled')):
+        raise HTTPException(status_code=404, detail='Wallet action is not available')
+
+    business_public_id = str(business.get('public_id') or '').strip()
+    if not verify_order_ahead_member_token(customer_public_id, business_public_id, token):
+        raise HTTPException(status_code=403, detail='Invalid Wallet action link')
+
+    base = _trial5_wallet_action_base_url()
+    order_url = (
+        f'{base}/order-ahead/{quote(customer_public_id)}'
+        f'?token={quote(token)}'
+    )
+
+    # The actual food-order action goes directly into LoyaltyTree Order Ahead.
+    if action_key == 'order':
+        return RedirectResponse(url=order_url, status_code=307)
+
+    title, cta = _TRIAL5_WALLET_ACTION_LABELS[action_key]
+    biz_name = html_lib.escape(str(business.get('name') or 'LoyaltyTree'))
+    safe_title = html_lib.escape(title)
+    safe_cta = html_lib.escape(cta)
+    safe_order_url = html_lib.escape(order_url, quote=True)
+
+    page = f"""<!doctype html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{safe_title} · {biz_name}</title>
+  <style>
+    *{{box-sizing:border-box}}
+    body{{margin:0;background:#f8fafc;color:#0f172a;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}
+    main{{max-width:520px;margin:0 auto;padding:56px 22px}}
+    .card{{background:#fff;border:1px solid #e2e8f0;border-radius:24px;padding:28px;box-shadow:0 16px 40px rgba(15,23,42,.06)}}
+    .eyebrow{{font-size:12px;font-weight:800;letter-spacing:.08em;color:#64748b;text-transform:uppercase}}
+    h1{{margin:8px 0 8px;font-size:28px;letter-spacing:-.5px}}
+    p{{color:#64748b;line-height:1.55;margin:0 0 22px}}
+    a{{display:block;text-align:center;text-decoration:none;background:#0f172a;color:#fff;padding:14px 16px;border-radius:14px;font-weight:800}}
+    .test{{margin-top:14px;text-align:center;color:#94a3b8;font-size:11px}}
+  </style>
+</head>
+<body>
+  <main>
+    <div class="card">
+      <div class="eyebrow">Apple Wallet Event Guide Test</div>
+      <h1>{safe_title}</h1>
+      <p>{biz_name} · This is a distinct LoyaltyTree Wallet action destination for Trial 5.</p>
+      <a href="{safe_order_url}">{safe_cta}</a>
+      <div class="test">Signed customer-specific test route</div>
+    </div>
+  </main>
+</body>
+</html>"""
+    return HTMLResponse(page, headers={'Cache-Control': 'no-store'})
+
+
 # ORDER AHEAD BETA - member-specific Wallet entry point. Phase 1 validates
 # Wallet -> member/business -> branch selection before menu/cart/mock payment.
 @app.get("/order-ahead/{customer_public_id}", response_class=HTMLResponse)
@@ -32154,6 +32430,9 @@ async def get_apple_order_ahead_event_beta_pass(customer_public_id: str):
             'X-LoyaltyTree-Apple-Cache': 'HIT' if cache_hit else 'MISS',
             'X-LoyaltyTree-Poster-Trial': '5',
             'X-LoyaltyTree-Poster-Status': str(trial5_diag.get('status') or 'CHECK'),
+            'X-LoyaltyTree-Poster-Profile': (
+                'TM-READY' if trial5_diag.get('ticketmaster_profile_ready') else 'TM-PARTIAL'
+            ),
         },
     )
 
@@ -32209,10 +32488,13 @@ async def get_apple_wallet_pass(customer_public_id: str, force_store_card: bool 
                 "Content-Disposition": f'attachment; filename="{beta_serial}.pkpass"',
                 "Cache-Control": "no-store",
                 "Content-Length": str(len(beta_bytes)),
-                "X-LoyaltyTree-Apple-Renderer": "clean-poster-event-ticket-trial5-diagnostics",
+                "X-LoyaltyTree-Apple-Renderer": "poster-event-ticket-trial5-ticketmaster-profile",
                 "X-LoyaltyTree-Apple-Cache": "HIT" if event_cache_hit else "MISS",
                 "X-LoyaltyTree-Poster-Trial": "5",
                 "X-LoyaltyTree-Poster-Status": str(trial5_diag.get('status') or 'CHECK'),
+                "X-LoyaltyTree-Poster-Profile": (
+                    "TM-READY" if trial5_diag.get('ticketmaster_profile_ready') else "TM-PARTIAL"
+                ),
             },
         )
 
