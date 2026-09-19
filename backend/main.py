@@ -8377,12 +8377,11 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     return pass_dict
 
 def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, program: dict, announcement: Optional[dict] = None) -> dict:
-    """Experimental Order Ahead Apple Event Ticket pass.
+    """Experimental Order Ahead classic Apple Event Ticket pass.
 
     This deliberately reuses the production loyalty-card fields and QR so the
     LoyaltyTree business logic remains identical. Only the Apple presentation
-    shell/serial changes. The pass attempts Apple's posterEventTicket style and
-    retains a legacy eventTicket field layout as a fallback.
+    shell/serial changes from Store Card to the classic eventTicket style.
 
     IMPORTANT: This is beta-only and is generated only for businesses with
     order_ahead_enabled. The production Store Card remains unchanged.
@@ -8414,39 +8413,21 @@ def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, prog
     # Remove them so the experiment isolates the pre-iOS-27 Event Ticket route.
     base.pop('featuredActions', None)
 
-    # Ask Wallet to attempt the richer poster Event Ticket first and fall back
-    # to the ordinary Event Ticket layout if its semantic/style validation fails.
-    base['preferredStyleSchemes'] = ['posterEventTicket', 'eventTicket']
+    # Classic Event Ticket trial only. Do not request posterEventTicket and do
+    # not attach poster/event-guide semantics. Keep the personalized Order Ahead
+    # URL in the pass so we can observe exactly how classic Wallet handles it;
+    # the normal Pass Details Order Ahead link remains the reliable fallback.
+    base.pop('preferredStyleSchemes', None)
+    base.pop('semantics', None)
+    base.pop('eventLogoText', None)
+    base.pop('suppressHeaderDarkening', None)
     base['orderFoodURL'] = action['url']
-    base['eventLogoText'] = biz_name[:32]
-    base['suppressHeaderDarkening'] = True
-
-    # Keep time/location semantics intentionally minimal. We do NOT invent an
-    # event date, relevantDate or expirationDate, because this is a persistent
-    # loyalty credential and we do not want Wallet creating false time relevance.
-    # These general semantics are only present to let us test whether Wallet will
-    # accept/render the poster-event shell for the beta on a real device.
-    venue_region = str(
-        business.get('city')
-        or business.get('state')
-        or business.get('country')
-        or business.get('country_code')
-        or 'Philippines'
-    ).strip()
-    base['semantics'] = {
-        'eventType': 'PKEventTypeGeneric',
-        'eventName': card_title[:80],
-        'venueName': biz_name[:80],
-        'venueRegionName': venue_region[:80] or 'Philippines',
-        'venueRoom': 'LoyaltyTree Order Ahead',
-        'attendeeName': str(customer.get('name') or 'Member')[:80],
-    }
 
     # Make the beta easy to identify in server/device logs without exposing
     # anything on the customer-facing pass.
     user_info = dict(base.get('userInfo') or {})
     user_info.update({
-        'loyaltreeRenderer': 'apple_event_ticket_order_ahead_beta',
+        'loyaltreeRenderer': 'apple_classic_event_ticket_order_ahead_beta',
         'loyaltreeCustomerPublicId': customer_public_id,
     })
     base['userInfo'] = user_info
@@ -8454,10 +8435,10 @@ def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, prog
 
 
 def build_apple_order_ahead_event_pkpass_bytes(customer: dict, business: dict, program: dict, announcement: Optional[dict] = None) -> Optional[bytes]:
-    """Assemble/sign the isolated Event Ticket beta .pkpass.
+    """Assemble/sign the isolated classic Event Ticket beta .pkpass.
 
-    Includes both legacy Event Ticket artwork (strip/logo) and poster artwork
-    assets so the same bundle can fall back cleanly if poster validation fails.
+    The bundle intentionally contains only the normal Event Ticket assets used
+    by the LoyaltyTree-style classic layout (icon, logo, and strip).
     """
     if not APPLE_PASS_TYPE_IDENTIFIER or not APPLE_TEAM_IDENTIFIER:
         return None
@@ -8498,25 +8479,11 @@ def build_apple_order_ahead_event_pkpass_bytes(customer: dict, business: dict, p
     logo_320 = _resize_png_bytes(logo_480, 320, 100)
     logo_160 = _resize_png_bytes(logo_480, 160, 50)
 
-    # Poster Event Ticket primary logo: max 126x30 pt. Build at @3x and downscale.
-    primary_logo_3x = apple_logo_from_image_bytes(logo_bytes, 378, 90) if logo_bytes else None
-    if not primary_logo_3x:
-        primary_logo_3x = generate_apple_logo_bytes(biz_name, 378, 90)
-    primary_logo_2x = _resize_png_bytes(primary_logo_3x, 252, 60)
-    primary_logo_1x = _resize_png_bytes(primary_logo_3x, 126, 30)
-
-    # Legacy Event Ticket strip uses 375x98 pt. Keep this visually aligned with
-    # the existing LoyaltyTree hero/banner so fallback still looks like LT.
+    # Classic Event Ticket strip uses the LoyaltyTree hero/banner treatment so
+    # the pass stays visually close to the Store Card experience.
     strip_3x = generate_apple_strip_bytes(customer, business, program or {}, 1125, 294)
     strip_2x = _resize_png_bytes(strip_3x, 750, 196)
     strip_1x = _resize_png_bytes(strip_3x, 375, 98)
-
-    # Poster Event Ticket artwork is 358x448 pt. Reuse the same LT hero source,
-    # center-cropped to Apple's poster aspect ratio, so the visual identity stays
-    # close to the Store Card / Google Wallet experience.
-    artwork_3x = generate_apple_strip_bytes(customer, business, program or {}, 1074, 1344)
-    artwork_2x = _resize_png_bytes(artwork_3x, 716, 896)
-    artwork_1x = _resize_png_bytes(artwork_3x, 358, 448)
 
     files = {
         'pass.json': json.dumps(pass_json).encode('utf-8'),
@@ -8526,15 +8493,9 @@ def build_apple_order_ahead_event_pkpass_bytes(customer: dict, business: dict, p
         'logo.png': logo_160,
         'logo@2x.png': logo_320,
         'logo@3x.png': logo_480,
-        'primaryLogo.png': primary_logo_1x,
-        'primaryLogo@2x.png': primary_logo_2x,
-        'primaryLogo@3x.png': primary_logo_3x,
         'strip.png': strip_1x,
         'strip@2x.png': strip_2x,
         'strip@3x.png': strip_3x,
-        'artwork.png': artwork_1x,
-        'artwork@2x.png': artwork_2x,
-        'artwork@3x.png': artwork_3x,
     }
     files = {name: content for name, content in files.items() if content}
 
