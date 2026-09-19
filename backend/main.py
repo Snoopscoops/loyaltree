@@ -93,6 +93,9 @@ APPLE_PASS_CERTIFICATE_PASSWORD = os.getenv('APPLE_PASS_CERTIFICATE_PASSWORD', '
 APPLE_WWDR_CERTIFICATE = os.getenv('APPLE_WWDR_CERTIFICATE', '')
 APPLE_PASS_AUTH_SECRET = os.getenv('APPLE_PASS_AUTH_SECRET', '')
 APPLE_PASS_WEB_SERVICE_URL = f'{BASE_URL}/api/v1/apple-wallet'
+# Experimental Apple Event Ticket renderer for Order Ahead businesses.
+# Uses a separate serial namespace so it can coexist with the production Store Card.
+APPLE_ORDER_AHEAD_EVENT_BETA_PREFIX = 'oa-beta-'
 
 # Platform super-admin credentials (you, the LoyaltyTree operator - not a
 # business owner). Set these in your environment; there is no signup flow
@@ -8373,6 +8376,164 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     # of the overlapping-text look on real devices.
     return pass_dict
 
+def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, program: dict, announcement: Optional[dict] = None) -> dict:
+    """Experimental Order Ahead classic Apple Event Ticket pass.
+
+    This deliberately reuses the production loyalty-card fields and QR so the
+    LoyaltyTree business logic remains identical. Only the Apple presentation
+    shell/serial changes from Store Card to the classic eventTicket style.
+
+    IMPORTANT: This is beta-only and is generated only for businesses with
+    order_ahead_enabled. The production Store Card remains unchanged.
+    """
+    if not business or not customer or not bool(business.get('order_ahead_enabled')):
+        raise ValueError('Order Ahead Event Ticket beta requires an enabled business')
+
+    action = order_ahead_wallet_action(customer, business)
+    if not action:
+        raise ValueError('Order Ahead Event Ticket beta could not create member action URL')
+
+    base = build_apple_pass_json(customer, business, program or {}, announcement)
+    customer_public_id = str(customer.get('public_id') or '').strip()
+    beta_serial = f'{APPLE_ORDER_AHEAD_EVENT_BETA_PREFIX}{customer_public_id}'
+    biz_name = str(business.get('name') or 'LoyaltyTree').strip()
+    card_title = str(base.get('description') or f'{biz_name} Rewards').strip()
+
+    # Reuse exactly the same visible loyalty fields/back fields as the Store Card.
+    # eventTicket inherits PassFields, so header/primary/secondary/auxiliary/back
+    # fields can be carried across without moving any loyalty logic into Apple.
+    event_fields = dict(base.pop('storeCard', {}) or {})
+
+    # PassKit expects field keys to be unique across the pass-style field
+    # collections. The production Store Card has accumulated some repeated
+    # membership keys between its face/details over time; keep the Store Card
+    # untouched, but sanitize the isolated Event Ticket so Apple does not emit
+    # duplicate-key warnings for membership_status / membership_valid_until.
+    seen_event_keys = set()
+    for field_group in ('headerFields', 'primaryFields', 'secondaryFields', 'auxiliaryFields', 'backFields'):
+        cleaned_fields = []
+        for field in list(event_fields.get(field_group) or []):
+            if not isinstance(field, dict):
+                continue
+            field_key = str(field.get('key') or '').strip()
+            if field_key and field_key in seen_event_keys:
+                continue
+            if field_key:
+                seen_event_keys.add(field_key)
+            cleaned_fields.append(field)
+        if field_group in event_fields:
+            event_fields[field_group] = cleaned_fields
+
+    base['serialNumber'] = beta_serial
+    base['authenticationToken'] = apple_pass_auth_token(beta_serial)
+    base['description'] = f'{card_title} — Order Ahead Beta'[:128]
+    base['eventTicket'] = event_fields
+
+    # iOS 27 Store Card Featured Actions are not what this beta is testing.
+    # Remove them so the experiment isolates the pre-iOS-27 Event Ticket route.
+    base.pop('featuredActions', None)
+
+    # Classic Event Ticket trial only. Do not request posterEventTicket and do
+    # not attach poster/event-guide semantics. Keep the personalized Order Ahead
+    # URL in the pass so we can observe exactly how classic Wallet handles it;
+    # the normal Pass Details Order Ahead link remains the reliable fallback.
+    base.pop('preferredStyleSchemes', None)
+    base.pop('semantics', None)
+    base.pop('eventLogoText', None)
+    base.pop('suppressHeaderDarkening', None)
+    base['orderFoodURL'] = action['url']
+
+    # Make the beta easy to identify in server/device logs without exposing
+    # anything on the customer-facing pass.
+    user_info = dict(base.get('userInfo') or {})
+    user_info.update({
+        'loyaltreeRenderer': 'apple_classic_event_ticket_order_ahead_beta',
+        'loyaltreeCustomerPublicId': customer_public_id,
+    })
+    base['userInfo'] = user_info
+    return base
+
+
+def build_apple_order_ahead_event_pkpass_bytes(customer: dict, business: dict, program: dict, announcement: Optional[dict] = None) -> Optional[bytes]:
+    """Assemble/sign the isolated classic Event Ticket beta .pkpass.
+
+    The bundle intentionally contains only the normal Event Ticket assets used
+    by the LoyaltyTree-style classic layout (icon, logo, and strip).
+    """
+    if not APPLE_PASS_TYPE_IDENTIFIER or not APPLE_TEAM_IDENTIFIER:
+        return None
+    if get_apple_pass_credentials() is None:
+        return None
+    if not business or not bool(business.get('order_ahead_enabled')):
+        return None
+
+    try:
+        pass_json = build_apple_order_ahead_event_pass_json(
+            customer, business, program or {}, announcement
+        )
+    except Exception as exc:
+        print(f'APPLE EVENT BETA pass-json error: {exc}')
+        return None
+
+    design = wallet_20_design(business, program or {})
+    current_tier = get_vip_tier(customer, program or {}) if program_has_tier(program) else {}
+    primary_color = (
+        _normalize_hex_color((current_tier or {}).get('color') or '#111827', '#111827')
+        if program_has_tier(program)
+        else design['background']
+    )
+    biz_name = business.get('name', 'Loyalty')
+    logo_url = business.get('logo_url') or ((program or {}).get('program_logo_url'))
+    logo_bytes = _fetch_image_bytes(logo_url)
+
+    icon_87 = apple_icon_from_logo_bytes(logo_bytes, 87) if logo_bytes else None
+    if not icon_87:
+        icon_87 = generate_apple_icon_bytes(primary_color, biz_name, 87)
+    icon_58 = _resize_png_bytes(icon_87, 58, 58)
+    icon_29 = _resize_png_bytes(icon_87, 29, 29)
+
+    # Legacy Event Ticket fallback logo.
+    logo_480 = apple_logo_from_image_bytes(logo_bytes, 480, 150) if logo_bytes else None
+    if not logo_480:
+        logo_480 = generate_apple_logo_bytes(biz_name, 480, 150)
+    logo_320 = _resize_png_bytes(logo_480, 320, 100)
+    logo_160 = _resize_png_bytes(logo_480, 160, 50)
+
+    # Classic Event Ticket strip uses the LoyaltyTree hero/banner treatment so
+    # the pass stays visually close to the Store Card experience.
+    strip_3x = generate_apple_strip_bytes(customer, business, program or {}, 1125, 294)
+    strip_2x = _resize_png_bytes(strip_3x, 750, 196)
+    strip_1x = _resize_png_bytes(strip_3x, 375, 98)
+
+    files = {
+        'pass.json': json.dumps(pass_json).encode('utf-8'),
+        'icon.png': icon_29,
+        'icon@2x.png': icon_58,
+        'icon@3x.png': icon_87,
+        'logo.png': logo_160,
+        'logo@2x.png': logo_320,
+        'logo@3x.png': logo_480,
+        'strip.png': strip_1x,
+        'strip@2x.png': strip_2x,
+        'strip@3x.png': strip_3x,
+    }
+    files = {name: content for name, content in files.items() if content}
+
+    manifest = {name: hashlib.sha1(content).hexdigest() for name, content in files.items()}
+    manifest_bytes = json.dumps(manifest).encode('utf-8')
+    signature = sign_pkpass_manifest(manifest_bytes)
+    if signature is None:
+        return None
+
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_STORED) as zf:
+        for name, content in files.items():
+            zf.writestr(name, content)
+        zf.writestr('manifest.json', manifest_bytes)
+        zf.writestr('signature', signature)
+    return buffer.getvalue()
+
+
 def generate_apple_strip_bytes(customer: dict, business: dict, program: dict, width: int, height: int) -> bytes:
     design = wallet_20_design(business, program)
     card_type = (program or {}).get('card_type', 'stamp')
@@ -8722,11 +8883,19 @@ def push_apple_wallet_update(serial_number: str):
     if not serial_number:
         print("APPLE WALLET SYNC: skipped - missing serial number")
         return {"status": "error", "detail": "Missing serial number", "registrations": 0, "pushes_sent": 0}
+    # A normal loyalty member can have both the production Store Card and the
+    # isolated Order Ahead Event Ticket beta installed at the same time. When
+    # loyalty data changes, wake both registered serials. Gift-card, car-lending
+    # and already-prefixed beta serials stay one-to-one.
+    related_serials = [serial_number]
+    if not str(serial_number).startswith(('gift-', 'cl-', APPLE_ORDER_AHEAD_EVENT_BETA_PREFIX)):
+        related_serials.append(f'{APPLE_ORDER_AHEAD_EVENT_BETA_PREFIX}{serial_number}')
+
     try:
         rows = (
             supabase.table("apple_wallet_registrations")
-            .select("push_token")
-            .eq("serial_number", serial_number)
+            .select("serial_number,push_token")
+            .in_("serial_number", related_serials)
             .eq("pass_type_identifier", APPLE_PASS_TYPE_IDENTIFIER)
             .execute()
         ).data or []
@@ -8739,15 +8908,16 @@ def push_apple_wallet_update(serial_number: str):
         print(f"APPLE WALLET SYNC: no saved Apple pass registration for {serial_number}")
         return {"status": "not_saved", "registrations": 0, "pushes_sent": 0}
 
-    # Record the change before waking Wallet.  This guarantees the immediate
-    # passesUpdatedSince callback can identify the serial even when the visible
-    # change came from a related table rather than customers.updated_at.
-    _mark_apple_pass_dirty(serial_number)
+    # Mark the exact installed serials dirty before waking Wallet.
+    registered_serials = list(dict.fromkeys(
+        str(row.get('serial_number')) for row in rows if row.get('serial_number')
+    ))
+    _mark_apple_pass_dirty(registered_serials)
     tokens = list(dict.fromkeys(tokens))
     sent = _send_apple_wallet_pushes(tokens)
     status = "push_sent" if sent > 0 else "push_failed"
-    print(f"APPLE WALLET SYNC: {serial_number} registrations={len(tokens)} pushes_sent={sent}")
-    return {"status": status, "registrations": len(tokens), "pushes_sent": sent}
+    print(f"APPLE WALLET SYNC: {serial_number} serials={registered_serials} registrations={len(tokens)} pushes_sent={sent}")
+    return {"status": status, "registrations": len(tokens), "pushes_sent": sent, "serials": registered_serials}
 
 
 APPLE_PASS_LAYOUT_RELEASE = "wallet-layout-2026-09-11-v9-unique-reset-field"
@@ -8780,10 +8950,14 @@ def refresh_business_apple_wallet_passes(business_id: int, reason: str = "card_c
     if not serials:
         return {"status": "no_members", "registered": 0, "devices_woken": 0}
 
+    # Include isolated Order Ahead Event Ticket beta serials. A registration
+    # query for a beta serial that was never installed is harmless.
+    candidate_serials = serials + [f'{APPLE_ORDER_AHEAD_EVENT_BETA_PREFIX}{s}' for s in serials]
+
     registrations = []
     try:
-        for i in range(0, len(serials), 100):
-            chunk = serials[i:i + 100]
+        for i in range(0, len(candidate_serials), 100):
+            chunk = candidate_serials[i:i + 100]
             rows = (
                 supabase.table("apple_wallet_registrations")
                 .select("serial_number,push_token")
@@ -8947,6 +9121,7 @@ def push_apple_wallet_announcement(business_id: int) -> int:
     serial_numbers = list(dict.fromkeys(r['public_id'] for r in customer_rows if r.get('public_id')))
     if not serial_numbers:
         return 0
+    serial_numbers = serial_numbers + [f'{APPLE_ORDER_AHEAD_EVENT_BETA_PREFIX}{s}' for s in serial_numbers]
     push_tokens = []
     try:
         # Chunked to stay well under PostgREST's URL length limit for large
@@ -31341,12 +31516,63 @@ async def get_wallet_pass(customer_public_id: str):
         "save_url": save_url,
         "google_class_ready": google_class_ready,
         "google_class_id": loyalty_object.get("classId"),
-        "apple_pass_url": f"{BASE_URL}/api/v1/customer/{customer_public_id}/apple-wallet-pass",
+        # For Order Ahead-enabled businesses, every new Apple Wallet add uses
+        # the isolated Event Ticket beta automatically. The normal Store Card
+        # endpoint remains available below for rollback/manual comparison.
+        "apple_pass_url": (
+            f"{BASE_URL}/api/v1/customer/{customer_public_id}/apple-wallet-event-beta"
+            if bool(business.get('order_ahead_enabled'))
+            else f"{BASE_URL}/api/v1/customer/{customer_public_id}/apple-wallet-pass"
+        ),
+        "apple_store_card_url": f"{BASE_URL}/api/v1/customer/{customer_public_id}/apple-wallet-pass?force_store_card=1",
+        "apple_event_beta_url": (
+            f"{BASE_URL}/api/v1/customer/{customer_public_id}/apple-wallet-event-beta"
+            if bool(business.get('order_ahead_enabled')) else None
+        ),
         "loyalty_object": loyalty_object,
     }
 
+@app.get("/api/v1/customer/{customer_public_id}/apple-wallet-event-beta")
+async def get_apple_order_ahead_event_beta_pass(customer_public_id: str):
+    """Download the isolated Apple Event Ticket / Order Ahead beta pass.
+
+    The production Store Card endpoint remains untouched. Only businesses with
+    the super-admin Order Ahead beta enabled can issue this alternate renderer.
+    """
+    customer = safe_get_customer(customer_public_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail='Customer not found')
+    business = safe_get_business_by_id(customer.get('business_id'))
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    if not bool(business.get('order_ahead_enabled')):
+        raise HTTPException(status_code=404, detail='Order Ahead Event Ticket beta is not enabled for this business')
+
+    program = safe_get_customer_program(customer, business.get('id')) or {}
+    announcement = get_latest_active_announcement_for_customer(business, customer)
+    pkpass_bytes = build_apple_order_ahead_event_pkpass_bytes(
+        customer, business, program, announcement
+    )
+    if pkpass_bytes is None:
+        raise HTTPException(
+            status_code=500,
+            detail='Could not build Apple Order Ahead Event Ticket beta pass',
+        )
+
+    beta_serial = f'{APPLE_ORDER_AHEAD_EVENT_BETA_PREFIX}{customer_public_id}'
+    return Response(
+        content=pkpass_bytes,
+        media_type='application/vnd.apple.pkpass',
+        headers={
+            'Content-Disposition': f'attachment; filename="{beta_serial}.pkpass"',
+            'Cache-Control': 'no-store',
+            'Content-Length': str(len(pkpass_bytes)),
+        },
+    )
+
+
 @app.get("/api/v1/customer/{customer_public_id}/apple-wallet-pass")
-async def get_apple_wallet_pass(customer_public_id: str):
+async def get_apple_wallet_pass(customer_public_id: str, force_store_card: bool = Query(default=False)):
     """Direct .pkpass download - optimized for the first Add to Wallet tap.
 
     The route logs phase timings so a slow client/network interaction is not
@@ -31363,6 +31589,36 @@ async def get_apple_wallet_pass(customer_public_id: str):
     program = safe_get_customer_program(customer, business.get('id'))
     announcement = get_latest_active_announcement_for_customer(business, customer)
     t_data = time.perf_counter()
+
+    # Order Ahead selector. Existing installed Store Cards keep their own serial/update
+    # path; every new Add-to-Wallet request for an enabled business receives the
+    # isolated classic Event Ticket unless force_store_card=1 is explicitly used.
+    if bool(business.get('order_ahead_enabled')) and not force_store_card:
+        beta_bytes = build_apple_order_ahead_event_pkpass_bytes(
+            customer, business, program or {}, announcement
+        )
+        t_build = time.perf_counter()
+        print(
+            f"APPLE EVENT BETA READY: {customer_public_id} "
+            f"data_ms={(t_data-t0)*1000:.0f} build_ms={(t_build-t_data)*1000:.0f} "
+            f"total_ms={(t_build-t0)*1000:.0f} bytes={len(beta_bytes) if beta_bytes else 0}"
+        )
+        if beta_bytes is None:
+            raise HTTPException(
+                status_code=500,
+                detail="Could not build Apple Order Ahead Event Ticket beta pass",
+            )
+        beta_serial = f'{APPLE_ORDER_AHEAD_EVENT_BETA_PREFIX}{customer_public_id}'
+        return Response(
+            content=beta_bytes,
+            media_type="application/vnd.apple.pkpass",
+            headers={
+                "Content-Disposition": f'attachment; filename="{beta_serial}.pkpass"',
+                "Cache-Control": "no-store",
+                "Content-Length": str(len(beta_bytes)),
+                "X-LoyaltyTree-Apple-Renderer": "event-ticket-order-ahead-beta",
+            },
+        )
 
     pkpass_bytes = _get_cached_apple_pkpass(customer, business, program or {}, announcement)
     cache_hit = pkpass_bytes is not None
@@ -31555,6 +31811,22 @@ async def apple_list_updated_serials(device_library_identifier: str, pass_type_i
                     business.get('updated_at') if business else None,
                     _apple_pass_dirty_at(serial),
                 ]
+            elif serial.startswith(APPLE_ORDER_AHEAD_EVENT_BETA_PREFIX):
+                customer = safe_get_customer(serial[len(APPLE_ORDER_AHEAD_EVENT_BETA_PREFIX):])
+                if not customer:
+                    continue
+                business = safe_get_business_by_id(customer.get('business_id'))
+                if not business or not bool(business.get('order_ahead_enabled')):
+                    continue
+                program = safe_get_customer_program(customer, business.get('id')) or {}
+                announcement = get_latest_active_announcement_for_customer(business, customer)
+                raw_values = [
+                    customer.get('updated_at'),
+                    business.get('updated_at'),
+                    program.get('updated_at') or program.get('created_at'),
+                    (announcement or {}).get('updated_at') or (announcement or {}).get('created_at'),
+                    _apple_pass_dirty_at(serial),
+                ]
             elif serial.startswith('cl-'):
                 customer = safe_get_cl_customer(serial[len('cl-'):])
                 if not customer:
@@ -31646,6 +31918,48 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
                 "Last-Modified": _http_date(last_modified),
                 "Cache-Control": "no-cache, no-store, must-revalidate",
                 "Content-Length": str(len(pkpass_bytes)),
+            },
+        )
+
+    # Order Ahead Event Ticket beta uses oa-beta-<customer public id>. It shares
+    # the same Pass Type ID/web service but rebuilds through the alternate Apple
+    # renderer so points/tier/membership/order status stay live during testing.
+    if serial_number.startswith(APPLE_ORDER_AHEAD_EVENT_BETA_PREFIX):
+        customer_public_id = serial_number[len(APPLE_ORDER_AHEAD_EVENT_BETA_PREFIX):]
+        customer = safe_get_customer(customer_public_id)
+        if not customer:
+            raise HTTPException(status_code=404, detail='Not found')
+        business = safe_get_business_by_id(customer.get('business_id'))
+        if not business or not bool(business.get('order_ahead_enabled')):
+            raise HTTPException(status_code=404, detail='Not found')
+        program = safe_get_customer_program(customer, business.get('id')) or {}
+        announcement = get_latest_active_announcement_for_customer(business, customer)
+
+        customer_ts = _parse_ts(customer.get('updated_at'))
+        business_ts = _parse_ts(business.get('updated_at'))
+        program_ts = _parse_ts(program.get('updated_at') or program.get('created_at'))
+        announcement_ts = _parse_ts((announcement or {}).get('updated_at') or (announcement or {}).get('created_at'))
+        dirty_ts = _apple_pass_dirty_at(serial_number)
+        candidates = [t for t in (customer_ts, business_ts, program_ts, announcement_ts, dirty_ts) if t]
+        last_modified_ts = max(candidates) if candidates else datetime.utcnow()
+        since_ts = _parse_ts(if_modified_since)
+        if (last_modified_ts and since_ts and
+                last_modified_ts.replace(microsecond=0) <= since_ts.replace(microsecond=0)):
+            _APPLE_PASS_DIRTY_AT.pop(str(serial_number), None)
+            return Response(status_code=304)
+
+        pkpass_bytes = build_apple_order_ahead_event_pkpass_bytes(
+            customer, business, program, announcement
+        )
+        if pkpass_bytes is None:
+            raise HTTPException(status_code=500, detail='Could not build Order Ahead Event Ticket beta pass')
+        return Response(
+            content=pkpass_bytes,
+            media_type='application/vnd.apple.pkpass',
+            headers={
+                'Last-Modified': _http_date(last_modified_ts),
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Content-Length': str(len(pkpass_bytes)),
             },
         )
 
