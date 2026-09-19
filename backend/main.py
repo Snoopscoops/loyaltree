@@ -8436,6 +8436,13 @@ def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, prog
     base['description'] = f'{card_title} — Order Ahead Beta'[:128]
     base['eventTicket'] = event_fields
 
+    # TRIAL 2: remove the top-level barcode/QR from the Order Ahead Event Ticket
+    # only. The normal Store Card is untouched. This isolates whether the barcode
+    # is causing Wallet to fall back to the classic Event Ticket renderer instead
+    # of using the newer poster/semantic Event Ticket presentation.
+    base.pop('barcodes', None)
+    base.pop('barcode', None)
+
     # Native Order Ahead button below the pass on iOS/watchOS 27+.
     # Apple's Featured Actions API works across pass styles. The predefined
     # `order` action renders the localized Order Delivery or Pickup action and
@@ -8570,7 +8577,7 @@ def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, prog
     # anything on the customer-facing pass.
     user_info = dict(base.get('userInfo') or {})
     user_info.update({
-        'loyaltreeRenderer': 'apple_poster_event_ticket_order_ahead_expiry_trial',
+        'loyaltreeRenderer': 'apple_poster_event_ticket_order_ahead_trial2_no_barcode',
         'loyaltreeCustomerPublicId': customer_public_id,
         'loyaltreeEventDateSource': expiry_source,
         'loyaltreeEventExpiryDate': event_expiry_date.isoformat(),
@@ -8919,7 +8926,7 @@ def _apple_event_pkpass_fingerprint(customer: dict, business: dict, program: dic
         'order_ahead': {
             'enabled': bool((business or {}).get('order_ahead_enabled')),
             'button_label': (business or {}).get('order_ahead_button_label'),
-            'renderer_version': 'event-ticket-poster-expiry-order-trial-v2',
+            'renderer_version': 'event-ticket-poster-expiry-order-trial2-no-barcode-v3',
         },
         # A PassKit push marks the installed Event Ticket serial dirty. Including
         # that marker means a pushed update can never accidentally reuse the
