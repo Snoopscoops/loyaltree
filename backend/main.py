@@ -8714,6 +8714,16 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
 _APPLE_PKPASS_CACHE = {}
 _APPLE_PKPASS_CACHE_TTL_SECONDS = 90
 
+# Order Ahead Event Tickets use a separate serial/renderer from the normal Store
+# Card, so they need their own cache. Five minutes comfortably covers the normal
+# join -> success screen -> Add to Wallet flow while normal fingerprint/dirty
+# invalidation keeps customer/program/order changes fresh. This cache is
+# intentionally process-local: a Render restart simply causes one cold rebuild.
+_APPLE_EVENT_PKPASS_CACHE = {}
+_APPLE_EVENT_PKPASS_CACHE_TTL_SECONDS = 5 * 60
+_APPLE_EVENT_PKPASS_BUILD_LOCKS = {}
+_APPLE_EVENT_PKPASS_BUILD_LOCKS_GUARD = Lock()
+
 
 def _apple_pkpass_fingerprint(customer: dict, business: dict, program: dict, announcement: Optional[dict]) -> str:
     payload = {
@@ -8782,12 +8792,133 @@ def _cache_apple_pkpass(customer: dict, business: dict, program: dict, announcem
                     _APPLE_PKPASS_CACHE.pop(key, None)
 
 
+def _apple_event_pkpass_fingerprint(customer: dict, business: dict, program: dict, announcement: Optional[dict]) -> str:
+    customer_public_id = str((customer or {}).get('public_id') or '')
+    event_serial = f'{APPLE_ORDER_AHEAD_EVENT_BETA_PREFIX}{customer_public_id}' if customer_public_id else ''
+    dirty_at = _apple_pass_dirty_at(event_serial) if event_serial else None
+    payload = {
+        'base': _apple_pkpass_fingerprint(customer, business, program or {}, announcement),
+        'order_ahead': {
+            'enabled': bool((business or {}).get('order_ahead_enabled')),
+            'button_label': (business or {}).get('order_ahead_button_label'),
+        },
+        # A PassKit push marks the installed Event Ticket serial dirty. Including
+        # that marker means a pushed update can never accidentally reuse the
+        # pre-push bytes, even if source timestamps happen to be unchanged.
+        'dirty_at': dirty_at.isoformat() if dirty_at else None,
+    }
+    return hashlib.sha1(json.dumps(payload, sort_keys=True, default=str).encode('utf-8')).hexdigest()
+
+
+def _get_cached_apple_event_pkpass(customer: dict, business: dict, program: dict, announcement: Optional[dict]) -> Optional[bytes]:
+    serial = str((customer or {}).get('public_id') or '')
+    if not serial:
+        return None
+    cached = _APPLE_EVENT_PKPASS_CACHE.get(serial)
+    if not cached:
+        return None
+    created_at, fingerprint, pkpass_bytes = cached
+    if time.monotonic() - created_at > _APPLE_EVENT_PKPASS_CACHE_TTL_SECONDS:
+        _APPLE_EVENT_PKPASS_CACHE.pop(serial, None)
+        return None
+    if fingerprint != _apple_event_pkpass_fingerprint(customer, business, program or {}, announcement):
+        _APPLE_EVENT_PKPASS_CACHE.pop(serial, None)
+        return None
+    return pkpass_bytes
+
+
+def _cache_apple_event_pkpass(customer: dict, business: dict, program: dict, announcement: Optional[dict], pkpass_bytes: bytes):
+    serial = str((customer or {}).get('public_id') or '')
+    if not serial or not pkpass_bytes:
+        return
+    _APPLE_EVENT_PKPASS_CACHE[serial] = (
+        time.monotonic(),
+        _apple_event_pkpass_fingerprint(customer, business, program or {}, announcement),
+        pkpass_bytes,
+    )
+
+    # Keep cache + per-customer build locks bounded on long-running instances.
+    if len(_APPLE_EVENT_PKPASS_CACHE) > 500:
+        cutoff = time.monotonic() - _APPLE_EVENT_PKPASS_CACHE_TTL_SECONDS
+        for key, value in list(_APPLE_EVENT_PKPASS_CACHE.items()):
+            if value[0] < cutoff:
+                _APPLE_EVENT_PKPASS_CACHE.pop(key, None)
+
+    if len(_APPLE_EVENT_PKPASS_BUILD_LOCKS) > 1000:
+        with _APPLE_EVENT_PKPASS_BUILD_LOCKS_GUARD:
+            for key in list(_APPLE_EVENT_PKPASS_BUILD_LOCKS.keys()):
+                lock = _APPLE_EVENT_PKPASS_BUILD_LOCKS.get(key)
+                if key not in _APPLE_EVENT_PKPASS_CACHE and lock is not None and not lock.locked():
+                    _APPLE_EVENT_PKPASS_BUILD_LOCKS.pop(key, None)
+                    if len(_APPLE_EVENT_PKPASS_BUILD_LOCKS) <= 750:
+                        break
+
+
+def _apple_event_build_lock(customer_public_id: str):
+    key = str(customer_public_id or '')
+    with _APPLE_EVENT_PKPASS_BUILD_LOCKS_GUARD:
+        lock = _APPLE_EVENT_PKPASS_BUILD_LOCKS.get(key)
+        if lock is None:
+            lock = Lock()
+            _APPLE_EVENT_PKPASS_BUILD_LOCKS[key] = lock
+        return lock
+
+
+def _get_or_build_apple_event_pkpass(customer: dict, business: dict, program: dict, announcement: Optional[dict]):
+    """Return (bytes, cache_hit) with per-customer single-flight generation.
+
+    Signup prewarm and an unusually fast first tap can race. The per-customer
+    lock prevents both requests from rendering/signing the same Event Ticket
+    simultaneously; the second caller rechecks the cache after the first build.
+    """
+    cached = _get_cached_apple_event_pkpass(customer, business, program or {}, announcement)
+    if cached is not None:
+        return cached, True
+
+    customer_public_id = str((customer or {}).get('public_id') or '')
+    lock = _apple_event_build_lock(customer_public_id)
+    with lock:
+        cached = _get_cached_apple_event_pkpass(customer, business, program or {}, announcement)
+        if cached is not None:
+            return cached, True
+        pkpass_bytes = build_apple_order_ahead_event_pkpass_bytes(
+            customer, business, program or {}, announcement
+        )
+        if pkpass_bytes:
+            _cache_apple_event_pkpass(customer, business, program or {}, announcement, pkpass_bytes)
+        return pkpass_bytes, False
+
+
+def _invalidate_apple_pkpass_caches(customer_public_id: str):
+    serial = str(customer_public_id or '')
+    if not serial:
+        return
+    _APPLE_PKPASS_CACHE.pop(serial, None)
+    _APPLE_EVENT_PKPASS_CACHE.pop(serial, None)
+
+
 def _prewarm_apple_pkpass(customer: dict, business: dict, program: dict):
-    """Best-effort preparation after signup; never delays the signup response."""
+    """Best-effort preparation after signup; never delays the signup response.
+
+    Order Ahead businesses prewarm the Event Ticket renderer that the Apple
+    button will actually request. Other businesses keep the existing Store
+    Card prewarm path.
+    """
     try:
         if not customer or not APPLE_PASS_TYPE_IDENTIFIER or not APPLE_TEAM_IDENTIFIER:
             return
         announcement = get_latest_active_announcement_for_customer(business, customer)
+        if bool((business or {}).get('order_ahead_enabled')):
+            pkpass_bytes, cache_hit = _get_or_build_apple_event_pkpass(
+                customer, business, program or {}, announcement
+            )
+            if pkpass_bytes:
+                print(
+                    f"APPLE EVENT PREWARMED: {customer.get('public_id')} "
+                    f"cache={'HIT' if cache_hit else 'MISS'} bytes={len(pkpass_bytes)}"
+                )
+            return
+
         pkpass_bytes = build_pkpass_bytes(customer, business, program or {}, announcement)
         if pkpass_bytes:
             _cache_apple_pkpass(customer, business, program or {}, announcement, pkpass_bytes)
@@ -14245,8 +14376,9 @@ def _oa_refresh_apple_order_status(customer: dict):
     if not customer:
         return
     try:
-        _APPLE_PKPASS_CACHE.pop(str(customer.get('public_id') or ''), None)
-        push_apple_wallet_update(str(customer.get('public_id') or ''))
+        customer_public_id = str(customer.get('public_id') or '')
+        _invalidate_apple_pkpass_caches(customer_public_id)
+        push_apple_wallet_update(customer_public_id)
     except Exception as e:
         print(f"ORDER AHEAD Apple order-status refresh warning: {e}")
 
@@ -31571,8 +31703,16 @@ async def get_apple_order_ahead_event_beta_pass(customer_public_id: str):
 
     program = safe_get_customer_program(customer, business.get('id')) or {}
     announcement = get_latest_active_announcement_for_customer(business, customer)
-    pkpass_bytes = build_apple_order_ahead_event_pkpass_bytes(
+    t0 = time.perf_counter()
+    pkpass_bytes, cache_hit = await asyncio.to_thread(
+        _get_or_build_apple_event_pkpass,
         customer, business, program, announcement
+    )
+    t_ready = time.perf_counter()
+    print(
+        f"APPLE EVENT DOWNLOAD READY: {customer_public_id} "
+        f"cache={'HIT' if cache_hit else 'MISS'} "
+        f"render_ms={(t_ready-t0)*1000:.0f} bytes={len(pkpass_bytes) if pkpass_bytes else 0}"
     )
     if pkpass_bytes is None:
         raise HTTPException(
@@ -31588,6 +31728,7 @@ async def get_apple_order_ahead_event_beta_pass(customer_public_id: str):
             'Content-Disposition': f'attachment; filename="{beta_serial}.pkpass"',
             'Cache-Control': 'no-store',
             'Content-Length': str(len(pkpass_bytes)),
+            'X-LoyaltyTree-Apple-Cache': 'HIT' if cache_hit else 'MISS',
         },
     )
 
@@ -31615,13 +31756,15 @@ async def get_apple_wallet_pass(customer_public_id: str, force_store_card: bool 
     # path; every new Add-to-Wallet request for an enabled business receives the
     # isolated classic Event Ticket unless force_store_card=1 is explicitly used.
     if bool(business.get('order_ahead_enabled')) and not force_store_card:
-        beta_bytes = build_apple_order_ahead_event_pkpass_bytes(
+        beta_bytes, event_cache_hit = await asyncio.to_thread(
+            _get_or_build_apple_event_pkpass,
             customer, business, program or {}, announcement
         )
         t_build = time.perf_counter()
         print(
             f"APPLE EVENT BETA READY: {customer_public_id} "
-            f"data_ms={(t_data-t0)*1000:.0f} build_ms={(t_build-t_data)*1000:.0f} "
+            f"cache={'HIT' if event_cache_hit else 'MISS'} "
+            f"data_ms={(t_data-t0)*1000:.0f} render_ms={(t_build-t_data)*1000:.0f} "
             f"total_ms={(t_build-t0)*1000:.0f} bytes={len(beta_bytes) if beta_bytes else 0}"
         )
         if beta_bytes is None:
@@ -31638,6 +31781,7 @@ async def get_apple_wallet_pass(customer_public_id: str, force_store_card: bool 
                 "Cache-Control": "no-store",
                 "Content-Length": str(len(beta_bytes)),
                 "X-LoyaltyTree-Apple-Renderer": "event-ticket-order-ahead-beta",
+                "X-LoyaltyTree-Apple-Cache": "HIT" if event_cache_hit else "MISS",
             },
         )
 
@@ -31969,7 +32113,8 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
             _APPLE_PASS_DIRTY_AT.pop(str(serial_number), None)
             return Response(status_code=304)
 
-        pkpass_bytes = build_apple_order_ahead_event_pkpass_bytes(
+        pkpass_bytes, event_cache_hit = await asyncio.to_thread(
+            _get_or_build_apple_event_pkpass,
             customer, business, program, announcement
         )
         if pkpass_bytes is None:
@@ -31981,6 +32126,7 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
                 'Last-Modified': _http_date(last_modified_ts),
                 'Cache-Control': 'no-cache, no-store, must-revalidate',
                 'Content-Length': str(len(pkpass_bytes)),
+                'X-LoyaltyTree-Apple-Cache': 'HIT' if event_cache_hit else 'MISS',
             },
         )
 
