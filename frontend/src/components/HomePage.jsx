@@ -470,7 +470,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
   const [homeBillingCycle, setHomeBillingCycle] = useState('monthly')
 
   const loadPricingContext = async (country) => {
-    const configuredBase = (API_BASE || import.meta.env.VITE_API_BASE_URL || 'https://loyaltree-btw1.onrender.com').replace(/\/$/, '')
+    const configuredBase = (API_BASE || import.meta.env.VITE_API_BASE_URL || 'https://api.theloyaltytree.com').replace(/\/$/, '')
     const query = country ? `?country=${encodeURIComponent(country)}` : ''
     try {
       const res = await fetch(`${configuredBase}/api/v1/public/pricing-context${query}`, { cache: 'no-store' })
@@ -496,7 +496,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
       const configuredBase = (API_BASE || import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
       const candidates = [...new Set([
         configuredBase,
-        'https://loyaltree-btw1.onrender.com',
+        'https://api.theloyaltytree.com',
         window.location.origin,
       ].filter(Boolean))]
       const errors = []
@@ -569,7 +569,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
       const configuredBase = (API_BASE || import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
       const candidates = [...new Set([
         configuredBase,
-        'https://loyaltree-btw1.onrender.com',
+        'https://api.theloyaltytree.com',
         window.location.origin,
       ].filter(Boolean))]
 

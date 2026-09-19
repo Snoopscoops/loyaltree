@@ -593,7 +593,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
   const [auditFilters, setAuditFilters] = useState({ status:'', branch_public_id:'', staff_public_id:'', date_from:'', date_to:'' })
 
   // Frontend URL for customer-facing pages
-  const FRONTEND_URL = 'https://loyaltree-btw1.onrender.com'
+  const FRONTEND_URL = 'https://theloyaltytree.com'
   const FACEBOOK_SUPPORT_URL = 'https://m.me/theloyaltytree'
 
   const contactLoyaltyTreeSupport = async () => {

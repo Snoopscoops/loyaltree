@@ -154,7 +154,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
   })
 
   const loadPricingContext = async (country) => {
-    const configuredBase = (API_BASE || import.meta.env.VITE_API_BASE_URL || 'https://loyaltree-btw1.onrender.com').replace(/\/$/, '')
+    const configuredBase = (API_BASE || import.meta.env.VITE_API_BASE_URL || 'https://api.theloyaltytree.com').replace(/\/$/, '')
     const query = country ? `?country=${encodeURIComponent(country)}` : ''
     try {
       const res = await fetch(`${configuredBase}/api/v1/public/pricing-context${query}`, { cache: 'no-store' })

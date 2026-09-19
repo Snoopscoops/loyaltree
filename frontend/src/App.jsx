@@ -16,7 +16,10 @@ import MotoliteApp from './components/MotoliteApp'
 import CustomerJoin from './components/CustomerJoin'
 import { trackEvent } from './analytics'
 
-const API_BASE = 'https://loyaltree-btw1.onrender.com'
+const API_BASE = (
+  import.meta.env.VITE_API_BASE_URL ||
+  'https://api.theloyaltytree.com'
+).replace(/\/$/, '')
 
 // /wallet/:id (and similar) are pages rendered by the FastAPI backend, not
 // React routes - if someone lands here on the frontend domain (old bookmark,

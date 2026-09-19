@@ -1,4 +1,4 @@
-const FALLBACK_API_BASE = 'https://loyaltree-btw1.onrender.com'
+const FALLBACK_API_BASE = 'https://api.theloyaltytree.com'
 
 const safeStorageGet = (storage, key) => {
   try { return storage.getItem(key) } catch (_) { return null }
