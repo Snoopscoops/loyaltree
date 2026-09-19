@@ -32422,15 +32422,11 @@ async def get_wallet_pass(customer_public_id: str):
         "save_url": save_url,
         "google_class_ready": google_class_ready,
         "google_class_id": loyalty_object.get("classId"),
-        # For Order Ahead-enabled businesses, every new Apple Wallet add uses
-        # the isolated Event Ticket beta automatically. The normal Store Card
-        # endpoint remains available below for rollback/manual comparison.
-        "apple_pass_url": (
-            f"{BASE_URL}/api/v1/customer/{customer_public_id}/apple-wallet-event-beta"
-            if bool(business.get('order_ahead_enabled'))
-            else f"{BASE_URL}/api/v1/customer/{customer_public_id}/apple-wallet-pass"
-        ),
-        "apple_store_card_url": f"{BASE_URL}/api/v1/customer/{customer_public_id}/apple-wallet-pass?force_store_card=1",
+        # Order Ahead now ships on the normal loyalty Store Card.
+        # iOS 27+ can render the top-level featuredActions CTA; older iOS
+        # keeps the tappable Pass Details/back-field Order Ahead link.
+        "apple_pass_url": f"{BASE_URL}/api/v1/customer/{customer_public_id}/apple-wallet-pass",
+        "apple_store_card_url": f"{BASE_URL}/api/v1/customer/{customer_public_id}/apple-wallet-pass",
         "apple_event_beta_url": (
             f"{BASE_URL}/api/v1/customer/{customer_public_id}/apple-wallet-event-beta"
             if bool(business.get('order_ahead_enabled')) else None
@@ -32511,48 +32507,9 @@ async def get_apple_wallet_pass(customer_public_id: str, force_store_card: bool 
     announcement = get_latest_active_announcement_for_customer(business, customer)
     t_data = time.perf_counter()
 
-    # Order Ahead selector. Existing installed Store Cards keep their own serial/update
-    # path; every new Add-to-Wallet request for an enabled business receives the
-    # isolated classic Event Ticket unless force_store_card=1 is explicitly used.
-    if bool(business.get('order_ahead_enabled')) and not force_store_card:
-        beta_bytes, event_cache_hit = await asyncio.to_thread(
-            _get_or_build_apple_event_pkpass,
-            customer, business, program or {}, announcement
-        )
-        t_build = time.perf_counter()
-        print(
-            f"APPLE EVENT BETA READY: {customer_public_id} "
-            f"cache={'HIT' if event_cache_hit else 'MISS'} "
-            f"data_ms={(t_data-t0)*1000:.0f} render_ms={(t_build-t_data)*1000:.0f} "
-            f"total_ms={(t_build-t0)*1000:.0f} bytes={len(beta_bytes) if beta_bytes else 0}"
-        )
-        if beta_bytes is None:
-            raise HTTPException(
-                status_code=500,
-                detail="Could not build Apple Order Ahead Event Ticket beta pass",
-            )
-        beta_serial = f'{APPLE_ORDER_AHEAD_EVENT_BETA_PREFIX}{customer_public_id}'
-        trial5_diag = _apple_trial5_log_pkpass_diagnostics(
-            beta_bytes,
-            cache_hit=event_cache_hit,
-        )
-        return Response(
-            content=beta_bytes,
-            media_type="application/vnd.apple.pkpass",
-            headers={
-                "Content-Disposition": f'attachment; filename="{beta_serial}.pkpass"',
-                "Cache-Control": "no-store",
-                "Content-Length": str(len(beta_bytes)),
-                "X-LoyaltyTree-Apple-Renderer": "trial7b-scratch-event-ticket-no-nfc",
-                "X-LoyaltyTree-Apple-Cache": "HIT" if event_cache_hit else "MISS",
-                "X-LoyaltyTree-Poster-Trial": "5",
-                "X-LoyaltyTree-Poster-Status": str(trial5_diag.get('status') or 'CHECK'),
-                "X-LoyaltyTree-Poster-Profile": (
-                    "TM-READY" if trial5_diag.get('ticketmaster_profile_ready') else "TM-PARTIAL"
-                ),
-            },
-        )
-
+    # Order Ahead uses the normal Store Card path again.
+    # Keep /apple-wallet-event-beta available only as an isolated research route;
+    # never auto-route customer Add-to-Wallet traffic into it.
     pkpass_bytes = _get_cached_apple_pkpass(customer, business, program or {}, announcement)
     cache_hit = pkpass_bytes is not None
     if not cache_hit:
@@ -32585,6 +32542,7 @@ async def get_apple_wallet_pass(customer_public_id: str, force_store_card: bool 
             "Content-Disposition": f'attachment; filename="{customer_public_id}.pkpass"',
             "Cache-Control": "no-store",
             "Content-Length": str(len(pkpass_bytes)),
+            "X-LoyaltyTree-Apple-Renderer": "store-card-order-ahead-featured-action",
         },
     )
 
