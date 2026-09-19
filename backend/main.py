@@ -95,7 +95,7 @@ APPLE_PASS_AUTH_SECRET = os.getenv('APPLE_PASS_AUTH_SECRET', '')
 APPLE_PASS_WEB_SERVICE_URL = f'{BASE_URL}/api/v1/apple-wallet'
 # Experimental Apple Event Ticket renderer for Order Ahead businesses.
 # Uses a separate serial namespace so it can coexist with the production Store Card.
-APPLE_ORDER_AHEAD_EVENT_BETA_PREFIX = 'oa-scratch-'
+APPLE_ORDER_AHEAD_EVENT_BETA_PREFIX = 'oa-nfc-'
 
 # Platform super-admin credentials (you, the LoyaltyTree operator - not a
 # business owner). Set these in your environment; there is no signup flow
@@ -8783,6 +8783,61 @@ def _trial5_resolve_poster_venue(customer: dict, business: dict) -> dict:
     }
 
 
+
+def _trial7_apple_nfc_config(customer: dict) -> dict:
+    """Build the Apple Wallet NFC dictionary for Trial 7.
+
+    A structurally valid NFC dictionary is not enough for production. Apple
+    requires the Pass Type ID / signing setup to have the NFC entitlement.
+    """
+    public_key = os.getenv('APPLE_POSTER_TRIAL7_NFC_PUBLIC_KEY', '').strip()
+    if not public_key:
+        raise ValueError(
+            'Trial 7 requires APPLE_POSTER_TRIAL7_NFC_PUBLIC_KEY '
+            '(Base64 X.509 SubjectPublicKeyInfo P-256 public key)'
+        )
+
+    # Validate that the env value is actually Base64 SPKI containing a P-256
+    # EC public key. This catches copy/paste and PEM-wrapper mistakes before
+    # generating a pass that Wallet cannot parse.
+    try:
+        import base64
+        from cryptography.hazmat.primitives.serialization import load_der_public_key
+        from cryptography.hazmat.primitives.asymmetric import ec
+
+        der = base64.b64decode(public_key, validate=True)
+        parsed_key = load_der_public_key(der)
+        if not isinstance(parsed_key, ec.EllipticCurvePublicKey):
+            raise ValueError('NFC public key is not an EC public key')
+        if not isinstance(parsed_key.curve, ec.SECP256R1):
+            raise ValueError('NFC public key must use P-256 / secp256r1')
+    except Exception as exc:
+        raise ValueError(
+            f'Invalid APPLE_POSTER_TRIAL7_NFC_PUBLIC_KEY: {exc}'
+        ) from exc
+
+    customer_public_id = str((customer or {}).get('public_id') or '').strip()
+    if not customer_public_id:
+        raise ValueError('Missing customer public id for NFC message')
+
+    prefix = os.getenv('APPLE_POSTER_TRIAL7_NFC_MESSAGE_PREFIX', 'LT').strip() or 'LT'
+    # Apple caps NFC message payload at 64 bytes. Keep a deterministic,
+    # customer-specific test payload comfortably below the limit.
+    raw_message = f'{prefix}:{customer_public_id}'
+    encoded = raw_message.encode('utf-8')
+    if len(encoded) > 64:
+        import hashlib
+        raw_message = f'{prefix}:{hashlib.sha256(customer_public_id.encode()).hexdigest()[:40]}'
+    if len(raw_message.encode('utf-8')) > 64:
+        raise ValueError('Trial 7 NFC message is longer than 64 bytes')
+
+    return {
+        'message': raw_message,
+        'encryptionPublicKey': public_key,
+        'requiresAuthentication': False,
+    }
+
+
 def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, program: dict, announcement: Optional[dict] = None) -> dict:
     """TRIAL 6 — clean Event Ticket built from scratch.
 
@@ -8918,6 +8973,11 @@ def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, prog
         'foregroundColor': 'rgb(255, 255, 255)',
         'labelColor': 'rgb(220, 225, 235)',
 
+        # TRIAL 7: add the real Apple Wallet NFC/VAS dictionary to the otherwise
+        # clean scratch Event Ticket. The signing Pass Type must also have
+        # Apple's NFC entitlement for this to be a meaningful renderer test.
+        'nfc': _trial7_apple_nfc_config(customer),
+
         # Legacy Event Ticket content remains valid on older rendering paths.
         'eventTicket': {
             'headerFields': [
@@ -8986,7 +9046,7 @@ def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, prog
         **action_urls,
 
         'userInfo': {
-            'loyaltreeRenderer': 'trial6_scratch_event_ticket',
+            'loyaltreeRenderer': 'trial7_scratch_event_ticket_nfc',
             'loyaltreeExpirySource': expiry_source,
             'loyaltreeVenueCoordinateSource': venue.get('coordinate_source'),
         },
@@ -9014,7 +9074,7 @@ def build_apple_order_ahead_event_pkpass_bytes(customer: dict, business: dict, p
             announcement,
         )
     except Exception as exc:
-        print(f'APPLE SCRATCH EVENT pass-json error: {exc}')
+        print(f'APPLE TRIAL7 NFC EVENT pass-json error: {exc}')
         return None
 
     biz_name = str((business or {}).get('name') or 'LoyaltyTree').strip() or 'LoyaltyTree'
@@ -9077,7 +9137,7 @@ def build_apple_order_ahead_event_pkpass_bytes(customer: dict, business: dict, p
                 layer.alpha_composite(mark, (x, y))
                 image = Image.alpha_composite(image.convert('RGBA'), layer).convert('RGB')
             except Exception as exc:
-                print(f'APPLE SCRATCH EVENT artwork-logo warning: {exc}')
+                print(f'APPLE TRIAL7 NFC EVENT artwork-logo warning: {exc}')
 
         # Add a subtle diagnostic mark; this is intentionally not production art.
         draw = ImageDraw.Draw(image, 'RGBA')
@@ -9148,11 +9208,11 @@ def build_apple_order_ahead_event_pkpass_bytes(customer: dict, business: dict, p
     try:
         diagnostics = _apple_trial5_validate_pkpass_bytes(pkpass_bytes)
         print(
-            'APPLE SCRATCH EVENT DIAGNOSTICS '
+            'APPLE TRIAL7 NFC EVENT DIAGNOSTICS '
             + json.dumps(diagnostics, sort_keys=True, separators=(',', ':'))
         )
     except Exception as exc:
-        print(f'APPLE SCRATCH EVENT diagnostics warning: {exc}')
+        print(f'APPLE TRIAL7 NFC EVENT diagnostics warning: {exc}')
 
     return pkpass_bytes
 
@@ -9416,7 +9476,7 @@ def _apple_event_pkpass_fingerprint(customer: dict, business: dict, program: dic
         'order_ahead': {
             'enabled': bool((business or {}).get('order_ahead_enabled')),
             'button_label': (business or {}).get('order_ahead_button_label'),
-            'renderer_version': 'trial6-scratch-event-ticket-v1',
+            'renderer_version': 'trial7-scratch-event-ticket-nfc-v1',
         },
         # A PassKit push marks the installed Event Ticket serial dirty. Including
         # that marker means a pushed update can never accidentally reuse the
@@ -32488,7 +32548,7 @@ async def get_apple_wallet_pass(customer_public_id: str, force_store_card: bool 
                 "Content-Disposition": f'attachment; filename="{beta_serial}.pkpass"',
                 "Cache-Control": "no-store",
                 "Content-Length": str(len(beta_bytes)),
-                "X-LoyaltyTree-Apple-Renderer": "trial6-scratch-event-ticket",
+                "X-LoyaltyTree-Apple-Renderer": "trial7-scratch-event-ticket-nfc",
                 "X-LoyaltyTree-Apple-Cache": "HIT" if event_cache_hit else "MISS",
                 "X-LoyaltyTree-Poster-Trial": "5",
                 "X-LoyaltyTree-Poster-Status": str(trial5_diag.get('status') or 'CHECK'),
