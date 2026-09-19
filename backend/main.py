@@ -20779,6 +20779,15 @@ async def get_qr_code(public_id: str, program_id: Optional[str] = Query(default=
     join_slug = make_program_join_slug(business.get('public_id'), program)
     join_url = f'{join_base}/join/{join_slug}'
     svg = generate_qr_svg(join_url)
+
+    # Warm the public Join-page config when an owner opens/generates the QR.
+    # The helper is defined later in the module but is available by request time.
+    # This makes the next customer scan a cache hit during normal campaigns.
+    try:
+        _join_config_cache_set(join_slug, _build_public_join_config_payload(business, program or {}))
+    except Exception as exc:
+        print(f"JOIN CONFIG PREWARM warning: {exc}")
+
     return JSONResponse({
         "svg": svg,
         "join_url": join_url,
@@ -31318,16 +31327,46 @@ async def announcement_detail_page(business_public_id: str, announcement_id: str
 
 # WALLET PASS (Google + Apple)
 
-@app.get("/api/v1/public/business/{public_id}/join-config")
-async def public_business_join_config(public_id: str):
-    business_public_id, program_public_id = split_program_join_slug(public_id)
-    business = safe_get_business(business_public_id)
-    if not business:
-        raise HTTPException(status_code=404, detail='Business not found')
-    program = safe_get_loyalty_program(business.get('id'), program_public_id=program_public_id) or {}
-    if program_public_id and not program:
-        raise HTTPException(status_code=404, detail='Program not found')
+# Public Join-page configuration is requested immediately after a customer scans
+# a Join QR. Keep this path deliberately lightweight: business/program branding
+# changes infrequently, while a campaign can produce many scans in a short burst.
+# A small in-process cache removes repeat Supabase round-trips without creating
+# durable state. The TTL is intentionally short so owner edits appear quickly.
+_JOIN_CONFIG_CACHE = {}
+_JOIN_CONFIG_CACHE_LOCK = Lock()
+_JOIN_CONFIG_CACHE_TTL_SECONDS = max(15, min(600, int(os.getenv('JOIN_CONFIG_CACHE_TTL_SECONDS', '180') or '180')))
+
+def _join_config_cache_get(cache_key: str):
+    now = time.monotonic()
+    with _JOIN_CONFIG_CACHE_LOCK:
+        row = _JOIN_CONFIG_CACHE.get(cache_key)
+        if not row:
+            return None
+        created_at, payload = row
+        if now - created_at > _JOIN_CONFIG_CACHE_TTL_SECONDS:
+            _JOIN_CONFIG_CACHE.pop(cache_key, None)
+            return None
+        return payload
+
+def _join_config_cache_set(cache_key: str, payload: dict):
+    if not cache_key or not payload:
+        return
+    now = time.monotonic()
+    with _JOIN_CONFIG_CACHE_LOCK:
+        _JOIN_CONFIG_CACHE[cache_key] = (now, payload)
+        # Keep the cache bounded on long-running instances.
+        if len(_JOIN_CONFIG_CACHE) > 500:
+            cutoff = now - _JOIN_CONFIG_CACHE_TTL_SECONDS
+            for key, value in list(_JOIN_CONFIG_CACHE.items()):
+                if value[0] < cutoff:
+                    _JOIN_CONFIG_CACHE.pop(key, None)
+            while len(_JOIN_CONFIG_CACHE) > 500:
+                _JOIN_CONFIG_CACHE.pop(next(iter(_JOIN_CONFIG_CACHE)), None)
+
+def _build_public_join_config_payload(business: dict, program: dict) -> dict:
+    program = program or {}
     category = business_category_meta(business.get('business_type'))
+    employee_membership = program_is_employee_membership(program)
     return {
         'public_id': business.get('public_id'),
         'program_public_id': program.get('public_id'),
@@ -31360,11 +31399,66 @@ async def public_business_join_config(public_id: str):
         'membership_terms': program.get('membership_terms'),
         'membership_expiry_reminders_enabled': program.get('membership_expiry_reminders_enabled') is not False,
         'membership_expiry_reminder_days': normalize_membership_expiry_reminder_days(program),
-        'membership_employee_mode': program_is_employee_membership(program),
-        'is_employee_membership': program_is_employee_membership(program),
+        'membership_employee_mode': employee_membership,
+        'is_employee_membership': employee_membership,
         'employee_attendance_enabled': bool(program.get('employee_attendance_enabled')),
         'employee_time_tracking_enabled': bool(program.get('employee_time_tracking_enabled')),
     }
+
+@app.get("/api/v1/public/business/{public_id}/join-config")
+def public_business_join_config(public_id: str):
+    # This route is intentionally synchronous. FastAPI runs normal `def` routes
+    # in its worker thread pool, so the synchronous Supabase client cannot block
+    # the main asyncio event loop while a QR-scan request waits on the network.
+    t0 = time.perf_counter()
+    cache_key = str(public_id or '').strip()
+    cached = _join_config_cache_get(cache_key)
+    if cached is not None:
+        total_ms = (time.perf_counter() - t0) * 1000
+        print(f"JOIN CONFIG PERF: slug={cache_key} cache=HIT total_ms={total_ms:.0f}")
+        return JSONResponse(
+            content=cached,
+            headers={
+                'Cache-Control': 'public, max-age=30, stale-while-revalidate=120',
+                'X-LoyaltyTree-Join-Config': 'HIT',
+                'Server-Timing': f'total;dur={total_ms:.1f}',
+            },
+        )
+
+    business_public_id, program_public_id = split_program_join_slug(cache_key)
+
+    t_business_start = time.perf_counter()
+    business = safe_get_business(business_public_id)
+    t_business_end = time.perf_counter()
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+
+    t_program_start = time.perf_counter()
+    program = safe_get_loyalty_program(business.get('id'), program_public_id=program_public_id) or {}
+    t_program_end = time.perf_counter()
+    if program_public_id and not program:
+        raise HTTPException(status_code=404, detail='Program not found')
+
+    payload = _build_public_join_config_payload(business, program)
+    _join_config_cache_set(cache_key, payload)
+
+    business_ms = (t_business_end - t_business_start) * 1000
+    program_ms = (t_program_end - t_program_start) * 1000
+    total_ms = (time.perf_counter() - t0) * 1000
+    print(
+        f"JOIN CONFIG PERF: slug={cache_key} cache=MISS "
+        f"business_ms={business_ms:.0f} program_ms={program_ms:.0f} total_ms={total_ms:.0f}"
+    )
+    return JSONResponse(
+        content=payload,
+        headers={
+            'Cache-Control': 'public, max-age=30, stale-while-revalidate=120',
+            'X-LoyaltyTree-Join-Config': 'MISS',
+            'Server-Timing': (
+                f'business;dur={business_ms:.1f}, program;dur={program_ms:.1f}, total;dur={total_ms:.1f}'
+            ),
+        },
+    )
 
 @app.get("/api/v1/customer/{customer_public_id}/wallet-pass")
 async def get_wallet_pass(customer_public_id: str):
