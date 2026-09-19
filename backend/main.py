@@ -8448,25 +8448,132 @@ def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, prog
         }
     ]
 
-    # Keep the current classic Event Ticket presentation: changing to the
-    # poster-event style would require event-specific semantics and could alter
-    # the loyalty/QR presentation. The existing tappable Pass Details Order
-    # Ahead field remains the fallback on older iOS versions.
-    base.pop('preferredStyleSchemes', None)
-    base.pop('semantics', None)
-    base.pop('eventLogoText', None)
-    base.pop('suppressHeaderDarkening', None)
+    # Poster Event Ticket trial for the iOS 18+ semantic event experience.
+    # Use the customer's real loyalty-card expiry as the synthetic "event" date
+    # so Wallet naturally moves with the validity of the card.
+    #
+    # Priority mirrors the customer-facing validity concepts:
+    #   Membership/Hybrid membership -> membership_expires_at
+    #   Multipass                    -> multipass_expires_at
+    #   Standalone loyalty card      -> card_expires_at
+    #   Hybrid engine clocks         -> latest enabled engine expiry
+    #
+    # An inactive membership has no real membership_expires_at yet. For this
+    # controlled Apple trial only, derive a temporary date from the configured
+    # membership duration; when the membership is activated, a Wallet update
+    # will rebuild this pass with the real membership_expires_at.
+    expiry_candidates = []
 
-    # Retain the semantic ordering URL as a best-effort compatibility hint.
-    # Featured Actions above are the native below-pass CTA on iOS 27+.
+    card_type = str((program or {}).get('card_type') or '').strip().lower()
+    if card_type in ('membership', 'hybrid'):
+        expiry_candidates.append(customer.get('membership_expires_at'))
+    if card_type == 'multipass':
+        expiry_candidates.append(customer.get('multipass_expires_at'))
+
+    expiry_candidates.append(customer.get('card_expires_at'))
+
+    if card_type == 'hybrid':
+        expiry_candidates.extend([
+            customer.get('hybrid_points_expires_at'),
+            customer.get('hybrid_stamps_expires_at'),
+            customer.get('hybrid_tier_expires_at'),
+        ])
+
+    parsed_expiries = [
+        parsed for parsed in (_date_only(value) for value in expiry_candidates)
+        if parsed is not None
+    ]
+
+    expiry_source = 'actual_card_expiry'
+    if parsed_expiries:
+        # When more than one Hybrid clock exists, use the latest validity date
+        # for the synthetic event so the pass does not "end" before the card.
+        event_expiry_date = max(parsed_expiries)
+    else:
+        expiry_source = 'derived_membership_duration'
+        try:
+            configured_days = max(
+                1,
+                min(3650, int((program or {}).get('membership_duration_days') or 30))
+            )
+        except Exception:
+            configured_days = 30
+
+        start_date = (
+            _date_only(customer.get('membership_start_date'))
+            or _date_only(customer.get('created_at'))
+            or _loyalty_today()
+        )
+        event_expiry_date = start_date + timedelta(days=configured_days)
+
+    # Use noon Manila time on the card-expiry date. This avoids accidental date
+    # shifts when Wallet converts the ISO timestamp to the device timezone.
+    trial_start_local = datetime.combine(
+        event_expiry_date,
+        datetime.min.time().replace(hour=12),
+        tzinfo=LOYALTY_TIMEZONE,
+    )
+    trial_end_local = trial_start_local + timedelta(hours=2)
+    trial_start = trial_start_local.astimezone(timezone.utc)
+    trial_end = trial_end_local.astimezone(timezone.utc)
+    trial_start_iso = trial_start.isoformat(timespec='seconds').replace('+00:00', 'Z')
+    trial_end_iso = trial_end.isoformat(timespec='seconds').replace('+00:00', 'Z')
+
+    branch_location = str(
+        business.get('address')
+        or business.get('location')
+        or 'Main Branch'
+    ).strip()[:120] or 'Main Branch'
+
+    guest_number = (
+        customer_public_id[-6:].upper()
+        if len(customer_public_id) >= 6
+        else customer_public_id.upper()
+    ) or 'GUEST'
+
+    base['preferredStyleSchemes'] = ['posterEventTicket', 'eventTicket']
+    base['eventLogoText'] = biz_name[:40]
+    base['suppressHeaderDarkening'] = False
+    base['relevantDates'] = [
+        {
+            'startDate': trial_start_iso,
+            'endDate': trial_end_iso,
+        }
+    ]
+    base['semantics'] = {
+        'eventType': 'PKEventTypeGeneric',
+        'eventName': f'{biz_name} Order Ahead Trial'[:80],
+        'eventStartDate': trial_start_iso,
+        'eventEndDate': trial_end_iso,
+        'attendeeName': str(customer.get('name') or 'LoyaltyTree Guest')[:80],
+        'admissionLevel': 'Loyalty Guest',
+        'venueName': f'{biz_name} Branch'[:80],
+        'venueRegionName': branch_location,
+        'venueRoom': branch_location,
+        'seats': [
+            {
+                'seatDescription': 'Guest Number',
+                'seatIdentifier': customer_public_id,
+                'seatNumber': guest_number,
+                'seatRow': 'LT',
+                'seatSection': 'GUEST',
+                'seatType': 'Loyalty Guest',
+            }
+        ],
+    }
+
+    # Semantic Event Ticket action for the iOS 18+ event guide/action area.
+    # The newer Featured Action above remains available where supported too.
     base['orderFoodURL'] = action['url']
 
     # Make the beta easy to identify in server/device logs without exposing
     # anything on the customer-facing pass.
     user_info = dict(base.get('userInfo') or {})
     user_info.update({
-        'loyaltreeRenderer': 'apple_classic_event_ticket_order_ahead_beta',
+        'loyaltreeRenderer': 'apple_poster_event_ticket_order_ahead_expiry_trial',
         'loyaltreeCustomerPublicId': customer_public_id,
+        'loyaltreeEventDateSource': expiry_source,
+        'loyaltreeEventExpiryDate': event_expiry_date.isoformat(),
     })
     base['userInfo'] = user_info
     return base
@@ -8812,7 +8919,7 @@ def _apple_event_pkpass_fingerprint(customer: dict, business: dict, program: dic
         'order_ahead': {
             'enabled': bool((business or {}).get('order_ahead_enabled')),
             'button_label': (business or {}).get('order_ahead_button_label'),
-            'renderer_version': 'event-ticket-featured-order-v1',
+            'renderer_version': 'event-ticket-poster-expiry-order-trial-v2',
         },
         # A PassKit push marks the installed Event Ticket serial dirty. Including
         # that marker means a pushed update can never accidentally reuse the
