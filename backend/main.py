@@ -26112,15 +26112,23 @@ async def cl_customer_wallet_page(customer_public_id: str):
 # CUSTOMER JOIN PAGE
 
 @app.get("/join/{business_public_id}", response_class=HTMLResponse)
-async def customer_join_page(business_public_id: str):
+def customer_join_page(business_public_id: str):
+    # This route performs synchronous Supabase calls. Keeping it as a normal
+    # def lets FastAPI run it in the worker thread pool instead of blocking
+    # the asyncio event loop used by the rest of the service.
+    t0 = time.perf_counter()
     # Existing/printed LoyaltyTree QR codes point at the backend BASE_URL.
     # When FRONTEND_URL is configured, forward them to the React join page,
     # which contains the required privacy consent UI.
     if FRONTEND_URL:
         frontend = FRONTEND_URL.rstrip('/')
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        print(f"JOIN PAGE PERF: slug={business_public_id} redirect=yes total_ms={elapsed_ms:.0f}")
         return RedirectResponse(url=f"{frontend}/join/{business_public_id}", status_code=307)
     try:
+        t_business_start = time.perf_counter()
         business = safe_get_business(business_public_id)
+        t_business_done = time.perf_counter()
         if not business:
             return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Business not found</h1><p>This link is invalid.</p></div>")
 
@@ -26128,7 +26136,9 @@ async def customer_join_page(business_public_id: str):
             return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Business not active</h1><p>This business is not accepting new members yet.</p></div>")
 
         _, join_program_public_id = split_program_join_slug(business_public_id)
+        t_program_start = time.perf_counter()
         program = safe_get_loyalty_program(business.get('id'), program_public_id=join_program_public_id)
+        t_program_done = time.perf_counter()
         if join_program_public_id and not program:
             return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Program not found</h1><p>This loyalty program link is invalid or no longer available.</p></div>", status_code=404)
         
@@ -26425,6 +26435,13 @@ async def customer_join_page(business_public_id: str):
             '</script></body></html>'
         )
         
+        total_done = time.perf_counter()
+        print(
+            f"JOIN PAGE PERF: slug={business_public_id} redirect=no "
+            f"business_ms={(t_business_done-t_business_start)*1000:.0f} "
+            f"program_ms={(t_program_done-t_program_start)*1000:.0f} "
+            f"total_ms={(total_done-t0)*1000:.0f}"
+        )
         return HTMLResponse(html)
     except Exception as e:
         import traceback
@@ -31319,15 +31336,28 @@ async def announcement_detail_page(business_public_id: str, announcement_id: str
 # WALLET PASS (Google + Apple)
 
 @app.get("/api/v1/public/business/{public_id}/join-config")
-async def public_business_join_config(public_id: str):
+def public_business_join_config(public_id: str):
+    # Synchronous Supabase client calls belong in FastAPI's worker thread pool.
+    t0 = time.perf_counter()
     business_public_id, program_public_id = split_program_join_slug(public_id)
+    t_business_start = time.perf_counter()
     business = safe_get_business(business_public_id)
+    t_business_done = time.perf_counter()
     if not business:
         raise HTTPException(status_code=404, detail='Business not found')
+    t_program_start = time.perf_counter()
     program = safe_get_loyalty_program(business.get('id'), program_public_id=program_public_id) or {}
+    t_program_done = time.perf_counter()
     if program_public_id and not program:
         raise HTTPException(status_code=404, detail='Program not found')
     category = business_category_meta(business.get('business_type'))
+    total_done = time.perf_counter()
+    print(
+        f"JOIN CONFIG PERF: slug={public_id} "
+        f"business_ms={(t_business_done-t_business_start)*1000:.0f} "
+        f"program_ms={(t_program_done-t_program_start)*1000:.0f} "
+        f"total_ms={(total_done-t0)*1000:.0f}"
+    )
     return {
         'public_id': business.get('public_id'),
         'program_public_id': program.get('public_id'),
