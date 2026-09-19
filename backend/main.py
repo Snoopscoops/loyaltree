@@ -181,6 +181,39 @@ SUBSCRIPTION_REMINDER_FROM = os.getenv('SUBSCRIPTION_REMINDER_FROM', 'billing@lo
 TRANSACTIONAL_EMAIL_FROM = (os.getenv('TRANSACTIONAL_EMAIL_FROM', '') or SUBSCRIPTION_REMINDER_FROM).strip()
 TRANSACTIONAL_REPLY_TO = os.getenv('TRANSACTIONAL_REPLY_TO', 'theloyaltytree@gmail.com').strip()
 FRONTEND_URL = os.getenv('FRONTEND_URL', '')
+# Canonical customer-facing base URL for Join QR codes. Keep this separate from
+# BASE_URL (the Render API host) so customer scans can open the frontend directly
+# instead of paying an extra backend -> frontend redirect round trip. If unset,
+# FRONTEND_URL remains the default for backwards compatibility.
+PUBLIC_JOIN_BASE_URL = (os.getenv('PUBLIC_JOIN_BASE_URL', '') or FRONTEND_URL or '').rstrip('/')
+
+
+def public_join_base_url() -> str:
+    return (PUBLIC_JOIN_BASE_URL or BASE_URL).rstrip('/')
+
+
+def public_join_url(join_slug: str) -> str:
+    return f"{public_join_base_url()}/join/{str(join_slug or '').lstrip('/')}"
+
+
+def canonicalize_stored_join_url(value: Optional[str], fallback_slug: str) -> str:
+    """Rewrite legacy Render /join URLs to the configured public frontend.
+
+    Existing printed QR codes continue to work through the backend redirect, but
+    any QR/link returned by the API after this deploy points directly at the
+    customer frontend whenever PUBLIC_JOIN_BASE_URL/FRONTEND_URL is configured.
+    """
+    raw = str(value or '').strip()
+    target_base = public_join_base_url()
+    backend_base = BASE_URL.rstrip('/')
+    if raw:
+        backend_prefix = f"{backend_base}/join/"
+        if target_base != backend_base and raw.startswith(backend_prefix):
+            return f"{target_base}/join/{raw[len(backend_prefix):]}"
+        return raw
+    return public_join_url(fallback_slug)
+
+
 SUBSCRIPTION_REMINDER_RESEND_DAYS = 3  # don't re-email more often than this while still expiring_soon/expired
 
 # Business-owner password recovery. Reset links are one-time, stored only as
@@ -4990,7 +5023,7 @@ def business_summary(biz: dict) -> dict:
         "setup_kit_status": biz.get("setup_kit_status"),
         "onboarding_step": int(biz.get("onboarding_step") or 0),
         "onboarding_completed": bool(biz.get("onboarding_completed")),
-        "join_url": f"{(FRONTEND_URL or BASE_URL).rstrip('/')}/join/{biz.get('public_id','')}",
+        "join_url": public_join_url(biz.get('public_id', '')),
         "order_ahead_enabled": bool(biz.get("order_ahead_enabled")),
         "order_ahead_button_label": (biz.get("order_ahead_button_label") or "Order Ahead")[:30],
         "created_at": biz.get("created_at"),
@@ -11241,7 +11274,6 @@ async def register(biz: BusinessCreate, request: Request):
 
     if business_id and biz.setup_kit_requested:
         try:
-            frontend_base = (FRONTEND_URL or BASE_URL).rstrip('/')
             supabase.table('setup_kit_orders').insert({
                 'public_id': generate_public_id(),
                 'business_id': business_id,
@@ -11250,7 +11282,7 @@ async def register(biz: BusinessCreate, request: Request):
                 'delivery_address': biz.kit_delivery_address.strip(),
                 'delivery_instructions': (biz.kit_delivery_instructions or '').strip() or None,
                 'logo_url': biz.logo_url,
-                'qr_join_url': f"{frontend_base}/join/{public_id}",
+                'qr_join_url': public_join_url(public_id),
                 'amount': SETUP_KIT_PRICE_PER_BRANCH * max(1, int(biz.branch_count or 1)),
                 'payment_status': 'unpaid',
                 'fulfillment_status': 'requested',
@@ -11455,8 +11487,12 @@ async def admin_list_plans(_: bool = Depends(require_admin)):
 
 
 def setup_kit_payload(order: dict, business: dict) -> dict:
-    frontend_base = (FRONTEND_URL or BASE_URL).rstrip('/')
-    join_url = order.get('qr_join_url') or f"{frontend_base}/join/{business.get('public_id')}"
+    # Older setup-kit rows may have persisted the Render backend /join URL.
+    # Rewrite them on read so downloads/QR previews immediately use the public
+    # frontend without requiring a database migration.
+    join_url = canonicalize_stored_join_url(
+        order.get('qr_join_url'), business.get('public_id') or ''
+    )
     return {
         **order,
         'business_public_id': business.get('public_id'),
@@ -15086,7 +15122,6 @@ def _ensure_partner_demo_business(partner: dict) -> dict:
 
 
 def _partner_demo_payload(partner: dict, business: dict) -> dict:
-    frontend = (FRONTEND_URL or BASE_URL).rstrip('/')
     customer_count = 0
     latest_customer = None
     try:
@@ -15108,7 +15143,7 @@ def _partner_demo_payload(partner: dict, business: dict) -> dict:
     return {
         'name': business.get('name') or 'Agyaman Express',
         'business_slug': business.get('public_id'),
-        'join_url': f"{frontend}/join/{business.get('public_id')}",
+        'join_url': public_join_url(business.get('public_id')),
         'customer_count': customer_count,
         'latest_customer': latest_customer,
         'is_demo': True,
@@ -20775,9 +20810,8 @@ async def get_qr_code(public_id: str, program_id: Optional[str] = Query(default=
     if program_id and not program:
         raise HTTPException(status_code=404, detail='Program not found for this business')
 
-    join_base = (FRONTEND_URL or BASE_URL).rstrip('/')
     join_slug = make_program_join_slug(business.get('public_id'), program)
-    join_url = f'{join_base}/join/{join_slug}'
+    join_url = public_join_url(join_slug)
     svg = generate_qr_svg(join_url)
 
     # Warm the public Join-page config when an owner opens/generates the QR.
@@ -26125,9 +26159,18 @@ async def customer_join_page(business_public_id: str):
     # Existing/printed LoyaltyTree QR codes point at the backend BASE_URL.
     # When FRONTEND_URL is configured, forward them to the React join page,
     # which contains the required privacy consent UI.
-    if FRONTEND_URL:
-        frontend = FRONTEND_URL.rstrip('/')
-        return RedirectResponse(url=f"{frontend}/join/{business_public_id}", status_code=307)
+    frontend = public_join_base_url()
+    backend = BASE_URL.rstrip('/')
+    if frontend and frontend != backend:
+        # Backwards compatibility for already-printed Render QR codes. New QR
+        # codes point directly at the frontend; old ones receive a lightweight
+        # cacheable redirect and never touch Supabase on this route.
+        response = RedirectResponse(
+            url=f"{frontend}/join/{business_public_id}",
+            status_code=302,
+        )
+        response.headers['Cache-Control'] = 'public, max-age=3600'
+        return response
     try:
         business = safe_get_business(business_public_id)
         if not business:
