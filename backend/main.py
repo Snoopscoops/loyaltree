@@ -8597,12 +8597,16 @@ def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, prog
         'suppressHeaderDarkening': False,
         'semantics': semantics,
 
-        # TRIAL 4B ACTION PROBE:
-        # Do not use the food-order semantic at all. Instead, expose the same
-        # signed LoyaltyTree destination through Apple's generic poster-event
-        # add-on action. The purpose is only to prove that Wallet can draw ANY
-        # quick-action button for this poster ticket.
-        'addOnURL': action['url'],
+        # TRIAL 4C EVENT GUIDE PROBE:
+        # Give Apple several different documented poster-event semantic actions
+        # at the same time. For this isolated diagnostic, they intentionally all
+        # point to the same signed LoyaltyTree customer URL. The goal is not the
+        # destination yet; it is to prove that Wallet activates the Event Guide
+        # and surfaces native quick actions for this poster Event Ticket.
+        'orderFoodURL': action['url'],
+        'merchandiseURL': action['url'],
+        'bagPolicyURL': action['url'],
+        'purchaseParkingURL': action['url'],
 
         'eventTicket': {
             'headerFields': [
@@ -8641,7 +8645,7 @@ def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, prog
             'backFields': [],
         },
         'userInfo': {
-            'loyaltreeRenderer': 'apple_clean_poster_event_ticket_trial4b_addon_probe',
+            'loyaltreeRenderer': 'apple_clean_poster_event_ticket_trial4c_event_guide_probe',
             'loyaltreeCustomerPublicId': customer_public_id,
             'loyaltreeEventDateSource': expiry_source,
             'loyaltreeEventExpiryDate': event_expiry_date.isoformat(),
@@ -9055,7 +9059,7 @@ def _apple_event_pkpass_fingerprint(customer: dict, business: dict, program: dic
         'order_ahead': {
             'enabled': bool((business or {}).get('order_ahead_enabled')),
             'button_label': (business or {}).get('order_ahead_button_label'),
-            'renderer_version': 'event-ticket-clean-poster-trial4b-addon-v6',
+            'renderer_version': 'event-ticket-clean-poster-trial4c-event-guide-v7',
         },
         # A PassKit push marks the installed Event Ticket serial dirty. Including
         # that marker means a pushed update can never accidentally reuse the
@@ -32035,7 +32039,7 @@ async def get_apple_wallet_pass(customer_public_id: str, force_store_card: bool 
                 "Content-Disposition": f'attachment; filename="{beta_serial}.pkpass"',
                 "Cache-Control": "no-store",
                 "Content-Length": str(len(beta_bytes)),
-                "X-LoyaltyTree-Apple-Renderer": "clean-poster-event-ticket-trial4b-addon",
+                "X-LoyaltyTree-Apple-Renderer": "clean-poster-event-ticket-trial4c-event-guide",
                 "X-LoyaltyTree-Apple-Cache": "HIT" if event_cache_hit else "MISS",
             },
         )
