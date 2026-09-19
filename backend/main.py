@@ -8383,6 +8383,169 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     # of the overlapping-text look on real devices.
     return pass_dict
 
+
+def _apple_trial5_validate_pkpass_bytes(pkpass_bytes: bytes) -> dict:
+    """Inspect the exact .pkpass bytes that will be sent to Wallet.
+
+    Diagnostics are intentionally non-secret: no authentication token, signed
+    customer URL, customer name, or full serial number is returned/logged.
+    """
+    result = {
+        'status': 'CHECK',
+        'zip_ok': False,
+        'pass_json_ok': False,
+        'signature_present': False,
+        'manifest_ok': False,
+        'poster_requested': False,
+        'event_ticket_present': False,
+        'barcode_present': False,
+        'missing_semantics': [],
+        'actions': [],
+        'assets': {},
+        'errors': [],
+    }
+
+    if not pkpass_bytes:
+        result['errors'].append('empty_pkpass')
+        return result
+
+    try:
+        with zipfile.ZipFile(BytesIO(pkpass_bytes), 'r') as zf:
+            result['zip_ok'] = True
+            names = set(zf.namelist())
+
+            for required in ('pass.json', 'manifest.json', 'signature'):
+                if required not in names:
+                    result['errors'].append(f'missing_{required}')
+
+            if 'signature' in names:
+                try:
+                    result['signature_present'] = len(zf.read('signature')) > 0
+                except Exception:
+                    result['signature_present'] = False
+
+            if 'pass.json' not in names:
+                return result
+
+            pass_json = json.loads(zf.read('pass.json').decode('utf-8'))
+            result['pass_json_ok'] = True
+            result['event_ticket_present'] = isinstance(pass_json.get('eventTicket'), dict)
+
+            preferred = list(pass_json.get('preferredStyleSchemes') or [])
+            result['poster_requested'] = 'posterEventTicket' in preferred
+
+            semantics = dict(pass_json.get('semantics') or {})
+            required_semantics = (
+                'eventName',
+                'venueName',
+                'venueRegionName',
+                'venueRoom',
+            )
+            result['missing_semantics'] = [
+                key for key in required_semantics
+                if not str(semantics.get(key) or '').strip()
+            ]
+
+            action_keys = (
+                'orderFoodURL',
+                'merchandiseURL',
+                'bagPolicyURL',
+                'purchaseParkingURL',
+                'addOnURL',
+            )
+            result['actions'] = [key for key in action_keys if pass_json.get(key)]
+            result['barcode_present'] = bool(pass_json.get('barcodes') or pass_json.get('barcode'))
+
+            # Poster assets: record only dimensions + byte sizes.
+            for base_name in ('artwork', 'primaryLogo', 'secondaryLogo'):
+                variants = {}
+                for name in sorted(names):
+                    if name == f'{base_name}.png' or name.startswith(f'{base_name}@'):
+                        raw = zf.read(name)
+                        dims = None
+                        try:
+                            with Image.open(BytesIO(raw)) as img:
+                                dims = [int(img.width), int(img.height)]
+                        except Exception:
+                            pass
+                        variants[name] = {
+                            'bytes': len(raw),
+                            'dimensions': dims,
+                        }
+                result['assets'][base_name] = variants
+
+            # Verify manifest hashes against the exact bytes in the ZIP.
+            manifest_errors = []
+            if 'manifest.json' in names:
+                try:
+                    manifest = json.loads(zf.read('manifest.json').decode('utf-8'))
+                    for name, expected_sha1 in manifest.items():
+                        if name not in names:
+                            manifest_errors.append(f'{name}:missing')
+                            continue
+                        actual_sha1 = hashlib.sha1(zf.read(name)).hexdigest()
+                        if actual_sha1 != expected_sha1:
+                            manifest_errors.append(f'{name}:sha1')
+                except Exception as exc:
+                    manifest_errors.append(f'parse:{type(exc).__name__}')
+            else:
+                manifest_errors.append('missing')
+
+            result['manifest_ok'] = not manifest_errors
+            if manifest_errors:
+                result['errors'].append('manifest:' + ','.join(manifest_errors[:8]))
+
+            poster_assets_ok = all(
+                bool(result['assets'].get(base_name))
+                for base_name in ('artwork', 'primaryLogo', 'secondaryLogo')
+            )
+
+            structural_ready = (
+                result['zip_ok']
+                and result['pass_json_ok']
+                and result['signature_present']
+                and result['manifest_ok']
+                and result['poster_requested']
+                and result['event_ticket_present']
+                and not result['barcode_present']
+                and not result['missing_semantics']
+                and poster_assets_ok
+            )
+            result['status'] = 'READY' if structural_ready else 'CHECK'
+            return result
+
+    except zipfile.BadZipFile:
+        result['errors'].append('bad_zip')
+    except Exception as exc:
+        result['errors'].append(f'{type(exc).__name__}:{str(exc)[:100]}')
+    return result
+
+
+def _apple_trial5_log_pkpass_diagnostics(pkpass_bytes: bytes, cache_hit: Optional[bool] = None) -> dict:
+    diagnostics = _apple_trial5_validate_pkpass_bytes(pkpass_bytes)
+    try:
+        compact = {
+            'status': diagnostics.get('status'),
+            'cache': None if cache_hit is None else ('HIT' if cache_hit else 'MISS'),
+            'poster_requested': diagnostics.get('poster_requested'),
+            'event_ticket_present': diagnostics.get('event_ticket_present'),
+            'barcode_present': diagnostics.get('barcode_present'),
+            'missing_semantics': diagnostics.get('missing_semantics'),
+            'actions': diagnostics.get('actions'),
+            'assets': diagnostics.get('assets'),
+            'signature_present': diagnostics.get('signature_present'),
+            'manifest_ok': diagnostics.get('manifest_ok'),
+            'errors': diagnostics.get('errors'),
+        }
+        print(
+            'APPLE POSTER TRIAL5 DIAGNOSTICS '
+            + json.dumps(compact, sort_keys=True, separators=(',', ':'))
+        )
+    except Exception as exc:
+        print(f'APPLE POSTER TRIAL5 diagnostics log error: {exc}')
+    return diagnostics
+
+
 def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, program: dict, announcement: Optional[dict] = None) -> dict:
     """TRIAL 4: build a clean Poster Event Ticket pass.json from scratch.
 
@@ -8645,7 +8808,7 @@ def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, prog
             'backFields': [],
         },
         'userInfo': {
-            'loyaltreeRenderer': 'apple_clean_poster_event_ticket_trial4c_event_guide_probe',
+            'loyaltreeRenderer': 'apple_clean_poster_event_ticket_trial5_diagnostics',
             'loyaltreeCustomerPublicId': customer_public_id,
             'loyaltreeEventDateSource': expiry_source,
             'loyaltreeEventExpiryDate': event_expiry_date.isoformat(),
@@ -9059,7 +9222,7 @@ def _apple_event_pkpass_fingerprint(customer: dict, business: dict, program: dic
         'order_ahead': {
             'enabled': bool((business or {}).get('order_ahead_enabled')),
             'button_label': (business or {}).get('order_ahead_button_label'),
-            'renderer_version': 'event-ticket-clean-poster-trial4c-event-guide-v7',
+            'renderer_version': 'event-ticket-clean-poster-trial5-diagnostics-v8',
         },
         # A PassKit push marks the installed Event Ticket serial dirty. Including
         # that marker means a pushed update can never accidentally reuse the
@@ -31980,6 +32143,7 @@ async def get_apple_order_ahead_event_beta_pass(customer_public_id: str):
         )
 
     beta_serial = f'{APPLE_ORDER_AHEAD_EVENT_BETA_PREFIX}{customer_public_id}'
+    trial5_diag = _apple_trial5_log_pkpass_diagnostics(pkpass_bytes, cache_hit=cache_hit)
     return Response(
         content=pkpass_bytes,
         media_type='application/vnd.apple.pkpass',
@@ -31988,6 +32152,8 @@ async def get_apple_order_ahead_event_beta_pass(customer_public_id: str):
             'Cache-Control': 'no-store',
             'Content-Length': str(len(pkpass_bytes)),
             'X-LoyaltyTree-Apple-Cache': 'HIT' if cache_hit else 'MISS',
+            'X-LoyaltyTree-Poster-Trial': '5',
+            'X-LoyaltyTree-Poster-Status': str(trial5_diag.get('status') or 'CHECK'),
         },
     )
 
@@ -32032,6 +32198,10 @@ async def get_apple_wallet_pass(customer_public_id: str, force_store_card: bool 
                 detail="Could not build Apple Order Ahead Event Ticket beta pass",
             )
         beta_serial = f'{APPLE_ORDER_AHEAD_EVENT_BETA_PREFIX}{customer_public_id}'
+        trial5_diag = _apple_trial5_log_pkpass_diagnostics(
+            beta_bytes,
+            cache_hit=event_cache_hit,
+        )
         return Response(
             content=beta_bytes,
             media_type="application/vnd.apple.pkpass",
@@ -32039,8 +32209,10 @@ async def get_apple_wallet_pass(customer_public_id: str, force_store_card: bool 
                 "Content-Disposition": f'attachment; filename="{beta_serial}.pkpass"',
                 "Cache-Control": "no-store",
                 "Content-Length": str(len(beta_bytes)),
-                "X-LoyaltyTree-Apple-Renderer": "clean-poster-event-ticket-trial4c-event-guide",
+                "X-LoyaltyTree-Apple-Renderer": "clean-poster-event-ticket-trial5-diagnostics",
                 "X-LoyaltyTree-Apple-Cache": "HIT" if event_cache_hit else "MISS",
+                "X-LoyaltyTree-Poster-Trial": "5",
+                "X-LoyaltyTree-Poster-Status": str(trial5_diag.get('status') or 'CHECK'),
             },
         )
 
