@@ -8406,40 +8406,18 @@ def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, prog
     biz_name = str(business.get('name') or 'LoyaltyTree').strip()
     card_title = str(base.get('description') or f'{biz_name} Rewards').strip()
 
-    # Reuse exactly the same visible loyalty fields/back fields as the Store Card.
-    # eventTicket inherits PassFields, so header/primary/secondary/auxiliary/back
-    # fields can be carried across without moving any loyalty logic into Apple.
-    event_fields = dict(base.pop('storeCard', {}) or {})
-
-    # PassKit expects field keys to be unique across the pass-style field
-    # collections. The production Store Card has accumulated some repeated
-    # membership keys between its face/details over time; keep the Store Card
-    # untouched, but sanitize the isolated Event Ticket so Apple does not emit
-    # duplicate-key warnings for membership_status / membership_valid_until.
-    seen_event_keys = set()
-    for field_group in ('headerFields', 'primaryFields', 'secondaryFields', 'auxiliaryFields', 'backFields'):
-        cleaned_fields = []
-        for field in list(event_fields.get(field_group) or []):
-            if not isinstance(field, dict):
-                continue
-            field_key = str(field.get('key') or '').strip()
-            if field_key and field_key in seen_event_keys:
-                continue
-            if field_key:
-                seen_event_keys.add(field_key)
-            cleaned_fields.append(field)
-        if field_group in event_fields:
-            event_fields[field_group] = cleaned_fields
+    # TRIAL 3: stop carrying the production Store Card's loyalty field groups
+    # into the Event Ticket. Keep only global pass metadata/branding from the
+    # base pass and construct a deliberately minimal Event Ticket below.
+    base.pop('storeCard', None)
 
     base['serialNumber'] = beta_serial
     base['authenticationToken'] = apple_pass_auth_token(beta_serial)
-    base['description'] = f'{card_title} — Order Ahead Beta'[:128]
-    base['eventTicket'] = event_fields
+    base['description'] = f'{card_title} — Order Ahead Trial 3'[:128]
 
-    # TRIAL 2: remove the top-level barcode/QR from the Order Ahead Event Ticket
-    # only. The normal Store Card is untouched. This isolates whether the barcode
-    # is causing Wallet to fall back to the classic Event Ticket renderer instead
-    # of using the newer poster/semantic Event Ticket presentation.
+    # TRIAL 3: keep the Event Ticket barcode-free. Trial 2 proved that removing
+    # the barcode alone was not enough, so Trial 3 also strips LoyaltyTree's
+    # normal loyalty-field layout from this beta pass.
     base.pop('barcodes', None)
     base.pop('barcode', None)
 
@@ -8538,7 +8516,49 @@ def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, prog
         else customer_public_id.upper()
     ) or 'GUEST'
 
+    guest_name = str(customer.get('name') or 'LoyaltyTree Guest').strip()[:80] or 'LoyaltyTree Guest'
+
+    # Minimal valid Event Ticket field set for backwards compatibility.
+    # No points, stamps, membership status, announcements, rewards, or QR.
+    base['eventTicket'] = {
+        'headerFields': [
+            {
+                'key': 'trial_date',
+                'label': 'VALID UNTIL',
+                'value': event_expiry_date.strftime('%b %d, %Y'),
+            }
+        ],
+        'primaryFields': [
+            {
+                'key': 'trial_event',
+                'label': 'EVENT',
+                'value': f'{biz_name} Order Ahead Trial'[:80],
+            }
+        ],
+        'secondaryFields': [
+            {
+                'key': 'trial_venue',
+                'label': 'VENUE',
+                'value': branch_location,
+            }
+        ],
+        'auxiliaryFields': [
+            {
+                'key': 'trial_guest',
+                'label': 'GUEST',
+                'value': guest_name,
+            },
+            {
+                'key': 'trial_guest_number',
+                'label': 'GUEST NO.',
+                'value': guest_number,
+            }
+        ],
+        'backFields': [],
+    }
+
     base['preferredStyleSchemes'] = ['posterEventTicket', 'eventTicket']
+    base.pop('logoText', None)
     base['eventLogoText'] = biz_name[:40]
     base['suppressHeaderDarkening'] = False
     base['relevantDates'] = [
@@ -8552,7 +8572,7 @@ def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, prog
         'eventName': f'{biz_name} Order Ahead Trial'[:80],
         'eventStartDate': trial_start_iso,
         'eventEndDate': trial_end_iso,
-        'attendeeName': str(customer.get('name') or 'LoyaltyTree Guest')[:80],
+        'attendeeName': guest_name,
         'admissionLevel': 'Loyalty Guest',
         'venueName': f'{biz_name} Branch'[:80],
         'venueRegionName': branch_location,
@@ -8577,7 +8597,7 @@ def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, prog
     # anything on the customer-facing pass.
     user_info = dict(base.get('userInfo') or {})
     user_info.update({
-        'loyaltreeRenderer': 'apple_poster_event_ticket_order_ahead_trial2_no_barcode',
+        'loyaltreeRenderer': 'apple_poster_event_ticket_order_ahead_trial3_minimal',
         'loyaltreeCustomerPublicId': customer_public_id,
         'loyaltreeEventDateSource': expiry_source,
         'loyaltreeEventExpiryDate': event_expiry_date.isoformat(),
@@ -8926,7 +8946,7 @@ def _apple_event_pkpass_fingerprint(customer: dict, business: dict, program: dic
         'order_ahead': {
             'enabled': bool((business or {}).get('order_ahead_enabled')),
             'button_label': (business or {}).get('order_ahead_button_label'),
-            'renderer_version': 'event-ticket-poster-expiry-order-trial2-no-barcode-v3',
+            'renderer_version': 'event-ticket-poster-expiry-order-trial3-minimal-v4',
         },
         # A PassKit push marks the installed Event Ticket serial dirty. Including
         # that marker means a pushed update can never accidentally reuse the
