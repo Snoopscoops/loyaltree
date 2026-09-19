@@ -95,7 +95,7 @@ APPLE_PASS_AUTH_SECRET = os.getenv('APPLE_PASS_AUTH_SECRET', '')
 APPLE_PASS_WEB_SERVICE_URL = f'{BASE_URL}/api/v1/apple-wallet'
 # Experimental Apple Event Ticket renderer for Order Ahead businesses.
 # Uses a separate serial namespace so it can coexist with the production Store Card.
-APPLE_ORDER_AHEAD_EVENT_BETA_PREFIX = 'oa-beta-'
+APPLE_ORDER_AHEAD_EVENT_BETA_PREFIX = 'oa-scratch-'
 
 # Platform super-admin credentials (you, the LoyaltyTree operator - not a
 # business owner). Set these in your environment; there is no signup flow
@@ -8784,196 +8784,152 @@ def _trial5_resolve_poster_venue(customer: dict, business: dict) -> dict:
 
 
 def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, program: dict, announcement: Optional[dict] = None) -> dict:
-    """TRIAL 4: build a clean Poster Event Ticket pass.json from scratch.
+    """TRIAL 6 — clean Event Ticket built from scratch.
 
-    This deliberately does NOT call build_apple_pass_json() and does not inherit
-    Store Card fields. The goal is to test Apple's poster-event validation with
-    the smallest LoyaltyTree-specific surface area possible.
+    Deliberately does NOT inherit:
+    - Store Card JSON
+    - LoyaltyTree pass fields
+    - prior Event Ticket trial JSON
+    - barcode / QR
+    - featuredActions
+    - Wallet web-service/update metadata
+
+    The only goal is to give Apple the simplest possible iOS-18-style
+    Poster Event Ticket + Event Guide input and see native event actions.
     """
-    if not business or not customer or not bool(business.get('order_ahead_enabled')):
-        raise ValueError('Order Ahead Event Ticket beta requires an enabled business')
-
-    action = order_ahead_wallet_action(customer, business)
-    if not action:
-        raise ValueError('Order Ahead Event Ticket beta could not create member action URL')
-
-    event_guide_actions = _trial5_event_guide_action_urls(customer, business)
-    if not event_guide_actions:
-        raise ValueError('Could not create Trial 5 Event Guide action URLs')
+    if not customer or not business:
+        raise ValueError('Missing customer/business')
+    if not bool(business.get('order_ahead_enabled')):
+        raise ValueError('Order Ahead must be enabled for scratch Event Ticket')
 
     customer_public_id = str(customer.get('public_id') or '').strip()
     if not customer_public_id:
         raise ValueError('Missing customer public id')
 
-    beta_serial = f'{APPLE_ORDER_AHEAD_EVENT_BETA_PREFIX}{customer_public_id}'
+    business_public_id = str(business.get('public_id') or '').strip()
+    if not business_public_id:
+        raise ValueError('Missing business public id')
+
+    action_urls = _trial5_event_guide_action_urls(customer, business)
+    if not action_urls:
+        raise ValueError('Could not build signed Event Guide action URLs')
+
     biz_name = str(business.get('name') or 'LoyaltyTree').strip() or 'LoyaltyTree'
-    guest_name = str(customer.get('name') or 'LoyaltyTree Guest').strip()[:80] or 'LoyaltyTree Guest'
-    guest_number = (
-        customer_public_id[-6:].upper()
-        if len(customer_public_id) >= 6
-        else customer_public_id.upper()
-    ) or 'GUEST'
+    guest_name = str(customer.get('name') or 'Guest').strip()[:80] or 'Guest'
+    serial = f'{APPLE_ORDER_AHEAD_EVENT_BETA_PREFIX}{customer_public_id}'
 
-    # Keep the user's requested behavior: the synthetic event date follows the
-    # card/membership validity date.
-    expiry_candidates = []
-    card_type = str((program or {}).get('card_type') or '').strip().lower()
-
-    if card_type in ('membership', 'hybrid'):
-        expiry_candidates.append(customer.get('membership_expires_at'))
-    if card_type == 'multipass':
-        expiry_candidates.append(customer.get('multipass_expires_at'))
-
-    expiry_candidates.append(customer.get('card_expires_at'))
-
-    if card_type == 'hybrid':
-        expiry_candidates.extend([
-            customer.get('hybrid_points_expires_at'),
-            customer.get('hybrid_stamps_expires_at'),
-            customer.get('hybrid_tier_expires_at'),
-        ])
-
-    parsed_expiries = [
-        parsed for parsed in (_date_only(value) for value in expiry_candidates)
-        if parsed is not None
+    # Use card/membership expiry as requested. If no real expiry exists yet,
+    # create a temporary validity date from the configured membership duration.
+    expiry_values = [
+        customer.get('membership_expires_at'),
+        customer.get('multipass_expires_at'),
+        customer.get('card_expires_at'),
+        customer.get('hybrid_points_expires_at'),
+        customer.get('hybrid_stamps_expires_at'),
+        customer.get('hybrid_tier_expires_at'),
     ]
-
-    expiry_source = 'actual_card_expiry'
+    parsed_expiries = [
+        d for d in (_date_only(v) for v in expiry_values)
+        if d is not None
+    ]
     if parsed_expiries:
-        event_expiry_date = max(parsed_expiries)
+        expiry_date = max(parsed_expiries)
+        expiry_source = 'actual_card_expiry'
     else:
-        expiry_source = 'derived_membership_duration'
         try:
-            configured_days = max(
+            duration_days = max(
                 1,
                 min(3650, int((program or {}).get('membership_duration_days') or 30))
             )
         except Exception:
-            configured_days = 30
-
-        start_date = (
+            duration_days = 30
+        base_date = (
             _date_only(customer.get('membership_start_date'))
             or _date_only(customer.get('created_at'))
             or _loyalty_today()
         )
-        event_expiry_date = start_date + timedelta(days=configured_days)
+        expiry_date = base_date + timedelta(days=duration_days)
+        expiry_source = 'derived_duration'
 
-    trial_start_local = datetime.combine(
-        event_expiry_date,
+    start_local = datetime.combine(
+        expiry_date,
         datetime.min.time().replace(hour=12),
         tzinfo=LOYALTY_TIMEZONE,
     )
-    trial_end_local = trial_start_local + timedelta(hours=2)
-    trial_start = trial_start_local.astimezone(timezone.utc)
-    trial_end = trial_end_local.astimezone(timezone.utc)
-    trial_start_iso = trial_start.isoformat(timespec='seconds').replace('+00:00', 'Z')
-    trial_end_iso = trial_end.isoformat(timespec='seconds').replace('+00:00', 'Z')
+    end_local = start_local + timedelta(hours=2)
+    event_start = start_local.astimezone(timezone.utc)
+    event_end = end_local.astimezone(timezone.utc)
+    event_start_iso = event_start.isoformat(timespec='seconds').replace('+00:00', 'Z')
+    event_end_iso = event_end.isoformat(timespec='seconds').replace('+00:00', 'Z')
 
-    # Ticketmaster-style venue resolution: prefer a real branch and real
-    # coordinates when available. Environment overrides allow an exact test
-    # venue before we add latitude/longitude columns to every business branch.
     venue = _trial5_resolve_poster_venue(customer, business)
-    venue_name = venue['venue_name']
-    venue_region = venue['venue_region']
-    venue_room = venue['venue_room']
+    venue_name = str(venue.get('venue_name') or biz_name).strip()[:80]
+    venue_region = str(venue.get('venue_region') or 'Philippines').strip()[:80]
+    venue_room = str(venue.get('venue_room') or 'Main Branch').strip()[:80]
 
-    event_name = f'{biz_name} Order Ahead Experience'[:80]
-
-    design = wallet_20_design(business, program or {})
-    primary_color = _normalize_hex_color(design.get('background'), '#111827')
-    r, g, b = _hex_to_rgb(primary_color)
-    relative_luma = (0.2126 * r) + (0.7152 * g) + (0.0722 * b)
-    if relative_luma > 170:
-        foreground = 'rgb(15, 23, 42)'
-        label = 'rgba(15, 23, 42, 0.72)'
-    else:
-        foreground = 'rgb(255, 255, 255)'
-        label = 'rgba(255, 255, 255, 0.75)'
+    # Use Live Performance because Apple explicitly supports poster semantic
+    # Event Tickets for live-performance events and requires performerNames.
+    event_name = f'{biz_name} Member Experience'[:80]
 
     semantics = {
-        # Trial 4 intentionally uses the poster-supported live-performance
-        # semantic profile instead of the generic profile.
         'eventType': 'PKEventTypeLivePerformance',
         'eventName': event_name,
-        'eventStartDate': trial_start_iso,
-        'eventEndDate': trial_end_iso,
+        'eventStartDate': event_start_iso,
+        'eventEndDate': event_end_iso,
         'eventStartDateInfo': {
-            'date': trial_start_iso,
+            'date': event_start_iso,
             'timeZone': 'Asia/Manila',
             'ignoreTimeComponents': True,
         },
         'performerNames': [biz_name[:80]],
-        'attendeeName': guest_name,
-        'admissionLevel': 'Loyalty Guest',
         'venueName': venue_name,
         'venueRegionName': venue_region,
         'venueRoom': venue_room,
+        'attendeeName': guest_name,
+        'admissionLevel': 'Member',
         'seats': [
             {
                 'seatDescription': 'Guest Number',
                 'seatIdentifier': customer_public_id,
-                'seatNumber': guest_number,
+                'seatNumber': customer_public_id[-6:].upper(),
                 'seatRow': 'LT',
-                'seatSection': 'GUEST',
-                'seatType': 'Loyalty Guest',
+                'seatSection': 'MEMBER',
+                'seatType': 'Member',
             }
         ],
     }
 
     if venue.get('latitude') is not None and venue.get('longitude') is not None:
         semantics['venueLocation'] = {
-            'latitude': venue['latitude'],
-            'longitude': venue['longitude'],
+            'latitude': float(venue['latitude']),
+            'longitude': float(venue['longitude']),
         }
 
-    # Fresh Apple-style Poster Event Ticket pass. No Store Card data is inherited.
-    # Legacy eventTicket fields remain because Apple requires backward-compatible
-    # pass content even when the poster renderer is preferred.
-    pass_dict = {
+    # This dictionary intentionally mirrors Apple's event-pass model instead of
+    # LoyaltyTree's existing Wallet renderer.
+    pass_json = {
         'formatVersion': 1,
         'passTypeIdentifier': APPLE_PASS_TYPE_IDENTIFIER,
         'teamIdentifier': APPLE_TEAM_IDENTIFIER,
         'organizationName': biz_name,
-        'serialNumber': beta_serial,
-        'description': f'{event_name} — Trial 4'[:128],
-        'backgroundColor': f'rgb({r}, {g}, {b})',
-        'foregroundColor': foreground,
-        'labelColor': label,
-        'webServiceURL': APPLE_PASS_WEB_SERVICE_URL,
-        'authenticationToken': apple_pass_auth_token(beta_serial),
-        'groupingIdentifier': f'loyaltree-order-ahead-{business.get("public_id") or business.get("id") or "business"}',
-        'expirationDate': trial_end_iso,
-        'relevantDates': [
-            {
-                'startDate': trial_start_iso,
-                'endDate': trial_end_iso,
-            }
-        ],
-        'preferredStyleSchemes': [
-            'posterEventTicket',
-            'eventTicket',
-        ],
-        'eventLogoText': biz_name[:40],
-        'suppressHeaderDarkening': False,
-        'semantics': semantics,
+        'serialNumber': serial,
+        'description': f'{biz_name} Event Ticket Test',
+        'backgroundColor': 'rgb(19, 24, 36)',
+        'foregroundColor': 'rgb(255, 255, 255)',
+        'labelColor': 'rgb(220, 225, 235)',
 
-        # TRIAL 5 TICKETMASTER-STYLE EVENT GUIDE:
-        # Four different HTTPS routes, each signed for this member. Their test
-        # pages are deliberately simple, but Apple sees genuinely distinct
-        # destinations rather than four aliases of the same Order Ahead URL.
-        **event_guide_actions,
-
+        # Legacy Event Ticket content remains valid on older rendering paths.
         'eventTicket': {
             'headerFields': [
                 {
-                    'key': 'date',
+                    'key': 'valid_until',
                     'label': 'VALID UNTIL',
-                    'value': event_expiry_date.strftime('%b %d, %Y'),
+                    'value': expiry_date.strftime('%b %d, %Y'),
                 }
             ],
             'primaryFields': [
                 {
-                    'key': 'event',
+                    'key': 'event_name',
                     'label': 'EVENT',
                     'value': event_name,
                 }
@@ -8983,7 +8939,12 @@ def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, prog
                     'key': 'venue',
                     'label': 'VENUE',
                     'value': venue_name,
-                }
+                },
+                {
+                    'key': 'region',
+                    'label': 'LOCATION',
+                    'value': venue_region,
+                },
             ],
             'auxiliaryFields': [
                 {
@@ -8992,169 +8953,208 @@ def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, prog
                     'value': guest_name,
                 },
                 {
-                    'key': 'guest_no',
+                    'key': 'guest_number',
                     'label': 'GUEST NO.',
-                    'value': guest_number,
+                    'value': customer_public_id[-6:].upper(),
                 },
             ],
             'backFields': [],
         },
+
+        # Apple tries the poster renderer first and legacy Event Ticket second.
+        'preferredStyleSchemes': [
+            'posterEventTicket',
+            'eventTicket',
+        ],
+
+        'eventLogoText': biz_name[:40],
+        'suppressHeaderDarkening': False,
+        'useAutomaticColors': True,
+
+        'relevantDates': [
+            {
+                'startDate': event_start_iso,
+                'endDate': event_end_iso,
+            }
+        ],
+        'expirationDate': event_end_iso,
+
+        'semantics': semantics,
+
+        # Event Guide quick-action inputs. These are four real, distinct,
+        # signed HTTPS LoyaltyTree destinations.
+        **action_urls,
+
         'userInfo': {
-            'loyaltreeRenderer': 'apple_clean_poster_event_ticket_trial5_ticketmaster_profile',
-            'loyaltreeCustomerPublicId': customer_public_id,
-            'loyaltreeEventDateSource': expiry_source,
-            'loyaltreeEventExpiryDate': event_expiry_date.isoformat(),
+            'loyaltreeRenderer': 'trial6_scratch_event_ticket',
+            'loyaltreeExpirySource': expiry_source,
             'loyaltreeVenueCoordinateSource': venue.get('coordinate_source'),
-            'loyaltreeVenueBranchPublicId': venue.get('branch_public_id'),
         },
     }
 
-    # Deliberately NO barcode, QR, Store Card style, or featuredActions in
-    # Trial 4. This isolates Apple's poster Event Ticket + semantic URL path.
-    return pass_dict
+    return pass_json
+
 
 def build_apple_order_ahead_event_pkpass_bytes(customer: dict, business: dict, program: dict, announcement: Optional[dict] = None) -> Optional[bytes]:
-    """TRIAL 4: assemble/sign a clean Poster Event Ticket bundle.
+    """TRIAL 6 — package the clean scratch Event Ticket.
 
-    Uses poster-specific artwork, primaryLogo and secondaryLogo assets rather
-    than the LoyaltyTree Store Card strip treatment.
+    Only generic signing/image helpers are reused. No LoyaltyTree pass JSON or
+    existing Store Card/Event Ticket artwork is inherited.
     """
     if not APPLE_PASS_TYPE_IDENTIFIER or not APPLE_TEAM_IDENTIFIER:
         return None
     if get_apple_pass_credentials() is None:
         return None
-    if not business or not bool(business.get('order_ahead_enabled')):
-        return None
 
     try:
         pass_json = build_apple_order_ahead_event_pass_json(
-            customer, business, program or {}, announcement
+            customer,
+            business,
+            program or {},
+            announcement,
         )
     except Exception as exc:
-        print(f'APPLE EVENT TRIAL4 pass-json error: {exc}')
+        print(f'APPLE SCRATCH EVENT pass-json error: {exc}')
         return None
 
-    design = wallet_20_design(business, program or {})
-    primary_color = _normalize_hex_color(design.get('background'), '#111827')
-    biz_name = str(business.get('name') or 'LoyaltyTree').strip() or 'LoyaltyTree'
-    logo_url = business.get('logo_url') or ((program or {}).get('program_logo_url'))
-    logo_bytes = _fetch_image_bytes(logo_url)
+    biz_name = str((business or {}).get('name') or 'LoyaltyTree').strip() or 'LoyaltyTree'
+    logo_url = (business or {}).get('logo_url') or (program or {}).get('program_logo_url')
+    source_logo = _fetch_image_bytes(logo_url)
 
-    # Standard icon for system surfaces.
-    icon_114 = apple_icon_from_logo_bytes(logo_bytes, 114) if logo_bytes else None
-    if not icon_114:
-        icon_114 = generate_apple_icon_bytes(primary_color, biz_name, 114)
-    icon_76 = _resize_png_bytes(icon_114, 76, 76)
-    icon_38 = _resize_png_bytes(icon_114, 38, 38)
+    # Apple Wallet icon: 38pt.
+    icon_3x = apple_icon_from_logo_bytes(source_logo, 114) if source_logo else None
+    if not icon_3x:
+        icon_3x = generate_apple_icon_bytes('#131824', biz_name, 114)
+    icon_2x = _resize_png_bytes(icon_3x, 76, 76)
+    icon_1x = _resize_png_bytes(icon_3x, 38, 38)
 
-    # Legacy logo fallback for devices that render the old eventTicket style.
-    logo_480 = apple_logo_from_image_bytes(logo_bytes, 480, 150) if logo_bytes else None
-    if not logo_480:
-        logo_480 = generate_apple_logo_bytes(biz_name, 480, 150)
-    logo_320 = _resize_png_bytes(logo_480, 320, 100)
-    logo_160 = _resize_png_bytes(logo_480, 160, 50)
+    # Legacy pre-iOS-18 event logo fallback.
+    logo_3x = apple_logo_from_image_bytes(source_logo, 480, 150) if source_logo else None
+    if not logo_3x:
+        logo_3x = generate_apple_logo_bytes(biz_name, 480, 150)
+    logo_2x = _resize_png_bytes(logo_3x, 320, 100)
+    logo_1x = _resize_png_bytes(logo_3x, 160, 50)
 
-    # Poster semantic primary logo: max 126x30 pt.
-    primary_logo_3x = apple_logo_from_image_bytes(logo_bytes, 378, 90) if logo_bytes else None
-    if not primary_logo_3x:
-        primary_logo_3x = generate_apple_logo_bytes(biz_name, 378, 90)
-    primary_logo_2x = _resize_png_bytes(primary_logo_3x, 252, 60)
-    primary_logo_1x = _resize_png_bytes(primary_logo_3x, 126, 30)
+    # Poster Event Ticket primary logo: max 126x30pt.
+    primary_3x = apple_logo_from_image_bytes(source_logo, 378, 90) if source_logo else None
+    if not primary_3x:
+        primary_3x = generate_apple_logo_bytes(biz_name, 378, 90)
+    primary_2x = _resize_png_bytes(primary_3x, 252, 60)
+    primary_1x = _resize_png_bytes(primary_3x, 126, 30)
 
-    # Poster semantic secondary logo: max 135x12 pt.
-    secondary_logo_3x = apple_logo_from_image_bytes(logo_bytes, 405, 36) if logo_bytes else None
-    if not secondary_logo_3x:
-        secondary_logo_3x = generate_apple_logo_bytes(biz_name, 405, 36)
-    secondary_logo_2x = _resize_png_bytes(secondary_logo_3x, 270, 24)
-    secondary_logo_1x = _resize_png_bytes(secondary_logo_3x, 135, 12)
+    # Poster Event Ticket secondary logo: max 135x12pt.
+    secondary_3x = apple_logo_from_image_bytes(source_logo, 405, 36) if source_logo else None
+    if not secondary_3x:
+        secondary_3x = generate_apple_logo_bytes('LoyaltyTree', 405, 36)
+    secondary_2x = _resize_png_bytes(secondary_3x, 270, 24)
+    secondary_1x = _resize_png_bytes(secondary_3x, 135, 12)
 
-    def _poster_artwork(width: int, height: int) -> bytes:
-        """Generate simple poster artwork without reusing Store Card strip art."""
-        from PIL import ImageDraw
+    # Fresh 358x448pt poster artwork. Nothing from Store Card strip rendering.
+    def _scratch_artwork(width: int, height: int) -> bytes:
+        from PIL import ImageDraw, ImageFont
 
-        bg_rgb = _hex_to_rgb(primary_color)
-        image = Image.new('RGB', (width, height), bg_rgb)
-
-        # Add a subtle two-band poster treatment so this is a true poster asset,
-        # not merely a stretched Store Card strip.
+        image = Image.new('RGB', (width, height), (19, 24, 36))
         draw = ImageDraw.Draw(image, 'RGBA')
-        draw.rectangle(
-            [0, int(height * 0.58), width, height],
-            fill=(0, 0, 0, 38),
+
+        # Big simple shapes make it obvious if Apple is really using artwork.png.
+        draw.rectangle([0, 0, width, height], fill=(19, 24, 36, 255))
+        draw.ellipse(
+            [-int(width * .20), -int(height * .08), int(width * .76), int(height * .55)],
+            fill=(255, 255, 255, 16),
         )
         draw.ellipse(
-            [
-                int(width * -0.18),
-                int(height * -0.08),
-                int(width * 0.72),
-                int(height * 0.55),
-            ],
-            fill=(255, 255, 255, 18),
+            [int(width * .45), int(height * .50), int(width * 1.10), int(height * 1.04)],
+            fill=(255, 255, 255, 10),
         )
 
-        # Center a business mark when available.
-        mark_bytes = logo_bytes or icon_114
-        if mark_bytes:
+        if source_logo:
             try:
-                mark = Image.open(BytesIO(mark_bytes)).convert('RGBA')
-                max_w = int(width * 0.64)
-                max_h = int(height * 0.22)
-                mark.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
+                mark = Image.open(BytesIO(source_logo)).convert('RGBA')
+                mark.thumbnail((int(width * .58), int(height * .16)), Image.Resampling.LANCZOS)
                 x = (width - mark.width) // 2
-                y = int(height * 0.26) - (mark.height // 2)
+                y = int(height * .22)
                 layer = Image.new('RGBA', image.size, (0, 0, 0, 0))
-                layer.alpha_composite(mark, (x, max(0, y)))
+                layer.alpha_composite(mark, (x, y))
                 image = Image.alpha_composite(image.convert('RGBA'), layer).convert('RGB')
-            except Exception as artwork_logo_error:
-                print(f'APPLE EVENT TRIAL4 artwork logo error: {artwork_logo_error}')
+            except Exception as exc:
+                print(f'APPLE SCRATCH EVENT artwork-logo warning: {exc}')
+
+        # Add a subtle diagnostic mark; this is intentionally not production art.
+        draw = ImageDraw.Draw(image, 'RGBA')
+        try:
+            font = ImageFont.load_default()
+            label_text = 'LOYALTYTREE EVENT TEST'
+            bbox = draw.textbbox((0, 0), label_text, font=font)
+            tw = bbox[2] - bbox[0]
+            draw.text(
+                ((width - tw) // 2, int(height * .76)),
+                label_text,
+                fill=(255, 255, 255, 145),
+                font=font,
+            )
+        except Exception:
+            pass
 
         out = BytesIO()
         image.save(out, format='PNG', optimize=True)
         return out.getvalue()
 
-    # Apple HIG: poster artwork is 358x448 pt.
-    artwork_3x = _poster_artwork(1074, 1344)
+    artwork_3x = _scratch_artwork(1074, 1344)
     artwork_2x = _resize_png_bytes(artwork_3x, 716, 896)
     artwork_1x = _resize_png_bytes(artwork_3x, 358, 448)
 
     files = {
-        'pass.json': json.dumps(pass_json).encode('utf-8'),
+        'pass.json': json.dumps(pass_json, separators=(',', ':')).encode('utf-8'),
 
-        'icon.png': icon_38,
-        'icon@2x.png': icon_76,
-        'icon@3x.png': icon_114,
+        'icon.png': icon_1x,
+        'icon@2x.png': icon_2x,
+        'icon@3x.png': icon_3x,
 
-        # Legacy fallback logo.
-        'logo.png': logo_160,
-        'logo@2x.png': logo_320,
-        'logo@3x.png': logo_480,
+        'logo.png': logo_1x,
+        'logo@2x.png': logo_2x,
+        'logo@3x.png': logo_3x,
 
-        # Poster Event Ticket assets.
-        'primaryLogo.png': primary_logo_1x,
-        'primaryLogo@2x.png': primary_logo_2x,
-        'primaryLogo@3x.png': primary_logo_3x,
-        'secondaryLogo.png': secondary_logo_1x,
-        'secondaryLogo@2x.png': secondary_logo_2x,
-        'secondaryLogo@3x.png': secondary_logo_3x,
+        'primaryLogo.png': primary_1x,
+        'primaryLogo@2x.png': primary_2x,
+        'primaryLogo@3x.png': primary_3x,
+
+        'secondaryLogo.png': secondary_1x,
+        'secondaryLogo@2x.png': secondary_2x,
+        'secondaryLogo@3x.png': secondary_3x,
+
         'artwork.png': artwork_1x,
         'artwork@2x.png': artwork_2x,
         'artwork@3x.png': artwork_3x,
     }
-    files = {name: content for name, content in files.items() if content}
+    files = {name: raw for name, raw in files.items() if raw}
 
-    manifest = {name: hashlib.sha1(content).hexdigest() for name, content in files.items()}
-    manifest_bytes = json.dumps(manifest).encode('utf-8')
+    manifest = {
+        name: hashlib.sha1(raw).hexdigest()
+        for name, raw in files.items()
+    }
+    manifest_bytes = json.dumps(manifest, separators=(',', ':')).encode('utf-8')
     signature = sign_pkpass_manifest(manifest_bytes)
     if signature is None:
         return None
 
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_STORED) as zf:
-        for name, content in files.items():
-            zf.writestr(name, content)
+        for name, raw in files.items():
+            zf.writestr(name, raw)
         zf.writestr('manifest.json', manifest_bytes)
         zf.writestr('signature', signature)
-    return buffer.getvalue()
+
+    pkpass_bytes = buffer.getvalue()
+    try:
+        diagnostics = _apple_trial5_validate_pkpass_bytes(pkpass_bytes)
+        print(
+            'APPLE SCRATCH EVENT DIAGNOSTICS '
+            + json.dumps(diagnostics, sort_keys=True, separators=(',', ':'))
+        )
+    except Exception as exc:
+        print(f'APPLE SCRATCH EVENT diagnostics warning: {exc}')
+
+    return pkpass_bytes
 
 def generate_apple_strip_bytes(customer: dict, business: dict, program: dict, width: int, height: int) -> bytes:
     design = wallet_20_design(business, program)
@@ -9416,7 +9416,7 @@ def _apple_event_pkpass_fingerprint(customer: dict, business: dict, program: dic
         'order_ahead': {
             'enabled': bool((business or {}).get('order_ahead_enabled')),
             'button_label': (business or {}).get('order_ahead_button_label'),
-            'renderer_version': 'event-ticket-trial5-ticketmaster-profile-v9',
+            'renderer_version': 'trial6-scratch-event-ticket-v1',
         },
         # A PassKit push marks the installed Event Ticket serial dirty. Including
         # that marker means a pushed update can never accidentally reuse the
@@ -32488,7 +32488,7 @@ async def get_apple_wallet_pass(customer_public_id: str, force_store_card: bool 
                 "Content-Disposition": f'attachment; filename="{beta_serial}.pkpass"',
                 "Cache-Control": "no-store",
                 "Content-Length": str(len(beta_bytes)),
-                "X-LoyaltyTree-Apple-Renderer": "poster-event-ticket-trial5-ticketmaster-profile",
+                "X-LoyaltyTree-Apple-Renderer": "trial6-scratch-event-ticket",
                 "X-LoyaltyTree-Apple-Cache": "HIT" if event_cache_hit else "MISS",
                 "X-LoyaltyTree-Poster-Trial": "5",
                 "X-LoyaltyTree-Poster-Status": str(trial5_diag.get('status') or 'CHECK'),
