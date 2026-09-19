@@ -181,6 +181,13 @@ SUBSCRIPTION_REMINDER_FROM = os.getenv('SUBSCRIPTION_REMINDER_FROM', 'billing@lo
 TRANSACTIONAL_EMAIL_FROM = (os.getenv('TRANSACTIONAL_EMAIL_FROM', '') or SUBSCRIPTION_REMINDER_FROM).strip()
 TRANSACTIONAL_REPLY_TO = os.getenv('TRANSACTIONAL_REPLY_TO', 'theloyaltytree@gmail.com').strip()
 FRONTEND_URL = os.getenv('FRONTEND_URL', '')
+# Canonical public/customer join host. Keep BASE_URL for backend/API and Wallet
+# service URLs; all newly generated customer Join links should use our domain.
+PUBLIC_JOIN_BASE_URL = (
+    os.getenv('PUBLIC_JOIN_BASE_URL', '')
+    or FRONTEND_URL
+    or 'https://theloyaltytree.com'
+).rstrip('/')
 SUBSCRIPTION_REMINDER_RESEND_DAYS = 3  # don't re-email more often than this while still expiring_soon/expired
 
 # Business-owner password recovery. Reset links are one-time, stored only as
@@ -4990,7 +4997,7 @@ def business_summary(biz: dict) -> dict:
         "setup_kit_status": biz.get("setup_kit_status"),
         "onboarding_step": int(biz.get("onboarding_step") or 0),
         "onboarding_completed": bool(biz.get("onboarding_completed")),
-        "join_url": f"{(FRONTEND_URL or BASE_URL).rstrip('/')}/join/{biz.get('public_id','')}",
+        "join_url": f"{PUBLIC_JOIN_BASE_URL}/join/{biz.get('public_id','')}",
         "order_ahead_enabled": bool(biz.get("order_ahead_enabled")),
         "order_ahead_button_label": (biz.get("order_ahead_button_label") or "Order Ahead")[:30],
         "created_at": biz.get("created_at"),
@@ -11261,7 +11268,7 @@ async def register(biz: BusinessCreate, request: Request):
 
     if business_id and biz.setup_kit_requested:
         try:
-            frontend_base = (FRONTEND_URL or BASE_URL).rstrip('/')
+            frontend_base = PUBLIC_JOIN_BASE_URL
             supabase.table('setup_kit_orders').insert({
                 'public_id': generate_public_id(),
                 'business_id': business_id,
@@ -11475,8 +11482,16 @@ async def admin_list_plans(_: bool = Depends(require_admin)):
 
 
 def setup_kit_payload(order: dict, business: dict) -> dict:
-    frontend_base = (FRONTEND_URL or BASE_URL).rstrip('/')
-    join_url = order.get('qr_join_url') or f"{frontend_base}/join/{business.get('public_id')}"
+    # Existing setup-kit rows may have stored the old Render join URL. Preserve
+    # the slug/program identifier, but always emit/re-download the QR on the
+    # canonical customer-facing domain.
+    stored_join_url = str(order.get('qr_join_url') or '').strip()
+    join_slug = str(business.get('public_id') or '').strip()
+    if '/join/' in stored_join_url:
+        stored_slug = stored_join_url.split('/join/', 1)[1].split('?', 1)[0].split('#', 1)[0].strip('/')
+        if stored_slug:
+            join_slug = stored_slug
+    join_url = f"{PUBLIC_JOIN_BASE_URL}/join/{join_slug}"
     return {
         **order,
         'business_public_id': business.get('public_id'),
@@ -15106,7 +15121,7 @@ def _ensure_partner_demo_business(partner: dict) -> dict:
 
 
 def _partner_demo_payload(partner: dict, business: dict) -> dict:
-    frontend = (FRONTEND_URL or BASE_URL).rstrip('/')
+    frontend = PUBLIC_JOIN_BASE_URL
     customer_count = 0
     latest_customer = None
     try:
@@ -20795,7 +20810,7 @@ async def get_qr_code(public_id: str, program_id: Optional[str] = Query(default=
     if program_id and not program:
         raise HTTPException(status_code=404, detail='Program not found for this business')
 
-    join_base = (FRONTEND_URL or BASE_URL).rstrip('/')
+    join_base = PUBLIC_JOIN_BASE_URL
     join_slug = make_program_join_slug(business.get('public_id'), program)
     join_url = f'{join_base}/join/{join_slug}'
     svg = generate_qr_svg(join_url)
@@ -26133,12 +26148,18 @@ async def cl_customer_wallet_page(customer_public_id: str):
 
 @app.get("/join/{business_public_id}", response_class=HTMLResponse)
 async def customer_join_page(business_public_id: str):
-    # Existing/printed LoyaltyTree QR codes point at the backend BASE_URL.
-    # When FRONTEND_URL is configured, forward them to the React join page,
-    # which contains the required privacy consent UI.
-    if FRONTEND_URL:
-        frontend = FRONTEND_URL.rstrip('/')
-        return RedirectResponse(url=f"{frontend}/join/{business_public_id}", status_code=307)
+    # LEGACY QR BRIDGE
+    # Existing printed QR codes may still point to the Render hostname. Never
+    # invalidate those paths: if the request reaches this backend, immediately
+    # forward the exact business/program slug to the canonical React join page.
+    # No database query, Wallet generation, or business loading happens first.
+    return RedirectResponse(
+        url=f"{PUBLIC_JOIN_BASE_URL}/join/{business_public_id}",
+        status_code=307,
+    )
+
+    # Kept below as unreachable fallback/reference for the former server-rendered
+    # join page; the canonical customer join experience now lives on the frontend.
     try:
         business = safe_get_business(business_public_id)
         if not business:
