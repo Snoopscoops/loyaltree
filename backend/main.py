@@ -8436,18 +8436,29 @@ def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, prog
     base['description'] = f'{card_title} — Order Ahead Beta'[:128]
     base['eventTicket'] = event_fields
 
-    # iOS 27 Store Card Featured Actions are not what this beta is testing.
-    # Remove them so the experiment isolates the pre-iOS-27 Event Ticket route.
-    base.pop('featuredActions', None)
+    # Native Order Ahead button below the pass on iOS/watchOS 27+.
+    # Apple's Featured Actions API works across pass styles. The predefined
+    # `order` action renders the localized Order Delivery or Pickup action and
+    # opens this customer's signed LoyaltyTree Order Ahead URL.
+    base['featuredActions'] = [
+        {
+            'identifier': 'loyaltree-order-ahead',
+            'type': 'order',
+            'url': action['url'],
+        }
+    ]
 
-    # Classic Event Ticket trial only. Do not request posterEventTicket and do
-    # not attach poster/event-guide semantics. Keep the personalized Order Ahead
-    # URL in the pass so we can observe exactly how classic Wallet handles it;
-    # the normal Pass Details Order Ahead link remains the reliable fallback.
+    # Keep the current classic Event Ticket presentation: changing to the
+    # poster-event style would require event-specific semantics and could alter
+    # the loyalty/QR presentation. The existing tappable Pass Details Order
+    # Ahead field remains the fallback on older iOS versions.
     base.pop('preferredStyleSchemes', None)
     base.pop('semantics', None)
     base.pop('eventLogoText', None)
     base.pop('suppressHeaderDarkening', None)
+
+    # Retain the semantic ordering URL as a best-effort compatibility hint.
+    # Featured Actions above are the native below-pass CTA on iOS 27+.
     base['orderFoodURL'] = action['url']
 
     # Make the beta easy to identify in server/device logs without exposing
@@ -8801,6 +8812,7 @@ def _apple_event_pkpass_fingerprint(customer: dict, business: dict, program: dic
         'order_ahead': {
             'enabled': bool((business or {}).get('order_ahead_enabled')),
             'button_label': (business or {}).get('order_ahead_button_label'),
+            'renderer_version': 'event-ticket-featured-order-v1',
         },
         # A PassKit push marks the installed Event Ticket serial dirty. Including
         # that marker means a pushed update can never accidentally reuse the
