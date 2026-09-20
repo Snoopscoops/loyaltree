@@ -2986,6 +2986,10 @@ def _pos_schema_error(exc) -> HTTPException:
         or 'pos_transactions' in raw
         or 'pos_redemption_reservations' in raw
         or 'pos_benefit_reservations' in raw
+        or 'pos_device_activation_codes' in raw
+        or 'pos_devices' in raw
+        or 'pos_companion_sessions' in raw
+        or 'pos_companion_offline_events' in raw
         or 'schema cache' in raw
         or 'pgrst205' in raw
         or 'pgrst202' in raw
@@ -36815,7 +36819,7 @@ async def admin_gift_card_print_pdf(batch_public_id: str, _: bool = Depends(requ
 # =============================================================================
 
 class POSDeviceActivationCodeCreate(BaseModel):
-    provider: Literal['storehub'] = 'storehub'
+    provider: Literal['storehub', 'loyverse'] = 'storehub'
     expires_in_minutes: int = Field(default=15, ge=5, le=1440)
     max_uses: int = Field(default=1, ge=1, le=25)
 
@@ -36838,6 +36842,11 @@ class POSCompanionActivateRequest(BaseModel):
 
 class POSCompanionCustomerLookupRequest(BaseModel):
     scan_value: str = Field(min_length=2, max_length=1000)
+
+
+class CompanionDevicePreferencesUpdate(BaseModel):
+    overlay_enabled: Optional[bool] = None
+    app_version: Optional[str] = Field(default=None, max_length=50)
 
 
 class POSCompanionPointsReserveRequest(BaseModel):
@@ -36869,6 +36878,36 @@ class POSCompanionReservationReleaseRequest(BaseModel):
 
 class POSCompanionReservationCommitRequest(BaseModel):
     external_transaction_id: str = Field(min_length=1, max_length=240)
+
+
+class POSCompanionSessionStartRequest(BaseModel):
+    scan_value: str = Field(min_length=2, max_length=1000)
+    ttl_seconds: int = Field(default=120, ge=30, le=300)
+
+
+class POSCompanionBridgePollRequest(BaseModel):
+    limit: int = Field(default=20, ge=1, le=50)
+
+
+class POSCompanionSessionMatchRequest(BaseModel):
+    external_transaction_id: str = Field(min_length=1, max_length=240)
+
+
+class POSCompanionTestSaleRequest(BaseModel):
+    amount: float = Field(gt=0)
+    external_transaction_id: Optional[str] = Field(default=None, max_length=240)
+    currency: str = Field(default='PHP', min_length=3, max_length=3)
+
+
+class CompanionMockTransactionRequest(BaseModel):
+    """Step 4 mock-POS request. Available only while the integration is in Test Mode."""
+    scenario: Literal['sale', 'ambiguous', 'duplicate', 'wrong_outlet', 'wrong_terminal', 'void', 'refund'] = 'sale'
+    amount: float = Field(default=420.0, gt=0, le=10000000)
+    second_amount: Optional[float] = Field(default=None, gt=0, le=10000000)
+    receipt_number: Optional[str] = Field(default=None, max_length=120)
+    external_transaction_id: Optional[str] = Field(default=None, max_length=240)
+    currency: str = Field(default='PHP', min_length=3, max_length=3)
+    terminal_id: Optional[str] = Field(default=None, max_length=160)
 
 
 def _pos_secret_hash(value: str) -> str:
@@ -36928,10 +36967,10 @@ def _pos_companion_preview_payload(activation: dict) -> dict:
     if not business_has_plan_feature(business, 'pos_integration'):
         raise HTTPException(status_code=403, detail='POS Integration requires the Pro plan.')
 
-    provider = activation.get('provider') or 'storehub'
+    provider = str(activation.get('provider') or 'storehub').lower()
     integration = _get_pos_integration(business.get('id'), provider)
     if not integration:
-        raise HTTPException(status_code=409, detail='Connect StoreHub in Loyalty Tree before activating a POS device.')
+        raise HTTPException(status_code=409, detail=f'Connect {provider.title()} in Loyalty Tree before activating a Companion device.')
 
     try:
         branches = (
@@ -36947,7 +36986,8 @@ def _pos_companion_preview_payload(activation: dict) -> dict:
         raise _pos_schema_error(exc)
 
     config = integration.get('config') if isinstance(integration.get('config'), dict) else {}
-    outlets = config.get('storehub_outlets') or []
+    location_key = 'storehub_outlets' if provider == 'storehub' else 'loyverse_stores'
+    outlets = config.get(location_key) or []
     if not outlets and integration.get('mode') == 'test':
         outlets = [
             {'id': f"test-{row.get('public_id')}", 'name': row.get('name') or row.get('public_id')}
@@ -36965,7 +37005,7 @@ def _pos_companion_preview_payload(activation: dict) -> dict:
         'integration_status': integration.get('status'),
         'branches': branches,
         'outlets': outlets,
-        'device_profiles': STOREHUB_DEVICE_PROFILES,
+        'device_profiles': POS_DEVICE_PROFILES,
         'default_checkout_mode': 'floating',
     }
 
@@ -37072,7 +37112,7 @@ def create_pos_device_activation_code(
     business = _require_pos_pro_business(public_id, authorization)
     integration = _get_pos_integration(business.get('id'), req.provider)
     if not integration:
-        raise HTTPException(status_code=409, detail='Connect StoreHub before creating a device activation code.')
+        raise HTTPException(status_code=409, detail=f'Connect {req.provider.title()} before creating a Companion activation code.')
 
     code = str(secrets.randbelow(900000) + 100000)
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=int(req.expires_in_minutes))
@@ -37095,7 +37135,7 @@ def create_pos_device_activation_code(
         'expires_at': expires_at.isoformat(),
         'max_uses': int(req.max_uses),
         'activation_id': str((row or {}).get('id') or ''),
-        'message': 'Enter this one-time code in the Loyalty Tree POS Companion app.',
+        'message': 'Enter this one-time code in the Loyalty Tree Companion app.',
     }
 
 
@@ -37131,6 +37171,7 @@ def list_pos_companion_devices(public_id: str, authorization: str = Header(defau
     return {'devices': public_devices}
 
 
+@app.post('/api/v1/companion/activation-preview')
 @app.post('/api/v1/pos-companion/activation-preview')
 def pos_companion_activation_preview(req: POSCompanionActivationPreviewRequest):
     activation = _pos_activation_row(req.activation_code)
@@ -37139,6 +37180,7 @@ def pos_companion_activation_preview(req: POSCompanionActivationPreviewRequest):
     return {'ok': True, **_pos_companion_preview_payload(activation)}
 
 
+@app.post('/api/v1/companion/activate')
 @app.post('/api/v1/pos-companion/activate')
 def activate_pos_companion_device(req: POSCompanionActivateRequest):
     activation = _pos_activation_row(req.activation_code)
@@ -37146,7 +37188,8 @@ def activate_pos_companion_device(req: POSCompanionActivateRequest):
         raise HTTPException(status_code=401, detail='Activation code is invalid, expired, revoked, or already used.')
     preview = _pos_companion_preview_payload(activation)
     business = _pos_business_by_id(activation.get('business_id'))
-    integration = _get_pos_integration(business.get('id'), 'storehub')
+    provider = str(activation.get('provider') or 'storehub').lower()
+    integration = _get_pos_integration(business.get('id'), provider)
 
     branch = safe_get_branch(req.branch_public_id)
     if not branch or branch.get('business_id') != business.get('id'):
@@ -37155,7 +37198,7 @@ def activate_pos_companion_device(req: POSCompanionActivateRequest):
     known_outlets = preview.get('outlets') or []
     known_ids = {str(row.get('id')) for row in known_outlets if isinstance(row, dict) and row.get('id') is not None}
     if known_ids and req.external_branch_id not in known_ids:
-        raise HTTPException(status_code=400, detail='Selected StoreHub outlet is not part of the connected account.')
+        raise HTTPException(status_code=400, detail=f'Selected {provider.title()} location is not part of the connected account.')
 
     try:
         mapping_rows = (
@@ -37171,7 +37214,7 @@ def activate_pos_companion_device(req: POSCompanionActivateRequest):
         if mapping and str(mapping.get('external_branch_id')) != str(req.external_branch_id):
             raise HTTPException(
                 status_code=409,
-                detail='This Loyalty Tree branch is already mapped to a different StoreHub outlet. Change the mapping from an owner-authorized setup before activating this device.',
+                detail=f'This Loyalty Tree branch is already mapped to a different {provider.title()} location. Change the mapping from an owner-authorized setup before activating this device.',
             )
         external_rows = (
             supabase.table('pos_branch_mappings')
@@ -37183,7 +37226,7 @@ def activate_pos_companion_device(req: POSCompanionActivateRequest):
             .data or []
         )
         if external_rows and str(external_rows[0].get('branch_id')) != str(branch.get('id')):
-            raise HTTPException(status_code=409, detail='That StoreHub outlet is already mapped to another Loyalty Tree branch.')
+            raise HTTPException(status_code=409, detail=f'That {provider.title()} location is already mapped to another Loyalty Tree branch.')
 
         profile = _pos_device_profile(req.hardware_model)
         settings = (mapping or {}).get('settings') if mapping and isinstance((mapping or {}).get('settings'), dict) else {}
@@ -37209,13 +37252,13 @@ def activate_pos_companion_device(req: POSCompanionActivateRequest):
             mapping = (supabase.table('pos_branch_mappings').insert(mapping_payload).execute().data or [None])[0]
 
         device_token = secrets.token_urlsafe(36)
-        display_name = f"{business.get('name') or 'Business'} {branch.get('name') or req.branch_public_id} POS"
+        display_name = f"{business.get('name') or 'Business'} {branch.get('name') or req.branch_public_id} Companion"
         device_payload = {
             'business_id': business.get('id'),
             'branch_id': branch.get('id'),
             'integration_id': integration.get('id'),
             'mapping_id': mapping.get('id'),
-            'provider': 'storehub',
+            'provider': provider,
             'device_token_hash': _pos_secret_hash(device_token),
             'display_name': display_name,
             'hardware_model': req.hardware_model,
@@ -37245,10 +37288,11 @@ def activate_pos_companion_device(req: POSCompanionActivateRequest):
         'outlet': {'id': mapping.get('external_branch_id'), 'name': mapping.get('external_branch_name')},
         'loyalty_contract': _pos_loyalty_contract(business),
         'redemption_config': _pos_redemption_config(integration),
-        'message': 'POS device activated. Save the returned device token securely on this device.',
+        'message': 'Loyalty Tree Companion activated. Save the returned device token securely on this device.',
     }
 
 
+@app.get('/api/v1/companion/config')
 @app.get('/api/v1/pos-companion/config')
 def pos_companion_device_config(x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token')):
     device = _require_pos_device(x_lt_device_token)
@@ -37267,8 +37311,52 @@ def pos_companion_device_config(x_lt_device_token: str = Header(default='', alia
         'business': {'public_id': business.get('public_id'), 'name': business.get('name')},
         'branch': {'public_id': branch.get('public_id'), 'name': branch.get('name')},
         'outlet': {'id': mapping.get('external_branch_id'), 'name': mapping.get('external_branch_name')},
+        'integration': {
+            'provider': (integration or {}).get('provider') or device.get('provider'),
+            'status': (integration or {}).get('status'),
+            'mode': (integration or {}).get('mode'),
+            'capabilities': (integration or {}).get('capabilities') if isinstance((integration or {}).get('capabilities'), dict) else {},
+        },
         'loyalty_contract': _pos_loyalty_contract(business),
         'redemption_config': _pos_redemption_config(integration),
+    }
+
+
+@app.patch('/api/v1/companion/device/preferences')
+@app.patch('/api/v1/pos-companion/device/preferences')
+def companion_device_preferences(
+    req: CompanionDevicePreferencesUpdate,
+    x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
+):
+    """Update device-local Companion preferences without exposing owner credentials.
+
+    Step 2 uses this to reflect whether the Android floating overlay is enabled.
+    The device remains authenticated only by its revocable device token.
+    """
+    device = _require_pos_device(x_lt_device_token)
+    patch = {}
+    if req.overlay_enabled is not None:
+        patch['overlay_enabled'] = bool(req.overlay_enabled)
+    if req.app_version is not None:
+        patch['app_version'] = str(req.app_version or '').strip()[:50] or None
+    if not patch:
+        return {'ok': True, 'device': {k: v for k, v in device.items() if k != 'device_token_hash'}}
+    patch['last_seen_at'] = datetime.now(timezone.utc).isoformat()
+    try:
+        rows = (
+            supabase.table('pos_devices')
+            .update(patch)
+            .eq('id', device.get('id'))
+            .execute().data or []
+        )
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    updated = rows[0] if rows else {**device, **patch}
+    _pos_device_cache_put(_pos_secret_hash(x_lt_device_token), updated)
+    return {
+        'ok': True,
+        'device': {k: v for k, v in updated.items() if k != 'device_token_hash'},
+        'message': 'Loyalty Tree Companion device preferences updated.',
     }
 
 
@@ -37384,6 +37472,7 @@ def _pos_companion_exact_transaction(device: dict, external_transaction_id: str)
     return tx
 
 
+@app.post('/api/v1/companion/customer/lookup')
 @app.post('/api/v1/pos-companion/customer/lookup')
 def pos_companion_customer_lookup(
     req: POSCompanionCustomerLookupRequest,
@@ -37397,7 +37486,7 @@ def pos_companion_customer_lookup(
 
     business = _pos_business_by_id(device.get('business_id'))
     if not business:
-        raise HTTPException(status_code=404, detail='Business not found for this POS device.')
+        raise HTTPException(status_code=404, detail='Business not found for this Companion device.')
 
     memberships = _pos_companion_program_rows(source_customer, device.get('business_id'))
     programs = [_pos_companion_program_payload(business, row, source_customer) for row in memberships]
@@ -37751,6 +37840,874 @@ async def pos_companion_benefit_commit(
     except Exception as exc:
         raise _pos_schema_error(exc)
     return {'ok': True, 'reservation': row, 'redemption': redemption_result, 'message': 'Employee benefit committed after StoreHub sale confirmation.'}
+
+
+# =============================================================================
+# LOYALTY TREE COMPANION SESSION + TRANSACTION BRIDGE
+# Step 3 — scanned customer -> short-lived checkout -> exact POS transaction
+# =============================================================================
+
+def _companion_provider_label(provider: str) -> str:
+    raw = str(provider or 'POS').lower()
+    return {'storehub': 'StoreHub', 'loyverse': 'Loyverse', 'manual': 'Manual / Other POS'}.get(raw, raw.title())
+
+
+def _companion_session_public(row: Optional[dict]) -> Optional[dict]:
+    if not row:
+        return None
+    return {
+        'id': str(row.get('id') or ''),
+        'status': row.get('status'),
+        'provider': row.get('provider'),
+        'source_customer_public_id': row.get('source_customer_public_id'),
+        'customer_public_id': row.get('customer_public_id'),
+        'customer_name': row.get('customer_name'),
+        'scanned_at': row.get('scanned_at'),
+        'expires_at': row.get('expires_at'),
+        'matched_pos_transaction_id': str(row.get('matched_pos_transaction_id') or '') or None,
+        'external_transaction_id': row.get('external_transaction_id'),
+        'gross_amount': float(row.get('gross_amount')) if row.get('gross_amount') is not None else None,
+        'currency': row.get('currency'),
+        'candidate_transactions': row.get('candidate_transactions') if isinstance(row.get('candidate_transactions'), list) else [],
+        'result': row.get('result') if isinstance(row.get('result'), dict) else {},
+        'error_message': row.get('error_message'),
+        'completed_at': row.get('completed_at'),
+    }
+
+
+def _companion_active_session(device: dict, expire_stale: bool = True) -> Optional[dict]:
+    active_states = ['waiting_for_sale', 'matching', 'manual_match_required', 'processing']
+    try:
+        rows = (
+            supabase.table('pos_companion_sessions').select('*')
+            .eq('device_id', device.get('id'))
+            .in_('status', active_states)
+            .order('created_at', desc=True)
+            .limit(1).execute().data or []
+        )
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    row = rows[0] if rows else None
+    if row and expire_stale:
+        expires = _pos_parse_timestamp(row.get('expires_at'))
+        if expires and expires <= datetime.now(timezone.utc):
+            patch = {
+                'status': 'expired',
+                'error_message': 'Customer scan expired before a POS sale was matched.',
+                'updated_at': datetime.now(timezone.utc).isoformat(),
+            }
+            try:
+                supabase.table('pos_companion_sessions').update(patch).eq('id', row.get('id')).execute()
+            except Exception:
+                pass
+            return None
+    return row
+
+
+def _companion_choose_earning_membership(source_customer: dict, business_id: int) -> dict:
+    """Prefer a normal points/stamp card when the scanned identity has several memberships."""
+    memberships = _pos_companion_program_rows(source_customer, business_id)
+    scored = []
+    for membership in memberships:
+        program = safe_get_customer_program(membership, business_id) or {}
+        reward_enabled = program_reward_uses_points(program) or program_reward_uses_stamps(program)
+        employee = program_is_employee_experience(program)
+        score = (0 if reward_enabled and not employee else 1, 0 if reward_enabled else 1, 0 if not employee else 1)
+        scored.append((score, membership))
+    scored.sort(key=lambda item: item[0])
+    return scored[0][1] if scored else source_customer
+
+
+def _companion_money_value(value) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        value = value.get('amount') if value.get('amount') is not None else value.get('value')
+    try:
+        return float(Decimal(str(value)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+    except Exception:
+        return None
+
+
+def _companion_normalize_provider_transaction(provider: str, raw: dict) -> Optional[dict]:
+    """Normalize provider payloads into Loyalty Tree's existing pos_transactions envelope."""
+    if not isinstance(raw, dict):
+        return None
+    provider = str(provider or '').lower()
+    if provider == 'storehub':
+        external_id = raw.get('refId') or raw.get('id') or raw.get('invoiceNumber')
+        branch_id = raw.get('storeId') or raw.get('store_id')
+        receipt = raw.get('invoiceNumber') or raw.get('receiptNumber') or external_id
+        raw_type = str(raw.get('transactionType') or '').lower()
+        cancelled = bool(raw.get('isCancelled'))
+        tx_type = 'void' if cancelled else ('refund' if any(x in raw_type for x in ('refund', 'return')) else 'sale')
+        amount = _companion_money_value(raw.get('total'))
+        occurred = raw.get('transactionTime') or raw.get('createdAt') or raw.get('created_at')
+        terminal = raw.get('terminalId') or raw.get('terminal_id') or raw.get('registerId') or raw.get('register_id')
+    elif provider == 'loyverse':
+        external_id = raw.get('id') or raw.get('receipt_number')
+        branch_id = raw.get('store_id')
+        receipt = raw.get('receipt_number') or external_id
+        raw_type = str(raw.get('receipt_type') or '').lower()
+        cancelled = bool(raw.get('cancelled_at'))
+        tx_type = 'void' if cancelled else ('refund' if raw.get('refund_for') or 'refund' in raw_type else 'sale')
+        amount = _companion_money_value(raw.get('total_money'))
+        occurred = raw.get('receipt_date') or raw.get('created_at') or raw.get('updated_at')
+        terminal = raw.get('pos_device_id') or raw.get('terminal_id') or raw.get('register_id')
+    else:
+        return None
+    if not external_id or amount is None:
+        return None
+    return {
+        'external_transaction_id': str(external_id),
+        'external_receipt_number': str(receipt) if receipt is not None else None,
+        'external_branch_id': str(branch_id) if branch_id is not None else None,
+        'external_terminal_id': str(terminal) if terminal is not None else None,
+        'transaction_type': tx_type,
+        'gross_amount': amount,
+        'net_amount': amount,
+        'eligible_amount': amount,
+        'transacted_at': occurred,
+        'raw_payload': raw,
+    }
+
+
+def _companion_upsert_bridge_transaction(device: dict, normalized: dict) -> Optional[dict]:
+    if not normalized or normalized.get('gross_amount') is None:
+        return None
+    integration_id = device.get('integration_id')
+    external_tx = normalized.get('external_transaction_id')
+    try:
+        rows = (
+            supabase.table('pos_transactions').select('*')
+            .eq('integration_id', integration_id)
+            .eq('external_transaction_id', external_tx)
+            .limit(1).execute().data or []
+        )
+        existing = rows[0] if rows else None
+        mappings = (
+            supabase.table('pos_branch_mappings').select('*')
+            .eq('integration_id', integration_id).eq('is_active', True).execute().data or []
+        )
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+
+    mapping = next(
+        (m for m in mappings if str(m.get('external_branch_id')) == str(normalized.get('external_branch_id'))),
+        None,
+    )
+    branch_id = mapping.get('branch_id') if mapping else ((existing or {}).get('branch_id') if existing else None)
+    status = 'received'
+    if normalized.get('transaction_type') == 'refund':
+        status = 'refunded'
+    elif normalized.get('transaction_type') == 'void':
+        status = 'voided'
+
+    previous_processing = (existing or {}).get('processing_metadata') if isinstance((existing or {}).get('processing_metadata'), dict) else {}
+    payload = {
+        'integration_id': integration_id,
+        'business_id': device.get('business_id'),
+        'branch_id': branch_id,
+        'provider': device.get('provider') or 'manual',
+        'external_transaction_id': external_tx,
+        'external_receipt_number': normalized.get('external_receipt_number'),
+        'transaction_type': normalized.get('transaction_type') or 'sale',
+        'source': 'poll',
+        'currency': business_currency(_pos_business_by_id(device.get('business_id')) or {}),
+        'gross_amount': normalized.get('gross_amount'),
+        'net_amount': normalized.get('net_amount'),
+        'eligible_amount': normalized.get('eligible_amount'),
+        'status': existing.get('status') if existing and existing.get('status') == 'loyalty_applied' else status,
+        'raw_payload': normalized.get('raw_payload') or {},
+        'processing_metadata': {
+            **previous_processing,
+            'bridge_external_branch_id': normalized.get('external_branch_id'),
+            'bridge_external_terminal_id': normalized.get('external_terminal_id'),
+        },
+        'transacted_at': normalized.get('transacted_at') or datetime.now(timezone.utc).isoformat(),
+        'error_message': None,
+    }
+    try:
+        if existing:
+            rows = supabase.table('pos_transactions').update(payload).eq('id', existing.get('id')).execute().data or []
+            return rows[0] if rows else {**existing, **payload}
+        rows = supabase.table('pos_transactions').insert(payload).execute().data or []
+        return rows[0] if rows else payload
+    except Exception as exc:
+        # A second Companion polling the same connected account may win the unique insert race.
+        try:
+            rows = supabase.table('pos_transactions').select('*').eq('integration_id', integration_id).eq('external_transaction_id', external_tx).limit(1).execute().data or []
+            if rows:
+                return rows[0]
+        except Exception:
+            pass
+        raise _pos_schema_error(exc)
+
+
+def _companion_provider_rows(device: dict, integration: dict, limit: int) -> list:
+    provider = str(device.get('provider') or '').lower()
+    now = datetime.now(timezone.utc)
+    if provider == 'storehub':
+        config = integration.get('config') if isinstance(integration.get('config'), dict) else {}
+        if not config.get('real_api_tested'):
+            raise HTTPException(status_code=409, detail='Test the StoreHub API connection from the owner dashboard before polling sales.')
+        payload = _storehub_get(integration, '/transactions', params={
+            'startDate': (now - timedelta(days=1)).strftime('%Y-%m-%d'),
+            'endDate': now.strftime('%Y-%m-%d'),
+        })
+        rows = _storehub_list(payload)
+    elif provider == 'loyverse':
+        payload = _loyverse_get(integration, '/receipts', params={
+            'created_at_min': (now - timedelta(hours=6)).isoformat().replace('+00:00', 'Z'),
+            'created_at_max': now.isoformat().replace('+00:00', 'Z'),
+            'limit': int(limit),
+        })
+        rows = _loyverse_list(payload, 'receipts')
+    else:
+        return []
+
+    normalized_rows = []
+    for raw in rows[: max(int(limit), 1)]:
+        item = _companion_normalize_provider_transaction(provider, raw)
+        if item:
+            tx = _companion_upsert_bridge_transaction(device, item)
+            if tx:
+                normalized_rows.append(tx)
+    try:
+        supabase.table('pos_integrations').update({'last_sync_at': now.isoformat(), 'last_error': None}).eq('id', integration.get('id')).execute()
+    except Exception:
+        pass
+    return normalized_rows
+
+
+def _companion_is_mock_transaction(tx: Optional[dict]) -> bool:
+    if not tx:
+        return False
+    if str(tx.get('source') or '').lower() == 'mock_bridge':
+        return True
+    processing = tx.get('processing_metadata') if isinstance(tx.get('processing_metadata'), dict) else {}
+    raw = tx.get('raw_payload') if isinstance(tx.get('raw_payload'), dict) else {}
+    return bool(processing.get('mock_bridge') or raw.get('mockBridge') or raw.get('mock_bridge'))
+
+
+def _companion_recent_mock_transactions(device: dict, session: dict, limit: int = 20) -> list:
+    """Return recent Step-4 mock transactions for this integration.
+
+    This deliberately reads from the same normalized ``pos_transactions`` table
+    used by real provider adapters. The Companion matching engine therefore does
+    not need a separate mock-only loyalty path.
+    """
+    try:
+        rows = (
+            supabase.table('pos_transactions').select('*')
+            .eq('integration_id', device.get('integration_id'))
+            .eq('source', 'mock_bridge')
+            .order('transacted_at', desc=True)
+            .limit(max(1, min(int(limit or 20), 50)))
+            .execute().data or []
+        )
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+
+    scanned_at = _pos_parse_timestamp(session.get('scanned_at')) or datetime.now(timezone.utc)
+    expires_at = _pos_parse_timestamp(session.get('expires_at')) or (scanned_at + timedelta(minutes=2))
+    earliest = scanned_at - timedelta(seconds=5)
+    latest = expires_at + timedelta(seconds=15)
+    filtered = []
+    for row in rows:
+        happened = _pos_parse_timestamp(row.get('transacted_at') or row.get('created_at'))
+        if happened and earliest <= happened <= latest:
+            filtered.append(row)
+    return filtered
+
+
+def _companion_mock_mapping(device: dict) -> dict:
+    mapping_id = device.get('mapping_id')
+    if not mapping_id:
+        return {}
+    try:
+        rows = supabase.table('pos_branch_mappings').select('*').eq('id', mapping_id).limit(1).execute().data or []
+        return rows[0] if rows else {}
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+
+
+def _companion_mock_upsert_transaction(
+    device: dict,
+    *,
+    external_transaction_id: str,
+    receipt_number: str,
+    amount: float,
+    currency: str,
+    branch_id,
+    external_branch_id: str,
+    terminal_id: str,
+    transaction_type: str,
+    scenario: str,
+) -> dict:
+    now = datetime.now(timezone.utc).isoformat()
+    status = 'received'
+    if transaction_type == 'void':
+        status = 'voided'
+    elif transaction_type == 'refund':
+        status = 'refunded'
+
+    raw_type = 'SALE' if transaction_type == 'sale' else transaction_type.upper()
+    raw_payload = {
+        'refId': external_transaction_id,
+        'id': external_transaction_id,
+        'invoiceNumber': receipt_number,
+        'storeId': external_branch_id,
+        'terminalId': terminal_id,
+        'total': amount,
+        'transactionTime': now,
+        'transactionType': raw_type,
+        'isCancelled': transaction_type == 'void',
+        'mockBridge': True,
+        'scenario': scenario,
+    }
+    processing_metadata = {
+        'mock_bridge': True,
+        'mock_scenario': scenario,
+        'bridge_external_branch_id': external_branch_id,
+        'bridge_external_terminal_id': terminal_id,
+        'companion_device_id': str(device.get('id')),
+    }
+    try:
+        existing_rows = (
+            supabase.table('pos_transactions').select('*')
+            .eq('integration_id', device.get('integration_id'))
+            .eq('external_transaction_id', external_transaction_id)
+            .limit(1).execute().data or []
+        )
+        existing = existing_rows[0] if existing_rows else None
+        payload = {
+            'integration_id': device.get('integration_id'),
+            'business_id': device.get('business_id'),
+            'branch_id': branch_id,
+            'provider': device.get('provider') or 'storehub',
+            'external_transaction_id': external_transaction_id,
+            'external_receipt_number': receipt_number,
+            'transaction_type': transaction_type,
+            'source': 'mock_bridge',
+            'currency': currency.upper(),
+            'gross_amount': amount,
+            'net_amount': amount,
+            'eligible_amount': amount if transaction_type == 'sale' else 0,
+            'status': (existing or {}).get('status') if (existing or {}).get('status') == 'loyalty_applied' else status,
+            'raw_payload': raw_payload,
+            'processing_metadata': {
+                **((existing or {}).get('processing_metadata') if isinstance((existing or {}).get('processing_metadata'), dict) else {}),
+                **processing_metadata,
+            },
+            'transacted_at': (existing or {}).get('transacted_at') or now,
+            'error_message': None,
+        }
+        if existing:
+            # Pressing Complete Sale twice with the same receipt proves idempotency:
+            # keep a loyalty-applied row applied rather than creating a second sale.
+            rows = supabase.table('pos_transactions').update(payload).eq('id', existing.get('id')).execute().data or []
+            return rows[0] if rows else {**existing, **payload}
+        rows = supabase.table('pos_transactions').insert(payload).execute().data or []
+        return rows[0] if rows else payload
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+
+
+def _companion_session_candidates(device: dict, session: dict, transactions: list) -> list:
+    scanned_at = _pos_parse_timestamp(session.get('scanned_at')) or datetime.now(timezone.utc)
+    expires_at = _pos_parse_timestamp(session.get('expires_at')) or (scanned_at + timedelta(minutes=2))
+    metadata = device.get('metadata') if isinstance(device.get('metadata'), dict) else {}
+    mapping = _companion_mock_mapping(device)
+    device_terminal = metadata.get('external_terminal_id') or mapping.get('external_terminal_id')
+    candidates = []
+    for tx in transactions:
+        if str(tx.get('integration_id')) != str(device.get('integration_id')):
+            continue
+        if tx.get('transaction_type') != 'sale':
+            continue
+        if tx.get('status') in ('loyalty_applied', 'refunded', 'voided', 'ignored', 'failed'):
+            continue
+        if tx.get('branch_id') is None or str(tx.get('branch_id')) != str(device.get('branch_id')):
+            continue
+        if tx.get('customer_id') and str(tx.get('customer_id')) != str(session.get('customer_id')):
+            continue
+        happened = _pos_parse_timestamp(tx.get('transacted_at') or tx.get('created_at'))
+        if not happened or happened < (scanned_at - timedelta(seconds=5)) or happened > (expires_at + timedelta(seconds=15)):
+            continue
+        processing = tx.get('processing_metadata') if isinstance(tx.get('processing_metadata'), dict) else {}
+        tx_terminal = processing.get('bridge_external_terminal_id')
+        expected_terminal = device_terminal
+        if _companion_is_mock_transaction(tx) and not expected_terminal:
+            expected_terminal = f'MOCK-{str(device.get("id") or "DEVICE")[:8].upper()}'
+        if expected_terminal and tx_terminal and str(expected_terminal) != str(tx_terminal):
+            continue
+        candidates.append({
+            'id': str(tx.get('id')),
+            'external_transaction_id': tx.get('external_transaction_id'),
+            'receipt_number': tx.get('external_receipt_number'),
+            'gross_amount': float(tx.get('gross_amount') or 0),
+            'currency': tx.get('currency') or 'PHP',
+            'transacted_at': tx.get('transacted_at'),
+            'status': tx.get('status'),
+        })
+    candidates.sort(key=lambda row: row.get('transacted_at') or '')
+    return candidates
+
+
+async def _companion_process_transaction(
+    device: dict,
+    session: dict,
+    tx: dict,
+    background_tasks: BackgroundTasks,
+    allow_test_mode: bool = False,
+) -> dict:
+    if not tx:
+        raise HTTPException(status_code=404, detail='POS transaction not found.')
+    if tx.get('status') == 'loyalty_applied':
+        if tx.get('customer_id') and str(tx.get('customer_id')) != str(session.get('customer_id')):
+            raise HTTPException(status_code=409, detail='This POS transaction was already applied to a different member.')
+        metadata = tx.get('processing_metadata') if isinstance(tx.get('processing_metadata'), dict) else {}
+        result = metadata.get('loyalty_result') if isinstance(metadata.get('loyalty_result'), dict) else {'duplicate_prevented': True}
+        patch = {
+            'status': 'completed', 'matched_pos_transaction_id': tx.get('id'),
+            'external_transaction_id': tx.get('external_transaction_id'), 'gross_amount': tx.get('gross_amount'),
+            'currency': tx.get('currency') or 'PHP', 'candidate_transactions': [], 'result': result,
+            'error_message': None, 'completed_at': datetime.now(timezone.utc).isoformat(),
+            'updated_at': datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            supabase.table('pos_companion_sessions').update(patch).eq('id', session.get('id')).execute()
+        except Exception:
+            pass
+        return {'ok': True, 'duplicate_prevented': True, 'session': _companion_session_public({**session, **patch}), 'loyalty_result': result}
+
+    if tx.get('transaction_type') != 'sale':
+        raise HTTPException(status_code=409, detail='Only completed sale transactions can earn loyalty.')
+    if tx.get('branch_id') is None or str(tx.get('branch_id')) != str(device.get('branch_id')):
+        raise HTTPException(status_code=409, detail='POS transaction does not belong to this Companion branch.')
+
+    business = _pos_business_by_id(device.get('business_id'))
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found for Companion device.')
+    customer_rows = supabase.table('customers').select('*').eq('id', session.get('customer_id')).limit(1).execute().data or []
+    customer = customer_rows[0] if customer_rows else None
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail='Loyalty member for this checkout no longer exists.')
+    program = safe_get_customer_program(customer, business.get('id')) or {}
+    provider = str(device.get('provider') or '').lower()
+    integration = _get_pos_integration(business.get('id'), provider)
+    if not integration:
+        raise HTTPException(status_code=409, detail='POS integration not found for this Companion device.')
+    if not allow_test_mode and (integration.get('mode') != 'live' or integration.get('status') != 'live'):
+        raise HTTPException(status_code=409, detail=f'{_companion_provider_label(provider)} is still in Test Mode. Matching can be tested, but automatic loyalty earning remains disabled until Go Live is explicitly enabled.')
+    config = integration.get('config') if isinstance(integration.get('config'), dict) else {}
+    if config.get('earning_enabled') is False:
+        raise HTTPException(status_code=409, detail='POS earning is disabled for this connection.')
+
+    amount = float(tx.get('eligible_amount') if tx.get('eligible_amount') is not None else (tx.get('net_amount') if tx.get('net_amount') is not None else tx.get('gross_amount') or 0))
+    amount = max(0.0, amount)
+    external_tx = str(tx.get('external_transaction_id') or '')
+    base_key = f'companion:{provider}:{device.get("integration_id")}:{external_tx}'[:180]
+    points_active = program_reward_uses_points(program)
+    stamps_active = program_reward_uses_stamps(program)
+    points_result = None
+    stamp_result = None
+
+    try:
+        session_processing = {'status': 'processing', 'matched_pos_transaction_id': tx.get('id'), 'external_transaction_id': external_tx, 'gross_amount': tx.get('gross_amount'), 'currency': tx.get('currency') or 'PHP', 'error_message': None, 'updated_at': datetime.now(timezone.utc).isoformat()}
+        supabase.table('pos_companion_sessions').update(session_processing).eq('id', session.get('id')).execute()
+
+        if points_active and amount > 0:
+            points_result = await add_points_sale(
+                business.get('public_id'),
+                PointsSaleRequest(customer_public_id=customer.get('public_id'), amount_spent=amount, as_owner=True),
+                background_tasks, authorization='', x_idempotency_key=f'{base_key}:points',
+            )
+        elif points_active:
+            points_result = {'message': 'Eligible amount is zero; no points earned.', 'points_earned': 0}
+
+        if stamps_active:
+            try:
+                stamp_result = await add_stamp(
+                    business.get('public_id'),
+                    StampRequest(customer_public_id=customer.get('public_id'), as_owner=True, stamp_kind='reward'),
+                    background_tasks, authorization='', x_idempotency_key=f'{base_key}:stamp',
+                )
+            except HTTPException as exc:
+                if exc.status_code == 409:
+                    stamp_result = {'message': str(exc.detail), 'stamp_skipped': True, 'duplicate_prevented': True}
+                else:
+                    raise
+
+        result = points_result or stamp_result or {
+            'message': 'Sale linked to member. This program has no purchase-earning Points/Stamp engine.',
+            'points_earned': 0, 'stamps_earned': 0,
+        }
+        if points_active and stamps_active:
+            result = {
+                'message': 'Points and Stamp rewards processed.',
+                'points': points_result or {}, 'stamps': stamp_result or {},
+                'points_earned': int((points_result or {}).get('points_earned') or 0),
+                'stamps_earned': 0 if (stamp_result or {}).get('stamp_skipped') else 1,
+            }
+
+        audit_refs = []
+        for item in (points_result, stamp_result):
+            audit_ref = item.get('transaction_id') if isinstance(item, dict) else None
+            if audit_ref:
+                audit_refs.append(str(audit_ref))
+                _pos_attach_audit_context(audit_ref, device.get('branch_id'), provider, external_tx)
+
+        points_earned = int((points_result or {}).get('points_earned') or 0)
+        stamps_earned = 1 if stamps_active and stamp_result and not stamp_result.get('stamp_skipped') and not stamp_result.get('duplicate_prevented') else 0
+        processing = tx.get('processing_metadata') if isinstance(tx.get('processing_metadata'), dict) else {}
+        processing = {
+            **processing,
+            'companion_session_id': str(session.get('id')), 'companion_device_id': str(device.get('id')),
+            'source_customer_public_id': session.get('source_customer_public_id'),
+            'earning_customer_public_id': customer.get('public_id'), 'loyalty_result': result,
+            'transaction_audit_refs': audit_refs, 'matched_at': datetime.now(timezone.utc).isoformat(),
+            'test_mode': bool(allow_test_mode and integration.get('mode') != 'live'),
+        }
+        updated = supabase.table('pos_transactions').update({
+            'customer_id': customer.get('id'), 'status': 'loyalty_applied',
+            'points_earned': points_earned, 'stamps_earned': stamps_earned,
+            'transaction_audit_ref': audit_refs[0] if audit_refs else None,
+            'processing_metadata': processing, 'error_message': None,
+            'processed_at': datetime.now(timezone.utc).isoformat(),
+        }).eq('id', tx.get('id')).execute().data or []
+        tx = updated[0] if updated else {**tx, 'status': 'loyalty_applied', 'customer_id': customer.get('id')}
+
+        patch = {
+            'status': 'completed', 'matched_pos_transaction_id': tx.get('id'),
+            'external_transaction_id': external_tx, 'gross_amount': tx.get('gross_amount'),
+            'currency': tx.get('currency') or 'PHP', 'candidate_transactions': [], 'result': result,
+            'error_message': None, 'completed_at': datetime.now(timezone.utc).isoformat(),
+            'updated_at': datetime.now(timezone.utc).isoformat(),
+        }
+        supabase.table('pos_companion_sessions').update(patch).eq('id', session.get('id')).execute()
+        return {
+            'ok': True, 'test_mode': bool(allow_test_mode and integration.get('mode') != 'live'),
+            'session': _companion_session_public({**session, **patch}),
+            'transaction': {'id': str(tx.get('id')), 'external_transaction_id': external_tx, 'gross_amount': float(tx.get('gross_amount') or 0), 'currency': tx.get('currency') or 'PHP'},
+            'loyalty_result': result,
+        }
+    except HTTPException as exc:
+        try:
+            supabase.table('pos_companion_sessions').update({'status': 'failed', 'error_message': str(exc.detail)[:1000], 'updated_at': datetime.now(timezone.utc).isoformat()}).eq('id', session.get('id')).execute()
+        except Exception:
+            pass
+        raise
+
+
+@app.post('/api/v1/companion/session/start')
+@app.post('/api/v1/pos-companion/session/start')
+def companion_session_start(
+    req: POSCompanionSessionStartRequest,
+    x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
+):
+    device = _require_pos_device(x_lt_device_token)
+    lookup = pos_companion_customer_lookup(POSCompanionCustomerLookupRequest(scan_value=req.scan_value), x_lt_device_token)
+    source_customer = safe_get_customer(lookup.get('source_membership_customer_public_id'))
+    if not source_customer:
+        raise HTTPException(status_code=404, detail='Scanned Loyalty Tree member was not found.')
+    earning_customer = _companion_choose_earning_membership(source_customer, device.get('business_id'))
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(seconds=int(req.ttl_seconds))
+    try:
+        supabase.table('pos_companion_sessions').update({
+            'status': 'cancelled', 'error_message': 'Replaced by a newer customer scan on this Companion device.',
+            'updated_at': now.isoformat(),
+        }).eq('device_id', device.get('id')).in_('status', ['waiting_for_sale','matching','manual_match_required','processing']).execute()
+        payload = {
+            'device_id': device.get('id'), 'business_id': device.get('business_id'), 'branch_id': device.get('branch_id'),
+            'integration_id': device.get('integration_id'), 'provider': device.get('provider') or 'storehub',
+            'source_customer_public_id': source_customer.get('public_id'), 'customer_id': earning_customer.get('id'),
+            'customer_public_id': earning_customer.get('public_id'),
+            'customer_name': lookup.get('identity', {}).get('name') or earning_customer.get('name'),
+            'status': 'waiting_for_sale', 'scanned_at': now.isoformat(), 'expires_at': expires.isoformat(),
+            'candidate_transactions': [], 'result': {}, 'created_at': now.isoformat(), 'updated_at': now.isoformat(),
+        }
+        rows = supabase.table('pos_companion_sessions').insert(payload).execute().data or []
+        session = rows[0] if rows else payload
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    return {'ok': True, 'session': _companion_session_public(session), 'customer': lookup, 'message': 'Member linked to this Companion. Complete the POS sale now.'}
+
+
+@app.get('/api/v1/companion/session/current')
+@app.get('/api/v1/pos-companion/session/current')
+def companion_session_current(x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token')):
+    device = _require_pos_device(x_lt_device_token)
+    session = _companion_active_session(device)
+    return {'ok': True, 'session': _companion_session_public(session), 'device_id': str(device.get('id'))}
+
+
+@app.post('/api/v1/companion/session/current/poll')
+@app.post('/api/v1/pos-companion/session/current/poll')
+async def companion_session_poll(
+    req: POSCompanionBridgePollRequest,
+    background_tasks: BackgroundTasks,
+    x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
+):
+    device = _require_pos_device(x_lt_device_token)
+    session = _companion_active_session(device)
+    if not session:
+        raise HTTPException(status_code=404, detail='No active Companion checkout. Scan a customer first.')
+    provider = str(device.get('provider') or '').lower()
+    integration = _get_pos_integration(device.get('business_id'), provider)
+    if not integration:
+        raise HTTPException(status_code=409, detail='POS integration not found for this Companion device.')
+    # Step 4: mock transactions are written into the same normalized transaction
+    # table as real StoreHub/Loyverse traffic. Prefer those rows during Test Mode.
+    mock_transactions = _companion_recent_mock_transactions(device, session, int(req.limit))
+    transactions = list(mock_transactions)
+    if not mock_transactions:
+        try:
+            transactions = _companion_provider_rows(device, integration, int(req.limit))
+        except HTTPException as exc:
+            # A Test Mode Companion must remain usable before StoreHub production
+            # API details are verified. If the only blocker is an untested live API,
+            # simply keep waiting for a Step-4 mock transaction.
+            if integration.get('mode') == 'test' and provider == 'storehub' and 'test the storehub api connection' in str(exc.detail).lower():
+                transactions = []
+            else:
+                try:
+                    supabase.table('pos_integrations').update({'last_error': str(exc.detail)[:1000]}).eq('id', integration.get('id')).execute()
+                except Exception:
+                    pass
+                raise
+
+    candidates = _companion_session_candidates(device, session, transactions)
+
+    if len(candidates) == 1:
+        tx_rows = supabase.table('pos_transactions').select('*').eq('id', candidates[0]['id']).limit(1).execute().data or []
+        if not tx_rows:
+            raise HTTPException(status_code=409, detail='Matched POS transaction disappeared during processing. Retry.')
+        matched_tx = tx_rows[0]
+        is_mock = _companion_is_mock_transaction(matched_tx)
+        if integration.get('mode') != 'live' and not is_mock:
+            patch = {
+                'status': 'manual_match_required', 'candidate_transactions': candidates,
+                'error_message': f'{_companion_provider_label(provider)} sale detected in Test Mode. Live-provider polling stays read-only until Go Live.',
+                'updated_at': datetime.now(timezone.utc).isoformat(),
+            }
+            rows = supabase.table('pos_companion_sessions').update(patch).eq('id', session.get('id')).execute().data or []
+            session = rows[0] if rows else {**session, **patch}
+            return {'ok': True, 'dry_run': True, 'state': 'test_match_ready', 'session': _companion_session_public(session), 'candidates': candidates}
+        return await _companion_process_transaction(device, session, matched_tx, background_tasks, allow_test_mode=is_mock)
+
+    if len(candidates) > 1 and integration.get('mode') != 'live':
+        # Multiple mock receipts intentionally exercise the exact manual-match path.
+        candidate_rows = (
+            supabase.table('pos_transactions').select('*')
+            .in_('id', [row['id'] for row in candidates]).execute().data or []
+        )
+        if candidate_rows and not all(_companion_is_mock_transaction(row) for row in candidate_rows):
+            patch = {
+                'status': 'manual_match_required', 'candidate_transactions': candidates,
+                'error_message': f'{_companion_provider_label(provider)} sales detected in Test Mode. Live-provider polling stays read-only until Go Live.',
+                'updated_at': datetime.now(timezone.utc).isoformat(),
+            }
+            rows = supabase.table('pos_companion_sessions').update(patch).eq('id', session.get('id')).execute().data or []
+            session = rows[0] if rows else {**session, **patch}
+            return {'ok': True, 'dry_run': True, 'state': 'test_match_ready', 'session': _companion_session_public(session), 'candidates': candidates}
+
+    patch = {
+        'status': 'manual_match_required' if len(candidates) > 1 else 'waiting_for_sale',
+        'candidate_transactions': candidates,
+        'error_message': 'Multiple possible POS sales found. Select the correct receipt.' if len(candidates) > 1 else None,
+        'updated_at': datetime.now(timezone.utc).isoformat(),
+    }
+    rows = supabase.table('pos_companion_sessions').update(patch).eq('id', session.get('id')).execute().data or []
+    session = rows[0] if rows else {**session, **patch}
+    return {'ok': True, 'session': _companion_session_public(session), 'state': 'manual_match_required' if len(candidates) > 1 else 'waiting_for_sale', 'candidates': candidates}
+
+
+@app.post('/api/v1/companion/session/current/match')
+@app.post('/api/v1/pos-companion/session/current/match')
+async def companion_session_match(
+    req: POSCompanionSessionMatchRequest,
+    background_tasks: BackgroundTasks,
+    x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
+):
+    device = _require_pos_device(x_lt_device_token)
+    session = _companion_active_session(device)
+    if not session:
+        raise HTTPException(status_code=404, detail='No active Companion checkout.')
+    tx = _pos_companion_exact_transaction(device, req.external_transaction_id)
+    if not tx:
+        raise HTTPException(status_code=404, detail='Exact POS transaction was not found for this Companion connection.')
+    if not _companion_session_candidates(device, session, [tx]):
+        raise HTTPException(status_code=409, detail='That receipt is outside this Companion checkout window or does not match this branch/register.')
+    integration = _get_pos_integration(device.get('business_id'), device.get('provider') or 'storehub')
+    allow_mock = bool(integration and integration.get('mode') == 'test' and _companion_is_mock_transaction(tx))
+    return await _companion_process_transaction(device, session, tx, background_tasks, allow_test_mode=allow_mock)
+
+
+@app.post('/api/v1/companion/mock/transaction')
+@app.post('/api/v1/pos-companion/mock/transaction')
+def companion_mock_transaction(
+    req: CompanionMockTransactionRequest,
+    x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
+):
+    """Create a realistic normalized POS event for Step-4 APK validation.
+
+    This endpoint is intentionally restricted to Test Mode. It never pretends to
+    be a live StoreHub call; it only feeds the same ``pos_transactions`` contract
+    that a real provider adapter will eventually populate.
+    """
+    device = _require_pos_device(x_lt_device_token)
+    session = _companion_active_session(device)
+    if not session:
+        raise HTTPException(status_code=409, detail='Scan a Loyalty Tree member before completing a mock POS sale.')
+    provider = str(device.get('provider') or 'storehub').lower()
+    integration = _get_pos_integration(device.get('business_id'), provider)
+    if not integration or integration.get('mode') != 'test':
+        raise HTTPException(status_code=409, detail='Mock POS Bridge is available only while this POS integration is in Test Mode.')
+
+    mapping = _companion_mock_mapping(device)
+    external_branch_id = str(mapping.get('external_branch_id') or f'mock-{device.get("branch_id")}')
+    branch_id = device.get('branch_id')
+    if req.scenario == 'wrong_outlet':
+        try:
+            other_rows = (
+                supabase.table('pos_branch_mappings').select('*')
+                .eq('integration_id', device.get('integration_id'))
+                .neq('branch_id', device.get('branch_id'))
+                .eq('is_active', True).limit(1).execute().data or []
+            )
+        except Exception as exc:
+            raise _pos_schema_error(exc)
+        if other_rows:
+            branch_id = other_rows[0].get('branch_id')
+            external_branch_id = str(other_rows[0].get('external_branch_id') or 'mock-other-outlet')
+        else:
+            branch_id = None
+            external_branch_id = 'mock-other-outlet'
+
+    terminal_id = (req.terminal_id or '').strip() or f'MOCK-{str(device.get("id") or "DEVICE")[:8].upper()}'
+    if req.scenario == 'wrong_terminal':
+        terminal_id = f'OTHER-{terminal_id}'
+
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')[:-3]
+    base_receipt = (req.receipt_number or '').strip() or f'MOCK-{stamp}'
+    external_id = (req.external_transaction_id or '').strip() or f'mock:{provider}:{external_branch_id}:{base_receipt}'
+    amount = float(Decimal(str(req.amount)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+    transaction_type = 'sale'
+    if req.scenario == 'void':
+        transaction_type = 'void'
+    elif req.scenario == 'refund':
+        transaction_type = 'refund'
+
+    created = [_companion_mock_upsert_transaction(
+        device, external_transaction_id=external_id, receipt_number=base_receipt,
+        amount=amount, currency=req.currency, branch_id=branch_id,
+        external_branch_id=external_branch_id, terminal_id=terminal_id,
+        transaction_type=transaction_type, scenario=req.scenario,
+    )]
+
+    if req.scenario == 'duplicate':
+        # Re-deliver the exact same provider event before Companion polling. The
+        # normalized transaction remains one row, and loyalty idempotency still
+        # keys off this same external transaction id.
+        _companion_mock_upsert_transaction(
+            device, external_transaction_id=external_id, receipt_number=base_receipt,
+            amount=amount, currency=req.currency, branch_id=branch_id,
+            external_branch_id=external_branch_id, terminal_id=terminal_id,
+            transaction_type=transaction_type, scenario=req.scenario,
+        )
+
+    if req.scenario == 'ambiguous':
+        second_amount = float(Decimal(str(req.second_amount or (amount + 100))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+        created.append(_companion_mock_upsert_transaction(
+            device, external_transaction_id=f'{external_id}:B', receipt_number=f'{base_receipt}-B',
+            amount=second_amount, currency=req.currency, branch_id=device.get('branch_id'),
+            external_branch_id=str(mapping.get('external_branch_id') or external_branch_id),
+            terminal_id=terminal_id, transaction_type='sale', scenario=req.scenario,
+        ))
+
+    public_rows = [{
+        'id': str(row.get('id') or ''),
+        'external_transaction_id': row.get('external_transaction_id'),
+        'receipt_number': row.get('external_receipt_number'),
+        'gross_amount': float(row.get('gross_amount') or 0),
+        'currency': row.get('currency') or req.currency.upper(),
+        'transaction_type': row.get('transaction_type'),
+        'status': row.get('status'),
+        'branch_id': row.get('branch_id'),
+        'source': row.get('source'),
+    } for row in created]
+    return {
+        'ok': True, 'mock_bridge': True, 'scenario': req.scenario,
+        'transactions': public_rows,
+        'message': (
+            'Two matching receipts created. Companion must ask the cashier to choose one.'
+            if req.scenario == 'ambiguous' else
+            'The same provider event was delivered twice but normalized to one transaction. Companion must award loyalty at most once.'
+            if req.scenario == 'duplicate' else
+            'Mock POS transaction written to the normalized bridge. Companion polling will decide whether it is safe to match.'
+        ),
+    }
+
+
+@app.post('/api/v1/companion/session/current/test-sale')
+@app.post('/api/v1/pos-companion/session/current/test-sale')
+async def companion_session_test_sale(
+    req: POSCompanionTestSaleRequest,
+    background_tasks: BackgroundTasks,
+    x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
+):
+    """Explicit Step-3 simulator: proves scan -> session -> sale -> loyalty -> Wallet without pretending StoreHub live writes are verified."""
+    device = _require_pos_device(x_lt_device_token)
+    session = _companion_active_session(device)
+    if not session:
+        raise HTTPException(status_code=404, detail='No active Companion checkout. Scan a customer first.')
+    provider = str(device.get('provider') or '').lower()
+    integration = _get_pos_integration(device.get('business_id'), provider)
+    if not integration or integration.get('mode') != 'test':
+        raise HTTPException(status_code=409, detail='Companion Test Sale is available only while the POS integration is in Test Mode.')
+    external_tx = (req.external_transaction_id or '').strip() or f'companion-test:{session.get("id")}'
+    now = datetime.now(timezone.utc).isoformat()
+    amount = float(Decimal(str(req.amount)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+    try:
+        existing = supabase.table('pos_transactions').select('*').eq('integration_id', device.get('integration_id')).eq('external_transaction_id', external_tx).limit(1).execute().data or []
+        if existing:
+            tx = existing[0]
+        else:
+            rows = supabase.table('pos_transactions').insert({
+                'integration_id': device.get('integration_id'), 'business_id': device.get('business_id'),
+                'branch_id': device.get('branch_id'), 'provider': provider,
+                'external_transaction_id': external_tx, 'external_receipt_number': external_tx,
+                'transaction_type': 'sale', 'source': 'simulator', 'currency': req.currency.upper(),
+                'gross_amount': amount, 'net_amount': amount, 'eligible_amount': amount, 'status': 'received',
+                'raw_payload': {'companion_test_sale': True},
+                'processing_metadata': {'companion_device_id': str(device.get('id')), 'companion_session_id': str(session.get('id'))},
+                'transacted_at': now,
+            }).execute().data or []
+            tx = rows[0] if rows else None
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    if not tx:
+        raise HTTPException(status_code=500, detail='Could not create Companion test transaction.')
+    return await _companion_process_transaction(device, session, tx, background_tasks, allow_test_mode=True)
+
+
+@app.post('/api/v1/companion/session/current/cancel')
+@app.post('/api/v1/pos-companion/session/current/cancel')
+def companion_session_cancel(x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token')):
+    device = _require_pos_device(x_lt_device_token)
+    session = _companion_active_session(device, expire_stale=False)
+    if not session:
+        return {'ok': True, 'session': None, 'message': 'No active checkout.'}
+    patch = {'status': 'cancelled', 'error_message': 'Checkout cancelled by cashier.', 'updated_at': datetime.now(timezone.utc).isoformat()}
+    try:
+        rows = supabase.table('pos_companion_sessions').update(patch).eq('id', session.get('id')).execute().data or []
+        session = rows[0] if rows else {**session, **patch}
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    return {'ok': True, 'session': _companion_session_public(session), 'message': 'Companion checkout cancelled.'}
 
 
 # =============================================================================

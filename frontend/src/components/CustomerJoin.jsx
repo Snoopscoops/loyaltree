@@ -215,231 +215,361 @@ function CustomerJoin({ API_BASE }) {
   }
 
   if (submitted) {
+    const brandColor = businessInfo?.primary_color || '#0f766e'
+
     return (
       <div style={styles.page}>
-        <div style={styles.card}>
-          <div style={{ fontSize: 64, marginBottom: 16 }}>🎉</div>
-          <h1 style={styles.title}>You&apos;re In!</h1>
-          <p style={styles.subtitle}>{isEmployeeMembership ? 'Your Employee Membership has been created.' : isEmployeeCard ? 'Your Employee Card has been created.' : 'Your loyalty card has been created.'}</p>
-          <div style={styles.infoBox}>
-            <p style={styles.infoLabel}>{isEmployeeExperience ? 'Employee ID' : 'Your Member ID'}</p>
-            <p style={styles.infoValue}>{isEmployeeExperience ? form.employee_id_number : 'Show this QR code on every visit'}</p>
-          </div>
+        <div style={styles.successShell}>
+          <section style={{...styles.successHero, background:`linear-gradient(145deg, ${brandColor} 0%, #0f172a 100%)`}}>
+            <div style={styles.successBadge}>MEMBERSHIP CREATED</div>
+            <div style={styles.successIcon}>✓</div>
+            <h1 style={styles.successTitle}>You&apos;re all set.</h1>
+            <p style={styles.successSubtitle}>
+              {isEmployeeMembership
+                ? `Your ${businessInfo?.name || 'business'} Employee Membership is ready.`
+                : isEmployeeCard
+                  ? `Your ${businessInfo?.name || 'business'} Employee Card is ready.`
+                  : `Your ${businessInfo?.name || 'loyalty'} card is ready to use.`}
+            </p>
 
-          {welcomeRewardIssued?.issued && <div style={{...styles.rewardBox,border:'1px solid #86efac',background:'#f0fdf4'}}>
-            <div style={styles.rewardTitle}>🎁 Welcome Reward Added</div>
-            <div style={styles.rewardRequirement}>{welcomeRewardIssued.name || 'Welcome Reward'}{welcomeRewardIssued.points_awarded ? ` · +${welcomeRewardIssued.points_awarded} points` : welcomeRewardIssued.stamps_awarded ? ` · +${welcomeRewardIssued.stamps_awarded} stamp${welcomeRewardIssued.stamps_awarded===1?'':'s'}` : ''}</div>
-            {welcomeRewardIssued.expires_at && <div style={{...styles.rewardRequirement,marginTop:4}}>Valid until {String(welcomeRewardIssued.expires_at).slice(0,10)}</div>}
-          </div>}
-
-          <div style={{
-            ...styles.walletPreview,
-            background: businessInfo?.primary_color || '#0d9488',
-          }}>
-            {businessInfo?.logo_url && <img src={businessInfo.logo_url} alt="" style={styles.walletPreviewLogo}/>}
-            <div style={styles.walletPreviewMeta}>
-              <small>{businessInfo?.category?.label || 'LoyaltyTree'}</small>
-              <strong>{businessInfo?.name || 'Your loyalty card'}</strong>
-              <span>{businessInfo?.card_name || (businessInfo?.card_type==='hybrid'?'HYBRID CARD':`${String(businessInfo?.card_type || 'stamp').toUpperCase()} CARD`)}</span>
+            <div style={styles.walletPreview}>
+              <div style={styles.walletPreviewTop}>
+                {businessInfo?.logo_url
+                  ? <img src={businessInfo.logo_url} alt="" style={styles.walletPreviewLogo}/>
+                  : <div style={styles.walletPreviewFallback}>{businessInfo?.category?.icon || '🌳'}</div>}
+                <div style={styles.walletPreviewMeta}>
+                  <small>{businessInfo?.category?.label || 'LOYALTYTREE'}</small>
+                  <strong>{businessInfo?.name || 'Your loyalty card'}</strong>
+                  <span>{businessInfo?.card_name || (businessInfo?.card_type==='hybrid' ? 'HYBRID CARD' : `${String(businessInfo?.card_type || 'stamp').toUpperCase()} CARD`)}</span>
+                </div>
+              </div>
+              <div style={styles.walletPreviewBottom}>
+                <span>{isEmployeeExperience ? 'Employee ID' : 'Member'}</span>
+                <strong>{isEmployeeExperience ? form.employee_id_number : form.name}</strong>
+              </div>
             </div>
-            <div style={styles.walletPreviewMember}>Your Wallet 2.0 card is ready</div>
-          </div>
+          </section>
 
-          <button type="button" onClick={addToWallet} style={{ ...styles.walletBtn, ...styles.unifiedWalletBtn }}>
-            Add to Wallet
-          </button>
-          {walletChoiceOpen && (
-            <div style={styles.walletChooser}>
-              <div style={styles.walletChooserTitle}>Choose your wallet</div>
-              <button type="button" onClick={openAppleWallet} style={{ ...styles.walletChoiceBtn, ...styles.appleBtn }}>Apple Wallet</button>
-              <button type="button" onClick={openGoogleWallet} disabled={walletLoading} style={{ ...styles.walletChoiceBtn, ...styles.googleBtn, ...(walletLoading ? styles.walletChoiceDisabled : {}) }}>
-                {walletLoading ? 'Preparing Google Wallet…' : 'Google Wallet'}
-              </button>
+          <section style={styles.successContent}>
+            {welcomeRewardIssued?.issued && (
+              <div style={styles.successReward}>
+                <div style={styles.successRewardIcon}>🎁</div>
+                <div>
+                  <div style={styles.successRewardTitle}>Welcome reward added</div>
+                  <div style={styles.successRewardText}>
+                    {welcomeRewardIssued.name || 'Welcome Reward'}
+                    {welcomeRewardIssued.points_awarded ? ` · +${welcomeRewardIssued.points_awarded} points` : ''}
+                    {welcomeRewardIssued.stamps_awarded ? ` · +${welcomeRewardIssued.stamps_awarded} stamp${welcomeRewardIssued.stamps_awarded===1?'':'s'}` : ''}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div style={styles.successStepLabel}>NEXT STEP</div>
+            <h2 style={styles.successContentTitle}>Save your card to your phone</h2>
+            <p style={styles.successContentText}>
+              One tap adds your LoyaltyTree card to the wallet built into your phone. No separate app needed.
+            </p>
+
+            <button type="button" onClick={addToWallet} style={styles.primaryWalletBtn}>
+              <span style={{fontSize:20}}>◫</span>
+              Add to Wallet
+            </button>
+
+            {walletChoiceOpen && (
+              <div style={styles.walletChooser}>
+                <div style={styles.walletChooserTitle}>Choose your wallet</div>
+                <button type="button" onClick={openAppleWallet} style={{...styles.walletChoiceBtn, ...styles.appleBtn}}>
+                  Apple Wallet
+                </button>
+                <button
+                  type="button"
+                  onClick={openGoogleWallet}
+                  disabled={walletLoading}
+                  style={{...styles.walletChoiceBtn, ...styles.googleBtn, ...(walletLoading ? styles.walletChoiceDisabled : {})}}
+                >
+                  {walletLoading ? 'Preparing Google Wallet…' : 'Google Wallet'}
+                </button>
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={() => { window.location.href = `${API_BASE}/wallet/${customerId}` }}
+              style={styles.secondaryWalletBtn}
+            >
+              View My Digital Card
+            </button>
+
+            <div style={styles.secureNote}>
+              <span>✓</span>
+              <span>Your card stays on your phone and can be shown on every visit.</span>
             </div>
-          )}
-          <button
-            onClick={() => { window.location.href = `${API_BASE}/wallet/${customerId}` }}
-            style={{ ...styles.walletBtn, ...styles.secondaryBtn, marginTop: 10 }}
-          >
-            📱 View My Digital Card
-          </button>
-          <p style={styles.hint}>
-            We&apos;ll automatically open the wallet made for your phone.
-          </p>
+          </section>
         </div>
       </div>
     )
   }
 
+  const brandColor = businessInfo?.primary_color || '#0f766e'
+  const programLabel = businessInfo?.card_type === 'hybrid'
+    ? `Membership + ${businessInfo?.hybrid_loyalty_type === 'stamp' ? 'Stamps' : 'Points'}`
+    : businessInfo?.card_name || `${String(businessInfo?.card_type || 'loyalty').replace('_',' ')} card`
+
   return (
     <div style={styles.page}>
-      <div style={styles.card}>
-        <div style={{...styles.logoBox,background:businessInfo?.primary_color||styles.logoBox.background}}>
-          {businessInfo?.logo_url?<img src={businessInfo.logo_url} alt="" style={styles.businessLogo}/>:<span style={styles.logoIcon}>{businessInfo?.category?.icon||'🌳'}</span>}
-        </div>
-        <h1 style={styles.title}>
-          {businessInfo?.name
-            ? (isEmployeeExperience ? `${businessInfo.name} Employee Membership` : `Join ${businessInfo.name}`)
-            : (isEmployeeExperience ? 'Employee Membership' : 'Join Rewards')}
-        </h1>
-        <p style={styles.subtitle}>
-          {isEmployeeMembership
-            ? 'Enter your employee details to receive your digital Employee Membership.'
-            : isEmployeeCard
-              ? 'Enter your employee details to access your legacy Employee Card.'
-              : `${businessInfo?.category?.label ? `${businessInfo.category.label} · ` : ''}${businessInfo?.card_type === 'hybrid' ? 'One card for membership plus rewards.' : 'Add your loyalty card to your phone and use it every visit.'}`}
-        </p>
+      <div style={styles.joinShell}>
+        <section style={{...styles.heroPanel, background:`linear-gradient(145deg, ${brandColor} 0%, #0f172a 100%)`}}>
+          <div>
+            <div style={styles.heroTopline}>
+              <div style={styles.heroLogoWrap}>
+                {businessInfo?.logo_url
+                  ? <img src={businessInfo.logo_url} alt="" style={styles.businessLogo}/>
+                  : <span style={styles.logoIcon}>{businessInfo?.category?.icon || '🌳'}</span>}
+              </div>
+              <div style={styles.heroTag}>POWERED BY LOYALTYTREE</div>
+            </div>
 
-        {welcomeRewardPreview && <div style={{...styles.rewardBox,border:'1px solid #86efac',background:'#f0fdf4'}}>
-          <div style={styles.rewardTitle}>🎁 {welcomeRewardPreview.title}</div>
-          <div style={styles.rewardRequirement}>{welcomeRewardPreview.when}</div>
-        </div>}
-                {hybridMembership && <div style={{...styles.rewardBox,border:'1px solid #99f6e4',background:'#f0fdfa'}}>
-          <div style={styles.rewardTitle}>✨ {hybridMembership.name} + {businessInfo?.hybrid_loyalty_type==='stamp'?'Stamps':'Points'}</div>
-          <div style={styles.rewardRequirement}>{hybridMembership.price>0?`₱${hybridMembership.price.toLocaleString()} / ${hybridMembership.duration} days`:`${hybridMembership.duration}-day membership`}</div>
-          <div style={{fontSize:12,color:'#475569',marginTop:6,fontWeight:700}}>{hybridMembership.enrollment==='automatic'?'Your membership activates automatically when you join.':'You join the loyalty program now. The business activates membership access for approved/paid subscribers.'}</div>
-          {hybridMembership.benefits.slice(0,3).map((benefit,i)=><div key={benefit.id||i} style={{fontSize:12,color:'#0f766e',marginTop:4}}>✓ {benefit.name}</div>)}
-        </div>}
-        {rewardSummary && <div style={styles.rewardBox}>
-          <div style={styles.rewardTitle}>🎁 {rewardSummary.title}</div>
-          <div style={styles.rewardRequirement}>{rewardSummary.requirement}</div>
-        </div>}
-        {earningRule && <p style={styles.earningRule}>{earningRule}</p>}
-
-        <form onSubmit={handleSubmit} style={styles.form}>
-          <div style={styles.inputGroup}>
-            <label style={styles.label}>Full Name</label>
-            <input
-              placeholder="John Doe"
-              value={form.name}
-              onChange={e => setForm({...form, name: e.target.value})}
-              style={styles.input}
-              required
-            />
+            <div style={styles.heroEyebrow}>{programLabel}</div>
+            <h1 style={styles.heroTitle}>
+              {businessInfo?.name
+                ? (isEmployeeExperience ? `${businessInfo.name} Employee Membership` : `Join ${businessInfo.name}`)
+                : (isEmployeeExperience ? 'Employee Membership' : 'Join Rewards')}
+            </h1>
+            <p style={styles.heroSubtitle}>
+              {isEmployeeMembership
+                ? 'Your employee membership, available directly on your phone.'
+                : isEmployeeCard
+                  ? 'Your employee card, available directly on your phone.'
+                  : 'Join in less than a minute, save your card to Apple Wallet or Google Wallet, and use it every visit.'}
+            </p>
           </div>
-          {isEmployeeExperience && (
-            <div style={styles.inputGroup}>
-              <label style={styles.label}>Employee ID</label>
-              <input
-                placeholder="e.g. ANG-00124"
-                value={form.employee_id_number}
-                onChange={e => setForm({...form, employee_id_number: e.target.value})}
-                style={styles.input}
-                required
-              />
+
+          <div style={styles.heroHighlights}>
+            {welcomeRewardPreview && (
+              <div style={styles.heroHighlight}>
+                <span style={styles.heroHighlightIcon}>🎁</span>
+                <div style={styles.heroHighlightText}>
+                  <strong>{welcomeRewardPreview.title}</strong>
+                  <span>{welcomeRewardPreview.when}</span>
+                </div>
+              </div>
+            )}
+            {rewardSummary && (
+              <div style={styles.heroHighlight}>
+                <span style={styles.heroHighlightIcon}>✦</span>
+                <div style={styles.heroHighlightText}>
+                  <strong>{rewardSummary.title}</strong>
+                  <span>{rewardSummary.requirement}</span>
+                </div>
+              </div>
+            )}
+            {earningRule && (
+              <div style={styles.heroHighlight}>
+                <span style={styles.heroHighlightIcon}>↗</span>
+                <div style={styles.heroHighlightText}>
+                  <strong>Earn every visit</strong>
+                  <span>{earningRule}</span>
+                </div>
+              </div>
+            )}
+            {!welcomeRewardPreview && !rewardSummary && !earningRule && (
+              <div style={styles.heroHighlight}>
+                <span style={styles.heroHighlightIcon}>◫</span>
+                <div style={styles.heroHighlightText}>
+                  <strong>No app download</strong>
+                  <span>Your membership lives in the wallet already on your phone.</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {hybridMembership && (
+            <div style={styles.membershipStrip}>
+              <div style={styles.membershipStripLabel}>{hybridMembership.name}</div>
+              <div style={styles.membershipStripValue}>
+                {hybridMembership.price > 0
+                  ? `₱${hybridMembership.price.toLocaleString()} / ${hybridMembership.duration} days`
+                  : `${hybridMembership.duration}-day membership`}
+              </div>
+              <div style={styles.membershipStripText}>
+                {hybridMembership.enrollment === 'automatic'
+                  ? 'Membership activates automatically when you join.'
+                  : 'Join now. The business activates membership access after approval or payment.'}
+              </div>
             </div>
           )}
-          {!isEmployeeExperience && <div style={styles.inputGroup}>
-            <label style={styles.label}>Address <span style={styles.optional}>(optional)</span></label>
-            <input
-              placeholder="123 Main St"
-              value={form.address}
-              onChange={e => setForm({...form, address: e.target.value})}
-              style={styles.input}
-            />
-          </div>}
-          {!isEmployeeExperience && <div style={styles.inputGroup}>
-            <label style={styles.label}>Age <span style={styles.optional}>(optional)</span></label>
-            <input
-              placeholder="25"
-              value={form.age}
-              onChange={e => setForm({...form, age: e.target.value})}
-              style={styles.input}
-              type="number"
-              min="0"
-              max="120"
-            />
-          </div>}
-          <div style={styles.inputGroup}>
-            <label style={styles.label}>{isEmployeeExperience ? 'Mobile Number' : 'Number'}</label>
-            <input
-              placeholder="+1 234 567 8900"
-              value={form.phone}
-              onChange={e => setForm({...form, phone: e.target.value})}
-              style={styles.input}
-              required
-            />
+
+          <div style={styles.heroFooter}>
+            <span>Apple Wallet</span>
+            <span style={styles.heroFooterDot}>•</span>
+            <span>Google Wallet</span>
+            <span style={styles.heroFooterDot}>•</span>
+            <span>No app required</span>
           </div>
-          <div style={styles.inputGroup}>
-            <label style={styles.label}>Birthday <span style={styles.optional}>(optional)</span></label>
-            <input
-              value={form.birthday}
-              onChange={e => setForm({...form, birthday: e.target.value})}
-              style={styles.input}
-              type="date"
-              required={isEmployeeCard}
-            />
+        </section>
+
+        <section style={styles.formPanel}>
+          <div style={styles.formHeader}>
+            <div style={styles.stepPill}>1-MINUTE SIGN UP</div>
+            <h2 style={styles.formTitle}>{isEmployeeExperience ? 'Enter your employee details' : 'Create your digital loyalty card'}</h2>
+            <p style={styles.formSubtitle}>
+              Required fields are kept to a minimum. Optional details help the business personalize your rewards.
+            </p>
           </div>
-          {isEmployeeExperience && (
-            <>
+
+          <form onSubmit={handleSubmit} style={styles.form}>
+            <div style={styles.fieldGrid}>
               <div style={styles.inputGroup}>
-                <label style={styles.label}>Position {isEmployeeMembership ? null : <span style={styles.optional}>(optional)</span>}</label>
-                <select
-                  value={form.employee_position}
-                  onChange={e => setForm({...form, employee_position: e.target.value})}
-                  style={styles.input}
-                  required={isEmployeeMembership}
-                >
-                  <option value="">Select position</option>
-                  {EMPLOYEE_POSITION_OPTIONS.map(option => <option key={option} value={option}>{option}</option>)}
-                </select>
-              </div>
-              <div style={styles.inputGroup}>
-                <label style={styles.label}>Started When <span style={styles.optional}>(optional)</span></label>
+                <label style={styles.label}>Full name</label>
                 <input
-                  value={form.employee_start_date}
-                  onChange={e => setForm({...form, employee_start_date: e.target.value})}
+                  placeholder="Your full name"
+                  value={form.name}
+                  onChange={e => setForm({...form, name: e.target.value})}
                   style={styles.input}
-                  type="date"
+                  required
                 />
               </div>
-            </>
-          )}
-          {!isEmployeeExperience && <div style={styles.inputGroup}>
-            <label style={styles.label}>Occupation <span style={styles.optional}>(optional)</span></label>
-            <select
-              value={form.occupation}
-              onChange={e => setForm({...form, occupation: e.target.value})}
-              style={styles.input}
-            >
-              <option value="">Select one</option>
-              <option value="working">Working</option>
-              <option value="business_owner">Business Owner</option>
-              <option value="unemployed">Unemployed</option>
-            </select>
-          </div>}
-          {!isEmployeeExperience && <div style={styles.inputGroup}>
-            <label style={styles.label}>Gender <span style={styles.optional}>(optional)</span></label>
-            <select
-              value={form.gender}
-              onChange={e => setForm({...form, gender: e.target.value})}
-              style={styles.input}
-            >
-              <option value="">Select one</option>
-              <option value="male">Male</option>
-              <option value="female">Female</option>
-              <option value="rather_not_say">Rather not say</option>
-            </select>
-          </div>}
-          <div style={styles.inputGroup}>
-            <label style={styles.label}>Email <span style={styles.optional}>(optional)</span></label>
-            <input
-              placeholder="john@email.com"
-              value={form.email}
-              onChange={e => setForm({...form, email: e.target.value})}
-              style={styles.input}
-              type="email"
-            />
-          </div>
-          <div style={styles.consentBox}>
-            <div style={styles.consentTitle}>Privacy & Membership Consent</div>
-            <p style={styles.consentText}>
-              By joining, you agree that the information you provide may be collected and used by this business and LoyaltyTree to create and manage your digital loyalty membership, provide rewards and membership services, and send relevant membership or promotional updates.
-            </p>
-            <p style={styles.consentText}>
-              Your information will be handled in accordance with applicable privacy requirements. You may request access, correction, or deletion of your personal information, subject to applicable legal and operational requirements.
-            </p>
-            <label style={styles.consentCheckRow}>
+
+              <div style={styles.inputGroup}>
+                <label style={styles.label}>{isEmployeeExperience ? 'Mobile number' : 'Phone number'}</label>
+                <input
+                  placeholder="+63 9XX XXX XXXX"
+                  value={form.phone}
+                  onChange={e => setForm({...form, phone: e.target.value})}
+                  style={styles.input}
+                  inputMode="tel"
+                  required
+                />
+              </div>
+
+              {isEmployeeExperience && (
+                <div style={styles.inputGroup}>
+                  <label style={styles.label}>Employee ID</label>
+                  <input
+                    placeholder="e.g. ANG-00124"
+                    value={form.employee_id_number}
+                    onChange={e => setForm({...form, employee_id_number: e.target.value})}
+                    style={styles.input}
+                    required
+                  />
+                </div>
+              )}
+
+              <div style={styles.inputGroup}>
+                <label style={styles.label}>Email <span style={styles.optional}>optional</span></label>
+                <input
+                  placeholder="you@email.com"
+                  value={form.email}
+                  onChange={e => setForm({...form, email: e.target.value})}
+                  style={styles.input}
+                  type="email"
+                />
+              </div>
+
+              <div style={styles.inputGroup}>
+                <label style={styles.label}>
+                  Birthday {!isEmployeeCard && <span style={styles.optional}>optional</span>}
+                </label>
+                <input
+                  value={form.birthday}
+                  onChange={e => setForm({...form, birthday: e.target.value})}
+                  style={styles.input}
+                  type="date"
+                  required={isEmployeeCard}
+                />
+              </div>
+
+              {!isEmployeeExperience && (
+                <div style={styles.inputGroup}>
+                  <label style={styles.label}>Age <span style={styles.optional}>optional</span></label>
+                  <input
+                    placeholder="25"
+                    value={form.age}
+                    onChange={e => setForm({...form, age: e.target.value})}
+                    style={styles.input}
+                    type="number"
+                    min="0"
+                    max="120"
+                    inputMode="numeric"
+                  />
+                </div>
+              )}
+
+              {!isEmployeeExperience && (
+                <div style={styles.inputGroup}>
+                  <label style={styles.label}>Occupation <span style={styles.optional}>optional</span></label>
+                  <select
+                    value={form.occupation}
+                    onChange={e => setForm({...form, occupation: e.target.value})}
+                    style={styles.input}
+                  >
+                    <option value="">Select one</option>
+                    <option value="working">Working</option>
+                    <option value="business_owner">Business Owner</option>
+                    <option value="unemployed">Unemployed</option>
+                  </select>
+                </div>
+              )}
+
+              {!isEmployeeExperience && (
+                <div style={styles.inputGroup}>
+                  <label style={styles.label}>Gender <span style={styles.optional}>optional</span></label>
+                  <select
+                    value={form.gender}
+                    onChange={e => setForm({...form, gender: e.target.value})}
+                    style={styles.input}
+                  >
+                    <option value="">Select one</option>
+                    <option value="male">Male</option>
+                    <option value="female">Female</option>
+                    <option value="rather_not_say">Rather not say</option>
+                  </select>
+                </div>
+              )}
+
+              {isEmployeeExperience && (
+                <>
+                  <div style={styles.inputGroup}>
+                    <label style={styles.label}>
+                      Position {!isEmployeeMembership && <span style={styles.optional}>optional</span>}
+                    </label>
+                    <select
+                      value={form.employee_position}
+                      onChange={e => setForm({...form, employee_position: e.target.value})}
+                      style={styles.input}
+                      required={isEmployeeMembership}
+                    >
+                      <option value="">Select position</option>
+                      {EMPLOYEE_POSITION_OPTIONS.map(option => <option key={option} value={option}>{option}</option>)}
+                    </select>
+                  </div>
+                  <div style={styles.inputGroup}>
+                    <label style={styles.label}>Start date <span style={styles.optional}>optional</span></label>
+                    <input
+                      value={form.employee_start_date}
+                      onChange={e => setForm({...form, employee_start_date: e.target.value})}
+                      style={styles.input}
+                      type="date"
+                    />
+                  </div>
+                </>
+              )}
+
+              {!isEmployeeExperience && (
+                <div style={{...styles.inputGroup, ...styles.fullWidth}}>
+                  <label style={styles.label}>Address <span style={styles.optional}>optional</span></label>
+                  <input
+                    placeholder="City / municipality"
+                    value={form.address}
+                    onChange={e => setForm({...form, address: e.target.value})}
+                    style={styles.input}
+                  />
+                </div>
+              )}
+            </div>
+
+            <label style={styles.consentCard}>
               <input
                 type="checkbox"
                 checked={privacyConsent}
@@ -447,28 +577,43 @@ function CustomerJoin({ API_BASE }) {
                 style={styles.consentCheckbox}
               />
               <span>
-                I have read and agree to the Privacy & Membership Consent, and I confirm that the information I provided is accurate.
+                <strong style={styles.consentTitle}>Privacy & membership consent</strong>
+                <span style={styles.consentText}>
+                  By joining, you agree that the information you provide may be collected and used by this business and LoyaltyTree to create and manage your digital loyalty membership, provide rewards and membership services, and send relevant membership or promotional updates.
+                </span>
+                <span style={{...styles.consentText, marginTop:5}}>
+                  Your information will be handled in accordance with applicable privacy requirements. You may request access, correction, or deletion of your personal information, subject to applicable legal and operational requirements.
+                </span>
+                <span style={{...styles.consentText, marginTop:5, color:'#334155', fontWeight:700}}>
+                  I have read and agree to the Privacy & Membership Consent, and I confirm that the information I provided is accurate.
+                </span>
               </span>
             </label>
+
+            {error && <div style={styles.error}>{error}</div>}
+
+            <button
+              type="submit"
+              disabled={loading || !privacyConsent}
+              style={{
+                ...styles.button,
+                background: `linear-gradient(135deg, ${brandColor}, #0f172a)`,
+                ...(loading || !privacyConsent ? styles.buttonDisabled : {}),
+              }}
+            >
+              <span>{loading ? 'Creating your card…' : (isEmployeeMembership ? 'Get My Employee Membership' : isEmployeeCard ? 'Get My Employee Card' : 'Create My Loyalty Card')}</span>
+              {!loading && <span style={{fontSize:18}}>→</span>}
+            </button>
+          </form>
+
+          <div style={styles.formFooter}>
+            <span style={styles.formFooterShield}>✓</span>
+            <span>
+              Secure signup · No app download · Add to Wallet after joining<br/>
+              LoyaltyTree helps the business manage your loyalty membership and digital card.
+            </span>
           </div>
-
-          <button
-            type="submit"
-            disabled={loading || !privacyConsent}
-            style={{
-              ...styles.button,
-              ...(loading || !privacyConsent ? styles.buttonDisabled : {}),
-            }}
-          >
-            {loading ? 'Creating...' : (isEmployeeMembership ? 'Get My Employee Membership' : isEmployeeCard ? 'Get My Employee Card' : 'Get My Loyalty Card')}
-          </button>
-        </form>
-
-        {error && <div style={styles.error}>{error}</div>}
-
-        <p style={styles.terms}>
-          LoyaltyTree helps the business manage your loyalty membership and digital card. Please contact the business if you want to review or update the information connected to your membership.
-        </p>
+        </section>
       </div>
     </div>
   )
@@ -477,222 +622,180 @@ function CustomerJoin({ API_BASE }) {
 const styles = {
   page: {
     minHeight: '100vh',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    background: 'linear-gradient(135deg, #0f766e 0%, #134e4a 50%, #0f172a 100%)',
-    padding: 20,
-  },
-  card: {
-    background: 'white',
-    borderRadius: 24,
-    padding: '48px 40px',
-    width: '100%',
-    maxWidth: 400,
-    boxShadow: '0 25px 50px -12px rgba(0,0,0,0.25)',
-    textAlign: 'center',
-  },
-  businessLogo:{width:'100%',height:'100%',objectFit:'cover',borderRadius:'inherit'},
-  logoBox: {
-    width: 64,
-    height: 64,
-    background: 'linear-gradient(135deg, #0d9488, #0f766e)',
-    borderRadius: 16,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    margin: '0 auto 24px',
-  },
-  logoIcon: {
-    fontSize: 32,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: 800,
+    background: '#f4f7f8',
+    padding: 'clamp(12px, 3vw, 32px)',
+    fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
     color: '#0f172a',
-    margin: '0 0 8px',
-    letterSpacing: '-0.5px',
-  },
-  subtitle: {
-    color: '#64748b',
-    fontSize: 15,
-    margin: '0 0 32px',
-  },
-  rewardBox: {
-    background: '#f8fafc',
-    borderRadius: 14,
-    padding: '18px 16px',
-    margin: '0 0 14px',
-    textAlign: 'center',
-  },
-  rewardTitle: {
-    color: '#0f172a',
-    fontSize: 15,
-    fontWeight: 800,
-    marginBottom: 7,
-  },
-  rewardRequirement: {
-    color: '#64748b',
-    fontSize: 13,
-    lineHeight: 1.5,
-  },
-  earningRule: {
-    color: '#475569',
-    fontSize: 13,
-    textAlign: 'center',
-    margin: '0 0 24px',
-  },
-  form: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 16,
-    textAlign: 'left',
-  },
-  inputGroup: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 6,
-  },
-  label: {
-    fontSize: 14,
-    fontWeight: 500,
-    color: '#334155',
-  },
-  optional: {
-    color: '#94a3b8',
-    fontWeight: 400,
-  },
-  input: {
-    padding: '14px 16px',
-    borderRadius: 12,
-    border: '1.5px solid #e2e8f0',
-    fontSize: 15,
-    outline: 'none',
-    fontFamily: 'inherit',
-    transition: 'border-color 0.2s',
-  },
-  button: {
-    padding: '16px',
-    background: 'linear-gradient(135deg, #0d9488, #0f766e)',
-    color: 'white',
-    border: 'none',
-    borderRadius: 12,
-    fontSize: 16,
-    fontWeight: 700,
-    cursor: 'pointer',
-    marginTop: 8,
-  },
-  error: {
-    padding: '12px 16px',
-    background: '#fef2f2',
-    color: '#dc2626',
-    borderRadius: 10,
-    fontSize: 14,
-    marginTop: 12,
-  },
-  terms: {
-    fontSize: 12,
-    color: '#94a3b8',
-    marginTop: 20,
-    lineHeight: 1.6,
-  },
-  consentBox: {
-    padding: '14px 15px',
-    border: '1px solid #dbe4ea',
-    background: '#f8fafc',
-    borderRadius: 12,
-    marginTop: 2,
-  },
-  consentTitle: {
-    fontSize: 13,
-    fontWeight: 800,
-    color: '#0f172a',
-    marginBottom: 7,
-  },
-  consentText: {
-    margin: '0 0 8px',
-    color: '#64748b',
-    fontSize: 12,
-    lineHeight: 1.55,
-  },
-  consentCheckRow: {
-    display: 'flex',
-    alignItems: 'flex-start',
-    gap: 9,
-    color: '#334155',
-    fontSize: 12,
-    lineHeight: 1.5,
-    fontWeight: 600,
-    cursor: 'pointer',
-  },
-  consentCheckbox: {
-    marginTop: 2,
-    width: 16,
-    height: 16,
-    accentColor: '#0d9488',
-    flexShrink: 0,
-  },
-  buttonDisabled: {
-    opacity: 0.5,
-    cursor: 'not-allowed',
-  },
-  infoBox: {
-    background: '#f0fdf4',
-    borderRadius: 12,
-    padding: 20,
-    margin: '24px 0',
-  },
-  infoLabel: {
-    fontSize: 13,
-    fontWeight: 600,
-    color: '#065f46',
-    textTransform: 'uppercase',
-    letterSpacing: '1px',
-    margin: '0 0 4px',
-  },
-  infoValue: {
-    fontSize: 14,
-    color: '#059669',
-    margin: 0,
-  },
-  hint: {
-    fontSize: 13,
-    color: '#64748b',
-    lineHeight: 1.6,
-    marginTop: 16,
-  },
-  walletPreview:{position:'relative',overflow:'hidden',borderRadius:18,padding:18,minHeight:150,color:'#fff',textAlign:'left',marginBottom:18,boxShadow:'0 16px 35px rgba(15,23,42,.18)'},
-  walletPreviewLogo:{width:44,height:44,borderRadius:12,objectFit:'cover',background:'#fff',marginBottom:18},
-  walletPreviewMeta:{display:'flex',flexDirection:'column',gap:3},
-  walletPreviewMember:{position:'absolute',right:16,bottom:15,fontSize:11,fontWeight:800,opacity:.8},
-  walletBtn: {
-    display: 'block',
     boxSizing: 'border-box',
+  },
+  joinShell: {
     width: '100%',
-    padding: '16px',
-    background: 'linear-gradient(135deg, #0d9488, #0f766e)',
-    color: 'white',
-    border: 'none',
-    borderRadius: 12,
-    fontSize: 16,
-    fontWeight: 700,
-    cursor: 'pointer',
-    marginTop: 20,
-    textAlign: 'center',
-    textDecoration: 'none',
+    maxWidth: 1080,
+    margin: '0 auto',
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 360px), 1fr))',
+    background: '#ffffff',
+    border: '1px solid #e6ecef',
+    borderRadius: 28,
+    overflow: 'hidden',
+    boxShadow: '0 24px 70px rgba(15, 23, 42, 0.10)',
   },
-  unifiedWalletBtn: { background: '#111827' },
-  walletChooser: { marginTop:10,padding:12,border:'1.5px solid #e2e8f0',borderRadius:12,background:'#f8fafc' },
-  walletChooserTitle: { fontSize:12,fontWeight:800,color:'#64748b',marginBottom:8 },
-  walletChoiceBtn: { display:'block',width:'100%',boxSizing:'border-box',border:'none',borderRadius:10,padding:'12px 14px',color:'#fff',fontSize:14,fontWeight:800,cursor:'pointer',marginTop:7 },
-  appleBtn: { background:'#000000' },
-  googleBtn: { background:'#4285f4' },
-  walletChoiceDisabled: { opacity:.55,cursor:'not-allowed' },
-  secondaryBtn: {
-    background: 'white',
-    color: '#0f766e',
-    border: '1.5px solid #e2e8f0',
+  heroPanel: {
+    color: '#ffffff',
+    padding: 'clamp(28px, 5vw, 54px)',
+    minHeight: 560,
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'space-between',
+    position: 'relative',
+    overflow: 'hidden',
   },
+  heroTopline: {display:'flex',alignItems:'center',justifyContent:'space-between',gap:16,marginBottom:46},
+  heroLogoWrap: {
+    width:58,height:58,borderRadius:18,display:'flex',alignItems:'center',justifyContent:'center',
+    overflow:'hidden',background:'rgba(255,255,255,.14)',border:'1px solid rgba(255,255,255,.18)',
+    boxShadow:'0 10px 30px rgba(0,0,0,.16)',
+  },
+  businessLogo:{width:'100%',height:'100%',objectFit:'cover'},
+  logoIcon:{fontSize:30},
+  heroTag:{fontSize:10,fontWeight:850,letterSpacing:'1.5px',opacity:.72,textAlign:'right'},
+  heroEyebrow:{
+    display:'inline-flex',width:'fit-content',padding:'7px 10px',borderRadius:999,
+    background:'rgba(255,255,255,.12)',border:'1px solid rgba(255,255,255,.16)',
+    fontSize:11,fontWeight:800,letterSpacing:'.5px',textTransform:'uppercase',marginBottom:16,
+  },
+  heroTitle:{
+    fontSize:'clamp(32px, 5vw, 52px)',lineHeight:1.02,letterSpacing:'-2px',
+    margin:'0 0 18px',maxWidth:520,
+  },
+  heroSubtitle:{fontSize:15,lineHeight:1.75,color:'rgba(255,255,255,.78)',maxWidth:500,margin:0},
+  heroHighlights:{display:'grid',gap:10,marginTop:36},
+  heroHighlight:{
+    display:'flex',alignItems:'flex-start',gap:12,padding:'13px 14px',borderRadius:16,
+    background:'rgba(255,255,255,.10)',border:'1px solid rgba(255,255,255,.12)',
+    backdropFilter:'blur(8px)',
+  },
+  heroHighlightIcon:{
+    width:30,height:30,borderRadius:10,background:'rgba(255,255,255,.14)',
+    display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,
+  },
+  heroHighlightText:{display:'flex',flexDirection:'column',gap:3,fontSize:12,lineHeight:1.45,color:'rgba(255,255,255,.74)'},
+  membershipStrip:{
+    marginTop:14,borderRadius:16,padding:'14px 15px',background:'rgba(255,255,255,.10)',
+    border:'1px solid rgba(255,255,255,.12)',
+  },
+  membershipStripLabel:{fontSize:12,fontWeight:800,opacity:.75,textTransform:'uppercase',letterSpacing:'.5px'},
+  membershipStripValue:{fontSize:17,fontWeight:850,marginTop:4},
+  membershipStripText:{fontSize:12,lineHeight:1.55,opacity:.74,marginTop:5},
+  heroFooter:{
+    display:'flex',alignItems:'center',flexWrap:'wrap',gap:8,marginTop:34,
+    fontSize:11,fontWeight:750,color:'rgba(255,255,255,.62)',
+  },
+  heroFooterDot:{opacity:.45},
+
+  formPanel:{padding:'clamp(26px, 5vw, 54px)',background:'#ffffff',alignSelf:'stretch'},
+  formHeader:{marginBottom:26},
+  stepPill:{color:'#64748b',fontSize:10,fontWeight:850,letterSpacing:'1.35px',marginBottom:11},
+  formTitle:{
+    margin:'0 0 9px',fontSize:'clamp(24px, 3.2vw, 32px)',lineHeight:1.12,
+    letterSpacing:'-.9px',color:'#0f172a',
+  },
+  formSubtitle:{margin:0,color:'#64748b',fontSize:13,lineHeight:1.65},
+  form:{display:'flex',flexDirection:'column',gap:18},
+  fieldGrid:{
+    display:'grid',gridTemplateColumns:'repeat(auto-fit, minmax(min(100%, 190px), 1fr))',gap:14,
+  },
+  fullWidth:{gridColumn:'1 / -1'},
+  inputGroup:{display:'flex',flexDirection:'column',gap:7},
+  label:{fontSize:12,fontWeight:750,color:'#334155'},
+  optional:{color:'#94a3b8',fontWeight:550,marginLeft:4},
+  input:{
+    width:'100%',boxSizing:'border-box',padding:'13px 14px',borderRadius:12,
+    border:'1px solid #dfe7eb',background:'#fbfcfd',fontSize:14,color:'#0f172a',
+    outline:'none',fontFamily:'inherit',minHeight:47,
+  },
+  consentCard:{
+    display:'flex',alignItems:'flex-start',gap:11,padding:'14px 15px',
+    border:'1px solid #e2e8f0',background:'#f8fafc',borderRadius:14,cursor:'pointer',
+  },
+  consentCheckbox:{marginTop:2,width:17,height:17,accentColor:'#0f766e',flexShrink:0},
+  consentTitle:{display:'block',fontSize:12,color:'#0f172a',marginBottom:4},
+  consentText:{display:'block',color:'#64748b',fontSize:11,lineHeight:1.55,fontWeight:500},
+  button:{
+    width:'100%',minHeight:52,border:'none',borderRadius:14,color:'#fff',
+    fontSize:14,fontWeight:850,cursor:'pointer',display:'flex',alignItems:'center',
+    justifyContent:'space-between',gap:12,padding:'0 18px',
+    boxShadow:'0 12px 24px rgba(15,23,42,.14)',
+  },
+  buttonDisabled:{opacity:.48,cursor:'not-allowed',boxShadow:'none'},
+  error:{
+    padding:'12px 14px',background:'#fff1f2',border:'1px solid #fecdd3',
+    color:'#be123c',borderRadius:12,fontSize:12,lineHeight:1.5,
+  },
+  formFooter:{
+    marginTop:18,display:'flex',alignItems:'center',justifyContent:'center',gap:7,
+    color:'#94a3b8',fontSize:10,textAlign:'center',lineHeight:1.45,
+  },
+  formFooterShield:{color:'#0f766e',fontWeight:900},
+
+  successShell:{
+    width:'100%',maxWidth:900,margin:'0 auto',display:'grid',
+    gridTemplateColumns:'repeat(auto-fit, minmax(min(100%, 330px), 1fr))',
+    background:'#fff',borderRadius:28,overflow:'hidden',border:'1px solid #e6ecef',
+    boxShadow:'0 24px 70px rgba(15, 23, 42, 0.10)',
+  },
+  successHero:{padding:'clamp(28px, 5vw, 50px)',color:'#fff',display:'flex',flexDirection:'column',justifyContent:'center'},
+  successBadge:{fontSize:10,fontWeight:850,letterSpacing:'1.4px',opacity:.7,marginBottom:22},
+  successIcon:{
+    width:52,height:52,borderRadius:17,display:'flex',alignItems:'center',justifyContent:'center',
+    background:'rgba(255,255,255,.15)',border:'1px solid rgba(255,255,255,.18)',
+    fontSize:25,fontWeight:900,marginBottom:20,
+  },
+  successTitle:{margin:'0 0 8px',fontSize:'clamp(31px, 5vw, 46px)',lineHeight:1,letterSpacing:'-1.5px'},
+  successSubtitle:{margin:'0 0 28px',color:'rgba(255,255,255,.74)',fontSize:14,lineHeight:1.65},
+  walletPreview:{
+    borderRadius:19,padding:18,minHeight:165,background:'rgba(255,255,255,.12)',
+    border:'1px solid rgba(255,255,255,.16)',display:'flex',flexDirection:'column',
+    justifyContent:'space-between',boxShadow:'0 18px 40px rgba(0,0,0,.16)',
+  },
+  walletPreviewTop:{display:'flex',alignItems:'flex-start',gap:12},
+  walletPreviewLogo:{width:44,height:44,borderRadius:13,objectFit:'cover',background:'#fff'},
+  walletPreviewFallback:{
+    width:44,height:44,borderRadius:13,background:'rgba(255,255,255,.15)',
+    display:'flex',alignItems:'center',justifyContent:'center',fontSize:22,
+  },
+  walletPreviewMeta:{display:'flex',flexDirection:'column',gap:2},
+  walletPreviewBottom:{display:'flex',flexDirection:'column',gap:2,marginTop:28},
+  successContent:{padding:'clamp(28px, 5vw, 50px)',display:'flex',flexDirection:'column',justifyContent:'center'},
+  successReward:{
+    display:'flex',gap:11,alignItems:'center',padding:'12px 13px',borderRadius:14,
+    border:'1px solid #bbf7d0',background:'#f0fdf4',marginBottom:22,
+  },
+  successRewardIcon:{fontSize:22},
+  successRewardTitle:{fontSize:12,fontWeight:850,color:'#166534'},
+  successRewardText:{fontSize:11,color:'#15803d',marginTop:2},
+  successStepLabel:{fontSize:10,fontWeight:850,letterSpacing:'1.4px',color:'#94a3b8',marginBottom:9},
+  successContentTitle:{margin:'0 0 9px',fontSize:27,letterSpacing:'-.7px',color:'#0f172a'},
+  successContentText:{margin:'0 0 24px',color:'#64748b',fontSize:13,lineHeight:1.65},
+  primaryWalletBtn:{
+    width:'100%',minHeight:52,border:'none',borderRadius:14,background:'#111827',
+    color:'#fff',fontSize:14,fontWeight:850,cursor:'pointer',display:'flex',
+    alignItems:'center',justifyContent:'center',gap:9,
+  },
+  secondaryWalletBtn:{
+    width:'100%',minHeight:48,border:'1px solid #dfe7eb',borderRadius:13,
+    background:'#fff',color:'#334155',fontSize:13,fontWeight:800,cursor:'pointer',marginTop:10,
+  },
+  walletChooser:{marginTop:10,padding:12,border:'1px solid #e2e8f0',borderRadius:13,background:'#f8fafc'},
+  walletChooserTitle:{fontSize:11,fontWeight:800,color:'#64748b',marginBottom:8},
+  walletChoiceBtn:{
+    display:'block',width:'100%',border:'none',borderRadius:10,padding:'12px 14px',
+    color:'#fff',fontSize:13,fontWeight:800,cursor:'pointer',marginTop:7,
+  },
+  appleBtn:{background:'#000000'},
+  googleBtn:{background:'#4285f4'},
+  walletChoiceDisabled:{opacity:.55,cursor:'not-allowed'},
+  secureNote:{display:'flex',alignItems:'flex-start',gap:7,marginTop:18,color:'#94a3b8',fontSize:10,lineHeight:1.5},
 }
 
 export default CustomerJoin
