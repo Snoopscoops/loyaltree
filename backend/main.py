@@ -1808,6 +1808,7 @@ class StaffInvite(BaseModel):
     phone: Optional[str] = None
     role: str = 'cashier'
     branch_public_id: Optional[str] = None  # which location this cashier is assigned to
+    permissions: Optional[dict] = None  # owner-controlled delegated capabilities
 
 class StaffUpdate(BaseModel):
     name: Optional[str] = None
@@ -1817,6 +1818,7 @@ class StaffUpdate(BaseModel):
     pin: Optional[str] = None
     is_active: Optional[bool] = None
     branch_public_id: Optional[str] = None  # reassign to a different location
+    permissions: Optional[dict] = None  # owner-controlled delegated capabilities
 
 class PartnerDemoCashierCreate(BaseModel):
     name: str
@@ -17957,6 +17959,7 @@ async def get_branch_manager_dashboard(
             'public_id': manager.get('public_id'),
             'name': manager.get('name'),
             'email': manager.get('email'),
+            'permissions': manager.get('permissions') if isinstance(manager.get('permissions'), dict) else {},
         },
         'branch': {
             'public_id': branch.get('public_id'),
@@ -21581,6 +21584,8 @@ async def invite_staff(public_id: str, invite: StaffInvite, authorization: str =
         'is_active': True,
         'created_at': datetime.utcnow().isoformat(),
     }
+    if invite.permissions is not None:
+        staff_data['permissions'] = invite.permissions if isinstance(invite.permissions, dict) else {}
 
     try:
         supabase.table("staff").insert(staff_data).execute()
@@ -36967,6 +36972,7 @@ def _pos_companion_preview_payload(activation: dict) -> dict:
     if not business_has_plan_feature(business, 'pos_integration'):
         raise HTTPException(status_code=403, detail='POS Integration requires the Pro plan.')
 
+    _validate_manager_activation_scope(activation, business)
     provider = str(activation.get('provider') or 'storehub').lower()
     integration = _get_pos_integration(business.get('id'), provider)
     if not integration:
@@ -36985,6 +36991,18 @@ def _pos_companion_preview_payload(activation: dict) -> dict:
     except Exception as exc:
         raise _pos_schema_error(exc)
 
+    metadata = activation.get('metadata') if isinstance(activation.get('metadata'), dict) else {}
+    allowed_branch_id = metadata.get('allowed_branch_id')
+    allowed_branch_public_id = str(metadata.get('allowed_branch_public_id') or '').strip()
+    if allowed_branch_id is not None or allowed_branch_public_id:
+        branches = [
+            row for row in branches
+            if (allowed_branch_id is None or str(row.get('id')) == str(allowed_branch_id))
+            and (not allowed_branch_public_id or str(row.get('public_id')) == allowed_branch_public_id)
+        ]
+        if not branches:
+            raise HTTPException(status_code=409, detail='The branch assigned to this activation code is no longer available.')
+
     config = integration.get('config') if isinstance(integration.get('config'), dict) else {}
     location_key = 'storehub_outlets' if provider == 'storehub' else 'loyverse_stores'
     outlets = config.get(location_key) or []
@@ -36993,6 +37011,11 @@ def _pos_companion_preview_payload(activation: dict) -> dict:
             {'id': f"test-{row.get('public_id')}", 'name': row.get('name') or row.get('public_id')}
             for row in branches
         ]
+    allowed_external_branch_id = str(metadata.get('allowed_external_branch_id') or '').strip()
+    if allowed_external_branch_id:
+        outlets = [row for row in outlets if str((row or {}).get('id')) == allowed_external_branch_id]
+        if not outlets:
+            raise HTTPException(status_code=409, detail='The POS location assigned to this activation code is no longer available. Generate a new code after the owner confirms branch mapping.')
 
     return {
         'business': {
@@ -37103,6 +37126,262 @@ def _pos_scan_customer_public_id(raw: str) -> str:
     return clean.strip()
 
 
+COMPANION_APK_DOWNLOAD_URL = os.getenv(
+    'COMPANION_APK_DOWNLOAD_URL',
+    'https://downloads.theloyaltytree.com/companion/LoyaltyTreeCompanion.apk',
+).strip()
+
+
+def _staff_permissions(staff: Optional[dict]) -> dict:
+    raw = (staff or {}).get('permissions')
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _manager_can_manage_companion(staff: Optional[dict]) -> bool:
+    return bool(_staff_permissions(staff).get('manage_companion_devices'))
+
+
+def _validate_manager_activation_scope(activation: dict, business: dict) -> dict:
+    """Re-check a manager-generated activation code against current owner controls.
+
+    Activation codes are bearer credentials, but an owner disabling/reassigning a
+    manager or removing Companion permission should invalidate an unused manager
+    code immediately instead of waiting for its short expiry.
+    """
+    metadata = activation.get('metadata') if isinstance(activation.get('metadata'), dict) else {}
+    if str(metadata.get('generated_by') or '').lower() != 'branch_manager':
+        return metadata
+
+    manager_staff_id = metadata.get('manager_staff_id')
+    allowed_branch_id = metadata.get('allowed_branch_id')
+    if not manager_staff_id or allowed_branch_id is None:
+        raise HTTPException(status_code=403, detail='This manager activation code is missing its security scope. Generate a new code.')
+    try:
+        rows = (
+            supabase.table('staff')
+            .select('id,business_id,branch_id,role,is_active,permissions')
+            .eq('id', manager_staff_id)
+            .eq('business_id', business.get('id'))
+            .limit(1)
+            .execute()
+            .data or []
+        )
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    manager = rows[0] if rows else None
+    if not manager or manager.get('is_active') is False or str(manager.get('role') or '').lower() != 'manager':
+        raise HTTPException(status_code=403, detail='This manager activation code has been revoked by the owner.')
+    if str(manager.get('branch_id')) != str(allowed_branch_id):
+        raise HTTPException(status_code=403, detail='This manager is no longer assigned to the branch on this activation code.')
+    if not _manager_can_manage_companion(manager):
+        raise HTTPException(status_code=403, detail='Companion device permission was removed from this manager. Generate a new code after the owner re-enables access.')
+    return metadata
+
+
+def _manager_companion_mapping(business: dict, branch: dict):
+    """Return the manager's current active branch mapping and its POS integration.
+
+    Owners remain the only users who can connect providers or change mappings.
+    Managers are intentionally restricted to whichever mapping the owner has
+    already saved for their assigned branch.
+    """
+    try:
+        mappings = (
+            supabase.table('pos_branch_mappings')
+            .select('*')
+            .eq('business_id', business.get('id'))
+            .eq('branch_id', branch.get('id'))
+            .eq('is_active', True)
+            .execute()
+            .data or []
+        )
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+
+    candidates = []
+    for mapping in mappings:
+        integration_id = mapping.get('integration_id')
+        if not integration_id:
+            continue
+        try:
+            rows = (
+                supabase.table('pos_integrations')
+                .select('*')
+                .eq('id', integration_id)
+                .eq('business_id', business.get('id'))
+                .limit(1)
+                .execute()
+                .data or []
+            )
+        except Exception as exc:
+            raise _pos_schema_error(exc)
+        if not rows:
+            continue
+        integration = rows[0]
+        provider = str(integration.get('provider') or '').lower()
+        if provider not in ('storehub', 'loyverse'):
+            continue
+        if str(integration.get('status') or '').lower() in ('disconnected', 'error'):
+            continue
+        # Prefer a live/connected mapping over Test Mode when both exist.
+        priority = 0 if str(integration.get('mode') or '').lower() != 'test' else 1
+        candidates.append((priority, mapping, integration))
+
+    if not candidates:
+        return None, None
+    candidates.sort(key=lambda item: item[0])
+    _, mapping, integration = candidates[0]
+    return mapping, integration
+
+
+def _manager_companion_devices(business: dict, branch: dict) -> list:
+    try:
+        devices = (
+            supabase.table('pos_devices')
+            .select('*')
+            .eq('business_id', business.get('id'))
+            .eq('branch_id', branch.get('id'))
+            .order('activated_at', desc=True)
+            .execute()
+            .data or []
+        )
+        mappings = (
+            supabase.table('pos_branch_mappings')
+            .select('*')
+            .eq('business_id', business.get('id'))
+            .eq('branch_id', branch.get('id'))
+            .execute()
+            .data or []
+        )
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    mapping_map = {str(row.get('id')): row for row in mappings}
+    result = []
+    for row in devices:
+        mapping = mapping_map.get(str(row.get('mapping_id'))) or {}
+        result.append({
+            'id': row.get('id'),
+            'display_name': row.get('display_name'),
+            'hardware_model': row.get('hardware_model'),
+            'scanner_method': row.get('scanner_method'),
+            'checkout_mode': row.get('checkout_mode'),
+            'status': row.get('status'),
+            'app_version': row.get('app_version'),
+            'activated_at': row.get('activated_at') or row.get('created_at'),
+            'last_seen_at': row.get('last_seen_at'),
+            'branch_public_id': branch.get('public_id'),
+            'branch_name': branch.get('name'),
+            'external_branch_id': mapping.get('external_branch_id'),
+            'external_branch_name': mapping.get('external_branch_name'),
+        })
+    return result
+
+
+@app.get('/api/v1/business/{public_id}/manager/companion-setup')
+def get_manager_companion_setup(public_id: str, authorization: str = Header(default='')):
+    _, business, manager, branch = require_branch_manager_session(public_id, authorization)
+    allowed = _manager_can_manage_companion(manager)
+    plan_ok = business_has_plan_feature(business, 'pos_integration')
+    response = {
+        'allowed': allowed,
+        'plan_ok': plan_ok,
+        'download_url': COMPANION_APK_DOWNLOAD_URL if allowed and plan_ok else None,
+        'branch': {
+            'public_id': branch.get('public_id'),
+            'name': branch.get('name'),
+            'address': branch.get('address'),
+        },
+        'mapping_ready': False,
+        'provider': None,
+        'integration_status': None,
+        'integration_mode': None,
+        'external_branch_id': None,
+        'external_branch_name': None,
+        'devices': [],
+    }
+    if not allowed or not plan_ok:
+        return response
+
+    mapping, integration = _manager_companion_mapping(business, branch)
+    if not mapping or not integration:
+        return response
+
+    response.update({
+        'mapping_ready': True,
+        'provider': integration.get('provider'),
+        'integration_status': integration.get('status'),
+        'integration_mode': integration.get('mode'),
+        'external_branch_id': mapping.get('external_branch_id'),
+        'external_branch_name': mapping.get('external_branch_name'),
+        'devices': _manager_companion_devices(business, branch),
+    })
+    return response
+
+
+@app.post('/api/v1/business/{public_id}/manager/companion-activation-code')
+def create_manager_companion_activation_code(public_id: str, authorization: str = Header(default='')):
+    _, business, manager, branch = require_branch_manager_session(public_id, authorization)
+    if not _manager_can_manage_companion(manager):
+        raise HTTPException(status_code=403, detail='The owner has not granted Companion device access to this manager.')
+    if not business_has_plan_feature(business, 'pos_integration'):
+        raise HTTPException(status_code=403, detail='POS Integration is included with the Pro plan.')
+
+    mapping, integration = _manager_companion_mapping(business, branch)
+    if not mapping or not integration:
+        raise HTTPException(
+            status_code=409,
+            detail='This branch is not mapped to an active POS integration yet. Ask the owner to finish POS branch mapping first.',
+        )
+    external_branch_id = str(mapping.get('external_branch_id') or '').strip()
+    if not external_branch_id:
+        raise HTTPException(status_code=409, detail='This branch mapping is missing its POS location ID. Ask the owner to repair the mapping.')
+
+    code = str(secrets.randbelow(900000) + 100000)
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+    payload = {
+        'business_id': business.get('id'),
+        'provider': str(integration.get('provider') or 'storehub').lower(),
+        'code_hash': _pos_secret_hash(code),
+        'expires_at': expires_at.isoformat(),
+        'max_uses': 1,
+        'used_count': 0,
+        'metadata': {
+            'purpose': 'pos_companion_device_activation',
+            'generated_by': 'branch_manager',
+            'manager_staff_id': manager.get('id'),
+            'allowed_branch_id': branch.get('id'),
+            'allowed_branch_public_id': branch.get('public_id'),
+            'allowed_external_branch_id': external_branch_id,
+            'allowed_external_branch_name': mapping.get('external_branch_name'),
+        },
+    }
+    try:
+        row = (supabase.table('pos_device_activation_codes').insert(payload).execute().data or [None])[0]
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    return {
+        'ok': True,
+        'activation_code': code,
+        'expires_at': expires_at.isoformat(),
+        'max_uses': 1,
+        'activation_id': str((row or {}).get('id') or ''),
+        'branch_public_id': branch.get('public_id'),
+        'branch_name': branch.get('name'),
+        'provider': payload['provider'],
+        'external_branch_id': external_branch_id,
+        'external_branch_name': mapping.get('external_branch_name'),
+        'message': 'Enter this one-time code in the Loyalty Tree Companion app. It can activate only this assigned branch.',
+    }
+
+
 @app.post('/api/v1/business/{public_id}/pos/device-activation-code')
 def create_pos_device_activation_code(
     public_id: str,
@@ -37188,12 +37467,24 @@ def activate_pos_companion_device(req: POSCompanionActivateRequest):
         raise HTTPException(status_code=401, detail='Activation code is invalid, expired, revoked, or already used.')
     preview = _pos_companion_preview_payload(activation)
     business = _pos_business_by_id(activation.get('business_id'))
+    _validate_manager_activation_scope(activation, business)
     provider = str(activation.get('provider') or 'storehub').lower()
     integration = _get_pos_integration(business.get('id'), provider)
 
     branch = safe_get_branch(req.branch_public_id)
     if not branch or branch.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail='Branch is not part of this business.')
+
+    metadata = activation.get('metadata') if isinstance(activation.get('metadata'), dict) else {}
+    allowed_branch_id = metadata.get('allowed_branch_id')
+    allowed_branch_public_id = str(metadata.get('allowed_branch_public_id') or '').strip()
+    allowed_external_branch_id = str(metadata.get('allowed_external_branch_id') or '').strip()
+    if allowed_branch_id is not None and str(branch.get('id')) != str(allowed_branch_id):
+        raise HTTPException(status_code=403, detail="This activation code is locked to the manager's assigned branch.")
+    if allowed_branch_public_id and str(branch.get('public_id')) != allowed_branch_public_id:
+        raise HTTPException(status_code=403, detail="This activation code is locked to the manager's assigned branch.")
+    if allowed_external_branch_id and str(req.external_branch_id) != allowed_external_branch_id:
+        raise HTTPException(status_code=403, detail='This activation code is locked to the POS location already mapped by the owner.')
 
     known_outlets = preview.get('outlets') or []
     known_ids = {str(row.get('id')) for row in known_outlets if isinstance(row, dict) and row.get('id') is not None}

@@ -183,6 +183,11 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
   const [stampDrafts, setStampDrafts] = useState({})
   const [stampSaving, setStampSaving] = useState('')
   const [memberSearch, setMemberSearch] = useState('')
+  const [companionSetup, setCompanionSetup] = useState(null)
+  const [companionLoading, setCompanionLoading] = useState(false)
+  const [companionGenerating, setCompanionGenerating] = useState(false)
+  const [companionCode, setCompanionCode] = useState(null)
+  const [companionError, setCompanionError] = useState('')
 
   const authFetch = async (url, options = {}) => {
     const headers = { ...(options.headers || {}) }
@@ -217,8 +222,41 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
     }
   }
 
+  const loadCompanionSetup = async () => {
+    if (!user?.business_slug) return
+    setCompanionLoading(true)
+    setCompanionError('')
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/manager/companion-setup`, { cache:'no-store' })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body.detail || 'Could not load Companion setup')
+      setCompanionSetup(body)
+    } catch (err) {
+      setCompanionError(err.message || 'Could not load Companion setup')
+    } finally {
+      setCompanionLoading(false)
+    }
+  }
+
+  const generateCompanionCode = async () => {
+    setCompanionGenerating(true)
+    setCompanionError('')
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/manager/companion-activation-code`, { method:'POST' })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body.detail || 'Could not generate activation code')
+      setCompanionCode(body)
+      await loadCompanionSetup()
+    } catch (err) {
+      setCompanionError(err.message || 'Could not generate activation code')
+    } finally {
+      setCompanionGenerating(false)
+    }
+  }
+
   useEffect(() => {
     loadManagerDashboard('')
+    loadCompanionSetup()
     const timer = setInterval(() => loadManagerDashboard(selectedProgramId), 30000)
     return () => clearInterval(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -322,6 +360,69 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
           </div>
         </section>
 
+        <section style={{...metricCard,marginTop:14,border:companionSetup?.allowed?'1px solid #99f6e4':'1px solid #e2e8f0'}}>
+          <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start',flexWrap:'wrap'}}>
+            <div>
+              <div style={{fontSize:11,fontWeight:900,color:'#0f766e'}}>LOYALTY TREE COMPANION</div>
+              <h3 style={{margin:'3px 0 5px'}}>Set up this branch's POS device</h3>
+              <div style={{fontSize:11.5,color:'#64748b',maxWidth:650,lineHeight:1.5}}>The owner controls the POS provider and branch mapping. When access is enabled, you can install Companion and create a one-time activation code only for <strong>{branch.name}</strong>.</div>
+            </div>
+            <button onClick={loadCompanionSetup} disabled={companionLoading} style={{border:'1px solid #cbd5e1',background:'#fff',borderRadius:9,padding:'7px 10px',fontWeight:800,cursor:'pointer'}}>{companionLoading?'Checking…':'↻ Refresh'}</button>
+          </div>
+
+          {companionError && <div style={{marginTop:12,padding:'10px 12px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:10,color:'#b91c1c',fontSize:12}}>{companionError}</div>}
+
+          {!companionLoading && companionSetup && !companionSetup.allowed && (
+            <div style={{marginTop:12,padding:'12px 14px',background:'#f8fafc',border:'1px dashed #cbd5e1',borderRadius:12,color:'#475569',fontSize:12}}>
+              Companion access is currently owner-only. Ask the owner to enable <strong>Manage Companion Devices</strong> on your manager account.
+            </div>
+          )}
+
+          {companionSetup?.allowed && !companionSetup?.plan_ok && (
+            <div style={{marginTop:12,padding:'12px 14px',background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:12,color:'#9a3412',fontSize:12}}>POS Integration requires the business Pro plan. The owner needs to upgrade before this branch can activate Companion.</div>
+          )}
+
+          {companionSetup?.allowed && companionSetup?.plan_ok && !companionSetup?.mapping_ready && (
+            <div style={{marginTop:12,padding:'12px 14px',background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:12,color:'#9a3412',fontSize:12}}>The owner still needs to connect a POS provider and map <strong>{branch.name}</strong> to its POS location. Managers cannot change that mapping.</div>
+          )}
+
+          {companionSetup?.allowed && companionSetup?.plan_ok && companionSetup?.mapping_ready && (
+            <>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',gap:10,marginTop:13}}>
+                <div style={{padding:'11px 12px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:11}}><div style={{fontSize:9.5,fontWeight:900,color:'#64748b'}}>PROVIDER</div><div style={{fontWeight:850,marginTop:3}}>{String(companionSetup.provider || 'POS').toUpperCase()}</div></div>
+                <div style={{padding:'11px 12px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:11}}><div style={{fontSize:9.5,fontWeight:900,color:'#64748b'}}>MAPPED LOCATION</div><div style={{fontWeight:850,marginTop:3}}>{companionSetup.external_branch_name || companionSetup.external_branch_id || branch.name}</div></div>
+                <div style={{padding:'11px 12px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:11}}><div style={{fontSize:9.5,fontWeight:900,color:'#64748b'}}>REGISTERED DEVICES</div><div style={{fontWeight:850,marginTop:3}}>{(companionSetup.devices || []).length}</div></div>
+              </div>
+
+              <div style={{display:'flex',gap:9,flexWrap:'wrap',marginTop:13}}>
+                <a href={companionSetup.download_url} style={{textDecoration:'none',border:'1px solid #99f6e4',background:'#f0fdfa',color:'#0f766e',borderRadius:10,padding:'10px 13px',fontWeight:850,fontSize:12}}>↓ Download Companion APK</a>
+                <button onClick={generateCompanionCode} disabled={companionGenerating} style={{border:'none',background:'#0f766e',color:'#fff',borderRadius:10,padding:'10px 13px',fontWeight:850,fontSize:12,cursor:'pointer'}}>{companionGenerating?'Generating…':'Generate one-time activation code'}</button>
+              </div>
+
+              {companionCode?.activation_code && (
+                <div style={{marginTop:13,padding:'14px 15px',background:'#ecfdf5',border:'1px solid #a7f3d0',borderRadius:12}}>
+                  <div style={{fontSize:10,fontWeight:900,color:'#047857'}}>ONE-TIME CODE · {branch.name}</div>
+                  <div style={{fontSize:30,fontWeight:950,letterSpacing:6,color:'#064e3b',marginTop:5}}>{companionCode.activation_code}</div>
+                  <div style={{fontSize:11,color:'#047857',marginTop:4}}>Valid until {companionCode.expires_at ? new Date(companionCode.expires_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '15 minutes from now'} · one device only.</div>
+                  <div style={{fontSize:10.5,color:'#64748b',marginTop:5}}>This code is server-locked to your assigned Loyalty Tree branch and the POS location already mapped by the owner.</div>
+                </div>
+              )}
+
+              {(companionSetup.devices || []).length > 0 && (
+                <div style={{marginTop:14,borderTop:'1px solid #e2e8f0',paddingTop:11}}>
+                  <div style={{fontSize:10,fontWeight:900,color:'#64748b',marginBottom:5}}>THIS BRANCH'S COMPANION DEVICES</div>
+                  {(companionSetup.devices || []).map(device => (
+                    <div key={device.public_id || device.id} style={{display:'flex',justifyContent:'space-between',gap:10,padding:'8px 0',borderBottom:'1px solid #f1f5f9',fontSize:11.5}}>
+                      <span style={{fontWeight:750}}>{device.device_name || device.hardware_model || 'Companion device'}</span>
+                      <span style={{color:String(device.status || 'active').toLowerCase()==='active'?'#047857':'#b91c1c'}}>{String(device.status || 'active').toLowerCase()==='active'?'Active':String(device.status || 'Inactive')}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </section>
+
         {error && <div style={{marginTop:16,padding:'12px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:12,color:'#b91c1c'}}>{error}</div>}
         {loading && !data ? <div style={{padding:40,textAlign:'center',color:'#64748b'}}>Loading branch dashboard…</div> : <>
           <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:12,marginTop:16}}>
@@ -376,7 +477,7 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
             </section>
           </div>
 
-          <div style={{fontSize:10.5,color:'#94a3b8',textAlign:'right',marginTop:10}}>Manager controls: member birthdays + stamp corrections + assigned-branch announcements{lastUpdated ? ` · updated ${lastUpdated.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}` : ''}</div>
+          <div style={{fontSize:10.5,color:'#94a3b8',textAlign:'right',marginTop:10}}>Manager controls: member birthdays + stamp corrections + assigned-branch announcements{companionSetup?.allowed ? ' + assigned-branch Companion setup' : ''}{lastUpdated ? ` · updated ${lastUpdated.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}` : ''}</div>
         </>}
       </main>
 
@@ -544,7 +645,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
   const [couponExpiry, setCouponExpiry] = useState('')
   const [couponError, setCouponError] = useState('')
   const [couponSaving, setCouponSaving] = useState(false)
-  const [inviteForm, setInviteForm] = useState({ name: '', email: '', phone: '', role: 'cashier', branch_public_id: '' })
+  const [inviteForm, setInviteForm] = useState({ name: '', email: '', phone: '', role: 'cashier', branch_public_id: '', permissions: {} })
   const [newBranchName, setNewBranchName] = useState('')
   const [newBranchAddress, setNewBranchAddress] = useState('')
   const [savingBranch, setSavingBranch] = useState(false)
@@ -1331,7 +1432,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
       if (res.ok) {
         setMessage('Staff invited! PIN: 0000')
         setShowInviteModal(false)
-        setInviteForm({ name: '', email: '', phone: '', role: 'cashier', branch_public_id: '' })
+        setInviteForm({ name: '', email: '', phone: '', role: 'cashier', branch_public_id: '', permissions: {} })
         loadData()
       } else {
         const data = await res.json()
@@ -1400,7 +1501,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
   }
 
   const openBranchManagerInvite = (branch) => {
-    setInviteForm({ name: '', email: '', phone: '', role: 'manager', branch_public_id: branch.public_id })
+    setInviteForm({ name: '', email: '', phone: '', role: 'manager', branch_public_id: branch.public_id, permissions: { manage_companion_devices: false } })
     setShowInviteModal(true)
   }
 
@@ -1823,6 +1924,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
       pin: s.pin || '0000',
       is_active: s.is_active !== false,
       branch_public_id: currentBranch?.public_id || '',
+      permissions: { ...(s.permissions || {}), manage_companion_devices: !!s.permissions?.manage_companion_devices },
     })
     setShowStaffEditModal(true)
   }
@@ -2894,6 +2996,11 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                   <div style={styles.staffInfo}>
                     <h4>{s.name}</h4>
                     <p style={styles.staffRole}>{s.role}</p>
+                    {String(s.role || '').toLowerCase() === 'manager' && (
+                      <p style={{margin:'3px 0',fontSize:11,fontWeight:800,color:s.permissions?.manage_companion_devices?'#047857':'#64748b'}}>
+                        {s.permissions?.manage_companion_devices ? '✓ Companion device access' : 'Companion access off'}
+                      </p>
+                    )}
                     <p style={styles.staffEmail}>{s.email}</p>
                     {branches.find(b => b.id === s.branch_id) && (
                       <p style={{margin: '4px 0 0 0', fontSize: 12, color: '#0f766e'}}>
@@ -4325,7 +4432,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
       {showStaffEditModal && (
         <div style={styles.modalOverlay} onClick={() => setShowStaffEditModal(false)}>
           <div style={styles.modal} onClick={e => e.stopPropagation()}>
-            <h3>✏️ Edit Cashier</h3>
+            <h3>✏️ Edit {String(staffEditForm.role || '').toLowerCase() === 'manager' ? 'Manager' : 'Cashier'}</h3>
             <form onSubmit={saveStaff}>
               <label style={styles.label}>Name</label>
               <input style={styles.input} value={staffEditForm.name || ''} onChange={e => setStaffEditForm({...staffEditForm, name: e.target.value})} required />
@@ -4334,7 +4441,14 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
               <label style={styles.label}>Phone</label>
               <input style={styles.input} value={staffEditForm.phone || ''} onChange={e => setStaffEditForm({...staffEditForm, phone: e.target.value})} />
               <label style={styles.label}>Role</label>
-              <select style={styles.input} value={staffEditForm.role || 'cashier'} onChange={e => setStaffEditForm({...staffEditForm, role: e.target.value})}>
+              <select style={styles.input} value={staffEditForm.role || 'cashier'} onChange={e => {
+                const nextRole = e.target.value
+                setStaffEditForm({
+                  ...staffEditForm,
+                  role: nextRole,
+                  permissions: { ...(staffEditForm.permissions || {}), manage_companion_devices: nextRole === 'manager' ? !!staffEditForm.permissions?.manage_companion_devices : false },
+                })
+              }}>
                 <option value="cashier">Cashier</option>
                 <option value="manager">Manager</option>
               </select>
@@ -4353,6 +4467,20 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                 inputMode="numeric"
                 placeholder="0000"
               />
+              {String(staffEditForm.role || '').toLowerCase() === 'manager' && (
+                <label style={{...styles.label, display:'flex', alignItems:'flex-start', gap:8, padding:'10px 11px', background:'#f0fdfa', border:'1px solid #99f6e4', borderRadius:10}}>
+                  <input
+                    type="checkbox"
+                    checked={!!staffEditForm.permissions?.manage_companion_devices}
+                    onChange={e => setStaffEditForm({
+                      ...staffEditForm,
+                      permissions: { ...(staffEditForm.permissions || {}), manage_companion_devices: e.target.checked },
+                    })}
+                    style={{marginTop:2}}
+                  />
+                  <span><strong>Manage Companion Devices</strong><br/><span style={{fontSize:11,color:'#64748b',fontWeight:500}}>Can download the Companion APK, view devices, and generate one-time activation codes only for the assigned branch. POS credentials and branch mapping stay owner-only.</span></span>
+                </label>
+              )}
               <label style={{...styles.label, display: 'flex', alignItems: 'center', gap: 8}}>
                 <input
                   type="checkbox"
@@ -4370,7 +4498,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                 disabled={deletingStaff}
                 style={{...styles.submitBtn, background: 'transparent', color: '#dc2626', border: '1px solid #fecaca', marginTop: 8}}
               >
-                {deletingStaff ? 'Removing...' : '🗑️ Remove Cashier'}
+                {deletingStaff ? 'Removing...' : `🗑️ Remove ${String(staffEditForm.role || '').toLowerCase() === 'manager' ? 'Manager' : 'Cashier'}`}
               </button>
             </form>
           </div>
@@ -4385,7 +4513,14 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
               <input style={styles.input} placeholder="Name" value={inviteForm.name} onChange={e => setInviteForm({...inviteForm, name: e.target.value})} required />
               <input style={styles.input} placeholder="Email" type="email" value={inviteForm.email} onChange={e => setInviteForm({...inviteForm, email: e.target.value})} required />
               <input style={styles.input} placeholder="Phone" value={inviteForm.phone} onChange={e => setInviteForm({...inviteForm, phone: e.target.value})} />
-              <select style={styles.input} value={inviteForm.role} onChange={e => setInviteForm({...inviteForm, role: e.target.value})}>
+              <select style={styles.input} value={inviteForm.role} onChange={e => {
+                const nextRole = e.target.value
+                setInviteForm({
+                  ...inviteForm,
+                  role: nextRole,
+                  permissions: { ...(inviteForm.permissions || {}), manage_companion_devices: nextRole === 'manager' ? !!inviteForm.permissions?.manage_companion_devices : false },
+                })
+              }}>
                 <option value="cashier">Cashier</option>
                 <option value="manager">Manager</option>
               </select>
@@ -4395,6 +4530,17 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                   <option key={b.public_id} value={b.public_id}>{b.name}</option>
                 ))}
               </select>
+              {inviteForm.role === 'manager' && (
+                <label style={{...styles.label,display:'flex',alignItems:'flex-start',gap:8,padding:'10px 11px',background:'#f0fdfa',border:'1px solid #99f6e4',borderRadius:10}}>
+                  <input
+                    type="checkbox"
+                    checked={!!inviteForm.permissions?.manage_companion_devices}
+                    onChange={e=>setInviteForm({...inviteForm,permissions:{...(inviteForm.permissions||{}),manage_companion_devices:e.target.checked}})}
+                    style={{marginTop:2}}
+                  />
+                  <span><strong>Allow Companion setup for assigned branch</strong><br/><span style={{fontSize:11,color:'#64748b',fontWeight:500}}>The manager can install Companion and generate branch-locked one-time codes. They cannot connect POS credentials or change branch mappings.</span></span>
+                </label>
+              )}
               <button type="submit" style={styles.submitBtn}>Send Invite</button>
             </form>
           </div>
