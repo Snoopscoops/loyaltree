@@ -82,6 +82,8 @@ const EMPTY_REDEMPTION_TEST = {
 
 const normalizePlan = value => String(value || '').trim().toLowerCase()
 
+const COMPANION_ANDROID_DOWNLOAD_URL = 'https://downloads.theloyaltytree.com/companion/LoyaltyTreeCompanion.apk'
+
 function POSIntegration({
   API_BASE,
   user,
@@ -1979,10 +1981,26 @@ function QuickCompanionSetup({
       {current === 3 && (
         <div style={s.quickBody}>
           <div>
-            <div style={s.stepLabel}>STEP 3 · ACTIVATE COMPANION</div>
-            <h4 style={s.quickTitle}>Activate the tablet</h4>
-            <p style={s.muted}>Generate a one-time code and enter it in the Loyalty Tree Companion app.</p>
+            <div style={s.stepLabel}>STEP 3 · SET UP COMPANION</div>
+            <h4 style={s.quickTitle}>Install and activate the tablet</h4>
+            <p style={s.muted}>Download the universal Loyalty Tree Companion APK, then generate the one-time code for this branch.</p>
           </div>
+
+          <div style={s.companionDownloadBox}>
+            <div>
+              <b style={{fontSize:13}}>1. Download Loyalty Tree Companion</b>
+              <div style={s.smallMuted}>Android 7.1+ · one universal APK for every Loyalty Tree business</div>
+            </div>
+            <button
+              type="button"
+              style={s.primaryButton}
+              onClick={() => window.open(COMPANION_ANDROID_DOWNLOAD_URL, '_blank', 'noopener,noreferrer')}
+            >
+              Download for Android
+            </button>
+          </div>
+
+          <div style={{...s.stepLabel,marginTop:4}}>2. GENERATE ONE-TIME ACTIVATION CODE</div>
 
           {!activationCodeInfo?.activation_code ? (
             <button type="button" style={s.primaryButton} disabled={saving || !apiAvailable} onClick={generateCompanionActivationCode}>
@@ -2005,7 +2023,7 @@ function QuickCompanionSetup({
 
           <div style={s.quickInstructions}>
             {[
-              'Open Loyalty Tree Companion on the tablet.',
+              'Install and open Loyalty Tree Companion on the tablet.',
               'Enter the 6-digit activation code.',
               'Choose the correct Loyalty Tree branch and POS outlet.',
               'Finish activation, then refresh device status here.',
@@ -2278,6 +2296,17 @@ const s = {
     color: '#334155',
     fontSize: 11.5,
     lineHeight: 1.45,
+  },
+  companionDownloadBox: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    flexWrap: 'wrap',
+    padding: 14,
+    border: '1px solid #99f6e4',
+    borderRadius: 14,
+    background: '#f0fdfa',
   },
   quickDetails: {
     border: '1px solid #e2e8f0',
