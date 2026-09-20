@@ -129,6 +129,11 @@ function POSIntegration({
   const [redemptionForm, setRedemptionForm] = useState(EMPTY_REDEMPTION_TEST)
   const [redemptionResult, setRedemptionResult] = useState(null)
   const [redemptionStage, setRedemptionStage] = useState('idle')
+  const [companionDevices, setCompanionDevices] = useState([])
+  const [activationCodeInfo, setActivationCodeInfo] = useState(null)
+  const [quickBranchId, setQuickBranchId] = useState('')
+  const [quickOutletId, setQuickOutletId] = useState('')
+  const [copyState, setCopyState] = useState('')
 
   const activeProvider = useMemo(
     () => PROVIDERS.find(item => item.id === provider) || PROVIDERS[0],
@@ -149,6 +154,111 @@ function POSIntegration({
   const call = async (url, options = {}) => {
     if (!authFetch) throw new Error('Authenticated API helper is not available.')
     return authFetch(url, options)
+  }
+
+  const loadCompanionDevices = async () => {
+    if (!isPro || !slug || !authFetch) return
+    try {
+      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/devices`, { cache: 'no-store' })
+      if (!res.ok) return
+      const data = await res.json().catch(() => ({}))
+      setCompanionDevices(data.devices || [])
+    } catch (_) {
+      // Device status is helpful, but should never block POS setup.
+    }
+  }
+
+  const generateCompanionActivationCode = async () => {
+    if (!slug) return
+    setSaving(true)
+    setError('')
+    setMessage('')
+    try {
+      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/device-activation-code`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider,
+          expires_in_minutes: 15,
+          max_uses: 1,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not generate Companion activation code.')
+      setActivationCodeInfo(data)
+      setMessage('Activation code ready. Enter it in the Loyalty Tree Companion app.')
+    } catch (err) {
+      setError(err.message || 'Could not generate Companion activation code.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const copyText = async (value, label = 'Copied') => {
+    try {
+      await navigator.clipboard.writeText(String(value || ''))
+      setCopyState(label)
+      window.setTimeout(() => setCopyState(''), 1600)
+    } catch (_) {
+      setCopyState('Copy manually')
+      window.setTimeout(() => setCopyState(''), 1600)
+    }
+  }
+
+  const saveQuickBranchMapping = async () => {
+    if (!slug) return
+    const branch = branches.find(item => item.public_id === quickBranchId) || branches[0]
+    if (!branch) {
+      setError('Create at least one Loyalty Tree branch first.')
+      return
+    }
+
+    const existing = branchMappings[branch.public_id] || {}
+    let externalBranchId = String(existing.external_branch_id || '').trim()
+    let externalBranchName = String(existing.external_branch_name || '').trim()
+
+    if (simulatorReady) {
+      externalBranchId = externalBranchId || `test-${branch.public_id}`
+      externalBranchName = externalBranchName || branch.name || branch.public_id
+    } else if (quickOutletId) {
+      const selected = providerLocations.find(item => String(item.id) === String(quickOutletId))
+      externalBranchId = String(quickOutletId)
+      externalBranchName = selected?.name || externalBranchName || String(quickOutletId)
+    }
+
+    if (!externalBranchId && !externalBranchName) {
+      setError(`Choose the ${providerLabel} ${locationLabel} for this branch, or use Advanced setup.`)
+      return
+    }
+
+    setSaving(true)
+    setError('')
+    setMessage('')
+    try {
+      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/branch-mappings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider,
+          mappings: [{
+            branch_public_id: branch.public_id,
+            external_branch_id: externalBranchId || null,
+            external_branch_name: externalBranchName || null,
+            device_model: existing.device_model || 'other',
+            scanner_method: existing.scanner_method || 'external_scanner',
+            checkout_mode: existing.checkout_mode || 'auto',
+          }],
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not save branch mapping.')
+      setMessage(`${branch.name || 'Branch'} is linked. Next, activate the Companion tablet.`)
+      await loadPOS()
+    } catch (err) {
+      setError(err.message || 'Could not save branch mapping.')
+    } finally {
+      setSaving(false)
+    }
   }
 
   const loadPOS = async () => {
@@ -232,6 +342,20 @@ function POSIntegration({
     loadPOS()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isPro, slug, provider])
+
+  useEffect(() => {
+    if (!quickBranchId && branches[0]?.public_id) setQuickBranchId(branches[0].public_id)
+  }, [branches, quickBranchId])
+
+  useEffect(() => {
+    setQuickOutletId('')
+    if (isConnected) loadCompanionDevices()
+    else {
+      setCompanionDevices([])
+      setActivationCodeInfo(null)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isConnected, slug, provider])
 
   const startStoreHubSimulator = async () => {
     if (!slug) return
@@ -814,6 +938,17 @@ function POSIntegration({
     )
   }
 
+  const activeCompanionDevices = companionDevices.filter(device => !device?.revoked_at)
+  const hasSavedMapping = Object.values(branchMappings).some(row => row?.saved_mapping)
+  const quickBranch = branches.find(item => item.public_id === quickBranchId) || branches[0] || null
+  const quickStep = !isConnected
+    ? 1
+    : !hasSavedMapping
+      ? 2
+      : activeCompanionDevices.length
+        ? 4
+        : 3
+
   return (
     <div style={s.page}>
       <div style={s.headerRow}>
@@ -843,7 +978,39 @@ function POSIntegration({
         <div style={s.card}>Loading POS integration…</div>
       ) : (
         <>
-          <SetupProgress step={setupStep} isLive={isLive} />
+          <QuickCompanionSetup
+            step={quickStep}
+            provider={provider}
+            setProvider={setProvider}
+            apiAvailable={apiAvailable}
+            saving={saving}
+            isConnected={isConnected}
+            simulatorReady={simulatorReady}
+            startStoreHubSimulator={startStoreHubSimulator}
+            branches={branches}
+            quickBranch={quickBranch}
+            quickBranchId={quickBranchId}
+            setQuickBranchId={setQuickBranchId}
+            providerLabel={providerLabel}
+            locationLabel={locationLabel}
+            providerLocations={providerLocations}
+            quickOutletId={quickOutletId}
+            setQuickOutletId={setQuickOutletId}
+            saveQuickBranchMapping={saveQuickBranchMapping}
+            activationCodeInfo={activationCodeInfo}
+            generateCompanionActivationCode={generateCompanionActivationCode}
+            loadCompanionDevices={loadCompanionDevices}
+            activeCompanionDevices={activeCompanionDevices}
+            copyText={copyText}
+            API_BASE={API_BASE}
+          />
+
+          {copyState && <div style={{...s.successBanner,padding:'8px 11px'}}>{copyState}</div>}
+
+          <details style={s.advancedPanel}>
+            <summary style={s.advancedSummary}>Advanced POS setup & diagnostics</summary>
+            <div style={s.advancedBody}>
+              <SetupProgress step={setupStep} isLive={isLive} />
 
           <section style={s.card}>
             <div style={s.sectionHeader}>
@@ -1651,9 +1818,261 @@ function POSIntegration({
               </section>
             </>
           )}
+            </div>
+          </details>
         </>
       )}
     </div>
+  )
+}
+
+function QuickCompanionSetup({
+  step,
+  provider,
+  setProvider,
+  apiAvailable,
+  saving,
+  isConnected,
+  simulatorReady,
+  startStoreHubSimulator,
+  branches,
+  quickBranch,
+  quickBranchId,
+  setQuickBranchId,
+  providerLabel,
+  locationLabel,
+  providerLocations,
+  quickOutletId,
+  setQuickOutletId,
+  saveQuickBranchMapping,
+  activationCodeInfo,
+  generateCompanionActivationCode,
+  loadCompanionDevices,
+  activeCompanionDevices,
+  copyText,
+  API_BASE,
+}) {
+  const current = Math.max(1, Math.min(Number(step || 1), 4))
+  const progress = ['Connect POS', 'Link branch', 'Activate', 'Test']
+
+  return (
+    <section style={s.quickCard}>
+      <div style={s.sectionHeader}>
+        <div>
+          <div style={s.eyebrow}>SIMPLE SETUP</div>
+          <h3 style={{...s.sectionTitle,marginTop:4}}>Loyalty Tree Companion</h3>
+          <p style={s.muted}>One step at a time. Advanced settings stay hidden unless you need them.</p>
+        </div>
+        <span style={s.quickStepPill}>Step {current} of 4</span>
+      </div>
+
+      <div style={s.quickProgress}>
+        {progress.map((label,index) => {
+          const number = index + 1
+          const done = number < current
+          const active = number === current
+          return (
+            <div key={label} style={{...s.quickProgressItem,...(active?s.quickProgressActive:{}),...(done?s.quickProgressDone:{})}}>
+              <span style={s.quickProgressDot}>{done ? '✓' : number}</span>
+              <span>{label}</span>
+            </div>
+          )
+        })}
+      </div>
+
+      {current === 1 && (
+        <div style={s.quickBody}>
+          <div>
+            <div style={s.stepLabel}>STEP 1 · CONNECT POS</div>
+            <h4 style={s.quickTitle}>Choose how you want to connect</h4>
+            <p style={s.muted}>For the ANGKAN test, use StoreHub Simulator. No StoreHub API token is needed yet.</p>
+          </div>
+
+          <div style={s.quickProviderRow}>
+            <button
+              type="button"
+              style={{...s.quickChoice,...(provider==='storehub'?s.quickChoiceActive:{})}}
+              onClick={() => setProvider('storehub')}
+              disabled={isConnected && provider !== 'storehub'}
+            >
+              <b>StoreHub</b>
+              <span>Philippines / Southeast Asia</span>
+            </button>
+            <button
+              type="button"
+              style={{...s.quickChoice,...(provider==='loyverse'?s.quickChoiceActive:{})}}
+              onClick={() => setProvider('loyverse')}
+              disabled={isConnected && provider !== 'loyverse'}
+            >
+              <b>Loyverse</b>
+              <span>Global</span>
+            </button>
+          </div>
+
+          {provider === 'storehub' ? (
+            <button
+              type="button"
+              style={s.primaryButton}
+              disabled={saving || !apiAvailable}
+              onClick={startStoreHubSimulator}
+            >
+              {saving ? 'Starting…' : 'Start StoreHub Simulator'}
+            </button>
+          ) : (
+            <div style={s.infoBanner}>
+              Open <b>Advanced POS setup & diagnostics</b> below to enter the Loyverse access token.
+            </div>
+          )}
+
+          <div style={s.quickHint}>Already have real StoreHub API access? Use Advanced setup below instead of Simulator Mode.</div>
+        </div>
+      )}
+
+      {current === 2 && (
+        <div style={s.quickBody}>
+          <div>
+            <div style={s.stepLabel}>STEP 2 · LINK BRANCH</div>
+            <h4 style={s.quickTitle}>Choose the branch for this tablet</h4>
+            <p style={s.muted}>Start with one branch. You can add the rest later.</p>
+          </div>
+
+          {!branches.length ? (
+            <div style={s.emptyState}>Create at least one Loyalty Tree branch first.</div>
+          ) : (
+            <>
+              <label style={s.fieldLabel}>Loyalty Tree branch
+                <select style={s.input} value={quickBranchId || quickBranch?.public_id || ''} onChange={e => setQuickBranchId(e.target.value)}>
+                  {branches.map(branch => <option key={branch.public_id} value={branch.public_id}>{branch.name}</option>)}
+                </select>
+              </label>
+
+              {simulatorReady ? (
+                <div style={s.ruleBox}>
+                  <b>StoreHub Simulator outlet</b>
+                  <div style={s.smallMuted}>A test outlet will be linked automatically to {quickBranch?.name || 'this branch'}.</div>
+                </div>
+              ) : providerLocations.length ? (
+                <label style={s.fieldLabel}>{providerLabel} {locationLabel}
+                  <select style={s.input} value={quickOutletId} onChange={e => setQuickOutletId(e.target.value)}>
+                    <option value="">Choose {providerLabel} {locationLabel}…</option>
+                    {providerLocations.map((location,index) => (
+                      <option key={location.id || index} value={String(location.id || '')}>
+                        {location.name || location.id || `${providerLabel} ${locationLabel} ${index + 1}`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <div style={s.infoBanner}>
+                  No {providerLabel} locations were detected. Use Advanced setup below to enter the location manually.
+                </div>
+              )}
+
+              <button type="button" style={s.primaryButton} disabled={saving || !apiAvailable} onClick={saveQuickBranchMapping}>
+                {saving ? 'Saving…' : `Link ${quickBranch?.name || 'branch'}`}
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {current === 3 && (
+        <div style={s.quickBody}>
+          <div>
+            <div style={s.stepLabel}>STEP 3 · ACTIVATE COMPANION</div>
+            <h4 style={s.quickTitle}>Activate the tablet</h4>
+            <p style={s.muted}>Generate a one-time code and enter it in the Loyalty Tree Companion app.</p>
+          </div>
+
+          {!activationCodeInfo?.activation_code ? (
+            <button type="button" style={s.primaryButton} disabled={saving || !apiAvailable} onClick={generateCompanionActivationCode}>
+              {saving ? 'Generating…' : 'Generate activation code'}
+            </button>
+          ) : (
+            <div style={s.activationBox}>
+              <div style={s.stepLabel}>ONE-TIME CODE</div>
+              <div style={s.activationCode}>{activationCodeInfo.activation_code}</div>
+              <div style={s.smallMuted}>
+                {activationCodeInfo.expires_at
+                  ? `Valid until ${new Date(activationCodeInfo.expires_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`
+                  : 'Valid for about 15 minutes'} · one device
+              </div>
+              <button type="button" style={s.secondaryButton} onClick={() => copyText(activationCodeInfo.activation_code,'Activation code copied')}>
+                Copy code
+              </button>
+            </div>
+          )}
+
+          <div style={s.quickInstructions}>
+            {[
+              'Open Loyalty Tree Companion on the tablet.',
+              'Enter the 6-digit activation code.',
+              'Choose the correct Loyalty Tree branch and POS outlet.',
+              'Finish activation, then refresh device status here.',
+            ].map((item,index) => (
+              <div key={item} style={s.quickInstruction}>
+                <span>{index + 1}</span>
+                <div>{item}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={s.actionRow}>
+            <button type="button" style={s.secondaryButton} disabled={saving} onClick={loadCompanionDevices}>Refresh device status</button>
+            {activationCodeInfo?.activation_code && (
+              <button type="button" style={s.secondaryButton} disabled={saving} onClick={generateCompanionActivationCode}>Generate new code</button>
+            )}
+          </div>
+
+          <details style={s.quickDetails}>
+            <summary>Advanced · API server</summary>
+            <div style={s.apiServerRow}>
+              <code>{API_BASE}</code>
+              <button type="button" style={s.miniButton} onClick={() => copyText(API_BASE,'API server copied')}>Copy</button>
+            </div>
+          </details>
+        </div>
+      )}
+
+      {current === 4 && (
+        <div style={s.quickBody}>
+          <div>
+            <div style={s.stepLabel}>STEP 4 · TEST</div>
+            <h4 style={s.quickTitle}>Run the first checkout test</h4>
+            <p style={s.muted}>The tablet is activated. Now validate the real cashier flow.</p>
+          </div>
+
+          <div style={s.quickInstructions}>
+            {[
+              'Enable the floating Loyalty Tree bubble.',
+              simulatorReady ? 'Open Mock StoreHub POS inside Companion.' : `Open ${providerLabel} on the POS.`,
+              'Tap the bubble and scan a real Loyalty Tree Wallet QR.',
+              simulatorReady ? 'Create a Completed Sale for ₱420.00.' : 'Complete a small test transaction.',
+              'Confirm the receipt matches, loyalty updates once, and the Wallet refreshes.',
+            ].map((item,index) => (
+              <div key={item} style={s.quickInstruction}>
+                <span>{index + 1}</span>
+                <div>{item}</div>
+              </div>
+            ))}
+          </div>
+
+          {!!activeCompanionDevices.length && (
+            <div style={s.deviceReadyBox}>
+              <b>✓ Companion device connected</b>
+              {activeCompanionDevices.slice(0,3).map((device,index) => (
+                <div key={device.id || index} style={s.smallMuted}>
+                  {device.display_name || device.branch_name || `Device ${index + 1}`}
+                  {device.branch_name ? ` · ${device.branch_name}` : ''}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <button type="button" style={s.secondaryButton} onClick={loadCompanionDevices}>Refresh device status</button>
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -1739,6 +2158,183 @@ function ResultItem({ label, value }) {
 }
 
 const s = {
+  quickCard: {
+    background: '#fff',
+    border: '1px solid #dbeafe',
+    borderRadius: 18,
+    padding: 16,
+    boxShadow: '0 8px 22px rgba(15,23,42,.04)',
+  },
+  quickStepPill: {
+    fontSize: 10,
+    fontWeight: 900,
+    padding: '6px 9px',
+    borderRadius: 999,
+    background: '#ccfbf1',
+    color: '#0f766e',
+  },
+  quickProgress: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(4,minmax(0,1fr))',
+    gap: 7,
+    marginTop: 14,
+  },
+  quickProgressItem: {
+    minWidth: 0,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '8px 9px',
+    borderRadius: 10,
+    background: '#f8fafc',
+    color: '#94a3b8',
+    fontSize: 10.5,
+    fontWeight: 800,
+  },
+  quickProgressActive: {
+    background: '#f0fdfa',
+    color: '#0f766e',
+    boxShadow: 'inset 0 0 0 1px #99f6e4',
+  },
+  quickProgressDone: {
+    color: '#0f766e',
+  },
+  quickProgressDot: {
+    flex: '0 0 auto',
+    width: 22,
+    height: 22,
+    borderRadius: 999,
+    display: 'grid',
+    placeItems: 'center',
+    background: '#ccfbf1',
+    color: '#0f766e',
+    fontSize: 10,
+    fontWeight: 900,
+  },
+  quickBody: {
+    display: 'grid',
+    gap: 12,
+    marginTop: 16,
+    paddingTop: 14,
+    borderTop: '1px solid #f1f5f9',
+  },
+  quickTitle: {
+    margin: '4px 0 5px',
+    fontSize: 16,
+    color: '#0f172a',
+  },
+  quickProviderRow: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))',
+    gap: 8,
+  },
+  quickChoice: {
+    display: 'grid',
+    gap: 3,
+    textAlign: 'left',
+    padding: '11px 12px',
+    border: '1px solid #e2e8f0',
+    borderRadius: 11,
+    background: '#fff',
+    color: '#0f172a',
+    cursor: 'pointer',
+  },
+  quickChoiceActive: {
+    borderColor: '#0d9488',
+    background: '#f0fdfa',
+    boxShadow: '0 0 0 2px rgba(13,148,136,.08)',
+  },
+  quickHint: {
+    fontSize: 10.5,
+    color: '#64748b',
+  },
+  activationBox: {
+    textAlign: 'center',
+    padding: 16,
+    border: '1px solid #99f6e4',
+    borderRadius: 14,
+    background: '#f0fdfa',
+  },
+  activationCode: {
+    margin: '5px 0 4px',
+    fontSize: 36,
+    lineHeight: 1.05,
+    letterSpacing: '.12em',
+    fontWeight: 950,
+    color: '#0f172a',
+  },
+  quickInstructions: {
+    display: 'grid',
+    gap: 7,
+  },
+  quickInstruction: {
+    display: 'grid',
+    gridTemplateColumns: '24px 1fr',
+    gap: 9,
+    alignItems: 'start',
+    padding: '8px 9px',
+    borderRadius: 9,
+    background: '#f8fafc',
+    color: '#334155',
+    fontSize: 11.5,
+    lineHeight: 1.45,
+  },
+  quickDetails: {
+    border: '1px solid #e2e8f0',
+    borderRadius: 10,
+    padding: '9px 10px',
+    color: '#475569',
+    fontSize: 11,
+  },
+  apiServerRow: {
+    marginTop: 9,
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 8,
+    padding: '9px 10px',
+    borderRadius: 9,
+    background: '#f8fafc',
+    overflow: 'hidden',
+  },
+  miniButton: {
+    flex: '0 0 auto',
+    border: '1px solid #cbd5e1',
+    borderRadius: 8,
+    padding: '5px 8px',
+    background: '#fff',
+    color: '#334155',
+    fontSize: 10,
+    fontWeight: 850,
+    cursor: 'pointer',
+  },
+  deviceReadyBox: {
+    display: 'grid',
+    gap: 4,
+    padding: 11,
+    borderRadius: 10,
+    border: '1px solid #a7f3d0',
+    background: '#ecfdf5',
+    color: '#047857',
+    fontSize: 12,
+  },
+  advancedPanel: {
+    border: '1px dashed #cbd5e1',
+    borderRadius: 14,
+    background: '#fff',
+    padding: '10px 12px',
+  },
+  advancedSummary: {
+    cursor: 'pointer',
+    color: '#64748b',
+    fontSize: 11.5,
+    fontWeight: 850,
+  },
+  advancedBody: {
+    display: 'grid',
+    gap: 14,
+    marginTop: 14,
+  },
   page: {
     display: 'grid',
     gap: 14,
