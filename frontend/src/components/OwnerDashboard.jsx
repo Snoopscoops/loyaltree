@@ -6,6 +6,7 @@ import LoyaltyCardCustomizer from './LoyaltyCardCustomizer'
 import GiftCards from './GiftCards'
 import SubscriptionPayment from './SubscriptionPayment'
 import POSIntegration from './POSIntegration'
+import Campaigns from './Campaigns'
 import logo192 from './logo-192.png'
 import logo64 from './logo-64.png'
 import { formatMoney, currencySymbol } from './currency'
@@ -182,7 +183,13 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
   const [showAnnouncements, setShowAnnouncements] = useState(false)
   const [stampDrafts, setStampDrafts] = useState({})
   const [stampSaving, setStampSaving] = useState('')
+  const [pointDrafts, setPointDrafts] = useState({})
+  const [pointSaving, setPointSaving] = useState('')
   const [memberSearch, setMemberSearch] = useState('')
+  const [managerMembers, setManagerMembers] = useState(null)
+  const [managerMembersLoading, setManagerMembersLoading] = useState(false)
+  const [managerMembersHasMore, setManagerMembersHasMore] = useState(false)
+  const [managerMembersOffset, setManagerMembersOffset] = useState(0)
   const [companionSetup, setCompanionSetup] = useState(null)
   const [companionLoading, setCompanionLoading] = useState(false)
   const [companionGenerating, setCompanionGenerating] = useState(false)
@@ -218,10 +225,31 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
       if (resolved && resolved !== selectedProgramId) setSelectedProgramId(resolved)
       setLastUpdated(new Date())
       setStampDrafts({})
+      setPointDrafts({})
     } catch (err) {
       setError(err.message || 'Could not load branch dashboard')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const loadManagerMembers = async (programId = selectedProgramId, search = memberSearch, offset = 0, append = false) => {
+    if (!user?.business_slug || !programId) return
+    setManagerMembersLoading(true)
+    try {
+      const params = new URLSearchParams({ program_id: programId, limit:'100', offset:String(offset) })
+      if (String(search || '').trim()) params.set('q', String(search).trim())
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/manager-members?${params.toString()}`, { cache:'no-store' })
+      const body = await res.json().catch(()=>({}))
+      if (!res.ok) throw new Error(body.detail || 'Could not load members')
+      const rows = body.members || []
+      setManagerMembers(current => append ? [...(current || []), ...rows] : rows)
+      setManagerMembersHasMore(!!body.has_more)
+      setManagerMembersOffset(Number(body.offset || 0) + rows.length)
+    } catch (err) {
+      setError(err.message || 'Could not load members')
+    } finally {
+      setManagerMembersLoading(false)
     }
   }
 
@@ -310,11 +338,18 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProgramId])
 
+  useEffect(() => {
+    if (!selectedProgramId) return
+    const timer = setTimeout(() => loadManagerMembers(selectedProgramId, memberSearch, 0, false), 250)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedProgramId, memberSearch])
+
   const s = data?.stats || {}
   const branch = data?.branch || { name:user?.branch_name || 'Assigned Branch', address:user?.branch_address || '' }
   const programs = data?.programs || []
   const selectedProgram = data?.selected_program || null
-  const members = data?.members || []
+  const members = managerMembers ?? data?.members ?? []
   const companionIntegrations = companionSetup?.integrations || []
   const companionSelectedIntegration = companionIntegrations.find(row => row.provider === companionMapProvider) || companionIntegrations[0] || null
   const companionLocations = companionSelectedIntegration?.locations || []
@@ -331,6 +366,8 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
     const desired = raw === undefined ? current : Math.max(0, parseInt(raw, 10) || 0)
     const delta = desired - current
     if (!delta) return
+    const reason = window.prompt('Reason for this manual stamp adjustment:', 'Branch manager correction')
+    if (!reason || !reason.trim()) return
     setStampSaving(member.public_id)
     setError('')
     try {
@@ -340,7 +377,7 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
         body:JSON.stringify({
           customer_public_id: member.public_id,
           delta,
-          reason: 'Branch manager correction',
+          reason: reason.trim(),
           stamp_kind: selectedProgram.stamp_kind || 'reward',
         }),
       })
@@ -354,11 +391,36 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
     }
   }
 
-  const filteredMembers = members.filter(member => {
-    const q = memberSearch.trim().toLowerCase()
-    if (!q) return true
-    return [member.name, member.email, member.phone, member.birthday].some(v => String(v || '').toLowerCase().includes(q))
-  })
+  const currentPointBalance = (member) => Number(member?.points_balance || 0)
+
+  const savePointBalance = async (member) => {
+    if (!selectedProgram?.points_editable || !member?.public_id) return
+    const current = currentPointBalance(member)
+    const raw = pointDrafts[member.public_id]
+    const desired = raw === undefined ? current : Math.max(0, parseInt(raw, 10) || 0)
+    const delta = desired - current
+    if (!delta) return
+    const reason = window.prompt('Reason for this manual points adjustment:', 'Branch manager correction')
+    if (!reason || !reason.trim()) return
+    setPointSaving(member.public_id)
+    setError('')
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/points/adjust`, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({ customer_public_id:member.public_id, delta, reason:reason.trim() }),
+      })
+      const body = await res.json().catch(()=>({}))
+      if (!res.ok) throw new Error(body.detail || 'Could not update points balance')
+      await loadManagerDashboard(selectedProgramId)
+    } catch (err) {
+      setError(err.message || 'Could not update points balance')
+    } finally {
+      setPointSaving('')
+    }
+  }
+
+  const filteredMembers = members
 
   const birthdayLabel = (value) => {
     if (!value) return 'Birthday not provided'
@@ -499,12 +561,22 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
             <div style={metricCard}><div style={{fontSize:10,fontWeight:900,color:'#64748b'}}>REDEMPTIONS · 30 DAYS</div><strong style={{display:'block',fontSize:28,marginTop:6}}>{s.redemptions_30d ?? 0}</strong><span style={{fontSize:11,color:'#94a3b8'}}>rewards redeemed here</span></div>
           </div>
 
+          {(data?.active_campaigns || []).length > 0 && <section style={{...metricCard,marginTop:14,background:'#fff7ed',borderColor:'#fed7aa'}}>
+            <div style={{fontSize:11,fontWeight:900,color:'#c2410c'}}>ACTIVE CAMPAIGNS AT THIS BRANCH</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:8,marginTop:9}}>
+              {(data.active_campaigns || []).map(c=><div key={c.public_id} style={{padding:'10px 11px',background:'#fff',border:'1px solid #fed7aa',borderRadius:11}}>
+                <strong style={{fontSize:12.5}}>{c.name}</strong><div style={{fontSize:11,color:'#c2410c',fontWeight:850,marginTop:3}}>{c.reward_text}</div>
+                <div style={{fontSize:10.5,color:'#64748b',marginTop:4}}>Qualify {c.qualifying_start_date} → {c.qualifying_end_date} · Coupon {c.coupon_start_date} → {c.coupon_end_date}</div>
+              </div>)}
+            </div>
+          </section>}
+
           <section style={{...metricCard,marginTop:14}}>
             <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}>
               <div>
                 <div style={{fontSize:11,fontWeight:900,color:'#0f766e'}}>MEMBERS</div>
                 <h3 style={{margin:'3px 0 0'}}>All members in {selectedProgram?.name || 'this program'}</h3>
-                <div style={{fontSize:11,color:'#64748b',marginTop:4}}>Birthdays are visible to managers. {selectedProgram?.stamp_editable ? 'Stamp balances can be corrected here.' : 'This program does not use editable stamps.'}</div>
+                <div style={{fontSize:11,color:'#64748b',marginTop:4}}>Managers can search all members in this program. Manual balance corrections are allowed and are always recorded with manager, branch, before/after values, date/time and reason.</div>
               </div>
               <input value={memberSearch} onChange={e=>setMemberSearch(e.target.value)} placeholder="Search name, phone, email, birthday" style={{minWidth:260,padding:'9px 11px',border:'1px solid #cbd5e1',borderRadius:10}} />
             </div>
@@ -524,10 +596,19 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
                       <button onClick={()=>saveStampCount(member)} disabled={stampSaving===member.public_id || Number(draft)===current} style={{flex:1,border:'none',borderRadius:9,background:Number(draft)===current?'#cbd5e1':'#0f766e',color:'#fff',fontWeight:850,cursor:Number(draft)===current?'default':'pointer'}}>{stampSaving===member.public_id?'Saving…':'Save stamps'}</button>
                     </div>
                   </div>}
+                  {selectedProgram?.points_editable && (()=>{const pointCurrent=currentPointBalance(member);const pointDraft=pointDrafts[member.public_id]??pointCurrent;return <div style={{marginTop:10,paddingTop:10,borderTop:'1px solid #e2e8f0'}}>
+                    <div style={{fontSize:10.5,fontWeight:850,color:'#475569',marginBottom:5}}>REWARD POINTS</div>
+                    <div style={{display:'flex',gap:6}}>
+                      <input type="number" min="0" value={pointDraft} onChange={e=>setPointDrafts(prev=>({...prev,[member.public_id]:e.target.value}))} style={{width:92,padding:'8px 9px',border:'1px solid #cbd5e1',borderRadius:9}} />
+                      <button onClick={()=>savePointBalance(member)} disabled={pointSaving===member.public_id || Number(pointDraft)===pointCurrent} style={{flex:1,border:'none',borderRadius:9,background:Number(pointDraft)===pointCurrent?'#cbd5e1':'#0f766e',color:'#fff',fontWeight:850,cursor:Number(pointDraft)===pointCurrent?'default':'pointer'}}>{pointSaving===member.public_id?'Saving…':'Save points'}</button>
+                    </div>
+                  </div>})()}
                 </div>
               })}
             </div>
-            {!filteredMembers.length && <div style={{padding:'24px 4px',color:'#94a3b8',textAlign:'center'}}>No matching members.</div>}
+            {managerMembersLoading && !filteredMembers.length && <div style={{padding:'24px 4px',color:'#94a3b8',textAlign:'center'}}>Searching all members…</div>}
+            {!managerMembersLoading && !filteredMembers.length && <div style={{padding:'24px 4px',color:'#94a3b8',textAlign:'center'}}>No matching members.</div>}
+            {managerMembersHasMore && <div style={{display:'flex',justifyContent:'center',marginTop:12}}><button onClick={()=>loadManagerMembers(selectedProgramId,memberSearch,managerMembersOffset,true)} disabled={managerMembersLoading} style={{border:'1px solid #cbd5e1',background:'#fff',borderRadius:9,padding:'8px 12px',fontWeight:800,cursor:'pointer'}}>{managerMembersLoading?'Loading…':'Load more members'}</button></div>}
           </section>
 
           <div style={{display:'grid',gridTemplateColumns:'minmax(0,1.35fr) minmax(260px,.65fr)',gap:14,marginTop:14}} className="lt-manager-grid">
@@ -2336,7 +2417,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
   const customerSearchTerm = customerSearch.trim().toLowerCase()
   const activeNavGroup = ['staff','orderahead','giftcards','pos','operations'].includes(activeTab)
     ? 'operate'
-    : ['satisfaction','retention','crm'].includes(activeTab)
+    : ['satisfaction','retention','crm','campaigns'].includes(activeTab)
     ? 'grow'
     : activeTab === 'program'
     ? 'card'
@@ -2702,6 +2783,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
         {activeNavGroup === 'grow' && (
           <div style={{...styles.subTabs,...(isMobile?styles.subTabsMobile:{})}}>
             <button style={{...styles.subTab,...(activeTab==='satisfaction'?styles.subTabActive:{})}} onClick={()=>setActiveTab('satisfaction')}>Satisfaction</button>
+            <button style={{...styles.subTab,...(activeTab==='campaigns'?styles.subTabActive:{})}} onClick={()=>setActiveTab('campaigns')}>Campaigns</button>
             <button style={styles.subTab} onClick={()=>{setShowAnnouncements(true);markAnnouncementsChecked()}}>Announcements</button>
             <button style={styles.subTab} onClick={()=>{markAnalyticsChecked();navigate('/analytics')}}>Analytics</button>
           </div>
@@ -3572,6 +3654,15 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
               </div>
             )}
           </div>
+        )}
+
+        {activeTab === 'campaigns' && (
+          <Campaigns
+            API_BASE={API_BASE}
+            user={user}
+            business={business}
+            authFetch={authFetch}
+          />
         )}
 
         {activeTab === 'giftcards' && (

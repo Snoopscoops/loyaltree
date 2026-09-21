@@ -2884,9 +2884,61 @@ class CouponRedeem(BaseModel):
     coupon_public_id: Optional[str] = None  # optional for backward compatibility; omitted = oldest usable coupon
     staff_pin: Optional[str] = None
     as_owner: Optional[bool] = False
+    # Optional sale values let campaign reports measure actual redeemed revenue/discount.
+    gross_amount: Optional[float] = Field(default=None, ge=0, le=1000000000)
+    discount_amount: Optional[float] = Field(default=None, ge=0, le=1000000000)
+    net_amount: Optional[float] = Field(default=None, ge=0, le=1000000000)
     # Set only after the cashier/owner explicitly confirms the customer's
     # birthday/ID when this particular birthday reward requires verification.
     birthday_verified: Optional[bool] = False
+
+
+class PointsBalanceAdjustRequest(BaseModel):
+    customer_public_id: str
+    delta: int = Field(ge=-100000000, le=100000000)
+    reason: str = Field(min_length=2, max_length=200)
+
+
+class CampaignCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=160)
+    description: Optional[str] = Field(default=None, max_length=1000)
+    scope: Literal['nationwide', 'selected_branches', 'single_branch'] = 'nationwide'
+    branch_public_ids: List[str] = Field(default_factory=list, max_length=200)
+    qualifying_start_date: str
+    qualifying_end_date: str
+    qualification_type: Literal['any_purchase', 'minimum_spend'] = 'any_purchase'
+    minimum_spend: float = Field(default=0, ge=0, le=1000000000)
+    reward_type: Literal['percent_discount', 'fixed_discount', 'buy_one_take_one']
+    reward_value: Optional[float] = Field(default=None, ge=0, le=1000000000)
+    reward_label: Optional[str] = Field(default=None, max_length=160)
+    reward_description: Optional[str] = Field(default=None, max_length=500)
+    coupon_start_date: str
+    coupon_end_date: str
+    min_redemption_spend: float = Field(default=0, ge=0, le=1000000000)
+    max_per_member: int = Field(default=1, ge=1, le=20)
+    applicable_product_text: Optional[str] = Field(default=None, max_length=300)
+    status: Literal['draft', 'scheduled', 'active', 'paused', 'ended'] = 'scheduled'
+
+
+class CampaignUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=2, max_length=160)
+    description: Optional[str] = Field(default=None, max_length=1000)
+    scope: Optional[Literal['nationwide', 'selected_branches', 'single_branch']] = None
+    branch_public_ids: Optional[List[str]] = Field(default=None, max_length=200)
+    qualifying_start_date: Optional[str] = None
+    qualifying_end_date: Optional[str] = None
+    qualification_type: Optional[Literal['any_purchase', 'minimum_spend']] = None
+    minimum_spend: Optional[float] = Field(default=None, ge=0, le=1000000000)
+    reward_type: Optional[Literal['percent_discount', 'fixed_discount', 'buy_one_take_one']] = None
+    reward_value: Optional[float] = Field(default=None, ge=0, le=1000000000)
+    reward_label: Optional[str] = Field(default=None, max_length=160)
+    reward_description: Optional[str] = Field(default=None, max_length=500)
+    coupon_start_date: Optional[str] = None
+    coupon_end_date: Optional[str] = None
+    min_redemption_spend: Optional[float] = Field(default=None, ge=0, le=1000000000)
+    max_per_member: Optional[int] = Field(default=None, ge=1, le=20)
+    applicable_product_text: Optional[str] = Field(default=None, max_length=300)
+    status: Optional[Literal['draft', 'scheduled', 'active', 'paused', 'ended']] = None
 
 # Helpers
 def generate_public_id() -> str:
@@ -4559,7 +4611,34 @@ def safe_get_active_coupons(customer_id: int) -> list:
                 verification_by_coupon = {}
         today = _loyalty_today()
         usable = []
+        campaign_by_coupon = {}
+        if coupon_ids:
+            try:
+                campaign_issues = (supabase.table('campaign_coupon_issues')
+                                   .select('coupon_public_id,campaign_id,starts_at,expires_at,reward_type,reward_value,min_redemption_spend,applicable_product_text')
+                                   .in_('coupon_public_id', coupon_ids).execute().data or [])
+                campaign_ids = list({row.get('campaign_id') for row in campaign_issues if row.get('campaign_id') is not None})
+                campaign_names = {}
+                if campaign_ids:
+                    for row in (supabase.table('campaigns').select('id,public_id,name').in_('id', campaign_ids).execute().data or []):
+                        campaign_names[row.get('id')] = row
+                for issue in campaign_issues:
+                    campaign = campaign_names.get(issue.get('campaign_id')) or {}
+                    campaign_by_coupon[str(issue.get('coupon_public_id'))] = {
+                        **issue,
+                        'campaign_public_id': campaign.get('public_id'),
+                        'campaign_name': campaign.get('name'),
+                    }
+            except Exception:
+                campaign_by_coupon = {}
         for coupon in rows:
+            starts_at = coupon.get('starts_at')
+            if starts_at:
+                try:
+                    if datetime.fromisoformat(str(starts_at)).date() > today:
+                        continue
+                except Exception:
+                    pass
             expires_at = coupon.get('expires_at')
             if expires_at:
                 try:
@@ -4570,6 +4649,7 @@ def safe_get_active_coupons(customer_id: int) -> list:
             usable.append({
                 **coupon,
                 'birthday_verification_required': verification_by_coupon.get(str(coupon.get('public_id')), False),
+                'campaign': campaign_by_coupon.get(str(coupon.get('public_id'))),
             })
         return usable
     except Exception:
@@ -4584,6 +4664,204 @@ def safe_get_active_coupon(customer_id: int):
     """
     coupons = safe_get_active_coupons(customer_id)
     return coupons[0] if coupons else None
+
+def _parse_campaign_date(value, field_name='date'):
+    try:
+        return datetime.fromisoformat(str(value)).date()
+    except Exception:
+        raise HTTPException(status_code=400, detail=f'Invalid {field_name}; use YYYY-MM-DD')
+
+
+def _campaign_effective_status(row: dict) -> str:
+    stored = str((row or {}).get('status') or 'scheduled').lower()
+    if stored in ('draft', 'paused', 'ended'):
+        return stored
+    today = _loyalty_today()
+    try:
+        start = _parse_campaign_date(row.get('qualifying_start_date'), 'qualifying start date')
+        end = _parse_campaign_date(row.get('qualifying_end_date'), 'qualifying end date')
+    except HTTPException:
+        return stored
+    if today < start:
+        return 'scheduled'
+    if today > end:
+        return 'ended'
+    return 'active'
+
+
+def _campaign_reward_text(row: dict) -> str:
+    label = str((row or {}).get('reward_label') or '').strip()
+    if label:
+        return label[:200]
+    reward_type = str((row or {}).get('reward_type') or '')
+    value = float((row or {}).get('reward_value') or 0)
+    if reward_type == 'percent_discount':
+        base = f'{value:g}% OFF'
+    elif reward_type == 'fixed_discount':
+        base = f'PHP {value:,.2f} OFF'
+    else:
+        base = 'BUY 1 TAKE 1'
+    name = str((row or {}).get('name') or '').strip()
+    return (f'{name} — {base}' if name else base)[:200]
+
+
+def _normalize_campaign_source_key(value: Optional[str]) -> str:
+    raw = str(value or '').strip()
+    for suffix in (':points', ':stamp', ':tier'):
+        if raw.endswith(suffix):
+            raw = raw[:-len(suffix)]
+    return raw[:240]
+
+
+def _campaign_branch_ids(campaign_id: int) -> set:
+    try:
+        rows = (supabase.table('campaign_branches').select('branch_id')
+                .eq('campaign_id', campaign_id).execute().data or [])
+        return {row.get('branch_id') for row in rows if row.get('branch_id') is not None}
+    except Exception:
+        return set()
+
+
+def _campaign_public(row: dict, branch_name_by_id: Optional[dict] = None) -> dict:
+    branch_name_by_id = branch_name_by_id or {}
+    branch_ids = _campaign_branch_ids(row.get('id')) if row.get('scope') != 'nationwide' else set()
+    return {
+        **row,
+        'effective_status': _campaign_effective_status(row),
+        'branch_ids': list(branch_ids),
+        'branch_names': [branch_name_by_id.get(bid) for bid in branch_ids if branch_name_by_id.get(bid)],
+    }
+
+
+def maybe_issue_campaign_coupons(
+    business: Optional[dict],
+    customer: Optional[dict],
+    *,
+    branch_id: Optional[int] = None,
+    gross_amount: Optional[float] = None,
+    source_transaction_id: Optional[str] = None,
+) -> list:
+    """Issue seasonal campaign coupons after a qualifying purchase.
+
+    This is intentionally best-effort: loyalty earning must never fail merely
+    because campaign storage has not been migrated or a marketing rule is bad.
+    """
+    if not supabase or not business or not customer:
+        return []
+    today = _loyalty_today()
+    source_key = _normalize_campaign_source_key(source_transaction_id) or f'event:{customer.get("id")}:{int(time.time())}'
+    try:
+        campaigns = (supabase.table('campaigns').select('*')
+                     .eq('business_id', business.get('id'))
+                     .in_('status', ['scheduled', 'active'])
+                     .lte('qualifying_start_date', today.isoformat())
+                     .gte('qualifying_end_date', today.isoformat())
+                     .order('created_at').execute().data or [])
+    except Exception as exc:
+        print(f'CAMPAIGN lookup warning: {exc}')
+        return []
+
+    issued = []
+    amount = float(gross_amount or 0)
+    for campaign in campaigns:
+        try:
+            if _campaign_effective_status(campaign) != 'active':
+                continue
+            scope = str(campaign.get('scope') or 'nationwide')
+            if scope != 'nationwide':
+                if branch_id is None or branch_id not in _campaign_branch_ids(campaign.get('id')):
+                    continue
+            if str(campaign.get('qualification_type') or 'any_purchase') == 'minimum_spend':
+                if amount + 0.0001 < float(campaign.get('minimum_spend') or 0):
+                    continue
+
+            existing_for_source = (supabase.table('campaign_coupon_issues').select('id')
+                                   .eq('campaign_id', campaign.get('id'))
+                                   .eq('customer_id', customer.get('id'))
+                                   .eq('source_transaction_id', source_key)
+                                   .limit(1).execute().data or [])
+            if existing_for_source:
+                continue
+            existing_count = (supabase.table('campaign_coupon_issues').select('id')
+                              .eq('campaign_id', campaign.get('id'))
+                              .eq('customer_id', customer.get('id'))
+                              .execute().data or [])
+            if len(existing_count) >= int(campaign.get('max_per_member') or 1):
+                continue
+
+            coupon_public_id = generate_public_id()
+            starts_at = str(campaign.get('coupon_start_date'))[:10]
+            expires_at = str(campaign.get('coupon_end_date'))[:10]
+            reward_text = _campaign_reward_text(campaign)
+            coupon_row = {
+                'public_id': coupon_public_id,
+                'business_id': business.get('id'),
+                'customer_id': customer.get('id'),
+                'reward_text': reward_text,
+                'reward_type': str(campaign.get('reward_type') or 'campaign'),
+                'status': 'active',
+                'starts_at': starts_at,
+                'expires_at': expires_at,
+                'source': 'campaign',
+                'source_ref': f"campaign:{campaign.get('public_id')}:{source_key}"[:300],
+                'created_at': datetime.utcnow().isoformat(),
+            }
+            coupon_res = supabase.table('coupons').insert(coupon_row).execute()
+            coupon_saved = (coupon_res.data or [coupon_row])[0]
+            issue_public_id = generate_public_id()
+            issue_row = {
+                'public_id': issue_public_id,
+                'campaign_id': campaign.get('id'),
+                'business_id': business.get('id'),
+                'customer_id': customer.get('id'),
+                'coupon_public_id': coupon_public_id,
+                'qualification_branch_id': branch_id,
+                'source_transaction_id': source_key,
+                'qualifying_amount': amount if gross_amount is not None else None,
+                'reward_type': campaign.get('reward_type'),
+                'reward_value': campaign.get('reward_value'),
+                'min_redemption_spend': float(campaign.get('min_redemption_spend') or 0),
+                'applicable_product_text': campaign.get('applicable_product_text'),
+                'status': 'issued',
+                'starts_at': starts_at,
+                'expires_at': expires_at,
+                'issued_at': datetime.utcnow().isoformat(),
+            }
+            issue_res = supabase.table('campaign_coupon_issues').insert(issue_row).execute()
+            issue_saved = (issue_res.data or [issue_row])[0]
+            for activity_type in ('qualified', 'coupon_issued'):
+                try:
+                    supabase.table('campaign_activity').insert({
+                        'campaign_id': campaign.get('id'),
+                        'campaign_issue_id': issue_saved.get('id'),
+                        'business_id': business.get('id'),
+                        'customer_id': customer.get('id'),
+                        'branch_id': branch_id,
+                        'activity_type': activity_type,
+                        'gross_amount': amount if gross_amount is not None else None,
+                        'source_transaction_id': source_key,
+                        'metadata': {'coupon_public_id': coupon_public_id, 'reward_text': reward_text},
+                        'created_at': datetime.utcnow().isoformat(),
+                    }).execute()
+                except Exception:
+                    pass
+            try:
+                enqueue_wallet_sync(customer, business, 'campaign_coupon_issued')
+            except Exception:
+                pass
+            issued.append({
+                'campaign_public_id': campaign.get('public_id'),
+                'campaign_name': campaign.get('name'),
+                'coupon_public_id': coupon_public_id,
+                'reward_text': reward_text,
+                'starts_at': starts_at,
+                'expires_at': expires_at,
+                'coupon': coupon_saved,
+            })
+        except Exception as exc:
+            print(f'CAMPAIGN issue warning campaign={campaign.get("public_id")}: {exc}')
+    return issued
+
 
 def normalize_welcome_reward(program: Optional[dict]) -> dict:
     program = program or {}
@@ -17879,7 +18157,7 @@ async def get_branch_manager_dashboard(
     if selected:
         try:
             customer_rows = (
-                supabase.table('customers').select('id,public_id,name,email,phone,birthday,stamp_count,tier_stamp_count,created_at')
+                supabase.table('customers').select('id,public_id,name,email,phone,birthday,stamp_count,tier_stamp_count,points_balance,created_at')
                 .eq('business_id', business.get('id'))
                 .eq('program_id', selected.get('id'))
                 .execute().data or []
@@ -17980,10 +18258,73 @@ async def get_branch_manager_dashboard(
     add_rows('employee_attendance_events', 'employee_attendance', 'action')
     add_rows('membership_benefit_redemptions', 'employee_benefit', 'benefit_name')
 
+    # Manual manager corrections are not hidden: surface them in the same branch
+    # activity feed using the immutable transaction_audit ledger.
+    if selected and customer_ids:
+        try:
+            adjustment_rows = (supabase.table('transaction_audit')
+                               .select('id,customer_id,staff_id,branch_id,created_at,action,delta,balance_before,balance_after,reason')
+                               .eq('business_id', business.get('id'))
+                               .eq('branch_id', branch.get('id'))
+                               .in_('action', ['points_adjust','stamp_adjust','tier_stamp_adjust','vip_adjust'])
+                               .gte('created_at', since.isoformat())
+                               .order('created_at', desc=True).limit(250).execute().data or [])
+        except Exception:
+            adjustment_rows = []
+        for row in adjustment_rows:
+            cid = row.get('customer_id')
+            if cid not in customer_ids:
+                continue
+            customer = customer_by_id.get(cid) or {}
+            staff = staff_by_id.get(row.get('staff_id')) or {}
+            delta = int(row.get('delta') or 0)
+            action = str(row.get('action') or '')
+            unit = 'points' if action in ('points_adjust','vip_adjust') else 'stamps'
+            recent.append({
+                'id': f"adjustment-{row.get('id')}",
+                'type': 'adjustment',
+                'detail': f"Manual {unit} adjustment {delta:+d} · {row.get('reason') or 'Correction'}",
+                'created_at': row.get('created_at'),
+                'customer_name': customer.get('name') or 'Member',
+                'customer_public_id': customer.get('public_id'),
+                'staff_name': staff.get('name') or 'Manager',
+            })
+
     recent.sort(key=lambda item: _parse_ts(item.get('created_at')) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     recent = recent[:40]
     branch_customers = [customer_by_id[cid] for cid in event_customer_ids if cid in customer_by_id]
     branch_customers.sort(key=lambda c: str(c.get('name') or '').lower())
+
+    # Managers can see campaigns that actually apply to their assigned branch,
+    # but campaign creation/scheduling remains owner-controlled.
+    active_campaigns = []
+    try:
+        today_iso = _loyalty_today().isoformat()
+        campaign_rows = (supabase.table('campaigns').select('*')
+                         .eq('business_id', business.get('id'))
+                         .in_('status', ['scheduled','active'])
+                         .lte('qualifying_start_date', today_iso)
+                         .gte('qualifying_end_date', today_iso)
+                         .order('qualifying_end_date').execute().data or [])
+        for campaign in campaign_rows:
+            if _campaign_effective_status(campaign) != 'active':
+                continue
+            if str(campaign.get('scope') or 'nationwide') != 'nationwide' and branch.get('id') not in _campaign_branch_ids(campaign.get('id')):
+                continue
+            active_campaigns.append({
+                'public_id': campaign.get('public_id'),
+                'name': campaign.get('name'),
+                'scope': campaign.get('scope'),
+                'reward_text': _campaign_reward_text(campaign),
+                'qualifying_start_date': campaign.get('qualifying_start_date'),
+                'qualifying_end_date': campaign.get('qualifying_end_date'),
+                'coupon_start_date': campaign.get('coupon_start_date'),
+                'coupon_end_date': campaign.get('coupon_end_date'),
+                'qualification_type': campaign.get('qualification_type'),
+                'minimum_spend': campaign.get('minimum_spend'),
+            })
+    except Exception:
+        active_campaigns = []
 
     return {
         'business': {
@@ -18019,6 +18360,7 @@ async def get_branch_manager_dashboard(
                 'stamp_editable': bool(program_reward_uses_stamps(selected) or tier_stamps_enabled(selected)),
                 'stamp_kind': 'reward' if program_reward_uses_stamps(selected) else ('tier' if tier_stamps_enabled(selected) else None),
                 'stamp_goal': selected.get('stamp_goal'),
+                'points_editable': bool(program_reward_uses_points(selected)),
             } if selected else None
         ),
         'stats': {
@@ -18052,12 +18394,66 @@ async def get_branch_manager_dashboard(
                 'birthday': c.get('birthday'),
                 'stamp_count': int(c.get('stamp_count') or 0),
                 'tier_stamp_count': int(c.get('tier_stamp_count') or 0),
+                'points_balance': int(c.get('points_balance') or 0),
                 'created_at': c.get('created_at'),
             }
             for c in sorted(customer_rows, key=lambda row: str(row.get('name') or '').lower())
         ][:500],
         'branch_customers': branch_customers[:100],
         'recent_activity': recent,
+        'active_campaigns': active_campaigns,
+    }
+
+
+@app.get("/api/v1/business/{public_id}/manager-members")
+async def get_branch_manager_members(
+    public_id: str,
+    program_id: Optional[str] = Query(default=None),
+    q: Optional[str] = Query(default=None, max_length=120),
+    limit: int = Query(default=100, ge=1, le=250),
+    offset: int = Query(default=0, ge=0),
+    authorization: str = Header(default=''),
+):
+    """Paginated business-wide member directory for an authenticated branch manager.
+
+    Managers may service/search every member in the selected loyalty program, but
+    branch-specific activity and manual adjustments remain attributed to the
+    manager's assigned branch.
+    """
+    _, business, _, _ = require_branch_manager_session(public_id, authorization)
+    program = safe_get_loyalty_program(business.get('id'), program_public_id=program_id) if program_id else safe_get_loyalty_program(business.get('id'))
+    if not program:
+        raise HTTPException(status_code=404, detail='Program not found for this business')
+    fields = 'id,public_id,name,email,phone,birthday,stamp_count,tier_stamp_count,points_balance,created_at'
+    try:
+        query = (supabase.table('customers').select(fields)
+                 .eq('business_id', business.get('id')).eq('program_id', program.get('id')))
+        term = str(q or '').strip()
+        if term:
+            safe_term = re.sub(r'[%_,()]', ' ', term).strip()
+            if safe_term:
+                clauses = [f'name.ilike.%{safe_term}%', f'email.ilike.%{safe_term}%', f'phone.ilike.%{safe_term}%']
+                if re.fullmatch(r'\d{4}-\d{2}-\d{2}', safe_term):
+                    clauses.append(f'birthday.eq.{safe_term}')
+                query = query.or_(','.join(clauses))
+        rows = (query.order('name').range(offset, offset + limit).execute().data or [])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    return {
+        'program_public_id': program.get('public_id'),
+        'members': [{
+            'public_id': c.get('public_id'), 'name': c.get('name'), 'email': c.get('email'),
+            'phone': c.get('phone'), 'birthday': c.get('birthday'),
+            'stamp_count': int(c.get('stamp_count') or 0),
+            'tier_stamp_count': int(c.get('tier_stamp_count') or 0),
+            'points_balance': int(c.get('points_balance') or 0),
+            'created_at': c.get('created_at'),
+        } for c in rows],
+        'offset': offset,
+        'limit': limit,
+        'has_more': has_more,
     }
 
 
@@ -22149,6 +22545,27 @@ def complete_transaction_audit(audit_row, *, balance_after=None, response_json=N
     except Exception as e:
         print(f"TRANSACTION AUDIT complete warning: {e}")
 
+    # Purchase-triggered campaigns sit on top of the permanent loyalty program.
+    # Manual corrections/redemptions never qualify. POS hybrid calls are deduped
+    # by the normalized idempotency/source key inside the campaign issuer.
+    try:
+        action = str(audit_row.get('action') or '')
+        if action in ('stamp_add', 'points_sale', 'tier_points_sale'):
+            business = safe_get_business_by_id(audit_row.get('business_id'))
+            customer = safe_get_customer_by_id(audit_row.get('customer_id'))
+            merged_meta = dict(audit_row.get('metadata') or {})
+            if isinstance(metadata, dict):
+                merged_meta.update(metadata)
+            amount = merged_meta.get('amount_spent')
+            if amount is None and isinstance(response_json, dict):
+                amount = response_json.get('amount_spent')
+            maybe_issue_campaign_coupons(
+                business, customer, branch_id=audit_row.get('branch_id'), gross_amount=amount,
+                source_transaction_id=audit_row.get('idempotency_key') or audit_row.get('transaction_id') or str(audit_id),
+            )
+    except Exception as campaign_exc:
+        print(f"CAMPAIGN post-transaction warning: {campaign_exc}")
+
 
 def fail_transaction_audit(audit_row, error):
     if not audit_row or audit_row.get('_duplicate_response') or not audit_row.get('id'):
@@ -22786,6 +23203,71 @@ async def adjust_stamp(public_id: str, req: StampAdjustRequest, background_tasks
         response_payload['transaction_id'] = str(audit_row.get('transaction_id'))
     complete_transaction_audit(audit_row, balance_after=new_count, response_json=response_payload)
     return response_payload
+
+
+@app.post("/api/v1/business/{public_id}/points/adjust")
+async def adjust_points_balance(
+    public_id: str,
+    req: PointsBalanceAdjustRequest,
+    background_tasks: BackgroundTasks,
+    authorization: str = Header(default=''),
+):
+    if req.delta == 0:
+        raise HTTPException(status_code=400, detail='Adjustment must add or remove at least one point')
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    customer = safe_get_customer(req.customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail='Customer not found for this business')
+
+    claims = get_staff_session_claims(public_id, authorization)
+    staff_id = branch_id = None
+    actor_type = 'owner'
+    if claims and str(claims.get('role') or '').lower() == 'manager':
+        _, _, manager, branch = require_branch_manager_session(public_id, authorization)
+        staff_id, branch_id, actor_type = manager.get('id'), branch.get('id'), 'manager'
+    else:
+        require_owner_session(public_id, authorization)
+
+    program = safe_get_customer_program(customer, business.get('id')) or {}
+    if not program_reward_uses_points(program):
+        raise HTTPException(status_code=400, detail='This program does not use spendable Reward Points')
+    before = int(customer.get('points_balance') or 0)
+    after = max(0, before + int(req.delta))
+    actual_delta = after - before
+    if actual_delta == 0:
+        return {'points_balance': after, 'delta': 0, 'message': 'Points balance unchanged'}
+
+    try:
+        updated = supabase.table('customers').update({
+            'points_balance': after,
+            'updated_at': datetime.utcnow().isoformat(),
+        }).eq('id', customer.get('id')).execute()
+        persisted = (updated.data or [{**customer, 'points_balance': after}])[0]
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+    audit_row = start_transaction_audit(
+        business_id=business.get('id'), customer_id=customer.get('id'), staff_id=staff_id,
+        branch_id=branch_id, actor_type=actor_type, action='points_adjust', delta=actual_delta,
+        balance_before=before, reason=req.reason.strip()[:200],
+        metadata={'card_type': program.get('card_type'), 'source': 'manager_member_dashboard' if actor_type == 'manager' else 'owner'},
+    )
+    payload = {
+        'message': 'Points balance updated', 'points_balance': after, 'delta': actual_delta,
+        'before': before, 'after': after, 'reason': req.reason.strip()[:200],
+        'wallet_sync': {'status': 'queued'},
+    }
+    if audit_row and audit_row.get('transaction_id'):
+        payload['transaction_id'] = str(audit_row.get('transaction_id'))
+    complete_transaction_audit(audit_row, balance_after=after, response_json=payload)
+    background_tasks.add_task(
+        sync_loyalty_wallets_background, dict(persisted), dict(business), dict(program),
+        'points_adjust', 'Points balance corrected', f'Your points balance is now {after:,}.',
+        f'points-adjust-{customer.get("id")}-{int(time.time())}',
+    )
+    return payload
 
 
 @app.post("/api/v1/business/{public_id}/vip-sale")
@@ -24626,6 +25108,12 @@ async def storehub_test_transaction(
             raise _pos_schema_error(exc)
 
         fresh_customer = safe_get_customer(req.customer_public_id) or customer
+        campaign_coupons = maybe_issue_campaign_coupons(
+            business, fresh_customer, branch_id=mapping.get('branch_id'), gross_amount=gross_amount,
+            source_transaction_id=idempotency_key,
+        )
+        if campaign_coupons:
+            loyalty_result = {**(loyalty_result or {}), 'campaign_coupons_issued': campaign_coupons}
         return {
             **(loyalty_result or {}),
             'amount_spent': gross_amount,
@@ -26361,6 +26849,12 @@ async def redeem_coupon(public_id: str, req: CouponRedeem, background_tasks: Bac
             coupon = res.data
         except Exception:
             coupon = None
+        if coupon and coupon.get('starts_at'):
+            try:
+                if datetime.fromisoformat(str(coupon.get('starts_at'))).date() > _loyalty_today():
+                    coupon = None
+            except Exception:
+                pass
         if coupon and coupon.get('expires_at'):
             try:
                 if datetime.fromisoformat(str(coupon.get('expires_at'))).date() < _loyalty_today():
@@ -26371,6 +26865,52 @@ async def redeem_coupon(public_id: str, req: CouponRedeem, background_tasks: Bac
         coupon = safe_get_active_coupon(customer.get('id'))
     if not coupon:
         raise HTTPException(status_code=400, detail="No active coupon to redeem")
+
+    campaign_issue = None
+    campaign_row = None
+    campaign_discount_amount = req.discount_amount
+    campaign_net_amount = req.net_amount
+    if str(coupon.get('source') or '').lower() == 'campaign':
+        try:
+            issue_rows = (supabase.table('campaign_coupon_issues').select('*')
+                          .eq('coupon_public_id', coupon.get('public_id')).limit(1).execute().data or [])
+            campaign_issue = issue_rows[0] if issue_rows else None
+            if campaign_issue:
+                campaign_rows = (supabase.table('campaigns').select('*')
+                                 .eq('id', campaign_issue.get('campaign_id')).limit(1).execute().data or [])
+                campaign_row = campaign_rows[0] if campaign_rows else None
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=f'Campaign coupon data is unavailable: {friendly_db_error(exc)}')
+        if not campaign_issue or not campaign_row:
+            raise HTTPException(status_code=409, detail='Campaign coupon record is incomplete')
+        today = _loyalty_today()
+        starts = _parse_campaign_date(campaign_issue.get('starts_at'), 'coupon start date')
+        expires = _parse_campaign_date(campaign_issue.get('expires_at'), 'coupon end date')
+        if today < starts:
+            raise HTTPException(status_code=400, detail=f'This campaign coupon becomes usable on {starts.isoformat()}')
+        if today > expires:
+            raise HTTPException(status_code=400, detail='This campaign coupon has expired')
+        min_spend = float(campaign_issue.get('min_redemption_spend') or 0)
+        if min_spend > 0:
+            if req.gross_amount is None:
+                raise HTTPException(status_code=400, detail=f'Enter the current bill total; this coupon requires a minimum purchase of PHP {min_spend:,.2f}')
+            if float(req.gross_amount) + 0.0001 < min_spend:
+                raise HTTPException(status_code=400, detail=f'Minimum purchase for this coupon is PHP {min_spend:,.2f}')
+        if req.gross_amount is not None:
+            gross = float(req.gross_amount)
+            reward_type = str(campaign_issue.get('reward_type') or '')
+            reward_value = float(campaign_issue.get('reward_value') or 0)
+            if campaign_discount_amount is None:
+                if reward_type == 'percent_discount':
+                    campaign_discount_amount = round(min(gross, gross * reward_value / 100.0), 2)
+                elif reward_type == 'fixed_discount':
+                    campaign_discount_amount = round(min(gross, reward_value), 2)
+            if campaign_net_amount is None and campaign_discount_amount is not None:
+                campaign_net_amount = round(max(0.0, gross - float(campaign_discount_amount)), 2)
+        scope = str(campaign_row.get('scope') or 'nationwide')
+        if scope != 'nationwide' and redeeming_branch_id is not None:
+            if redeeming_branch_id not in _campaign_branch_ids(campaign_row.get('id')):
+                raise HTTPException(status_code=403, detail='This campaign coupon is not valid at this branch')
 
     # Birthday rewards may require an explicit staff/owner birthday or ID
     # verification. Never trust the browser alone: enforce it again here.
@@ -26403,6 +26943,32 @@ async def redeem_coupon(public_id: str, req: CouponRedeem, background_tasks: Bac
             }).eq('coupon_public_id', coupon.get('public_id')).execute()
         except Exception:
             pass
+        if campaign_issue:
+            campaign_patch = {
+                'status': 'redeemed',
+                'redemption_branch_id': redeeming_branch_id,
+                'redeemed_at': redeemed_at,
+                'redemption_gross_amount': req.gross_amount,
+                'discount_amount': campaign_discount_amount,
+                'redemption_net_amount': campaign_net_amount,
+            }
+            supabase.table('campaign_coupon_issues').update(campaign_patch).eq('id', campaign_issue.get('id')).execute()
+            try:
+                supabase.table('campaign_activity').insert({
+                    'campaign_id': campaign_issue.get('campaign_id'),
+                    'campaign_issue_id': campaign_issue.get('id'),
+                    'business_id': business.get('id'),
+                    'customer_id': customer.get('id'),
+                    'branch_id': redeeming_branch_id,
+                    'activity_type': 'coupon_redeemed',
+                    'gross_amount': req.gross_amount,
+                    'discount_amount': campaign_discount_amount,
+                    'source_transaction_id': None,
+                    'metadata': {'coupon_public_id': coupon.get('public_id'), 'net_amount': campaign_net_amount},
+                    'created_at': redeemed_at,
+                }).execute()
+            except Exception:
+                pass
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
@@ -26429,8 +26995,243 @@ async def redeem_coupon(public_id: str, req: CouponRedeem, background_tasks: Bac
         "success": True,
         "reward_text": coupon.get('reward_text'),
         "redeemed_at": redeemed_at,
+        "campaign": ({
+            'public_id': campaign_row.get('public_id'),
+            'name': campaign_row.get('name'),
+            'gross_amount': req.gross_amount,
+            'discount_amount': campaign_discount_amount,
+            'net_amount': campaign_net_amount,
+        } if campaign_row else None),
         "active_coupons": safe_get_active_coupons(customer.get('id')),
     }
+
+def _campaign_validate_payload(data: dict, existing: Optional[dict] = None) -> dict:
+    merged = {**(existing or {}), **(data or {})}
+    q_start = _parse_campaign_date(merged.get('qualifying_start_date'), 'qualifying start date')
+    q_end = _parse_campaign_date(merged.get('qualifying_end_date'), 'qualifying end date')
+    c_start = _parse_campaign_date(merged.get('coupon_start_date'), 'coupon start date')
+    c_end = _parse_campaign_date(merged.get('coupon_end_date'), 'coupon end date')
+    if q_end < q_start:
+        raise HTTPException(status_code=400, detail='Qualifying end date cannot be before the start date')
+    if c_end < c_start:
+        raise HTTPException(status_code=400, detail='Coupon end date cannot be before the start date')
+    reward_type = str(merged.get('reward_type') or '')
+    reward_value = merged.get('reward_value')
+    if reward_type in ('percent_discount', 'fixed_discount') and (reward_value is None or float(reward_value) <= 0):
+        raise HTTPException(status_code=400, detail='Discount campaigns need a positive reward value')
+    if reward_type == 'percent_discount' and float(reward_value or 0) > 100:
+        raise HTTPException(status_code=400, detail='Percentage discount cannot exceed 100%')
+    return merged
+
+
+def _campaign_report(business: dict, campaign: dict) -> dict:
+    # Prefer SQL aggregates so reports remain accurate for 100k+ coupon issues.
+    summary = None
+    by_branch = []
+    try:
+        rows = supabase.rpc('campaign_report_summary', {'p_campaign_id': campaign.get('id')}).execute().data or []
+        summary = rows[0] if rows else None
+        by_branch = supabase.rpc('campaign_report_by_branch', {'p_campaign_id': campaign.get('id')}).execute().data or []
+    except Exception as exc:
+        print(f'CAMPAIGN aggregate RPC fallback: {exc}')
+
+    if summary is None:
+        # Rolling-deploy fallback before the SQL functions are installed.
+        try:
+            issues = (supabase.table('campaign_coupon_issues').select('*')
+                      .eq('campaign_id', campaign.get('id')).limit(5000).execute().data or [])
+        except Exception:
+            issues = []
+        issued = len(issues)
+        unique_members = len({x.get('customer_id') for x in issues if x.get('customer_id') is not None})
+        redeemed_rows = [x for x in issues if str(x.get('status') or '') == 'redeemed']
+        redeemed = len(redeemed_rows)
+        redeemed_members = len({x.get('customer_id') for x in redeemed_rows if x.get('customer_id') is not None})
+        today = _loyalty_today()
+        def issue_is_expired(x):
+            if str(x.get('status') or '') == 'expired': return True
+            if str(x.get('status') or '') != 'issued': return False
+            try: return _parse_campaign_date(x.get('expires_at'), 'coupon end date') < today
+            except HTTPException: return False
+        expired = sum(1 for x in issues if issue_is_expired(x))
+        summary = {
+            'issued': issued, 'unique_members': unique_members,
+            'redeemed': redeemed, 'redeemed_members': redeemed_members,
+            'expired': expired,
+            'gross_revenue_from_redemptions': sum(float(x.get('redemption_gross_amount') or 0) for x in redeemed_rows),
+            'net_revenue_from_redemptions': sum(float(x.get('redemption_net_amount') or 0) for x in redeemed_rows),
+            'discount_given': sum(float(x.get('discount_amount') or 0) for x in redeemed_rows),
+        }
+        branch_map = {}
+        for issue in issues:
+            bid = issue.get('redemption_branch_id') or issue.get('qualification_branch_id')
+            key = str(bid or 'unknown')
+            item = branch_map.setdefault(key, {'branch_id': bid, 'branch_name': 'Unknown / unassigned' if bid is None else 'Branch', 'issued': 0, 'redeemed': 0, 'gross_revenue': 0.0, 'discount_given': 0.0})
+            item['issued'] += 1
+            if str(issue.get('status') or '') == 'redeemed':
+                item['redeemed'] += 1
+                item['gross_revenue'] += float(issue.get('redemption_gross_amount') or 0)
+                item['discount_given'] += float(issue.get('discount_amount') or 0)
+        branch_ids = [v.get('branch_id') for v in branch_map.values() if v.get('branch_id') is not None]
+        if branch_ids:
+            try:
+                names = {r.get('id'):r.get('name') for r in (supabase.table('branches').select('id,name').in_('id', branch_ids).execute().data or [])}
+                for item in branch_map.values(): item['branch_name'] = names.get(item.get('branch_id')) or item['branch_name']
+            except Exception: pass
+        by_branch = list(branch_map.values())
+
+    issued = int((summary or {}).get('issued') or 0)
+    redeemed = int((summary or {}).get('redeemed') or 0)
+    expired = int((summary or {}).get('expired') or 0)
+    try:
+        activity = (supabase.table('campaign_activity').select('*')
+                    .eq('campaign_id', campaign.get('id')).order('created_at', desc=True)
+                    .limit(100).execute().data or [])
+    except Exception:
+        activity = []
+    customer_ids = {x.get('customer_id') for x in activity if x.get('customer_id') is not None}
+    branch_ids = {x.get('branch_id') for x in activity if x.get('branch_id') is not None}
+    customer_map, branch_name_map = {}, {}
+    if customer_ids:
+        try: customer_map = {r.get('id'):r for r in (supabase.table('customers').select('id,public_id,name').in_('id', list(customer_ids)).execute().data or [])}
+        except Exception: pass
+    if branch_ids:
+        try: branch_name_map = {r.get('id'):r.get('name') for r in (supabase.table('branches').select('id,name').in_('id', list(branch_ids)).execute().data or [])}
+        except Exception: pass
+    for row in activity:
+        customer = customer_map.get(row.get('customer_id')) or {}
+        row['customer_name'] = customer.get('name') or 'Member'
+        row['customer_public_id'] = customer.get('public_id')
+        row['branch_name'] = branch_name_map.get(row.get('branch_id')) or ('Nationwide / unassigned' if row.get('branch_id') is None else 'Branch')
+    return {
+        'issued': issued,
+        'unique_members': int((summary or {}).get('unique_members') or 0),
+        'redeemed': redeemed,
+        'redeemed_members': int((summary or {}).get('redeemed_members') or 0),
+        'expired': expired,
+        'active_or_unused': max(0, issued - redeemed - expired),
+        'redemption_rate': round((redeemed / issued * 100.0), 2) if issued else 0.0,
+        'gross_revenue_from_redemptions': round(float((summary or {}).get('gross_revenue_from_redemptions') or 0), 2),
+        'net_revenue_from_redemptions': round(float((summary or {}).get('net_revenue_from_redemptions') or 0), 2),
+        'discount_given': round(float((summary or {}).get('discount_given') or 0), 2),
+        'branches': by_branch,
+        'activity': activity,
+    }
+
+
+@app.get('/api/v1/business/{public_id}/campaigns')
+async def list_campaigns(public_id: str, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    try:
+        branches = (supabase.table('branches').select('id,public_id,name,address,is_active')
+                    .eq('business_id', business.get('id')).order('name').execute().data or [])
+        branch_name_by_id = {row.get('id'): row.get('name') for row in branches}
+        campaigns = (supabase.table('campaigns').select('*').eq('business_id', business.get('id'))
+                     .order('created_at', desc=True).execute().data or [])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+    result = []
+    for campaign in campaigns:
+        public = _campaign_public(campaign, branch_name_by_id)
+        report = _campaign_report(business, campaign)
+        public['summary'] = {k: report[k] for k in ('issued','redeemed','expired','active_or_unused','redemption_rate','gross_revenue_from_redemptions','discount_given')}
+        result.append(public)
+    return {'campaigns': result, 'branches': branches}
+
+
+@app.post('/api/v1/business/{public_id}/campaigns')
+async def create_campaign(public_id: str, req: CampaignCreate, authorization: str = Header(default='')):
+    claims = require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    payload = req.dict()
+    _campaign_validate_payload(payload)
+    scope = payload.get('scope') or 'nationwide'
+    branch_public_ids = list(dict.fromkeys(payload.pop('branch_public_ids', []) or []))
+    if scope == 'single_branch' and len(branch_public_ids) != 1:
+        raise HTTPException(status_code=400, detail='Single-branch campaigns require exactly one branch')
+    if scope == 'selected_branches' and not branch_public_ids:
+        raise HTTPException(status_code=400, detail='Select at least one branch')
+    if scope == 'nationwide':
+        branch_public_ids = []
+    branches = []
+    if branch_public_ids:
+        branches = (supabase.table('branches').select('id,public_id,name').eq('business_id', business.get('id')).in_('public_id', branch_public_ids).execute().data or [])
+        if len({b.get('public_id') for b in branches}) != len(set(branch_public_ids)):
+            raise HTTPException(status_code=400, detail='One or more selected branches are invalid')
+    row = {
+        **payload,
+        'public_id': generate_public_id(),
+        'business_id': business.get('id'),
+        'created_by_staff_id': claims.get('staff_id'),
+        'created_at': datetime.utcnow().isoformat(),
+        'updated_at': datetime.utcnow().isoformat(),
+    }
+    try:
+        saved = (supabase.table('campaigns').insert(row).execute().data or [row])[0]
+        if branches:
+            supabase.table('campaign_branches').insert([{'campaign_id': saved.get('id'), 'branch_id': b.get('id')} for b in branches]).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+    return _campaign_public(saved, {b.get('id'): b.get('name') for b in branches})
+
+
+@app.patch('/api/v1/business/{public_id}/campaigns/{campaign_public_id}')
+async def update_campaign(public_id: str, campaign_public_id: str, req: CampaignUpdate, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    rows = (supabase.table('campaigns').select('*').eq('business_id', business.get('id')).eq('public_id', campaign_public_id).limit(1).execute().data or [])
+    if not rows:
+        raise HTTPException(status_code=404, detail='Campaign not found')
+    current = rows[0]
+    patch = req.dict(exclude_unset=True)
+    branch_public_ids = patch.pop('branch_public_ids', None)
+    merged = _campaign_validate_payload(patch, current)
+    scope = str(merged.get('scope') or 'nationwide')
+    if branch_public_ids is not None:
+        branch_public_ids = list(dict.fromkeys(branch_public_ids or []))
+    elif 'scope' in patch:
+        branch_public_ids = [] if scope == 'nationwide' else None
+    if scope == 'single_branch' and branch_public_ids is not None and len(branch_public_ids) != 1:
+        raise HTTPException(status_code=400, detail='Single-branch campaigns require exactly one branch')
+    if scope == 'selected_branches' and branch_public_ids is not None and not branch_public_ids:
+        raise HTTPException(status_code=400, detail='Select at least one branch')
+    patch['updated_at'] = datetime.utcnow().isoformat()
+    try:
+        saved = (supabase.table('campaigns').update(patch).eq('id', current.get('id')).execute().data or [{**current, **patch}])[0]
+        if branch_public_ids is not None:
+            supabase.table('campaign_branches').delete().eq('campaign_id', current.get('id')).execute()
+            if scope != 'nationwide':
+                branches = (supabase.table('branches').select('id,public_id').eq('business_id', business.get('id')).in_('public_id', branch_public_ids).execute().data or [])
+                if len({b.get('public_id') for b in branches}) != len(set(branch_public_ids)):
+                    raise HTTPException(status_code=400, detail='One or more selected branches are invalid')
+                if branches:
+                    supabase.table('campaign_branches').insert([{'campaign_id': current.get('id'), 'branch_id': b.get('id')} for b in branches]).execute()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+    return _campaign_public(saved)
+
+
+@app.get('/api/v1/business/{public_id}/campaigns/{campaign_public_id}/report')
+async def get_campaign_report(public_id: str, campaign_public_id: str, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    rows = (supabase.table('campaigns').select('*').eq('business_id', business.get('id')).eq('public_id', campaign_public_id).limit(1).execute().data or [])
+    if not rows:
+        raise HTTPException(status_code=404, detail='Campaign not found')
+    campaign = rows[0]
+    return {'campaign': _campaign_public(campaign), 'report': _campaign_report(business, campaign)}
+
 
 @app.get("/api/v1/business/{public_id}/hero-image.png")
 async def get_hero_image(public_id: str, c: Optional[str] = None):
