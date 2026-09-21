@@ -124,10 +124,12 @@ function POSIntegration({
     value_per_point: 1,
     min_points: 1,
     increment_points: 1,
+    options: [50, 100, 200],
     max_percent: 100,
     hold_minutes: 10,
     earn_on_net_amount: true,
   })
+  const [redemptionOptionDraft, setRedemptionOptionDraft] = useState('')
   const [redemptionForm, setRedemptionForm] = useState(EMPTY_REDEMPTION_TEST)
   const [redemptionResult, setRedemptionResult] = useState(null)
   const [redemptionStage, setRedemptionStage] = useState('idle')
@@ -290,7 +292,14 @@ function POSIntegration({
       setLoyverseConnection(data.loyverse_connection || null)
       setLoyverseStores(data.loyverse_connection?.stores || (provider === 'loyverse' ? data.integration?.config?.loyverse_stores : []) || [])
       setLoyaltyContract(data.loyalty_contract || null)
-      if (data.redemption_config) setRedemptionConfig(data.redemption_config)
+      if (data.redemption_config) {
+        setRedemptionConfig({
+          ...data.redemption_config,
+          options: Array.isArray(data.redemption_config.options)
+            ? data.redemption_config.options.map(Number).filter(value => Number.isInteger(value) && value > 0)
+            : [],
+        })
+      }
       if (data.storehub_connection?.store_name) {
         setStoreHubCredentials(current => ({ ...current, store_name: data.storehub_connection.store_name }))
       }
@@ -768,12 +777,56 @@ function POSIntegration({
     }
   }
 
+  const addRedemptionOption = () => {
+    const points = Number(redemptionOptionDraft)
+    if (!Number.isInteger(points) || points <= 0) {
+      setError('Enter a whole-number point amount for the redeemable.')
+      return
+    }
+    const current = Array.isArray(redemptionConfig.options) ? redemptionConfig.options.map(Number) : []
+    if (current.includes(points)) {
+      setRedemptionOptionDraft('')
+      return
+    }
+    if (current.length >= 12) {
+      setError('Use at most 12 redemption options.')
+      return
+    }
+    setError('')
+    setRedemptionConfig(config => ({
+      ...config,
+      options: [...(Array.isArray(config.options) ? config.options : []), points]
+        .map(Number)
+        .filter(value => Number.isInteger(value) && value > 0)
+        .filter((value, index, arr) => arr.indexOf(value) === index)
+        .sort((a, b) => a - b),
+    }))
+    setRedemptionOptionDraft('')
+  }
+
+  const removeRedemptionOption = points => {
+    setRedemptionConfig(config => ({
+      ...config,
+      options: (Array.isArray(config.options) ? config.options : []).filter(value => Number(value) !== Number(points)),
+    }))
+  }
+
   const saveRedemptionSettings = async () => {
+    const options = (Array.isArray(redemptionConfig.options) ? redemptionConfig.options : [])
+      .map(Number)
+      .filter(value => Number.isInteger(value) && value > 0)
+      .filter((value, index, arr) => arr.indexOf(value) === index)
+      .sort((a, b) => a - b)
+    if (!options.length) {
+      setError('Add at least one available redeemable before saving.')
+      return
+    }
     const ok = await saveSetupSettings({
       redemption_enabled: true,
       redemption_value_per_point: Number(redemptionConfig.value_per_point || 1),
       redemption_min_points: Number(redemptionConfig.min_points || 1),
       redemption_increment_points: Number(redemptionConfig.increment_points || 1),
+      redemption_options: options,
       redemption_max_percent: Number(redemptionConfig.max_percent || 100),
       reservation_hold_minutes: Number(redemptionConfig.hold_minutes || 10),
       earn_on_net_amount: redemptionConfig.earn_on_net_amount !== false,
@@ -781,7 +834,7 @@ function POSIntegration({
     if (ok) {
       setRedemptionConfig(current => ({ ...current, enabled: true }))
       setSetupStep(6)
-      setMessage('StoreHub redemption simulator enabled.')
+      setMessage('Redemption options saved for the Companion cashier.')
       await loadPOS()
     }
   }
@@ -1555,17 +1608,17 @@ function POSIntegration({
 
               <section style={s.card}>
                 <div style={s.stepLabel}>5 · REDEMPTION</div>
-                <h3 style={s.sectionTitle}>Reserve → discount → complete sale</h3>
+                <h3 style={s.sectionTitle}>Choose redeemables → discount → complete sale</h3>
                 {provider !== 'storehub' ? (
                   <p style={s.muted}>POS redemption simulator is currently implemented for StoreHub first.</p>
                 ) : (
                   <>
                     <p style={s.muted}>
-                      Loyalty Tree reserves points first. The StoreHub adapter then applies the checkout discount.
+                      The owner defines the available point redemptions here. Loyalty Tree reserves the selected points first, then the StoreHub adapter applies the checkout discount.
                       Points are deducted only after the POS sale is confirmed, and new points are earned on the net paid amount.
                     </p>
                     <div style={s.ruleBox}>
-                      <b>ANGKAN default</b>
+                      <b>Redemption conversion</b>
                       <div style={s.smallMuted}>1 point = ₱1 · earn on net amount after redemption · reservation expires automatically.</div>
                     </div>
 
@@ -1587,6 +1640,45 @@ function POSIntegration({
                           onChange={e => setRedemptionConfig(c => ({...c,max_percent:e.target.value}))}/>
                       </label>
                     </div>
+
+                    <div style={{marginTop:14,padding:14,border:'1px solid #cbd5e1',borderRadius:12,background:'#f8fafc'}}>
+                      <div style={{fontSize:11,fontWeight:900,color:'#0f766e'}}>AVAILABLE REDEEMABLES</div>
+                      <div style={{fontSize:12,color:'#64748b',marginTop:4}}>
+                        Add the point amounts cashiers may offer. The peso discount is calculated automatically from the value per point above.
+                      </div>
+                      <div style={{display:'flex',gap:8,marginTop:10,flexWrap:'wrap'}}>
+                        {(Array.isArray(redemptionConfig.options) ? redemptionConfig.options : []).map(points => {
+                          const discount = Number(points || 0) * Number(redemptionConfig.value_per_point || 1)
+                          return (
+                            <div key={points} style={{display:'flex',alignItems:'center',gap:8,border:'1px solid #99f6e4',background:'#f0fdfa',borderRadius:999,padding:'7px 9px 7px 12px'}}>
+                              <span style={{fontSize:12,fontWeight:850,color:'#115e59'}}>
+                                {Number(points).toLocaleString()} pts → ₱{discount.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
+                              </span>
+                              <button type="button" onClick={()=>removeRedemptionOption(points)} style={{border:0,background:'transparent',color:'#b91c1c',fontWeight:900,cursor:'pointer',padding:'0 3px'}} aria-label={`Remove ${points} point redeemable`}>×</button>
+                            </div>
+                          )
+                        })}
+                        {!(Array.isArray(redemptionConfig.options) && redemptionConfig.options.length) && (
+                          <span style={{fontSize:12,color:'#94a3b8'}}>No redeemables configured yet.</span>
+                        )}
+                      </div>
+                      <div style={{display:'flex',gap:8,marginTop:10,alignItems:'end',flexWrap:'wrap'}}>
+                        <label style={{...s.fieldLabel,margin:0,minWidth:180,flex:'1 1 180px'}}>Points required
+                          <input
+                            style={s.input}
+                            type="number"
+                            min="1"
+                            step="1"
+                            placeholder="e.g. 50"
+                            value={redemptionOptionDraft}
+                            onChange={e=>setRedemptionOptionDraft(e.target.value)}
+                            onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();addRedemptionOption()}}}
+                          />
+                        </label>
+                        <button type="button" style={{...s.secondaryButton,width:'auto',margin:0}} onClick={addRedemptionOption}>+ Add redeemable</button>
+                      </div>
+                    </div>
+
                     <ChoiceRow
                       checked={redemptionConfig.earn_on_net_amount !== false}
                       label="Earn on NET amount after redemption"

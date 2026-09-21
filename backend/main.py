@@ -2459,6 +2459,9 @@ class POSSettingsUpdate(BaseModel):
     redemption_value_per_point: Optional[float] = Field(default=None, gt=0, le=100000)
     redemption_min_points: Optional[int] = Field(default=None, ge=1, le=100000000)
     redemption_increment_points: Optional[int] = Field(default=None, ge=1, le=100000000)
+    # Owner-defined point amounts shown as cashier redemption choices.
+    # Stored inside pos_integrations.config so no additional database table is required.
+    redemption_options: Optional[List[int]] = None
     redemption_max_percent: Optional[float] = Field(default=None, gt=0, le=100)
     reservation_hold_minutes: Optional[int] = Field(default=None, ge=1, le=120)
     earn_on_net_amount: Optional[bool] = None
@@ -3161,16 +3164,37 @@ def _pos_device_profile(device_model: Optional[str]) -> dict:
 def _pos_redemption_config(integration: Optional[dict]) -> dict:
     config = (integration or {}).get('config') if isinstance((integration or {}).get('config'), dict) else {}
     test_mode_redemption = str((integration or {}).get('mode') or '').lower() == 'test'
+
     def _num(key, default, cast=float):
         try:
             return cast(config.get(key) if config.get(key) is not None else default)
         except Exception:
             return cast(default)
+
+    # Keep the cashier choices merchant-controlled. Existing test integrations that
+    # predate this field get a visible starter set so redemption can be exercised
+    # immediately; once the owner saves the list (including an empty list), that
+    # explicit value is respected.
+    raw_options = config.get('redemption_options')
+    if isinstance(raw_options, list):
+        options = []
+        for value in raw_options:
+            try:
+                points = int(value)
+            except (TypeError, ValueError):
+                continue
+            if points > 0 and points not in options:
+                options.append(points)
+        options.sort()
+    else:
+        options = [50, 100, 200] if test_mode_redemption else []
+
     return {
         'enabled': bool(config.get('redemption_enabled')) or test_mode_redemption,
         'value_per_point': max(0.0001, _num('redemption_value_per_point', 1.0, float)),
         'min_points': max(1, _num('redemption_min_points', 1, int)),
         'increment_points': max(1, _num('redemption_increment_points', 1, int)),
+        'options': options,
         'max_percent': min(100.0, max(0.01, _num('redemption_max_percent', 100.0, float))),
         'hold_minutes': min(120, max(1, _num('reservation_hold_minutes', 10, int))),
         'earn_on_net_amount': config.get('earn_on_net_amount') is not False,
@@ -23160,6 +23184,7 @@ async def start_pos_integration(public_id: str, req: POSIntegrationCreate, autho
         'redemption_value_per_point': 1.0,
         'redemption_min_points': 1,
         'redemption_increment_points': 1,
+        'redemption_options': [50, 100, 200],
         'redemption_max_percent': 100.0,
         'reservation_hold_minutes': 10,
         'earn_on_net_amount': True,
@@ -23487,6 +23512,21 @@ async def update_pos_settings(public_id: str, req: POSSettingsUpdate, authorizat
         patch['setup_step'] = max(int((integration.get('config') or {}).get('setup_step') or 2), 5)
     if 'redemption_enabled' in patch:
         patch['setup_step'] = max(int((integration.get('config') or {}).get('setup_step') or 2), 6)
+    if 'redemption_options' in patch:
+        normalized_options = []
+        for value in (patch.get('redemption_options') or []):
+            try:
+                points = int(value)
+            except (TypeError, ValueError):
+                continue
+            if points <= 0:
+                continue
+            if points not in normalized_options:
+                normalized_options.append(points)
+        normalized_options.sort()
+        if len(normalized_options) > 12:
+            raise HTTPException(status_code=400, detail='Use at most 12 redemption options.')
+        patch['redemption_options'] = normalized_options
 
     config = _merge_pos_config(integration, patch)
     try:
@@ -38096,6 +38136,12 @@ def pos_companion_points_reserve(
         raise HTTPException(status_code=400, detail=f"Minimum redemption is {config['min_points']} points.")
     if points % int(config['increment_points']) != 0:
         raise HTTPException(status_code=400, detail=f"Redemption must be in increments of {config['increment_points']} points.")
+    configured_options = [int(value) for value in (config.get('options') or []) if int(value) > 0]
+    if configured_options and points not in configured_options:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Choose one of the configured redemption options: {', '.join(str(value) for value in configured_options)} points.",
+        )
 
     key = (req.reservation_key or f"LT-POS-{uuid.uuid4().hex[:24]}").strip()
     row = _pos_rpc_first('pos_reserve_points_redemption', {
