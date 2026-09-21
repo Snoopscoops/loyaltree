@@ -3160,13 +3160,17 @@ def _pos_device_profile(device_model: Optional[str]) -> dict:
 
 def _pos_redemption_config(integration: Optional[dict]) -> dict:
     config = (integration or {}).get('config') if isinstance((integration or {}).get('config'), dict) else {}
+    test_mode_redemption = (
+        str((integration or {}).get('mode') or '').lower() == 'test'
+        and config.get('simulator') is True
+    )
     def _num(key, default, cast=float):
         try:
             return cast(config.get(key) if config.get(key) is not None else default)
         except Exception:
             return cast(default)
     return {
-        'enabled': bool(config.get('redemption_enabled')),
+        'enabled': bool(config.get('redemption_enabled')) or test_mode_redemption,
         'value_per_point': max(0.0001, _num('redemption_value_per_point', 1.0, float)),
         'min_points': max(1, _num('redemption_min_points', 1, int)),
         'increment_points': max(1, _num('redemption_increment_points', 1, int)),
@@ -23532,8 +23536,8 @@ async def connect_storehub_account(
         'member_identification': 'qr',
         'loyalty_source': 'existing_loyaltytree_program',
         'earning_enabled': True,
-        # Redemption may be exercised in simulator while live write-back remains capability-gated.
-        'redemption_enabled': False,
+        # Test/simulator mode exposes redemption directly in the Companion POS overlay.
+        'redemption_enabled': True,
         'redemption_value_per_point': float(((existing or {}).get('config') or {}).get('redemption_value_per_point') or 1.0),
         'redemption_min_points': int(((existing or {}).get('config') or {}).get('redemption_min_points') or 1),
         'redemption_increment_points': int(((existing or {}).get('config') or {}).get('redemption_increment_points') or 1),
