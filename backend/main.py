@@ -3160,10 +3160,7 @@ def _pos_device_profile(device_model: Optional[str]) -> dict:
 
 def _pos_redemption_config(integration: Optional[dict]) -> dict:
     config = (integration or {}).get('config') if isinstance((integration or {}).get('config'), dict) else {}
-    test_mode_redemption = (
-        str((integration or {}).get('mode') or '').lower() == 'test'
-        and config.get('simulator') is True
-    )
+    test_mode_redemption = str((integration or {}).get('mode') or '').lower() == 'test'
     def _num(key, default, cast=float):
         try:
             return cast(config.get(key) if config.get(key) is not None else default)
