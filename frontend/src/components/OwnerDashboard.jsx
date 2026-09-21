@@ -188,6 +188,9 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
   const [companionGenerating, setCompanionGenerating] = useState(false)
   const [companionCode, setCompanionCode] = useState(null)
   const [companionError, setCompanionError] = useState('')
+  const [companionMapProvider, setCompanionMapProvider] = useState('')
+  const [companionMapLocation, setCompanionMapLocation] = useState('')
+  const [companionMappingSaving, setCompanionMappingSaving] = useState(false)
 
   const authFetch = async (url, options = {}) => {
     const headers = { ...(options.headers || {}) }
@@ -231,10 +234,49 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
       const body = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(body.detail || 'Could not load Companion setup')
       setCompanionSetup(body)
+      const integrations = body.integrations || []
+      const preferredProvider = body.provider || integrations[0]?.provider || ''
+      const preferredIntegration = integrations.find(row => row.provider === preferredProvider) || integrations[0] || null
+      const preferredLocation = body.external_branch_id || preferredIntegration?.locations?.[0]?.id || ''
+      setCompanionMapProvider(preferredProvider)
+      setCompanionMapLocation(preferredLocation)
     } catch (err) {
       setCompanionError(err.message || 'Could not load Companion setup')
     } finally {
       setCompanionLoading(false)
+    }
+  }
+
+  const saveCompanionMapping = async () => {
+    if (!companionMapProvider || !companionMapLocation) {
+      setCompanionError('Choose a POS provider and location first.')
+      return
+    }
+    const integration = (companionSetup?.integrations || []).find(row => row.provider === companionMapProvider)
+    const location = (integration?.locations || []).find(row => String(row.id) === String(companionMapLocation))
+    setCompanionMappingSaving(true)
+    setCompanionError('')
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/manager/pos-branch-mapping`, {
+        method:'PUT',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          provider: companionMapProvider,
+          external_branch_id: companionMapLocation,
+          external_branch_name: location?.name || null,
+          checkout_mode: 'auto',
+        }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body.detail || 'Could not save POS branch mapping')
+      setCompanionSetup(body)
+      setCompanionCode(null)
+      setCompanionMapProvider(body.provider || companionMapProvider)
+      setCompanionMapLocation(body.external_branch_id || companionMapLocation)
+    } catch (err) {
+      setCompanionError(err.message || 'Could not save POS branch mapping')
+    } finally {
+      setCompanionMappingSaving(false)
     }
   }
 
@@ -273,6 +315,9 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
   const programs = data?.programs || []
   const selectedProgram = data?.selected_program || null
   const members = data?.members || []
+  const companionIntegrations = companionSetup?.integrations || []
+  const companionSelectedIntegration = companionIntegrations.find(row => row.provider === companionMapProvider) || companionIntegrations[0] || null
+  const companionLocations = companionSelectedIntegration?.locations || []
   const metricCard = {background:'#fff',border:'1px solid #e2e8f0',borderRadius:14,padding:16,boxShadow:'0 2px 10px rgba(15,23,42,.04)'}
 
   const currentStampCount = (member) => selectedProgram?.stamp_kind === 'tier'
@@ -365,7 +410,7 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
             <div>
               <div style={{fontSize:11,fontWeight:900,color:'#0f766e'}}>LOYALTY TREE COMPANION</div>
               <h3 style={{margin:'3px 0 5px'}}>Set up this branch's POS device</h3>
-              <div style={{fontSize:11.5,color:'#64748b',maxWidth:650,lineHeight:1.5}}>The owner controls the POS provider and branch mapping. When access is enabled, you can install Companion and create a one-time activation code only for <strong>{branch.name}</strong>.</div>
+              <div style={{fontSize:11.5,color:'#64748b',maxWidth:700,lineHeight:1.5}}>The owner connects the business POS account once. With Companion access enabled, you can map <strong>{branch.name}</strong> to its POS location, download the APK, and activate this branch's device.</div>
             </div>
             <button onClick={loadCompanionSetup} disabled={companionLoading} style={{border:'1px solid #cbd5e1',background:'#fff',borderRadius:9,padding:'7px 10px',fontWeight:800,cursor:'pointer'}}>{companionLoading?'Checking…':'↻ Refresh'}</button>
           </div>
@@ -382,8 +427,30 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
             <div style={{marginTop:12,padding:'12px 14px',background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:12,color:'#9a3412',fontSize:12}}>POS Integration requires the business Pro plan. The owner needs to upgrade before this branch can activate Companion.</div>
           )}
 
-          {companionSetup?.allowed && companionSetup?.plan_ok && !companionSetup?.mapping_ready && (
-            <div style={{marginTop:12,padding:'12px 14px',background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:12,color:'#9a3412',fontSize:12}}>The owner still needs to connect a POS provider and map <strong>{branch.name}</strong> to its POS location. Managers cannot change that mapping.</div>
+          {companionSetup?.allowed && companionSetup?.plan_ok && !companionSetup?.provider_connected && (
+            <div style={{marginTop:12,padding:'12px 14px',background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:12,color:'#9a3412',fontSize:12}}>No POS provider account is connected yet. The owner only needs to connect the StoreHub or Loyverse account credentials once. After that, you can choose and map <strong>{branch.name}</strong> yourself.</div>
+          )}
+
+          {companionSetup?.allowed && companionSetup?.plan_ok && companionSetup?.provider_connected && (
+            <div style={{marginTop:13,padding:'13px 14px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:12}}>
+              <div style={{fontSize:10,fontWeight:900,color:'#0f766e'}}>1 · MAP THIS BRANCH</div>
+              <div style={{fontSize:11.5,color:'#64748b',marginTop:4}}>Choose which connected POS location belongs to <strong>{branch.name}</strong>. You cannot map or change any other Loyalty Tree branch.</div>
+              <div style={{display:'grid',gridTemplateColumns:'minmax(150px,.6fr) minmax(220px,1.4fr) auto',gap:8,marginTop:10,alignItems:'end'}} className="lt-companion-map-grid">
+                <label style={{fontSize:10,fontWeight:850,color:'#475569'}}>POS PROVIDER
+                  <select value={companionMapProvider} onChange={e=>{const provider=e.target.value;setCompanionMapProvider(provider);const row=companionIntegrations.find(x=>x.provider===provider);setCompanionMapLocation(row?.locations?.[0]?.id||'')}} style={{display:'block',width:'100%',marginTop:5,padding:'9px 10px',border:'1px solid #cbd5e1',borderRadius:9,background:'#fff'}}>
+                    {companionIntegrations.map(row=><option key={row.provider} value={row.provider}>{row.label || row.provider}</option>)}
+                  </select>
+                </label>
+                <label style={{fontSize:10,fontWeight:850,color:'#475569'}}>POS LOCATION
+                  <select value={companionMapLocation} onChange={e=>setCompanionMapLocation(e.target.value)} style={{display:'block',width:'100%',marginTop:5,padding:'9px 10px',border:'1px solid #cbd5e1',borderRadius:9,background:'#fff'}} disabled={!companionLocations.length}>
+                    {!companionLocations.length && <option value="">No available locations</option>}
+                    {companionLocations.map(row=><option key={row.id} value={row.id}>{row.name || row.id}</option>)}
+                  </select>
+                </label>
+                <button onClick={saveCompanionMapping} disabled={companionMappingSaving || !companionMapLocation} style={{border:'none',background:'#0f766e',color:'#fff',borderRadius:9,padding:'10px 12px',fontWeight:850,cursor:'pointer',minHeight:38}}>{companionMappingSaving?'Saving…':companionSetup?.mapping_ready?'Save mapping':'Map branch'}</button>
+              </div>
+              {companionSetup?.mapping_ready && <div style={{fontSize:10.5,color:'#047857',marginTop:8}}>✓ Current mapping: {String(companionSetup.provider || '').toUpperCase()} · {companionSetup.external_branch_name || companionSetup.external_branch_id}</div>}
+            </div>
           )}
 
           {companionSetup?.allowed && companionSetup?.plan_ok && companionSetup?.mapping_ready && (
@@ -404,7 +471,7 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
                   <div style={{fontSize:10,fontWeight:900,color:'#047857'}}>ONE-TIME CODE · {branch.name}</div>
                   <div style={{fontSize:30,fontWeight:950,letterSpacing:6,color:'#064e3b',marginTop:5}}>{companionCode.activation_code}</div>
                   <div style={{fontSize:11,color:'#047857',marginTop:4}}>Valid until {companionCode.expires_at ? new Date(companionCode.expires_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '15 minutes from now'} · one device only.</div>
-                  <div style={{fontSize:10.5,color:'#64748b',marginTop:5}}>This code is server-locked to your assigned Loyalty Tree branch and the POS location already mapped by the owner.</div>
+                  <div style={{fontSize:10.5,color:'#64748b',marginTop:5}}>This code is server-locked to your assigned Loyalty Tree branch and the POS location you mapped above.</div>
                 </div>
               )}
 
@@ -477,7 +544,7 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
             </section>
           </div>
 
-          <div style={{fontSize:10.5,color:'#94a3b8',textAlign:'right',marginTop:10}}>Manager controls: member birthdays + stamp corrections + assigned-branch announcements{companionSetup?.allowed ? ' + assigned-branch Companion setup' : ''}{lastUpdated ? ` · updated ${lastUpdated.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}` : ''}</div>
+          <div style={{fontSize:10.5,color:'#94a3b8',textAlign:'right',marginTop:10}}>Manager controls: member birthdays + stamp corrections + assigned-branch announcements{companionSetup?.allowed ? ' + assigned-branch POS mapping + Companion setup' : ''}{lastUpdated ? ` · updated ${lastUpdated.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}` : ''}</div>
         </>}
       </main>
 
@@ -493,7 +560,7 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
           onClose={()=>setShowAnnouncements(false)}
         />
       )}
-      <style>{`@media(max-width:760px){.lt-manager-grid{grid-template-columns:1fr!important}}`}</style>
+      <style>{`@media(max-width:760px){.lt-manager-grid,.lt-companion-map-grid{grid-template-columns:1fr!important}}`}</style>
     </div>
   )
 }
@@ -4478,7 +4545,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                     })}
                     style={{marginTop:2}}
                   />
-                  <span><strong>Manage Companion Devices</strong><br/><span style={{fontSize:11,color:'#64748b',fontWeight:500}}>Can download the Companion APK, view devices, and generate one-time activation codes only for the assigned branch. POS credentials and branch mapping stay owner-only.</span></span>
+                  <span><strong>Manage Companion Devices</strong><br/><span style={{fontSize:11,color:'#64748b',fontWeight:500}}>Can map the assigned branch to an already-connected POS location, download the Companion APK, view devices, and generate one-time activation codes. POS account credentials and other branches stay owner-only.</span></span>
                 </label>
               )}
               <label style={{...styles.label, display: 'flex', alignItems: 'center', gap: 8}}>
@@ -4538,7 +4605,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                     onChange={e=>setInviteForm({...inviteForm,permissions:{...(inviteForm.permissions||{}),manage_companion_devices:e.target.checked}})}
                     style={{marginTop:2}}
                   />
-                  <span><strong>Allow Companion setup for assigned branch</strong><br/><span style={{fontSize:11,color:'#64748b',fontWeight:500}}>The manager can install Companion and generate branch-locked one-time codes. They cannot connect POS credentials or change branch mappings.</span></span>
+                  <span><strong>Allow Companion setup for assigned branch</strong><br/><span style={{fontSize:11,color:'#64748b',fontWeight:500}}>The manager can map their assigned branch to an already-connected POS location, install Companion, and generate branch-locked one-time codes. They cannot access POS credentials or other branch mappings.</span></span>
                 </label>
               )}
               <button type="submit" style={styles.submitBtn}>Send Invite</button>
