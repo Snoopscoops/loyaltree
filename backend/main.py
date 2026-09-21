@@ -18145,19 +18145,20 @@ async def get_branch_manager_dashboard(
             .eq('business_id', business.get('id'))
             .order('updated_at', desc=True).execute().data or []
         )
+    viewing_all_programs = str(program_id or '').strip().lower() == 'all'
     selected = None
-    if program_id:
+    if program_id and not viewing_all_programs:
         selected = next((p for p in programs if p.get('public_id') == program_id), None)
         if not selected:
             raise HTTPException(status_code=404, detail='Program not found for this business')
-    if not selected:
+    if not selected and not viewing_all_programs:
         selected = next((p for p in programs if p.get('is_default')), None) or (programs[0] if programs else None)
 
     customer_rows = []
     if selected:
         try:
             customer_rows = (
-                supabase.table('customers').select('id,public_id,name,email,phone,birthday,stamp_count,tier_stamp_count,points_balance,created_at')
+                supabase.table('customers').select('id,public_id,name,email,phone,birthday,stamp_count,tier_stamp_count,points_balance,vip_points,vip_manual_tier_id,multipass_sessions_remaining,multipass_total_sessions,membership_status,membership_expires_at,employee_id_number,employee_position,program_id,created_at')
                 .eq('business_id', business.get('id'))
                 .eq('program_id', selected.get('id'))
                 .execute().data or []
@@ -18166,6 +18167,20 @@ async def get_branch_manager_dashboard(
             customer_rows = []
     customer_ids = {c.get('id') for c in customer_rows if c.get('id') is not None}
     customer_by_id = {c.get('id'): c for c in customer_rows}
+    program_ids = [p.get('id') for p in programs if p.get('id') is not None]
+    program_by_id = {p.get('id'): p for p in programs if p.get('id') is not None}
+    try:
+        if viewing_all_programs and not program_ids:
+            program_member_count = 0
+        else:
+            member_count_query = supabase.table('customers').select('id', count='exact').eq('business_id', business.get('id'))
+            if viewing_all_programs:
+                member_count_query = member_count_query.in_('program_id', program_ids)
+            elif selected:
+                member_count_query = member_count_query.eq('program_id', selected.get('id'))
+            program_member_count = int(member_count_query.execute().count or 0)
+    except Exception:
+        program_member_count = len(customer_rows)
 
     try:
         branch_staff = (
@@ -18189,7 +18204,7 @@ async def get_branch_manager_dashboard(
 
     def add_rows(table_name: str, kind: str, extra_fields: str = ''):
         nonlocal activity_30d, activity_today, redemptions_30d
-        if not selected or not customer_ids:
+        if not viewing_all_programs and (not selected or not customer_ids):
             return
         fields = 'id,customer_id,staff_id,branch_id,created_at' + ((',' + extra_fields) if extra_fields else '')
         try:
@@ -18205,7 +18220,7 @@ async def get_branch_manager_dashboard(
             rows = []
         for row in rows:
             cid = row.get('customer_id')
-            if cid not in customer_ids:
+            if not viewing_all_programs and cid not in customer_ids:
                 continue
             event_customer_ids.add(cid)
             activity_30d += 1
@@ -18242,6 +18257,7 @@ async def get_branch_manager_dashboard(
                 'type': kind,
                 'detail': detail,
                 'created_at': row.get('created_at'),
+                '_customer_id': cid,
                 'customer_name': customer.get('name') or 'Member',
                 'customer_public_id': customer.get('public_id'),
                 'staff_name': staff.get('name') or ('Owner' if row.get('staff_id') is None else 'Staff'),
@@ -18260,7 +18276,7 @@ async def get_branch_manager_dashboard(
 
     # Manual manager corrections are not hidden: surface them in the same branch
     # activity feed using the immutable transaction_audit ledger.
-    if selected and customer_ids:
+    if viewing_all_programs or (selected and customer_ids):
         try:
             adjustment_rows = (supabase.table('transaction_audit')
                                .select('id,customer_id,staff_id,branch_id,created_at,action,delta,balance_before,balance_after,reason')
@@ -18273,7 +18289,7 @@ async def get_branch_manager_dashboard(
             adjustment_rows = []
         for row in adjustment_rows:
             cid = row.get('customer_id')
-            if cid not in customer_ids:
+            if not viewing_all_programs and cid not in customer_ids:
                 continue
             customer = customer_by_id.get(cid) or {}
             staff = staff_by_id.get(row.get('staff_id')) or {}
@@ -18285,10 +18301,33 @@ async def get_branch_manager_dashboard(
                 'type': 'adjustment',
                 'detail': f"Manual {unit} adjustment {delta:+d} · {row.get('reason') or 'Correction'}",
                 'created_at': row.get('created_at'),
+                '_customer_id': cid,
                 'customer_name': customer.get('name') or 'Member',
                 'customer_public_id': customer.get('public_id'),
                 'staff_name': staff.get('name') or 'Manager',
             })
+
+    if viewing_all_programs and event_customer_ids:
+        # Only the recent feed needs names here; the member directory is loaded
+        # separately with pagination. Keep this lookup bounded for large chains.
+        recent.sort(key=lambda item: _parse_ts(item.get('created_at')) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        lookup_ids = list(dict.fromkeys(item.get('_customer_id') for item in recent[:100] if item.get('_customer_id') is not None))
+        try:
+            all_activity_customers = (
+                supabase.table('customers').select('id,public_id,name,email,phone,birthday,program_id')
+                .eq('business_id', business.get('id'))
+                .in_('id', lookup_ids)
+                .execute().data or []
+            ) if lookup_ids else []
+            customer_by_id.update({c.get('id'): c for c in all_activity_customers if c.get('id') is not None})
+        except Exception:
+            pass
+    for item in recent:
+        cid = item.pop('_customer_id', None)
+        customer = customer_by_id.get(cid) or {}
+        if customer:
+            item['customer_name'] = customer.get('name') or item.get('customer_name') or 'Member'
+            item['customer_public_id'] = customer.get('public_id') or item.get('customer_public_id')
 
     recent.sort(key=lambda item: _parse_ts(item.get('created_at')) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     recent = recent[:40]
@@ -18354,6 +18393,14 @@ async def get_branch_manager_dashboard(
         ],
         'selected_program': (
             {
+                'public_id': 'all',
+                'name': 'All Cards',
+                'card_type': 'all',
+                'stamp_editable': False,
+                'stamp_kind': None,
+                'stamp_goal': None,
+                'points_editable': False,
+            } if viewing_all_programs else ({
                 'public_id': selected.get('public_id'),
                 'name': selected.get('program_name') or selected.get('card_name') or 'Loyalty Program',
                 'card_type': selected.get('card_type'),
@@ -18361,10 +18408,11 @@ async def get_branch_manager_dashboard(
                 'stamp_kind': 'reward' if program_reward_uses_stamps(selected) else ('tier' if tier_stamps_enabled(selected) else None),
                 'stamp_goal': selected.get('stamp_goal'),
                 'points_editable': bool(program_reward_uses_points(selected)),
-            } if selected else None
+            } if selected else None)
         ),
+        'viewing_all_programs': viewing_all_programs,
         'stats': {
-            'program_members': len(customer_rows),
+            'program_members': program_member_count,
             'branch_members_served_30d': len(event_customer_ids),
             'loyalty_actions_today': activity_today,
             'loyalty_actions_30d': activity_30d,
@@ -18385,7 +18433,7 @@ async def get_branch_manager_dashboard(
         # the member has not visited this branch in the last 30 days. Keep the
         # profile intentionally narrow: identity/contact, birthday, and stamp
         # balances only. Branch-specific activity remains separately filtered.
-        'members': [
+        'members': ([] if viewing_all_programs else [
             {
                 'public_id': c.get('public_id'),
                 'name': c.get('name'),
@@ -18395,10 +18443,24 @@ async def get_branch_manager_dashboard(
                 'stamp_count': int(c.get('stamp_count') or 0),
                 'tier_stamp_count': int(c.get('tier_stamp_count') or 0),
                 'points_balance': int(c.get('points_balance') or 0),
+                'vip_points': int(c.get('vip_points') or 0),
+                'multipass_sessions_remaining': int(c.get('multipass_sessions_remaining') or 0),
+                'multipass_total_sessions': int(c.get('multipass_total_sessions') or 0),
+                'membership_status': c.get('membership_status'),
+                'membership_expires_at': c.get('membership_expires_at'),
+                'employee_id_number': c.get('employee_id_number'),
+                'employee_position': c.get('employee_position'),
+                'program_public_id': selected.get('public_id') if selected else None,
+                'program_name': (selected.get('program_name') or selected.get('card_name') or 'Loyalty Program') if selected else None,
+                'card_type': selected.get('card_type') if selected else None,
+                'stamp_editable': bool(selected and (program_reward_uses_stamps(selected) or tier_stamps_enabled(selected))),
+                'stamp_kind': ('reward' if program_reward_uses_stamps(selected) else ('tier' if tier_stamps_enabled(selected) else None)) if selected else None,
+                'points_editable': bool(selected and program_reward_uses_points(selected)),
+                'vip_tier': (get_vip_tier(c, selected) if selected and program_has_tier(selected) else None),
                 'created_at': c.get('created_at'),
             }
             for c in sorted(customer_rows, key=lambda row: str(row.get('name') or '').lower())
-        ][:500],
+        ][:500]),
         'branch_customers': branch_customers[:100],
         'recent_activity': recent,
         'active_campaigns': active_campaigns,
@@ -18421,13 +18483,37 @@ async def get_branch_manager_members(
     manager's assigned branch.
     """
     _, business, _, _ = require_branch_manager_session(public_id, authorization)
-    program = safe_get_loyalty_program(business.get('id'), program_public_id=program_id) if program_id else safe_get_loyalty_program(business.get('id'))
-    if not program:
-        raise HTTPException(status_code=404, detail='Program not found for this business')
-    fields = 'id,public_id,name,email,phone,birthday,stamp_count,tier_stamp_count,points_balance,created_at'
     try:
-        query = (supabase.table('customers').select(fields)
-                 .eq('business_id', business.get('id')).eq('program_id', program.get('id')))
+        programs = (
+            supabase.table('loyalty_programs').select('*')
+            .eq('business_id', business.get('id'))
+            .eq('is_active', True)
+            .order('is_default', desc=True).order('sort_order').order('created_at')
+            .execute().data or []
+        )
+    except Exception:
+        programs = (
+            supabase.table('loyalty_programs').select('*')
+            .eq('business_id', business.get('id')).order('updated_at', desc=True).execute().data or []
+        )
+    program_by_id = {p.get('id'): p for p in programs if p.get('id') is not None}
+    viewing_all = str(program_id or '').strip().lower() == 'all'
+    program = None
+    if not viewing_all:
+        program = next((p for p in programs if p.get('public_id') == program_id), None) if program_id else (next((p for p in programs if p.get('is_default')), None) or (programs[0] if programs else None))
+        if not program:
+            raise HTTPException(status_code=404, detail='Program not found for this business')
+
+    fields = 'id,public_id,name,email,phone,birthday,stamp_count,tier_stamp_count,points_balance,vip_points,vip_manual_tier_id,multipass_sessions_remaining,multipass_total_sessions,membership_status,membership_expires_at,employee_id_number,employee_position,program_id,created_at'
+    try:
+        query = supabase.table('customers').select(fields).eq('business_id', business.get('id'))
+        if viewing_all:
+            active_program_ids = list(program_by_id.keys())
+            if not active_program_ids:
+                return {'program_public_id':'all','viewing_all_programs':True,'members':[],'offset':offset,'limit':limit,'has_more':False}
+            query = query.in_('program_id', active_program_ids)
+        else:
+            query = query.eq('program_id', program.get('id'))
         term = str(q or '').strip()
         if term:
             safe_term = re.sub(r'[%_,()]', ' ', term).strip()
@@ -18441,20 +18527,42 @@ async def get_branch_manager_members(
         raise HTTPException(status_code=500, detail=friendly_db_error(exc))
     has_more = len(rows) > limit
     rows = rows[:limit]
-    return {
-        'program_public_id': program.get('public_id'),
-        'members': [{
+
+    def member_payload(c):
+        member_program = program_by_id.get(c.get('program_id')) or program or {}
+        return {
             'public_id': c.get('public_id'), 'name': c.get('name'), 'email': c.get('email'),
             'phone': c.get('phone'), 'birthday': c.get('birthday'),
             'stamp_count': int(c.get('stamp_count') or 0),
             'tier_stamp_count': int(c.get('tier_stamp_count') or 0),
             'points_balance': int(c.get('points_balance') or 0),
+            'vip_points': int(c.get('vip_points') or 0),
+            'multipass_sessions_remaining': int(c.get('multipass_sessions_remaining') or 0),
+            'multipass_total_sessions': int(c.get('multipass_total_sessions') or 0),
+            'membership_status': c.get('membership_status'),
+            'membership_expires_at': c.get('membership_expires_at'),
+            'employee_id_number': c.get('employee_id_number'),
+            'employee_position': c.get('employee_position'),
+            'program_public_id': member_program.get('public_id'),
+            'program_name': member_program.get('program_name') or member_program.get('card_name') or 'Loyalty Program',
+            'card_type': member_program.get('card_type'),
+            'is_default_program': bool(member_program.get('is_default')),
+            'stamp_editable': bool(program_reward_uses_stamps(member_program) or tier_stamps_enabled(member_program)),
+            'stamp_kind': 'reward' if program_reward_uses_stamps(member_program) else ('tier' if tier_stamps_enabled(member_program) else None),
+            'points_editable': bool(program_reward_uses_points(member_program)),
+            'vip_tier': (get_vip_tier(c, member_program) if member_program and program_has_tier(member_program) else None),
             'created_at': c.get('created_at'),
-        } for c in rows],
+        }
+
+    return {
+        'program_public_id': 'all' if viewing_all else program.get('public_id'),
+        'viewing_all_programs': viewing_all,
+        'members': [member_payload(c) for c in rows],
         'offset': offset,
         'limit': limit,
         'has_more': has_more,
     }
+
 
 
 @app.get("/api/v1/business/{public_id}/branches")

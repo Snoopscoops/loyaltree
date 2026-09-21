@@ -178,7 +178,7 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [selectedProgramId, setSelectedProgramId] = useState('')
+  const [selectedProgramId, setSelectedProgramId] = useState('all')
   const [lastUpdated, setLastUpdated] = useState(null)
   const [showAnnouncements, setShowAnnouncements] = useState(false)
   const [stampDrafts, setStampDrafts] = useState({})
@@ -325,12 +325,17 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
   }
 
   useEffect(() => {
-    loadManagerDashboard('')
+    loadManagerDashboard('all')
     loadCompanionSetup()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.business_slug])
+
+  useEffect(() => {
+    if (!selectedProgramId) return
     const timer = setInterval(() => loadManagerDashboard(selectedProgramId), 30000)
     return () => clearInterval(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.business_slug])
+  }, [user?.business_slug, selectedProgramId])
 
   useEffect(() => {
     if (!selectedProgramId || !data?.selected_program?.public_id || selectedProgramId === data.selected_program.public_id) return
@@ -355,12 +360,23 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
   const companionLocations = companionSelectedIntegration?.locations || []
   const metricCard = {background:'#fff',border:'1px solid #e2e8f0',borderRadius:14,padding:16,boxShadow:'0 2px 10px rgba(15,23,42,.04)'}
 
-  const currentStampCount = (member) => selectedProgram?.stamp_kind === 'tier'
+  const viewingAllPrograms = selectedProgramId === 'all' || data?.viewing_all_programs === true
+  const programMetaForMember = (member) => viewingAllPrograms ? {
+    public_id: member?.program_public_id,
+    name: member?.program_name,
+    card_type: member?.card_type,
+    stamp_editable: !!member?.stamp_editable,
+    stamp_kind: member?.stamp_kind || null,
+    points_editable: !!member?.points_editable,
+  } : selectedProgram
+
+  const currentStampCount = (member) => programMetaForMember(member)?.stamp_kind === 'tier'
     ? Number(member?.tier_stamp_count || 0)
     : Number(member?.stamp_count || 0)
 
   const saveStampCount = async (member) => {
-    if (!selectedProgram?.stamp_editable || !member?.public_id) return
+    const memberProgram = programMetaForMember(member)
+    if (!memberProgram?.stamp_editable || !member?.public_id) return
     const current = currentStampCount(member)
     const raw = stampDrafts[member.public_id]
     const desired = raw === undefined ? current : Math.max(0, parseInt(raw, 10) || 0)
@@ -378,12 +394,12 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
           customer_public_id: member.public_id,
           delta,
           reason: reason.trim(),
-          stamp_kind: selectedProgram.stamp_kind || 'reward',
+          stamp_kind: memberProgram.stamp_kind || 'reward',
         }),
       })
       const body = await res.json().catch(()=>({}))
       if (!res.ok) throw new Error(body.detail || 'Could not update stamp balance')
-      await loadManagerDashboard(selectedProgramId)
+      await Promise.all([loadManagerDashboard(selectedProgramId), loadManagerMembers(selectedProgramId, memberSearch, 0, false)])
     } catch (err) {
       setError(err.message || 'Could not update stamp balance')
     } finally {
@@ -393,8 +409,26 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
 
   const currentPointBalance = (member) => Number(member?.points_balance || 0)
 
+  const memberCardSummary = (member) => {
+    const type = String(member?.card_type || 'stamp').toLowerCase()
+    if (type === 'points') return `${Number(member?.points_balance || 0).toLocaleString()} points`
+    if (type === 'multipass') return `${Number(member?.multipass_sessions_remaining || 0)}/${Number(member?.multipass_total_sessions || 0)} sessions`
+    if (type === 'membership') return `${String(member?.membership_status || 'inactive').toUpperCase()}${member?.membership_expires_at ? ` · until ${member.membership_expires_at}` : ''}`
+    if (type === 'employee') return `${member?.employee_id_number ? `Employee #${member.employee_id_number}` : 'Employee card'}${member?.employee_position ? ` · ${member.employee_position}` : ''}`
+    if (type === 'vip') return `${member?.vip_tier?.name || 'Tier'} · ${member?.stamp_kind === 'tier' ? `${Number(member?.tier_stamp_count || 0)} stamps` : `${Number(member?.vip_points || 0)} pts`}`
+    if (type === 'hybrid') {
+      const parts = []
+      if (member?.points_editable) parts.push(`${Number(member?.points_balance || 0).toLocaleString()} points`)
+      if (member?.stamp_editable) parts.push(`${Number(member?.stamp_kind === 'tier' ? member?.tier_stamp_count : member?.stamp_count || 0)} stamps`)
+      if (member?.membership_status) parts.push(String(member.membership_status).toUpperCase())
+      return parts.join(' · ') || 'Hybrid card'
+    }
+    return `${Number(member?.stamp_count || 0)} stamps`
+  }
+
   const savePointBalance = async (member) => {
-    if (!selectedProgram?.points_editable || !member?.public_id) return
+    const memberProgram = programMetaForMember(member)
+    if (!memberProgram?.points_editable || !member?.public_id) return
     const current = currentPointBalance(member)
     const raw = pointDrafts[member.public_id]
     const desired = raw === undefined ? current : Math.max(0, parseInt(raw, 10) || 0)
@@ -412,7 +446,7 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
       })
       const body = await res.json().catch(()=>({}))
       if (!res.ok) throw new Error(body.detail || 'Could not update points balance')
-      await loadManagerDashboard(selectedProgramId)
+      await Promise.all([loadManagerDashboard(selectedProgramId), loadManagerMembers(selectedProgramId, memberSearch, 0, false)])
     } catch (err) {
       setError(err.message || 'Could not update points balance')
     } finally {
@@ -458,8 +492,9 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
               <div style={{fontSize:12,opacity:.78,marginTop:8}}>Manager: {data?.manager?.name || user?.name || 'Manager'}</div>
             </div>
             {programs.length > 0 && (
-              <label style={{fontSize:11,fontWeight:850,minWidth:230}}>VIEWING PROGRAM
+              <label style={{fontSize:11,fontWeight:850,minWidth:230}}>VIEWING CARDS
                 <select value={selectedProgramId} onChange={e=>setSelectedProgramId(e.target.value)} style={{display:'block',width:'100%',marginTop:6,padding:'10px 12px',borderRadius:10,border:'1px solid rgba(255,255,255,.45)',background:'#fff',color:'#0f172a',fontWeight:800}}>
+                  <option value="all">All Cards · {programs.length} programs</option>
                   {programs.map(p=><option key={p.public_id} value={p.public_id}>{p.name}</option>)}
                 </select>
               </label>
@@ -555,7 +590,7 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
         {error && <div style={{marginTop:16,padding:'12px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:12,color:'#b91c1c'}}>{error}</div>}
         {loading && !data ? <div style={{padding:40,textAlign:'center',color:'#64748b'}}>Loading branch dashboard…</div> : <>
           <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:12,marginTop:16}}>
-            <div style={metricCard}><div style={{fontSize:10,fontWeight:900,color:'#64748b'}}>ALL PROGRAM MEMBERS</div><strong style={{display:'block',fontSize:28,marginTop:6}}>{s.program_members ?? members.length}</strong><span style={{fontSize:11,color:'#94a3b8'}}>manager can view birthdays</span></div>
+            <div style={metricCard}><div style={{fontSize:10,fontWeight:900,color:'#64748b'}}>{viewingAllPrograms?'ALL CARD MEMBERSHIPS':'PROGRAM MEMBERS'}</div><strong style={{display:'block',fontSize:28,marginTop:6}}>{s.program_members ?? members.length}</strong><span style={{fontSize:11,color:'#94a3b8'}}>{viewingAllPrograms?'across every active card':'manager can view birthdays'}</span></div>
             <div style={metricCard}><div style={{fontSize:10,fontWeight:900,color:'#64748b'}}>SERVED · 30 DAYS</div><strong style={{display:'block',fontSize:28,marginTop:6}}>{s.branch_members_served_30d ?? 0}</strong><span style={{fontSize:11,color:'#94a3b8'}}>unique members at this branch</span></div>
             <div style={metricCard}><div style={{fontSize:10,fontWeight:900,color:'#64748b'}}>TODAY</div><strong style={{display:'block',fontSize:28,marginTop:6}}>{s.loyalty_actions_today ?? 0}</strong><span style={{fontSize:11,color:'#94a3b8'}}>loyalty actions</span></div>
             <div style={metricCard}><div style={{fontSize:10,fontWeight:900,color:'#64748b'}}>REDEMPTIONS · 30 DAYS</div><strong style={{display:'block',fontSize:28,marginTop:6}}>{s.redemptions_30d ?? 0}</strong><span style={{fontSize:11,color:'#94a3b8'}}>rewards redeemed here</span></div>
@@ -575,28 +610,29 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
             <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}>
               <div>
                 <div style={{fontSize:11,fontWeight:900,color:'#0f766e'}}>MEMBERS</div>
-                <h3 style={{margin:'3px 0 0'}}>All members in {selectedProgram?.name || 'this program'}</h3>
-                <div style={{fontSize:11,color:'#64748b',marginTop:4}}>Managers can search all members in this program. Manual balance corrections are allowed and are always recorded with manager, branch, before/after values, date/time and reason.</div>
+                <h3 style={{margin:'3px 0 0'}}>{viewingAllPrograms ? 'All members · All cards' : `All members in ${selectedProgram?.name || 'this program'}`}</h3>
+                <div style={{fontSize:11,color:'#64748b',marginTop:4}}>{viewingAllPrograms ? 'Managers can see every active card membership across the business. Each membership keeps its own card label and balance.' : 'Managers can search all members in this program.'} Manual balance corrections are allowed and are always recorded with manager, branch, before/after values, date/time and reason.</div>
               </div>
               <input value={memberSearch} onChange={e=>setMemberSearch(e.target.value)} placeholder="Search name, phone, email, birthday" style={{minWidth:260,padding:'9px 11px',border:'1px solid #cbd5e1',borderRadius:10}} />
             </div>
             <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(235px,1fr))',gap:9,marginTop:12}}>
               {filteredMembers.map(member=>{
+                const memberProgram = programMetaForMember(member)
                 const current = currentStampCount(member)
                 const draft = stampDrafts[member.public_id] ?? current
                 return <div key={member.public_id} style={{padding:'12px 13px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:12}}>
                   <div style={{display:'flex',justifyContent:'space-between',gap:8,alignItems:'flex-start'}}>
-                    <div style={{minWidth:0}}><strong style={{fontSize:13}}>{member.name || 'Member'}</strong><div style={{fontSize:10.5,color:'#64748b',marginTop:3,overflow:'hidden',textOverflow:'ellipsis'}}>{member.email || member.phone || 'Loyalty member'}</div></div>
+                    <div style={{minWidth:0}}><strong style={{fontSize:13}}>{member.name || 'Member'}</strong><div style={{fontSize:10.5,color:'#64748b',marginTop:3,overflow:'hidden',textOverflow:'ellipsis'}}>{member.email || member.phone || 'Loyalty member'}</div>{viewingAllPrograms&&<><div style={{display:'inline-flex',marginTop:6,fontSize:9.5,fontWeight:900,color:'#0f766e',background:'#ecfdf5',border:'1px solid #a7f3d0',padding:'4px 7px',borderRadius:999}}>{member.program_name || 'Loyalty Program'} · {String(member.card_type || 'card').replace(/_/g,' ').toUpperCase()}</div><div style={{fontSize:10.5,color:'#334155',fontWeight:800,marginTop:5}}>{memberCardSummary(member)}</div></>}</div>
                     <span style={{fontSize:10,fontWeight:850,color:'#7c3aed',background:'#f5f3ff',padding:'4px 6px',borderRadius:999,whiteSpace:'nowrap'}}>🎂 {birthdayLabel(member.birthday)}</span>
                   </div>
-                  {selectedProgram?.stamp_editable && <div style={{marginTop:10,paddingTop:10,borderTop:'1px solid #e2e8f0'}}>
-                    <div style={{fontSize:10.5,fontWeight:850,color:'#475569',marginBottom:5}}>{selectedProgram.stamp_kind === 'tier' ? 'TIER STAMPS' : 'REWARD STAMPS'}</div>
+                  {memberProgram?.stamp_editable && <div style={{marginTop:10,paddingTop:10,borderTop:'1px solid #e2e8f0'}}>
+                    <div style={{fontSize:10.5,fontWeight:850,color:'#475569',marginBottom:5}}>{memberProgram.stamp_kind === 'tier' ? 'TIER STAMPS' : 'REWARD STAMPS'}</div>
                     <div style={{display:'flex',gap:6}}>
                       <input type="number" min="0" value={draft} onChange={e=>setStampDrafts(prev=>({...prev,[member.public_id]:e.target.value}))} style={{width:82,padding:'8px 9px',border:'1px solid #cbd5e1',borderRadius:9}} />
                       <button onClick={()=>saveStampCount(member)} disabled={stampSaving===member.public_id || Number(draft)===current} style={{flex:1,border:'none',borderRadius:9,background:Number(draft)===current?'#cbd5e1':'#0f766e',color:'#fff',fontWeight:850,cursor:Number(draft)===current?'default':'pointer'}}>{stampSaving===member.public_id?'Saving…':'Save stamps'}</button>
                     </div>
                   </div>}
-                  {selectedProgram?.points_editable && (()=>{const pointCurrent=currentPointBalance(member);const pointDraft=pointDrafts[member.public_id]??pointCurrent;return <div style={{marginTop:10,paddingTop:10,borderTop:'1px solid #e2e8f0'}}>
+                  {memberProgram?.points_editable && (()=>{const pointCurrent=currentPointBalance(member);const pointDraft=pointDrafts[member.public_id]??pointCurrent;return <div style={{marginTop:10,paddingTop:10,borderTop:'1px solid #e2e8f0'}}>
                     <div style={{fontSize:10.5,fontWeight:850,color:'#475569',marginBottom:5}}>REWARD POINTS</div>
                     <div style={{display:'flex',gap:6}}>
                       <input type="number" min="0" value={pointDraft} onChange={e=>setPointDrafts(prev=>({...prev,[member.public_id]:e.target.value}))} style={{width:92,padding:'8px 9px',border:'1px solid #cbd5e1',borderRadius:9}} />
@@ -614,7 +650,7 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
           <div style={{display:'grid',gridTemplateColumns:'minmax(0,1.35fr) minmax(260px,.65fr)',gap:14,marginTop:14}} className="lt-manager-grid">
             <section style={metricCard}>
               <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',marginBottom:10}}><div><div style={{fontSize:11,fontWeight:900,color:'#0f766e'}}>RECENT ACTIVITY</div><h3 style={{margin:'3px 0 0'}}>What happened at {branch.name}</h3></div><button onClick={()=>loadManagerDashboard(selectedProgramId)} disabled={loading} style={{border:'1px solid #e2e8f0',background:'#fff',borderRadius:9,padding:'7px 9px',cursor:'pointer'}}>↻</button></div>
-              {(data?.recent_activity || []).length === 0 ? <div style={{padding:'26px 4px',color:'#94a3b8',textAlign:'center'}}>No branch activity for this program in the last 30 days.</div> : (data.recent_activity || []).map(item=><div key={item.id} style={{display:'grid',gridTemplateColumns:'1fr auto',gap:10,padding:'10px 0',borderBottom:'1px solid #f1f5f9'}}><div><strong style={{fontSize:13}}>{item.customer_name}</strong><div style={{fontSize:11.5,color:'#475569',marginTop:2}}>{item.detail} · by {item.staff_name}</div></div><time style={{fontSize:10.5,color:'#94a3b8',whiteSpace:'nowrap'}}>{item.created_at ? new Date(item.created_at).toLocaleString('en-PH',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : ''}</time></div>)}
+              {(data?.recent_activity || []).length === 0 ? <div style={{padding:'26px 4px',color:'#94a3b8',textAlign:'center'}}>No branch activity for this card view in the last 30 days.</div> : (data.recent_activity || []).map(item=><div key={item.id} style={{display:'grid',gridTemplateColumns:'1fr auto',gap:10,padding:'10px 0',borderBottom:'1px solid #f1f5f9'}}><div><strong style={{fontSize:13}}>{item.customer_name}</strong><div style={{fontSize:11.5,color:'#475569',marginTop:2}}>{item.detail} · by {item.staff_name}</div></div><time style={{fontSize:10.5,color:'#94a3b8',whiteSpace:'nowrap'}}>{item.created_at ? new Date(item.created_at).toLocaleString('en-PH',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : ''}</time></div>)}
             </section>
 
             <section style={metricCard}>
