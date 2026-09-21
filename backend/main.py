@@ -188,6 +188,13 @@ PUBLIC_JOIN_BASE_URL = (
     or FRONTEND_URL
     or 'https://theloyaltytree.com'
 ).rstrip('/')
+
+# Canonical customer-facing Order Ahead host.
+# Keep BASE_URL as the backend/origin host; this public host can sit behind Cloudflare.
+PUBLIC_ORDER_BASE_URL = (
+    os.getenv('PUBLIC_ORDER_BASE_URL', '')
+    or BASE_URL
+).rstrip('/')
 SUBSCRIPTION_REMINDER_RESEND_DAYS = 3  # don't re-email more often than this while still expiring_soon/expired
 
 # Business-owner password recovery. Reset links are one-time, stored only as
@@ -7209,7 +7216,7 @@ def order_ahead_wallet_action(customer: dict, business: dict) -> Optional[dict]:
     label = str(business.get('order_ahead_button_label') or 'Order Ahead').strip()[:30] or 'Order Ahead'
     return {
         'label': label,
-        'url': f'{BASE_URL}/order-ahead/{quote(customer_public_id)}?token={quote(token)}',
+        'url': f'{PUBLIC_ORDER_BASE_URL}/order-ahead/{quote(customer_public_id)}?token={quote(token)}',
     }
 
 
@@ -32214,7 +32221,7 @@ async def order_ahead_branch_page(customer_public_id: str, token: str = Query(de
             )
         else:
             branch_card_parts.append(
-                f"""<a class="branch" href="{BASE_URL}/order-ahead/{quote(customer_public_id)}/branch/{quote(str(b.get('public_id') or ''))}?token={quote(token)}">
+                f"""<a class="branch" href="{PUBLIC_ORDER_BASE_URL}/order-ahead/{quote(customer_public_id)}/branch/{quote(str(b.get('public_id') or ''))}?token={quote(token)}">
                   <div class="branch-name">{name}</div>
                   <div class="branch-address">{address}</div>
                   <div class="branch-cta"><span>{cta_label}</span><span>&rsaquo;</span></div>
@@ -32326,7 +32333,7 @@ async def order_ahead_branch_selected(customer_public_id: str, branch_public_id:
     logo = html_lib.escape(str(business.get('logo_url') or program.get('program_logo_url') or DEFAULT_LOGO_URL))
     hero = html_lib.escape(str(program.get('hero_image_url') or ''))
     banner_html = '<img class="banner" src="' + hero + '" alt="">' if ui['show_banner'] and hero else ''
-    branch_picker_url = f"{BASE_URL}/order-ahead/{quote(customer_public_id)}?token={quote(token)}"
+    branch_picker_url = f"{PUBLIC_ORDER_BASE_URL}/order-ahead/{quote(customer_public_id)}?token={quote(token)}"
 
     substitutions = {
         '__BG__': ui['background_color'], '__TEXT__': ui['text_color'], '__MUTED__': ui['muted_color'],
@@ -32334,7 +32341,7 @@ async def order_ahead_branch_selected(customer_public_id: str, branch_public_id:
         '__BIZ__': biz_name, '__BRANCH__': branch_name, '__LOGO__': logo,
         '__BANNER__': banner_html, '__MENU_HEADING__': html_lib.escape(ui['menu_heading']),
         '__DATA__': data_json, '__UI__': ui_json, '__BRANCH_PICKER_URL__': html_lib.escape(branch_picker_url),
-        '__ORDER_API_BASE__': json.dumps(f"{BASE_URL}/api/v1/order-ahead/{quote(customer_public_id)}/orders"),
+        '__ORDER_API_BASE__': json.dumps(f"{PUBLIC_ORDER_BASE_URL}/api/v1/order-ahead/{quote(customer_public_id)}/orders"),
         '__ORDER_TOKEN__': json.dumps(token),
         '__MONEY_ZERO__': html_lib.escape(money_text(0, business_currency(business))),
         '__CAT_RADIUS__': '999px' if ui['category_style'] == 'pills' else '8px',
