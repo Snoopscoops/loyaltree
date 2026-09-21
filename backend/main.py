@@ -37824,6 +37824,20 @@ def pos_companion_device_config(x_lt_device_token: str = Header(default='', alia
         raise _pos_schema_error(exc)
     branch = branch_rows[0] if branch_rows else {}
     mapping = mapping_rows[0] if mapping_rows else {}
+
+    redemption_debug = _pos_redemption_config(integration)
+    print(
+        "COMPANION_CONFIG_DEBUG",
+        {
+            "business": business.get("name"),
+            "provider": (integration or {}).get("provider"),
+            "status": (integration or {}).get("status"),
+            "mode": (integration or {}).get("mode"),
+            "redemption_config": redemption_debug,
+        },
+        flush=True,
+    )
+
     return {
         'ok': True,
         'device': {k: v for k, v in device.items() if k != 'device_token_hash'},
@@ -37837,7 +37851,7 @@ def pos_companion_device_config(x_lt_device_token: str = Header(default='', alia
             'capabilities': (integration or {}).get('capabilities') if isinstance((integration or {}).get('capabilities'), dict) else {},
         },
         'loyalty_contract': _pos_loyalty_contract(business),
-        'redemption_config': _pos_redemption_config(integration),
+        'redemption_config': redemption_debug,
     }
 
 
