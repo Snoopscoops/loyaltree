@@ -325,17 +325,24 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
     },
   ]
 
+  const withTenBranchPrice = (tiers) => {
+    const one = Number(tiers?.['1'] || 0)
+    const five = Number(tiers?.['5'] || 0)
+    return { ...tiers, '10': five + (5 * one) }
+  }
+
   const pricingBranches = [
     { key: '1', label: '1 branch' },
     { key: '3', label: '3 branches' },
     { key: '5', label: 'Up to 5 branches' },
+    { key: '10', label: 'Up to 10 branches' },
   ]
 
   const pricingPlans = [
     {
       key: 'starter',
       name: 'Starter',
-      prices: regionalPriceTiers('starter', { '1': 350, '3': 1000, '5': 1600 }),
+      prices: withTenBranchPrice(regionalPriceTiers('starter', { '1': 350, '3': 1000, '5': 1600 })),
       tagline: 'A complete digital loyalty system for smaller businesses getting started.',
       features: [
         'Google Wallet & Apple Wallet',
@@ -351,7 +358,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
       key: 'growth',
       name: 'Growth',
       highlight: true,
-      prices: regionalPriceTiers('growth', { '1': 550, '3': 1600, '5': 2600 }),
+      prices: withTenBranchPrice(regionalPriceTiers('growth', { '1': 550, '3': 1600, '5': 2600 })),
       tagline: 'More customer engagement and retention tools — including 2-in-1 Loyalty Cards and Gift Cards — for growing businesses.',
       features: [
         'Google Wallet & Apple Wallet',
@@ -370,7 +377,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
     {
       key: 'pro',
       name: 'Pro',
-      prices: regionalPriceTiers('pro', { '1': 750, '3': 2100, '5': 3600 }),
+      prices: withTenBranchPrice(regionalPriceTiers('pro', { '1': 750, '3': 2100, '5': 3600 })),
       tagline: 'Advanced loyalty tools for businesses ready to run more complex programs.',
       features: [
         'Google Wallet & Apple Wallet',
@@ -1051,7 +1058,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
             </p>
           )}
           <p style={s.pricingNote}>
-            Prices above are shown in {pricingContext.currency || 'PHP'} for {pricingContext.country_name || 'Philippines'}. Need more than 5 branches or a custom deployment? Contact LoyaltyTree and we can discuss a specialized setup for your business.
+            Prices above are shown in {pricingContext.currency || 'PHP'} for {pricingContext.country_name || 'Philippines'}. Need more than 10 branches or a custom deployment? Contact LoyaltyTree and we can discuss a specialized setup for your business.
           </p>
         </div>
       </section>}

@@ -228,7 +228,7 @@ SUBSCRIPTION_PLANS = {
         'birthday_greetings': True,
         'max_loyalty_cards': 1,
         'win_back': False,
-        'max_branches': 5,
+        'max_branches': 10,
         'geofence_notifications': False,
         # Growth-tier product modules. Starter cannot create/edit these.
         'hybrid_cards': False,
@@ -248,7 +248,7 @@ SUBSCRIPTION_PLANS = {
         'birthday_greetings': True,
         'max_loyalty_cards': 2,
         'win_back': True,
-        'max_branches': 5,
+        'max_branches': 10,
         'geofence_notifications': False,
         'hybrid_cards': True,
         'gift_cards': True,
@@ -267,7 +267,7 @@ SUBSCRIPTION_PLANS = {
         'birthday_greetings': True,
         'max_loyalty_cards': 3,
         'win_back': True,
-        'max_branches': 5,
+        'max_branches': 10,
         # Reserved until geotag/geofence delivery is implemented and enabled.
         'geofence_notifications': False,
         # Pro inherits Growth product modules and includes POS Integration.
@@ -580,11 +580,24 @@ def billing_period_label(value: Optional[str]) -> str:
 
 
 def get_price_for_plan(plan: Optional[str], branch_count: int, billing_cycle: str = 'monthly', pricing_region: str = 'PH') -> int:
-    """Return localized prepaid subscription price for plan/branch/package."""
+    """Return localized prepaid subscription price for plan/branch/package.
+
+    Branches 1-5 use the existing package pricing. For branches 6-10,
+    the 5-branch package is the base and each additional branch uses the
+    normal single-branch monthly rate.
+    """
     plan_key = plan if plan in SUBSCRIPTION_PLANS else 'starter'
     tiers = price_tiers_for_region(plan_key, pricing_region)
-    bracket = branch_price_bracket(branch_count)
-    monthly_price = int(tiers.get(bracket, tiers.get('1', 0)) or 0)
+    branch_count = max(1, int(branch_count or 1))
+
+    if branch_count <= 5:
+        bracket = branch_price_bracket(branch_count)
+        monthly_price = int(tiers.get(bracket, tiers.get('1', 0)) or 0)
+    else:
+        five_branch_price = int(tiers.get('5', tiers.get('1', 0)) or 0)
+        single_branch_price = int(tiers.get('1', 0) or 0)
+        monthly_price = five_branch_price + ((branch_count - 5) * single_branch_price)
+
     cycle = normalize_billing_cycle(billing_cycle)
     multiplier = int(BILLING_CYCLE_CONFIG[cycle]['billable_months'])
     return monthly_price * multiplier
@@ -1407,7 +1420,7 @@ LOYALTYTREE_LEGAL_NAME = 'LoyaltyTree Information Technology Solutions'
 LOYALTYTREE_LEGAL_LOCATION = 'Isabela, Philippines'
 LOYALTYTREE_LEGAL_PHONE = '0939 799 2144'
 LOYALTYTREE_LEGAL_EMAIL = 'theloyaltytree@gmail.com'
-BUSINESS_AGREEMENT_VERSION = '2026-09-12-v1'
+BUSINESS_AGREEMENT_VERSION = '2026-09-22-v2'
 TERMS_VERSION = '2026-09-12'
 PRIVACY_VERSION = '2026-09-12'
 DPA_VERSION = '2026-09-12-v1'
@@ -1433,6 +1446,7 @@ def _signup_agreement_sections() -> list:
             'title': 'Subscription, billing, renewal, and optional PR Kit',
             'paragraphs': [
                 'The Business will pay the subscription price shown in the Subscription Summary. A successful subscription payment activates or extends access for the applicable subscription period. Unless a separate recurring-payment arrangement is expressly enabled, LoyaltyTree does not represent that renewal is automatic.',
+                'The standard self-serve subscription has a minimum initial term of three (3) months, payable in advance. Prices displayed as a monthly amount are monthly-equivalent reference prices only and do not create a month-to-month payment option. The Business may instead select a longer prepaid term offered at checkout.',
                 'Failure to pay may result in the account remaining pending, being limited, or being suspended until payment is received. Taxes, custom work, hardware, delivery, and third-party charges may be separate where disclosed.',
                 'If the Business selects the Physical QR / PR Kit, the one-time amount shown in the Subscription Summary is additional to the subscription fee and is based on the number of branches selected at signup. Fulfillment begins after the applicable payment is confirmed.',
                 'Except where required by law or expressly stated in a written order, fees already earned for an activated subscription period, completed setup work, custom development, or fulfilled physical items are not automatically refundable merely because the Business later stops using the service.',
@@ -1746,8 +1760,8 @@ class SignupAgreementPreviewRequest(BaseModel):
     address: Optional[str] = None
     contact_person: Optional[str] = None
     plan: str
-    branch_count: int = Field(default=1, ge=1, le=5)
-    billing_cycle: Literal['monthly', '3_months', '6_months', 'annual'] = 'monthly'
+    branch_count: int = Field(default=1, ge=1, le=10)
+    billing_cycle: Literal['3_months', '6_months', 'annual'] = '3_months'
     country_code: str = Field(default='PH', min_length=2, max_length=3)
     pricing_region: Optional[str] = Field(default=None, min_length=2, max_length=3)
     setup_kit_requested: bool = False
@@ -1764,7 +1778,7 @@ class BusinessCreate(BaseModel):
     address: Optional[str] = None  # business's main address - lets super admin organize businesses by location
     branch_count: int = Field(default=1, ge=1, le=50)
     plan: Optional[str] = None  # explicit plan choice; if omitted, derived from branch_count
-    billing_cycle: Literal['monthly', '3_months', '6_months', 'annual'] = 'monthly'
+    billing_cycle: Literal['3_months', '6_months', 'annual'] = '3_months'
     country_code: str = Field(default='PH', min_length=2, max_length=3)
     pricing_region: Optional[str] = Field(default=None, min_length=2, max_length=3)
     setup_kit_requested: bool = False
@@ -1776,7 +1790,7 @@ class BusinessCreate(BaseModel):
     agreement: Optional[BusinessAgreementAcceptance] = None
 
 class SubscriptionCheckoutRequest(BaseModel):
-    billing_cycle: Literal['monthly', '3_months', '6_months', 'annual'] = 'monthly'
+    billing_cycle: Literal['3_months', '6_months', 'annual'] = '3_months'
     payment_method: Optional[Literal['qrph', 'card']] = None
 
 
@@ -39000,6 +39014,7 @@ def pos_companion_customer_lookup(
     except Exception:
         integration = None
     config = (integration or {}).get('config') if isinstance((integration or {}).get('config'), dict) else {}
+
 
     return {
         'ok': True,
