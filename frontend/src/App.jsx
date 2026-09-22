@@ -7,6 +7,7 @@ import PublicInfoPage from './components/PublicInfoPage'
 import LegalPage from './components/LegalPages'
 import OwnerDashboard from './components/OwnerDashboard'
 import CarLendingDashboard from './components/CarLendingDashboard'
+import LendingDashboard from './components/LendingDashboard'
 import CockpitDashboard from './components/CockpitDashboard'
 import CashierApp from './components/CashierApp'
 import AnalyticsDashboard from './components/AnalyticsDashboard'
@@ -177,7 +178,9 @@ function App() {
           ) : user?.role === 'owner' ? (
             user.business_type === 'car_lending'
               ? <CarLendingDashboard API_BASE={API_BASE} user={user} onLogout={handleLogout} />
-              : user.business_type === 'cockpit'
+              : user.business_type === 'lending'
+                ? <LendingDashboard API_BASE={API_BASE} user={user} onLogout={handleLogout} />
+                : user.business_type === 'cockpit'
                 ? <CockpitDashboard API_BASE={API_BASE} user={user} onLogout={handleLogout} />
                 : <OwnerDashboard API_BASE={API_BASE} user={user} onLogout={handleLogout} />
           ) : <Navigate to="/login" />

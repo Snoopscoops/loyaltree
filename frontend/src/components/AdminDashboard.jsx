@@ -8,7 +8,7 @@ const BUSINESS_TYPE_OPTIONS=[
   ['spa','🌿 Spa'],['salon','✂️ Salon / Barber'],['fitness','🏋️ Gym / Fitness'],['restaurant','🍽️ Restaurant / Food'],
   ['coffee','☕ Coffee Shop / Café'],['retail','🛍️ Retail / Store'],['clinic','🩺 Clinic / Wellness'],['laundry','🧺 Laundry Shop'],
   ['gas_station','⛽ Gasoline Station'],['car_wash','🚿 Car Wash'],['pharmacy','💊 Pharmacy'],['bakery','🥐 Bakery'],['hotel','🏨 Hotel / Resort'],
-  ['other','🏪 Other Business'],['car_lending','🚗 Car Lending / Showroom'],['cockpit','🏆 Cockpit Arena']
+  ['other','🏪 Other Business'],['car_lending','🚗 Car Lending / Showroom'],['lending','💼 Lending / Loan Management'],['cockpit','🏆 Cockpit Arena']
 ]
 const businessTypeLabel=v=>BUSINESS_TYPE_OPTIONS.find(([k])=>k===v)?.[1]||'🏪 Other Business'
 const kitStatusLabel=s=>({requested:'Requested',paid:'Paid',preparing:'Preparing',ready_to_ship:'Ready to ship',shipped:'Shipped',delivered:'Delivered',cancelled:'Cancelled'})[String(s||'').toLowerCase()]||'Not requested'

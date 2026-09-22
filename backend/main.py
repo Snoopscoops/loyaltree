@@ -1400,6 +1400,7 @@ BUSINESS_CATEGORY_META = {
     'hotel': {'label': 'Hotel / Resort', 'icon': '🏨', 'color': '#4338ca', 'recommended_cards': ['vip','membership','points']},
     'other': {'label': 'Other Business', 'icon': '🏪', 'color': '#0d9488', 'recommended_cards': ['stamp','points','vip']},
     'car_lending': {'label': 'Car Lending / Showroom', 'icon': '🚗', 'color': '#0f172a', 'recommended_cards': []},
+    'lending': {'label': 'Lending / Loan Management', 'icon': '💼', 'color': '#1d4ed8', 'recommended_cards': []},
     'cockpit': {'label': 'Cockpit Arena', 'icon': '🏆', 'color': '#713f12', 'recommended_cards': []},
 }
 
@@ -12265,7 +12266,7 @@ async def register(biz: BusinessCreate, request: Request):
     # dashboards set up by us, not self-serve) - block them here rather than
     # just hiding the option in the UI, since this endpoint is public.
     biz.business_type = normalize_business_type(biz.business_type)
-    INVITE_ONLY_BUSINESS_TYPES = {'car_lending', 'cockpit'}
+    INVITE_ONLY_BUSINESS_TYPES = {'car_lending', 'lending', 'cockpit'}
     if biz.business_type in INVITE_ONLY_BUSINESS_TYPES:
         raise HTTPException(
             status_code=403,
@@ -40633,3 +40634,881 @@ def owner_match_pos_offline_event(
         'event': _pos_offline_event_public(updated),
         'message': 'Offline event matched using the supplied exact StoreHub transaction ID.',
     }
+
+# =============================================================================
+# LOYALTYTREE LENDING / LOAN MANAGEMENT v1
+# Generic cash-lending module. Deliberately separate from Car Lending/Showroom,
+# loyalty customers, Wallet passes, POS, and Order Ahead.
+# =============================================================================
+
+LENDING_FREQUENCIES = ('daily', 'weekly', 'biweekly', 'semimonthly', 'monthly')
+LENDING_LOAN_STATUSES = ('active', 'overdue', 'fully_paid', 'defaulted', 'cancelled')
+
+
+class LendingBorrowerCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=160)
+    phone: Optional[str] = Field(default=None, max_length=80)
+    email: Optional[str] = Field(default=None, max_length=254)
+    address: Optional[str] = Field(default=None, max_length=500)
+    id_number: Optional[str] = Field(default=None, max_length=160)
+    emergency_contact_name: Optional[str] = Field(default=None, max_length=160)
+    emergency_contact_phone: Optional[str] = Field(default=None, max_length=80)
+    photo_url: Optional[str] = Field(default=None, max_length=2000)
+    notes: Optional[str] = Field(default=None, max_length=4000)
+
+
+class LendingBorrowerUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=2, max_length=160)
+    phone: Optional[str] = Field(default=None, max_length=80)
+    email: Optional[str] = Field(default=None, max_length=254)
+    address: Optional[str] = Field(default=None, max_length=500)
+    id_number: Optional[str] = Field(default=None, max_length=160)
+    emergency_contact_name: Optional[str] = Field(default=None, max_length=160)
+    emergency_contact_phone: Optional[str] = Field(default=None, max_length=80)
+    photo_url: Optional[str] = Field(default=None, max_length=2000)
+    notes: Optional[str] = Field(default=None, max_length=4000)
+    status: Optional[Literal['active', 'inactive', 'blocked']] = None
+
+
+class LendingLoanCreate(BaseModel):
+    borrower_public_id: str = Field(min_length=1, max_length=160)
+    branch_public_id: Optional[str] = Field(default=None, max_length=160)
+    contract_number: Optional[str] = Field(default=None, max_length=100)
+    principal_amount: float = Field(gt=0, le=1000000000)
+    interest_rate: float = Field(default=0, ge=0, le=10000)
+    total_payable: Optional[float] = Field(default=None, gt=0, le=1000000000)
+    installment_amount: Optional[float] = Field(default=None, gt=0, le=1000000000)
+    installment_count: int = Field(ge=1, le=1000)
+    payment_frequency: Literal['daily', 'weekly', 'biweekly', 'semimonthly', 'monthly'] = 'monthly'
+    release_date: Optional[str] = None
+    first_due_date: Optional[str] = None
+    notes: Optional[str] = Field(default=None, max_length=4000)
+
+
+class LendingLoanUpdate(BaseModel):
+    branch_public_id: Optional[str] = Field(default=None, max_length=160)
+    contract_number: Optional[str] = Field(default=None, max_length=100)
+    notes: Optional[str] = Field(default=None, max_length=4000)
+    status: Optional[Literal['active', 'overdue', 'fully_paid', 'defaulted', 'cancelled']] = None
+
+
+class LendingPaymentCreate(BaseModel):
+    amount: float = Field(gt=0, le=1000000000)
+    payment_date: Optional[str] = None
+    method: Optional[str] = Field(default=None, max_length=80)
+    reference_number: Optional[str] = Field(default=None, max_length=160)
+    notes: Optional[str] = Field(default=None, max_length=1000)
+
+
+class LendingDocumentCreate(BaseModel):
+    borrower_public_id: Optional[str] = Field(default=None, max_length=160)
+    document_type: str = Field(default='other', min_length=1, max_length=80)
+    title: Optional[str] = Field(default=None, max_length=200)
+    file_url: Optional[str] = Field(default=None, max_length=2500)
+    file_name: Optional[str] = Field(default=None, max_length=300)
+    mime_type: Optional[str] = Field(default=None, max_length=160)
+
+
+def _lending_money(value) -> float:
+    try:
+        return float(Decimal(str(value or 0)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+    except Exception:
+        return 0.0
+
+
+def _lending_date(value, field_name: str, default_value: Optional[date] = None) -> date:
+    if value in (None, ''):
+        if default_value is not None:
+            return default_value
+        raise HTTPException(status_code=400, detail=f'{field_name} is required')
+    try:
+        return datetime.strptime(str(value)[:10], '%Y-%m-%d').date()
+    except Exception:
+        raise HTTPException(status_code=400, detail=f'{field_name} must use YYYY-MM-DD')
+
+
+def _lending_add_months(value: date, months: int) -> date:
+    month_index = value.month - 1 + months
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def _lending_due_date(first_due: date, frequency: str, installment_index: int) -> date:
+    if frequency == 'daily':
+        return first_due + timedelta(days=installment_index)
+    if frequency == 'weekly':
+        return first_due + timedelta(days=7 * installment_index)
+    if frequency == 'biweekly':
+        return first_due + timedelta(days=14 * installment_index)
+    if frequency == 'semimonthly':
+        return first_due + timedelta(days=15 * installment_index)
+    return _lending_add_months(first_due, installment_index)
+
+
+def _lending_first_due(release_date: date, frequency: str) -> date:
+    if frequency == 'daily':
+        return release_date + timedelta(days=1)
+    if frequency == 'weekly':
+        return release_date + timedelta(days=7)
+    if frequency == 'biweekly':
+        return release_date + timedelta(days=14)
+    if frequency == 'semimonthly':
+        return release_date + timedelta(days=15)
+    return _lending_add_months(release_date, 1)
+
+
+def _lending_require_owner(public_id: str, authorization: str) -> dict:
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    if str(business.get('business_type') or '').lower() != 'lending':
+        raise HTTPException(status_code=403, detail='Lending module is not enabled for this business')
+    return business
+
+
+def _lending_find_borrower(business_id, borrower_public_id: str) -> Optional[dict]:
+    try:
+        rows = (
+            supabase.table('lending_borrowers').select('*')
+            .eq('business_id', business_id).eq('public_id', borrower_public_id).limit(1).execute().data or []
+        )
+        return rows[0] if rows else None
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+
+def _lending_find_loan(business_id, loan_public_id: str) -> Optional[dict]:
+    try:
+        rows = (
+            supabase.table('lending_loans').select('*')
+            .eq('business_id', business_id).eq('public_id', loan_public_id).limit(1).execute().data or []
+        )
+        return rows[0] if rows else None
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+
+def _lending_refresh_business(business_id) -> None:
+    """Refresh overdue flags from the installment ledger.
+
+    Runs on lending dashboard/list reads so status remains correct even on days
+    with no payment entry or cron job. Payment writes also call this immediately.
+    """
+    today = datetime.now(LOYALTY_TIMEZONE).date()
+    try:
+        loans = (
+            supabase.table('lending_loans').select('id,status,balance_remaining,next_due_date,days_past_due')
+            .eq('business_id', business_id).execute().data or []
+        )
+        if not loans:
+            return
+        loan_ids = [row['id'] for row in loans]
+        installments = (
+            supabase.table('lending_installments').select('id,loan_id,due_date,amount_due,amount_paid,status,performance')
+            .in_('loan_id', loan_ids).order('due_date').execute().data or []
+        )
+    except Exception:
+        return
+
+    by_loan = defaultdict(list)
+    for inst in installments:
+        by_loan[inst.get('loan_id')].append(inst)
+        if str(inst.get('status')) == 'paid':
+            continue
+        try:
+            due = datetime.strptime(str(inst.get('due_date'))[:10], '%Y-%m-%d').date()
+        except Exception:
+            continue
+        target_perf = 'overdue' if due < today and _lending_money(inst.get('amount_paid')) < _lending_money(inst.get('amount_due')) else 'pending'
+        if inst.get('performance') != target_perf:
+            try:
+                supabase.table('lending_installments').update({
+                    'performance': target_perf,
+                    'updated_at': datetime.utcnow().isoformat(),
+                }).eq('id', inst.get('id')).execute()
+            except Exception:
+                pass
+
+    for loan in loans:
+        if loan.get('status') in ('fully_paid', 'defaulted', 'cancelled'):
+            continue
+        unpaid = [
+            i for i in by_loan.get(loan.get('id'), [])
+            if _lending_money(i.get('amount_paid')) + 0.009 < _lending_money(i.get('amount_due'))
+        ]
+        if not unpaid or _lending_money(loan.get('balance_remaining')) <= 0:
+            patch = {'status': 'fully_paid', 'balance_remaining': 0, 'next_due_date': None, 'days_past_due': 0, 'updated_at': datetime.utcnow().isoformat()}
+        else:
+            unpaid.sort(key=lambda row: str(row.get('due_date') or '9999-12-31'))
+            earliest = unpaid[0]
+            try:
+                earliest_due = datetime.strptime(str(earliest.get('due_date'))[:10], '%Y-%m-%d').date()
+            except Exception:
+                earliest_due = today
+            is_overdue = earliest_due < today
+            patch = {
+                'status': 'overdue' if is_overdue else 'active',
+                'next_due_date': earliest_due.isoformat(),
+                'days_past_due': max(0, (today - earliest_due).days) if is_overdue else 0,
+                'updated_at': datetime.utcnow().isoformat(),
+            }
+        try:
+            supabase.table('lending_loans').update(patch).eq('id', loan.get('id')).execute()
+        except Exception:
+            pass
+
+
+def _lending_enrich_loans(business_id, loans: list[dict]) -> list[dict]:
+    if not loans:
+        return []
+    borrower_ids = list({row.get('borrower_id') for row in loans if row.get('borrower_id')})
+    branch_ids = list({row.get('branch_id') for row in loans if row.get('branch_id')})
+    loan_ids = [row.get('id') for row in loans if row.get('id')]
+    borrowers = []
+    branches = []
+    installments = []
+    try:
+        if borrower_ids:
+            borrowers = supabase.table('lending_borrowers').select('id,public_id,name,phone,email,status').in_('id', borrower_ids).execute().data or []
+        if branch_ids:
+            branches = supabase.table('branches').select('id,public_id,name,address,is_active').in_('id', branch_ids).execute().data or []
+        if loan_ids:
+            installments = supabase.table('lending_installments').select('loan_id,status,performance,amount_due,amount_paid').in_('loan_id', loan_ids).execute().data or []
+    except Exception:
+        pass
+    borrower_map = {row['id']: row for row in borrowers}
+    branch_map = {row['id']: row for row in branches}
+    perf_map = defaultdict(lambda: {'on_time': 0, 'delayed': 0, 'overdue': 0, 'pending': 0, 'partial': 0})
+    for inst in installments:
+        perf = perf_map[inst.get('loan_id')]
+        performance = str(inst.get('performance') or 'pending')
+        if performance in perf:
+            perf[performance] += 1
+        if str(inst.get('status')) == 'partial':
+            perf['partial'] += 1
+    out = []
+    for loan in loans:
+        item = dict(loan)
+        item['borrower'] = borrower_map.get(loan.get('borrower_id'))
+        item['branch'] = branch_map.get(loan.get('branch_id'))
+        item['payment_performance'] = perf_map.get(loan.get('id'), {'on_time': 0, 'delayed': 0, 'overdue': 0, 'pending': 0, 'partial': 0})
+        out.append(item)
+    return out
+
+
+
+LENDING_DOCUMENT_BUCKET = 'lending-documents'
+LENDING_DOCUMENT_MAX_BYTES = 10 * 1024 * 1024
+LENDING_DOCUMENT_MIME_TYPES = {
+    'application/pdf': '.pdf',
+    'image/jpeg': '.jpg',
+    'image/png': '.png',
+    'image/webp': '.webp',
+}
+
+
+def _lending_storage_headers(content_type: Optional[str] = None) -> dict:
+    headers = {
+        'Authorization': f'Bearer {SUPABASE_KEY}',
+        'apikey': SUPABASE_KEY,
+    }
+    if content_type:
+        headers['Content-Type'] = content_type
+    return headers
+
+
+def _lending_storage_url(storage_path: str) -> str:
+    safe_path = quote(str(storage_path or '').lstrip('/'), safe='/')
+    return f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/{LENDING_DOCUMENT_BUCKET}/{safe_path}"
+
+
+
+def _lending_storage_download_url(storage_path: str) -> str:
+    safe_path = quote(str(storage_path or '').lstrip('/'), safe='/')
+    return f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/authenticated/{LENDING_DOCUMENT_BUCKET}/{safe_path}"
+
+
+def _lending_document_public(row: dict) -> dict:
+    out = {k: v for k, v in dict(row or {}).items() if k not in ('storage_path', 'file_url')}
+    out['has_private_file'] = bool((row or {}).get('storage_path'))
+    # Legacy/external URLs can still be represented, but new Lending uploads use
+    # private Supabase Storage and are fetched through the authenticated endpoint.
+    out['legacy_file_url'] = (row or {}).get('file_url') if not (row or {}).get('storage_path') else None
+    return out
+
+@app.get('/api/v1/business/{public_id}/lending/dashboard')
+def lending_dashboard(public_id: str, authorization: str = Header(default='')):
+    business = _lending_require_owner(public_id, authorization)
+    business_id = business.get('id')
+    _lending_refresh_business(business_id)
+    try:
+        borrowers = supabase.table('lending_borrowers').select('id,status').eq('business_id', business_id).execute().data or []
+        loans = supabase.table('lending_loans').select('*').eq('business_id', business_id).execute().data or []
+        installments = supabase.table('lending_installments').select('loan_id,status,performance,amount_due,amount_paid').eq('business_id', business_id).execute().data or []
+        payments = supabase.table('lending_payments').select('amount,payment_date,timeliness').eq('business_id', business_id).execute().data or []
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+    today = datetime.now(LOYALTY_TIMEZONE).date()
+    month_prefix = today.strftime('%Y-%m')
+    active_loans = [l for l in loans if l.get('status') in ('active', 'overdue')]
+    overdue_loans = [l for l in loans if l.get('status') == 'overdue']
+    completed_loans = [l for l in loans if l.get('status') == 'fully_paid']
+    on_time = sum(1 for i in installments if i.get('performance') == 'on_time')
+    delayed = sum(1 for i in installments if i.get('performance') == 'delayed')
+    overdue_installments = sum(1 for i in installments if i.get('performance') == 'overdue')
+    partial_installments = sum(1 for i in installments if i.get('status') == 'partial')
+    completed_for_rate = on_time + delayed
+    on_time_rate = round((on_time / completed_for_rate) * 100, 1) if completed_for_rate else 100.0
+    collections_today = sum(_lending_money(p.get('amount')) for p in payments if str(p.get('payment_date'))[:10] == today.isoformat())
+    collections_month = sum(_lending_money(p.get('amount')) for p in payments if str(p.get('payment_date') or '').startswith(month_prefix))
+
+    return {
+        'business_name': business.get('name'),
+        'borrowers': len(borrowers),
+        'active_borrowers': sum(1 for b in borrowers if b.get('status') == 'active'),
+        'active_loans': len(active_loans),
+        'fully_paid_loans': len(completed_loans),
+        'overdue_loans': len(overdue_loans),
+        'total_released': _lending_money(sum(_lending_money(l.get('principal_amount')) for l in loans if l.get('status') != 'cancelled')),
+        'outstanding_balance': _lending_money(sum(_lending_money(l.get('balance_remaining')) for l in active_loans)),
+        'collections_today': _lending_money(collections_today),
+        'collections_month': _lending_money(collections_month),
+        'on_time_installments': on_time,
+        'delayed_installments': delayed,
+        'overdue_installments': overdue_installments,
+        'partial_installments': partial_installments,
+        'on_time_rate': on_time_rate,
+    }
+
+
+@app.get('/api/v1/business/{public_id}/lending/borrowers')
+def lending_list_borrowers(public_id: str, search: Optional[str] = None, authorization: str = Header(default='')):
+    business = _lending_require_owner(public_id, authorization)
+    business_id = business.get('id')
+    _lending_refresh_business(business_id)
+    try:
+        borrowers = supabase.table('lending_borrowers').select('*').eq('business_id', business_id).order('created_at', desc=True).execute().data or []
+        loans = supabase.table('lending_loans').select('id,borrower_id,status,balance_remaining').eq('business_id', business_id).execute().data or []
+        installments = supabase.table('lending_installments').select('loan_id,performance').eq('business_id', business_id).execute().data or []
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+    if search:
+        needle = search.strip().lower()
+        borrowers = [b for b in borrowers if needle in ' '.join(str(b.get(k) or '').lower() for k in ('name','phone','email','address','id_number'))]
+    loan_map = defaultdict(list)
+    for loan in loans:
+        loan_map[loan.get('borrower_id')].append(loan)
+    loan_by_id = {loan.get('id'): loan for loan in loans}
+    perf_by_borrower = defaultdict(lambda: {'on_time': 0, 'delayed': 0, 'overdue': 0})
+    for inst in installments:
+        loan = loan_by_id.get(inst.get('loan_id'))
+        if not loan:
+            continue
+        borrower_id = loan.get('borrower_id')
+        perf = str(inst.get('performance') or '')
+        if perf in perf_by_borrower[borrower_id]:
+            perf_by_borrower[borrower_id][perf] += 1
+    out = []
+    for borrower in borrowers:
+        item = dict(borrower)
+        borrower_loans = loan_map.get(borrower.get('id'), [])
+        active = [l for l in borrower_loans if l.get('status') in ('active','overdue')]
+        perf = perf_by_borrower.get(borrower.get('id'), {'on_time': 0, 'delayed': 0, 'overdue': 0})
+        item['active_loans'] = len(active)
+        item['total_loans'] = len(borrower_loans)
+        item['outstanding_balance'] = _lending_money(sum(_lending_money(l.get('balance_remaining')) for l in active))
+        item['payment_performance'] = perf
+        out.append(item)
+    return out
+
+
+@app.post('/api/v1/business/{public_id}/lending/borrowers')
+def lending_create_borrower(public_id: str, payload: LendingBorrowerCreate, authorization: str = Header(default='')):
+    business = _lending_require_owner(public_id, authorization)
+    row = payload.model_dump()
+    row.update({
+        'public_id': f'lbr_{uuid.uuid4().hex}',
+        'business_id': business.get('id'),
+        'name': payload.name.strip(),
+        'created_at': datetime.utcnow().isoformat(),
+        'updated_at': datetime.utcnow().isoformat(),
+    })
+    try:
+        res = supabase.table('lending_borrowers').insert(row).execute()
+        return (res.data or [row])[0]
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+
+@app.patch('/api/v1/business/{public_id}/lending/borrowers/{borrower_public_id}')
+def lending_update_borrower(public_id: str, borrower_public_id: str, payload: LendingBorrowerUpdate, authorization: str = Header(default='')):
+    business = _lending_require_owner(public_id, authorization)
+    borrower = _lending_find_borrower(business.get('id'), borrower_public_id)
+    if not borrower:
+        raise HTTPException(status_code=404, detail='Borrower not found')
+    patch = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if 'name' in patch:
+        patch['name'] = patch['name'].strip()
+    patch['updated_at'] = datetime.utcnow().isoformat()
+    try:
+        res = supabase.table('lending_borrowers').update(patch).eq('id', borrower.get('id')).execute()
+        return (res.data or [{**borrower, **patch}])[0]
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+
+@app.get('/api/v1/business/{public_id}/lending/loans')
+def lending_list_loans(public_id: str, status: Optional[str] = None, borrower_public_id: Optional[str] = None, authorization: str = Header(default='')):
+    business = _lending_require_owner(public_id, authorization)
+    business_id = business.get('id')
+    _lending_refresh_business(business_id)
+    try:
+        query = supabase.table('lending_loans').select('*').eq('business_id', business_id)
+        if status:
+            query = query.eq('status', status)
+        if borrower_public_id:
+            borrower = _lending_find_borrower(business_id, borrower_public_id)
+            if not borrower:
+                return []
+            query = query.eq('borrower_id', borrower.get('id'))
+        loans = query.order('created_at', desc=True).execute().data or []
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+    return _lending_enrich_loans(business_id, loans)
+
+
+@app.post('/api/v1/business/{public_id}/lending/loans')
+def lending_create_loan(public_id: str, payload: LendingLoanCreate, authorization: str = Header(default='')):
+    business = _lending_require_owner(public_id, authorization)
+    business_id = business.get('id')
+    borrower = _lending_find_borrower(business_id, payload.borrower_public_id)
+    if not borrower:
+        raise HTTPException(status_code=404, detail='Borrower not found')
+    if borrower.get('status') == 'blocked':
+        raise HTTPException(status_code=409, detail='This borrower is blocked from new loans')
+
+    branch_id = None
+    if payload.branch_public_id:
+        branch = safe_get_branch(payload.branch_public_id)
+        if not branch or branch.get('business_id') != business_id:
+            raise HTTPException(status_code=400, detail='Branch does not belong to this business')
+        branch_id = branch.get('id')
+
+    release = _lending_date(payload.release_date, 'release_date', date.today())
+    first_due = _lending_date(payload.first_due_date, 'first_due_date', _lending_first_due(release, payload.payment_frequency))
+    if first_due < release:
+        raise HTTPException(status_code=400, detail='first_due_date cannot be before release_date')
+
+    principal = _lending_money(payload.principal_amount)
+    if payload.total_payable is not None:
+        total = _lending_money(payload.total_payable)
+    elif payload.installment_amount is not None:
+        total = _lending_money(payload.installment_amount * payload.installment_count)
+    else:
+        total = _lending_money(principal * (1 + (payload.interest_rate / 100)))
+    if total + 0.009 < principal:
+        raise HTTPException(status_code=400, detail='Total payable cannot be lower than principal amount')
+    installment = _lending_money(payload.installment_amount if payload.installment_amount is not None else total / payload.installment_count)
+    if installment <= 0:
+        raise HTTPException(status_code=400, detail='Installment amount must be greater than zero')
+    if payload.installment_count > 1 and _lending_money(installment * (payload.installment_count - 1)) + 0.009 >= total:
+        raise HTTPException(status_code=400, detail='Installment amount is too high for the total payable and number of payments')
+
+    # Keep the schedule exactly equal to total payable by putting any rounding
+    # difference into the final installment.
+    schedule = []
+    allocated = 0.0
+    for index in range(payload.installment_count):
+        if index == payload.installment_count - 1:
+            amount_due = _lending_money(total - allocated)
+        else:
+            amount_due = installment
+            allocated = _lending_money(allocated + amount_due)
+        schedule.append({
+            'public_id': f'lin_{uuid.uuid4().hex}',
+            'business_id': business_id,
+            'installment_number': index + 1,
+            'due_date': _lending_due_date(first_due, payload.payment_frequency, index).isoformat(),
+            'amount_due': amount_due,
+            'amount_paid': 0,
+            'status': 'pending',
+            'performance': 'pending',
+        })
+
+    loan_public_id = f'ln_{uuid.uuid4().hex}'
+    contract_number = (payload.contract_number or f'LND-{datetime.utcnow().strftime("%Y%m%d")}-{uuid.uuid4().hex[:6].upper()}').strip()
+    loan_row = {
+        'public_id': loan_public_id,
+        'business_id': business_id,
+        'borrower_id': borrower.get('id'),
+        'branch_id': branch_id,
+        'contract_number': contract_number,
+        'principal_amount': principal,
+        'interest_rate': _lending_money(payload.interest_rate),
+        'total_payable': total,
+        'installment_amount': installment,
+        'installment_count': payload.installment_count,
+        'payment_frequency': payload.payment_frequency,
+        'release_date': release.isoformat(),
+        'first_due_date': first_due.isoformat(),
+        'next_due_date': first_due.isoformat(),
+        'balance_remaining': total,
+        'status': 'active',
+        'days_past_due': 0,
+        'notes': payload.notes,
+        'created_at': datetime.utcnow().isoformat(),
+        'updated_at': datetime.utcnow().isoformat(),
+    }
+    try:
+        existing = supabase.table('lending_loans').select('id').eq('business_id', business_id).eq('contract_number', contract_number).limit(1).execute().data or []
+        if existing:
+            raise HTTPException(status_code=409, detail='Contract number already exists for this business')
+        inserted = supabase.table('lending_loans').insert(loan_row).execute().data or []
+        if not inserted:
+            raise HTTPException(status_code=500, detail='Loan could not be created')
+        loan = inserted[0]
+        for row in schedule:
+            row['loan_id'] = loan.get('id')
+        supabase.table('lending_installments').insert(schedule).execute()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Best-effort rollback if installment creation failed after loan insert.
+        try:
+            supabase.table('lending_loans').delete().eq('public_id', loan_public_id).execute()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+    return lending_get_loan(public_id, loan_public_id, authorization)
+
+
+@app.get('/api/v1/business/{public_id}/lending/loans/{loan_public_id}')
+def lending_get_loan(public_id: str, loan_public_id: str, authorization: str = Header(default='')):
+    business = _lending_require_owner(public_id, authorization)
+    business_id = business.get('id')
+    _lending_refresh_business(business_id)
+    loan = _lending_find_loan(business_id, loan_public_id)
+    if not loan:
+        raise HTTPException(status_code=404, detail='Loan not found')
+    try:
+        borrower_rows = supabase.table('lending_borrowers').select('*').eq('id', loan.get('borrower_id')).limit(1).execute().data or []
+        branch_rows = supabase.table('branches').select('id,public_id,name,address,is_active').eq('id', loan.get('branch_id')).limit(1).execute().data or [] if loan.get('branch_id') else []
+        installments = supabase.table('lending_installments').select('*').eq('loan_id', loan.get('id')).order('installment_number').execute().data or []
+        payments = supabase.table('lending_payments').select('*').eq('loan_id', loan.get('id')).order('payment_date', desc=True).order('created_at', desc=True).execute().data or []
+        documents = supabase.table('lending_documents').select('*').eq('loan_id', loan.get('id')).order('created_at', desc=True).execute().data or []
+        documents = [_lending_document_public(row) for row in documents]
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+    out = dict(loan)
+    out['borrower'] = borrower_rows[0] if borrower_rows else None
+    out['branch'] = branch_rows[0] if branch_rows else None
+    out['installments'] = installments
+    out['payments'] = payments
+    out['documents'] = documents
+    return out
+
+
+@app.patch('/api/v1/business/{public_id}/lending/loans/{loan_public_id}')
+def lending_update_loan(public_id: str, loan_public_id: str, payload: LendingLoanUpdate, authorization: str = Header(default='')):
+    business = _lending_require_owner(public_id, authorization)
+    business_id = business.get('id')
+    loan = _lending_find_loan(business_id, loan_public_id)
+    if not loan:
+        raise HTTPException(status_code=404, detail='Loan not found')
+    patch = {k: v for k, v in payload.model_dump().items() if v is not None and k != 'branch_public_id'}
+    if payload.branch_public_id is not None:
+        if payload.branch_public_id == '':
+            patch['branch_id'] = None
+        else:
+            branch = safe_get_branch(payload.branch_public_id)
+            if not branch or branch.get('business_id') != business_id:
+                raise HTTPException(status_code=400, detail='Branch does not belong to this business')
+            patch['branch_id'] = branch.get('id')
+    if payload.contract_number:
+        duplicate = supabase.table('lending_loans').select('id').eq('business_id', business_id).eq('contract_number', payload.contract_number.strip()).execute().data or []
+        if any(row.get('id') != loan.get('id') for row in duplicate):
+            raise HTTPException(status_code=409, detail='Contract number already exists for this business')
+        patch['contract_number'] = payload.contract_number.strip()
+    patch['updated_at'] = datetime.utcnow().isoformat()
+    try:
+        res = supabase.table('lending_loans').update(patch).eq('id', loan.get('id')).execute()
+        return (res.data or [{**loan, **patch}])[0]
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+
+@app.post('/api/v1/business/{public_id}/lending/loans/{loan_public_id}/payments')
+def lending_record_payment(public_id: str, loan_public_id: str, payload: LendingPaymentCreate, authorization: str = Header(default='')):
+    business = _lending_require_owner(public_id, authorization)
+    business_id = business.get('id')
+    _lending_refresh_business(business_id)
+    loan = _lending_find_loan(business_id, loan_public_id)
+    if not loan:
+        raise HTTPException(status_code=404, detail='Loan not found')
+    if loan.get('status') in ('fully_paid','cancelled'):
+        raise HTTPException(status_code=409, detail=f"Cannot add a payment to a {loan.get('status')} loan")
+
+    amount = _lending_money(payload.amount)
+    balance_before = _lending_money(loan.get('balance_remaining'))
+    if amount > balance_before + 0.009:
+        raise HTTPException(status_code=400, detail=f'Payment exceeds remaining balance of {balance_before:.2f}')
+    local_today = datetime.now(LOYALTY_TIMEZONE).date()
+    payment_date = _lending_date(payload.payment_date, 'payment_date', local_today)
+    if payment_date > local_today:
+        raise HTTPException(status_code=400, detail='Payment date cannot be in the future')
+    try:
+        release_date = datetime.strptime(str(loan.get('release_date'))[:10], '%Y-%m-%d').date()
+        if payment_date < release_date:
+            raise HTTPException(status_code=400, detail='Payment date cannot be before the loan release date')
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+    if loan.get('last_payment_date'):
+        try:
+            last_payment_date = datetime.strptime(str(loan.get('last_payment_date'))[:10], '%Y-%m-%d').date()
+            if payment_date < last_payment_date:
+                raise HTTPException(status_code=409, detail=f'Payment date cannot be earlier than the last recorded payment ({last_payment_date.isoformat()})')
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+    payment_public_id = f'lpay_{uuid.uuid4().hex}'
+    receipt_number = f'RCPT-{datetime.utcnow().strftime("%Y%m%d")}-{uuid.uuid4().hex[:8].upper()}'
+
+    try:
+        supabase.rpc('record_lending_payment_v1', {
+            'p_business_id': business_id,
+            'p_loan_id': loan.get('id'),
+            'p_payment_public_id': payment_public_id,
+            'p_receipt_number': receipt_number,
+            'p_amount': amount,
+            'p_payment_date': payment_date.isoformat(),
+            'p_method': payload.method,
+            'p_reference_number': payload.reference_number,
+            'p_notes': payload.notes,
+        }).execute()
+        payment_rows = (
+            supabase.table('lending_payments').select('*')
+            .eq('business_id', business_id).eq('public_id', payment_public_id).limit(1).execute().data or []
+        )
+    except Exception as exc:
+        message = friendly_db_error(exc)
+        if 'record_lending_payment_v1' in str(exc) or 'function' in str(exc).lower():
+            message = f'{message}. Run backend/lending_schema.sql before using Lending payments.'
+        raise HTTPException(status_code=500, detail=message)
+
+    _lending_refresh_business(business_id)
+    return {
+        'payment': payment_rows[0] if payment_rows else {'public_id': payment_public_id, 'receipt_number': receipt_number, 'amount': amount},
+        'loan': lending_get_loan(public_id, loan_public_id, authorization),
+    }
+
+
+@app.get('/api/v1/business/{public_id}/lending/payments')
+def lending_list_payments(public_id: str, authorization: str = Header(default='')):
+    business = _lending_require_owner(public_id, authorization)
+    business_id = business.get('id')
+    try:
+        payments = supabase.table('lending_payments').select('*').eq('business_id', business_id).order('payment_date', desc=True).order('created_at', desc=True).execute().data or []
+        borrower_ids = list({p.get('borrower_id') for p in payments if p.get('borrower_id')})
+        loan_ids = list({p.get('loan_id') for p in payments if p.get('loan_id')})
+        borrowers = supabase.table('lending_borrowers').select('id,public_id,name').in_('id', borrower_ids).execute().data or [] if borrower_ids else []
+        loans = supabase.table('lending_loans').select('id,public_id,contract_number').in_('id', loan_ids).execute().data or [] if loan_ids else []
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+    bm = {b['id']: b for b in borrowers}
+    lm = {l['id']: l for l in loans}
+    for payment in payments:
+        payment['borrower'] = bm.get(payment.get('borrower_id'))
+        payment['loan'] = lm.get(payment.get('loan_id'))
+    return payments
+
+
+@app.post('/api/v1/business/{public_id}/lending/loans/{loan_public_id}/documents/upload')
+async def lending_upload_document(
+    public_id: str,
+    loan_public_id: str,
+    request: Request,
+    document_type: str = Query(default='other', max_length=80),
+    title: Optional[str] = Query(default=None, max_length=200),
+    file_name: Optional[str] = Query(default=None, max_length=300),
+    mime_type: Optional[str] = Query(default=None, max_length=160),
+    authorization: str = Header(default=''),
+):
+    business = _lending_require_owner(public_id, authorization)
+    business_id = business.get('id')
+    loan = _lending_find_loan(business_id, loan_public_id)
+    if not loan:
+        raise HTTPException(status_code=404, detail='Loan not found')
+
+    content_type = str(mime_type or request.headers.get('content-type') or '').split(';', 1)[0].strip().lower()
+    if content_type not in LENDING_DOCUMENT_MIME_TYPES:
+        raise HTTPException(status_code=400, detail='Only PDF, JPG, PNG, and WEBP files are allowed')
+    raw = await request.body()
+    if not raw:
+        raise HTTPException(status_code=400, detail='Document file is empty')
+    if len(raw) > LENDING_DOCUMENT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail='Document file exceeds the 10 MB limit')
+
+    extension = LENDING_DOCUMENT_MIME_TYPES[content_type]
+    storage_path = f"{public_id}/{loan_public_id}/{uuid.uuid4().hex}{extension}"
+    try:
+        import httpx
+        with httpx.Client(timeout=30) as client:
+            uploaded = client.post(
+                _lending_storage_url(storage_path),
+                headers=_lending_storage_headers(content_type),
+                content=raw,
+            )
+        if uploaded.status_code >= 300:
+            raise HTTPException(status_code=502, detail=f'Private document storage failed ({uploaded.status_code})')
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f'Private document storage failed: {exc}')
+
+    row = {
+        'public_id': f'ldoc_{uuid.uuid4().hex}',
+        'business_id': business_id,
+        'borrower_id': loan.get('borrower_id'),
+        'loan_id': loan.get('id'),
+        'document_type': (document_type or 'other').strip().lower(),
+        'title': title,
+        'storage_path': storage_path,
+        'file_url': None,
+        'file_name': (file_name or f'document{extension}')[:300],
+        'mime_type': content_type,
+        'created_at': datetime.utcnow().isoformat(),
+    }
+    try:
+        res = supabase.table('lending_documents').insert(row).execute()
+        saved = (res.data or [row])[0]
+        return _lending_document_public(saved)
+    except Exception as exc:
+        # Do not leave an orphaned private object if metadata insert fails.
+        try:
+            import httpx
+            with httpx.Client(timeout=15) as client:
+                client.delete(_lending_storage_url(storage_path), headers=_lending_storage_headers())
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+
+@app.get('/api/v1/business/{public_id}/lending/documents/{document_public_id}/download')
+def lending_download_document(public_id: str, document_public_id: str, authorization: str = Header(default='')):
+    business = _lending_require_owner(public_id, authorization)
+    business_id = business.get('id')
+    try:
+        rows = (
+            supabase.table('lending_documents').select('*')
+            .eq('business_id', business_id).eq('public_id', document_public_id).limit(1).execute().data or []
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+    if not rows:
+        raise HTTPException(status_code=404, detail='Document not found')
+    doc = rows[0]
+    storage_path = doc.get('storage_path')
+    if not storage_path:
+        raise HTTPException(status_code=409, detail='This legacy document is not stored in private Lending storage')
+    try:
+        import httpx
+        with httpx.Client(timeout=30) as client:
+            stored = client.get(_lending_storage_download_url(storage_path), headers=_lending_storage_headers())
+        if stored.status_code == 404:
+            raise HTTPException(status_code=404, detail='Stored document file was not found')
+        if stored.status_code >= 300:
+            raise HTTPException(status_code=502, detail=f'Private document retrieval failed ({stored.status_code})')
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f'Private document retrieval failed: {exc}')
+
+    filename = re.sub(r'[^A-Za-z0-9._ -]+', '_', str(doc.get('file_name') or 'document'))[:180]
+    media_type = str(doc.get('mime_type') or stored.headers.get('content-type') or 'application/octet-stream').split(';',1)[0]
+    return Response(
+        content=stored.content,
+        media_type=media_type,
+        headers={
+            'Content-Disposition': f'inline; filename="{filename}"',
+            'Cache-Control': 'private, no-store',
+            'X-Content-Type-Options': 'nosniff',
+        },
+    )
+
+
+@app.post('/api/v1/business/{public_id}/lending/loans/{loan_public_id}/documents')
+def lending_add_document(public_id: str, loan_public_id: str, payload: LendingDocumentCreate, authorization: str = Header(default='')):
+    """Legacy/external document metadata path.
+
+    New Lending UI uploads to the private /documents/upload endpoint above.
+    This remains available for an already-private external document URL, if a
+    business has one, without breaking future import/migration workflows.
+    """
+    business = _lending_require_owner(public_id, authorization)
+    business_id = business.get('id')
+    loan = _lending_find_loan(business_id, loan_public_id)
+    if not loan:
+        raise HTTPException(status_code=404, detail='Loan not found')
+    if not payload.file_url:
+        raise HTTPException(status_code=400, detail='file_url is required for the legacy document metadata endpoint')
+    borrower_id = loan.get('borrower_id')
+    if payload.borrower_public_id:
+        borrower = _lending_find_borrower(business_id, payload.borrower_public_id)
+        if not borrower:
+            raise HTTPException(status_code=404, detail='Borrower not found')
+        borrower_id = borrower.get('id')
+    row = {
+        'public_id': f'ldoc_{uuid.uuid4().hex}',
+        'business_id': business_id,
+        'borrower_id': borrower_id,
+        'loan_id': loan.get('id'),
+        'document_type': payload.document_type.strip().lower(),
+        'title': payload.title,
+        'file_url': payload.file_url,
+        'storage_path': None,
+        'file_name': payload.file_name,
+        'mime_type': payload.mime_type,
+        'created_at': datetime.utcnow().isoformat(),
+    }
+    try:
+        res = supabase.table('lending_documents').insert(row).execute()
+        return _lending_document_public((res.data or [row])[0])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+
+@app.delete('/api/v1/business/{public_id}/lending/documents/{document_public_id}')
+def lending_delete_document(public_id: str, document_public_id: str, authorization: str = Header(default='')):
+    business = _lending_require_owner(public_id, authorization)
+    business_id = business.get('id')
+    try:
+        rows = supabase.table('lending_documents').select('*').eq('business_id', business_id).eq('public_id', document_public_id).limit(1).execute().data or []
+        if not rows:
+            raise HTTPException(status_code=404, detail='Document not found')
+        doc = rows[0]
+        storage_path = doc.get('storage_path')
+        if storage_path:
+            try:
+                import httpx
+                with httpx.Client(timeout=15) as client:
+                    deleted = client.delete(_lending_storage_url(storage_path), headers=_lending_storage_headers())
+                if deleted.status_code >= 300 and deleted.status_code != 404:
+                    raise HTTPException(status_code=502, detail=f'Private document deletion failed ({deleted.status_code})')
+            except HTTPException:
+                raise
+            except Exception as exc:
+                raise HTTPException(status_code=502, detail=f'Private document deletion failed: {exc}')
+        supabase.table('lending_documents').delete().eq('id', doc.get('id')).execute()
+        return {'success': True}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
