@@ -62,6 +62,8 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const [networkPartners,setNetworkPartners]=useState([])
   const [networkPartnerSaving,setNetworkPartnerSaving]=useState(false)
   const [networkPartnerForm,setNetworkPartnerForm]=useState({name:'',email:'',password:'',partner_type:'city',region:'',city:'',partner_code:'',commission_type:'percent',commission_value:10,is_active:true})
+  const [networkPartnerAssignForm,setNetworkPartnerAssignForm]=useState({partner_public_id:'',business_public_id:''})
+  const [networkPartnerAssigning,setNetworkPartnerAssigning]=useState(false)
   const [platformAnalytics,setPlatformAnalytics]=useState(null)
   const [analyticsDays,setAnalyticsDays]=useState(30)
   const [analyticsLoading,setAnalyticsLoading]=useState(false)
@@ -459,6 +461,43 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const createNetworkPartner=async(e)=>{e.preventDefault();setNetworkPartnerSaving(true);try{const res=await authedFetch('/api/v1/admin/network-partners',{method:'POST',body:JSON.stringify({...networkPartnerForm,commission_value:Number(networkPartnerForm.commission_value)||0,partner_code:networkPartnerForm.partner_code.toUpperCase()})});const d=await res.json().catch(()=>({}));if(!res.ok)throw new Error(d.detail||'Could not create partner');setNetworkPartnerForm({name:'',email:'',password:'',partner_type:'city',region:'',city:'',partner_code:'',commission_type:'percent',commission_value:10,is_active:true});setMessage('City/region partner created');loadData()}catch(err){setMessage(err.message)}setNetworkPartnerSaving(false)}
   const patchNetworkPartner=async(p,patch)=>{try{const res=await authedFetch(`/api/v1/admin/network-partners/${p.public_id}`,{method:'PATCH',body:JSON.stringify(patch)});const d=await res.json().catch(()=>({}));if(!res.ok)throw new Error(d.detail||'Partner update failed');setMessage('Partner updated');loadData()}catch(err){setMessage(err.message)}}
 
+  const assignNetworkPartnerBusiness=async(e)=>{
+    e.preventDefault()
+    const partnerPublicId=networkPartnerAssignForm.partner_public_id
+    const businessPublicId=networkPartnerAssignForm.business_public_id
+    if(!partnerPublicId||!businessPublicId){
+      setMessage('Choose both a partner and a business')
+      setTimeout(()=>setMessage(''),3000)
+      return
+    }
+
+    const partner=networkPartners.find(p=>p.public_id===partnerPublicId)
+    const business=businesses.find(b=>b.public_id===businessPublicId)
+
+    const ok=window.confirm(
+      `Assign ${business?.name||'this business'} to ${partner?.name||'this partner'}?\n\nIf the business is already assigned to another partner, this will reassign it.`
+    )
+    if(!ok)return
+
+    setNetworkPartnerAssigning(true)
+    try{
+      const res=await authedFetch(
+        `/api/v1/admin/businesses/${businessPublicId}/network-partner/${partnerPublicId}`,
+        {method:'PATCH'}
+      )
+      const d=await res.json().catch(()=>({}))
+      if(!res.ok)throw new Error(d.detail||'Could not assign business')
+      setMessage(`${business?.name||'Business'} assigned to ${partner?.name||'partner'}`)
+      setNetworkPartnerAssignForm({partner_public_id:'',business_public_id:''})
+      await loadData()
+    }catch(err){
+      setMessage(err.message||'Could not assign business')
+    }finally{
+      setNetworkPartnerAssigning(false)
+      setTimeout(()=>setMessage(''),4000)
+    }
+  }
+
   const filteredCount = businessTypeFilter ? businesses.filter(b => b.business_type === businessTypeFilter).length : businesses.length
   const latestKitByBusiness=setupKitOrders.reduce((m,o)=>{if(o.business_public_id&&!m[o.business_public_id])m[o.business_public_id]=o;return m},{})
   const businessKitStatus=b=>latestKitByBusiness[b.public_id]?.fulfillment_status||b.setup_kit_status||(b.setup_kit_requested?(b.setup_kit_paid?'paid':'requested'):'')
@@ -832,6 +871,55 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
               <div><label style={styles.partnerLabel}>Commission</label><div style={{display:'flex',gap:6}}><select style={{...styles.select,width:110}} value={networkPartnerForm.commission_type} onChange={e=>setNetworkPartnerForm({...networkPartnerForm,commission_type:e.target.value})}><option value="percent">Percent</option><option value="fixed">Fixed ₱</option></select><input style={styles.input} type="number" min="0" step="0.01" value={networkPartnerForm.commission_value} onChange={e=>setNetworkPartnerForm({...networkPartnerForm,commission_value:e.target.value})}/></div></div>
             </div><button style={styles.approveBtn} disabled={networkPartnerSaving}>{networkPartnerSaving?'Creating…':'+ Create local partner'}</button>
           </form>
+          <form onSubmit={assignNetworkPartnerBusiness} style={{...styles.partnerForm,marginTop:16}}>
+            <div style={{fontWeight:800,fontSize:14,color:'#0f172a',marginBottom:10}}>Assign business to partner</div>
+            <div style={styles.partnerFormGrid}>
+              <div>
+                <label style={styles.partnerLabel}>Partner</label>
+                <select
+                  style={styles.select}
+                  value={networkPartnerAssignForm.partner_public_id}
+                  onChange={e=>setNetworkPartnerAssignForm({...networkPartnerAssignForm,partner_public_id:e.target.value})}
+                  required
+                >
+                  <option value="">Choose partner</option>
+                  {networkPartners.filter(p=>p.is_active).map(p=>
+                    <option key={p.public_id} value={p.public_id}>
+                      {p.name} · {p.partner_code}
+                    </option>
+                  )}
+                </select>
+              </div>
+              <div>
+                <label style={styles.partnerLabel}>Business</label>
+                <select
+                  style={styles.select}
+                  value={networkPartnerAssignForm.business_public_id}
+                  onChange={e=>setNetworkPartnerAssignForm({...networkPartnerAssignForm,business_public_id:e.target.value})}
+                  required
+                >
+                  <option value="">Choose business</option>
+                  {businesses
+                    .slice()
+                    .sort((a,b)=>String(a.name||'').localeCompare(String(b.name||'')))
+                    .map(b=>
+                      <option key={b.public_id} value={b.public_id}>
+                        {b.name}{b.address?` · ${b.address}`:''}
+                      </option>
+                    )}
+                </select>
+              </div>
+            </div>
+            <div style={{display:'flex',alignItems:'center',gap:10,marginTop:10}}>
+              <button style={styles.approveBtn} disabled={networkPartnerAssigning}>
+                {networkPartnerAssigning?'Assigning…':'Assign Business'}
+              </button>
+              <span style={{fontSize:12,color:'#64748b'}}>
+                Assigning an already-linked business will move it to the selected partner.
+              </span>
+            </div>
+          </form>
+
           <div style={{...styles.partnerList,marginTop:16}}>{networkPartners.map(p=><div key={p.public_id} style={styles.partnerRow}><div style={{flex:1,minWidth:220}}><b>{p.name}</b><div style={{fontSize:12,color:'#64748b',marginTop:4}}>{p.partner_type==='region'?'Region':'City'} · {p.city?`${p.city}, `:''}{p.region}</div><div style={{fontSize:12,color:'#0f766e',fontWeight:700,marginTop:4}}>{p.partner_code} · {p.business_count||0} businesses</div></div><div style={{fontSize:12,minWidth:150}}>Earned <b>₱{Number(p.commission_earned||0).toLocaleString()}</b><br/>Unpaid <b>₱{Number(p.commission_unpaid||0).toLocaleString()}</b></div><button style={p.is_active?styles.rejectBtn:styles.approveBtn} onClick={()=>patchNetworkPartner(p,{is_active:!p.is_active})}>{p.is_active?'Deactivate':'Activate'}</button></div>)}{!networkPartners.length&&<div style={styles.partnerEmpty}>No city or region partners yet.</div>}</div>
         </section>
         )}
