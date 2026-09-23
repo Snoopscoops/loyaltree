@@ -82,8 +82,6 @@ const EMPTY_REDEMPTION_TEST = {
 
 const normalizePlan = value => String(value || '').trim().toLowerCase()
 
-const COMPANION_ANDROID_DOWNLOAD_URL = 'https://downloads.theloyaltytree.com/companion/LoyaltyTreeCompanion.apk'
-
 function POSIntegration({
   API_BASE,
   user,
@@ -100,7 +98,6 @@ function POSIntegration({
   const [apiAvailable, setApiAvailable] = useState(true)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
-  const [errorLog, setErrorLog] = useState(null)
   const [integration, setIntegration] = useState(null)
   const [provider, setProvider] = useState('storehub')
   const [setupStep, setSetupStep] = useState(1)
@@ -125,17 +122,16 @@ function POSIntegration({
     value_per_point: 1,
     min_points: 1,
     increment_points: 1,
-    options: [50, 100, 200],
     max_percent: 100,
     hold_minutes: 10,
     earn_on_net_amount: true,
   })
-  const [redemptionOptionDraft, setRedemptionOptionDraft] = useState('')
   const [redemptionForm, setRedemptionForm] = useState(EMPTY_REDEMPTION_TEST)
   const [redemptionResult, setRedemptionResult] = useState(null)
   const [redemptionStage, setRedemptionStage] = useState('idle')
   const [companionDevices, setCompanionDevices] = useState([])
   const [activationCodeInfo, setActivationCodeInfo] = useState(null)
+  const [newDeviceName, setNewDeviceName] = useState('')
   const [quickBranchId, setQuickBranchId] = useState('')
   const [quickOutletId, setQuickOutletId] = useState('')
   const [copyState, setCopyState] = useState('')
@@ -161,39 +157,6 @@ function POSIntegration({
     return authFetch(url, options)
   }
 
-  const readApiResponse = async (res, fallbackMessage, context = {}) => {
-    const raw = await res.text().catch(() => '')
-    let data = {}
-    if (raw) {
-      try { data = JSON.parse(raw) } catch (_) { data = { raw_response: raw } }
-    }
-
-    if (!res.ok) {
-      const detail = typeof data?.detail === 'string'
-        ? data.detail
-        : (data?.detail ? JSON.stringify(data.detail) : (data?.message || fallbackMessage))
-      const requestId = res.headers?.get?.('x-request-id') || res.headers?.get?.('cf-ray') || ''
-      const log = {
-        time: new Date().toISOString(),
-        operation: context.operation || 'POS API request',
-        provider: context.provider || providerLabel,
-        status: res.status,
-        status_text: res.statusText || '',
-        endpoint: context.endpoint || '',
-        detail: detail || fallbackMessage,
-        request_id: requestId,
-        response: data,
-      }
-      setErrorLog(log)
-      const err = new Error(detail || fallbackMessage)
-      err.diagnostic = log
-      throw err
-    }
-
-    setErrorLog(null)
-    return data
-  }
-
   const loadCompanionDevices = async () => {
     if (!isPro || !slug || !authFetch) return
     try {
@@ -212,6 +175,13 @@ function POSIntegration({
     setError('')
     setMessage('')
     try {
+      const branch = branches.find(item => item.public_id === quickBranchId) || branches[0]
+      if (!branch) throw new Error('Choose a Loyalty Tree branch first.')
+      const mapping = branchMappings[branch.public_id] || {}
+      if (!mapping.saved_mapping || !mapping.external_branch_id) {
+        throw new Error('Link this branch to its POS outlet before generating a device.')
+      }
+      const deviceName = newDeviceName.trim() || `${branch.name || 'Branch'} POS`
       const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/device-activation-code`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -219,12 +189,16 @@ function POSIntegration({
           provider,
           expires_in_minutes: 15,
           max_uses: 1,
+          branch_public_id: branch.public_id,
+          external_branch_id: mapping.external_branch_id,
+          external_branch_name: mapping.external_branch_name || null,
+          device_name: deviceName,
         }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Could not generate Companion activation code.')
       setActivationCodeInfo(data)
-      setMessage('Activation code ready. Enter it in the Loyalty Tree Companion app.')
+      setMessage(`Device pairing code ready for ${data.branch_name || branch.name}. Enter it in Loyalty Tree Companion.`)
     } catch (err) {
       setError(err.message || 'Could not generate Companion activation code.')
     } finally {
@@ -326,14 +300,7 @@ function POSIntegration({
       setLoyverseConnection(data.loyverse_connection || null)
       setLoyverseStores(data.loyverse_connection?.stores || (provider === 'loyverse' ? data.integration?.config?.loyverse_stores : []) || [])
       setLoyaltyContract(data.loyalty_contract || null)
-      if (data.redemption_config) {
-        setRedemptionConfig({
-          ...data.redemption_config,
-          options: Array.isArray(data.redemption_config.options)
-            ? data.redemption_config.options.map(Number).filter(value => Number.isInteger(value) && value > 0)
-            : [],
-        })
-      }
+      if (data.redemption_config) setRedemptionConfig(data.redemption_config)
       if (data.storehub_connection?.store_name) {
         setStoreHubCredentials(current => ({ ...current, store_name: data.storehub_connection.store_name }))
       }
@@ -380,7 +347,6 @@ function POSIntegration({
   useEffect(() => {
     setMessage('')
     setError('')
-    setErrorLog(null)
     setTestResult(null)
     setRedemptionResult(null)
     setRedemptionStage('idle')
@@ -423,21 +389,16 @@ function POSIntegration({
   }
 
   const connectStoreHub = async () => {
-    if (!slug) {
-      setMessage('')
-      setError('Business account could not be identified. Refresh the Owner Dashboard and sign in again.')
-      return
-    }
+    if (!slug) return
     const storeName = storeHubCredentials.store_name.trim()
     const apiToken = storeHubCredentials.api_token.trim()
     if (!storeName || !apiToken) {
-      setMessage('')
       setError('Enter the StoreHub store name and API token.')
       return
     }
     setSaving(true)
     setError('')
-    setMessage('Testing StoreHub API connection…')
+    setMessage('')
     setStoreHubRealResult(null)
     try {
       const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/storehub/connect`, {
@@ -445,11 +406,8 @@ function POSIntegration({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ store_name: storeName, api_token: apiToken }),
       })
-      const data = await readApiResponse(res, 'Could not connect StoreHub.', {
-        operation: 'Test & connect StoreHub',
-        provider: 'StoreHub',
-        endpoint: `/api/v1/business/${slug}/pos/storehub/connect`,
-      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not connect StoreHub.')
       setIntegration(data.integration || null)
       setStoreHubRealResult(data)
       setStoreHubOutlets(data.stores || [])
@@ -460,7 +418,6 @@ function POSIntegration({
       setMessage(`StoreHub connected securely. ${data.store_count ?? 0} outlet(s) detected.`)
       await loadPOS()
     } catch (err) {
-      setMessage('')
       setError(err.message || 'Could not connect StoreHub.')
     } finally {
       setSaving(false)
@@ -479,11 +436,8 @@ function POSIntegration({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ provider }),
       })
-      const data = await readApiResponse(res, 'StoreHub API connection test failed.', {
-        operation: 'Test saved StoreHub connection',
-        provider: 'StoreHub',
-        endpoint: `/api/v1/business/${slug}/pos/storehub/connection-test`,
-      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'StoreHub API connection test failed.')
       setStoreHubRealResult(data)
       setIntegration(data.integration || integration)
       setStoreHubOutlets(data.stores || [])
@@ -824,56 +778,12 @@ function POSIntegration({
     }
   }
 
-  const addRedemptionOption = () => {
-    const points = Number(redemptionOptionDraft)
-    if (!Number.isInteger(points) || points <= 0) {
-      setError('Enter a whole-number point amount for the redeemable.')
-      return
-    }
-    const current = Array.isArray(redemptionConfig.options) ? redemptionConfig.options.map(Number) : []
-    if (current.includes(points)) {
-      setRedemptionOptionDraft('')
-      return
-    }
-    if (current.length >= 12) {
-      setError('Use at most 12 redemption options.')
-      return
-    }
-    setError('')
-    setRedemptionConfig(config => ({
-      ...config,
-      options: [...(Array.isArray(config.options) ? config.options : []), points]
-        .map(Number)
-        .filter(value => Number.isInteger(value) && value > 0)
-        .filter((value, index, arr) => arr.indexOf(value) === index)
-        .sort((a, b) => a - b),
-    }))
-    setRedemptionOptionDraft('')
-  }
-
-  const removeRedemptionOption = points => {
-    setRedemptionConfig(config => ({
-      ...config,
-      options: (Array.isArray(config.options) ? config.options : []).filter(value => Number(value) !== Number(points)),
-    }))
-  }
-
   const saveRedemptionSettings = async () => {
-    const options = (Array.isArray(redemptionConfig.options) ? redemptionConfig.options : [])
-      .map(Number)
-      .filter(value => Number.isInteger(value) && value > 0)
-      .filter((value, index, arr) => arr.indexOf(value) === index)
-      .sort((a, b) => a - b)
-    if (!options.length) {
-      setError('Add at least one available redeemable before saving.')
-      return
-    }
     const ok = await saveSetupSettings({
       redemption_enabled: true,
       redemption_value_per_point: Number(redemptionConfig.value_per_point || 1),
       redemption_min_points: Number(redemptionConfig.min_points || 1),
       redemption_increment_points: Number(redemptionConfig.increment_points || 1),
-      redemption_options: options,
       redemption_max_percent: Number(redemptionConfig.max_percent || 100),
       reservation_hold_minutes: Number(redemptionConfig.hold_minutes || 10),
       earn_on_net_amount: redemptionConfig.earn_on_net_amount !== false,
@@ -881,7 +791,7 @@ function POSIntegration({
     if (ok) {
       setRedemptionConfig(current => ({ ...current, enabled: true }))
       setSetupStep(6)
-      setMessage('Redemption options saved for the Companion cashier.')
+      setMessage('StoreHub redemption simulator enabled.')
       await loadPOS()
     }
   }
@@ -1074,26 +984,7 @@ function POSIntegration({
       )}
 
       {message && <div style={s.successBanner}>{message}</div>}
-      {error && <div style={s.errorBanner}>
-        <div><b>POS request failed</b></div>
-        <div style={{marginTop:4}}>{error}</div>
-        {errorLog && (
-          <details style={s.errorLogPanel} open>
-            <summary style={s.errorLogSummary}>Technical error log</summary>
-            <div style={s.errorLogGrid}>
-              <div><b>Operation</b><br />{errorLog.operation || '—'}</div>
-              <div><b>Provider</b><br />{errorLog.provider || '—'}</div>
-              <div><b>HTTP status</b><br />{errorLog.status || '—'} {errorLog.status_text || ''}</div>
-              <div><b>Time</b><br />{errorLog.time || '—'}</div>
-            </div>
-            {errorLog.endpoint && <div style={s.errorLogLine}><b>Loyalty Tree endpoint:</b> <code>{errorLog.endpoint}</code></div>}
-            {errorLog.request_id && <div style={s.errorLogLine}><b>Request ID:</b> <code>{errorLog.request_id}</code></div>}
-            <div style={s.errorLogLine}><b>Backend detail:</b> {errorLog.detail || 'No detail returned.'}</div>
-            <pre style={s.errorLogPre}>{JSON.stringify(errorLog.response || {}, null, 2)}</pre>
-            <div style={s.errorLogHint}>API tokens are never included in this diagnostic panel. You can copy this log when debugging the StoreHub connection.</div>
-          </details>
-        )}
-      </div>}
+      {error && <div style={s.errorBanner}>{error}</div>}
 
       {loading ? (
         <div style={s.card}>Loading POS integration…</div>
@@ -1119,6 +1010,8 @@ function POSIntegration({
             setQuickOutletId={setQuickOutletId}
             saveQuickBranchMapping={saveQuickBranchMapping}
             activationCodeInfo={activationCodeInfo}
+            newDeviceName={newDeviceName}
+            setNewDeviceName={setNewDeviceName}
             generateCompanionActivationCode={generateCompanionActivationCode}
             loadCompanionDevices={loadCompanionDevices}
             activeCompanionDevices={activeCompanionDevices}
@@ -1187,7 +1080,7 @@ function POSIntegration({
                     </button>
                   </div>
                 </div>
-                {storeHubConnection && storeHubConnection.encryption_configured === false && (
+                {!storeHubConnection?.encryption_configured && (
                   <div style={s.infoBanner}>
                     Platform setup required: add <code>POS_CREDENTIALS_ENCRYPTION_KEY</code> once to the Loyalty Tree backend environment.
                   </div>
@@ -1219,14 +1112,12 @@ function POSIntegration({
                   <button
                     type="button"
                     style={s.primaryButton}
-                    disabled={saving || !apiAvailable}
+                    disabled={saving || !apiAvailable || !storeHubConnection?.encryption_configured}
                     onClick={connectStoreHub}
                   >
-                    {saving ? 'Testing StoreHub…' : 'Test & connect StoreHub'}
+                    {saving ? 'Testing…' : 'Test & connect StoreHub'}
                   </button>
-                  <span style={s.smallMuted}>
-                    Credentials are saved only after StoreHub authentication succeeds. If StoreHub or the Loyalty Tree backend rejects the request, the error will be shown above.
-                  </span>
+                  <span style={s.smallMuted}>Credentials are saved only after StoreHub authentication succeeds.</span>
                 </div>
               </div>
             )}
@@ -1676,17 +1567,17 @@ function POSIntegration({
 
               <section style={s.card}>
                 <div style={s.stepLabel}>5 · REDEMPTION</div>
-                <h3 style={s.sectionTitle}>Choose redeemables → discount → complete sale</h3>
+                <h3 style={s.sectionTitle}>Reserve → discount → complete sale</h3>
                 {provider !== 'storehub' ? (
                   <p style={s.muted}>POS redemption simulator is currently implemented for StoreHub first.</p>
                 ) : (
                   <>
                     <p style={s.muted}>
-                      The owner defines the available point redemptions here. Loyalty Tree reserves the selected points first, then the StoreHub adapter applies the checkout discount.
+                      Loyalty Tree reserves points first. The StoreHub adapter then applies the checkout discount.
                       Points are deducted only after the POS sale is confirmed, and new points are earned on the net paid amount.
                     </p>
                     <div style={s.ruleBox}>
-                      <b>Redemption conversion</b>
+                      <b>ANGKAN default</b>
                       <div style={s.smallMuted}>1 point = ₱1 · earn on net amount after redemption · reservation expires automatically.</div>
                     </div>
 
@@ -1708,45 +1599,6 @@ function POSIntegration({
                           onChange={e => setRedemptionConfig(c => ({...c,max_percent:e.target.value}))}/>
                       </label>
                     </div>
-
-                    <div style={{marginTop:14,padding:14,border:'1px solid #cbd5e1',borderRadius:12,background:'#f8fafc'}}>
-                      <div style={{fontSize:11,fontWeight:900,color:'#0f766e'}}>AVAILABLE REDEEMABLES</div>
-                      <div style={{fontSize:12,color:'#64748b',marginTop:4}}>
-                        Add the point amounts cashiers may offer. The peso discount is calculated automatically from the value per point above.
-                      </div>
-                      <div style={{display:'flex',gap:8,marginTop:10,flexWrap:'wrap'}}>
-                        {(Array.isArray(redemptionConfig.options) ? redemptionConfig.options : []).map(points => {
-                          const discount = Number(points || 0) * Number(redemptionConfig.value_per_point || 1)
-                          return (
-                            <div key={points} style={{display:'flex',alignItems:'center',gap:8,border:'1px solid #99f6e4',background:'#f0fdfa',borderRadius:999,padding:'7px 9px 7px 12px'}}>
-                              <span style={{fontSize:12,fontWeight:850,color:'#115e59'}}>
-                                {Number(points).toLocaleString()} pts → ₱{discount.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
-                              </span>
-                              <button type="button" onClick={()=>removeRedemptionOption(points)} style={{border:0,background:'transparent',color:'#b91c1c',fontWeight:900,cursor:'pointer',padding:'0 3px'}} aria-label={`Remove ${points} point redeemable`}>×</button>
-                            </div>
-                          )
-                        })}
-                        {!(Array.isArray(redemptionConfig.options) && redemptionConfig.options.length) && (
-                          <span style={{fontSize:12,color:'#94a3b8'}}>No redeemables configured yet.</span>
-                        )}
-                      </div>
-                      <div style={{display:'flex',gap:8,marginTop:10,alignItems:'end',flexWrap:'wrap'}}>
-                        <label style={{...s.fieldLabel,margin:0,minWidth:180,flex:'1 1 180px'}}>Points required
-                          <input
-                            style={s.input}
-                            type="number"
-                            min="1"
-                            step="1"
-                            placeholder="e.g. 50"
-                            value={redemptionOptionDraft}
-                            onChange={e=>setRedemptionOptionDraft(e.target.value)}
-                            onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();addRedemptionOption()}}}
-                          />
-                        </label>
-                        <button type="button" style={{...s.secondaryButton,width:'auto',margin:0}} onClick={addRedemptionOption}>+ Add redeemable</button>
-                      </div>
-                    </div>
-
                     <ChoiceRow
                       checked={redemptionConfig.earn_on_net_amount !== false}
                       label="Earn on NET amount after redemption"
@@ -2008,6 +1860,8 @@ function QuickCompanionSetup({
   setQuickOutletId,
   saveQuickBranchMapping,
   activationCodeInfo,
+  newDeviceName,
+  setNewDeviceName,
   generateCompanionActivationCode,
   loadCompanionDevices,
   activeCompanionDevices,
@@ -2141,30 +1995,17 @@ function QuickCompanionSetup({
       {current === 3 && (
         <div style={s.quickBody}>
           <div>
-            <div style={s.stepLabel}>STEP 3 · SET UP COMPANION</div>
-            <h4 style={s.quickTitle}>Install and activate the tablet</h4>
-            <p style={s.muted}>Download the universal Loyalty Tree Companion APK, then generate the one-time code for this branch.</p>
+            <div style={s.stepLabel}>STEP 3 · ACTIVATE COMPANION</div>
+            <h4 style={s.quickTitle}>Generate POS device</h4>
+            <p style={s.muted}>Create a Loyalty Tree Companion device locked to the selected branch and StoreHub outlet.</p>
+            <label style={s.fieldLabel}>Device name
+              <input style={s.input} value={newDeviceName} onChange={e => setNewDeviceName(e.target.value)} placeholder={`${quickBranch?.name || 'Branch'} POS 1`} />
+            </label>
           </div>
-
-          <div style={s.companionDownloadBox}>
-            <div>
-              <b style={{fontSize:13}}>1. Download Loyalty Tree Companion</b>
-              <div style={s.smallMuted}>Android 7.1+ · one universal APK for every Loyalty Tree business</div>
-            </div>
-            <button
-              type="button"
-              style={s.primaryButton}
-              onClick={() => window.open(COMPANION_ANDROID_DOWNLOAD_URL, '_blank', 'noopener,noreferrer')}
-            >
-              Download for Android
-            </button>
-          </div>
-
-          <div style={{...s.stepLabel,marginTop:4}}>2. GENERATE ONE-TIME ACTIVATION CODE</div>
 
           {!activationCodeInfo?.activation_code ? (
             <button type="button" style={s.primaryButton} disabled={saving || !apiAvailable} onClick={generateCompanionActivationCode}>
-              {saving ? 'Generating…' : 'Generate activation code'}
+              {saving ? 'Generating…' : 'Generate New Device'}
             </button>
           ) : (
             <div style={s.activationBox}>
@@ -2183,9 +2024,9 @@ function QuickCompanionSetup({
 
           <div style={s.quickInstructions}>
             {[
-              'Install and open Loyalty Tree Companion on the tablet.',
-              'Enter the 6-digit activation code.',
-              'Choose the correct Loyalty Tree branch and POS outlet.',
+              'Open Loyalty Tree Companion on the physical POS/tablet.',
+              'Enter the 6-digit pairing code.',
+              'The branch and StoreHub outlet are already locked by Loyalty Tree.',
               'Finish activation, then refresh device status here.',
             ].map((item,index) => (
               <div key={item} style={s.quickInstruction}>
@@ -2217,8 +2058,33 @@ function QuickCompanionSetup({
           <div>
             <div style={s.stepLabel}>STEP 4 · TEST</div>
             <h4 style={s.quickTitle}>Run the first checkout test</h4>
-            <p style={s.muted}>The tablet is activated. Now validate the real cashier flow.</p>
+            <p style={s.muted}>The POS device is activated. You can add more physical POS devices or validate the cashier flow.</p>
           </div>
+
+          <div style={s.ruleBox}>
+            <b>Active POS Devices</b>
+            {activeCompanionDevices.length ? activeCompanionDevices.map((device,index) => (
+              <div key={device.id || device.public_id || index} style={{marginTop:8,paddingTop:8,borderTop:'1px solid #e2e8f0'}}>
+                <strong>{device.display_name || `POS Device ${index + 1}`}</strong>
+                <div style={s.smallMuted}>{device.branch_name || 'Branch'} · {device.external_branch_name || device.external_branch_id || providerLabel} · {device.status || 'active'}</div>
+              </div>
+            )) : <div style={s.smallMuted}>No activated devices yet.</div>}
+          </div>
+
+          <label style={s.fieldLabel}>New device name
+            <input style={s.input} value={newDeviceName} onChange={e => setNewDeviceName(e.target.value)} placeholder={`${quickBranch?.name || 'Branch'} POS 2`} />
+          </label>
+          <button type="button" style={s.primaryButton} disabled={saving || !apiAvailable} onClick={generateCompanionActivationCode}>
+            {saving ? 'Generating…' : '+ Generate Another Device'}
+          </button>
+          {activationCodeInfo?.activation_code && (
+            <div style={s.activationBox}>
+              <div style={s.stepLabel}>NEW DEVICE PAIRING CODE</div>
+              <div style={s.activationCode}>{activationCodeInfo.activation_code}</div>
+              <div style={s.smallMuted}>{activationCodeInfo.branch_name || quickBranch?.name} · {activationCodeInfo.external_branch_name || 'mapped POS outlet'} · one device</div>
+              <button type="button" style={s.secondaryButton} onClick={() => copyText(activationCodeInfo.activation_code,'Pairing code copied')}>Copy code</button>
+            </div>
+          )}
 
           <div style={s.quickInstructions}>
             {[
@@ -2456,17 +2322,6 @@ const s = {
     color: '#334155',
     fontSize: 11.5,
     lineHeight: 1.45,
-  },
-  companionDownloadBox: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-    flexWrap: 'wrap',
-    padding: 14,
-    border: '1px solid #99f6e4',
-    borderRadius: 14,
-    background: '#f0fdfa',
   },
   quickDetails: {
     border: '1px solid #e2e8f0',
@@ -2783,45 +2638,6 @@ const s = {
     color: '#b91c1c',
     fontSize: 12,
     fontWeight: 700,
-  },
-  errorLogPanel: {
-    marginTop: 10,
-    paddingTop: 9,
-    borderTop: '1px solid #fecaca',
-    color: '#7f1d1d',
-    fontWeight: 500,
-  },
-  errorLogSummary: {
-    cursor: 'pointer',
-    fontWeight: 850,
-  },
-  errorLogGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
-    gap: 8,
-    marginTop: 9,
-  },
-  errorLogLine: {
-    marginTop: 8,
-    overflowWrap: 'anywhere',
-  },
-  errorLogPre: {
-    margin: '9px 0 0',
-    padding: 10,
-    maxHeight: 260,
-    overflow: 'auto',
-    borderRadius: 8,
-    background: '#450a0a',
-    color: '#fee2e2',
-    fontSize: 11,
-    lineHeight: 1.45,
-    whiteSpace: 'pre-wrap',
-    overflowWrap: 'anywhere',
-  },
-  errorLogHint: {
-    marginTop: 8,
-    fontSize: 11,
-    fontWeight: 600,
   },
   mappingList: {
     display: 'grid',

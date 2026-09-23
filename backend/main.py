@@ -188,13 +188,6 @@ PUBLIC_JOIN_BASE_URL = (
     or FRONTEND_URL
     or 'https://theloyaltytree.com'
 ).rstrip('/')
-
-# Canonical customer-facing Order Ahead host.
-# Keep BASE_URL as the backend/origin host; this public host can sit behind Cloudflare.
-PUBLIC_ORDER_BASE_URL = (
-    os.getenv('PUBLIC_ORDER_BASE_URL', '')
-    or BASE_URL
-).rstrip('/')
 SUBSCRIPTION_REMINDER_RESEND_DAYS = 3  # don't re-email more often than this while still expiring_soon/expired
 
 # Business-owner password recovery. Reset links are one-time, stored only as
@@ -228,7 +221,7 @@ SUBSCRIPTION_PLANS = {
         'birthday_greetings': True,
         'max_loyalty_cards': 1,
         'win_back': False,
-        'max_branches': 10,
+        'max_branches': 5,
         'geofence_notifications': False,
         # Growth-tier product modules. Starter cannot create/edit these.
         'hybrid_cards': False,
@@ -248,7 +241,7 @@ SUBSCRIPTION_PLANS = {
         'birthday_greetings': True,
         'max_loyalty_cards': 2,
         'win_back': True,
-        'max_branches': 10,
+        'max_branches': 5,
         'geofence_notifications': False,
         'hybrid_cards': True,
         'gift_cards': True,
@@ -267,7 +260,7 @@ SUBSCRIPTION_PLANS = {
         'birthday_greetings': True,
         'max_loyalty_cards': 3,
         'win_back': True,
-        'max_branches': 10,
+        'max_branches': 5,
         # Reserved until geotag/geofence delivery is implemented and enabled.
         'geofence_notifications': False,
         # Pro inherits Growth product modules and includes POS Integration.
@@ -580,24 +573,11 @@ def billing_period_label(value: Optional[str]) -> str:
 
 
 def get_price_for_plan(plan: Optional[str], branch_count: int, billing_cycle: str = 'monthly', pricing_region: str = 'PH') -> int:
-    """Return localized prepaid subscription price for plan/branch/package.
-
-    Branches 1-5 use the existing package pricing. For branches 6-10,
-    the 5-branch package is the base and each additional branch uses the
-    normal single-branch monthly rate.
-    """
+    """Return localized prepaid subscription price for plan/branch/package."""
     plan_key = plan if plan in SUBSCRIPTION_PLANS else 'starter'
     tiers = price_tiers_for_region(plan_key, pricing_region)
-    branch_count = max(1, int(branch_count or 1))
-
-    if branch_count <= 5:
-        bracket = branch_price_bracket(branch_count)
-        monthly_price = int(tiers.get(bracket, tiers.get('1', 0)) or 0)
-    else:
-        five_branch_price = int(tiers.get('5', tiers.get('1', 0)) or 0)
-        single_branch_price = int(tiers.get('1', 0) or 0)
-        monthly_price = five_branch_price + ((branch_count - 5) * single_branch_price)
-
+    bracket = branch_price_bracket(branch_count)
+    monthly_price = int(tiers.get(bracket, tiers.get('1', 0)) or 0)
     cycle = normalize_billing_cycle(billing_cycle)
     multiplier = int(BILLING_CYCLE_CONFIG[cycle]['billable_months'])
     return monthly_price * multiplier
@@ -1400,7 +1380,6 @@ BUSINESS_CATEGORY_META = {
     'hotel': {'label': 'Hotel / Resort', 'icon': '🏨', 'color': '#4338ca', 'recommended_cards': ['vip','membership','points']},
     'other': {'label': 'Other Business', 'icon': '🏪', 'color': '#0d9488', 'recommended_cards': ['stamp','points','vip']},
     'car_lending': {'label': 'Car Lending / Showroom', 'icon': '🚗', 'color': '#0f172a', 'recommended_cards': []},
-    'lending': {'label': 'Lending / Loan Management', 'icon': '💼', 'color': '#1d4ed8', 'recommended_cards': []},
     'cockpit': {'label': 'Cockpit Arena', 'icon': '🏆', 'color': '#713f12', 'recommended_cards': []},
 }
 
@@ -1421,7 +1400,7 @@ LOYALTYTREE_LEGAL_NAME = 'LoyaltyTree Information Technology Solutions'
 LOYALTYTREE_LEGAL_LOCATION = 'Isabela, Philippines'
 LOYALTYTREE_LEGAL_PHONE = '0939 799 2144'
 LOYALTYTREE_LEGAL_EMAIL = 'theloyaltytree@gmail.com'
-BUSINESS_AGREEMENT_VERSION = '2026-09-22-v2'
+BUSINESS_AGREEMENT_VERSION = '2026-09-12-v1'
 TERMS_VERSION = '2026-09-12'
 PRIVACY_VERSION = '2026-09-12'
 DPA_VERSION = '2026-09-12-v1'
@@ -1447,7 +1426,6 @@ def _signup_agreement_sections() -> list:
             'title': 'Subscription, billing, renewal, and optional PR Kit',
             'paragraphs': [
                 'The Business will pay the subscription price shown in the Subscription Summary. A successful subscription payment activates or extends access for the applicable subscription period. Unless a separate recurring-payment arrangement is expressly enabled, LoyaltyTree does not represent that renewal is automatic.',
-                'The standard self-serve subscription has a minimum initial term of three (3) months, payable in advance. Prices displayed as a monthly amount are monthly-equivalent reference prices only and do not create a month-to-month payment option. The Business may instead select a longer prepaid term offered at checkout.',
                 'Failure to pay may result in the account remaining pending, being limited, or being suspended until payment is received. Taxes, custom work, hardware, delivery, and third-party charges may be separate where disclosed.',
                 'If the Business selects the Physical QR / PR Kit, the one-time amount shown in the Subscription Summary is additional to the subscription fee and is based on the number of branches selected at signup. Fulfillment begins after the applicable payment is confirmed.',
                 'Except where required by law or expressly stated in a written order, fees already earned for an activated subscription period, completed setup work, custom development, or fulfilled physical items are not automatically refundable merely because the Business later stops using the service.',
@@ -1761,8 +1739,8 @@ class SignupAgreementPreviewRequest(BaseModel):
     address: Optional[str] = None
     contact_person: Optional[str] = None
     plan: str
-    branch_count: int = Field(default=1, ge=1, le=10)
-    billing_cycle: Literal['3_months', '6_months', 'annual'] = '3_months'
+    branch_count: int = Field(default=1, ge=1, le=5)
+    billing_cycle: Literal['monthly', '3_months', '6_months', 'annual'] = 'monthly'
     country_code: str = Field(default='PH', min_length=2, max_length=3)
     pricing_region: Optional[str] = Field(default=None, min_length=2, max_length=3)
     setup_kit_requested: bool = False
@@ -1779,7 +1757,7 @@ class BusinessCreate(BaseModel):
     address: Optional[str] = None  # business's main address - lets super admin organize businesses by location
     branch_count: int = Field(default=1, ge=1, le=50)
     plan: Optional[str] = None  # explicit plan choice; if omitted, derived from branch_count
-    billing_cycle: Literal['3_months', '6_months', 'annual'] = '3_months'
+    billing_cycle: Literal['monthly', '3_months', '6_months', 'annual'] = 'monthly'
     country_code: str = Field(default='PH', min_length=2, max_length=3)
     pricing_region: Optional[str] = Field(default=None, min_length=2, max_length=3)
     setup_kit_requested: bool = False
@@ -1791,7 +1769,7 @@ class BusinessCreate(BaseModel):
     agreement: Optional[BusinessAgreementAcceptance] = None
 
 class SubscriptionCheckoutRequest(BaseModel):
-    billing_cycle: Literal['3_months', '6_months', 'annual'] = '3_months'
+    billing_cycle: Literal['monthly', '3_months', '6_months', 'annual'] = 'monthly'
     payment_method: Optional[Literal['qrph', 'card']] = None
 
 
@@ -2459,17 +2437,6 @@ class POSBranchMappingsUpdate(BaseModel):
     mappings: List[POSBranchMappingInput] = Field(default_factory=list, max_length=100)
 
 
-class ManagerPOSBranchMappingUpdate(BaseModel):
-    # Branch managers never choose a LoyaltyTree branch here: their session
-    # already locks the request to exactly one assigned branch.
-    provider: Literal['storehub', 'loyverse'] = 'storehub'
-    external_branch_id: str = Field(min_length=1, max_length=200)
-    external_branch_name: Optional[str] = Field(default=None, max_length=200)
-    device_model: Optional[Literal['imin_falcon_1', 'imin_d4', 'sunmi_d3_pro', 'sunmi_t2', 'other']] = None
-    scanner_method: Optional[Literal['camera', 'hardware_scanner', 'external_scanner']] = None
-    checkout_mode: Optional[Literal['auto', 'seamless', 'companion']] = 'auto'
-
-
 class POSSettingsUpdate(BaseModel):
     provider: Literal['storehub', 'loyverse'] = 'storehub'
     member_identification: Optional[Literal['qr', 'phone', 'email']] = None
@@ -2481,9 +2448,6 @@ class POSSettingsUpdate(BaseModel):
     redemption_value_per_point: Optional[float] = Field(default=None, gt=0, le=100000)
     redemption_min_points: Optional[int] = Field(default=None, ge=1, le=100000000)
     redemption_increment_points: Optional[int] = Field(default=None, ge=1, le=100000000)
-    # Owner-defined point amounts shown as cashier redemption choices.
-    # Stored inside pos_integrations.config so no additional database table is required.
-    redemption_options: Optional[List[int]] = None
     redemption_max_percent: Optional[float] = Field(default=None, gt=0, le=100)
     reservation_hold_minutes: Optional[int] = Field(default=None, ge=1, le=120)
     earn_on_net_amount: Optional[bool] = None
@@ -2906,61 +2870,9 @@ class CouponRedeem(BaseModel):
     coupon_public_id: Optional[str] = None  # optional for backward compatibility; omitted = oldest usable coupon
     staff_pin: Optional[str] = None
     as_owner: Optional[bool] = False
-    # Optional sale values let campaign reports measure actual redeemed revenue/discount.
-    gross_amount: Optional[float] = Field(default=None, ge=0, le=1000000000)
-    discount_amount: Optional[float] = Field(default=None, ge=0, le=1000000000)
-    net_amount: Optional[float] = Field(default=None, ge=0, le=1000000000)
     # Set only after the cashier/owner explicitly confirms the customer's
     # birthday/ID when this particular birthday reward requires verification.
     birthday_verified: Optional[bool] = False
-
-
-class PointsBalanceAdjustRequest(BaseModel):
-    customer_public_id: str
-    delta: int = Field(ge=-100000000, le=100000000)
-    reason: str = Field(min_length=2, max_length=200)
-
-
-class CampaignCreate(BaseModel):
-    name: str = Field(min_length=2, max_length=160)
-    description: Optional[str] = Field(default=None, max_length=1000)
-    scope: Literal['nationwide', 'selected_branches', 'single_branch'] = 'nationwide'
-    branch_public_ids: List[str] = Field(default_factory=list, max_length=200)
-    qualifying_start_date: str
-    qualifying_end_date: str
-    qualification_type: Literal['any_purchase', 'minimum_spend'] = 'any_purchase'
-    minimum_spend: float = Field(default=0, ge=0, le=1000000000)
-    reward_type: Literal['percent_discount', 'fixed_discount', 'buy_one_take_one']
-    reward_value: Optional[float] = Field(default=None, ge=0, le=1000000000)
-    reward_label: Optional[str] = Field(default=None, max_length=160)
-    reward_description: Optional[str] = Field(default=None, max_length=500)
-    coupon_start_date: str
-    coupon_end_date: str
-    min_redemption_spend: float = Field(default=0, ge=0, le=1000000000)
-    max_per_member: int = Field(default=1, ge=1, le=20)
-    applicable_product_text: Optional[str] = Field(default=None, max_length=300)
-    status: Literal['draft', 'scheduled', 'active', 'paused', 'ended'] = 'scheduled'
-
-
-class CampaignUpdate(BaseModel):
-    name: Optional[str] = Field(default=None, min_length=2, max_length=160)
-    description: Optional[str] = Field(default=None, max_length=1000)
-    scope: Optional[Literal['nationwide', 'selected_branches', 'single_branch']] = None
-    branch_public_ids: Optional[List[str]] = Field(default=None, max_length=200)
-    qualifying_start_date: Optional[str] = None
-    qualifying_end_date: Optional[str] = None
-    qualification_type: Optional[Literal['any_purchase', 'minimum_spend']] = None
-    minimum_spend: Optional[float] = Field(default=None, ge=0, le=1000000000)
-    reward_type: Optional[Literal['percent_discount', 'fixed_discount', 'buy_one_take_one']] = None
-    reward_value: Optional[float] = Field(default=None, ge=0, le=1000000000)
-    reward_label: Optional[str] = Field(default=None, max_length=160)
-    reward_description: Optional[str] = Field(default=None, max_length=500)
-    coupon_start_date: Optional[str] = None
-    coupon_end_date: Optional[str] = None
-    min_redemption_spend: Optional[float] = Field(default=None, ge=0, le=1000000000)
-    max_per_member: Optional[int] = Field(default=None, ge=1, le=20)
-    applicable_product_text: Optional[str] = Field(default=None, max_length=300)
-    status: Optional[Literal['draft', 'scheduled', 'active', 'paused', 'ended']] = None
 
 # Helpers
 def generate_public_id() -> str:
@@ -3237,38 +3149,16 @@ def _pos_device_profile(device_model: Optional[str]) -> dict:
 
 def _pos_redemption_config(integration: Optional[dict]) -> dict:
     config = (integration or {}).get('config') if isinstance((integration or {}).get('config'), dict) else {}
-    test_mode_redemption = str((integration or {}).get('mode') or '').lower() == 'test'
-
     def _num(key, default, cast=float):
         try:
             return cast(config.get(key) if config.get(key) is not None else default)
         except Exception:
             return cast(default)
-
-    # Keep the cashier choices merchant-controlled. Existing test integrations that
-    # predate this field get a visible starter set so redemption can be exercised
-    # immediately; once the owner saves the list (including an empty list), that
-    # explicit value is respected.
-    raw_options = config.get('redemption_options')
-    if isinstance(raw_options, list):
-        options = []
-        for value in raw_options:
-            try:
-                points = int(value)
-            except (TypeError, ValueError):
-                continue
-            if points > 0 and points not in options:
-                options.append(points)
-        options.sort()
-    else:
-        options = [50, 100, 200] if test_mode_redemption else []
-
     return {
-        'enabled': bool(config.get('redemption_enabled')) or test_mode_redemption,
+        'enabled': bool(config.get('redemption_enabled')),
         'value_per_point': max(0.0001, _num('redemption_value_per_point', 1.0, float)),
         'min_points': max(1, _num('redemption_min_points', 1, int)),
         'increment_points': max(1, _num('redemption_increment_points', 1, int)),
-        'options': options,
         'max_percent': min(100.0, max(0.01, _num('redemption_max_percent', 100.0, float))),
         'hold_minutes': min(120, max(1, _num('reservation_hold_minutes', 10, int))),
         'earn_on_net_amount': config.get('earn_on_net_amount') is not False,
@@ -4633,34 +4523,7 @@ def safe_get_active_coupons(customer_id: int) -> list:
                 verification_by_coupon = {}
         today = _loyalty_today()
         usable = []
-        campaign_by_coupon = {}
-        if coupon_ids:
-            try:
-                campaign_issues = (supabase.table('campaign_coupon_issues')
-                                   .select('coupon_public_id,campaign_id,starts_at,expires_at,reward_type,reward_value,min_redemption_spend,applicable_product_text')
-                                   .in_('coupon_public_id', coupon_ids).execute().data or [])
-                campaign_ids = list({row.get('campaign_id') for row in campaign_issues if row.get('campaign_id') is not None})
-                campaign_names = {}
-                if campaign_ids:
-                    for row in (supabase.table('campaigns').select('id,public_id,name').in_('id', campaign_ids).execute().data or []):
-                        campaign_names[row.get('id')] = row
-                for issue in campaign_issues:
-                    campaign = campaign_names.get(issue.get('campaign_id')) or {}
-                    campaign_by_coupon[str(issue.get('coupon_public_id'))] = {
-                        **issue,
-                        'campaign_public_id': campaign.get('public_id'),
-                        'campaign_name': campaign.get('name'),
-                    }
-            except Exception:
-                campaign_by_coupon = {}
         for coupon in rows:
-            starts_at = coupon.get('starts_at')
-            if starts_at:
-                try:
-                    if datetime.fromisoformat(str(starts_at)).date() > today:
-                        continue
-                except Exception:
-                    pass
             expires_at = coupon.get('expires_at')
             if expires_at:
                 try:
@@ -4671,7 +4534,6 @@ def safe_get_active_coupons(customer_id: int) -> list:
             usable.append({
                 **coupon,
                 'birthday_verification_required': verification_by_coupon.get(str(coupon.get('public_id')), False),
-                'campaign': campaign_by_coupon.get(str(coupon.get('public_id'))),
             })
         return usable
     except Exception:
@@ -4686,204 +4548,6 @@ def safe_get_active_coupon(customer_id: int):
     """
     coupons = safe_get_active_coupons(customer_id)
     return coupons[0] if coupons else None
-
-def _parse_campaign_date(value, field_name='date'):
-    try:
-        return datetime.fromisoformat(str(value)).date()
-    except Exception:
-        raise HTTPException(status_code=400, detail=f'Invalid {field_name}; use YYYY-MM-DD')
-
-
-def _campaign_effective_status(row: dict) -> str:
-    stored = str((row or {}).get('status') or 'scheduled').lower()
-    if stored in ('draft', 'paused', 'ended'):
-        return stored
-    today = _loyalty_today()
-    try:
-        start = _parse_campaign_date(row.get('qualifying_start_date'), 'qualifying start date')
-        end = _parse_campaign_date(row.get('qualifying_end_date'), 'qualifying end date')
-    except HTTPException:
-        return stored
-    if today < start:
-        return 'scheduled'
-    if today > end:
-        return 'ended'
-    return 'active'
-
-
-def _campaign_reward_text(row: dict) -> str:
-    label = str((row or {}).get('reward_label') or '').strip()
-    if label:
-        return label[:200]
-    reward_type = str((row or {}).get('reward_type') or '')
-    value = float((row or {}).get('reward_value') or 0)
-    if reward_type == 'percent_discount':
-        base = f'{value:g}% OFF'
-    elif reward_type == 'fixed_discount':
-        base = f'PHP {value:,.2f} OFF'
-    else:
-        base = 'BUY 1 TAKE 1'
-    name = str((row or {}).get('name') or '').strip()
-    return (f'{name} — {base}' if name else base)[:200]
-
-
-def _normalize_campaign_source_key(value: Optional[str]) -> str:
-    raw = str(value or '').strip()
-    for suffix in (':points', ':stamp', ':tier'):
-        if raw.endswith(suffix):
-            raw = raw[:-len(suffix)]
-    return raw[:240]
-
-
-def _campaign_branch_ids(campaign_id: int) -> set:
-    try:
-        rows = (supabase.table('campaign_branches').select('branch_id')
-                .eq('campaign_id', campaign_id).execute().data or [])
-        return {row.get('branch_id') for row in rows if row.get('branch_id') is not None}
-    except Exception:
-        return set()
-
-
-def _campaign_public(row: dict, branch_name_by_id: Optional[dict] = None) -> dict:
-    branch_name_by_id = branch_name_by_id or {}
-    branch_ids = _campaign_branch_ids(row.get('id')) if row.get('scope') != 'nationwide' else set()
-    return {
-        **row,
-        'effective_status': _campaign_effective_status(row),
-        'branch_ids': list(branch_ids),
-        'branch_names': [branch_name_by_id.get(bid) for bid in branch_ids if branch_name_by_id.get(bid)],
-    }
-
-
-def maybe_issue_campaign_coupons(
-    business: Optional[dict],
-    customer: Optional[dict],
-    *,
-    branch_id: Optional[int] = None,
-    gross_amount: Optional[float] = None,
-    source_transaction_id: Optional[str] = None,
-) -> list:
-    """Issue seasonal campaign coupons after a qualifying purchase.
-
-    This is intentionally best-effort: loyalty earning must never fail merely
-    because campaign storage has not been migrated or a marketing rule is bad.
-    """
-    if not supabase or not business or not customer:
-        return []
-    today = _loyalty_today()
-    source_key = _normalize_campaign_source_key(source_transaction_id) or f'event:{customer.get("id")}:{int(time.time())}'
-    try:
-        campaigns = (supabase.table('campaigns').select('*')
-                     .eq('business_id', business.get('id'))
-                     .in_('status', ['scheduled', 'active'])
-                     .lte('qualifying_start_date', today.isoformat())
-                     .gte('qualifying_end_date', today.isoformat())
-                     .order('created_at').execute().data or [])
-    except Exception as exc:
-        print(f'CAMPAIGN lookup warning: {exc}')
-        return []
-
-    issued = []
-    amount = float(gross_amount or 0)
-    for campaign in campaigns:
-        try:
-            if _campaign_effective_status(campaign) != 'active':
-                continue
-            scope = str(campaign.get('scope') or 'nationwide')
-            if scope != 'nationwide':
-                if branch_id is None or branch_id not in _campaign_branch_ids(campaign.get('id')):
-                    continue
-            if str(campaign.get('qualification_type') or 'any_purchase') == 'minimum_spend':
-                if amount + 0.0001 < float(campaign.get('minimum_spend') or 0):
-                    continue
-
-            existing_for_source = (supabase.table('campaign_coupon_issues').select('id')
-                                   .eq('campaign_id', campaign.get('id'))
-                                   .eq('customer_id', customer.get('id'))
-                                   .eq('source_transaction_id', source_key)
-                                   .limit(1).execute().data or [])
-            if existing_for_source:
-                continue
-            existing_count = (supabase.table('campaign_coupon_issues').select('id')
-                              .eq('campaign_id', campaign.get('id'))
-                              .eq('customer_id', customer.get('id'))
-                              .execute().data or [])
-            if len(existing_count) >= int(campaign.get('max_per_member') or 1):
-                continue
-
-            coupon_public_id = generate_public_id()
-            starts_at = str(campaign.get('coupon_start_date'))[:10]
-            expires_at = str(campaign.get('coupon_end_date'))[:10]
-            reward_text = _campaign_reward_text(campaign)
-            coupon_row = {
-                'public_id': coupon_public_id,
-                'business_id': business.get('id'),
-                'customer_id': customer.get('id'),
-                'reward_text': reward_text,
-                'reward_type': str(campaign.get('reward_type') or 'campaign'),
-                'status': 'active',
-                'starts_at': starts_at,
-                'expires_at': expires_at,
-                'source': 'campaign',
-                'source_ref': f"campaign:{campaign.get('public_id')}:{source_key}"[:300],
-                'created_at': datetime.utcnow().isoformat(),
-            }
-            coupon_res = supabase.table('coupons').insert(coupon_row).execute()
-            coupon_saved = (coupon_res.data or [coupon_row])[0]
-            issue_public_id = generate_public_id()
-            issue_row = {
-                'public_id': issue_public_id,
-                'campaign_id': campaign.get('id'),
-                'business_id': business.get('id'),
-                'customer_id': customer.get('id'),
-                'coupon_public_id': coupon_public_id,
-                'qualification_branch_id': branch_id,
-                'source_transaction_id': source_key,
-                'qualifying_amount': amount if gross_amount is not None else None,
-                'reward_type': campaign.get('reward_type'),
-                'reward_value': campaign.get('reward_value'),
-                'min_redemption_spend': float(campaign.get('min_redemption_spend') or 0),
-                'applicable_product_text': campaign.get('applicable_product_text'),
-                'status': 'issued',
-                'starts_at': starts_at,
-                'expires_at': expires_at,
-                'issued_at': datetime.utcnow().isoformat(),
-            }
-            issue_res = supabase.table('campaign_coupon_issues').insert(issue_row).execute()
-            issue_saved = (issue_res.data or [issue_row])[0]
-            for activity_type in ('qualified', 'coupon_issued'):
-                try:
-                    supabase.table('campaign_activity').insert({
-                        'campaign_id': campaign.get('id'),
-                        'campaign_issue_id': issue_saved.get('id'),
-                        'business_id': business.get('id'),
-                        'customer_id': customer.get('id'),
-                        'branch_id': branch_id,
-                        'activity_type': activity_type,
-                        'gross_amount': amount if gross_amount is not None else None,
-                        'source_transaction_id': source_key,
-                        'metadata': {'coupon_public_id': coupon_public_id, 'reward_text': reward_text},
-                        'created_at': datetime.utcnow().isoformat(),
-                    }).execute()
-                except Exception:
-                    pass
-            try:
-                enqueue_wallet_sync(customer, business, 'campaign_coupon_issued')
-            except Exception:
-                pass
-            issued.append({
-                'campaign_public_id': campaign.get('public_id'),
-                'campaign_name': campaign.get('name'),
-                'coupon_public_id': coupon_public_id,
-                'reward_text': reward_text,
-                'starts_at': starts_at,
-                'expires_at': expires_at,
-                'coupon': coupon_saved,
-            })
-        except Exception as exc:
-            print(f'CAMPAIGN issue warning campaign={campaign.get("public_id")}: {exc}')
-    return issued
-
 
 def normalize_welcome_reward(program: Optional[dict]) -> dict:
     program = program or {}
@@ -7231,7 +6895,7 @@ def order_ahead_wallet_action(customer: dict, business: dict) -> Optional[dict]:
     label = str(business.get('order_ahead_button_label') or 'Order Ahead').strip()[:30] or 'Order Ahead'
     return {
         'label': label,
-        'url': f'{PUBLIC_ORDER_BASE_URL}/order-ahead/{quote(customer_public_id)}?token={quote(token)}',
+        'url': f'{BASE_URL}/order-ahead/{quote(customer_public_id)}?token={quote(token)}',
     }
 
 
@@ -12266,7 +11930,7 @@ async def register(biz: BusinessCreate, request: Request):
     # dashboards set up by us, not self-serve) - block them here rather than
     # just hiding the option in the UI, since this endpoint is public.
     biz.business_type = normalize_business_type(biz.business_type)
-    INVITE_ONLY_BUSINESS_TYPES = {'car_lending', 'lending', 'cockpit'}
+    INVITE_ONLY_BUSINESS_TYPES = {'car_lending', 'cockpit'}
     if biz.business_type in INVITE_ONLY_BUSINESS_TYPES:
         raise HTTPException(
             status_code=403,
@@ -18167,20 +17831,19 @@ async def get_branch_manager_dashboard(
             .eq('business_id', business.get('id'))
             .order('updated_at', desc=True).execute().data or []
         )
-    viewing_all_programs = str(program_id or '').strip().lower() == 'all'
     selected = None
-    if program_id and not viewing_all_programs:
+    if program_id:
         selected = next((p for p in programs if p.get('public_id') == program_id), None)
         if not selected:
             raise HTTPException(status_code=404, detail='Program not found for this business')
-    if not selected and not viewing_all_programs:
+    if not selected:
         selected = next((p for p in programs if p.get('is_default')), None) or (programs[0] if programs else None)
 
     customer_rows = []
     if selected:
         try:
             customer_rows = (
-                supabase.table('customers').select('id,public_id,name,email,phone,birthday,stamp_count,tier_stamp_count,points_balance,vip_points,vip_manual_tier_id,multipass_sessions_remaining,multipass_total_sessions,membership_status,membership_expires_at,employee_id_number,employee_position,program_id,created_at')
+                supabase.table('customers').select('id,public_id,name,email,phone,birthday,stamp_count,tier_stamp_count,created_at')
                 .eq('business_id', business.get('id'))
                 .eq('program_id', selected.get('id'))
                 .execute().data or []
@@ -18189,20 +17852,6 @@ async def get_branch_manager_dashboard(
             customer_rows = []
     customer_ids = {c.get('id') for c in customer_rows if c.get('id') is not None}
     customer_by_id = {c.get('id'): c for c in customer_rows}
-    program_ids = [p.get('id') for p in programs if p.get('id') is not None]
-    program_by_id = {p.get('id'): p for p in programs if p.get('id') is not None}
-    try:
-        if viewing_all_programs and not program_ids:
-            program_member_count = 0
-        else:
-            member_count_query = supabase.table('customers').select('id', count='exact').eq('business_id', business.get('id'))
-            if viewing_all_programs:
-                member_count_query = member_count_query.in_('program_id', program_ids)
-            elif selected:
-                member_count_query = member_count_query.eq('program_id', selected.get('id'))
-            program_member_count = int(member_count_query.execute().count or 0)
-    except Exception:
-        program_member_count = len(customer_rows)
 
     try:
         branch_staff = (
@@ -18226,7 +17875,7 @@ async def get_branch_manager_dashboard(
 
     def add_rows(table_name: str, kind: str, extra_fields: str = ''):
         nonlocal activity_30d, activity_today, redemptions_30d
-        if not viewing_all_programs and (not selected or not customer_ids):
+        if not selected or not customer_ids:
             return
         fields = 'id,customer_id,staff_id,branch_id,created_at' + ((',' + extra_fields) if extra_fields else '')
         try:
@@ -18242,7 +17891,7 @@ async def get_branch_manager_dashboard(
             rows = []
         for row in rows:
             cid = row.get('customer_id')
-            if not viewing_all_programs and cid not in customer_ids:
+            if cid not in customer_ids:
                 continue
             event_customer_ids.add(cid)
             activity_30d += 1
@@ -18279,7 +17928,6 @@ async def get_branch_manager_dashboard(
                 'type': kind,
                 'detail': detail,
                 'created_at': row.get('created_at'),
-                '_customer_id': cid,
                 'customer_name': customer.get('name') or 'Member',
                 'customer_public_id': customer.get('public_id'),
                 'staff_name': staff.get('name') or ('Owner' if row.get('staff_id') is None else 'Staff'),
@@ -18296,96 +17944,10 @@ async def get_branch_manager_dashboard(
     add_rows('employee_attendance_events', 'employee_attendance', 'action')
     add_rows('membership_benefit_redemptions', 'employee_benefit', 'benefit_name')
 
-    # Manual manager corrections are not hidden: surface them in the same branch
-    # activity feed using the immutable transaction_audit ledger.
-    if viewing_all_programs or (selected and customer_ids):
-        try:
-            adjustment_rows = (supabase.table('transaction_audit')
-                               .select('id,customer_id,staff_id,branch_id,created_at,action,delta,balance_before,balance_after,reason')
-                               .eq('business_id', business.get('id'))
-                               .eq('branch_id', branch.get('id'))
-                               .in_('action', ['points_adjust','stamp_adjust','tier_stamp_adjust','vip_adjust'])
-                               .gte('created_at', since.isoformat())
-                               .order('created_at', desc=True).limit(250).execute().data or [])
-        except Exception:
-            adjustment_rows = []
-        for row in adjustment_rows:
-            cid = row.get('customer_id')
-            if not viewing_all_programs and cid not in customer_ids:
-                continue
-            customer = customer_by_id.get(cid) or {}
-            staff = staff_by_id.get(row.get('staff_id')) or {}
-            delta = int(row.get('delta') or 0)
-            action = str(row.get('action') or '')
-            unit = 'points' if action in ('points_adjust','vip_adjust') else 'stamps'
-            recent.append({
-                'id': f"adjustment-{row.get('id')}",
-                'type': 'adjustment',
-                'detail': f"Manual {unit} adjustment {delta:+d} · {row.get('reason') or 'Correction'}",
-                'created_at': row.get('created_at'),
-                '_customer_id': cid,
-                'customer_name': customer.get('name') or 'Member',
-                'customer_public_id': customer.get('public_id'),
-                'staff_name': staff.get('name') or 'Manager',
-            })
-
-    if viewing_all_programs and event_customer_ids:
-        # Only the recent feed needs names here; the member directory is loaded
-        # separately with pagination. Keep this lookup bounded for large chains.
-        recent.sort(key=lambda item: _parse_ts(item.get('created_at')) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
-        lookup_ids = list(dict.fromkeys(item.get('_customer_id') for item in recent[:100] if item.get('_customer_id') is not None))
-        try:
-            all_activity_customers = (
-                supabase.table('customers').select('id,public_id,name,email,phone,birthday,program_id')
-                .eq('business_id', business.get('id'))
-                .in_('id', lookup_ids)
-                .execute().data or []
-            ) if lookup_ids else []
-            customer_by_id.update({c.get('id'): c for c in all_activity_customers if c.get('id') is not None})
-        except Exception:
-            pass
-    for item in recent:
-        cid = item.pop('_customer_id', None)
-        customer = customer_by_id.get(cid) or {}
-        if customer:
-            item['customer_name'] = customer.get('name') or item.get('customer_name') or 'Member'
-            item['customer_public_id'] = customer.get('public_id') or item.get('customer_public_id')
-
     recent.sort(key=lambda item: _parse_ts(item.get('created_at')) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     recent = recent[:40]
     branch_customers = [customer_by_id[cid] for cid in event_customer_ids if cid in customer_by_id]
     branch_customers.sort(key=lambda c: str(c.get('name') or '').lower())
-
-    # Managers can see campaigns that actually apply to their assigned branch,
-    # but campaign creation/scheduling remains owner-controlled.
-    active_campaigns = []
-    try:
-        today_iso = _loyalty_today().isoformat()
-        campaign_rows = (supabase.table('campaigns').select('*')
-                         .eq('business_id', business.get('id'))
-                         .in_('status', ['scheduled','active'])
-                         .lte('qualifying_start_date', today_iso)
-                         .gte('qualifying_end_date', today_iso)
-                         .order('qualifying_end_date').execute().data or [])
-        for campaign in campaign_rows:
-            if _campaign_effective_status(campaign) != 'active':
-                continue
-            if str(campaign.get('scope') or 'nationwide') != 'nationwide' and branch.get('id') not in _campaign_branch_ids(campaign.get('id')):
-                continue
-            active_campaigns.append({
-                'public_id': campaign.get('public_id'),
-                'name': campaign.get('name'),
-                'scope': campaign.get('scope'),
-                'reward_text': _campaign_reward_text(campaign),
-                'qualifying_start_date': campaign.get('qualifying_start_date'),
-                'qualifying_end_date': campaign.get('qualifying_end_date'),
-                'coupon_start_date': campaign.get('coupon_start_date'),
-                'coupon_end_date': campaign.get('coupon_end_date'),
-                'qualification_type': campaign.get('qualification_type'),
-                'minimum_spend': campaign.get('minimum_spend'),
-            })
-    except Exception:
-        active_campaigns = []
 
     return {
         'business': {
@@ -18415,26 +17977,16 @@ async def get_branch_manager_dashboard(
         ],
         'selected_program': (
             {
-                'public_id': 'all',
-                'name': 'All Cards',
-                'card_type': 'all',
-                'stamp_editable': False,
-                'stamp_kind': None,
-                'stamp_goal': None,
-                'points_editable': False,
-            } if viewing_all_programs else ({
                 'public_id': selected.get('public_id'),
                 'name': selected.get('program_name') or selected.get('card_name') or 'Loyalty Program',
                 'card_type': selected.get('card_type'),
                 'stamp_editable': bool(program_reward_uses_stamps(selected) or tier_stamps_enabled(selected)),
                 'stamp_kind': 'reward' if program_reward_uses_stamps(selected) else ('tier' if tier_stamps_enabled(selected) else None),
                 'stamp_goal': selected.get('stamp_goal'),
-                'points_editable': bool(program_reward_uses_points(selected)),
-            } if selected else None)
+            } if selected else None
         ),
-        'viewing_all_programs': viewing_all_programs,
         'stats': {
-            'program_members': program_member_count,
+            'program_members': len(customer_rows),
             'branch_members_served_30d': len(event_customer_ids),
             'loyalty_actions_today': activity_today,
             'loyalty_actions_30d': activity_30d,
@@ -18455,7 +18007,7 @@ async def get_branch_manager_dashboard(
         # the member has not visited this branch in the last 30 days. Keep the
         # profile intentionally narrow: identity/contact, birthday, and stamp
         # balances only. Branch-specific activity remains separately filtered.
-        'members': ([] if viewing_all_programs else [
+        'members': [
             {
                 'public_id': c.get('public_id'),
                 'name': c.get('name'),
@@ -18464,127 +18016,13 @@ async def get_branch_manager_dashboard(
                 'birthday': c.get('birthday'),
                 'stamp_count': int(c.get('stamp_count') or 0),
                 'tier_stamp_count': int(c.get('tier_stamp_count') or 0),
-                'points_balance': int(c.get('points_balance') or 0),
-                'vip_points': int(c.get('vip_points') or 0),
-                'multipass_sessions_remaining': int(c.get('multipass_sessions_remaining') or 0),
-                'multipass_total_sessions': int(c.get('multipass_total_sessions') or 0),
-                'membership_status': c.get('membership_status'),
-                'membership_expires_at': c.get('membership_expires_at'),
-                'employee_id_number': c.get('employee_id_number'),
-                'employee_position': c.get('employee_position'),
-                'program_public_id': selected.get('public_id') if selected else None,
-                'program_name': (selected.get('program_name') or selected.get('card_name') or 'Loyalty Program') if selected else None,
-                'card_type': selected.get('card_type') if selected else None,
-                'stamp_editable': bool(selected and (program_reward_uses_stamps(selected) or tier_stamps_enabled(selected))),
-                'stamp_kind': ('reward' if program_reward_uses_stamps(selected) else ('tier' if tier_stamps_enabled(selected) else None)) if selected else None,
-                'points_editable': bool(selected and program_reward_uses_points(selected)),
-                'vip_tier': (get_vip_tier(c, selected) if selected and program_has_tier(selected) else None),
                 'created_at': c.get('created_at'),
             }
             for c in sorted(customer_rows, key=lambda row: str(row.get('name') or '').lower())
-        ][:500]),
+        ][:500],
         'branch_customers': branch_customers[:100],
         'recent_activity': recent,
-        'active_campaigns': active_campaigns,
     }
-
-
-@app.get("/api/v1/business/{public_id}/manager-members")
-async def get_branch_manager_members(
-    public_id: str,
-    program_id: Optional[str] = Query(default=None),
-    q: Optional[str] = Query(default=None, max_length=120),
-    limit: int = Query(default=100, ge=1, le=250),
-    offset: int = Query(default=0, ge=0),
-    authorization: str = Header(default=''),
-):
-    """Paginated business-wide member directory for an authenticated branch manager.
-
-    Managers may service/search every member in the selected loyalty program, but
-    branch-specific activity and manual adjustments remain attributed to the
-    manager's assigned branch.
-    """
-    _, business, _, _ = require_branch_manager_session(public_id, authorization)
-    try:
-        programs = (
-            supabase.table('loyalty_programs').select('*')
-            .eq('business_id', business.get('id'))
-            .eq('is_active', True)
-            .order('is_default', desc=True).order('sort_order').order('created_at')
-            .execute().data or []
-        )
-    except Exception:
-        programs = (
-            supabase.table('loyalty_programs').select('*')
-            .eq('business_id', business.get('id')).order('updated_at', desc=True).execute().data or []
-        )
-    program_by_id = {p.get('id'): p for p in programs if p.get('id') is not None}
-    viewing_all = str(program_id or '').strip().lower() == 'all'
-    program = None
-    if not viewing_all:
-        program = next((p for p in programs if p.get('public_id') == program_id), None) if program_id else (next((p for p in programs if p.get('is_default')), None) or (programs[0] if programs else None))
-        if not program:
-            raise HTTPException(status_code=404, detail='Program not found for this business')
-
-    fields = 'id,public_id,name,email,phone,birthday,stamp_count,tier_stamp_count,points_balance,vip_points,vip_manual_tier_id,multipass_sessions_remaining,multipass_total_sessions,membership_status,membership_expires_at,employee_id_number,employee_position,program_id,created_at'
-    try:
-        query = supabase.table('customers').select(fields).eq('business_id', business.get('id'))
-        if viewing_all:
-            active_program_ids = list(program_by_id.keys())
-            if not active_program_ids:
-                return {'program_public_id':'all','viewing_all_programs':True,'members':[],'offset':offset,'limit':limit,'has_more':False}
-            query = query.in_('program_id', active_program_ids)
-        else:
-            query = query.eq('program_id', program.get('id'))
-        term = str(q or '').strip()
-        if term:
-            safe_term = re.sub(r'[%_,()]', ' ', term).strip()
-            if safe_term:
-                clauses = [f'name.ilike.%{safe_term}%', f'email.ilike.%{safe_term}%', f'phone.ilike.%{safe_term}%']
-                if re.fullmatch(r'\d{4}-\d{2}-\d{2}', safe_term):
-                    clauses.append(f'birthday.eq.{safe_term}')
-                query = query.or_(','.join(clauses))
-        rows = (query.order('name').range(offset, offset + limit).execute().data or [])
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
-    has_more = len(rows) > limit
-    rows = rows[:limit]
-
-    def member_payload(c):
-        member_program = program_by_id.get(c.get('program_id')) or program or {}
-        return {
-            'public_id': c.get('public_id'), 'name': c.get('name'), 'email': c.get('email'),
-            'phone': c.get('phone'), 'birthday': c.get('birthday'),
-            'stamp_count': int(c.get('stamp_count') or 0),
-            'tier_stamp_count': int(c.get('tier_stamp_count') or 0),
-            'points_balance': int(c.get('points_balance') or 0),
-            'vip_points': int(c.get('vip_points') or 0),
-            'multipass_sessions_remaining': int(c.get('multipass_sessions_remaining') or 0),
-            'multipass_total_sessions': int(c.get('multipass_total_sessions') or 0),
-            'membership_status': c.get('membership_status'),
-            'membership_expires_at': c.get('membership_expires_at'),
-            'employee_id_number': c.get('employee_id_number'),
-            'employee_position': c.get('employee_position'),
-            'program_public_id': member_program.get('public_id'),
-            'program_name': member_program.get('program_name') or member_program.get('card_name') or 'Loyalty Program',
-            'card_type': member_program.get('card_type'),
-            'is_default_program': bool(member_program.get('is_default')),
-            'stamp_editable': bool(program_reward_uses_stamps(member_program) or tier_stamps_enabled(member_program)),
-            'stamp_kind': 'reward' if program_reward_uses_stamps(member_program) else ('tier' if tier_stamps_enabled(member_program) else None),
-            'points_editable': bool(program_reward_uses_points(member_program)),
-            'vip_tier': (get_vip_tier(c, member_program) if member_program and program_has_tier(member_program) else None),
-            'created_at': c.get('created_at'),
-        }
-
-    return {
-        'program_public_id': 'all' if viewing_all else program.get('public_id'),
-        'viewing_all_programs': viewing_all,
-        'members': [member_payload(c) for c in rows],
-        'offset': offset,
-        'limit': limit,
-        'has_more': has_more,
-    }
-
 
 
 @app.get("/api/v1/business/{public_id}/branches")
@@ -22675,27 +22113,6 @@ def complete_transaction_audit(audit_row, *, balance_after=None, response_json=N
     except Exception as e:
         print(f"TRANSACTION AUDIT complete warning: {e}")
 
-    # Purchase-triggered campaigns sit on top of the permanent loyalty program.
-    # Manual corrections/redemptions never qualify. POS hybrid calls are deduped
-    # by the normalized idempotency/source key inside the campaign issuer.
-    try:
-        action = str(audit_row.get('action') or '')
-        if action in ('stamp_add', 'points_sale', 'tier_points_sale'):
-            business = safe_get_business_by_id(audit_row.get('business_id'))
-            customer = safe_get_customer_by_id(audit_row.get('customer_id'))
-            merged_meta = dict(audit_row.get('metadata') or {})
-            if isinstance(metadata, dict):
-                merged_meta.update(metadata)
-            amount = merged_meta.get('amount_spent')
-            if amount is None and isinstance(response_json, dict):
-                amount = response_json.get('amount_spent')
-            maybe_issue_campaign_coupons(
-                business, customer, branch_id=audit_row.get('branch_id'), gross_amount=amount,
-                source_transaction_id=audit_row.get('idempotency_key') or audit_row.get('transaction_id') or str(audit_id),
-            )
-    except Exception as campaign_exc:
-        print(f"CAMPAIGN post-transaction warning: {campaign_exc}")
-
 
 def fail_transaction_audit(audit_row, error):
     if not audit_row or audit_row.get('_duplicate_response') or not audit_row.get('id'):
@@ -23335,71 +22752,6 @@ async def adjust_stamp(public_id: str, req: StampAdjustRequest, background_tasks
     return response_payload
 
 
-@app.post("/api/v1/business/{public_id}/points/adjust")
-async def adjust_points_balance(
-    public_id: str,
-    req: PointsBalanceAdjustRequest,
-    background_tasks: BackgroundTasks,
-    authorization: str = Header(default=''),
-):
-    if req.delta == 0:
-        raise HTTPException(status_code=400, detail='Adjustment must add or remove at least one point')
-    business = safe_get_business(public_id)
-    if not business:
-        raise HTTPException(status_code=404, detail='Business not found')
-    customer = safe_get_customer(req.customer_public_id)
-    if not customer or customer.get('business_id') != business.get('id'):
-        raise HTTPException(status_code=404, detail='Customer not found for this business')
-
-    claims = get_staff_session_claims(public_id, authorization)
-    staff_id = branch_id = None
-    actor_type = 'owner'
-    if claims and str(claims.get('role') or '').lower() == 'manager':
-        _, _, manager, branch = require_branch_manager_session(public_id, authorization)
-        staff_id, branch_id, actor_type = manager.get('id'), branch.get('id'), 'manager'
-    else:
-        require_owner_session(public_id, authorization)
-
-    program = safe_get_customer_program(customer, business.get('id')) or {}
-    if not program_reward_uses_points(program):
-        raise HTTPException(status_code=400, detail='This program does not use spendable Reward Points')
-    before = int(customer.get('points_balance') or 0)
-    after = max(0, before + int(req.delta))
-    actual_delta = after - before
-    if actual_delta == 0:
-        return {'points_balance': after, 'delta': 0, 'message': 'Points balance unchanged'}
-
-    try:
-        updated = supabase.table('customers').update({
-            'points_balance': after,
-            'updated_at': datetime.utcnow().isoformat(),
-        }).eq('id', customer.get('id')).execute()
-        persisted = (updated.data or [{**customer, 'points_balance': after}])[0]
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
-
-    audit_row = start_transaction_audit(
-        business_id=business.get('id'), customer_id=customer.get('id'), staff_id=staff_id,
-        branch_id=branch_id, actor_type=actor_type, action='points_adjust', delta=actual_delta,
-        balance_before=before, reason=req.reason.strip()[:200],
-        metadata={'card_type': program.get('card_type'), 'source': 'manager_member_dashboard' if actor_type == 'manager' else 'owner'},
-    )
-    payload = {
-        'message': 'Points balance updated', 'points_balance': after, 'delta': actual_delta,
-        'before': before, 'after': after, 'reason': req.reason.strip()[:200],
-        'wallet_sync': {'status': 'queued'},
-    }
-    if audit_row and audit_row.get('transaction_id'):
-        payload['transaction_id'] = str(audit_row.get('transaction_id'))
-    complete_transaction_audit(audit_row, balance_after=after, response_json=payload)
-    background_tasks.add_task(
-        sync_loyalty_wallets_background, dict(persisted), dict(business), dict(program),
-        'points_adjust', 'Points balance corrected', f'Your points balance is now {after:,}.',
-        f'points-adjust-{customer.get("id")}-{int(time.time())}',
-    )
-    return payload
-
-
 @app.post("/api/v1/business/{public_id}/vip-sale")
 async def add_vip_sale(public_id: str, req: VIPSaleRequest, background_tasks: BackgroundTasks, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
     business = safe_get_business(public_id)
@@ -23796,7 +23148,6 @@ async def start_pos_integration(public_id: str, req: POSIntegrationCreate, autho
         'redemption_value_per_point': 1.0,
         'redemption_min_points': 1,
         'redemption_increment_points': 1,
-        'redemption_options': [50, 100, 200],
         'redemption_max_percent': 100.0,
         'reservation_hold_minutes': 10,
         'earn_on_net_amount': True,
@@ -24124,21 +23475,6 @@ async def update_pos_settings(public_id: str, req: POSSettingsUpdate, authorizat
         patch['setup_step'] = max(int((integration.get('config') or {}).get('setup_step') or 2), 5)
     if 'redemption_enabled' in patch:
         patch['setup_step'] = max(int((integration.get('config') or {}).get('setup_step') or 2), 6)
-    if 'redemption_options' in patch:
-        normalized_options = []
-        for value in (patch.get('redemption_options') or []):
-            try:
-                points = int(value)
-            except (TypeError, ValueError):
-                continue
-            if points <= 0:
-                continue
-            if points not in normalized_options:
-                normalized_options.append(points)
-        normalized_options.sort()
-        if len(normalized_options) > 12:
-            raise HTTPException(status_code=400, detail='Use at most 12 redemption options.')
-        patch['redemption_options'] = normalized_options
 
     config = _merge_pos_config(integration, patch)
     try:
@@ -24185,8 +23521,8 @@ async def connect_storehub_account(
         'member_identification': 'qr',
         'loyalty_source': 'existing_loyaltytree_program',
         'earning_enabled': True,
-        # Test/simulator mode exposes redemption directly in the Companion POS overlay.
-        'redemption_enabled': True,
+        # Redemption may be exercised in simulator while live write-back remains capability-gated.
+        'redemption_enabled': False,
         'redemption_value_per_point': float(((existing or {}).get('config') or {}).get('redemption_value_per_point') or 1.0),
         'redemption_min_points': int(((existing or {}).get('config') or {}).get('redemption_min_points') or 1),
         'redemption_increment_points': int(((existing or {}).get('config') or {}).get('redemption_increment_points') or 1),
@@ -24999,8 +24335,8 @@ async def storehub_test_transaction(
 
     idempotency_key = f'pos:storehub:{integration.get("id")}:{external_tx}'[:220]
     loyalty_type = effective_loyalty_type(program)
-    points_active = program_reward_uses_points(program)
-    stamps_active = program_reward_uses_stamps(program)
+    points_active = bool(earning_enabled and program_reward_uses_points(program))
+    stamps_active = bool(earning_enabled and program_reward_uses_stamps(program))
 
     try:
         if not points_active and not stamps_active:
@@ -25238,12 +24574,6 @@ async def storehub_test_transaction(
             raise _pos_schema_error(exc)
 
         fresh_customer = safe_get_customer(req.customer_public_id) or customer
-        campaign_coupons = maybe_issue_campaign_coupons(
-            business, fresh_customer, branch_id=mapping.get('branch_id'), gross_amount=gross_amount,
-            source_transaction_id=idempotency_key,
-        )
-        if campaign_coupons:
-            loyalty_result = {**(loyalty_result or {}), 'campaign_coupons_issued': campaign_coupons}
         return {
             **(loyalty_result or {}),
             'amount_spent': gross_amount,
@@ -26100,7 +25430,7 @@ async def get_points_history(public_id: str, customer_public_id: str):
             .eq('business_id', business.get('id'))
             .eq('customer_id', customer.get('id'))
             .eq('status', 'success')
-            .in_('action', ['points_adjust', 'points_redeem', 'pos_points_redeem'])
+            .in_('action', ['points_adjust', 'points_redeem'])
             .order('created_at', desc=True)
             .execute()
         ).data or []
@@ -26979,12 +26309,6 @@ async def redeem_coupon(public_id: str, req: CouponRedeem, background_tasks: Bac
             coupon = res.data
         except Exception:
             coupon = None
-        if coupon and coupon.get('starts_at'):
-            try:
-                if datetime.fromisoformat(str(coupon.get('starts_at'))).date() > _loyalty_today():
-                    coupon = None
-            except Exception:
-                pass
         if coupon and coupon.get('expires_at'):
             try:
                 if datetime.fromisoformat(str(coupon.get('expires_at'))).date() < _loyalty_today():
@@ -26995,52 +26319,6 @@ async def redeem_coupon(public_id: str, req: CouponRedeem, background_tasks: Bac
         coupon = safe_get_active_coupon(customer.get('id'))
     if not coupon:
         raise HTTPException(status_code=400, detail="No active coupon to redeem")
-
-    campaign_issue = None
-    campaign_row = None
-    campaign_discount_amount = req.discount_amount
-    campaign_net_amount = req.net_amount
-    if str(coupon.get('source') or '').lower() == 'campaign':
-        try:
-            issue_rows = (supabase.table('campaign_coupon_issues').select('*')
-                          .eq('coupon_public_id', coupon.get('public_id')).limit(1).execute().data or [])
-            campaign_issue = issue_rows[0] if issue_rows else None
-            if campaign_issue:
-                campaign_rows = (supabase.table('campaigns').select('*')
-                                 .eq('id', campaign_issue.get('campaign_id')).limit(1).execute().data or [])
-                campaign_row = campaign_rows[0] if campaign_rows else None
-        except Exception as exc:
-            raise HTTPException(status_code=409, detail=f'Campaign coupon data is unavailable: {friendly_db_error(exc)}')
-        if not campaign_issue or not campaign_row:
-            raise HTTPException(status_code=409, detail='Campaign coupon record is incomplete')
-        today = _loyalty_today()
-        starts = _parse_campaign_date(campaign_issue.get('starts_at'), 'coupon start date')
-        expires = _parse_campaign_date(campaign_issue.get('expires_at'), 'coupon end date')
-        if today < starts:
-            raise HTTPException(status_code=400, detail=f'This campaign coupon becomes usable on {starts.isoformat()}')
-        if today > expires:
-            raise HTTPException(status_code=400, detail='This campaign coupon has expired')
-        min_spend = float(campaign_issue.get('min_redemption_spend') or 0)
-        if min_spend > 0:
-            if req.gross_amount is None:
-                raise HTTPException(status_code=400, detail=f'Enter the current bill total; this coupon requires a minimum purchase of PHP {min_spend:,.2f}')
-            if float(req.gross_amount) + 0.0001 < min_spend:
-                raise HTTPException(status_code=400, detail=f'Minimum purchase for this coupon is PHP {min_spend:,.2f}')
-        if req.gross_amount is not None:
-            gross = float(req.gross_amount)
-            reward_type = str(campaign_issue.get('reward_type') or '')
-            reward_value = float(campaign_issue.get('reward_value') or 0)
-            if campaign_discount_amount is None:
-                if reward_type == 'percent_discount':
-                    campaign_discount_amount = round(min(gross, gross * reward_value / 100.0), 2)
-                elif reward_type == 'fixed_discount':
-                    campaign_discount_amount = round(min(gross, reward_value), 2)
-            if campaign_net_amount is None and campaign_discount_amount is not None:
-                campaign_net_amount = round(max(0.0, gross - float(campaign_discount_amount)), 2)
-        scope = str(campaign_row.get('scope') or 'nationwide')
-        if scope != 'nationwide' and redeeming_branch_id is not None:
-            if redeeming_branch_id not in _campaign_branch_ids(campaign_row.get('id')):
-                raise HTTPException(status_code=403, detail='This campaign coupon is not valid at this branch')
 
     # Birthday rewards may require an explicit staff/owner birthday or ID
     # verification. Never trust the browser alone: enforce it again here.
@@ -27073,32 +26351,6 @@ async def redeem_coupon(public_id: str, req: CouponRedeem, background_tasks: Bac
             }).eq('coupon_public_id', coupon.get('public_id')).execute()
         except Exception:
             pass
-        if campaign_issue:
-            campaign_patch = {
-                'status': 'redeemed',
-                'redemption_branch_id': redeeming_branch_id,
-                'redeemed_at': redeemed_at,
-                'redemption_gross_amount': req.gross_amount,
-                'discount_amount': campaign_discount_amount,
-                'redemption_net_amount': campaign_net_amount,
-            }
-            supabase.table('campaign_coupon_issues').update(campaign_patch).eq('id', campaign_issue.get('id')).execute()
-            try:
-                supabase.table('campaign_activity').insert({
-                    'campaign_id': campaign_issue.get('campaign_id'),
-                    'campaign_issue_id': campaign_issue.get('id'),
-                    'business_id': business.get('id'),
-                    'customer_id': customer.get('id'),
-                    'branch_id': redeeming_branch_id,
-                    'activity_type': 'coupon_redeemed',
-                    'gross_amount': req.gross_amount,
-                    'discount_amount': campaign_discount_amount,
-                    'source_transaction_id': None,
-                    'metadata': {'coupon_public_id': coupon.get('public_id'), 'net_amount': campaign_net_amount},
-                    'created_at': redeemed_at,
-                }).execute()
-            except Exception:
-                pass
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
@@ -27125,243 +26377,8 @@ async def redeem_coupon(public_id: str, req: CouponRedeem, background_tasks: Bac
         "success": True,
         "reward_text": coupon.get('reward_text'),
         "redeemed_at": redeemed_at,
-        "campaign": ({
-            'public_id': campaign_row.get('public_id'),
-            'name': campaign_row.get('name'),
-            'gross_amount': req.gross_amount,
-            'discount_amount': campaign_discount_amount,
-            'net_amount': campaign_net_amount,
-        } if campaign_row else None),
         "active_coupons": safe_get_active_coupons(customer.get('id')),
     }
-
-def _campaign_validate_payload(data: dict, existing: Optional[dict] = None) -> dict:
-    merged = {**(existing or {}), **(data or {})}
-    q_start = _parse_campaign_date(merged.get('qualifying_start_date'), 'qualifying start date')
-    q_end = _parse_campaign_date(merged.get('qualifying_end_date'), 'qualifying end date')
-    c_start = _parse_campaign_date(merged.get('coupon_start_date'), 'coupon start date')
-    c_end = _parse_campaign_date(merged.get('coupon_end_date'), 'coupon end date')
-    if q_end < q_start:
-        raise HTTPException(status_code=400, detail='Qualifying end date cannot be before the start date')
-    if c_end < c_start:
-        raise HTTPException(status_code=400, detail='Coupon end date cannot be before the start date')
-    reward_type = str(merged.get('reward_type') or '')
-    reward_value = merged.get('reward_value')
-    if reward_type in ('percent_discount', 'fixed_discount') and (reward_value is None or float(reward_value) <= 0):
-        raise HTTPException(status_code=400, detail='Discount campaigns need a positive reward value')
-    if reward_type == 'percent_discount' and float(reward_value or 0) > 100:
-        raise HTTPException(status_code=400, detail='Percentage discount cannot exceed 100%')
-    return merged
-
-
-def _campaign_report(business: dict, campaign: dict) -> dict:
-    # Prefer SQL aggregates so reports remain accurate for 100k+ coupon issues.
-    summary = None
-    by_branch = []
-    try:
-        rows = supabase.rpc('campaign_report_summary', {'p_campaign_id': campaign.get('id')}).execute().data or []
-        summary = rows[0] if rows else None
-        by_branch = supabase.rpc('campaign_report_by_branch', {'p_campaign_id': campaign.get('id')}).execute().data or []
-    except Exception as exc:
-        print(f'CAMPAIGN aggregate RPC fallback: {exc}')
-
-    if summary is None:
-        # Rolling-deploy fallback before the SQL functions are installed.
-        try:
-            issues = (supabase.table('campaign_coupon_issues').select('*')
-                      .eq('campaign_id', campaign.get('id')).limit(5000).execute().data or [])
-        except Exception:
-            issues = []
-        issued = len(issues)
-        unique_members = len({x.get('customer_id') for x in issues if x.get('customer_id') is not None})
-        redeemed_rows = [x for x in issues if str(x.get('status') or '') == 'redeemed']
-        redeemed = len(redeemed_rows)
-        redeemed_members = len({x.get('customer_id') for x in redeemed_rows if x.get('customer_id') is not None})
-        today = _loyalty_today()
-        def issue_is_expired(x):
-            if str(x.get('status') or '') == 'expired': return True
-            if str(x.get('status') or '') != 'issued': return False
-            try: return _parse_campaign_date(x.get('expires_at'), 'coupon end date') < today
-            except HTTPException: return False
-        expired = sum(1 for x in issues if issue_is_expired(x))
-        summary = {
-            'issued': issued, 'unique_members': unique_members,
-            'redeemed': redeemed, 'redeemed_members': redeemed_members,
-            'expired': expired,
-            'gross_revenue_from_redemptions': sum(float(x.get('redemption_gross_amount') or 0) for x in redeemed_rows),
-            'net_revenue_from_redemptions': sum(float(x.get('redemption_net_amount') or 0) for x in redeemed_rows),
-            'discount_given': sum(float(x.get('discount_amount') or 0) for x in redeemed_rows),
-        }
-        branch_map = {}
-        for issue in issues:
-            bid = issue.get('redemption_branch_id') or issue.get('qualification_branch_id')
-            key = str(bid or 'unknown')
-            item = branch_map.setdefault(key, {'branch_id': bid, 'branch_name': 'Unknown / unassigned' if bid is None else 'Branch', 'issued': 0, 'redeemed': 0, 'gross_revenue': 0.0, 'discount_given': 0.0})
-            item['issued'] += 1
-            if str(issue.get('status') or '') == 'redeemed':
-                item['redeemed'] += 1
-                item['gross_revenue'] += float(issue.get('redemption_gross_amount') or 0)
-                item['discount_given'] += float(issue.get('discount_amount') or 0)
-        branch_ids = [v.get('branch_id') for v in branch_map.values() if v.get('branch_id') is not None]
-        if branch_ids:
-            try:
-                names = {r.get('id'):r.get('name') for r in (supabase.table('branches').select('id,name').in_('id', branch_ids).execute().data or [])}
-                for item in branch_map.values(): item['branch_name'] = names.get(item.get('branch_id')) or item['branch_name']
-            except Exception: pass
-        by_branch = list(branch_map.values())
-
-    issued = int((summary or {}).get('issued') or 0)
-    redeemed = int((summary or {}).get('redeemed') or 0)
-    expired = int((summary or {}).get('expired') or 0)
-    try:
-        activity = (supabase.table('campaign_activity').select('*')
-                    .eq('campaign_id', campaign.get('id')).order('created_at', desc=True)
-                    .limit(100).execute().data or [])
-    except Exception:
-        activity = []
-    customer_ids = {x.get('customer_id') for x in activity if x.get('customer_id') is not None}
-    branch_ids = {x.get('branch_id') for x in activity if x.get('branch_id') is not None}
-    customer_map, branch_name_map = {}, {}
-    if customer_ids:
-        try: customer_map = {r.get('id'):r for r in (supabase.table('customers').select('id,public_id,name').in_('id', list(customer_ids)).execute().data or [])}
-        except Exception: pass
-    if branch_ids:
-        try: branch_name_map = {r.get('id'):r.get('name') for r in (supabase.table('branches').select('id,name').in_('id', list(branch_ids)).execute().data or [])}
-        except Exception: pass
-    for row in activity:
-        customer = customer_map.get(row.get('customer_id')) or {}
-        row['customer_name'] = customer.get('name') or 'Member'
-        row['customer_public_id'] = customer.get('public_id')
-        row['branch_name'] = branch_name_map.get(row.get('branch_id')) or ('Nationwide / unassigned' if row.get('branch_id') is None else 'Branch')
-    return {
-        'issued': issued,
-        'unique_members': int((summary or {}).get('unique_members') or 0),
-        'redeemed': redeemed,
-        'redeemed_members': int((summary or {}).get('redeemed_members') or 0),
-        'expired': expired,
-        'active_or_unused': max(0, issued - redeemed - expired),
-        'redemption_rate': round((redeemed / issued * 100.0), 2) if issued else 0.0,
-        'gross_revenue_from_redemptions': round(float((summary or {}).get('gross_revenue_from_redemptions') or 0), 2),
-        'net_revenue_from_redemptions': round(float((summary or {}).get('net_revenue_from_redemptions') or 0), 2),
-        'discount_given': round(float((summary or {}).get('discount_given') or 0), 2),
-        'branches': by_branch,
-        'activity': activity,
-    }
-
-
-@app.get('/api/v1/business/{public_id}/campaigns')
-async def list_campaigns(public_id: str, authorization: str = Header(default='')):
-    require_owner_session(public_id, authorization)
-    business = safe_get_business(public_id)
-    if not business:
-        raise HTTPException(status_code=404, detail='Business not found')
-    try:
-        branches = (supabase.table('branches').select('id,public_id,name,address,is_active')
-                    .eq('business_id', business.get('id')).order('name').execute().data or [])
-        branch_name_by_id = {row.get('id'): row.get('name') for row in branches}
-        campaigns = (supabase.table('campaigns').select('*').eq('business_id', business.get('id'))
-                     .order('created_at', desc=True).execute().data or [])
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
-    result = []
-    for campaign in campaigns:
-        public = _campaign_public(campaign, branch_name_by_id)
-        report = _campaign_report(business, campaign)
-        public['summary'] = {k: report[k] for k in ('issued','redeemed','expired','active_or_unused','redemption_rate','gross_revenue_from_redemptions','discount_given')}
-        result.append(public)
-    return {'campaigns': result, 'branches': branches}
-
-
-@app.post('/api/v1/business/{public_id}/campaigns')
-async def create_campaign(public_id: str, req: CampaignCreate, authorization: str = Header(default='')):
-    claims = require_owner_session(public_id, authorization)
-    business = safe_get_business(public_id)
-    if not business:
-        raise HTTPException(status_code=404, detail='Business not found')
-    payload = req.dict()
-    _campaign_validate_payload(payload)
-    scope = payload.get('scope') or 'nationwide'
-    branch_public_ids = list(dict.fromkeys(payload.pop('branch_public_ids', []) or []))
-    if scope == 'single_branch' and len(branch_public_ids) != 1:
-        raise HTTPException(status_code=400, detail='Single-branch campaigns require exactly one branch')
-    if scope == 'selected_branches' and not branch_public_ids:
-        raise HTTPException(status_code=400, detail='Select at least one branch')
-    if scope == 'nationwide':
-        branch_public_ids = []
-    branches = []
-    if branch_public_ids:
-        branches = (supabase.table('branches').select('id,public_id,name').eq('business_id', business.get('id')).in_('public_id', branch_public_ids).execute().data or [])
-        if len({b.get('public_id') for b in branches}) != len(set(branch_public_ids)):
-            raise HTTPException(status_code=400, detail='One or more selected branches are invalid')
-    row = {
-        **payload,
-        'public_id': generate_public_id(),
-        'business_id': business.get('id'),
-        'created_by_staff_id': claims.get('staff_id'),
-        'created_at': datetime.utcnow().isoformat(),
-        'updated_at': datetime.utcnow().isoformat(),
-    }
-    try:
-        saved = (supabase.table('campaigns').insert(row).execute().data or [row])[0]
-        if branches:
-            supabase.table('campaign_branches').insert([{'campaign_id': saved.get('id'), 'branch_id': b.get('id')} for b in branches]).execute()
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
-    return _campaign_public(saved, {b.get('id'): b.get('name') for b in branches})
-
-
-@app.patch('/api/v1/business/{public_id}/campaigns/{campaign_public_id}')
-async def update_campaign(public_id: str, campaign_public_id: str, req: CampaignUpdate, authorization: str = Header(default='')):
-    require_owner_session(public_id, authorization)
-    business = safe_get_business(public_id)
-    if not business:
-        raise HTTPException(status_code=404, detail='Business not found')
-    rows = (supabase.table('campaigns').select('*').eq('business_id', business.get('id')).eq('public_id', campaign_public_id).limit(1).execute().data or [])
-    if not rows:
-        raise HTTPException(status_code=404, detail='Campaign not found')
-    current = rows[0]
-    patch = req.dict(exclude_unset=True)
-    branch_public_ids = patch.pop('branch_public_ids', None)
-    merged = _campaign_validate_payload(patch, current)
-    scope = str(merged.get('scope') or 'nationwide')
-    if branch_public_ids is not None:
-        branch_public_ids = list(dict.fromkeys(branch_public_ids or []))
-    elif 'scope' in patch:
-        branch_public_ids = [] if scope == 'nationwide' else None
-    if scope == 'single_branch' and branch_public_ids is not None and len(branch_public_ids) != 1:
-        raise HTTPException(status_code=400, detail='Single-branch campaigns require exactly one branch')
-    if scope == 'selected_branches' and branch_public_ids is not None and not branch_public_ids:
-        raise HTTPException(status_code=400, detail='Select at least one branch')
-    patch['updated_at'] = datetime.utcnow().isoformat()
-    try:
-        saved = (supabase.table('campaigns').update(patch).eq('id', current.get('id')).execute().data or [{**current, **patch}])[0]
-        if branch_public_ids is not None:
-            supabase.table('campaign_branches').delete().eq('campaign_id', current.get('id')).execute()
-            if scope != 'nationwide':
-                branches = (supabase.table('branches').select('id,public_id').eq('business_id', business.get('id')).in_('public_id', branch_public_ids).execute().data or [])
-                if len({b.get('public_id') for b in branches}) != len(set(branch_public_ids)):
-                    raise HTTPException(status_code=400, detail='One or more selected branches are invalid')
-                if branches:
-                    supabase.table('campaign_branches').insert([{'campaign_id': current.get('id'), 'branch_id': b.get('id')} for b in branches]).execute()
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
-    return _campaign_public(saved)
-
-
-@app.get('/api/v1/business/{public_id}/campaigns/{campaign_public_id}/report')
-async def get_campaign_report(public_id: str, campaign_public_id: str, authorization: str = Header(default='')):
-    require_owner_session(public_id, authorization)
-    business = safe_get_business(public_id)
-    if not business:
-        raise HTTPException(status_code=404, detail='Business not found')
-    rows = (supabase.table('campaigns').select('*').eq('business_id', business.get('id')).eq('public_id', campaign_public_id).limit(1).execute().data or [])
-    if not rows:
-        raise HTTPException(status_code=404, detail='Campaign not found')
-    campaign = rows[0]
-    return {'campaign': _campaign_public(campaign), 'report': _campaign_report(business, campaign)}
-
 
 @app.get("/api/v1/business/{public_id}/hero-image.png")
 async def get_hero_image(public_id: str, c: Optional[str] = None):
@@ -32236,7 +31253,7 @@ async def order_ahead_branch_page(customer_public_id: str, token: str = Query(de
             )
         else:
             branch_card_parts.append(
-                f"""<a class="branch" href="{PUBLIC_ORDER_BASE_URL}/order-ahead/{quote(customer_public_id)}/branch/{quote(str(b.get('public_id') or ''))}?token={quote(token)}">
+                f"""<a class="branch" href="{BASE_URL}/order-ahead/{quote(customer_public_id)}/branch/{quote(str(b.get('public_id') or ''))}?token={quote(token)}">
                   <div class="branch-name">{name}</div>
                   <div class="branch-address">{address}</div>
                   <div class="branch-cta"><span>{cta_label}</span><span>&rsaquo;</span></div>
@@ -32348,7 +31365,7 @@ async def order_ahead_branch_selected(customer_public_id: str, branch_public_id:
     logo = html_lib.escape(str(business.get('logo_url') or program.get('program_logo_url') or DEFAULT_LOGO_URL))
     hero = html_lib.escape(str(program.get('hero_image_url') or ''))
     banner_html = '<img class="banner" src="' + hero + '" alt="">' if ui['show_banner'] and hero else ''
-    branch_picker_url = f"{PUBLIC_ORDER_BASE_URL}/order-ahead/{quote(customer_public_id)}?token={quote(token)}"
+    branch_picker_url = f"{BASE_URL}/order-ahead/{quote(customer_public_id)}?token={quote(token)}"
 
     substitutions = {
         '__BG__': ui['background_color'], '__TEXT__': ui['text_color'], '__MUTED__': ui['muted_color'],
@@ -32356,7 +31373,7 @@ async def order_ahead_branch_selected(customer_public_id: str, branch_public_id:
         '__BIZ__': biz_name, '__BRANCH__': branch_name, '__LOGO__': logo,
         '__BANNER__': banner_html, '__MENU_HEADING__': html_lib.escape(ui['menu_heading']),
         '__DATA__': data_json, '__UI__': ui_json, '__BRANCH_PICKER_URL__': html_lib.escape(branch_picker_url),
-        '__ORDER_API_BASE__': json.dumps(f"{PUBLIC_ORDER_BASE_URL}/api/v1/order-ahead/{quote(customer_public_id)}/orders"),
+        '__ORDER_API_BASE__': json.dumps(f"{BASE_URL}/api/v1/order-ahead/{quote(customer_public_id)}/orders"),
         '__ORDER_TOKEN__': json.dumps(token),
         '__MONEY_ZERO__': html_lib.escape(money_text(0, business_currency(business))),
         '__CAT_RADIUS__': '999px' if ui['category_style'] == 'pills' else '8px',
@@ -37810,6 +36827,12 @@ class POSDeviceActivationCodeCreate(BaseModel):
     provider: Literal['storehub', 'loyverse'] = 'storehub'
     expires_in_minutes: int = Field(default=15, ge=5, le=1440)
     max_uses: int = Field(default=1, ge=1, le=25)
+    # Optional owner-side lock. When supplied, the generated code can activate
+    # only this LT branch + POS outlet, so the cashier device does not choose.
+    branch_public_id: Optional[str] = Field(default=None, max_length=200)
+    external_branch_id: Optional[str] = Field(default=None, max_length=200)
+    external_branch_name: Optional[str] = Field(default=None, max_length=200)
+    device_name: Optional[str] = Field(default=None, max_length=120)
 
 
 class POSCompanionActivationPreviewRequest(BaseModel):
@@ -37875,16 +36898,24 @@ class POSCompanionSessionStartRequest(BaseModel):
 
 class POSCompanionBridgePollRequest(BaseModel):
     limit: int = Field(default=20, ge=1, le=50)
+    # When the cashier selected a points redemption, the Companion keeps the
+    # reservation id locally and sends it with every poll. The POS transaction
+    # itself remains provider-normalized and does not need LT-only fields.
+    redemption_reservation_id: Optional[str] = Field(default=None, max_length=100)
 
 
 class POSCompanionSessionMatchRequest(BaseModel):
     external_transaction_id: str = Field(min_length=1, max_length=240)
+    # Required only when this exact manually-selected receipt should commit a
+    # previously reserved Loyalty Tree points redemption.
+    redemption_reservation_id: Optional[str] = Field(default=None, max_length=100)
 
 
 class POSCompanionTestSaleRequest(BaseModel):
     amount: float = Field(gt=0)
     external_transaction_id: Optional[str] = Field(default=None, max_length=240)
     currency: str = Field(default='PHP', min_length=3, max_length=3)
+    redemption_reservation_id: Optional[str] = Field(default=None, max_length=100)
 
 
 class CompanionMockTransactionRequest(BaseModel):
@@ -37998,7 +37029,7 @@ def _pos_companion_preview_payload(activation: dict) -> dict:
     if allowed_external_branch_id:
         outlets = [row for row in outlets if str((row or {}).get('id')) == allowed_external_branch_id]
         if not outlets:
-            raise HTTPException(status_code=409, detail='The POS location assigned to this activation code is no longer available. Generate a new code after the assigned branch mapping is confirmed.')
+            raise HTTPException(status_code=409, detail='The POS location assigned to this activation code is no longer available. Generate a new code after the owner confirms branch mapping.')
 
     return {
         'business': {
@@ -38170,11 +37201,11 @@ def _validate_manager_activation_scope(activation: dict, business: dict) -> dict
 
 
 def _manager_companion_mapping(business: dict, branch: dict):
-    """Return the manager's current active branch mapping and POS integration.
+    """Return the manager's current active branch mapping and its POS integration.
 
-    Provider credentials remain business-owner controlled. A manager who has
-    Companion permission may, however, select the already-connected provider
-    location for exactly their assigned branch.
+    Owners remain the only users who can connect providers or change mappings.
+    Managers are intentionally restricted to whichever mapping the owner has
+    already saved for their assigned branch.
     """
     try:
         mappings = (
@@ -38225,80 +37256,6 @@ def _manager_companion_mapping(business: dict, branch: dict):
     return mapping, integration
 
 
-def _manager_pos_setup_options(business: dict, branch: dict) -> list:
-    """Safe provider/location choices a manager may map to their assigned branch.
-
-    Credentials and provider-wide settings are never returned. Locations already
-    mapped to a different LoyaltyTree branch are filtered out server-side.
-    """
-    try:
-        integrations = (
-            supabase.table('pos_integrations')
-            .select('*')
-            .eq('business_id', business.get('id'))
-            .execute()
-            .data or []
-        )
-        active_mappings = (
-            supabase.table('pos_branch_mappings')
-            .select('id,integration_id,branch_id,external_branch_id,external_branch_name,is_active')
-            .eq('business_id', business.get('id'))
-            .eq('is_active', True)
-            .execute()
-            .data or []
-        )
-    except Exception as exc:
-        raise _pos_schema_error(exc)
-
-    result = []
-    for integration in integrations:
-        provider = str(integration.get('provider') or '').lower()
-        if provider not in ('storehub', 'loyverse'):
-            continue
-        status = str(integration.get('status') or '').lower()
-        if status in ('disconnected', 'error'):
-            continue
-        config = integration.get('config') if isinstance(integration.get('config'), dict) else {}
-        location_key = 'storehub_outlets' if provider == 'storehub' else 'loyverse_stores'
-        raw_locations = config.get(location_key) or []
-        if integration.get('mode') == 'test' and not raw_locations:
-            raw_locations = [{
-                'id': f"test-{branch.get('public_id')}",
-                'name': f"{branch.get('name') or 'Assigned branch'} (Test)",
-            }]
-
-        used_by_other = {
-            str(row.get('external_branch_id'))
-            for row in active_mappings
-            if str(row.get('integration_id')) == str(integration.get('id'))
-            and str(row.get('branch_id')) != str(branch.get('id'))
-            and row.get('external_branch_id') is not None
-        }
-        locations = []
-        for row in raw_locations:
-            if not isinstance(row, dict) or row.get('id') is None:
-                continue
-            external_id = str(row.get('id'))
-            if external_id in used_by_other:
-                continue
-            locations.append({
-                'id': external_id,
-                'name': str(row.get('name') or row.get('label') or external_id),
-            })
-
-        result.append({
-            'provider': provider,
-            'label': 'StoreHub' if provider == 'storehub' else 'Loyverse',
-            'status': integration.get('status'),
-            'mode': integration.get('mode'),
-            'account_name': integration.get('external_account_name'),
-            'locations': locations,
-        })
-
-    result.sort(key=lambda row: (0 if str(row.get('mode') or '').lower() != 'test' else 1, row.get('label') or ''))
-    return result
-
-
 def _manager_companion_devices(business: dict, branch: dict) -> list:
     try:
         devices = (
@@ -38347,7 +37304,6 @@ def get_manager_companion_setup(public_id: str, authorization: str = Header(defa
     _, business, manager, branch = require_branch_manager_session(public_id, authorization)
     allowed = _manager_can_manage_companion(manager)
     plan_ok = business_has_plan_feature(business, 'pos_integration')
-    integrations = _manager_pos_setup_options(business, branch) if allowed and plan_ok else []
     response = {
         'allowed': allowed,
         'plan_ok': plan_ok,
@@ -38357,9 +37313,6 @@ def get_manager_companion_setup(public_id: str, authorization: str = Header(defa
             'name': branch.get('name'),
             'address': branch.get('address'),
         },
-        'provider_connected': bool(integrations),
-        'can_map_branch': bool(allowed and plan_ok and integrations),
-        'integrations': integrations,
         'mapping_ready': False,
         'provider': None,
         'integration_status': None,
@@ -38387,144 +37340,6 @@ def get_manager_companion_setup(public_id: str, authorization: str = Header(defa
     return response
 
 
-@app.put('/api/v1/business/{public_id}/manager/pos-branch-mapping')
-def save_manager_pos_branch_mapping(
-    public_id: str,
-    req: ManagerPOSBranchMappingUpdate,
-    authorization: str = Header(default=''),
-):
-    """Let an authorized manager map only their assigned branch.
-
-    The owner still controls provider credentials/business-wide POS settings.
-    This route never accepts another LoyaltyTree branch id and therefore cannot
-    be used by a manager to modify a sibling branch.
-    """
-    _, business, manager, branch = require_branch_manager_session(public_id, authorization)
-    if not _manager_can_manage_companion(manager):
-        raise HTTPException(status_code=403, detail='The owner has not granted Companion device access to this manager.')
-    if not business_has_plan_feature(business, 'pos_integration'):
-        raise HTTPException(status_code=403, detail='POS Integration is included with the Pro plan.')
-
-    integration = _get_pos_integration(business.get('id'), req.provider)
-    if not integration or str(integration.get('status') or '').lower() in ('disconnected', 'error'):
-        raise HTTPException(
-            status_code=409,
-            detail=f'{req.provider.title()} is not connected yet. The owner must connect the POS account credentials once before branch managers can map locations.',
-        )
-
-    external_id = str(req.external_branch_id or '').strip()
-    config = integration.get('config') if isinstance(integration.get('config'), dict) else {}
-    location_key = 'storehub_outlets' if req.provider == 'storehub' else 'loyverse_stores'
-    known_locations = [row for row in (config.get(location_key) or []) if isinstance(row, dict)]
-    if integration.get('mode') == 'test' and not known_locations:
-        known_locations = [{
-            'id': f"test-{branch.get('public_id')}",
-            'name': f"{branch.get('name') or 'Assigned branch'} (Test)",
-        }]
-    known_ids = {str(row.get('id')) for row in known_locations if row.get('id') is not None}
-    if not known_ids:
-        raise HTTPException(status_code=409, detail=f'No {req.provider.title()} POS locations are available from the connected account.')
-    if external_id not in known_ids:
-        raise HTTPException(status_code=400, detail=f'Selected {req.provider.title()} location is not available to this business.')
-
-    try:
-        conflicts = (
-            supabase.table('pos_branch_mappings')
-            .select('id,branch_id,external_branch_id')
-            .eq('integration_id', integration.get('id'))
-            .eq('external_branch_id', external_id)
-            .eq('is_active', True)
-            .execute()
-            .data or []
-        )
-        if any(str(row.get('branch_id')) != str(branch.get('id')) for row in conflicts):
-            raise HTTPException(status_code=409, detail=f'That {req.provider.title()} location is already mapped to another Loyalty Tree branch.')
-
-        current_rows = (
-            supabase.table('pos_branch_mappings')
-            .select('*')
-            .eq('business_id', business.get('id'))
-            .eq('branch_id', branch.get('id'))
-            .execute()
-            .data or []
-        )
-        active_devices = (
-            supabase.table('pos_devices')
-            .select('id,mapping_id,status')
-            .eq('business_id', business.get('id'))
-            .eq('branch_id', branch.get('id'))
-            .eq('status', 'active')
-            .execute()
-            .data or []
-        )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise _pos_schema_error(exc)
-
-    target_existing = next(
-        (row for row in current_rows if str(row.get('integration_id')) == str(integration.get('id'))),
-        None,
-    )
-    target_existing_id = str((target_existing or {}).get('id') or '')
-    changing_existing_device_mapping = any(
-        str(device.get('mapping_id') or '') != target_existing_id
-        or str((target_existing or {}).get('external_branch_id') or '') != external_id
-        for device in active_devices
-    )
-    if active_devices and changing_existing_device_mapping:
-        raise HTTPException(
-            status_code=409,
-            detail='This branch already has an active Companion device on a different POS mapping. Keep the current mapping or ask the owner to retire the old device before remapping.',
-        )
-
-    external_name = (req.external_branch_name or '').strip() or next(
-        (str(row.get('name') or row.get('label') or external_id) for row in known_locations if str(row.get('id')) == external_id),
-        branch.get('name') or external_id,
-    )
-    settings = (target_existing or {}).get('settings') if isinstance((target_existing or {}).get('settings'), dict) else {}
-    settings = {
-        **settings,
-        'checkout_mode': req.checkout_mode or settings.get('checkout_mode') or 'auto',
-        'mapped_by': 'branch_manager',
-        'mapped_by_manager_staff_id': manager.get('id'),
-        'mapped_at': datetime.now(timezone.utc).isoformat(),
-    }
-    if req.device_model is not None:
-        settings['device_model'] = req.device_model
-    if req.scanner_method is not None:
-        settings['scanner_method'] = req.scanner_method
-
-    mapping_payload = {
-        'integration_id': integration.get('id'),
-        'business_id': business.get('id'),
-        'branch_id': branch.get('id'),
-        'external_branch_id': external_id,
-        'external_branch_name': external_name,
-        'is_active': True,
-        'settings': settings,
-    }
-    try:
-        # A manager can only deactivate mappings for their own assigned branch.
-        for row in current_rows:
-            if row.get('id') == (target_existing or {}).get('id'):
-                continue
-            if row.get('is_active') is not False:
-                supabase.table('pos_branch_mappings').update({'is_active': False}).eq('id', row.get('id')).execute()
-        if target_existing:
-            supabase.table('pos_branch_mappings').update(mapping_payload).eq('id', target_existing.get('id')).execute()
-        else:
-            supabase.table('pos_branch_mappings').insert(mapping_payload).execute()
-        integration_config = _merge_pos_config(integration, {
-            'setup_step': max(int((integration.get('config') or {}).get('setup_step') or 2), 3),
-        })
-        supabase.table('pos_integrations').update({'config': integration_config}).eq('id', integration.get('id')).execute()
-    except Exception as exc:
-        raise _pos_schema_error(exc)
-
-    return get_manager_companion_setup(public_id, authorization)
-
-
 @app.post('/api/v1/business/{public_id}/manager/companion-activation-code')
 def create_manager_companion_activation_code(public_id: str, authorization: str = Header(default='')):
     _, business, manager, branch = require_branch_manager_session(public_id, authorization)
@@ -38537,11 +37352,11 @@ def create_manager_companion_activation_code(public_id: str, authorization: str 
     if not mapping or not integration:
         raise HTTPException(
             status_code=409,
-            detail='Map your assigned branch to one of the connected POS locations before generating an activation code.',
+            detail='This branch is not mapped to an active POS integration yet. Ask the owner to finish POS branch mapping first.',
         )
     external_branch_id = str(mapping.get('external_branch_id') or '').strip()
     if not external_branch_id:
-        raise HTTPException(status_code=409, detail='This branch mapping is missing its POS location ID. Save the branch mapping again before generating a code.')
+        raise HTTPException(status_code=409, detail='This branch mapping is missing its POS location ID. Ask the owner to repair the mapping.')
 
     code = str(secrets.randbelow(900000) + 100000)
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
@@ -38577,7 +37392,7 @@ def create_manager_companion_activation_code(public_id: str, authorization: str 
         'provider': payload['provider'],
         'external_branch_id': external_branch_id,
         'external_branch_name': mapping.get('external_branch_name'),
-        'message': 'Enter this one-time code in the Loyalty Tree Companion app. It can activate only this assigned branch and mapped POS location.',
+        'message': 'Enter this one-time code in the Loyalty Tree Companion app. It can activate only this assigned branch.',
     }
 
 
@@ -38592,6 +37407,43 @@ def create_pos_device_activation_code(
     if not integration:
         raise HTTPException(status_code=409, detail=f'Connect {req.provider.title()} before creating a Companion activation code.')
 
+    # If the owner selected a branch/outlet in the dashboard, lock this code to
+    # that mapping. This turns "Generate Device" into a deterministic pairing
+    # operation instead of asking the cashier to choose a branch again.
+    metadata = {'purpose': 'pos_companion_device_activation', 'generated_by': 'owner'}
+    locked_branch = None
+    locked_mapping = None
+    if req.branch_public_id:
+        locked_branch = safe_get_branch(req.branch_public_id)
+        if not locked_branch or str(locked_branch.get('business_id')) != str(business.get('id')):
+            raise HTTPException(status_code=404, detail='Selected branch is not part of this business.')
+        try:
+            rows = (
+                supabase.table('pos_branch_mappings')
+                .select('*')
+                .eq('integration_id', integration.get('id'))
+                .eq('branch_id', locked_branch.get('id'))
+                .limit(1)
+                .execute().data or []
+            )
+        except Exception as exc:
+            raise _pos_schema_error(exc)
+        locked_mapping = rows[0] if rows else None
+        if not locked_mapping:
+            raise HTTPException(status_code=409, detail='Map this Loyalty Tree branch to a POS outlet before generating a device.')
+        mapped_external_id = str(locked_mapping.get('external_branch_id') or '').strip()
+        requested_external_id = str(req.external_branch_id or '').strip()
+        if requested_external_id and requested_external_id != mapped_external_id:
+            raise HTTPException(status_code=409, detail='Selected POS outlet does not match the saved branch mapping.')
+        metadata.update({
+            'allowed_branch_id': locked_branch.get('id'),
+            'allowed_branch_public_id': locked_branch.get('public_id'),
+            'allowed_external_branch_id': mapped_external_id,
+            'allowed_external_branch_name': locked_mapping.get('external_branch_name') or req.external_branch_name,
+        })
+    if req.device_name:
+        metadata['device_name'] = str(req.device_name).strip()[:120]
+
     code = str(secrets.randbelow(900000) + 100000)
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=int(req.expires_in_minutes))
     payload = {
@@ -38601,7 +37453,7 @@ def create_pos_device_activation_code(
         'expires_at': expires_at.isoformat(),
         'max_uses': int(req.max_uses),
         'used_count': 0,
-        'metadata': {'purpose': 'pos_companion_device_activation'},
+        'metadata': metadata,
     }
     try:
         row = (supabase.table('pos_device_activation_codes').insert(payload).execute().data or [None])[0]
@@ -38613,7 +37465,12 @@ def create_pos_device_activation_code(
         'expires_at': expires_at.isoformat(),
         'max_uses': int(req.max_uses),
         'activation_id': str((row or {}).get('id') or ''),
-        'message': 'Enter this one-time code in the Loyalty Tree Companion app.',
+        'branch_public_id': (locked_branch or {}).get('public_id'),
+        'branch_name': (locked_branch or {}).get('name'),
+        'external_branch_id': (locked_mapping or {}).get('external_branch_id'),
+        'external_branch_name': (locked_mapping or {}).get('external_branch_name'),
+        'device_name': metadata.get('device_name'),
+        'message': 'Enter this one-time code in the Loyalty Tree Companion app. The device is locked to the selected branch and POS outlet.' if locked_branch else 'Enter this one-time code in the Loyalty Tree Companion app.',
     }
 
 
@@ -38683,7 +37540,7 @@ def activate_pos_companion_device(req: POSCompanionActivateRequest):
     if allowed_branch_public_id and str(branch.get('public_id')) != allowed_branch_public_id:
         raise HTTPException(status_code=403, detail="This activation code is locked to the manager's assigned branch.")
     if allowed_external_branch_id and str(req.external_branch_id) != allowed_external_branch_id:
-        raise HTTPException(status_code=403, detail='This activation code is locked to the POS location mapped for this assigned branch.')
+        raise HTTPException(status_code=403, detail='This activation code is locked to the POS location already mapped by the owner.')
 
     known_outlets = preview.get('outlets') or []
     known_ids = {str(row.get('id')) for row in known_outlets if isinstance(row, dict) and row.get('id') is not None}
@@ -38704,7 +37561,7 @@ def activate_pos_companion_device(req: POSCompanionActivateRequest):
         if mapping and str(mapping.get('external_branch_id')) != str(req.external_branch_id):
             raise HTTPException(
                 status_code=409,
-                detail=f'This Loyalty Tree branch is already mapped to a different {provider.title()} location. Change the assigned-branch POS mapping before activating this device.',
+                detail=f'This Loyalty Tree branch is already mapped to a different {provider.title()} location. Change the mapping from an owner-authorized setup before activating this device.',
             )
         external_rows = (
             supabase.table('pos_branch_mappings')
@@ -38742,7 +37599,8 @@ def activate_pos_companion_device(req: POSCompanionActivateRequest):
             mapping = (supabase.table('pos_branch_mappings').insert(mapping_payload).execute().data or [None])[0]
 
         device_token = secrets.token_urlsafe(36)
-        display_name = f"{business.get('name') or 'Business'} {branch.get('name') or req.branch_public_id} Companion"
+        requested_device_name = str(metadata.get('device_name') or '').strip()
+        display_name = requested_device_name or f"{business.get('name') or 'Business'} {branch.get('name') or req.branch_public_id} Companion"
         device_payload = {
             'business_id': business.get('id'),
             'branch_id': branch.get('id'),
@@ -38795,20 +37653,6 @@ def pos_companion_device_config(x_lt_device_token: str = Header(default='', alia
         raise _pos_schema_error(exc)
     branch = branch_rows[0] if branch_rows else {}
     mapping = mapping_rows[0] if mapping_rows else {}
-
-    redemption_debug = _pos_redemption_config(integration)
-    print(
-        "COMPANION_CONFIG_DEBUG",
-        {
-            "business": business.get("name"),
-            "provider": (integration or {}).get("provider"),
-            "status": (integration or {}).get("status"),
-            "mode": (integration or {}).get("mode"),
-            "redemption_config": redemption_debug,
-        },
-        flush=True,
-    )
-
     return {
         'ok': True,
         'device': {k: v for k, v in device.items() if k != 'device_token_hash'},
@@ -38822,7 +37666,7 @@ def pos_companion_device_config(x_lt_device_token: str = Header(default='', alia
             'capabilities': (integration or {}).get('capabilities') if isinstance((integration or {}).get('capabilities'), dict) else {},
         },
         'loyalty_contract': _pos_loyalty_contract(business),
-        'redemption_config': redemption_debug,
+        'redemption_config': _pos_redemption_config(integration),
     }
 
 
@@ -39016,7 +37860,6 @@ def pos_companion_customer_lookup(
         integration = None
     config = (integration or {}).get('config') if isinstance((integration or {}).get('config'), dict) else {}
 
-
     return {
         'ok': True,
         'identity': {
@@ -39042,6 +37885,79 @@ def pos_companion_customer_lookup(
     }
 
 
+def _companion_allowed_membership_ids(device: dict, session: dict) -> set:
+    """Return customer-row ids belonging to the identity scanned for this checkout.
+
+    A single human may have several Loyalty Tree program memberships. Redemption
+    can target any of those memberships, but never an arbitrary customer row from
+    the same business.
+    """
+    allowed = set()
+    if session.get('customer_id') is not None:
+        allowed.add(str(session.get('customer_id')))
+
+    source_public_id = session.get('source_customer_public_id')
+    source_customer = safe_get_customer(source_public_id) if source_public_id else None
+    if source_customer and source_customer.get('business_id') == device.get('business_id'):
+        allowed.add(str(source_customer.get('id')))
+        try:
+            for membership in _pos_companion_program_rows(source_customer, device.get('business_id')):
+                if membership.get('id') is not None:
+                    allowed.add(str(membership.get('id')))
+        except Exception:
+            pass
+    return allowed
+
+
+def _companion_points_reservation_for_session(
+    device: dict,
+    session: dict,
+    reservation_id: str,
+    *,
+    gross_amount: Optional[float] = None,
+    require_discount_applied: bool = False,
+) -> dict:
+    row = _pos_redemption_row(reservation_id)
+    if not row:
+        raise HTTPException(status_code=404, detail='Points reservation was not found.')
+
+    if row.get('business_id') != device.get('business_id'):
+        raise HTTPException(status_code=404, detail='Points reservation does not belong to this business.')
+    if str(row.get('integration_id')) != str(device.get('integration_id')):
+        raise HTTPException(status_code=409, detail='Points reservation belongs to a different POS connection.')
+    if row.get('branch_id') is not None and str(row.get('branch_id')) != str(device.get('branch_id')):
+        raise HTTPException(status_code=409, detail='Points reservation belongs to a different branch.')
+
+    allowed_customer_ids = _companion_allowed_membership_ids(device, session)
+    if str(row.get('customer_id')) not in allowed_customer_ids:
+        raise HTTPException(status_code=409, detail='Points reservation belongs to a different scanned customer.')
+
+    status = str(row.get('status') or '').lower()
+    if status in ('released', 'reversed', 'expired', 'cancelled'):
+        raise HTTPException(status_code=409, detail=f'Points reservation is {status}. Reserve the points again.')
+
+    expires_at = _pos_parse_timestamp(row.get('expires_at'))
+    if status not in ('committed',) and expires_at and expires_at <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=409, detail='Points reservation expired. Reserve the points again.')
+
+    if gross_amount is not None:
+        reserved_gross = float(row.get('gross_amount') or 0)
+        if abs(reserved_gross - float(gross_amount)) > 0.01:
+            raise HTTPException(
+                status_code=400,
+                detail=f'Gross amount changed after reservation. Reserved for PHP {reserved_gross:.2f}; sale is PHP {float(gross_amount):.2f}.',
+            )
+
+    if require_discount_applied and status not in ('discount_applied', 'committed'):
+        raise HTTPException(
+            status_code=409,
+            detail='Confirm that the Loyalty Tree discount was applied before completing the POS sale.',
+        )
+
+    return row
+
+
+@app.post('/api/v1/companion/points/reserve')
 @app.post('/api/v1/pos-companion/points/reserve')
 def pos_companion_points_reserve(
     req: POSCompanionPointsReserveRequest,
@@ -39056,9 +37972,15 @@ def pos_companion_points_reserve(
     if not config.get('enabled'):
         raise HTTPException(status_code=409, detail='POS points redemption is not enabled for this StoreHub connection.')
 
+    session = _companion_active_session(device)
+    if not session:
+        raise HTTPException(status_code=409, detail='Scan a Loyalty Tree member before reserving points.')
+
     customer = safe_get_customer(req.customer_public_id)
     if not customer or customer.get('business_id') != device.get('business_id'):
         raise HTTPException(status_code=404, detail='Program membership not found for this business.')
+    if str(customer.get('id')) not in _companion_allowed_membership_ids(device, session):
+        raise HTTPException(status_code=409, detail='Selected points membership does not belong to the scanned customer.')
     program = safe_get_customer_program(customer, device.get('business_id')) or {}
     if not program_reward_uses_points(program):
         raise HTTPException(status_code=400, detail='Selected program does not use redeemable points.')
@@ -39068,22 +37990,6 @@ def pos_companion_points_reserve(
         raise HTTPException(status_code=400, detail=f"Minimum redemption is {config['min_points']} points.")
     if points % int(config['increment_points']) != 0:
         raise HTTPException(status_code=400, detail=f"Redemption must be in increments of {config['increment_points']} points.")
-    configured_options = [int(value) for value in (config.get('options') or []) if int(value) > 0]
-    if configured_options and points not in configured_options:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Choose one of the configured redemption options: {', '.join(str(value) for value in configured_options)} points.",
-        )
-
-    session = _companion_active_session(device, expire_stale=False)
-    if not session:
-        raise HTTPException(status_code=409, detail='No active Companion checkout. Scan the customer again.')
-
-    if str(session.get('customer_public_id') or '') != str(customer.get('public_id') or ''):
-        raise HTTPException(
-            status_code=409,
-            detail='The active Companion checkout belongs to a different customer. Scan this customer again.',
-        )
 
     key = (req.reservation_key or f"LT-POS-{uuid.uuid4().hex[:24]}").strip()
     row = _pos_rpc_first('pos_reserve_points_redemption', {
@@ -39100,30 +38006,72 @@ def pos_companion_points_reserve(
         'p_max_percent': config['max_percent'],
         'p_hold_minutes': config['hold_minutes'],
     })
+    return {'ok': True, 'reservation': _pos_redemption_public(row), 'message': f'{points} points reserved.'}
 
-    session_result = dict(session.get('result')) if isinstance(session.get('result'), dict) else {}
-    session_result['redemption_reservation_id'] = str(row.get('id'))
-    session_result['redemption_reserved_at'] = datetime.now(timezone.utc).isoformat()
 
-    session_rows = (
-        supabase.table('pos_companion_sessions')
-        .update({
-            'result': session_result,
-            'updated_at': datetime.now(timezone.utc).isoformat(),
-        })
-        .eq('id', session.get('id'))
-        .execute()
-        .data or []
-    )
-    session = session_rows[0] if session_rows else {**session, 'result': session_result}
+@app.post('/api/v1/companion/points/{reservation_id}/apply-discount')
+@app.post('/api/v1/pos-companion/points/{reservation_id}/apply-discount')
+def pos_companion_points_apply_discount(
+    reservation_id: str,
+    req: POSRedemptionApplyRequest,
+    x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
+):
+    """Confirm/apply the reserved cash-value discount before sale completion.
 
+    In StoreHub Test Mode this exercises the same discount-applied state machine.
+    In Companion checkout mode this button is the cashier's explicit confirmation
+    that the displayed fixed discount was entered in StoreHub.
+    """
+    device = _require_pos_device(x_lt_device_token)
+    session = _companion_active_session(device)
+    if not session:
+        raise HTTPException(status_code=409, detail='No active Companion checkout. Scan the customer again.')
+
+    integration = _get_pos_integration(device.get('business_id'), device.get('provider') or 'storehub')
+    if not integration:
+        raise HTTPException(status_code=409, detail='POS integration not found for this Companion device.')
+    if str(device.get('provider') or 'storehub').lower() != 'storehub':
+        raise HTTPException(status_code=409, detail='Companion cash-value discount confirmation is currently implemented for StoreHub.')
+
+    reservation = _companion_points_reservation_for_session(device, session, reservation_id)
+    status = str(reservation.get('status') or '').lower()
+    if status == 'committed':
+        return {
+            'ok': True,
+            'duplicate': True,
+            'reservation': _pos_redemption_public(reservation),
+            'message': 'Points redemption was already committed.',
+        }
+    if status == 'discount_applied':
+        return {
+            'ok': True,
+            'duplicate': True,
+            'reservation': _pos_redemption_public(reservation),
+            'message': 'Loyalty Tree discount was already confirmed for this checkout.',
+        }
+    if status != 'reserved':
+        raise HTTPException(status_code=409, detail=f'Points reservation is {status or "not active"}.')
+
+    adapter = _storehub_apply_redemption_discount(integration, reservation, req.external_transaction_id)
+    row = _pos_rpc_first('pos_mark_redemption_discount_applied', {
+        'p_reservation_id': reservation.get('id'),
+        'p_external_transaction_id': req.external_transaction_id,
+        'p_provider_payload': adapter,
+    })
+    if row.get('status') != 'discount_applied':
+        raise HTTPException(
+            status_code=409,
+            detail='Points reservation expired before the discount could be confirmed. Reserve the points again.',
+        )
     return {
         'ok': True,
+        'adapter': adapter,
         'reservation': _pos_redemption_public(row),
-        'message': f'{points} points reserved.',
+        'message': adapter.get('message') or 'Loyalty Tree discount confirmed.',
     }
 
 
+@app.post('/api/v1/companion/points/{reservation_id}/release')
 @app.post('/api/v1/pos-companion/points/{reservation_id}/release')
 def pos_companion_points_release(
     reservation_id: str,
@@ -39138,6 +38086,7 @@ def pos_companion_points_release(
     return {'ok': True, 'reservation': _pos_redemption_public(released), 'message': 'Reserved points released.'}
 
 
+@app.post('/api/v1/companion/coupons/reserve')
 @app.post('/api/v1/pos-companion/coupons/reserve')
 def pos_companion_coupon_reserve(
     req: POSCompanionCouponReserveRequest,
@@ -39180,6 +38129,7 @@ def pos_companion_coupon_reserve(
     return {'ok': True, 'reservation': row, 'coupon': coupon, 'message': f"Reserved {coupon.get('reward_text') or 'reward'} for this checkout."}
 
 
+@app.post('/api/v1/companion/coupons/{reservation_id}/release')
 @app.post('/api/v1/pos-companion/coupons/{reservation_id}/release')
 def pos_companion_coupon_release(
     reservation_id: str,
@@ -39197,6 +38147,7 @@ def pos_companion_coupon_release(
     return {'ok': True, 'reservation': rows[0] if rows else row, 'message': 'Redeemable reward reservation released.'}
 
 
+@app.post('/api/v1/companion/coupons/{reservation_id}/commit')
 @app.post('/api/v1/pos-companion/coupons/{reservation_id}/commit')
 def pos_companion_coupon_commit(
     reservation_id: str,
@@ -39232,6 +38183,7 @@ def pos_companion_coupon_commit(
     return {'ok': True, 'reservation': committed, 'message': 'Redeemable reward committed after StoreHub sale confirmation.'}
 
 
+@app.post('/api/v1/companion/benefits/reserve')
 @app.post('/api/v1/pos-companion/benefits/reserve')
 def pos_companion_benefit_reserve(
     req: POSCompanionBenefitReserveRequest,
@@ -39301,6 +38253,7 @@ def pos_companion_benefit_reserve(
     }
 
 
+@app.post('/api/v1/companion/benefits/{reservation_id}/release')
 @app.post('/api/v1/pos-companion/benefits/{reservation_id}/release')
 def pos_companion_benefit_release(
     reservation_id: str,
@@ -39319,6 +38272,7 @@ def pos_companion_benefit_release(
     return {'ok': True, 'reservation': released, 'message': 'Employee benefit reservation released.'}
 
 
+@app.post('/api/v1/companion/benefits/{reservation_id}/commit')
 @app.post('/api/v1/pos-companion/benefits/{reservation_id}/commit')
 async def pos_companion_benefit_commit(
     reservation_id: str,
@@ -39397,46 +38351,6 @@ def _companion_provider_label(provider: str) -> str:
 def _companion_session_public(row: Optional[dict]) -> Optional[dict]:
     if not row:
         return None
-
-    result = row.get('result') if isinstance(row.get('result'), dict) else {}
-    pending_redemption = None
-    completed_redemption = None
-
-    reservation_id = result.get('redemption_reservation_id')
-    if reservation_id:
-        try:
-            redemption = _pos_redemption_row(str(reservation_id))
-        except Exception:
-            redemption = None
-
-        if redemption:
-            same_checkout = (
-                redemption.get('business_id') == row.get('business_id')
-                and str(redemption.get('integration_id') or '') == str(row.get('integration_id') or '')
-                and redemption.get('customer_id') == row.get('customer_id')
-            )
-
-            if same_checkout:
-                public_redemption = _pos_redemption_public(redemption)
-                redemption_status = str(redemption.get('status') or '').lower()
-
-                if redemption_status in ('reserved', 'discount_applied'):
-                    pending_redemption = public_redemption
-                elif redemption_status == 'committed':
-                    completed_redemption = public_redemption
-
-    # Companion Android parses redemption state from the session result object.
-    # Keep the server-side reservation authoritative across every poll.
-    if pending_redemption is not None:
-        result['pending_points_redemption'] = pending_redemption
-    else:
-        result.pop('pending_points_redemption', None)
-
-    if completed_redemption is not None:
-        result['redemption'] = completed_redemption
-    else:
-        result.pop('redemption', None)
-
     return {
         'id': str(row.get('id') or ''),
         'status': row.get('status'),
@@ -39451,9 +38365,7 @@ def _companion_session_public(row: Optional[dict]) -> Optional[dict]:
         'gross_amount': float(row.get('gross_amount')) if row.get('gross_amount') is not None else None,
         'currency': row.get('currency'),
         'candidate_transactions': row.get('candidate_transactions') if isinstance(row.get('candidate_transactions'), list) else [],
-        'result': result,
-        'pending_redemption': pending_redemption,
-        'completed_redemption': completed_redemption,
+        'result': row.get('result') if isinstance(row.get('result'), dict) else {},
         'error_message': row.get('error_message'),
         'completed_at': row.get('completed_at'),
     }
@@ -39845,14 +38757,24 @@ async def _companion_process_transaction(
     tx: dict,
     background_tasks: BackgroundTasks,
     allow_test_mode: bool = False,
+    redemption_reservation_id: Optional[str] = None,
 ) -> dict:
     if not tx:
         raise HTTPException(status_code=404, detail='POS transaction not found.')
+
     if tx.get('status') == 'loyalty_applied':
         if tx.get('customer_id') and str(tx.get('customer_id')) != str(session.get('customer_id')):
             raise HTTPException(status_code=409, detail='This POS transaction was already applied to a different member.')
         metadata = tx.get('processing_metadata') if isinstance(tx.get('processing_metadata'), dict) else {}
         result = metadata.get('loyalty_result') if isinstance(metadata.get('loyalty_result'), dict) else {'duplicate_prevented': True}
+        existing_redemption_id = metadata.get('redemption_reservation_id')
+        if not existing_redemption_id and isinstance(result.get('redemption'), dict):
+            existing_redemption_id = result.get('redemption', {}).get('reservation_id')
+        if redemption_reservation_id and str(existing_redemption_id or '') != str(redemption_reservation_id):
+            raise HTTPException(
+                status_code=409,
+                detail='This POS transaction was already finalized without this redemption reservation.',
+            )
         patch = {
             'status': 'completed', 'matched_pos_transaction_id': tx.get('id'),
             'external_transaction_id': tx.get('external_transaction_id'), 'gross_amount': tx.get('gross_amount'),
@@ -39864,152 +38786,185 @@ async def _companion_process_transaction(
             supabase.table('pos_companion_sessions').update(patch).eq('id', session.get('id')).execute()
         except Exception:
             pass
-        return {'ok': True, 'duplicate_prevented': True, 'session': _companion_session_public({**session, **patch}), 'loyalty_result': result}
+        return {
+            'ok': True,
+            'duplicate_prevented': True,
+            'session': _companion_session_public({**session, **patch}),
+            'loyalty_result': result,
+        }
 
     if tx.get('transaction_type') != 'sale':
-        raise HTTPException(status_code=409, detail='Only completed sale transactions can earn loyalty.')
+        raise HTTPException(status_code=409, detail='Only completed sale transactions can earn or commit loyalty.')
     if tx.get('branch_id') is None or str(tx.get('branch_id')) != str(device.get('branch_id')):
         raise HTTPException(status_code=409, detail='POS transaction does not belong to this Companion branch.')
 
     business = _pos_business_by_id(device.get('business_id'))
     if not business:
         raise HTTPException(status_code=404, detail='Business not found for Companion device.')
+
     customer_rows = supabase.table('customers').select('*').eq('id', session.get('customer_id')).limit(1).execute().data or []
     customer = customer_rows[0] if customer_rows else None
     if not customer or customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail='Loyalty member for this checkout no longer exists.')
+
     program = safe_get_customer_program(customer, business.get('id')) or {}
     provider = str(device.get('provider') or '').lower()
     integration = _get_pos_integration(business.get('id'), provider)
     if not integration:
         raise HTTPException(status_code=409, detail='POS integration not found for this Companion device.')
     if not allow_test_mode and (integration.get('mode') != 'live' or integration.get('status') != 'live'):
-        raise HTTPException(status_code=409, detail=f'{_companion_provider_label(provider)} is still in Test Mode. Matching can be tested, but automatic loyalty earning remains disabled until Go Live is explicitly enabled.')
+        raise HTTPException(
+            status_code=409,
+            detail=f'{_companion_provider_label(provider)} is still in Test Mode. Matching can be tested, but automatic loyalty earning remains disabled until Go Live is explicitly enabled.',
+        )
+
     config = integration.get('config') if isinstance(integration.get('config'), dict) else {}
-    if config.get('earning_enabled') is False:
+    earning_enabled = config.get('earning_enabled') is not False
+    if not earning_enabled and not redemption_reservation_id:
         raise HTTPException(status_code=409, detail='POS earning is disabled for this connection.')
 
-    amount = float(tx.get('eligible_amount') if tx.get('eligible_amount') is not None else (tx.get('net_amount') if tx.get('net_amount') is not None else tx.get('gross_amount') or 0))
-    amount = max(0.0, amount)
     external_tx = str(tx.get('external_transaction_id') or '')
+    gross_amount = float(
+        Decimal(str(float(tx.get('gross_amount') or 0))).quantize(
+            Decimal('0.01'), rounding=ROUND_HALF_UP
+        )
+    )
     base_key = f'companion:{provider}:{device.get("integration_id")}:{external_tx}'[:180]
+
+    redemption = None
+    committed_redemption = None
+    redemption_customer = None
+    redemption_program = None
+    redemption_amount = 0.0
+    points_redeemed = 0
+    net_amount = gross_amount
+    eligible_amount = float(
+        tx.get('eligible_amount')
+        if tx.get('eligible_amount') is not None
+        else (
+            tx.get('net_amount')
+            if tx.get('net_amount') is not None
+            else gross_amount
+        )
+    )
+    redemption_audit_ref = None
+
+    if redemption_reservation_id:
+        redemption = _companion_points_reservation_for_session(
+            device,
+            session,
+            redemption_reservation_id,
+            gross_amount=gross_amount,
+            require_discount_applied=True,
+        )
+        bound_tx = str(redemption.get('external_transaction_id') or '').strip()
+        if bound_tx and bound_tx != external_tx:
+            raise HTTPException(
+                status_code=409,
+                detail=f'Points redemption is already bound to POS transaction {bound_tx}.',
+            )
+
+        redemption_customer_rows = (
+            supabase.table('customers').select('*')
+            .eq('id', redemption.get('customer_id')).limit(1).execute().data or []
+        )
+        redemption_customer = redemption_customer_rows[0] if redemption_customer_rows else None
+        if not redemption_customer or redemption_customer.get('business_id') != business.get('id'):
+            raise HTTPException(status_code=404, detail='Points membership for this redemption no longer exists.')
+        redemption_program = safe_get_customer_program(redemption_customer, business.get('id')) or {}
+        if not program_reward_uses_points(redemption_program):
+            raise HTTPException(status_code=400, detail='Cash-value POS redemption requires a Points-enabled program.')
+
+        redemption_amount = float(redemption.get('redemption_amount') or 0)
+        points_redeemed = int(redemption.get('points_reserved') or 0)
+        net_amount = float(
+            Decimal(str(max(gross_amount - redemption_amount, 0))).quantize(
+                Decimal('0.01'), rounding=ROUND_HALF_UP
+            )
+        )
+        if redemption.get('net_amount') is not None:
+            net_amount = float(
+                Decimal(str(max(float(redemption.get('net_amount') or 0), 0))).quantize(
+                    Decimal('0.01'), rounding=ROUND_HALF_UP
+                )
+            )
+        redemption_config = _pos_redemption_config(integration)
+        eligible_amount = net_amount if redemption_config.get('earn_on_net_amount') else gross_amount
+        eligible_amount = float(
+            Decimal(str(max(eligible_amount, 0))).quantize(
+                Decimal('0.01'), rounding=ROUND_HALF_UP
+            )
+        )
+    else:
+        net_amount = float(
+            Decimal(str(float(tx.get('net_amount') if tx.get('net_amount') is not None else gross_amount))).quantize(
+                Decimal('0.01'), rounding=ROUND_HALF_UP
+            )
+        )
+        eligible_amount = float(
+            Decimal(str(max(eligible_amount, 0))).quantize(
+                Decimal('0.01'), rounding=ROUND_HALF_UP
+            )
+        )
+
     points_active = program_reward_uses_points(program)
     stamps_active = program_reward_uses_stamps(program)
     points_result = None
     stamp_result = None
 
     try:
-        session_processing = {'status': 'processing', 'matched_pos_transaction_id': tx.get('id'), 'external_transaction_id': external_tx, 'gross_amount': tx.get('gross_amount'), 'currency': tx.get('currency') or 'PHP', 'error_message': None, 'updated_at': datetime.now(timezone.utc).isoformat()}
+        session_processing = {
+            'status': 'processing',
+            'matched_pos_transaction_id': tx.get('id'),
+            'external_transaction_id': external_tx,
+            'gross_amount': gross_amount,
+            'currency': tx.get('currency') or 'PHP',
+            'error_message': None,
+            'updated_at': datetime.now(timezone.utc).isoformat(),
+        }
         supabase.table('pos_companion_sessions').update(session_processing).eq('id', session.get('id')).execute()
 
-        session_result = dict(session.get('result')) if isinstance(session.get('result'), dict) else {}
-        reservation_id = session_result.get('redemption_reservation_id')
-        committed_redemption = None
-        redemption_amount = 0.0
-        points_redeemed = 0
-        redemption_audit_ref = None
-        redemption_net_amount = float(tx.get('gross_amount') or amount)
-
-        if reservation_id:
-            redemption = _pos_redemption_row(str(reservation_id))
-            if not redemption:
-                raise HTTPException(status_code=409, detail='Reserved points redemption could not be found.')
-
-            if redemption.get('business_id') != business.get('id'):
-                raise HTTPException(status_code=409, detail='Points reservation belongs to a different business.')
-            if str(redemption.get('integration_id') or '') != str(device.get('integration_id') or ''):
-                raise HTTPException(status_code=409, detail='Points reservation belongs to a different POS connection.')
-            if redemption.get('customer_id') != customer.get('id'):
-                raise HTTPException(status_code=409, detail='Points reservation belongs to a different customer.')
-            if redemption.get('branch_id') and device.get('branch_id') and str(redemption.get('branch_id')) != str(device.get('branch_id')):
-                raise HTTPException(status_code=409, detail='Points reservation belongs to a different branch.')
-
-            tx_gross = float(tx.get('gross_amount') or 0)
-            reserved_gross = float(redemption.get('gross_amount') or 0)
-            if abs(tx_gross - reserved_gross) > 0.01:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f'POS total changed after redemption. Reserved for PHP {reserved_gross:.2f}; completed sale is PHP {tx_gross:.2f}.',
-                )
-
-            bound_tx = str(redemption.get('external_transaction_id') or '').strip()
-            if bound_tx and bound_tx != external_tx:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f'Points reservation is already attached to POS transaction {bound_tx}.',
-                )
-
-            redemption_status = str(redemption.get('status') or '').lower()
-
-            if redemption_status == 'reserved':
-                adapter = _storehub_apply_redemption_discount(
-                    integration,
-                    redemption,
-                    external_tx,
-                )
-                redemption = _pos_rpc_first('pos_mark_redemption_discount_applied', {
-                    'p_reservation_id': redemption.get('id'),
-                    'p_external_transaction_id': external_tx,
-                    'p_provider_payload': adapter,
-                })
-                redemption_status = str(redemption.get('status') or '').lower()
-
-            if redemption_status not in ('discount_applied', 'committed'):
-                raise HTTPException(
-                    status_code=409,
-                    detail='Points reservation is no longer available for this checkout.',
-                )
-
-            if redemption_status != 'committed':
+        if redemption:
+            committed_redemption = redemption
+            if str(redemption.get('status') or '').lower() != 'committed':
                 committed_redemption = _pos_rpc_first('pos_commit_points_redemption', {
                     'p_reservation_id': redemption.get('id'),
                     'p_external_transaction_id': external_tx,
                 })
-            else:
-                committed_redemption = redemption
 
-            redemption_amount = float(committed_redemption.get('redemption_amount') or 0)
-            points_redeemed = int(committed_redemption.get('points_reserved') or 0)
-            redemption_net_amount = float(
-                committed_redemption.get('net_amount')
-                or max(tx_gross - redemption_amount, 0)
-            )
-
-            # Record the actual POS point deduction as its own immutable activity.
             redeem_audit = start_transaction_audit(
                 business_id=business.get('id'),
-                customer_id=customer.get('id'),
+                customer_id=redemption_customer.get('id'),
                 staff_id=None,
                 branch_id=device.get('branch_id'),
-                actor_type='system',
+                actor_type='owner',
                 action='pos_points_redeem',
                 idempotency_key=f'{base_key}:redeem',
-                delta=-points_redeemed,
+                delta=-int(committed_redemption.get('points_reserved') or 0),
                 balance_before=int(committed_redemption.get('balance_before') or 0),
-                reason='POS points redemption',
                 metadata={
-                    'card_type': program.get('card_type') or 'points',
+                    'card_type': redemption_program.get('card_type') or 'points',
                     'pos_provider': provider,
                     'pos_external_transaction_id': external_tx,
                     'redemption_reservation_id': str(committed_redemption.get('id')),
-                    'redemption_amount': redemption_amount,
-                    'gross_amount': tx_gross,
-                    'net_amount': redemption_net_amount,
+                    'redemption_amount': float(committed_redemption.get('redemption_amount') or 0),
+                    'gross_amount': gross_amount,
+                    'net_amount': net_amount,
+                    'companion_device_id': str(device.get('id')),
+                    'companion_session_id': str(session.get('id')),
                 },
             )
-
             if redeem_audit and not redeem_audit.get('_duplicate_response'):
                 complete_transaction_audit(
                     redeem_audit,
                     balance_after=int(committed_redemption.get('balance_after') or 0),
                     response_json={
                         'success': True,
-                        'points_spent': points_redeemed,
-                        'redemption_amount': redemption_amount,
+                        'points_spent': int(committed_redemption.get('points_reserved') or 0),
+                        'redemption_amount': float(committed_redemption.get('redemption_amount') or 0),
                         'points_balance': int(committed_redemption.get('balance_after') or 0),
                     },
                 )
-
             if redeem_audit and redeem_audit.get('transaction_id'):
                 redemption_audit_ref = str(redeem_audit.get('transaction_id'))
                 _pos_attach_audit_context(
@@ -40019,90 +38974,81 @@ async def _companion_process_transaction(
                     external_tx,
                 )
 
-            # Redemption mutates the Loyalty Tree balance directly, so explicitly
-            # refresh every registered wallet representation after the commit.
-            # sync_loyalty_wallets_background handles both Google Wallet and
-            # Apple Wallet using the same fresh Loyalty Tree customer state.
-            fresh_customer = safe_get_customer(customer.get('public_id')) or customer
-            background_tasks.add_task(
-                sync_loyalty_wallets_background,
-                dict(fresh_customer),
-                dict(business),
-                dict(program),
-                'pos_companion_redemption',
-                'Loyalty balance updated',
-                f"POS redemption completed. You now have {int(fresh_customer.get('points_balance') or 0)} points.",
-                f"pos-companion-redemption-{external_tx}",
-            )
-
-        if points_active and committed_redemption:
-            # A redemption transaction spends points; it must never earn points
-            # from the same purchase.
-            points_result = {
-                'message': f'{points_redeemed} points redeemed. No points earned on this transaction.',
-                'amount_spent': redemption_net_amount,
-                'points_earned': 0,
-                'points_redeemed': points_redeemed,
-                'points_balance': int(committed_redemption.get('balance_after') or 0),
-            }
-        elif points_active and amount > 0:
+        if points_active and eligible_amount > 0:
             points_result = await add_points_sale(
                 business.get('public_id'),
-                PointsSaleRequest(customer_public_id=customer.get('public_id'), amount_spent=amount, as_owner=True),
-                background_tasks, authorization='', x_idempotency_key=f'{base_key}:points',
+                PointsSaleRequest(
+                    customer_public_id=customer.get('public_id'),
+                    amount_spent=eligible_amount,
+                    as_owner=True,
+                ),
+                background_tasks,
+                authorization='',
+                x_idempotency_key=f'{base_key}:points',
             )
         elif points_active:
-            points_result = {'message': 'Eligible amount is zero; no points earned.', 'points_earned': 0}
+            fresh = safe_get_customer(customer.get('public_id')) or customer
+            points_result = {
+                'message': 'Eligible amount is zero; no points earned.',
+                'amount_spent': 0,
+                'points_earned': 0,
+                'points_balance': int(fresh.get('points_balance') or 0),
+            }
 
         if stamps_active:
             try:
                 stamp_result = await add_stamp(
                     business.get('public_id'),
-                    StampRequest(customer_public_id=customer.get('public_id'), as_owner=True, stamp_kind='reward'),
-                    background_tasks, authorization='', x_idempotency_key=f'{base_key}:stamp',
+                    StampRequest(
+                        customer_public_id=customer.get('public_id'),
+                        as_owner=True,
+                        stamp_kind='reward',
+                    ),
+                    background_tasks,
+                    authorization='',
+                    x_idempotency_key=f'{base_key}:stamp',
                 )
             except HTTPException as exc:
                 if exc.status_code == 409:
-                    stamp_result = {'message': str(exc.detail), 'stamp_skipped': True, 'duplicate_prevented': True}
+                    stamp_result = {
+                        'message': str(exc.detail),
+                        'stamp_skipped': True,
+                        'duplicate_prevented': True,
+                    }
                 else:
                     raise
 
         result = points_result or stamp_result or {
             'message': 'Sale linked to member. This program has no purchase-earning Points/Stamp engine.',
-            'points_earned': 0, 'stamps_earned': 0,
+            'points_earned': 0,
+            'stamps_earned': 0,
         }
         if points_active and stamps_active:
             result = {
                 'message': 'Points and Stamp rewards processed.',
-                'points': points_result or {}, 'stamps': stamp_result or {},
+                'points': points_result or {},
+                'stamps': stamp_result or {},
                 'points_earned': int((points_result or {}).get('points_earned') or 0),
                 'stamps_earned': 0 if (stamp_result or {}).get('stamp_skipped') else 1,
             }
 
-        if committed_redemption:
+        if redemption:
             result = {
-                'message': f'{points_redeemed} points redeemed. No points earned on this redemption transaction.',
-                'points_earned': 0,
-                'points_redeemed': points_redeemed,
-                'points_balance': int(committed_redemption.get('balance_after') or 0),
-                'gross_amount': float(tx.get('gross_amount') or 0),
-                'discount_amount': redemption_amount,
-                'net_amount': redemption_net_amount,
-                'redemption_reservation_id': str(committed_redemption.get('id')),
-                'redemption': _pos_redemption_public(committed_redemption),
-                'stamps': stamp_result or {},
-                'stamps_earned': (
-                    1 if stamps_active and stamp_result
-                    and not stamp_result.get('stamp_skipped')
-                    and not stamp_result.get('duplicate_prevented')
-                    else 0
-                ),
+                **(result or {}),
+                'redemption': {
+                    'reservation_id': str((committed_redemption or redemption).get('id')),
+                    'status': (committed_redemption or redemption).get('status'),
+                    'points_redeemed': int((committed_redemption or redemption).get('points_reserved') or 0),
+                    'redemption_amount': float((committed_redemption or redemption).get('redemption_amount') or 0),
+                    'balance_after_redemption': (committed_redemption or redemption).get('balance_after'),
+                    'gross_amount': gross_amount,
+                    'net_amount': net_amount,
+                },
             }
 
         audit_refs = []
         if redemption_audit_ref:
             audit_refs.append(redemption_audit_ref)
-
         for item in (points_result, stamp_result):
             audit_ref = item.get('transaction_id') if isinstance(item, dict) else None
             if audit_ref:
@@ -40110,58 +39056,113 @@ async def _companion_process_transaction(
                 _pos_attach_audit_context(audit_ref, device.get('branch_id'), provider, external_tx)
 
         points_earned = int((points_result or {}).get('points_earned') or 0)
-        stamps_earned = 1 if stamps_active and stamp_result and not stamp_result.get('stamp_skipped') and not stamp_result.get('duplicate_prevented') else 0
+        stamps_earned = (
+            1
+            if stamps_active
+            and stamp_result
+            and not stamp_result.get('stamp_skipped')
+            and not stamp_result.get('duplicate_prevented')
+            else 0
+        )
+
+        wallet_status = None
+        if redemption and redemption_customer and redemption_program:
+            fresh_redemption_customer = safe_get_customer(redemption_customer.get('public_id')) or redemption_customer
+            background_tasks.add_task(
+                sync_loyalty_wallets_background,
+                dict(fresh_redemption_customer),
+                dict(business),
+                dict(redemption_program),
+                'pos_companion_redemption',
+                'Loyalty balance updated',
+                f"POS redemption completed. You now have {int(fresh_redemption_customer.get('points_balance') or 0)} points.",
+                f"pos-companion-redemption-{external_tx}",
+            )
+            wallet_status = 'queued'
+
         processing = tx.get('processing_metadata') if isinstance(tx.get('processing_metadata'), dict) else {}
         processing = {
             **processing,
-            'companion_session_id': str(session.get('id')), 'companion_device_id': str(device.get('id')),
+            'companion_session_id': str(session.get('id')),
+            'companion_device_id': str(device.get('id')),
             'source_customer_public_id': session.get('source_customer_public_id'),
-            'earning_customer_public_id': customer.get('public_id'), 'loyalty_result': result,
-            'transaction_audit_refs': audit_refs, 'matched_at': datetime.now(timezone.utc).isoformat(),
+            'earning_customer_public_id': customer.get('public_id'),
+            'loyalty_result': result,
+            'transaction_audit_refs': audit_refs,
+            'matched_at': datetime.now(timezone.utc).isoformat(),
             'test_mode': bool(allow_test_mode and integration.get('mode') != 'live'),
+            'redemption_reservation_id': str((committed_redemption or redemption).get('id')) if redemption else None,
+            'gross_amount': gross_amount,
+            'redemption_amount': redemption_amount,
+            'net_amount': net_amount,
+            'eligible_amount': eligible_amount,
+            'wallet_sync_status': wallet_status,
         }
-        transaction_patch = {
-            'customer_id': customer.get('id'), 'status': 'loyalty_applied',
-            'points_earned': points_earned, 'stamps_earned': stamps_earned,
+        updated = supabase.table('pos_transactions').update({
+            'customer_id': customer.get('id'),
+            'status': 'loyalty_applied',
+            'gross_amount': gross_amount,
+            'discount_amount': redemption_amount,
+            'net_amount': net_amount,
+            'eligible_amount': eligible_amount,
+            'points_redeemed': points_redeemed,
+            'points_earned': points_earned,
+            'stamps_earned': stamps_earned,
             'transaction_audit_ref': audit_refs[0] if audit_refs else None,
-            'processing_metadata': processing, 'error_message': None,
+            'processing_metadata': processing,
+            'error_message': None,
             'processed_at': datetime.now(timezone.utc).isoformat(),
+        }).eq('id', tx.get('id')).execute().data or []
+        tx = updated[0] if updated else {
+            **tx,
+            'status': 'loyalty_applied',
+            'customer_id': customer.get('id'),
+            'gross_amount': gross_amount,
+            'discount_amount': redemption_amount,
+            'net_amount': net_amount,
+            'eligible_amount': eligible_amount,
+            'points_redeemed': points_redeemed,
         }
-
-        if committed_redemption:
-            transaction_patch.update({
-                'discount_amount': redemption_amount,
-                'net_amount': redemption_net_amount,
-                'eligible_amount': redemption_net_amount,
-                'points_redeemed': points_redeemed,
-            })
-
-        updated = (
-            supabase.table('pos_transactions')
-            .update(transaction_patch)
-            .eq('id', tx.get('id'))
-            .execute()
-            .data or []
-        )
-        tx = updated[0] if updated else {**tx, 'status': 'loyalty_applied', 'customer_id': customer.get('id')}
 
         patch = {
-            'status': 'completed', 'matched_pos_transaction_id': tx.get('id'),
-            'external_transaction_id': external_tx, 'gross_amount': tx.get('gross_amount'),
-            'currency': tx.get('currency') or 'PHP', 'candidate_transactions': [], 'result': result,
-            'error_message': None, 'completed_at': datetime.now(timezone.utc).isoformat(),
+            'status': 'completed',
+            'matched_pos_transaction_id': tx.get('id'),
+            'external_transaction_id': external_tx,
+            'gross_amount': gross_amount,
+            'currency': tx.get('currency') or 'PHP',
+            'candidate_transactions': [],
+            'result': result,
+            'error_message': None,
+            'completed_at': datetime.now(timezone.utc).isoformat(),
             'updated_at': datetime.now(timezone.utc).isoformat(),
         }
         supabase.table('pos_companion_sessions').update(patch).eq('id', session.get('id')).execute()
+
+        fresh_customer = safe_get_customer(customer.get('public_id')) or customer
         return {
-            'ok': True, 'test_mode': bool(allow_test_mode and integration.get('mode') != 'live'),
+            'ok': True,
+            'test_mode': bool(allow_test_mode and integration.get('mode') != 'live'),
             'session': _companion_session_public({**session, **patch}),
-            'transaction': {'id': str(tx.get('id')), 'external_transaction_id': external_tx, 'gross_amount': float(tx.get('gross_amount') or 0), 'currency': tx.get('currency') or 'PHP'},
+            'transaction': {
+                'id': str(tx.get('id')),
+                'external_transaction_id': external_tx,
+                'gross_amount': gross_amount,
+                'redemption_amount': redemption_amount,
+                'net_amount': net_amount,
+                'eligible_amount': eligible_amount,
+                'points_redeemed': points_redeemed,
+                'currency': tx.get('currency') or 'PHP',
+            },
+            'points_balance': int(fresh_customer.get('points_balance') or 0),
             'loyalty_result': result,
         }
     except HTTPException as exc:
         try:
-            supabase.table('pos_companion_sessions').update({'status': 'failed', 'error_message': str(exc.detail)[:1000], 'updated_at': datetime.now(timezone.utc).isoformat()}).eq('id', session.get('id')).execute()
+            supabase.table('pos_companion_sessions').update({
+                'status': 'failed',
+                'error_message': str(exc.detail)[:1000],
+                'updated_at': datetime.now(timezone.utc).isoformat(),
+            }).eq('id', session.get('id')).execute()
         except Exception:
             pass
         raise
@@ -40262,7 +39263,14 @@ async def companion_session_poll(
             rows = supabase.table('pos_companion_sessions').update(patch).eq('id', session.get('id')).execute().data or []
             session = rows[0] if rows else {**session, **patch}
             return {'ok': True, 'dry_run': True, 'state': 'test_match_ready', 'session': _companion_session_public(session), 'candidates': candidates}
-        return await _companion_process_transaction(device, session, matched_tx, background_tasks, allow_test_mode=is_mock)
+        return await _companion_process_transaction(
+            device,
+            session,
+            matched_tx,
+            background_tasks,
+            allow_test_mode=is_mock,
+            redemption_reservation_id=req.redemption_reservation_id,
+        )
 
     if len(candidates) > 1 and integration.get('mode') != 'live':
         # Multiple mock receipts intentionally exercise the exact manual-match path.
@@ -40309,7 +39317,14 @@ async def companion_session_match(
         raise HTTPException(status_code=409, detail='That receipt is outside this Companion checkout window or does not match this branch/register.')
     integration = _get_pos_integration(device.get('business_id'), device.get('provider') or 'storehub')
     allow_mock = bool(integration and integration.get('mode') == 'test' and _companion_is_mock_transaction(tx))
-    return await _companion_process_transaction(device, session, tx, background_tasks, allow_test_mode=allow_mock)
+    return await _companion_process_transaction(
+        device,
+        session,
+        tx,
+        background_tasks,
+        allow_test_mode=allow_mock,
+        redemption_reservation_id=req.redemption_reservation_id,
+    )
 
 
 @app.post('/api/v1/companion/mock/transaction')
@@ -40457,7 +39472,14 @@ async def companion_session_test_sale(
         raise _pos_schema_error(exc)
     if not tx:
         raise HTTPException(status_code=500, detail='Could not create Companion test transaction.')
-    return await _companion_process_transaction(device, session, tx, background_tasks, allow_test_mode=True)
+    return await _companion_process_transaction(
+        device,
+        session,
+        tx,
+        background_tasks,
+        allow_test_mode=True,
+        redemption_reservation_id=req.redemption_reservation_id,
+    )
 
 
 @app.post('/api/v1/companion/session/current/cancel')
@@ -40889,881 +39911,3 @@ def owner_match_pos_offline_event(
         'event': _pos_offline_event_public(updated),
         'message': 'Offline event matched using the supplied exact StoreHub transaction ID.',
     }
-
-# =============================================================================
-# LOYALTYTREE LENDING / LOAN MANAGEMENT v1
-# Generic cash-lending module. Deliberately separate from Car Lending/Showroom,
-# loyalty customers, Wallet passes, POS, and Order Ahead.
-# =============================================================================
-
-LENDING_FREQUENCIES = ('daily', 'weekly', 'biweekly', 'semimonthly', 'monthly')
-LENDING_LOAN_STATUSES = ('active', 'overdue', 'fully_paid', 'defaulted', 'cancelled')
-
-
-class LendingBorrowerCreate(BaseModel):
-    name: str = Field(min_length=2, max_length=160)
-    phone: Optional[str] = Field(default=None, max_length=80)
-    email: Optional[str] = Field(default=None, max_length=254)
-    address: Optional[str] = Field(default=None, max_length=500)
-    id_number: Optional[str] = Field(default=None, max_length=160)
-    emergency_contact_name: Optional[str] = Field(default=None, max_length=160)
-    emergency_contact_phone: Optional[str] = Field(default=None, max_length=80)
-    photo_url: Optional[str] = Field(default=None, max_length=2000)
-    notes: Optional[str] = Field(default=None, max_length=4000)
-
-
-class LendingBorrowerUpdate(BaseModel):
-    name: Optional[str] = Field(default=None, min_length=2, max_length=160)
-    phone: Optional[str] = Field(default=None, max_length=80)
-    email: Optional[str] = Field(default=None, max_length=254)
-    address: Optional[str] = Field(default=None, max_length=500)
-    id_number: Optional[str] = Field(default=None, max_length=160)
-    emergency_contact_name: Optional[str] = Field(default=None, max_length=160)
-    emergency_contact_phone: Optional[str] = Field(default=None, max_length=80)
-    photo_url: Optional[str] = Field(default=None, max_length=2000)
-    notes: Optional[str] = Field(default=None, max_length=4000)
-    status: Optional[Literal['active', 'inactive', 'blocked']] = None
-
-
-class LendingLoanCreate(BaseModel):
-    borrower_public_id: str = Field(min_length=1, max_length=160)
-    branch_public_id: Optional[str] = Field(default=None, max_length=160)
-    contract_number: Optional[str] = Field(default=None, max_length=100)
-    principal_amount: float = Field(gt=0, le=1000000000)
-    interest_rate: float = Field(default=0, ge=0, le=10000)
-    total_payable: Optional[float] = Field(default=None, gt=0, le=1000000000)
-    installment_amount: Optional[float] = Field(default=None, gt=0, le=1000000000)
-    installment_count: int = Field(ge=1, le=1000)
-    payment_frequency: Literal['daily', 'weekly', 'biweekly', 'semimonthly', 'monthly'] = 'monthly'
-    release_date: Optional[str] = None
-    first_due_date: Optional[str] = None
-    notes: Optional[str] = Field(default=None, max_length=4000)
-
-
-class LendingLoanUpdate(BaseModel):
-    branch_public_id: Optional[str] = Field(default=None, max_length=160)
-    contract_number: Optional[str] = Field(default=None, max_length=100)
-    notes: Optional[str] = Field(default=None, max_length=4000)
-    status: Optional[Literal['active', 'overdue', 'fully_paid', 'defaulted', 'cancelled']] = None
-
-
-class LendingPaymentCreate(BaseModel):
-    amount: float = Field(gt=0, le=1000000000)
-    payment_date: Optional[str] = None
-    method: Optional[str] = Field(default=None, max_length=80)
-    reference_number: Optional[str] = Field(default=None, max_length=160)
-    notes: Optional[str] = Field(default=None, max_length=1000)
-
-
-class LendingDocumentCreate(BaseModel):
-    borrower_public_id: Optional[str] = Field(default=None, max_length=160)
-    document_type: str = Field(default='other', min_length=1, max_length=80)
-    title: Optional[str] = Field(default=None, max_length=200)
-    file_url: Optional[str] = Field(default=None, max_length=2500)
-    file_name: Optional[str] = Field(default=None, max_length=300)
-    mime_type: Optional[str] = Field(default=None, max_length=160)
-
-
-def _lending_money(value) -> float:
-    try:
-        return float(Decimal(str(value or 0)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
-    except Exception:
-        return 0.0
-
-
-def _lending_date(value, field_name: str, default_value: Optional[date] = None) -> date:
-    if value in (None, ''):
-        if default_value is not None:
-            return default_value
-        raise HTTPException(status_code=400, detail=f'{field_name} is required')
-    try:
-        return datetime.strptime(str(value)[:10], '%Y-%m-%d').date()
-    except Exception:
-        raise HTTPException(status_code=400, detail=f'{field_name} must use YYYY-MM-DD')
-
-
-def _lending_add_months(value: date, months: int) -> date:
-    month_index = value.month - 1 + months
-    year = value.year + month_index // 12
-    month = month_index % 12 + 1
-    day = min(value.day, calendar.monthrange(year, month)[1])
-    return date(year, month, day)
-
-
-def _lending_due_date(first_due: date, frequency: str, installment_index: int) -> date:
-    if frequency == 'daily':
-        return first_due + timedelta(days=installment_index)
-    if frequency == 'weekly':
-        return first_due + timedelta(days=7 * installment_index)
-    if frequency == 'biweekly':
-        return first_due + timedelta(days=14 * installment_index)
-    if frequency == 'semimonthly':
-        return first_due + timedelta(days=15 * installment_index)
-    return _lending_add_months(first_due, installment_index)
-
-
-def _lending_first_due(release_date: date, frequency: str) -> date:
-    if frequency == 'daily':
-        return release_date + timedelta(days=1)
-    if frequency == 'weekly':
-        return release_date + timedelta(days=7)
-    if frequency == 'biweekly':
-        return release_date + timedelta(days=14)
-    if frequency == 'semimonthly':
-        return release_date + timedelta(days=15)
-    return _lending_add_months(release_date, 1)
-
-
-def _lending_require_owner(public_id: str, authorization: str) -> dict:
-    require_owner_session(public_id, authorization)
-    business = safe_get_business(public_id)
-    if not business:
-        raise HTTPException(status_code=404, detail='Business not found')
-    if str(business.get('business_type') or '').lower() != 'lending':
-        raise HTTPException(status_code=403, detail='Lending module is not enabled for this business')
-    return business
-
-
-def _lending_find_borrower(business_id, borrower_public_id: str) -> Optional[dict]:
-    try:
-        rows = (
-            supabase.table('lending_borrowers').select('*')
-            .eq('business_id', business_id).eq('public_id', borrower_public_id).limit(1).execute().data or []
-        )
-        return rows[0] if rows else None
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
-
-
-def _lending_find_loan(business_id, loan_public_id: str) -> Optional[dict]:
-    try:
-        rows = (
-            supabase.table('lending_loans').select('*')
-            .eq('business_id', business_id).eq('public_id', loan_public_id).limit(1).execute().data or []
-        )
-        return rows[0] if rows else None
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
-
-
-def _lending_refresh_business(business_id) -> None:
-    """Refresh overdue flags from the installment ledger.
-
-    Runs on lending dashboard/list reads so status remains correct even on days
-    with no payment entry or cron job. Payment writes also call this immediately.
-    """
-    today = datetime.now(LOYALTY_TIMEZONE).date()
-    try:
-        loans = (
-            supabase.table('lending_loans').select('id,status,balance_remaining,next_due_date,days_past_due')
-            .eq('business_id', business_id).execute().data or []
-        )
-        if not loans:
-            return
-        loan_ids = [row['id'] for row in loans]
-        installments = (
-            supabase.table('lending_installments').select('id,loan_id,due_date,amount_due,amount_paid,status,performance')
-            .in_('loan_id', loan_ids).order('due_date').execute().data or []
-        )
-    except Exception:
-        return
-
-    by_loan = defaultdict(list)
-    for inst in installments:
-        by_loan[inst.get('loan_id')].append(inst)
-        if str(inst.get('status')) == 'paid':
-            continue
-        try:
-            due = datetime.strptime(str(inst.get('due_date'))[:10], '%Y-%m-%d').date()
-        except Exception:
-            continue
-        target_perf = 'overdue' if due < today and _lending_money(inst.get('amount_paid')) < _lending_money(inst.get('amount_due')) else 'pending'
-        if inst.get('performance') != target_perf:
-            try:
-                supabase.table('lending_installments').update({
-                    'performance': target_perf,
-                    'updated_at': datetime.utcnow().isoformat(),
-                }).eq('id', inst.get('id')).execute()
-            except Exception:
-                pass
-
-    for loan in loans:
-        if loan.get('status') in ('fully_paid', 'defaulted', 'cancelled'):
-            continue
-        unpaid = [
-            i for i in by_loan.get(loan.get('id'), [])
-            if _lending_money(i.get('amount_paid')) + 0.009 < _lending_money(i.get('amount_due'))
-        ]
-        if not unpaid or _lending_money(loan.get('balance_remaining')) <= 0:
-            patch = {'status': 'fully_paid', 'balance_remaining': 0, 'next_due_date': None, 'days_past_due': 0, 'updated_at': datetime.utcnow().isoformat()}
-        else:
-            unpaid.sort(key=lambda row: str(row.get('due_date') or '9999-12-31'))
-            earliest = unpaid[0]
-            try:
-                earliest_due = datetime.strptime(str(earliest.get('due_date'))[:10], '%Y-%m-%d').date()
-            except Exception:
-                earliest_due = today
-            is_overdue = earliest_due < today
-            patch = {
-                'status': 'overdue' if is_overdue else 'active',
-                'next_due_date': earliest_due.isoformat(),
-                'days_past_due': max(0, (today - earliest_due).days) if is_overdue else 0,
-                'updated_at': datetime.utcnow().isoformat(),
-            }
-        try:
-            supabase.table('lending_loans').update(patch).eq('id', loan.get('id')).execute()
-        except Exception:
-            pass
-
-
-def _lending_enrich_loans(business_id, loans: list[dict]) -> list[dict]:
-    if not loans:
-        return []
-    borrower_ids = list({row.get('borrower_id') for row in loans if row.get('borrower_id')})
-    branch_ids = list({row.get('branch_id') for row in loans if row.get('branch_id')})
-    loan_ids = [row.get('id') for row in loans if row.get('id')]
-    borrowers = []
-    branches = []
-    installments = []
-    try:
-        if borrower_ids:
-            borrowers = supabase.table('lending_borrowers').select('id,public_id,name,phone,email,status').in_('id', borrower_ids).execute().data or []
-        if branch_ids:
-            branches = supabase.table('branches').select('id,public_id,name,address,is_active').in_('id', branch_ids).execute().data or []
-        if loan_ids:
-            installments = supabase.table('lending_installments').select('loan_id,status,performance,amount_due,amount_paid').in_('loan_id', loan_ids).execute().data or []
-    except Exception:
-        pass
-    borrower_map = {row['id']: row for row in borrowers}
-    branch_map = {row['id']: row for row in branches}
-    perf_map = defaultdict(lambda: {'on_time': 0, 'delayed': 0, 'overdue': 0, 'pending': 0, 'partial': 0})
-    for inst in installments:
-        perf = perf_map[inst.get('loan_id')]
-        performance = str(inst.get('performance') or 'pending')
-        if performance in perf:
-            perf[performance] += 1
-        if str(inst.get('status')) == 'partial':
-            perf['partial'] += 1
-    out = []
-    for loan in loans:
-        item = dict(loan)
-        item['borrower'] = borrower_map.get(loan.get('borrower_id'))
-        item['branch'] = branch_map.get(loan.get('branch_id'))
-        item['payment_performance'] = perf_map.get(loan.get('id'), {'on_time': 0, 'delayed': 0, 'overdue': 0, 'pending': 0, 'partial': 0})
-        out.append(item)
-    return out
-
-
-
-LENDING_DOCUMENT_BUCKET = 'lending-documents'
-LENDING_DOCUMENT_MAX_BYTES = 10 * 1024 * 1024
-LENDING_DOCUMENT_MIME_TYPES = {
-    'application/pdf': '.pdf',
-    'image/jpeg': '.jpg',
-    'image/png': '.png',
-    'image/webp': '.webp',
-}
-
-
-def _lending_storage_headers(content_type: Optional[str] = None) -> dict:
-    headers = {
-        'Authorization': f'Bearer {SUPABASE_KEY}',
-        'apikey': SUPABASE_KEY,
-    }
-    if content_type:
-        headers['Content-Type'] = content_type
-    return headers
-
-
-def _lending_storage_url(storage_path: str) -> str:
-    safe_path = quote(str(storage_path or '').lstrip('/'), safe='/')
-    return f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/{LENDING_DOCUMENT_BUCKET}/{safe_path}"
-
-
-
-def _lending_storage_download_url(storage_path: str) -> str:
-    safe_path = quote(str(storage_path or '').lstrip('/'), safe='/')
-    return f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/authenticated/{LENDING_DOCUMENT_BUCKET}/{safe_path}"
-
-
-def _lending_document_public(row: dict) -> dict:
-    out = {k: v for k, v in dict(row or {}).items() if k not in ('storage_path', 'file_url')}
-    out['has_private_file'] = bool((row or {}).get('storage_path'))
-    # Legacy/external URLs can still be represented, but new Lending uploads use
-    # private Supabase Storage and are fetched through the authenticated endpoint.
-    out['legacy_file_url'] = (row or {}).get('file_url') if not (row or {}).get('storage_path') else None
-    return out
-
-@app.get('/api/v1/business/{public_id}/lending/dashboard')
-def lending_dashboard(public_id: str, authorization: str = Header(default='')):
-    business = _lending_require_owner(public_id, authorization)
-    business_id = business.get('id')
-    _lending_refresh_business(business_id)
-    try:
-        borrowers = supabase.table('lending_borrowers').select('id,status').eq('business_id', business_id).execute().data or []
-        loans = supabase.table('lending_loans').select('*').eq('business_id', business_id).execute().data or []
-        installments = supabase.table('lending_installments').select('loan_id,status,performance,amount_due,amount_paid').eq('business_id', business_id).execute().data or []
-        payments = supabase.table('lending_payments').select('amount,payment_date,timeliness').eq('business_id', business_id).execute().data or []
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
-
-    today = datetime.now(LOYALTY_TIMEZONE).date()
-    month_prefix = today.strftime('%Y-%m')
-    active_loans = [l for l in loans if l.get('status') in ('active', 'overdue')]
-    overdue_loans = [l for l in loans if l.get('status') == 'overdue']
-    completed_loans = [l for l in loans if l.get('status') == 'fully_paid']
-    on_time = sum(1 for i in installments if i.get('performance') == 'on_time')
-    delayed = sum(1 for i in installments if i.get('performance') == 'delayed')
-    overdue_installments = sum(1 for i in installments if i.get('performance') == 'overdue')
-    partial_installments = sum(1 for i in installments if i.get('status') == 'partial')
-    completed_for_rate = on_time + delayed
-    on_time_rate = round((on_time / completed_for_rate) * 100, 1) if completed_for_rate else 100.0
-    collections_today = sum(_lending_money(p.get('amount')) for p in payments if str(p.get('payment_date'))[:10] == today.isoformat())
-    collections_month = sum(_lending_money(p.get('amount')) for p in payments if str(p.get('payment_date') or '').startswith(month_prefix))
-
-    return {
-        'business_name': business.get('name'),
-        'borrowers': len(borrowers),
-        'active_borrowers': sum(1 for b in borrowers if b.get('status') == 'active'),
-        'active_loans': len(active_loans),
-        'fully_paid_loans': len(completed_loans),
-        'overdue_loans': len(overdue_loans),
-        'total_released': _lending_money(sum(_lending_money(l.get('principal_amount')) for l in loans if l.get('status') != 'cancelled')),
-        'outstanding_balance': _lending_money(sum(_lending_money(l.get('balance_remaining')) for l in active_loans)),
-        'collections_today': _lending_money(collections_today),
-        'collections_month': _lending_money(collections_month),
-        'on_time_installments': on_time,
-        'delayed_installments': delayed,
-        'overdue_installments': overdue_installments,
-        'partial_installments': partial_installments,
-        'on_time_rate': on_time_rate,
-    }
-
-
-@app.get('/api/v1/business/{public_id}/lending/borrowers')
-def lending_list_borrowers(public_id: str, search: Optional[str] = None, authorization: str = Header(default='')):
-    business = _lending_require_owner(public_id, authorization)
-    business_id = business.get('id')
-    _lending_refresh_business(business_id)
-    try:
-        borrowers = supabase.table('lending_borrowers').select('*').eq('business_id', business_id).order('created_at', desc=True).execute().data or []
-        loans = supabase.table('lending_loans').select('id,borrower_id,status,balance_remaining').eq('business_id', business_id).execute().data or []
-        installments = supabase.table('lending_installments').select('loan_id,performance').eq('business_id', business_id).execute().data or []
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
-
-    if search:
-        needle = search.strip().lower()
-        borrowers = [b for b in borrowers if needle in ' '.join(str(b.get(k) or '').lower() for k in ('name','phone','email','address','id_number'))]
-    loan_map = defaultdict(list)
-    for loan in loans:
-        loan_map[loan.get('borrower_id')].append(loan)
-    loan_by_id = {loan.get('id'): loan for loan in loans}
-    perf_by_borrower = defaultdict(lambda: {'on_time': 0, 'delayed': 0, 'overdue': 0})
-    for inst in installments:
-        loan = loan_by_id.get(inst.get('loan_id'))
-        if not loan:
-            continue
-        borrower_id = loan.get('borrower_id')
-        perf = str(inst.get('performance') or '')
-        if perf in perf_by_borrower[borrower_id]:
-            perf_by_borrower[borrower_id][perf] += 1
-    out = []
-    for borrower in borrowers:
-        item = dict(borrower)
-        borrower_loans = loan_map.get(borrower.get('id'), [])
-        active = [l for l in borrower_loans if l.get('status') in ('active','overdue')]
-        perf = perf_by_borrower.get(borrower.get('id'), {'on_time': 0, 'delayed': 0, 'overdue': 0})
-        item['active_loans'] = len(active)
-        item['total_loans'] = len(borrower_loans)
-        item['outstanding_balance'] = _lending_money(sum(_lending_money(l.get('balance_remaining')) for l in active))
-        item['payment_performance'] = perf
-        out.append(item)
-    return out
-
-
-@app.post('/api/v1/business/{public_id}/lending/borrowers')
-def lending_create_borrower(public_id: str, payload: LendingBorrowerCreate, authorization: str = Header(default='')):
-    business = _lending_require_owner(public_id, authorization)
-    row = payload.model_dump()
-    row.update({
-        'public_id': f'lbr_{uuid.uuid4().hex}',
-        'business_id': business.get('id'),
-        'name': payload.name.strip(),
-        'created_at': datetime.utcnow().isoformat(),
-        'updated_at': datetime.utcnow().isoformat(),
-    })
-    try:
-        res = supabase.table('lending_borrowers').insert(row).execute()
-        return (res.data or [row])[0]
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
-
-
-@app.patch('/api/v1/business/{public_id}/lending/borrowers/{borrower_public_id}')
-def lending_update_borrower(public_id: str, borrower_public_id: str, payload: LendingBorrowerUpdate, authorization: str = Header(default='')):
-    business = _lending_require_owner(public_id, authorization)
-    borrower = _lending_find_borrower(business.get('id'), borrower_public_id)
-    if not borrower:
-        raise HTTPException(status_code=404, detail='Borrower not found')
-    patch = {k: v for k, v in payload.model_dump().items() if v is not None}
-    if 'name' in patch:
-        patch['name'] = patch['name'].strip()
-    patch['updated_at'] = datetime.utcnow().isoformat()
-    try:
-        res = supabase.table('lending_borrowers').update(patch).eq('id', borrower.get('id')).execute()
-        return (res.data or [{**borrower, **patch}])[0]
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
-
-
-@app.get('/api/v1/business/{public_id}/lending/loans')
-def lending_list_loans(public_id: str, status: Optional[str] = None, borrower_public_id: Optional[str] = None, authorization: str = Header(default='')):
-    business = _lending_require_owner(public_id, authorization)
-    business_id = business.get('id')
-    _lending_refresh_business(business_id)
-    try:
-        query = supabase.table('lending_loans').select('*').eq('business_id', business_id)
-        if status:
-            query = query.eq('status', status)
-        if borrower_public_id:
-            borrower = _lending_find_borrower(business_id, borrower_public_id)
-            if not borrower:
-                return []
-            query = query.eq('borrower_id', borrower.get('id'))
-        loans = query.order('created_at', desc=True).execute().data or []
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
-    return _lending_enrich_loans(business_id, loans)
-
-
-@app.post('/api/v1/business/{public_id}/lending/loans')
-def lending_create_loan(public_id: str, payload: LendingLoanCreate, authorization: str = Header(default='')):
-    business = _lending_require_owner(public_id, authorization)
-    business_id = business.get('id')
-    borrower = _lending_find_borrower(business_id, payload.borrower_public_id)
-    if not borrower:
-        raise HTTPException(status_code=404, detail='Borrower not found')
-    if borrower.get('status') == 'blocked':
-        raise HTTPException(status_code=409, detail='This borrower is blocked from new loans')
-
-    branch_id = None
-    if payload.branch_public_id:
-        branch = safe_get_branch(payload.branch_public_id)
-        if not branch or branch.get('business_id') != business_id:
-            raise HTTPException(status_code=400, detail='Branch does not belong to this business')
-        branch_id = branch.get('id')
-
-    release = _lending_date(payload.release_date, 'release_date', date.today())
-    first_due = _lending_date(payload.first_due_date, 'first_due_date', _lending_first_due(release, payload.payment_frequency))
-    if first_due < release:
-        raise HTTPException(status_code=400, detail='first_due_date cannot be before release_date')
-
-    principal = _lending_money(payload.principal_amount)
-    if payload.total_payable is not None:
-        total = _lending_money(payload.total_payable)
-    elif payload.installment_amount is not None:
-        total = _lending_money(payload.installment_amount * payload.installment_count)
-    else:
-        total = _lending_money(principal * (1 + (payload.interest_rate / 100)))
-    if total + 0.009 < principal:
-        raise HTTPException(status_code=400, detail='Total payable cannot be lower than principal amount')
-    installment = _lending_money(payload.installment_amount if payload.installment_amount is not None else total / payload.installment_count)
-    if installment <= 0:
-        raise HTTPException(status_code=400, detail='Installment amount must be greater than zero')
-    if payload.installment_count > 1 and _lending_money(installment * (payload.installment_count - 1)) + 0.009 >= total:
-        raise HTTPException(status_code=400, detail='Installment amount is too high for the total payable and number of payments')
-
-    # Keep the schedule exactly equal to total payable by putting any rounding
-    # difference into the final installment.
-    schedule = []
-    allocated = 0.0
-    for index in range(payload.installment_count):
-        if index == payload.installment_count - 1:
-            amount_due = _lending_money(total - allocated)
-        else:
-            amount_due = installment
-            allocated = _lending_money(allocated + amount_due)
-        schedule.append({
-            'public_id': f'lin_{uuid.uuid4().hex}',
-            'business_id': business_id,
-            'installment_number': index + 1,
-            'due_date': _lending_due_date(first_due, payload.payment_frequency, index).isoformat(),
-            'amount_due': amount_due,
-            'amount_paid': 0,
-            'status': 'pending',
-            'performance': 'pending',
-        })
-
-    loan_public_id = f'ln_{uuid.uuid4().hex}'
-    contract_number = (payload.contract_number or f'LND-{datetime.utcnow().strftime("%Y%m%d")}-{uuid.uuid4().hex[:6].upper()}').strip()
-    loan_row = {
-        'public_id': loan_public_id,
-        'business_id': business_id,
-        'borrower_id': borrower.get('id'),
-        'branch_id': branch_id,
-        'contract_number': contract_number,
-        'principal_amount': principal,
-        'interest_rate': _lending_money(payload.interest_rate),
-        'total_payable': total,
-        'installment_amount': installment,
-        'installment_count': payload.installment_count,
-        'payment_frequency': payload.payment_frequency,
-        'release_date': release.isoformat(),
-        'first_due_date': first_due.isoformat(),
-        'next_due_date': first_due.isoformat(),
-        'balance_remaining': total,
-        'status': 'active',
-        'days_past_due': 0,
-        'notes': payload.notes,
-        'created_at': datetime.utcnow().isoformat(),
-        'updated_at': datetime.utcnow().isoformat(),
-    }
-    try:
-        existing = supabase.table('lending_loans').select('id').eq('business_id', business_id).eq('contract_number', contract_number).limit(1).execute().data or []
-        if existing:
-            raise HTTPException(status_code=409, detail='Contract number already exists for this business')
-        inserted = supabase.table('lending_loans').insert(loan_row).execute().data or []
-        if not inserted:
-            raise HTTPException(status_code=500, detail='Loan could not be created')
-        loan = inserted[0]
-        for row in schedule:
-            row['loan_id'] = loan.get('id')
-        supabase.table('lending_installments').insert(schedule).execute()
-    except HTTPException:
-        raise
-    except Exception as exc:
-        # Best-effort rollback if installment creation failed after loan insert.
-        try:
-            supabase.table('lending_loans').delete().eq('public_id', loan_public_id).execute()
-        except Exception:
-            pass
-        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
-    return lending_get_loan(public_id, loan_public_id, authorization)
-
-
-@app.get('/api/v1/business/{public_id}/lending/loans/{loan_public_id}')
-def lending_get_loan(public_id: str, loan_public_id: str, authorization: str = Header(default='')):
-    business = _lending_require_owner(public_id, authorization)
-    business_id = business.get('id')
-    _lending_refresh_business(business_id)
-    loan = _lending_find_loan(business_id, loan_public_id)
-    if not loan:
-        raise HTTPException(status_code=404, detail='Loan not found')
-    try:
-        borrower_rows = supabase.table('lending_borrowers').select('*').eq('id', loan.get('borrower_id')).limit(1).execute().data or []
-        branch_rows = supabase.table('branches').select('id,public_id,name,address,is_active').eq('id', loan.get('branch_id')).limit(1).execute().data or [] if loan.get('branch_id') else []
-        installments = supabase.table('lending_installments').select('*').eq('loan_id', loan.get('id')).order('installment_number').execute().data or []
-        payments = supabase.table('lending_payments').select('*').eq('loan_id', loan.get('id')).order('payment_date', desc=True).order('created_at', desc=True).execute().data or []
-        documents = supabase.table('lending_documents').select('*').eq('loan_id', loan.get('id')).order('created_at', desc=True).execute().data or []
-        documents = [_lending_document_public(row) for row in documents]
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
-    out = dict(loan)
-    out['borrower'] = borrower_rows[0] if borrower_rows else None
-    out['branch'] = branch_rows[0] if branch_rows else None
-    out['installments'] = installments
-    out['payments'] = payments
-    out['documents'] = documents
-    return out
-
-
-@app.patch('/api/v1/business/{public_id}/lending/loans/{loan_public_id}')
-def lending_update_loan(public_id: str, loan_public_id: str, payload: LendingLoanUpdate, authorization: str = Header(default='')):
-    business = _lending_require_owner(public_id, authorization)
-    business_id = business.get('id')
-    loan = _lending_find_loan(business_id, loan_public_id)
-    if not loan:
-        raise HTTPException(status_code=404, detail='Loan not found')
-    patch = {k: v for k, v in payload.model_dump().items() if v is not None and k != 'branch_public_id'}
-    if payload.branch_public_id is not None:
-        if payload.branch_public_id == '':
-            patch['branch_id'] = None
-        else:
-            branch = safe_get_branch(payload.branch_public_id)
-            if not branch or branch.get('business_id') != business_id:
-                raise HTTPException(status_code=400, detail='Branch does not belong to this business')
-            patch['branch_id'] = branch.get('id')
-    if payload.contract_number:
-        duplicate = supabase.table('lending_loans').select('id').eq('business_id', business_id).eq('contract_number', payload.contract_number.strip()).execute().data or []
-        if any(row.get('id') != loan.get('id') for row in duplicate):
-            raise HTTPException(status_code=409, detail='Contract number already exists for this business')
-        patch['contract_number'] = payload.contract_number.strip()
-    patch['updated_at'] = datetime.utcnow().isoformat()
-    try:
-        res = supabase.table('lending_loans').update(patch).eq('id', loan.get('id')).execute()
-        return (res.data or [{**loan, **patch}])[0]
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
-
-
-@app.post('/api/v1/business/{public_id}/lending/loans/{loan_public_id}/payments')
-def lending_record_payment(public_id: str, loan_public_id: str, payload: LendingPaymentCreate, authorization: str = Header(default='')):
-    business = _lending_require_owner(public_id, authorization)
-    business_id = business.get('id')
-    _lending_refresh_business(business_id)
-    loan = _lending_find_loan(business_id, loan_public_id)
-    if not loan:
-        raise HTTPException(status_code=404, detail='Loan not found')
-    if loan.get('status') in ('fully_paid','cancelled'):
-        raise HTTPException(status_code=409, detail=f"Cannot add a payment to a {loan.get('status')} loan")
-
-    amount = _lending_money(payload.amount)
-    balance_before = _lending_money(loan.get('balance_remaining'))
-    if amount > balance_before + 0.009:
-        raise HTTPException(status_code=400, detail=f'Payment exceeds remaining balance of {balance_before:.2f}')
-    local_today = datetime.now(LOYALTY_TIMEZONE).date()
-    payment_date = _lending_date(payload.payment_date, 'payment_date', local_today)
-    if payment_date > local_today:
-        raise HTTPException(status_code=400, detail='Payment date cannot be in the future')
-    try:
-        release_date = datetime.strptime(str(loan.get('release_date'))[:10], '%Y-%m-%d').date()
-        if payment_date < release_date:
-            raise HTTPException(status_code=400, detail='Payment date cannot be before the loan release date')
-    except HTTPException:
-        raise
-    except Exception:
-        pass
-    if loan.get('last_payment_date'):
-        try:
-            last_payment_date = datetime.strptime(str(loan.get('last_payment_date'))[:10], '%Y-%m-%d').date()
-            if payment_date < last_payment_date:
-                raise HTTPException(status_code=409, detail=f'Payment date cannot be earlier than the last recorded payment ({last_payment_date.isoformat()})')
-        except HTTPException:
-            raise
-        except Exception:
-            pass
-    payment_public_id = f'lpay_{uuid.uuid4().hex}'
-    receipt_number = f'RCPT-{datetime.utcnow().strftime("%Y%m%d")}-{uuid.uuid4().hex[:8].upper()}'
-
-    try:
-        supabase.rpc('record_lending_payment_v1', {
-            'p_business_id': business_id,
-            'p_loan_id': loan.get('id'),
-            'p_payment_public_id': payment_public_id,
-            'p_receipt_number': receipt_number,
-            'p_amount': amount,
-            'p_payment_date': payment_date.isoformat(),
-            'p_method': payload.method,
-            'p_reference_number': payload.reference_number,
-            'p_notes': payload.notes,
-        }).execute()
-        payment_rows = (
-            supabase.table('lending_payments').select('*')
-            .eq('business_id', business_id).eq('public_id', payment_public_id).limit(1).execute().data or []
-        )
-    except Exception as exc:
-        message = friendly_db_error(exc)
-        if 'record_lending_payment_v1' in str(exc) or 'function' in str(exc).lower():
-            message = f'{message}. Run backend/lending_schema.sql before using Lending payments.'
-        raise HTTPException(status_code=500, detail=message)
-
-    _lending_refresh_business(business_id)
-    return {
-        'payment': payment_rows[0] if payment_rows else {'public_id': payment_public_id, 'receipt_number': receipt_number, 'amount': amount},
-        'loan': lending_get_loan(public_id, loan_public_id, authorization),
-    }
-
-
-@app.get('/api/v1/business/{public_id}/lending/payments')
-def lending_list_payments(public_id: str, authorization: str = Header(default='')):
-    business = _lending_require_owner(public_id, authorization)
-    business_id = business.get('id')
-    try:
-        payments = supabase.table('lending_payments').select('*').eq('business_id', business_id).order('payment_date', desc=True).order('created_at', desc=True).execute().data or []
-        borrower_ids = list({p.get('borrower_id') for p in payments if p.get('borrower_id')})
-        loan_ids = list({p.get('loan_id') for p in payments if p.get('loan_id')})
-        borrowers = supabase.table('lending_borrowers').select('id,public_id,name').in_('id', borrower_ids).execute().data or [] if borrower_ids else []
-        loans = supabase.table('lending_loans').select('id,public_id,contract_number').in_('id', loan_ids).execute().data or [] if loan_ids else []
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
-    bm = {b['id']: b for b in borrowers}
-    lm = {l['id']: l for l in loans}
-    for payment in payments:
-        payment['borrower'] = bm.get(payment.get('borrower_id'))
-        payment['loan'] = lm.get(payment.get('loan_id'))
-    return payments
-
-
-@app.post('/api/v1/business/{public_id}/lending/loans/{loan_public_id}/documents/upload')
-async def lending_upload_document(
-    public_id: str,
-    loan_public_id: str,
-    request: Request,
-    document_type: str = Query(default='other', max_length=80),
-    title: Optional[str] = Query(default=None, max_length=200),
-    file_name: Optional[str] = Query(default=None, max_length=300),
-    mime_type: Optional[str] = Query(default=None, max_length=160),
-    authorization: str = Header(default=''),
-):
-    business = _lending_require_owner(public_id, authorization)
-    business_id = business.get('id')
-    loan = _lending_find_loan(business_id, loan_public_id)
-    if not loan:
-        raise HTTPException(status_code=404, detail='Loan not found')
-
-    content_type = str(mime_type or request.headers.get('content-type') or '').split(';', 1)[0].strip().lower()
-    if content_type not in LENDING_DOCUMENT_MIME_TYPES:
-        raise HTTPException(status_code=400, detail='Only PDF, JPG, PNG, and WEBP files are allowed')
-    raw = await request.body()
-    if not raw:
-        raise HTTPException(status_code=400, detail='Document file is empty')
-    if len(raw) > LENDING_DOCUMENT_MAX_BYTES:
-        raise HTTPException(status_code=413, detail='Document file exceeds the 10 MB limit')
-
-    extension = LENDING_DOCUMENT_MIME_TYPES[content_type]
-    storage_path = f"{public_id}/{loan_public_id}/{uuid.uuid4().hex}{extension}"
-    try:
-        import httpx
-        with httpx.Client(timeout=30) as client:
-            uploaded = client.post(
-                _lending_storage_url(storage_path),
-                headers=_lending_storage_headers(content_type),
-                content=raw,
-            )
-        if uploaded.status_code >= 300:
-            raise HTTPException(status_code=502, detail=f'Private document storage failed ({uploaded.status_code})')
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f'Private document storage failed: {exc}')
-
-    row = {
-        'public_id': f'ldoc_{uuid.uuid4().hex}',
-        'business_id': business_id,
-        'borrower_id': loan.get('borrower_id'),
-        'loan_id': loan.get('id'),
-        'document_type': (document_type or 'other').strip().lower(),
-        'title': title,
-        'storage_path': storage_path,
-        'file_url': None,
-        'file_name': (file_name or f'document{extension}')[:300],
-        'mime_type': content_type,
-        'created_at': datetime.utcnow().isoformat(),
-    }
-    try:
-        res = supabase.table('lending_documents').insert(row).execute()
-        saved = (res.data or [row])[0]
-        return _lending_document_public(saved)
-    except Exception as exc:
-        # Do not leave an orphaned private object if metadata insert fails.
-        try:
-            import httpx
-            with httpx.Client(timeout=15) as client:
-                client.delete(_lending_storage_url(storage_path), headers=_lending_storage_headers())
-        except Exception:
-            pass
-        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
-
-
-@app.get('/api/v1/business/{public_id}/lending/documents/{document_public_id}/download')
-def lending_download_document(public_id: str, document_public_id: str, authorization: str = Header(default='')):
-    business = _lending_require_owner(public_id, authorization)
-    business_id = business.get('id')
-    try:
-        rows = (
-            supabase.table('lending_documents').select('*')
-            .eq('business_id', business_id).eq('public_id', document_public_id).limit(1).execute().data or []
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
-    if not rows:
-        raise HTTPException(status_code=404, detail='Document not found')
-    doc = rows[0]
-    storage_path = doc.get('storage_path')
-    if not storage_path:
-        raise HTTPException(status_code=409, detail='This legacy document is not stored in private Lending storage')
-    try:
-        import httpx
-        with httpx.Client(timeout=30) as client:
-            stored = client.get(_lending_storage_download_url(storage_path), headers=_lending_storage_headers())
-        if stored.status_code == 404:
-            raise HTTPException(status_code=404, detail='Stored document file was not found')
-        if stored.status_code >= 300:
-            raise HTTPException(status_code=502, detail=f'Private document retrieval failed ({stored.status_code})')
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f'Private document retrieval failed: {exc}')
-
-    filename = re.sub(r'[^A-Za-z0-9._ -]+', '_', str(doc.get('file_name') or 'document'))[:180]
-    media_type = str(doc.get('mime_type') or stored.headers.get('content-type') or 'application/octet-stream').split(';',1)[0]
-    return Response(
-        content=stored.content,
-        media_type=media_type,
-        headers={
-            'Content-Disposition': f'inline; filename="{filename}"',
-            'Cache-Control': 'private, no-store',
-            'X-Content-Type-Options': 'nosniff',
-        },
-    )
-
-
-@app.post('/api/v1/business/{public_id}/lending/loans/{loan_public_id}/documents')
-def lending_add_document(public_id: str, loan_public_id: str, payload: LendingDocumentCreate, authorization: str = Header(default='')):
-    """Legacy/external document metadata path.
-
-    New Lending UI uploads to the private /documents/upload endpoint above.
-    This remains available for an already-private external document URL, if a
-    business has one, without breaking future import/migration workflows.
-    """
-    business = _lending_require_owner(public_id, authorization)
-    business_id = business.get('id')
-    loan = _lending_find_loan(business_id, loan_public_id)
-    if not loan:
-        raise HTTPException(status_code=404, detail='Loan not found')
-    if not payload.file_url:
-        raise HTTPException(status_code=400, detail='file_url is required for the legacy document metadata endpoint')
-    borrower_id = loan.get('borrower_id')
-    if payload.borrower_public_id:
-        borrower = _lending_find_borrower(business_id, payload.borrower_public_id)
-        if not borrower:
-            raise HTTPException(status_code=404, detail='Borrower not found')
-        borrower_id = borrower.get('id')
-    row = {
-        'public_id': f'ldoc_{uuid.uuid4().hex}',
-        'business_id': business_id,
-        'borrower_id': borrower_id,
-        'loan_id': loan.get('id'),
-        'document_type': payload.document_type.strip().lower(),
-        'title': payload.title,
-        'file_url': payload.file_url,
-        'storage_path': None,
-        'file_name': payload.file_name,
-        'mime_type': payload.mime_type,
-        'created_at': datetime.utcnow().isoformat(),
-    }
-    try:
-        res = supabase.table('lending_documents').insert(row).execute()
-        return _lending_document_public((res.data or [row])[0])
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
-
-
-@app.delete('/api/v1/business/{public_id}/lending/documents/{document_public_id}')
-def lending_delete_document(public_id: str, document_public_id: str, authorization: str = Header(default='')):
-    business = _lending_require_owner(public_id, authorization)
-    business_id = business.get('id')
-    try:
-        rows = supabase.table('lending_documents').select('*').eq('business_id', business_id).eq('public_id', document_public_id).limit(1).execute().data or []
-        if not rows:
-            raise HTTPException(status_code=404, detail='Document not found')
-        doc = rows[0]
-        storage_path = doc.get('storage_path')
-        if storage_path:
-            try:
-                import httpx
-                with httpx.Client(timeout=15) as client:
-                    deleted = client.delete(_lending_storage_url(storage_path), headers=_lending_storage_headers())
-                if deleted.status_code >= 300 and deleted.status_code != 404:
-                    raise HTTPException(status_code=502, detail=f'Private document deletion failed ({deleted.status_code})')
-            except HTTPException:
-                raise
-            except Exception as exc:
-                raise HTTPException(status_code=502, detail=f'Private document deletion failed: {exc}')
-        supabase.table('lending_documents').delete().eq('id', doc.get('id')).execute()
-        return {'success': True}
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
