@@ -31866,8 +31866,14 @@ async def customer_wallet_page(customer_public_id: str):
         except (TypeError, ValueError):
             earned, pesos = 0, 0
         if earned > 0 and pesos > 0:
-            earned_text = _fmt_number(earned)
-            pesos_text = _fmt_number(pesos)
+            def _wallet_fmt_number(value):
+                number = float(value)
+                if number.is_integer():
+                    return f"{int(number):,}"
+                return f"{number:,.2f}".rstrip("0").rstrip(".")
+
+            earned_text = _wallet_fmt_number(earned)
+            pesos_text = _wallet_fmt_number(pesos)
             point_word = 'point' if earned == 1 else 'points'
             earning_rule = f'₱{pesos_text} = {earned_text} {point_word}'
         else:
