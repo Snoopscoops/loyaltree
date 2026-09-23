@@ -100,6 +100,7 @@ function POSIntegration({
   const [apiAvailable, setApiAvailable] = useState(true)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
+  const [errorLog, setErrorLog] = useState(null)
   const [integration, setIntegration] = useState(null)
   const [provider, setProvider] = useState('storehub')
   const [setupStep, setSetupStep] = useState(1)
@@ -158,6 +159,39 @@ function POSIntegration({
   const call = async (url, options = {}) => {
     if (!authFetch) throw new Error('Authenticated API helper is not available.')
     return authFetch(url, options)
+  }
+
+  const readApiResponse = async (res, fallbackMessage, context = {}) => {
+    const raw = await res.text().catch(() => '')
+    let data = {}
+    if (raw) {
+      try { data = JSON.parse(raw) } catch (_) { data = { raw_response: raw } }
+    }
+
+    if (!res.ok) {
+      const detail = typeof data?.detail === 'string'
+        ? data.detail
+        : (data?.detail ? JSON.stringify(data.detail) : (data?.message || fallbackMessage))
+      const requestId = res.headers?.get?.('x-request-id') || res.headers?.get?.('cf-ray') || ''
+      const log = {
+        time: new Date().toISOString(),
+        operation: context.operation || 'POS API request',
+        provider: context.provider || providerLabel,
+        status: res.status,
+        status_text: res.statusText || '',
+        endpoint: context.endpoint || '',
+        detail: detail || fallbackMessage,
+        request_id: requestId,
+        response: data,
+      }
+      setErrorLog(log)
+      const err = new Error(detail || fallbackMessage)
+      err.diagnostic = log
+      throw err
+    }
+
+    setErrorLog(null)
+    return data
   }
 
   const loadCompanionDevices = async () => {
@@ -346,6 +380,7 @@ function POSIntegration({
   useEffect(() => {
     setMessage('')
     setError('')
+    setErrorLog(null)
     setTestResult(null)
     setRedemptionResult(null)
     setRedemptionStage('idle')
@@ -410,8 +445,11 @@ function POSIntegration({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ store_name: storeName, api_token: apiToken }),
       })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.detail || 'Could not connect StoreHub.')
+      const data = await readApiResponse(res, 'Could not connect StoreHub.', {
+        operation: 'Test & connect StoreHub',
+        provider: 'StoreHub',
+        endpoint: `/api/v1/business/${slug}/pos/storehub/connect`,
+      })
       setIntegration(data.integration || null)
       setStoreHubRealResult(data)
       setStoreHubOutlets(data.stores || [])
@@ -441,8 +479,11 @@ function POSIntegration({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ provider }),
       })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.detail || 'StoreHub API connection test failed.')
+      const data = await readApiResponse(res, 'StoreHub API connection test failed.', {
+        operation: 'Test saved StoreHub connection',
+        provider: 'StoreHub',
+        endpoint: `/api/v1/business/${slug}/pos/storehub/connection-test`,
+      })
       setStoreHubRealResult(data)
       setIntegration(data.integration || integration)
       setStoreHubOutlets(data.stores || [])
@@ -1033,7 +1074,26 @@ function POSIntegration({
       )}
 
       {message && <div style={s.successBanner}>{message}</div>}
-      {error && <div style={s.errorBanner}>{error}</div>}
+      {error && <div style={s.errorBanner}>
+        <div><b>POS request failed</b></div>
+        <div style={{marginTop:4}}>{error}</div>
+        {errorLog && (
+          <details style={s.errorLogPanel} open>
+            <summary style={s.errorLogSummary}>Technical error log</summary>
+            <div style={s.errorLogGrid}>
+              <div><b>Operation</b><br />{errorLog.operation || '—'}</div>
+              <div><b>Provider</b><br />{errorLog.provider || '—'}</div>
+              <div><b>HTTP status</b><br />{errorLog.status || '—'} {errorLog.status_text || ''}</div>
+              <div><b>Time</b><br />{errorLog.time || '—'}</div>
+            </div>
+            {errorLog.endpoint && <div style={s.errorLogLine}><b>Loyalty Tree endpoint:</b> <code>{errorLog.endpoint}</code></div>}
+            {errorLog.request_id && <div style={s.errorLogLine}><b>Request ID:</b> <code>{errorLog.request_id}</code></div>}
+            <div style={s.errorLogLine}><b>Backend detail:</b> {errorLog.detail || 'No detail returned.'}</div>
+            <pre style={s.errorLogPre}>{JSON.stringify(errorLog.response || {}, null, 2)}</pre>
+            <div style={s.errorLogHint}>API tokens are never included in this diagnostic panel. You can copy this log when debugging the StoreHub connection.</div>
+          </details>
+        )}
+      </div>}
 
       {loading ? (
         <div style={s.card}>Loading POS integration…</div>
@@ -2723,6 +2783,45 @@ const s = {
     color: '#b91c1c',
     fontSize: 12,
     fontWeight: 700,
+  },
+  errorLogPanel: {
+    marginTop: 10,
+    paddingTop: 9,
+    borderTop: '1px solid #fecaca',
+    color: '#7f1d1d',
+    fontWeight: 500,
+  },
+  errorLogSummary: {
+    cursor: 'pointer',
+    fontWeight: 850,
+  },
+  errorLogGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+    gap: 8,
+    marginTop: 9,
+  },
+  errorLogLine: {
+    marginTop: 8,
+    overflowWrap: 'anywhere',
+  },
+  errorLogPre: {
+    margin: '9px 0 0',
+    padding: 10,
+    maxHeight: 260,
+    overflow: 'auto',
+    borderRadius: 8,
+    background: '#450a0a',
+    color: '#fee2e2',
+    fontSize: 11,
+    lineHeight: 1.45,
+    whiteSpace: 'pre-wrap',
+    overflowWrap: 'anywhere',
+  },
+  errorLogHint: {
+    marginTop: 8,
+    fontSize: 11,
+    fontWeight: 600,
   },
   mappingList: {
     display: 'grid',
