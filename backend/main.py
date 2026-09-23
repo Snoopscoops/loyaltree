@@ -39683,6 +39683,60 @@ def _companion_upsert_bridge_transaction(device: dict, normalized: dict) -> Opti
         raise _pos_schema_error(exc)
 
 
+def _storehub_safe_trace_value(value, depth: int = 0):
+    """Return a bounded/redacted StoreHub payload copy for temporary POS tracing.
+
+    Keeps transaction/amount field names and values visible while suppressing
+    likely credentials and customer PII. This is diagnostic logging only.
+    """
+    if depth > 3:
+        return '<max-depth>'
+    if isinstance(value, dict):
+        safe = {}
+        for key, child in list(value.items())[:80]:
+            key_text = str(key)
+            lowered = key_text.lower()
+            if any(secret in lowered for secret in (
+                'token', 'authorization', 'password', 'secret', 'apikey', 'api_key',
+                'email', 'phone', 'mobile', 'address', 'customername', 'customer_name',
+                'firstname', 'first_name', 'lastname', 'last_name',
+            )):
+                safe[key_text] = '<redacted>'
+            else:
+                safe[key_text] = _storehub_safe_trace_value(child, depth + 1)
+        return safe
+    if isinstance(value, list):
+        return [_storehub_safe_trace_value(child, depth + 1) for child in value[:10]]
+    if isinstance(value, str):
+        return value[:300] + ('…' if len(value) > 300 else '')
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return str(value)[:300]
+
+
+def _storehub_trace_transactions(payload, rows: list) -> None:
+    """Temporary Render trace for discovering StoreHub's real transaction schema."""
+    try:
+        envelope_keys = list(payload.keys()) if isinstance(payload, dict) else []
+        print('STOREHUB_TX_TRACE', {
+            'row_count': len(rows),
+            'payload_type': type(payload).__name__,
+            'envelope_keys': envelope_keys[:80],
+        })
+        for index, raw in enumerate(rows[:3]):
+            if not isinstance(raw, dict):
+                print('STOREHUB_TX_TRACE_ROW', {'index': index, 'type': type(raw).__name__})
+                continue
+            print('STOREHUB_TX_TRACE_KEYS', {'index': index, 'keys': list(raw.keys())[:120]})
+            safe = _storehub_safe_trace_value(raw)
+            encoded = json.dumps(safe, ensure_ascii=False, default=str)
+            if len(encoded) > 6000:
+                encoded = encoded[:6000] + '…<truncated>'
+            print(f'STOREHUB_TX_TRACE_RAW index={index} {encoded}')
+    except Exception as exc:
+        print(f'STOREHUB_TX_TRACE_ERROR {exc}')
+
+
 def _companion_provider_rows(device: dict, integration: dict, limit: int) -> list:
     provider = str(device.get('provider') or '').lower()
     now = datetime.now(timezone.utc)
@@ -39695,6 +39749,7 @@ def _companion_provider_rows(device: dict, integration: dict, limit: int) -> lis
             'endDate': now.strftime('%Y-%m-%d'),
         })
         rows = _storehub_list(payload)
+        _storehub_trace_transactions(payload, rows)
     elif provider == 'loyverse':
         payload = _loyverse_get(integration, '/receipts', params={
             'created_at_min': (now - timedelta(hours=6)).isoformat().replace('+00:00', 'Z'),
