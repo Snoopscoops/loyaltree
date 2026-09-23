@@ -39902,7 +39902,89 @@ async def _companion_process_transaction(
         session_processing = {'status': 'processing', 'matched_pos_transaction_id': tx.get('id'), 'external_transaction_id': external_tx, 'gross_amount': tx.get('gross_amount'), 'currency': tx.get('currency') or 'PHP', 'error_message': None, 'updated_at': datetime.now(timezone.utc).isoformat()}
         supabase.table('pos_companion_sessions').update(session_processing).eq('id', session.get('id')).execute()
 
-        if points_active and amount > 0:
+        session_result = dict(session.get('result')) if isinstance(session.get('result'), dict) else {}
+        reservation_id = session_result.get('redemption_reservation_id')
+        committed_redemption = None
+        redemption_amount = 0.0
+        points_redeemed = 0
+        redemption_net_amount = float(tx.get('gross_amount') or amount)
+
+        if reservation_id:
+            redemption = _pos_redemption_row(str(reservation_id))
+            if not redemption:
+                raise HTTPException(status_code=409, detail='Reserved points redemption could not be found.')
+
+            if redemption.get('business_id') != business.get('id'):
+                raise HTTPException(status_code=409, detail='Points reservation belongs to a different business.')
+            if str(redemption.get('integration_id') or '') != str(device.get('integration_id') or ''):
+                raise HTTPException(status_code=409, detail='Points reservation belongs to a different POS connection.')
+            if redemption.get('customer_id') != customer.get('id'):
+                raise HTTPException(status_code=409, detail='Points reservation belongs to a different customer.')
+            if redemption.get('branch_id') and device.get('branch_id') and str(redemption.get('branch_id')) != str(device.get('branch_id')):
+                raise HTTPException(status_code=409, detail='Points reservation belongs to a different branch.')
+
+            tx_gross = float(tx.get('gross_amount') or 0)
+            reserved_gross = float(redemption.get('gross_amount') or 0)
+            if abs(tx_gross - reserved_gross) > 0.01:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f'POS total changed after redemption. Reserved for PHP {reserved_gross:.2f}; completed sale is PHP {tx_gross:.2f}.',
+                )
+
+            bound_tx = str(redemption.get('external_transaction_id') or '').strip()
+            if bound_tx and bound_tx != external_tx:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f'Points reservation is already attached to POS transaction {bound_tx}.',
+                )
+
+            redemption_status = str(redemption.get('status') or '').lower()
+
+            if redemption_status == 'reserved':
+                adapter = _storehub_apply_redemption_discount(
+                    integration,
+                    redemption,
+                    external_tx,
+                )
+                redemption = _pos_rpc_first('pos_mark_redemption_discount_applied', {
+                    'p_reservation_id': redemption.get('id'),
+                    'p_external_transaction_id': external_tx,
+                    'p_provider_payload': adapter,
+                })
+                redemption_status = str(redemption.get('status') or '').lower()
+
+            if redemption_status not in ('discount_applied', 'committed'):
+                raise HTTPException(
+                    status_code=409,
+                    detail='Points reservation is no longer available for this checkout.',
+                )
+
+            if redemption_status != 'committed':
+                committed_redemption = _pos_rpc_first('pos_commit_points_redemption', {
+                    'p_reservation_id': redemption.get('id'),
+                    'p_external_transaction_id': external_tx,
+                })
+            else:
+                committed_redemption = redemption
+
+            redemption_amount = float(committed_redemption.get('redemption_amount') or 0)
+            points_redeemed = int(committed_redemption.get('points_reserved') or 0)
+            redemption_net_amount = float(
+                committed_redemption.get('net_amount')
+                or max(tx_gross - redemption_amount, 0)
+            )
+
+        if points_active and committed_redemption:
+            # A redemption transaction spends points; it must never earn points
+            # from the same purchase.
+            points_result = {
+                'message': f'{points_redeemed} points redeemed. No points earned on this transaction.',
+                'amount_spent': redemption_net_amount,
+                'points_earned': 0,
+                'points_redeemed': points_redeemed,
+                'points_balance': int(committed_redemption.get('balance_after') or 0),
+            }
+        elif points_active and amount > 0:
             points_result = await add_points_sale(
                 business.get('public_id'),
                 PointsSaleRequest(customer_public_id=customer.get('public_id'), amount_spent=amount, as_owner=True),
@@ -39936,6 +40018,26 @@ async def _companion_process_transaction(
                 'stamps_earned': 0 if (stamp_result or {}).get('stamp_skipped') else 1,
             }
 
+        if committed_redemption:
+            result = {
+                'message': f'{points_redeemed} points redeemed. No points earned on this redemption transaction.',
+                'points_earned': 0,
+                'points_redeemed': points_redeemed,
+                'points_balance': int(committed_redemption.get('balance_after') or 0),
+                'gross_amount': float(tx.get('gross_amount') or 0),
+                'discount_amount': redemption_amount,
+                'net_amount': redemption_net_amount,
+                'redemption_reservation_id': str(committed_redemption.get('id')),
+                'redemption': _pos_redemption_public(committed_redemption),
+                'stamps': stamp_result or {},
+                'stamps_earned': (
+                    1 if stamps_active and stamp_result
+                    and not stamp_result.get('stamp_skipped')
+                    and not stamp_result.get('duplicate_prevented')
+                    else 0
+                ),
+            }
+
         audit_refs = []
         for item in (points_result, stamp_result):
             audit_ref = item.get('transaction_id') if isinstance(item, dict) else None
@@ -39954,13 +40056,29 @@ async def _companion_process_transaction(
             'transaction_audit_refs': audit_refs, 'matched_at': datetime.now(timezone.utc).isoformat(),
             'test_mode': bool(allow_test_mode and integration.get('mode') != 'live'),
         }
-        updated = supabase.table('pos_transactions').update({
+        transaction_patch = {
             'customer_id': customer.get('id'), 'status': 'loyalty_applied',
             'points_earned': points_earned, 'stamps_earned': stamps_earned,
             'transaction_audit_ref': audit_refs[0] if audit_refs else None,
             'processing_metadata': processing, 'error_message': None,
             'processed_at': datetime.now(timezone.utc).isoformat(),
-        }).eq('id', tx.get('id')).execute().data or []
+        }
+
+        if committed_redemption:
+            transaction_patch.update({
+                'discount_amount': redemption_amount,
+                'net_amount': redemption_net_amount,
+                'eligible_amount': redemption_net_amount,
+                'points_redeemed': points_redeemed,
+            })
+
+        updated = (
+            supabase.table('pos_transactions')
+            .update(transaction_patch)
+            .eq('id', tx.get('id'))
+            .execute()
+            .data or []
+        )
         tx = updated[0] if updated else {**tx, 'status': 'loyalty_applied', 'customer_id': customer.get('id')}
 
         patch = {
