@@ -8,6 +8,19 @@ const EMPLOYEE_POSITION_OPTIONS = [
   'Barber / Stylist', 'Security', 'Maintenance / Utility', 'Driver / Rider', 'Other',
 ]
 
+const BIRTHDAY_MONTHS = [
+  ['1', 'January'], ['2', 'February'], ['3', 'March'], ['4', 'April'],
+  ['5', 'May'], ['6', 'June'], ['7', 'July'], ['8', 'August'],
+  ['9', 'September'], ['10', 'October'], ['11', 'November'], ['12', 'December'],
+]
+
+function birthdayDayCount(monthValue) {
+  const month = Number(monthValue)
+  if (month === 2) return 29
+  if ([4, 6, 9, 11].includes(month)) return 30
+  return 31
+}
+
 function CustomerJoin({ API_BASE }) {
   const { businessSlug } = useParams()
   const [form, setForm] = useState({
@@ -16,7 +29,8 @@ function CustomerJoin({ API_BASE }) {
     age: '',
     phone: '',
     email: '',
-    birthday: '',
+    birthday_month: '',
+    birthday_day: '',
     occupation: '',
     gender: '',
     employee_id_number: '',
@@ -175,8 +189,8 @@ function CustomerJoin({ API_BASE }) {
       setError('Please select a position.')
       return
     }
-    if (isEmployeeCard && !form.birthday) {
-      setError('Birthday is required for the legacy Employee Card.')
+    if (!form.birthday_month || !form.birthday_day) {
+      setError('Birthday month and day are required.')
       return
     }
     setLoading(true)
@@ -190,7 +204,8 @@ function CustomerJoin({ API_BASE }) {
           age: form.age ? parseInt(form.age, 10) : null,
           phone: form.phone,
           email: form.email || null,
-          birthday: form.birthday || null,
+          birthday_month: parseInt(form.birthday_month, 10),
+          birthday_day: parseInt(form.birthday_day, 10),
           occupation: isEmployeeExperience ? null : (form.occupation || null),
           gender: isEmployeeExperience ? null : (form.gender || null),
           employee_id_number: isEmployeeExperience ? form.employee_id_number.trim() : null,
@@ -468,16 +483,44 @@ function CustomerJoin({ API_BASE }) {
               </div>
 
               <div style={styles.inputGroup}>
-                <label style={styles.label}>
-                  Birthday {!isEmployeeCard && <span style={styles.optional}>optional</span>}
-                </label>
-                <input
-                  value={form.birthday}
-                  onChange={e => setForm({...form, birthday: e.target.value})}
-                  style={styles.input}
-                  type="date"
-                  required={isEmployeeCard}
-                />
+                <label style={styles.label}>Birthday</label>
+                <div style={{display:'grid',gridTemplateColumns:'minmax(0,1.4fr) minmax(0,1fr)',gap:10}}>
+                  <select
+                    value={form.birthday_month}
+                    onChange={e => {
+                      const month = e.target.value
+                      const maxDay = birthdayDayCount(month)
+                      const currentDay = Number(form.birthday_day || 0)
+                      setForm({
+                        ...form,
+                        birthday_month: month,
+                        birthday_day: currentDay > maxDay ? '' : form.birthday_day,
+                      })
+                    }}
+                    style={styles.input}
+                    required
+                  >
+                    <option value="">Month</option>
+                    {BIRTHDAY_MONTHS.map(([value, label]) => (
+                      <option key={value} value={value}>{label}</option>
+                    ))}
+                  </select>
+                  <select
+                    value={form.birthday_day}
+                    onChange={e => setForm({...form, birthday_day: e.target.value})}
+                    style={styles.input}
+                    required
+                    disabled={!form.birthday_month}
+                  >
+                    <option value="">Day</option>
+                    {Array.from({length: birthdayDayCount(form.birthday_month)}, (_, i) => i + 1).map(day => (
+                      <option key={day} value={String(day)}>{day}</option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{fontSize:11,color:'#64748b',marginTop:6}}>
+                  Month and day only. Birth year is not collected.
+                </div>
               </div>
 
               {!isEmployeeExperience && (

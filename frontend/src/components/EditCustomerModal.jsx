@@ -1,10 +1,32 @@
 import React, { useState, useEffect } from 'react'
 
+const BIRTHDAY_MONTHS = [
+  ['1', 'January'], ['2', 'February'], ['3', 'March'], ['4', 'April'],
+  ['5', 'May'], ['6', 'June'], ['7', 'July'], ['8', 'August'],
+  ['9', 'September'], ['10', 'October'], ['11', 'November'], ['12', 'December'],
+]
+
+function birthdayDayCount(monthValue) {
+  const month = Number(monthValue)
+  if (month === 2) return 29
+  if ([4, 6, 9, 11].includes(month)) return 30
+  return 31
+}
+
+function legacyBirthdayParts(value) {
+  const match = String(value || '').match(/^\d{4}-(\d{2})-(\d{2})/)
+  if (!match) return { month: '', day: '' }
+  return { month: String(Number(match[1])), day: String(Number(match[2])) }
+}
+
 function EditCustomerModal({ API_BASE, businessSlug, customer, onClose, onSave }) {
   const [form, setForm] = useState({
     name: '',
     phone: '',
     email: '',
+    age: '',
+    birthday_month: '',
+    birthday_day: '',
   })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -20,10 +42,14 @@ function EditCustomerModal({ API_BASE, businessSlug, customer, onClose, onSave }
 
   useEffect(() => {
     if (customer) {
+      const legacy = legacyBirthdayParts(customer.birthday)
       setForm({
         name: customer.name || '',
         phone: customer.phone || '',
         email: customer.email || '',
+        age: customer.age ?? '',
+        birthday_month: customer.birthday_month ? String(customer.birthday_month) : legacy.month,
+        birthday_day: customer.birthday_day ? String(customer.birthday_day) : legacy.day,
       })
       fetchCoupons()
     }
@@ -94,12 +120,21 @@ function EditCustomerModal({ API_BASE, businessSlug, customer, onClose, onSave }
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError('')
+    if (!form.birthday_month || !form.birthday_day) {
+      setError('Birthday month and day are required.')
+      return
+    }
     setLoading(true)
     try {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/customers/${customer.public_id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form)
+        body: JSON.stringify({
+          ...form,
+          age: form.age === '' ? null : Number(form.age),
+          birthday_month: Number(form.birthday_month),
+          birthday_day: Number(form.birthday_day),
+        })
       })
       if (res.ok) {
         onSave()
@@ -172,6 +207,61 @@ function EditCustomerModal({ API_BASE, businessSlug, customer, onClose, onSave }
               onChange={e => setForm({...form, email: e.target.value})}
               style={styles.input}
             />
+          </div>
+
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>Age <span style={styles.optional}>(optional)</span></label>
+            <input
+              type="number"
+              min="0"
+              max="120"
+              inputMode="numeric"
+              value={form.age}
+              onChange={e => setForm({...form, age: e.target.value})}
+              style={styles.input}
+              placeholder="25"
+            />
+          </div>
+
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>Birthday</label>
+            <div style={{display:'grid',gridTemplateColumns:'minmax(0,1.4fr) minmax(0,1fr)',gap:10}}>
+              <select
+                value={form.birthday_month}
+                onChange={e => {
+                  const month = e.target.value
+                  const maxDay = birthdayDayCount(month)
+                  const currentDay = Number(form.birthday_day || 0)
+                  setForm({
+                    ...form,
+                    birthday_month: month,
+                    birthday_day: currentDay > maxDay ? '' : form.birthday_day,
+                  })
+                }}
+                style={styles.input}
+                required
+              >
+                <option value="">Month</option>
+                {BIRTHDAY_MONTHS.map(([value, label]) => (
+                  <option key={value} value={value}>{label}</option>
+                ))}
+              </select>
+              <select
+                value={form.birthday_day}
+                onChange={e => setForm({...form, birthday_day: e.target.value})}
+                style={styles.input}
+                required
+                disabled={!form.birthday_month}
+              >
+                <option value="">Day</option>
+                {Array.from({length: birthdayDayCount(form.birthday_month)}, (_, i) => i + 1).map(day => (
+                  <option key={day} value={String(day)}>{day}</option>
+                ))}
+              </select>
+            </div>
+            <div style={{fontSize:11,color:'#64748b',marginTop:6}}>
+              Month and day only. Birth year is not collected.
+            </div>
           </div>
 
           <div style={styles.couponSection}>

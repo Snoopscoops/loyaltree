@@ -33,6 +33,32 @@ function vipTierPerks(tier) {
   return out
 }
 
+function formatBirthdayMonthDay(customer) {
+  let month = Number(customer?.birthday_month || 0)
+  let day = Number(customer?.birthday_day || 0)
+
+  // Legacy customers may still have a YYYY-MM-DD birthday value. Display only
+  // month/day so the cashier UI never exposes the birth year.
+  if ((!month || !day) && customer?.birthday) {
+    const match = String(customer.birthday).match(/^\d{4}-(\d{2})-(\d{2})/)
+    if (match) {
+      month = Number(match[1])
+      day = Number(match[2])
+    }
+  }
+
+  if (!month || !day) return '—'
+  try {
+    return new Intl.DateTimeFormat('en-PH', {
+      month: 'long',
+      day: 'numeric',
+      timeZone: 'UTC',
+    }).format(new Date(Date.UTC(2000, month - 1, day)))
+  } catch (_) {
+    return `${month}/${day}`
+  }
+}
+
 function giftIdentifierFromScan(value) {
   const raw = String(value || '').trim()
   if (!raw) return ''
@@ -297,7 +323,10 @@ function CashierApp({ API_BASE }) {
           public_id: c.public_id,
           name: c.name,
           phone: c.phone,
-          birthday: c.birthday || null,
+          birthday: c.birthday || null, // legacy compatibility only
+          birthday_month: c.birthday_month || null,
+          birthday_day: c.birthday_day || null,
+          age: c.age ?? null,
           employee_id_number: c.employee_id_number || '',
           employee_position: c.employee_position || '',
           employee_start_date: c.employee_start_date || null,
@@ -1509,7 +1538,7 @@ function CashierApp({ API_BASE }) {
               <div style={{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:8,margin:'12px 0'}}>
                 <div style={{padding:'10px 11px',borderRadius:10,background:'#f8fafc',border:'1px solid #e2e8f0'}}>
                   <div style={{fontSize:9.5,fontWeight:900,color:'#64748b',letterSpacing:.55}}>BIRTHDAY</div>
-                  <div style={{fontSize:12.5,fontWeight:800,color:'#334155',marginTop:4}}>{customerData.birthday || '—'}</div>
+                  <div style={{fontSize:12.5,fontWeight:800,color:'#334155',marginTop:4}}>{formatBirthdayMonthDay(customerData)}</div>
                 </div>
                 <div style={{padding:'10px 11px',borderRadius:10,background:'#f8fafc',border:'1px solid #e2e8f0'}}>
                   <div style={{fontSize:9.5,fontWeight:900,color:'#64748b',letterSpacing:.55}}>STARTED</div>
@@ -1628,7 +1657,7 @@ function CashierApp({ API_BASE }) {
                 </div>
                 <div style={{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:8,margin:'12px 0'}}>
                   <div style={{padding:'10px 11px',borderRadius:10,background:'#f8fafc',border:'1px solid #e2e8f0'}}><div style={{fontSize:9.5,fontWeight:900,color:'#64748b',letterSpacing:.55}}>STARTED WHEN</div><div style={{fontSize:12.5,fontWeight:800,color:'#334155',marginTop:4}}>{customerData.employee_start_date || '—'}</div></div>
-                  <div style={{padding:'10px 11px',borderRadius:10,background:'#f8fafc',border:'1px solid #e2e8f0'}}><div style={{fontSize:9.5,fontWeight:900,color:'#64748b',letterSpacing:.55}}>BIRTHDAY</div><div style={{fontSize:12.5,fontWeight:800,color:'#334155',marginTop:4}}>{customerData.birthday || '—'}</div></div>
+                  <div style={{padding:'10px 11px',borderRadius:10,background:'#f8fafc',border:'1px solid #e2e8f0'}}><div style={{fontSize:9.5,fontWeight:900,color:'#64748b',letterSpacing:.55}}>BIRTHDAY</div><div style={{fontSize:12.5,fontWeight:800,color:'#334155',marginTop:4}}>{formatBirthdayMonthDay(customerData)}</div></div>
                 </div>
                 {customerData.employee_time_tracking_enabled && <div style={{padding:'11px 12px',borderRadius:12,background:customerData.employee_attendance?.is_clocked_in?'#dcfce7':'#f8fafc',border:`1px solid ${customerData.employee_attendance?.is_clocked_in?'#86efac':'#e2e8f0'}`,marginBottom:12}}>
                   <div style={{fontSize:10,fontWeight:900,color:customerData.employee_attendance?.is_clocked_in?'#047857':'#64748b',letterSpacing:.6}}>TIME STATUS</div>
