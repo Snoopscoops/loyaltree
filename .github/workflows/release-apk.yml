@@ -1,0 +1,199 @@
+name: Release Loyalty Tree Companion APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: "Version name shown in Companion (example: 0.5.0)"
+        required: true
+        default: "0.5.0"
+      version_code:
+        description: "Android version code. Must increase every release."
+        required: true
+        default: "5"
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android platform and build tools
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Validate release secrets
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          for name in \
+            ANDROID_KEYSTORE_BASE64 \
+            ANDROID_STORE_PASSWORD \
+            ANDROID_KEY_ALIAS \
+            ANDROID_KEY_PASSWORD \
+            R2_ACCOUNT_ID \
+            R2_ACCESS_KEY_ID \
+            R2_SECRET_ACCESS_KEY \
+            R2_BUCKET
+          do
+            if [ -z "${!name:-}" ]; then
+              echo "Missing GitHub Actions secret: $name"
+              exit 1
+            fi
+          done
+
+      - name: Decode and validate PKCS12 signing keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          KEYSTORE="$RUNNER_TEMP/loyaltytree-companion-release.p12"
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE"
+          test -s "$KEYSTORE"
+          keytool -list \
+            -keystore "$KEYSTORE" \
+            -storetype PKCS12 \
+            -storepass "$ANDROID_STORE_PASSWORD" \
+            -alias "$ANDROID_KEY_ALIAS" >/dev/null
+
+      - name: Build signed release APK
+        env:
+          LT_VERSION_NAME: ${{ inputs.version_name }}
+          LT_VERSION_CODE: ${{ inputs.version_code }}
+          LT_RELEASE_STORE_FILE: ${{ runner.temp }}/loyaltytree-companion-release.p12
+          LT_RELEASE_STORE_TYPE: PKCS12
+          LT_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          LT_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          LT_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: gradle :app:assembleRelease --stacktrace
+
+      - name: Prepare release files
+        env:
+          VERSION_NAME: ${{ inputs.version_name }}
+          VERSION_CODE: ${{ inputs.version_code }}
+        run: |
+          set -euo pipefail
+          RELEASE_APK="app/build/outputs/apk/release/app-release.apk"
+          test -f "$RELEASE_APK"
+          cp "$RELEASE_APK" LoyaltyTreeCompanion.apk
+          sha256sum LoyaltyTreeCompanion.apk | tee LoyaltyTreeCompanion.apk.sha256
+          SHA256="$(cut -d' ' -f1 LoyaltyTreeCompanion.apk.sha256)"
+          PUBLISHED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          python3 - <<PY
+          import json
+          from pathlib import Path
+          data = {
+              "version_name": "${VERSION_NAME}",
+              "version_code": int("${VERSION_CODE}"),
+              "platform": "android",
+              "min_android": "7.1",
+              "min_sdk": 25,
+              "package": "com.loyaltytree.companion",
+              "download_url": "https://downloads.theloyaltytree.com/companion/LoyaltyTreeCompanion.apk",
+              "sha256": "${SHA256}",
+              "published_at": "${PUBLISHED_AT}",
+              "required": False,
+          }
+          Path("latest.json").write_text(json.dumps(data, indent=2) + "\n")
+          PY
+
+      - name: Verify APK signature
+        run: |
+          set -euo pipefail
+          APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          "$APKSIGNER" verify --verbose LoyaltyTreeCompanion.apk
+
+      - name: Upload build artifact to GitHub Actions
+        uses: actions/upload-artifact@v4
+        with:
+          name: LoyaltyTreeCompanion-${{ inputs.version_name }}
+          path: |
+            LoyaltyTreeCompanion.apk
+            LoyaltyTreeCompanion.apk.sha256
+            latest.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Install AWS CLI for Cloudflare R2
+        run: python3 -m pip install --disable-pip-version-check --quiet awscli
+
+      - name: Publish APK and release metadata to Cloudflare R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          VERSION_NAME: ${{ inputs.version_name }}
+        run: |
+          set -euo pipefail
+          ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+
+          aws s3 cp LoyaltyTreeCompanion.apk \
+            "s3://${R2_BUCKET}/companion/releases/${VERSION_NAME}/LoyaltyTreeCompanion.apk" \
+            --endpoint-url "$ENDPOINT" \
+            --content-type "application/vnd.android.package-archive" \
+            --content-disposition 'attachment; filename="LoyaltyTreeCompanion.apk"' \
+            --cache-control "public,max-age=31536000,immutable"
+
+          aws s3 cp LoyaltyTreeCompanion.apk \
+            "s3://${R2_BUCKET}/companion/LoyaltyTreeCompanion.apk" \
+            --endpoint-url "$ENDPOINT" \
+            --content-type "application/vnd.android.package-archive" \
+            --content-disposition 'attachment; filename="LoyaltyTreeCompanion.apk"' \
+            --cache-control "no-cache"
+
+          aws s3 cp LoyaltyTreeCompanion.apk.sha256 \
+            "s3://${R2_BUCKET}/companion/LoyaltyTreeCompanion.apk.sha256" \
+            --endpoint-url "$ENDPOINT" \
+            --content-type "text/plain" \
+            --cache-control "no-cache"
+
+          aws s3 cp latest.json \
+            "s3://${R2_BUCKET}/companion/latest.json" \
+            --endpoint-url "$ENDPOINT" \
+            --content-type "application/json" \
+            --cache-control "no-cache"
+
+      - name: Release summary
+        env:
+          VERSION_NAME: ${{ inputs.version_name }}
+          VERSION_CODE: ${{ inputs.version_code }}
+        run: |
+          {
+            echo "## Loyalty Tree Companion release"
+            echo ""
+            echo "- Version: ${VERSION_NAME} (${VERSION_CODE})"
+            echo "- Public APK: https://downloads.theloyaltytree.com/companion/LoyaltyTreeCompanion.apk"
+            echo "- Metadata: https://downloads.theloyaltytree.com/companion/latest.json"
+            echo "- Package: com.loyaltytree.companion"
+            echo "- Android: 7.1+"
+          } >> "$GITHUB_STEP_SUMMARY"
