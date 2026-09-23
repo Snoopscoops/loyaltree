@@ -6,3 +6,7 @@ loyalty-tree-companion/
 # Frontend generated files
 frontend/node_modules/
 frontend/dist/
+
+# Frontend generated files
+frontend/node_modules/
+frontend/dist/
