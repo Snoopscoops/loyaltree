@@ -39075,6 +39075,16 @@ def pos_companion_points_reserve(
             detail=f"Choose one of the configured redemption options: {', '.join(str(value) for value in configured_options)} points.",
         )
 
+    session = _companion_active_session(device, expire_stale=False)
+    if not session:
+        raise HTTPException(status_code=409, detail='No active Companion checkout. Scan the customer again.')
+
+    if str(session.get('customer_public_id') or '') != str(customer.get('public_id') or ''):
+        raise HTTPException(
+            status_code=409,
+            detail='The active Companion checkout belongs to a different customer. Scan this customer again.',
+        )
+
     key = (req.reservation_key or f"LT-POS-{uuid.uuid4().hex[:24]}").strip()
     row = _pos_rpc_first('pos_reserve_points_redemption', {
         'p_business_id': device.get('business_id'),
@@ -39090,7 +39100,29 @@ def pos_companion_points_reserve(
         'p_max_percent': config['max_percent'],
         'p_hold_minutes': config['hold_minutes'],
     })
-    return {'ok': True, 'reservation': _pos_redemption_public(row), 'message': f'{points} points reserved.'}
+
+    session_result = dict(session.get('result')) if isinstance(session.get('result'), dict) else {}
+    session_result['redemption_reservation_id'] = str(row.get('id'))
+    session_result['redemption_reserved_at'] = datetime.now(timezone.utc).isoformat()
+
+    session_rows = (
+        supabase.table('pos_companion_sessions')
+        .update({
+            'result': session_result,
+            'updated_at': datetime.now(timezone.utc).isoformat(),
+        })
+        .eq('id', session.get('id'))
+        .execute()
+        .data or []
+    )
+    session = session_rows[0] if session_rows else {**session, 'result': session_result}
+
+    return {
+        'ok': True,
+        'reservation': _pos_redemption_public(row),
+        'session': _companion_session_public(session),
+        'message': f'{points} points reserved.',
+    }
 
 
 @app.post('/api/v1/pos-companion/points/{reservation_id}/release')
@@ -39366,6 +39398,34 @@ def _companion_provider_label(provider: str) -> str:
 def _companion_session_public(row: Optional[dict]) -> Optional[dict]:
     if not row:
         return None
+
+    result = row.get('result') if isinstance(row.get('result'), dict) else {}
+    pending_redemption = None
+    completed_redemption = None
+
+    reservation_id = result.get('redemption_reservation_id')
+    if reservation_id:
+        try:
+            redemption = _pos_redemption_row(str(reservation_id))
+        except Exception:
+            redemption = None
+
+        if redemption:
+            same_checkout = (
+                redemption.get('business_id') == row.get('business_id')
+                and str(redemption.get('integration_id') or '') == str(row.get('integration_id') or '')
+                and redemption.get('customer_id') == row.get('customer_id')
+            )
+
+            if same_checkout:
+                public_redemption = _pos_redemption_public(redemption)
+                redemption_status = str(redemption.get('status') or '').lower()
+
+                if redemption_status in ('reserved', 'discount_applied'):
+                    pending_redemption = public_redemption
+                elif redemption_status == 'committed':
+                    completed_redemption = public_redemption
+
     return {
         'id': str(row.get('id') or ''),
         'status': row.get('status'),
@@ -39380,7 +39440,9 @@ def _companion_session_public(row: Optional[dict]) -> Optional[dict]:
         'gross_amount': float(row.get('gross_amount')) if row.get('gross_amount') is not None else None,
         'currency': row.get('currency'),
         'candidate_transactions': row.get('candidate_transactions') if isinstance(row.get('candidate_transactions'), list) else [],
-        'result': row.get('result') if isinstance(row.get('result'), dict) else {},
+        'result': result,
+        'pending_redemption': pending_redemption,
+        'completed_redemption': completed_redemption,
         'error_message': row.get('error_message'),
         'completed_at': row.get('completed_at'),
     }
