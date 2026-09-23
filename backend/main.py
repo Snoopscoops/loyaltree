@@ -39425,6 +39425,18 @@ def _companion_session_public(row: Optional[dict]) -> Optional[dict]:
                 elif redemption_status == 'committed':
                     completed_redemption = public_redemption
 
+    # Companion Android parses redemption state from the session result object.
+    # Keep the server-side reservation authoritative across every poll.
+    if pending_redemption is not None:
+        result['pending_points_redemption'] = pending_redemption
+    else:
+        result.pop('pending_points_redemption', None)
+
+    if completed_redemption is not None:
+        result['redemption'] = completed_redemption
+    else:
+        result.pop('redemption', None)
+
     return {
         'id': str(row.get('id') or ''),
         'status': row.get('status'),
