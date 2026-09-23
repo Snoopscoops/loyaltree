@@ -2445,13 +2445,15 @@ class POSBranchMappingInput(BaseModel):
     external_branch_name: Optional[str] = None
     # ANGKAN device profile. Stored in pos_branch_mappings.settings so each
     # branch can use the scanning method appropriate for its actual terminal.
-    device_model: Optional[Literal['imin_falcon_1', 'imin_d4', 'sunmi_d3_pro', 'sunmi_t2', 'other']] = None
-    scanner_method: Optional[Literal['camera', 'hardware_scanner', 'external_scanner']] = None
+    # Keep branch mapping input tolerant: older/newer dashboard builds may send
+    # device labels that are not yet in this backend's enum. Normalize below.
+    device_model: Optional[str] = None
+    scanner_method: Optional[str] = None
     # Checkout integration strategy:
     # auto       = try seamless first; companion fallback if StoreHub write hooks are not verified
     # seamless   = require StoreHub open-cart write + completion callback before branch can use redemption
     # companion  = LoyaltyTree companion handles scan/redeem; cashier confirms the discount in StoreHub
-    checkout_mode: Optional[Literal['auto', 'seamless', 'companion']] = 'auto'
+    checkout_mode: Optional[str] = 'auto'
 
 
 class POSBranchMappingsUpdate(BaseModel):
@@ -23875,10 +23877,20 @@ async def save_pos_branch_mappings(public_id: str, req: POSBranchMappingsUpdate,
                 detail=f'POS location ID is not part of the connected account: {external_id}',
             )
         seen_external.add(external_id)
-        device_model = item.device_model or 'other'
+        allowed_device_models = {'imin_falcon_1', 'imin_d4', 'sunmi_d3_pro', 'sunmi_t2', 'other'}
+        device_model = str(item.device_model or 'other').strip().lower()
+        if device_model not in allowed_device_models:
+            device_model = 'other'
         profile = _pos_device_profile(device_model)
-        scanner_method = item.scanner_method or profile.get('recommended_scanner_method') or 'external_scanner'
-        checkout_mode = item.checkout_mode or 'auto'
+
+        allowed_scanners = {'camera', 'hardware_scanner', 'external_scanner'}
+        scanner_method = str(item.scanner_method or profile.get('recommended_scanner_method') or 'external_scanner').strip().lower()
+        if scanner_method not in allowed_scanners:
+            scanner_method = profile.get('recommended_scanner_method') or 'external_scanner'
+
+        checkout_mode = str(item.checkout_mode or 'auto').strip().lower()
+        if checkout_mode not in {'auto', 'seamless', 'companion'}:
+            checkout_mode = 'auto'
         prepared.append((branch, external_id, external_name, device_model, scanner_method, checkout_mode))
 
     try:
@@ -37998,9 +38010,34 @@ def _pos_companion_preview_payload(activation: dict) -> dict:
         ]
     allowed_external_branch_id = str(metadata.get('allowed_external_branch_id') or '').strip()
     if allowed_external_branch_id:
-        outlets = [row for row in outlets if str((row or {}).get('id')) == allowed_external_branch_id]
-        if not outlets:
-            raise HTTPException(status_code=409, detail='The POS location assigned to this activation code is no longer available. Generate a new code after the assigned branch mapping is confirmed.')
+        matched_outlets = [row for row in outlets if str((row or {}).get('id')) == allowed_external_branch_id]
+        if not matched_outlets:
+            # The saved LT branch mapping is authoritative for Companion activation.
+            # StoreHub's cached outlet list can be stale/empty even though the owner
+            # has already mapped this branch successfully. Recover the mapped outlet
+            # instead of rejecting the APK preview with a false 409.
+            try:
+                mapping_query = (
+                    supabase.table('pos_branch_mappings')
+                    .select('*')
+                    .eq('integration_id', integration.get('id'))
+                    .eq('external_branch_id', allowed_external_branch_id)
+                    .eq('is_active', True)
+                )
+                if allowed_branch_id is not None:
+                    mapping_query = mapping_query.eq('branch_id', allowed_branch_id)
+                mapped_rows = mapping_query.limit(1).execute().data or []
+            except Exception as exc:
+                raise _pos_schema_error(exc)
+            if mapped_rows:
+                mapped = mapped_rows[0]
+                matched_outlets = [{
+                    'id': str(mapped.get('external_branch_id')),
+                    'name': mapped.get('external_branch_name') or metadata.get('allowed_external_branch_name') or allowed_external_branch_id,
+                }]
+        if not matched_outlets:
+            raise HTTPException(status_code=409, detail='The POS location assigned to this activation code has no active Loyalty Tree branch mapping. Save the branch mapping, then generate a new activation code.')
+        outlets = matched_outlets
 
     return {
         'business': {
@@ -38693,21 +38730,30 @@ def activate_pos_companion_device(req: POSCompanionActivateRequest):
         raise HTTPException(status_code=400, detail=f'Selected {provider.title()} location is not part of the connected account.')
 
     try:
+        # A branch can have stale/older mapping rows from previous setup attempts.
+        # During Companion activation the code is already locked to the authorized
+        # branch + POS location, so prefer that exact mapping and repair a stale
+        # branch mapping instead of blocking the APK with a false 409.
         mapping_rows = (
             supabase.table('pos_branch_mappings')
             .select('*')
             .eq('integration_id', integration.get('id'))
             .eq('branch_id', branch.get('id'))
-            .limit(1)
             .execute()
             .data or []
         )
-        mapping = mapping_rows[0] if mapping_rows else None
-        if mapping and str(mapping.get('external_branch_id')) != str(req.external_branch_id):
-            raise HTTPException(
-                status_code=409,
-                detail=f'This Loyalty Tree branch is already mapped to a different {provider.title()} location. Change the assigned-branch POS mapping before activating this device.',
-            )
+        mapping = next(
+            (row for row in mapping_rows if str(row.get('external_branch_id')) == str(req.external_branch_id)),
+            None,
+        )
+        if mapping is None:
+            mapping = next((row for row in mapping_rows if row.get('is_active') is not False), None)
+        if mapping is None and mapping_rows:
+            mapping = mapping_rows[0]
+
+        # Do not reject merely because an older row points at another outlet.
+        # The activation-code metadata checks above are the authorization boundary.
+        # The selected mapping row will be updated to the authorized outlet below.
         external_rows = (
             supabase.table('pos_branch_mappings')
             .select('*')
@@ -38742,6 +38788,13 @@ def activate_pos_companion_device(req: POSCompanionActivateRequest):
             mapping = (supabase.table('pos_branch_mappings').update(mapping_payload).eq('id', mapping.get('id')).execute().data or [mapping])[0]
         else:
             mapping = (supabase.table('pos_branch_mappings').insert(mapping_payload).execute().data or [None])[0]
+
+        # Keep only the mapping used by this activation active for this LT branch.
+        # This prevents an older duplicate row from being selected on the next APK run.
+        if mapping and mapping.get('id'):
+            for stale_mapping in mapping_rows:
+                if str(stale_mapping.get('id')) != str(mapping.get('id')) and stale_mapping.get('is_active') is not False:
+                    supabase.table('pos_branch_mappings').update({'is_active': False}).eq('id', stale_mapping.get('id')).execute()
 
         device_token = secrets.token_urlsafe(36)
         display_name = f"{business.get('name') or 'Business'} {branch.get('name') or req.branch_public_id} Companion"
