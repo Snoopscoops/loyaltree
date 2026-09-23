@@ -198,7 +198,7 @@ function POSIntegration({
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Could not generate Companion activation code.')
       setActivationCodeInfo(data)
-      setMessage(`Device pairing code ready for ${data.branch_name || branch.name}. Enter it in Loyalty Tree Companion.`)
+      setMessage(`Pairing code ready for the existing ${providerLabel} POS at ${data.branch_name || branch.name}. Enter it in Loyalty Tree Companion on that POS.`)
     } catch (err) {
       setError(err.message || 'Could not generate Companion activation code.')
     } finally {
@@ -953,11 +953,14 @@ function POSIntegration({
   const activeCompanionDevices = companionDevices.filter(device => !device?.revoked_at)
   const hasSavedMapping = Object.values(branchMappings).some(row => row?.saved_mapping)
   const quickBranch = branches.find(item => item.public_id === quickBranchId) || branches[0] || null
+  const activeDevicesForQuickBranch = activeCompanionDevices.filter(device =>
+    !quickBranch?.public_id || String(device?.branch_public_id || '') === String(quickBranch.public_id)
+  )
   const quickStep = !isConnected
     ? 1
     : !hasSavedMapping
       ? 2
-      : activeCompanionDevices.length
+      : activeDevicesForQuickBranch.length
         ? 4
         : 3
 
@@ -1014,7 +1017,7 @@ function POSIntegration({
             setNewDeviceName={setNewDeviceName}
             generateCompanionActivationCode={generateCompanionActivationCode}
             loadCompanionDevices={loadCompanionDevices}
-            activeCompanionDevices={activeCompanionDevices}
+            activeCompanionDevices={activeDevicesForQuickBranch}
             copyText={copyText}
             API_BASE={API_BASE}
           />
@@ -1996,8 +1999,8 @@ function QuickCompanionSetup({
         <div style={s.quickBody}>
           <div>
             <div style={s.stepLabel}>STEP 3 · ACTIVATE COMPANION</div>
-            <h4 style={s.quickTitle}>Generate POS device</h4>
-            <p style={s.muted}>Create a Loyalty Tree Companion device locked to the selected branch and StoreHub outlet.</p>
+            <h4 style={s.quickTitle}>Pair Loyalty Tree with the existing POS</h4>
+            <p style={s.muted}>This does not create another StoreHub POS. It pairs Loyalty Tree Companion with the physical POS already using the selected StoreHub outlet.</p>
             <label style={s.fieldLabel}>Device name
               <input style={s.input} value={newDeviceName} onChange={e => setNewDeviceName(e.target.value)} placeholder={`${quickBranch?.name || 'Branch'} POS 1`} />
             </label>
@@ -2005,7 +2008,7 @@ function QuickCompanionSetup({
 
           {!activationCodeInfo?.activation_code ? (
             <button type="button" style={s.primaryButton} disabled={saving || !apiAvailable} onClick={generateCompanionActivationCode}>
-              {saving ? 'Generating…' : 'Generate New Device'}
+              {saving ? 'Generating…' : 'Pair Existing POS'}
             </button>
           ) : (
             <div style={s.activationBox}>
@@ -2024,9 +2027,9 @@ function QuickCompanionSetup({
 
           <div style={s.quickInstructions}>
             {[
-              'Open Loyalty Tree Companion on the physical POS/tablet.',
+              'Open Loyalty Tree Companion on the existing physical POS/tablet that already runs StoreHub.',
               'Enter the 6-digit pairing code.',
-              'The branch and StoreHub outlet are already locked by Loyalty Tree.',
+              'Loyalty Tree attaches to the saved branch + StoreHub outlet; it does not create or replace a StoreHub POS.',
               'Finish activation, then refresh device status here.',
             ].map((item,index) => (
               <div key={item} style={s.quickInstruction}>
@@ -2058,7 +2061,7 @@ function QuickCompanionSetup({
           <div>
             <div style={s.stepLabel}>STEP 4 · TEST</div>
             <h4 style={s.quickTitle}>Run the first checkout test</h4>
-            <p style={s.muted}>The POS device is activated. You can add more physical POS devices or validate the cashier flow.</p>
+            <p style={s.muted}>Loyalty Tree is paired with this existing POS. You can pair another physical POS at the same mapped outlet or validate the cashier flow.</p>
           </div>
 
           <div style={s.ruleBox}>
@@ -2071,15 +2074,15 @@ function QuickCompanionSetup({
             )) : <div style={s.smallMuted}>No activated devices yet.</div>}
           </div>
 
-          <label style={s.fieldLabel}>New device name
+          <label style={s.fieldLabel}>Existing POS name
             <input style={s.input} value={newDeviceName} onChange={e => setNewDeviceName(e.target.value)} placeholder={`${quickBranch?.name || 'Branch'} POS 2`} />
           </label>
           <button type="button" style={s.primaryButton} disabled={saving || !apiAvailable} onClick={generateCompanionActivationCode}>
-            {saving ? 'Generating…' : '+ Generate Another Device'}
+            {saving ? 'Generating…' : '+ Pair Another Existing POS'}
           </button>
           {activationCodeInfo?.activation_code && (
             <div style={s.activationBox}>
-              <div style={s.stepLabel}>NEW DEVICE PAIRING CODE</div>
+              <div style={s.stepLabel}>EXISTING POS PAIRING CODE</div>
               <div style={s.activationCode}>{activationCodeInfo.activation_code}</div>
               <div style={s.smallMuted}>{activationCodeInfo.branch_name || quickBranch?.name} · {activationCodeInfo.external_branch_name || 'mapped POS outlet'} · one device</div>
               <button type="button" style={s.secondaryButton} onClick={() => copyText(activationCodeInfo.activation_code,'Pairing code copied')}>Copy code</button>
