@@ -26100,7 +26100,7 @@ async def get_points_history(public_id: str, customer_public_id: str):
             .eq('business_id', business.get('id'))
             .eq('customer_id', customer.get('id'))
             .eq('status', 'success')
-            .in_('action', ['points_adjust', 'points_redeem'])
+            .in_('action', ['points_adjust', 'points_redeem', 'pos_points_redeem'])
             .order('created_at', desc=True)
             .execute()
         ).data or []
@@ -39907,6 +39907,7 @@ async def _companion_process_transaction(
         committed_redemption = None
         redemption_amount = 0.0
         points_redeemed = 0
+        redemption_audit_ref = None
         redemption_net_amount = float(tx.get('gross_amount') or amount)
 
         if reservation_id:
@@ -39974,6 +39975,66 @@ async def _companion_process_transaction(
                 or max(tx_gross - redemption_amount, 0)
             )
 
+            # Record the actual POS point deduction as its own immutable activity.
+            redeem_audit = start_transaction_audit(
+                business_id=business.get('id'),
+                customer_id=customer.get('id'),
+                staff_id=None,
+                branch_id=device.get('branch_id'),
+                actor_type='system',
+                action='pos_points_redeem',
+                idempotency_key=f'{base_key}:redeem',
+                delta=-points_redeemed,
+                balance_before=int(committed_redemption.get('balance_before') or 0),
+                reason='POS points redemption',
+                metadata={
+                    'card_type': program.get('card_type') or 'points',
+                    'pos_provider': provider,
+                    'pos_external_transaction_id': external_tx,
+                    'redemption_reservation_id': str(committed_redemption.get('id')),
+                    'redemption_amount': redemption_amount,
+                    'gross_amount': tx_gross,
+                    'net_amount': redemption_net_amount,
+                },
+            )
+
+            if redeem_audit and not redeem_audit.get('_duplicate_response'):
+                complete_transaction_audit(
+                    redeem_audit,
+                    balance_after=int(committed_redemption.get('balance_after') or 0),
+                    response_json={
+                        'success': True,
+                        'points_spent': points_redeemed,
+                        'redemption_amount': redemption_amount,
+                        'points_balance': int(committed_redemption.get('balance_after') or 0),
+                    },
+                )
+
+            if redeem_audit and redeem_audit.get('transaction_id'):
+                redemption_audit_ref = str(redeem_audit.get('transaction_id'))
+                _pos_attach_audit_context(
+                    redeem_audit.get('transaction_id'),
+                    device.get('branch_id'),
+                    provider,
+                    external_tx,
+                )
+
+            # Redemption mutates the Loyalty Tree balance directly, so explicitly
+            # refresh every registered wallet representation after the commit.
+            # sync_loyalty_wallets_background handles both Google Wallet and
+            # Apple Wallet using the same fresh Loyalty Tree customer state.
+            fresh_customer = safe_get_customer(customer.get('public_id')) or customer
+            background_tasks.add_task(
+                sync_loyalty_wallets_background,
+                dict(fresh_customer),
+                dict(business),
+                dict(program),
+                'pos_companion_redemption',
+                'Loyalty balance updated',
+                f"POS redemption completed. You now have {int(fresh_customer.get('points_balance') or 0)} points.",
+                f"pos-companion-redemption-{external_tx}",
+            )
+
         if points_active and committed_redemption:
             # A redemption transaction spends points; it must never earn points
             # from the same purchase.
@@ -40039,6 +40100,9 @@ async def _companion_process_transaction(
             }
 
         audit_refs = []
+        if redemption_audit_ref:
+            audit_refs.append(redemption_audit_ref)
+
         for item in (points_result, stamp_result):
             audit_ref = item.get('transaction_id') if isinstance(item, dict) else None
             if audit_ref:
