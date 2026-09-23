@@ -388,16 +388,21 @@ function POSIntegration({
   }
 
   const connectStoreHub = async () => {
-    if (!slug) return
+    if (!slug) {
+      setMessage('')
+      setError('Business account could not be identified. Refresh the Owner Dashboard and sign in again.')
+      return
+    }
     const storeName = storeHubCredentials.store_name.trim()
     const apiToken = storeHubCredentials.api_token.trim()
     if (!storeName || !apiToken) {
+      setMessage('')
       setError('Enter the StoreHub store name and API token.')
       return
     }
     setSaving(true)
     setError('')
-    setMessage('')
+    setMessage('Testing StoreHub API connection…')
     setStoreHubRealResult(null)
     try {
       const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/storehub/connect`, {
@@ -417,6 +422,7 @@ function POSIntegration({
       setMessage(`StoreHub connected securely. ${data.store_count ?? 0} outlet(s) detected.`)
       await loadPOS()
     } catch (err) {
+      setMessage('')
       setError(err.message || 'Could not connect StoreHub.')
     } finally {
       setSaving(false)
@@ -1121,7 +1127,7 @@ function POSIntegration({
                     </button>
                   </div>
                 </div>
-                {!storeHubConnection?.encryption_configured && (
+                {storeHubConnection && storeHubConnection.encryption_configured === false && (
                   <div style={s.infoBanner}>
                     Platform setup required: add <code>POS_CREDENTIALS_ENCRYPTION_KEY</code> once to the Loyalty Tree backend environment.
                   </div>
@@ -1153,12 +1159,14 @@ function POSIntegration({
                   <button
                     type="button"
                     style={s.primaryButton}
-                    disabled={saving || !apiAvailable || !storeHubConnection?.encryption_configured}
+                    disabled={saving || !apiAvailable}
                     onClick={connectStoreHub}
                   >
-                    {saving ? 'Testing…' : 'Test & connect StoreHub'}
+                    {saving ? 'Testing StoreHub…' : 'Test & connect StoreHub'}
                   </button>
-                  <span style={s.smallMuted}>Credentials are saved only after StoreHub authentication succeeds.</span>
+                  <span style={s.smallMuted}>
+                    Credentials are saved only after StoreHub authentication succeeds. If StoreHub or the Loyalty Tree backend rejects the request, the error will be shown above.
+                  </span>
                 </div>
               </div>
             )}
