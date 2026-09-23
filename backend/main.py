@@ -39120,7 +39120,6 @@ def pos_companion_points_reserve(
     return {
         'ok': True,
         'reservation': _pos_redemption_public(row),
-        'session': _companion_session_public(session),
         'message': f'{points} points reserved.',
     }
 
