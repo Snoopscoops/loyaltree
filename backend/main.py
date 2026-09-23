@@ -40265,6 +40265,54 @@ def companion_session_current(x_lt_device_token: str = Header(default='', alias=
     return {'ok': True, 'session': _companion_session_public(session), 'device_id': str(device.get('id'))}
 
 
+@app.get('/api/v1/companion/pos/peek')
+@app.get('/api/v1/pos-companion/pos/peek')
+def companion_pos_peek(
+    limit: int = 10,
+    x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
+):
+    """Read-only POS diagnostic for an activated Companion device.
+
+    This deliberately works without a scanned Loyalty Tree customer. It asks the
+    configured provider adapter for recent transactions, normalizes them through
+    the same bridge used by checkout matching, and returns only rows belonging to
+    this Companion's assigned LT branch. No points, stamps, redemption, customer
+    link, or transaction processing is performed here.
+    """
+    device = _require_pos_device(x_lt_device_token)
+    provider = str(device.get('provider') or '').lower()
+    integration = _get_pos_integration(device.get('business_id'), provider)
+    if not integration:
+        raise HTTPException(status_code=409, detail='POS integration not found for this Companion device.')
+    safe_limit = max(1, min(int(limit or 10), 50))
+    transactions = _companion_provider_rows(device, integration, safe_limit)
+    rows = []
+    for tx in transactions:
+        if str(tx.get('integration_id')) != str(device.get('integration_id')):
+            continue
+        if tx.get('branch_id') is None or str(tx.get('branch_id')) != str(device.get('branch_id')):
+            continue
+        if str(tx.get('transaction_type') or '').lower() != 'sale':
+            continue
+        rows.append({
+            'id': str(tx.get('id') or ''),
+            'external_transaction_id': str(tx.get('external_transaction_id') or ''),
+            'receipt_number': str(tx.get('external_receipt_number') or ''),
+            'gross_amount': float(tx.get('gross_amount') or 0),
+            'currency': str(tx.get('currency') or 'PHP'),
+            'transacted_at': tx.get('transacted_at') or tx.get('created_at') or '',
+            'status': str(tx.get('status') or ''),
+        })
+    rows.sort(key=lambda row: row.get('transacted_at') or '', reverse=True)
+    return {
+        'ok': True,
+        'provider': provider,
+        'read_only': True,
+        'transactions': rows[:safe_limit],
+        'message': 'Read-only POS check. No customer or loyalty action was processed.',
+    }
+
+
 @app.post('/api/v1/companion/session/current/poll')
 @app.post('/api/v1/pos-companion/session/current/poll')
 async def companion_session_poll(
