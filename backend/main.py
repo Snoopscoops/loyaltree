@@ -2242,6 +2242,14 @@ class LoyaltyProgramCreate(BaseModel):
     membership_employee_mode: bool = False
 
 
+class WalletActionConfig(BaseModel):
+    id: Optional[str] = Field(default=None, max_length=80)
+    label: str = Field(min_length=1, max_length=40)
+    url: str = Field(min_length=1, max_length=2000)
+    enabled: bool = True
+    primary: bool = False
+
+
 class LoyaltyConfig(BaseModel):
     card_type: Literal['stamp', 'points', 'multipass', 'membership', 'vip', 'hybrid', 'employee'] = 'stamp'
     # Hybrid keeps one Wallet card/customer identity while combining Membership
@@ -2287,6 +2295,9 @@ class LoyaltyConfig(BaseModel):
     wallet_show_background: bool = True
     description: Optional[str] = Field(default=None, max_length=140)  # short blurb shown below the card on the join page / wallet pass - also doubles as the multipass card's "what these sessions are for" description
     google_review_url: Optional[str] = None  # Growth/Pro only - link prompted after a redeemed reward
+    # Up to five owner-configured HTTPS destinations rendered on both Wallets.
+    # These remain separate from special signed actions such as Order Ahead.
+    wallet_actions: Optional[List[WalletActionConfig]] = None
     # --- Points card only ---
     points_per_amount: Optional[float] = Field(default=10, ge=0)     # points earned...
     points_amount_pesos: Optional[float] = Field(default=100, ge=1)  # ...per this many pesos spent
@@ -6571,6 +6582,8 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         details.insert(0, ('available_now', 'AVAILABLE NOW', available_text))
 
     order_ahead_action = order_ahead_wallet_action(customer, business)
+    custom_wallet_actions = program_wallet_actions(program)
+    primary_wallet_action = order_ahead_action or primary_program_wallet_action(program)
 
     primary_is_stamps = loyalty_points_label == 'STAMPS'
     wallet_stamp_balance_text, wallet_stamp_progress_row = wallet_stamp_balance_and_module(
@@ -6611,6 +6624,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         'linksModuleData': {
             'uris': [
                 *([{'uri': order_ahead_action['url'], 'description': f"🛍️ {order_ahead_action['label']}"}] if order_ahead_action else []),
+                *[{'uri': action['url'], 'description': f"↗ {action['label']}"} for action in custom_wallet_actions],
                 {'uri': f'{BASE_URL}/feedback/{cust_public_id}', 'description': '⭐ Rate Your Experience'},
                 {'uri': f'{BASE_URL}/wallet/{cust_public_id}', 'description': 'View Rewards / Account'},
             ]
@@ -6620,19 +6634,19 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
                 'webAppLinkInfo': {
                     'appTarget': {
                         'targetUri': {
-                            'uri': order_ahead_action['url'],
-                            'description': order_ahead_action['label'],
+                            'uri': primary_wallet_action['url'],
+                            'description': primary_wallet_action['label'],
                         }
                     }
                 },
                 'displayText': {
                     'defaultValue': {
                         'language': 'en-US',
-                        'value': order_ahead_action['label'],
+                        'value': primary_wallet_action['label'],
                     }
                 },
             }
-        } if order_ahead_action else {}),
+        } if primary_wallet_action else {}),
     }
 
     # Object-level heroImage overrides the class-level one for just this
@@ -6932,8 +6946,8 @@ def sync_wallet_object(customer: dict, business: dict, program: dict,
                 'barcode': desired.get('barcode'),
                 'textModulesData': desired.get('textModulesData'),
                 'linksModuleData': desired.get('linksModuleData'),
-                # Explicit None clears a previously-enabled Wallet CTA when the
-                # super admin turns Order Ahead off.
+                # Explicit None clears a previously-enabled primary Wallet CTA when
+                # neither Order Ahead nor an owner-configured primary action remains.
                 'appLinkData': desired.get('appLinkData'),
                 'state': desired.get('state', 'active'),
                 # Native field updates can notify without leaving a permanent
@@ -7217,6 +7231,36 @@ def order_ahead_member_token(customer_public_id: str, business_public_id: str) -
 def verify_order_ahead_member_token(customer_public_id: str, business_public_id: str, token: str) -> bool:
     expected = order_ahead_member_token(customer_public_id, business_public_id)
     return bool(expected and token and hmac.compare_digest(expected, str(token).strip()))
+
+
+def program_wallet_actions(program: Optional[dict]) -> list[dict]:
+    """Return sanitized active owner-configured Wallet actions.
+
+    The DB is still treated as untrusted input because older/manual rows can
+    bypass the Pydantic save route. Only http(s) destinations are emitted into
+    Apple/Google Wallet payloads.
+    """
+    out = []
+    for i, raw in enumerate(((program or {}).get('wallet_actions') or [])[:5]):
+        if not isinstance(raw, dict) or raw.get('enabled') is False:
+            continue
+        label = str(raw.get('label') or '').strip()[:40]
+        url = str(raw.get('url') or '').strip()[:2000]
+        if not label or not re.match(r'^https://', url, flags=re.IGNORECASE):
+            continue
+        safe_id = re.sub(r'[^A-Za-z0-9_-]+', '-', str(raw.get('id') or f'action-{i+1}')).strip('-_')[:80] or f'action-{i+1}'
+        out.append({
+            'id': safe_id,
+            'label': label,
+            'url': url,
+            'primary': raw.get('primary') is True,
+        })
+    return out
+
+
+def primary_program_wallet_action(program: Optional[dict]) -> Optional[dict]:
+    actions = program_wallet_actions(program)
+    return next((a for a in actions if a.get('primary')), actions[0] if actions else None)
 
 
 def order_ahead_wallet_action(customer: dict, business: dict) -> Optional[dict]:
@@ -8300,6 +8344,20 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
 
     order_ahead_action = order_ahead_wallet_action(customer, business)
     order_ahead_status_field = _oa_apple_order_status_field(customer, business)
+    custom_wallet_actions = program_wallet_actions(program)
+
+    def _apple_custom_action_fields():
+        fields = []
+        for i, action in enumerate(custom_wallet_actions):
+            safe_label = html_lib.escape(action['label'])
+            safe_url = html_lib.escape(action['url'], quote=True)
+            fields.append({
+                'key': f'custom_action_{i+1}_{action["id"][:24]}',
+                'label': ('★ ' if action.get('primary') else '↗ ') + action['label'].upper(),
+                'value': f'{action["label"]} ›',
+                'attributedValue': f'<a href="{safe_url}">{safe_label} ›</a>',
+            })
+        return fields
 
     if card_type == 'hybrid':
         # Hybrid Details is a small action/account menu rather than a dump of
@@ -8315,6 +8373,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
             })
         if order_ahead_status_field:
             back_fields.append(order_ahead_status_field)
+        back_fields += _apple_custom_action_fields()
 
         back_fields += [
             {'key': key, 'label': label, 'value': str(value)}
@@ -8355,6 +8414,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     else:
         back_fields = [
             {'key': 'card', 'label': 'CARD', 'value': card_title},
+            *_apple_custom_action_fields(),
             *[{'key': key, 'label': label, 'value': str(value)} for key, label, value in apple_details],
             *activity_fields,
             {'key': 'about', 'label': 'ABOUT', 'value': description or f'{biz_name} digital loyalty card powered by LoyaltyTree.'},
@@ -19567,6 +19627,7 @@ async def get_loyalty_config(public_id: str, response: Response, program_id: Opt
             "wallet_secondary_color": None,
             "wallet_show_background": True,
             "description": None,
+            "wallet_actions": [],
             "google_wallet_class_id": None,
             "points_per_amount": 10,
             "points_amount_pesos": 100,
@@ -19790,6 +19851,37 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
             data['program_name'] = str(config.card_name).strip()
     if config.description is not None:
         data['description'] = config.description
+
+    if config.wallet_actions is not None:
+        if len(config.wallet_actions) > 5:
+            raise HTTPException(status_code=400, detail='A loyalty card can have up to 5 custom Wallet actions.')
+        normalized_actions = []
+        primary_seen = False
+        for i, action in enumerate(config.wallet_actions):
+            label = str(action.label or '').strip()
+            url = str(action.url or '').strip()
+            if not label or not url:
+                raise HTTPException(status_code=400, detail=f'Wallet action {i + 1} needs both a name and destination URL.')
+            if not re.match(r'^https://', url, flags=re.IGNORECASE):
+                raise HTTPException(status_code=400, detail=f'Wallet action {i + 1} must use a full https:// URL.')
+            is_primary = bool(action.primary) and not primary_seen
+            if is_primary:
+                primary_seen = True
+            normalized_actions.append({
+                'id': re.sub(r'[^A-Za-z0-9_-]+', '-', str(action.id or uuid.uuid4().hex[:12])).strip('-_')[:80] or uuid.uuid4().hex[:12],
+                'label': label[:40],
+                'url': url[:2000],
+                'enabled': bool(action.enabled),
+                'primary': is_primary,
+            })
+        # If actions exist but none was explicitly selected, make the first active
+        # action deterministic for Google Wallet's one primary web CTA slot.
+        if normalized_actions and not primary_seen:
+            first_active = next((a for a in normalized_actions if a['enabled']), None)
+            if first_active:
+                first_active['primary'] = True
+        data['wallet_actions'] = normalized_actions
+
     if config.card_type == 'points' or (config.card_type == 'hybrid' and hybrid_points):
         data['points_per_amount'] = config.points_per_amount
         data['points_amount_pesos'] = config.points_amount_pesos

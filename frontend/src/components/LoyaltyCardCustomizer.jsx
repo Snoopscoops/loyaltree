@@ -109,6 +109,10 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     wallet_show_background: true,
     description: '',
     google_review_url: '',
+    // Custom Wallet actions shown in Google Wallet links / primary CTA and
+    // Apple Wallet Pass Details. These are normal HTTPS destinations and are
+    // separate from LoyaltyTree's signed Order Ahead action.
+    wallet_actions: [],
     // Points card only
     points_per_amount: 10,
     points_amount_pesos: 100,
@@ -271,6 +275,15 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
           wallet_show_background: data.wallet_show_background !== false,
           description: data.description || '',
           google_review_url: data.google_review_url || '',
+          wallet_actions: Array.isArray(data.wallet_actions)
+            ? data.wallet_actions.slice(0, 5).map((action, i) => ({
+                id: action?.id || `action-${i+1}`,
+                label: action?.label || '',
+                url: action?.url || '',
+                enabled: action?.enabled !== false,
+                primary: action?.primary === true,
+              }))
+            : [],
           points_per_amount: data.points_per_amount ?? 10,
           points_amount_pesos: data.points_amount_pesos ?? 100,
           points_cap_limit: data.points_cap_limit ?? '',
@@ -538,6 +551,35 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     )
   }
 
+  const addWalletAction = () => {
+    if ((form.wallet_actions || []).length >= 5) return
+    const first = (form.wallet_actions || []).length === 0
+    update('wallet_actions', [
+      ...(form.wallet_actions || []),
+      { id: Math.random().toString(16).slice(2, 14), label: '', url: '', enabled: true, primary: first },
+    ])
+  }
+
+  const updateWalletAction = (index, patch) => {
+    const actions = (form.wallet_actions || []).map((action, i) => {
+      if (i !== index) {
+        return patch.primary === true ? { ...action, primary: false } : action
+      }
+      return { ...action, ...patch }
+    })
+    update('wallet_actions', actions)
+  }
+
+  const removeWalletAction = (index) => {
+    const before = form.wallet_actions || []
+    const removedWasPrimary = before[index]?.primary === true
+    const next = before.filter((_, i) => i !== index)
+    if (removedWasPrimary && next.length && !next.some(action => action.primary === true)) {
+      next[0] = { ...next[0], primary: true }
+    }
+    update('wallet_actions', next)
+  }
+
   const IMAGE_UPLOAD_MAX_MB = 8
 
   // Uploads a photo picked from the device to Cloudinary and stores the
@@ -626,6 +668,13 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     wallet_show_background: form.wallet_show_background !== false,
     description: form.description || '',
     google_review_url: form.google_review_url || null,
+    wallet_actions: (form.wallet_actions || []).slice(0, 5).map((action, i) => ({
+      id: action.id || `action-${i+1}`,
+      label: (action.label || '').trim(),
+      url: (action.url || '').trim(),
+      enabled: action.enabled !== false,
+      primary: action.primary === true,
+    })),
     points_per_amount: Number(form.points_per_amount) || 0,
     points_amount_pesos: Number(form.points_amount_pesos) || 1,
     points_cap_limit: form.points_cap_limit === '' || form.points_cap_limit == null
@@ -2598,6 +2647,57 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                 </div>
             </div>
           )}
+
+          <section style={{...styles.editorSection,border:'1px solid #bfdbfe',background:'#f8fbff'}}>
+            <div style={styles.editorSectionHead}>
+              <div>
+                <div style={styles.editorSectionEyebrow}>WALLET ACTIONS</div>
+                <h3 style={styles.editorSectionTitle}>Add links customers can open from their card</h3>
+              </div>
+              <span style={{...styles.editorSectionBadge,background:'#dbeafe',color:'#1d4ed8'}}>↗</span>
+            </div>
+            <p style={{...styles.hint,margin:'0 0 14px'}}>
+              Examples: <b>Book Appointment</b>, <b>View Activities</b>, <b>Dream Block</b>, <b>Visit Website</b>, or a custom ordering page.
+              Google Wallet can use the Primary action as its main web CTA; Apple Wallet shows these as tappable links in Pass Details.
+            </p>
+
+            {(form.wallet_actions || []).length === 0 && (
+              <div style={{padding:14,border:'1px dashed #bfdbfe',borderRadius:12,background:'#fff',color:'#64748b',fontSize:12.5,lineHeight:1.55}}>
+                No custom actions yet. LoyaltyTree's normal Card &amp; History / Feedback links still remain available.
+              </div>
+            )}
+
+            <div style={{display:'grid',gap:10,marginTop:(form.wallet_actions || []).length ? 0 : 12}}>
+              {(form.wallet_actions || []).map((action, i) => (
+                <div key={action.id || i} style={{padding:12,border:'1px solid #dbeafe',borderRadius:12,background:'#fff'}}>
+                  <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'minmax(150px,.8fr) minmax(260px,1.7fr) auto',gap:8,alignItems:'end'}}>
+                    <label style={{display:'grid',gap:6}}>
+                      <span style={styles.miniLabel}>Button / action name</span>
+                      <input style={styles.input} maxLength={40} placeholder="e.g. View Activities" value={action.label || ''} onChange={e=>updateWalletAction(i,{label:e.target.value})}/>
+                    </label>
+                    <label style={{display:'grid',gap:6}}>
+                      <span style={styles.miniLabel}>Destination URL</span>
+                      <input style={styles.input} maxLength={2000} inputMode="url" placeholder="https://..." value={action.url || ''} onChange={e=>updateWalletAction(i,{url:e.target.value})}/>
+                    </label>
+                    <button type="button" style={{...styles.prizeRemoveBtn,height:42,width:42,alignSelf:'end'}} aria-label={`Remove wallet action ${i+1}`} onClick={()=>removeWalletAction(i)}>✕</button>
+                  </div>
+                  <div style={{display:'flex',gap:16,flexWrap:'wrap',marginTop:10}}>
+                    <label style={{display:'flex',gap:8,alignItems:'center',fontSize:12,fontWeight:750,cursor:'pointer'}}>
+                      <input type="radio" name="primary-wallet-action" checked={action.primary === true} onChange={()=>updateWalletAction(i,{primary:true})}/> Primary action
+                    </label>
+                    <label style={{display:'flex',gap:8,alignItems:'center',fontSize:12,fontWeight:750,cursor:'pointer'}}>
+                      <input type="checkbox" checked={action.enabled !== false} onChange={e=>updateWalletAction(i,{enabled:e.target.checked})}/> Active
+                    </label>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <button type="button" disabled={(form.wallet_actions || []).length >= 5} onClick={addWalletAction} style={{...styles.addPrizeBtn,marginTop:12,...((form.wallet_actions || []).length>=5?{opacity:.5,cursor:'not-allowed'}:{})}}>
+              + Add Wallet Action
+            </button>
+            <p style={{...styles.hint,marginTop:8}}>Maximum 5 actions. Use a full <b>https://</b> URL. Only one action can be Primary.</p>
+          </section>
 
           <div style={styles.wallet20Box}>
             <div style={styles.wallet20TitleRow}>
