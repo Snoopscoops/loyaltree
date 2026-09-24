@@ -190,6 +190,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
   const [showMobilePreview, setShowMobilePreview] = useState(false)
   const [plan, setPlan] = useState('starter')
   const [planFeatures, setPlanFeatures] = useState({ hybrid_cards: false, gift_cards: false })
+  const [branches, setBranches] = useState([])
+  const [branchesLoading, setBranchesLoading] = useState(false)
+  const [branchReviewError, setBranchReviewError] = useState('')
 
   useEffect(() => {
     const onResize = () => setGuidedMobile(window.innerWidth <= 640)
@@ -222,6 +225,11 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     fetchConfig()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [programPublicId])
+
+  useEffect(() => {
+    fetchBranches()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.business_slug, user?.token])
 
   const fetchConfig = async () => {
     setLoading(true)
@@ -361,6 +369,96 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
       setError('Network error')
     }
     setLoading(false)
+  }
+
+  const fetchBranches = async () => {
+    if (!user?.business_slug || !user?.token) {
+      setBranches([])
+      return
+    }
+    setBranchesLoading(true)
+    setBranchReviewError('')
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/v1/business/${user.business_slug}/branches`,
+        {
+          cache: 'no-store',
+          headers: { 'Authorization': `Bearer ${user.token}` },
+        }
+      )
+      const data = await res.json().catch(() => [])
+      if (!res.ok) {
+        const detail = data?.detail
+        throw new Error(typeof detail === 'string' ? detail : 'Could not load branches')
+      }
+      setBranches((Array.isArray(data) ? data : []).map(branch => ({
+        ...branch,
+        google_review_url: branch?.google_review_url || '',
+        _saved_google_review_url: branch?.google_review_url || '',
+      })))
+    } catch (err) {
+      setBranches([])
+      setBranchReviewError(err?.message || 'Could not load branch review links')
+    } finally {
+      setBranchesLoading(false)
+    }
+  }
+
+  const updateBranchReviewUrl = (branchPublicId, value) => {
+    setBranches(current => current.map(branch => (
+      branch.public_id === branchPublicId
+        ? { ...branch, google_review_url: value }
+        : branch
+    )))
+    setSaved(false)
+    setBranchReviewError('')
+  }
+
+  const saveBranchReviewLinks = async () => {
+    if (!['growth', 'pro'].includes(String(plan || '').toLowerCase())) return
+    if (!user?.token) throw new Error('Your owner session expired. Please sign in again.')
+
+    const dirtyBranches = branches.filter(branch => (
+      String(branch.google_review_url || '').trim()
+      !== String(branch._saved_google_review_url || '').trim()
+    ))
+    if (!dirtyBranches.length) return
+
+    const savedById = {}
+    for (const branch of dirtyBranches) {
+      const url = String(branch.google_review_url || '').trim()
+      if (url && !/^https?:\/\//i.test(url)) {
+        throw new Error(`${branch.name || 'Branch'} review link must start with https://`)
+      }
+
+      const res = await fetch(
+        `${API_BASE}/api/v1/business/${user.business_slug}/branches/${encodeURIComponent(branch.public_id)}`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${user.token}`,
+          },
+          body: JSON.stringify({ google_review_url: url || null }),
+        }
+      )
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        const detail = data?.detail
+        throw new Error(
+          `${branch.name || 'Branch'}: ${typeof detail === 'string' ? detail : 'Could not save Google review link'}`
+        )
+      }
+      savedById[branch.public_id] = {
+        ...branch,
+        ...data,
+        google_review_url: data?.google_review_url || '',
+        _saved_google_review_url: data?.google_review_url || '',
+      }
+    }
+
+    setBranches(current => current.map(branch => savedById[branch.public_id] || branch))
+    setBranchReviewError('')
   }
 
   const update = (key, value) => {
@@ -1036,6 +1134,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
       // then publish/update the Google Wallet class.
       const savedData = await postConfig()
       setForm(current => ({ ...current, card_type: savedData.card_type }))
+      // Branch review destinations are stored on branches, not loyalty_programs.
+      // Save them as part of the same one-tap Publish workflow.
+      await saveBranchReviewLinks()
 
       // The Google Wallet class endpoint can occasionally fail on the first
       // create/update request while the just-saved config/class state settles.
@@ -1098,6 +1199,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
   const multipassPreviewUsed = Math.ceil(multipassSessionCount / 3)
   const displayName = form.card_name || `${user?.business_name || 'Your Business'} Rewards`
   const hybridAllowed = planFeatures.hybrid_cards === true
+  const googleReviewEnabled = ['growth', 'pro'].includes(String(plan || '').toLowerCase())
   const isHybrid = form.card_type === 'hybrid'
   const hybridPointsEnabled = isHybrid && form.hybrid_points_enabled !== false
   const hybridStampsEnabled = isHybrid && form.hybrid_stamps_enabled === true
@@ -2905,14 +3007,71 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                 </div>
               )}
               <div style={{...styles.fieldGroup,marginTop:14}}>
-                <label style={styles.label}>Google review link</label>
-                <input
-                  style={styles.input}
-                  placeholder="https://g.page/r/..."
-                  value={form.google_review_url}
-                  onChange={e => update('google_review_url', e.target.value)}
-                />
-                <p style={styles.hint}>Growth &amp; Pro plans only — prompted after a customer redeems a reward.</p>
+                <label style={styles.label}>Google Review links</label>
+                <p style={{...styles.hint,margin:'4px 0 12px'}}>
+                  Growth &amp; Pro plans only. The review prompt follows the branch that actually handled the redemption.
+                </p>
+
+                {!googleReviewEnabled ? (
+                  <div style={{padding:12,border:'1px solid #e2e8f0',borderRadius:10,background:'#f8fafc',fontSize:13,color:'#64748b'}}>
+                    Upgrade to Growth or Pro to configure Google Review prompts.
+                  </div>
+                ) : (
+                  <>
+                    {branchesLoading ? (
+                      <div style={{...styles.hint,padding:'8px 0'}}>Loading branches...</div>
+                    ) : branches.length > 0 ? (
+                      <div style={{display:'grid',gap:10}}>
+                        {branches.map(branch => (
+                          <div
+                            key={branch.public_id}
+                            style={{
+                              padding:12,
+                              border:'1px solid #e2e8f0',
+                              borderRadius:12,
+                              background: branch.is_active === false ? '#f8fafc' : '#fff',
+                            }}
+                          >
+                            <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'flex-start',marginBottom:8}}>
+                              <div>
+                                <div style={{fontSize:13,fontWeight:850,color:'#334155'}}>{branch.name || 'Branch'}</div>
+                                {branch.address && <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>{branch.address}</div>}
+                              </div>
+                              {branch.is_active === false && <span style={{fontSize:10,fontWeight:800,color:'#94a3b8'}}>INACTIVE</span>}
+                            </div>
+                            <input
+                              style={styles.input}
+                              placeholder="https://g.page/r/..."
+                              value={branch.google_review_url || ''}
+                              onChange={e => updateBranchReviewUrl(branch.public_id, e.target.value)}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div style={{padding:12,border:'1px solid #e2e8f0',borderRadius:10,background:'#f8fafc',fontSize:12,color:'#64748b'}}>
+                        No branches yet. Add branches first, then each location will get its own Google Review field here.
+                      </div>
+                    )}
+
+                    <div style={{marginTop:12,paddingTop:12,borderTop:'1px solid #e2e8f0'}}>
+                      <label style={styles.miniLabel}>Default / fallback review link <span style={{fontWeight:500,color:'#94a3b8'}}>· optional</span></label>
+                      <input
+                        style={{...styles.input,marginTop:6}}
+                        placeholder="Used when the redemption has no branch-specific link"
+                        value={form.google_review_url}
+                        onChange={e => update('google_review_url', e.target.value)}
+                      />
+                      <p style={{...styles.hint,marginTop:6}}>
+                        Used for owner-direct redemptions, unassigned staff, or a branch with no review URL.
+                      </p>
+                    </div>
+
+                    {branchReviewError && (
+                      <div style={{marginTop:8,fontSize:12,fontWeight:700,color:'#b91c1c'}}>{branchReviewError}</div>
+                    )}
+                  </>
+                )}
               </div>
             </div>
           </details>

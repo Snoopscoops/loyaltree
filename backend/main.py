@@ -1856,11 +1856,13 @@ class PartnerDemoCashierUpdate(BaseModel):
 class BranchCreate(BaseModel):
     name: str
     address: Optional[str] = None
+    google_review_url: Optional[str] = Field(default=None, max_length=1000)
 
 class BranchUpdate(BaseModel):
     name: Optional[str] = None
     address: Optional[str] = None
     is_active: Optional[bool] = None
+    google_review_url: Optional[str] = Field(default=None, max_length=1000)
 
 # --- Car Lending / Showroom: buyer records (cl_customers table - kept
 # separate from the loyalty `customers` table on purpose, see
@@ -3077,6 +3079,60 @@ def safe_get_branch(public_id: str):
         return res.data
     except Exception:
         return None
+
+
+def normalize_google_review_url(value: Optional[str], *, strict: bool = False) -> Optional[str]:
+    """Normalize a Google review destination.
+
+    Businesses may use g.page, maps.app.goo.gl, a Google Business Profile
+    review URL, or another http(s) redirect supplied by Google.
+    """
+    raw = str(value or '').strip()
+    if not raw:
+        return None
+    if not re.match(r'^https?://', raw, flags=re.IGNORECASE):
+        if strict:
+            raise HTTPException(
+                status_code=400,
+                detail="Google review links must start with http:// or https://",
+            )
+        return None
+    return raw
+
+
+def google_review_url_for_redemption(
+    business: Optional[dict],
+    program: Optional[dict],
+    branch_id: Optional[int] = None,
+) -> Optional[str]:
+    """Return the correct review destination for this redemption.
+
+    The branch-specific URL wins. The program-level URL stays as the fallback
+    for owner-direct redemptions, unassigned staff, and branches that have not
+    configured their own review URL yet.
+    """
+    if not business or not get_plan_features(business.get('plan')).get('google_review_prompt'):
+        return None
+
+    if branch_id is not None and supabase:
+        try:
+            rows = (
+                supabase.table('branches')
+                .select('google_review_url')
+                .eq('id', branch_id)
+                .eq('business_id', business.get('id'))
+                .limit(1)
+                .execute()
+                .data or []
+            )
+            if rows:
+                branch_url = normalize_google_review_url(rows[0].get('google_review_url'))
+                if branch_url:
+                    return branch_url
+        except Exception as exc:
+            print(f"GOOGLE REVIEW branch lookup warning: {exc}")
+
+    return normalize_google_review_url((program or {}).get('google_review_url'))
 
 
 # POS Integration helpers -----------------------------------------------------
@@ -18667,11 +18723,18 @@ async def create_branch(public_id: str, branch: BranchCreate, authorization: str
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
+    review_url = normalize_google_review_url(branch.google_review_url, strict=True)
+    if review_url and not get_plan_features(business.get('plan')).get('google_review_prompt'):
+        raise HTTPException(
+            status_code=403,
+            detail="Per-branch Google review links are available on the Growth and Pro plans.",
+        )
     branch_data = {
         'business_id': business.get('id'),
         'public_id': generate_public_id(),
         'name': branch.name,
         'address': branch.address,
+        'google_review_url': review_url,
         'is_active': True,
         'created_at': datetime.utcnow().isoformat(),
     }
@@ -18691,7 +18754,22 @@ async def update_branch(public_id: str, branch_public_id: str, update: BranchUpd
     if not branch or branch.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Branch not found for this business")
 
-    update_data = {k: v for k, v in update.dict(exclude_unset=True).items() if v is not None}
+    raw_update = update.dict(exclude_unset=True)
+    if 'google_review_url' in raw_update:
+        if not get_plan_features(business.get('plan')).get('google_review_prompt'):
+            raise HTTPException(
+                status_code=403,
+                detail="Per-branch Google review links are available on the Growth and Pro plans.",
+            )
+        # Keep an explicit NULL so the owner can clear a saved branch URL.
+        raw_update['google_review_url'] = normalize_google_review_url(
+            raw_update.get('google_review_url'),
+            strict=True,
+        )
+    update_data = {
+        k: v for k, v in raw_update.items()
+        if v is not None or k == 'google_review_url'
+    }
     if not update_data:
         return branch
     try:
@@ -20108,7 +20186,10 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
                 status_code=403,
                 detail="The Google review prompt is available on the Growth and Pro plans. Upgrade to set a review link."
             )
-        data['google_review_url'] = config.google_review_url
+        data['google_review_url'] = normalize_google_review_url(
+            config.google_review_url,
+            strict=True,
+        )
 
     # Do not create a new timestamp/push for an identical configuration.
     # This is especially important when the UI performs Save followed by
@@ -25501,6 +25582,11 @@ async def redeem_points_prize(public_id: str, req: PointsRedeemRequest, backgrou
         "prize_name": prize.get('name'),
         "points_spent": prize_cost,
         "points_balance": new_balance,
+        "google_review_url": google_review_url_for_redemption(
+            business,
+            program,
+            redeeming_branch_id,
+        ),
     }
     if audit_row and audit_row.get('transaction_id'): response_payload['transaction_id']=str(audit_row.get('transaction_id'))
     complete_transaction_audit(audit_row,balance_after=new_balance,response_json=response_payload)
@@ -26803,6 +26889,7 @@ async def redeem_reward(public_id: str, req: RedeemRequest, authorization: str =
 
     if session_claims:
         redeeming_staff_id = session_claims.get('staff_id')
+        redeeming_branch_id = session_claims.get('branch_id')
     elif req.as_owner:
         pass
     else:
@@ -26891,10 +26978,11 @@ async def redeem_reward(public_id: str, req: RedeemRequest, authorization: str =
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    review_url = None
-    features = get_plan_features(business.get('plan'))
-    if features.get('google_review_prompt') and program:
-        review_url = program.get('google_review_url')
+    review_url = google_review_url_for_redemption(
+        business,
+        program,
+        redeeming_branch_id,
+    )
 
     response_payload = {"message": f"{reward['reward_name']} redeemed!", "success": True, "reward": reward, "stamp_count": customer.get("stamp_count", 0), "google_review_url": review_url}
     if audit_row and audit_row.get('transaction_id'):
@@ -27229,6 +27317,11 @@ async def redeem_coupon(public_id: str, req: CouponRedeem, background_tasks: Bac
         "success": True,
         "reward_text": coupon.get('reward_text'),
         "redeemed_at": redeemed_at,
+        "google_review_url": google_review_url_for_redemption(
+            business,
+            program,
+            redeeming_branch_id,
+        ),
         "campaign": ({
             'public_id': campaign_row.get('public_id'),
             'name': campaign_row.get('name'),
