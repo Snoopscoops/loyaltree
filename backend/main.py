@@ -24563,7 +24563,10 @@ async def storehub_transactions_preview(
         },
     )
     rows = _storehub_list(payload)
-    summaries = [_storehub_transaction_summary(row) for row in rows[: int(req.limit)]]
+    # StoreHub does not reliably return the newest transaction first for this
+    # merchant account, so preview the newest timestamps rather than rows[0:n].
+    recent_rows = _storehub_recent_rows(rows, int(req.limit))
+    summaries = [_storehub_transaction_summary(row) for row in recent_rows]
 
     try:
         supabase.table('pos_integrations').update({
@@ -25477,20 +25480,93 @@ async def storehub_test_transaction(
 
 @app.post('/api/v1/business/{public_id}/pos/go-live')
 async def pos_go_live(public_id: str, req: POSGoLiveRequest, authorization: str = Header(default='')):
+    """Enable live loyalty earning after the provider read/mapping path is proven.
+
+    StoreHub live earning uses the Companion scan session as the member identity,
+    the mapped StoreHub outlet/register as the POS scope, and refId as the provider
+    idempotency key. Redemption/write-back remains separately gated by the existing
+    redemption capability flags.
+    """
     business = _require_pos_pro_business(public_id, authorization)
     integration = _get_pos_integration(business.get('id'), req.provider)
     if not integration:
         raise HTTPException(status_code=409, detail=f'Set up {req.provider.title()} first.')
-    # Keep live transaction mutation disabled until the provider-specific member
-    # matching and webhook/write-back path is proven end-to-end.
-    provider_label = 'StoreHub' if req.provider == 'storehub' else 'Loyverse'
-    raise HTTPException(
-        status_code=409,
-        detail=(
-            f'{provider_label} is connected in safe test mode. '
-            'Keep it in Test Mode until customer matching and real transaction processing are verified.'
+
+    provider = str(req.provider or '').lower()
+    provider_label = 'StoreHub' if provider == 'storehub' else 'Loyverse'
+    if provider != 'storehub':
+        raise HTTPException(
+            status_code=409,
+            detail=f'{provider_label} live Companion earning is not enabled by this release yet.',
+        )
+
+    config = integration.get('config') if isinstance(integration.get('config'), dict) else {}
+    if not config.get('real_api_tested'):
+        raise HTTPException(status_code=409, detail='Test the StoreHub API connection before enabling Go Live.')
+
+    try:
+        mappings = (
+            supabase.table('pos_branch_mappings').select('*')
+            .eq('integration_id', integration.get('id'))
+            .eq('is_active', True)
+            .execute().data or []
+        )
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+
+    valid_mappings = [m for m in mappings if str(m.get('external_branch_id') or '').strip()]
+    if not valid_mappings:
+        raise HTTPException(
+            status_code=409,
+            detail='Map at least one Loyalty Tree branch to a StoreHub outlet before enabling Go Live.',
+        )
+
+    now = datetime.now(timezone.utc).isoformat()
+    live_config = {
+        **config,
+        'simulator': False,
+        'earning_enabled': config.get('earning_enabled') is not False,
+        # Redemption needs a verified StoreHub write/discount capability; reading
+        # sales is enough for earning but not enough to mutate the POS cart.
+        'redemption_enabled': bool(config.get('redemption_enabled') and (integration.get('capabilities') or {}).get('discount_write')),
+        'live_transaction_polling': True,
+        'live_enabled_at': now,
+        # Keep verbose payload tracing off in production unless explicitly toggled
+        # for a short diagnostic session.
+        'trace_transactions': False,
+    }
+    capabilities = integration.get('capabilities') if isinstance(integration.get('capabilities'), dict) else {}
+    live_capabilities = {
+        **capabilities,
+        'api_read': True,
+        'stores_read': True,
+        'transactions_read': True,
+        'live_companion_earning': True,
+    }
+    try:
+        rows = supabase.table('pos_integrations').update({
+            'status': 'live',
+            'mode': 'live',
+            'config': live_config,
+            'capabilities': live_capabilities,
+            'last_error': None,
+        }).eq('id', integration.get('id')).execute().data or []
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+
+    updated = rows[0] if rows else {**integration, 'status': 'live', 'mode': 'live', 'config': live_config, 'capabilities': live_capabilities}
+    return {
+        'ok': True,
+        'provider': provider,
+        'mode': 'live',
+        'status': 'live',
+        'branch_mappings_ready': len(valid_mappings),
+        'integration': _pos_public_integration(updated),
+        'message': (
+            'StoreHub live Companion earning is enabled. New non-cancelled sales can now be '
+            'matched to the scanned Loyalty Tree member and processed by the existing loyalty engine.'
         ),
-    )
+    }
 
 
 @app.post("/api/v1/business/{public_id}/points-redeem")
@@ -39802,7 +39878,11 @@ def _companion_normalize_provider_transaction(provider: str, raw: dict) -> Optio
     }
 
 
-def _companion_upsert_bridge_transaction(device: dict, normalized: dict) -> Optional[dict]:
+def _companion_upsert_bridge_transaction(
+    device: dict,
+    normalized: dict,
+    known_mapping: Optional[dict] = None,
+) -> Optional[dict]:
     if not normalized or normalized.get('gross_amount') is None:
         return None
     integration_id = device.get('integration_id')
@@ -39815,10 +39895,13 @@ def _companion_upsert_bridge_transaction(device: dict, normalized: dict) -> Opti
             .limit(1).execute().data or []
         )
         existing = rows[0] if rows else None
-        mappings = (
-            supabase.table('pos_branch_mappings').select('*')
-            .eq('integration_id', integration_id).eq('is_active', True).execute().data or []
-        )
+        if known_mapping is not None:
+            mappings = [known_mapping]
+        else:
+            mappings = (
+                supabase.table('pos_branch_mappings').select('*')
+                .eq('integration_id', integration_id).eq('is_active', True).execute().data or []
+            )
     except Exception as exc:
         raise _pos_schema_error(exc)
 
@@ -39859,6 +39942,21 @@ def _companion_upsert_bridge_transaction(device: dict, normalized: dict) -> Opti
     }
     try:
         if existing:
+            existing_processing = existing.get('processing_metadata') if isinstance(existing.get('processing_metadata'), dict) else {}
+            same_provider_event = (
+                str(existing.get('external_receipt_number') or '') == str(payload.get('external_receipt_number') or '')
+                and str(existing.get('transaction_type') or '') == str(payload.get('transaction_type') or '')
+                and str(existing.get('branch_id') or '') == str(payload.get('branch_id') or '')
+                and _companion_money_value(existing.get('gross_amount')) == _companion_money_value(payload.get('gross_amount'))
+                and _companion_money_value(existing.get('net_amount')) == _companion_money_value(payload.get('net_amount'))
+                and existing.get('raw_payload') == payload.get('raw_payload')
+                and str(existing_processing.get('bridge_external_terminal_id') or '')
+                    == str(payload.get('processing_metadata', {}).get('bridge_external_terminal_id') or '')
+            )
+            # Repeated Companion polls should read an already-known StoreHub sale,
+            # not rewrite the same Supabase row every few seconds.
+            if same_provider_event:
+                return existing
             rows = supabase.table('pos_transactions').update(payload).eq('id', existing.get('id')).execute().data or []
             return rows[0] if rows else {**existing, **payload}
         rows = supabase.table('pos_transactions').insert(payload).execute().data or []
@@ -39928,6 +40026,51 @@ def _storehub_trace_transactions(payload, rows: list) -> None:
         print(f'STOREHUB_TX_TRACE_ERROR {exc}')
 
 
+def _storehub_transaction_event_time(raw: dict) -> Optional[datetime]:
+    """Return the newest provider timestamp relevant to this StoreHub row.
+
+    StoreHub may return a large account-level list that is not ordered newest-first.
+    A later cancellation is also significant even when the original sale is older,
+    so cancelledTime wins when present.
+    """
+    if not isinstance(raw, dict):
+        return None
+    value = (
+        raw.get('cancelledTime')
+        or raw.get('updatedAt')
+        or raw.get('updated_at')
+        or raw.get('transactionTime')
+        or raw.get('createdAt')
+        or raw.get('created_at')
+    )
+    return _pos_parse_timestamp(value)
+
+
+def _storehub_recent_rows(rows: list, limit: int, external_branch_id: Optional[str] = None) -> list:
+    """Pick the newest StoreHub rows locally instead of trusting provider ordering.
+
+    The live ANGKAN trace returned 5,000 rows and began with 2023 transactions even
+    though a current date range was requested.  Sorting the provider response before
+    applying the Companion limit prevents an old first page from hiding the sale that
+    just happened at the cashier.  When an outlet mapping is known, rows from other
+    StoreHub outlets are discarded before sorting.
+    """
+    safe_limit = max(1, min(int(limit or 20), 100))
+    branch_key = str(external_branch_id or '').strip()
+    ranked = []
+    for index, raw in enumerate(rows or []):
+        if not isinstance(raw, dict):
+            continue
+        raw_branch = raw.get('storeId') or raw.get('store_id')
+        if branch_key and str(raw_branch or '').strip() != branch_key:
+            continue
+        happened = _storehub_transaction_event_time(raw)
+        rank = happened.timestamp() if happened else float('-inf')
+        ranked.append((rank, index, raw))
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [item[2] for item in ranked[:safe_limit]]
+
+
 def _companion_provider_rows(device: dict, integration: dict, limit: int) -> list:
     provider = str(device.get('provider') or '').lower()
     now = datetime.now(timezone.utc)
@@ -39939,8 +40082,15 @@ def _companion_provider_rows(device: dict, integration: dict, limit: int) -> lis
             'startDate': (now - timedelta(days=1)).strftime('%Y-%m-%d'),
             'endDate': now.strftime('%Y-%m-%d'),
         })
-        rows = _storehub_list(payload)
-        _storehub_trace_transactions(payload, rows)
+        provider_rows = _storehub_list(payload)
+        # The transaction schema is already known.  Keep the verbose Render trace
+        # opt-in so live polling does not print thousands of rows every few seconds.
+        if config.get('trace_transactions'):
+            _storehub_trace_transactions(payload, provider_rows)
+
+        mapping = _companion_mock_mapping(device)
+        mapped_store_id = mapping.get('external_branch_id') if isinstance(mapping, dict) else None
+        rows = _storehub_recent_rows(provider_rows, limit, mapped_store_id)
     elif provider == 'loyverse':
         payload = _loyverse_get(integration, '/receipts', params={
             'created_at_min': (now - timedelta(hours=6)).isoformat().replace('+00:00', 'Z'),
@@ -39952,10 +40102,16 @@ def _companion_provider_rows(device: dict, integration: dict, limit: int) -> lis
         return []
 
     normalized_rows = []
+    # StoreHub rows are already newest-first and branch-filtered above. Loyverse
+    # still respects its provider-side limit, so the same bounded loop works for both.
     for raw in rows[: max(int(limit), 1)]:
         item = _companion_normalize_provider_transaction(provider, raw)
         if item:
-            tx = _companion_upsert_bridge_transaction(device, item)
+            tx = _companion_upsert_bridge_transaction(
+                device,
+                item,
+                mapping if provider == 'storehub' and isinstance(mapping, dict) and mapping else None,
+            )
             if tx:
                 normalized_rows.append(tx)
     try:
