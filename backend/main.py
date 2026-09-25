@@ -34317,10 +34317,21 @@ async def run_birthday_greetings(_: bool = Depends(require_cron)):
                 reward_description=settings.get('birthday_reward_description') if has_reward else '',
                 expiry_date=(reward or {}).get('expires_at') or '',
             )
+            # For pre-birthday campaigns, make the push copy explicitly an
+            # advance greeting. The birthday coupon itself is already created
+            # above on this same run, so the customer can see/use it before
+            # the birthday and it remains valid through birthday + configured
+            # validity days.
+            send_timing = settings.get('birthday_send_timing') or 'birthday'
+            notification_header = (
+                f"Happy Birthday, {first_name}! 🎉"
+                if send_timing == 'birthday'
+                else f"Advance Happy Birthday, {first_name}! 🎉"
+            )
             object_id = f"{GOOGLE_WALLET_ISSUER_ID}.{customer.get('public_id', '')}"
             ok = send_wallet_object_message(
                 object_id,
-                header=f"Happy Birthday, {first_name}! 🎉",
+                header=notification_header,
                 body=body,
                 message_id=f"birthday-{customer.get('id')}-{occasion_year}",
             )

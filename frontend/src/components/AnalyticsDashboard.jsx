@@ -849,7 +849,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start',flexWrap:'wrap',marginBottom:14}}>
             <div>
               <h4 style={{...styles.insightTitle,marginBottom:4}}>🎂 Birthday Automation</h4>
-              <div style={styles.mutedText}>Birthday greetings are on by default. Birthday rewards stay off until the business explicitly enables them.</div>
+              <div style={styles.mutedText}>Choose an early send timing to greet customers before their birthday. When Birthday Rewards are enabled, the coupon is issued on the same scheduled run.</div>
             </div>
             <button className="an-actionbtn" style={styles.actionBtn} disabled={savingRetentionSettings} onClick={saveRetentionSettings}>
               {savingRetentionSettings ? 'Saving…' : 'Save Birthday & Retention Settings'}
@@ -879,6 +879,11 @@ function AnalyticsDashboard({ API_BASE, user }) {
                 </select>
               </div>
             </div>
+            {retentionSettings.birthday_send_timing !== 'birthday' && (
+              <div style={{...styles.editorHelp,marginBottom:12}}>
+                The greeting and enabled birthday coupon are issued on the selected pre-birthday date. The coupon stays active through the birthday plus the validity period below.
+              </div>
+            )}
 
             <label style={styles.editorLabel}>Birthday Greeting</label>
             <textarea
@@ -945,10 +950,10 @@ function AnalyticsDashboard({ API_BASE, user }) {
                   <input type="number" min="0" max="10000" style={styles.editorInput} value={retentionSettings.birthday_reward_min_visits ?? 2} onChange={e=>setRetentionSettings(s=>({...s,birthday_reward_min_visits:Number(e.target.value)}))} />
                 </div>
                 <div>
-                  <label style={styles.editorLabel}>Reward Validity</label>
+                  <label style={styles.editorLabel}>Valid Through Birthday +</label>
                   <div style={{display:'flex',gap:8,alignItems:'center'}}>
                     <input type="number" min="1" max="365" style={{...styles.editorInput,width:100}} value={retentionSettings.birthday_reward_validity_days ?? 7} onChange={e=>setRetentionSettings(s=>({...s,birthday_reward_validity_days:Number(e.target.value)}))} />
-                    <span style={styles.mutedText}>days</span>
+                    <span style={styles.mutedText}>days after birthday</span>
                   </div>
                 </div>
                 <div>
