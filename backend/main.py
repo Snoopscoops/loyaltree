@@ -35841,9 +35841,14 @@ def _save_birthday_automation_settings(business_id: int, settings: dict):
             payload['created_at'] = now
             supabase.table('birthday_automation_settings').insert(payload).execute()
     except Exception as exc:
+        # Do not hide the real Supabase/PostgREST failure. This route is owner-authenticated,
+        # and friendly_db_error() strips the noisy wrapper while keeping the actionable
+        # database message (missing table/column, RLS, constraint, schema-cache, etc.).
+        raw_error = f"{type(exc).__name__}: {exc}"
+        print(f"BIRTHDAY AUTOMATION DB ERROR business_id={business_id}: {raw_error}")
         raise HTTPException(
             status_code=503,
-            detail='Birthday automation storage is not ready. Run birthday_automation_migration.sql in Supabase, then retry.'
+            detail=f"Birthday automation database error: {friendly_db_error(exc)}"
         ) from exc
 
 
@@ -36065,6 +36070,45 @@ def _issue_birthday_reward(business: dict, customer: dict, settings: dict, occas
     except Exception as exc:
         print(f'BIRTHDAY REWARD coupon warning customer={customer.get("public_id")}: {exc}')
         return {'issued': False, 'eligible': True, 'coupon_error': True, **eligibility}
+
+
+@app.get('/api/v1/business/{public_id}/birthday-storage-diagnostic')
+async def birthday_storage_diagnostic(public_id: str, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    business_id = business.get('id')
+    try:
+        rows = (
+            supabase.table('birthday_automation_settings')
+            .select('id,business_id,birthday_send_timing,birthday_reward_enabled')
+            .eq('business_id', business_id)
+            .limit(5)
+            .execute()
+            .data or []
+        )
+        return {
+            'ok': True,
+            'business_id': business_id,
+            'table': 'birthday_automation_settings',
+            'readable': True,
+            'matching_rows': len(rows),
+            'rows': rows,
+        }
+    except Exception as exc:
+        raw_error = f"{type(exc).__name__}: {exc}"
+        print(f"BIRTHDAY STORAGE DIAGNOSTIC ERROR business_id={business_id}: {raw_error}")
+        return JSONResponse(
+            status_code=503,
+            content={
+                'ok': False,
+                'business_id': business_id,
+                'table': 'birthday_automation_settings',
+                'readable': False,
+                'error': friendly_db_error(exc),
+            },
+        )
 
 
 @app.get('/api/v1/business/{public_id}/retention-settings')
