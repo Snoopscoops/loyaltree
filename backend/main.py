@@ -35760,7 +35760,7 @@ class RetentionMessageSettings(BaseModel):
     # away a coupon unless they deliberately configure one.
     birthday_message: Optional[str] = None
     birthday_enabled: Optional[bool] = None
-    birthday_send_timing: Optional[Literal['birthday', '3_days_before', '7_days_before', 'month_start']] = None
+    birthday_send_timing: Optional[Literal['birthday', '1_day_before', '3_days_before', '7_days_before', 'month_start']] = None
     birthday_reward_enabled: Optional[bool] = None
     birthday_reward_type: Optional[Literal['free_item', 'discount', 'custom']] = None
     birthday_reward_name: Optional[str] = Field(default=None, max_length=120)
@@ -35944,7 +35944,7 @@ def _birthday_send_occasion(birthday, today, timing: str):
     if not parsed:
         return None
     month, day = parsed
-    timing = timing if timing in {'birthday','3_days_before','7_days_before','month_start'} else 'birthday'
+    timing = timing if timing in {'birthday','1_day_before','3_days_before','7_days_before','month_start'} else 'birthday'
     if timing == 'month_start':
         if today.day != 1 or today.month != month:
             return None
@@ -35952,7 +35952,7 @@ def _birthday_send_occasion(birthday, today, timing: str):
     occurrence = _next_birthday_occurrence(birthday, today)
     if not occurrence:
         return None
-    offset = {'birthday': 0, '3_days_before': 3, '7_days_before': 7}[timing]
+    offset = {'birthday': 0, '1_day_before': 1, '3_days_before': 3, '7_days_before': 7}[timing]
     return occurrence if (occurrence - today).days == offset else None
 
 
@@ -36103,7 +36103,7 @@ async def save_retention_settings(public_id:str, req:RetentionMessageSettings, a
         raise HTTPException(status_code=400,detail='Win-back message must be 1-500 characters')
     if churn_days < 7 or churn_days > 365:
         raise HTTPException(status_code=400,detail='Churn inactivity threshold must be between 7 and 365 days')
-    if birthday_send_timing not in {'birthday','3_days_before','7_days_before','month_start'}:
+    if birthday_send_timing not in {'birthday','1_day_before','3_days_before','7_days_before','month_start'}:
         raise HTTPException(status_code=400,detail='Invalid birthday send timing')
     if reward_type not in {'free_item','discount','custom'}:
         raise HTTPException(status_code=400,detail='Invalid birthday reward type')

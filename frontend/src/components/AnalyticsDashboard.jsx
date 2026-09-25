@@ -873,6 +873,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
                 <label style={styles.editorLabel}>Send Timing</label>
                 <select style={styles.editorSelect} value={retentionSettings.birthday_send_timing || 'birthday'} onChange={e=>setRetentionSettings(s=>({...s,birthday_send_timing:e.target.value}))}>
                   <option value="birthday">On the birthday</option>
+                  <option value="1_day_before">1 day before</option>
                   <option value="3_days_before">3 days before</option>
                   <option value="7_days_before">7 days before</option>
                   <option value="month_start">Start of birthday month</option>
