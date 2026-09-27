@@ -26,7 +26,7 @@ function CustomerJoin({ API_BASE }) {
   const [form, setForm] = useState({
     name: '',
     address: '',
-    age: '',
+    age_bracket: '',
     phone: '',
     email: '',
     birthday_month: '',
@@ -201,7 +201,7 @@ function CustomerJoin({ API_BASE }) {
         body: JSON.stringify({
           name: form.name,
           address: form.address || null,
-          age: form.age ? parseInt(form.age, 10) : null,
+          age_bracket: isEmployeeExperience ? null : (form.age_bracket || null),
           phone: form.phone,
           email: form.email || null,
           birthday_month: parseInt(form.birthday_month, 10),
@@ -212,7 +212,7 @@ function CustomerJoin({ API_BASE }) {
           employee_position: isEmployeeExperience ? (form.employee_position || null) : null,
           employee_start_date: isEmployeeExperience ? (form.employee_start_date || null) : null,
           privacy_consent: true,
-          privacy_consent_version: '2026-08-09-v1',
+          privacy_consent_version: '2026-09-27-v2',
         })
       })
       const data = await res.json()
@@ -525,17 +525,24 @@ function CustomerJoin({ API_BASE }) {
 
               {!isEmployeeExperience && (
                 <div style={styles.inputGroup}>
-                  <label style={styles.label}>Age <span style={styles.optional}>optional</span></label>
-                  <input
-                    placeholder="25"
-                    value={form.age}
-                    onChange={e => setForm({...form, age: e.target.value})}
+                  <label style={styles.label}>Age bracket <span style={styles.optional}>optional</span></label>
+                  <select
+                    value={form.age_bracket}
+                    onChange={e => setForm({...form, age_bracket: e.target.value})}
                     style={styles.input}
-                    type="number"
-                    min="0"
-                    max="120"
-                    inputMode="numeric"
-                  />
+                  >
+                    <option value="">Select age bracket</option>
+                    <option value="under_18">Under 18</option>
+                    <option value="18_24">18–24</option>
+                    <option value="25_34">25–34</option>
+                    <option value="35_44">35–44</option>
+                    <option value="45_54">45–54</option>
+                    <option value="55_64">55–64</option>
+                    <option value="65_plus">65+</option>
+                  </select>
+                  <div style={{fontSize:11,color:'#64748b',marginTop:6}}>
+                    Exact age is not collected.
+                  </div>
                 </div>
               )}
 
@@ -566,7 +573,8 @@ function CustomerJoin({ API_BASE }) {
                     <option value="">Select one</option>
                     <option value="male">Male</option>
                     <option value="female">Female</option>
-                    <option value="rather_not_say">Rather not say</option>
+                    <option value="lgbtq">LGBTQ+</option>
+                    <option value="rather_not_say">Prefer not to say</option>
                   </select>
                 </div>
               )}
@@ -622,7 +630,7 @@ function CustomerJoin({ API_BASE }) {
               <span>
                 <strong style={styles.consentTitle}>Privacy & membership consent</strong>
                 <span style={styles.consentText}>
-                  By joining, you agree that the information you provide may be collected and used by this business and LoyaltyTree to create and manage your digital loyalty membership, provide rewards and membership services, and send relevant membership or promotional updates.
+                  By joining, you agree that the information you provide may be collected and used by this business and LoyaltyTree to create and manage your digital loyalty membership, provide rewards and membership services, send relevant membership or promotional updates, and produce privacy-protected aggregate customer analytics.
                 </span>
                 <span style={{...styles.consentText, marginTop:5}}>
                   Your information will be handled in accordance with applicable privacy requirements. You may request access, correction, or deletion of your personal information, subject to applicable legal and operational requirements.

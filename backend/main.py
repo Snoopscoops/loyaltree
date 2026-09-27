@@ -2356,21 +2356,43 @@ class LoyaltyConfig(BaseModel):
     vip_stamps_enabled: bool = False
     vip_tiers: Optional[List[dict]] = None
 
+AGE_BRACKETS = ('under_18', '18_24', '25_34', '35_44', '45_54', '55_64', '65_plus')
+GENDER_OPTIONS = ('male', 'female', 'lgbtq', 'rather_not_say')
+
+
+def _age_to_bracket(raw_age) -> Optional[str]:
+    try:
+        age_value = int(raw_age)
+    except (TypeError, ValueError):
+        return None
+    if age_value < 0 or age_value > 120: return None
+    if age_value < 18: return 'under_18'
+    if age_value <= 24: return '18_24'
+    if age_value <= 34: return '25_34'
+    if age_value <= 44: return '35_44'
+    if age_value <= 54: return '45_54'
+    if age_value <= 64: return '55_64'
+    return '65_plus'
+
+
 class CustomerSignup(BaseModel):
     name: str
     address: Optional[str] = None
-    age: Optional[int] = Field(default=None, ge=0, le=120)
+    age: Optional[int] = Field(default=None, ge=0, le=120)  # legacy input only; never stored by new flow
+    age_bracket: Optional[Literal['under_18','18_24','25_34','35_44','45_54','55_64','65_plus']] = None
     phone: str
     email: Optional[str] = None
-    birthday: Optional[str] = None  # 'YYYY-MM-DD'
-    occupation: Optional[str] = None  # 'working' | 'business_owner' | 'unemployed'
-    gender: Optional[str] = None  # 'male' | 'female' | 'rather_not_say'
-    last_order_date: Optional[str] = None  # 'YYYY-MM-DD'
+    birthday: Optional[str] = None  # legacy full date only
+    birthday_month: Optional[int] = Field(default=None, ge=1, le=12)
+    birthday_day: Optional[int] = Field(default=None, ge=1, le=31)
+    occupation: Optional[str] = None
+    gender: Optional[Literal['male','female','lgbtq','rather_not_say']] = None
+    last_order_date: Optional[str] = None
     privacy_consent: bool = False
     privacy_consent_version: Optional[str] = Field(default=None, max_length=40)
     employee_id_number: Optional[str] = Field(default=None, max_length=80)
     employee_position: Optional[str] = Field(default=None, max_length=100)
-    employee_start_date: Optional[str] = None  # YYYY-MM-DD; optional for Employee Membership
+    employee_start_date: Optional[str] = None
 
 class PlatformAnalyticsEventCreate(BaseModel):
     event_name: str = Field(min_length=1, max_length=80)
@@ -2389,13 +2411,16 @@ class PlatformAnalyticsEventCreate(BaseModel):
 class CustomerUpdate(BaseModel):
     name: Optional[str] = None
     address: Optional[str] = None
-    age: Optional[int] = Field(default=None, ge=0, le=120)
+    age: Optional[int] = Field(default=None, ge=0, le=120)  # legacy input only
+    age_bracket: Optional[Literal['under_18','18_24','25_34','35_44','45_54','55_64','65_plus']] = None
     phone: Optional[str] = None
     email: Optional[str] = None
-    birthday: Optional[str] = None  # 'YYYY-MM-DD'
-    occupation: Optional[str] = None  # 'working' | 'business_owner' | 'unemployed'
-    gender: Optional[str] = None  # 'male' | 'female' | 'rather_not_say'
-    last_order_date: Optional[str] = None  # 'YYYY-MM-DD'
+    birthday: Optional[str] = None  # legacy full date only
+    birthday_month: Optional[int] = Field(default=None, ge=1, le=12)
+    birthday_day: Optional[int] = Field(default=None, ge=1, le=31)
+    occupation: Optional[str] = None
+    gender: Optional[Literal['male','female','lgbtq','rather_not_say']] = None
+    last_order_date: Optional[str] = None
     stamp_count: Optional[int] = Field(default=None, ge=0)  # lets the owner manually correct a customer's stamp count
     points_balance: Optional[int] = Field(default=None, ge=0)  # lets the owner manually correct a customer's points balance
     multipass_sessions_remaining: Optional[int] = Field(default=None, ge=0)  # lets the owner manually correct a customer's remaining sessions
@@ -17836,7 +17861,15 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
     if customer.get('business_id') != business.get('id'):
         raise HTTPException(status_code=404, detail="Customer not found for this business")
 
-    update_data = {k: v for k, v in update.dict(exclude_unset=True).items() if v is not None}
+    raw_update = update.dict(exclude_unset=True)
+    # Exact age is never stored. Legacy clients are converted to a bracket.
+    if 'age' in raw_update:
+        if not raw_update.get('age_bracket'):
+            raw_update['age_bracket'] = _age_to_bracket(raw_update.get('age'))
+        raw_update['age'] = None
+    if raw_update.get('age_bracket') in AGE_BRACKETS:
+        raw_update['age'] = None
+    update_data = {k: v for k, v in raw_update.items() if v is not None or k == 'age'}
 
     # Repair legacy customer rows before ANY edit (including a points-only
     # correction). PostgreSQL re-checks CHECK constraints on the whole row
@@ -17848,7 +17881,7 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
     # being edited. Clear only values that are outside the current allowed
     # enums; valid profile data is preserved.
     allowed_occupations = {'working', 'business_owner', 'unemployed'}
-    allowed_genders = {'male', 'female', 'rather_not_say'}
+    allowed_genders = {'male', 'female', 'lgbtq', 'rather_not_say'}
 
     current_occupation = customer.get('occupation')
     if current_occupation not in (None, '') and current_occupation not in allowed_occupations:
@@ -19610,82 +19643,66 @@ async def get_analytics(
         "engagement_rate": adoption_rate,
     }
 
-    gender_counts = {"male": 0, "female": 0, "rather_not_say": 0}
-    for c in customers:
-        g = (c.get('gender') or 'rather_not_say')
-        if g not in gender_counts:
-            g = 'rather_not_say'
-        gender_counts[g] += 1
+    # ---------------- Privacy-protected demographics ----------------
+    DEMO_MIN_SAMPLE = 10 if selected_branch else 5
+    DEMO_MIN_CELL = 5
 
-    age_counts = {
-        "under_18": 0,
-        "18_24": 0,
-        "25_34": 0,
-        "35_44": 0,
-        "45_54": 0,
-        "55_64": 0,
-        "65_plus": 0,
-        "unknown": 0,
-    }
+    def _privacy_safe_counts(counts: dict, sample_size: int, minimum_sample: int, minimum_cell: int) -> dict:
+        if sample_size < minimum_sample:
+            return {"available": False, "counts": None, "suppressed": False, "reason": "minimum_sample_not_met"}
+        suppressed = {k for k,v in counts.items() if 0 < int(v or 0) < minimum_cell}
+        visible = [(k,int(v or 0)) for k,v in counts.items() if k not in suppressed and int(v or 0) >= minimum_cell]
+        # Secondary suppression prevents solving a small hidden cell from the total.
+        if suppressed and visible:
+            suppressed.add(min(visible,key=lambda x:x[1])[0])
+        safe={k:(None if k in suppressed else int(v or 0)) for k,v in counts.items()}
+        available=any(v is not None and v>0 for v in safe.values())
+        return {"available":available,"counts":safe if available else None,"suppressed":bool(suppressed),"reason":None if available else "all_cells_suppressed"}
 
     def _customer_age(customer: dict) -> Optional[int]:
-        raw_age = customer.get("age")
+        raw_age=customer.get('age')
         try:
-            if raw_age is not None and str(raw_age).strip() != "":
-                age_value = int(raw_age)
-                return age_value if 0 <= age_value <= 120 else None
-        except (TypeError, ValueError):
+            if raw_age is not None and str(raw_age).strip()!='':
+                value=int(raw_age)
+                if 0 <= value <= 120: return value
+        except (TypeError,ValueError):
             pass
-
-        birthday = customer.get("birthday")
+        birthday=customer.get('birthday')
         if birthday:
-            try:
-                birthday_date = datetime.fromisoformat(
-                    str(birthday).replace("Z", "+00:00")
-                ).date()
-            except (TypeError, ValueError):
-                try:
-                    birthday_date = datetime.strptime(
-                        str(birthday)[:10], "%Y-%m-%d"
-                    ).date()
-                except (TypeError, ValueError):
-                    birthday_date = None
-            if birthday_date:
-                today = now.date()
-                derived_age = today.year - birthday_date.year - (
-                    (today.month, today.day) < (birthday_date.month, birthday_date.day)
-                )
-                return derived_age if 0 <= derived_age <= 120 else None
-
-        # New privacy-preserving signups may store month/day + age instead of a
-        # full birth year. Age is already handled above, so there is nothing to
-        # infer here when it is absent.
+            try: born=datetime.fromisoformat(str(birthday).replace('Z','+00:00')).date()
+            except Exception:
+                try: born=datetime.strptime(str(birthday)[:10],'%Y-%m-%d').date()
+                except Exception: born=None
+            if born:
+                today=now.date(); value=today.year-born.year-((today.month,today.day)<(born.month,born.day))
+                if 0 <= value <= 120: return value
         return None
 
     def _age_bucket(customer: dict) -> str:
-        age_value = _customer_age(customer)
-        if age_value is None:
-            return "unknown"
-        if age_value < 18:
-            return "under_18"
-        if age_value <= 24:
-            return "18_24"
-        if age_value <= 34:
-            return "25_34"
-        if age_value <= 44:
-            return "35_44"
-        if age_value <= 54:
-            return "45_54"
-        if age_value <= 64:
-            return "55_64"
-        return "65_plus"
+        saved=str(customer.get('age_bracket') or '').strip()
+        if saved in AGE_BRACKETS: return saved
+        return _age_to_bracket(_customer_age(customer)) or 'unknown'
 
+    raw_age={k:0 for k in AGE_BRACKETS}; age_sample=0
+    raw_gender={"male":0,"female":0,"lgbtq":0,"rather_not_say":0}; gender_sample=0
     for c in customers:
-        age_counts[_age_bucket(c)] += 1
+        bucket=_age_bucket(c)
+        if bucket in raw_age: raw_age[bucket]+=1; age_sample+=1
+        gender=str(c.get('gender') or '').strip().lower()
+        if gender in raw_gender: raw_gender[gender]+=1; gender_sample+=1
 
-    demographics_block = {
-        "gender": gender_counts,
-        "age": age_counts,
+    safe_age=_privacy_safe_counts(raw_age,age_sample,DEMO_MIN_SAMPLE,DEMO_MIN_CELL)
+    safe_gender=_privacy_safe_counts(raw_gender,gender_sample,DEMO_MIN_SAMPLE,DEMO_MIN_CELL)
+    demographics_block={
+        "age":safe_age.get("counts"),
+        "gender":safe_gender.get("counts"),
+        "privacy":{
+            "minimum_sample":DEMO_MIN_SAMPLE,"minimum_cell":DEMO_MIN_CELL,
+            "age_sample_size":age_sample,"gender_sample_size":gender_sample,
+            "age_available":safe_age.get("available",False),"gender_available":safe_gender.get("available",False),
+            "age_suppressed":safe_age.get("suppressed",False),"gender_suppressed":safe_gender.get("suppressed",False),
+            "secondary_suppression":True,
+        },
     }
 
     # ---------------- Branch performance ----------------
@@ -19787,31 +19804,34 @@ async def get_analytics(
             return None
         return parsed.replace(tzinfo=timezone.utc).astimezone(LOYALTY_TIMEZONE)
 
-    def _empty_demo_counts():
-        return {
-            "gender": {"male": 0, "female": 0, "rather_not_say": 0},
-            "age": {
-                "under_18": 0, "18_24": 0, "25_34": 0, "35_44": 0,
-                "45_54": 0, "55_64": 0, "65_plus": 0, "unknown": 0,
-            },
-        }
+    # Privacy thresholds for branch/day/time demographics.
+    TIME_DEMO_BUCKET_HOURS=2
+    TIME_DEMO_MIN_SAMPLE=10
+    TIME_DEMO_MIN_CELL=5
 
-    def _demographics_for_ids(ids: set) -> Optional[dict]:
-        clean_ids = {cid for cid in ids if cid is not None}
-        # Do not expose tiny hour/day demographic cells.
-        if len(clean_ids) < 5:
-            return None
-        out = _empty_demo_counts()
-        for cid in clean_ids:
-            customer = customer_map.get(str(cid))
-            if not customer:
-                continue
-            gender = customer.get('gender') or 'rather_not_say'
-            if gender not in out['gender']:
-                gender = 'rather_not_say'
-            out['gender'][gender] += 1
-            out['age'][_age_bucket(customer)] += 1
-        return out
+    def _time_demographic_payload(ids:set)->dict:
+        clean={cid for cid in ids if cid is not None}
+        age_counts={k:0 for k in AGE_BRACKETS}
+        gender_counts={"male":0,"female":0,"lgbtq":0,"rather_not_say":0}
+        age_sample=0; gender_sample=0
+        for cid in clean:
+            customer=customer_map.get(str(cid))
+            if not customer: continue
+            bucket=_age_bucket(customer)
+            if bucket in age_counts: age_counts[bucket]+=1; age_sample+=1
+            gender=str(customer.get('gender') or '').strip().lower()
+            if gender in gender_counts: gender_counts[gender]+=1; gender_sample+=1
+        safe_age=_privacy_safe_counts(age_counts,age_sample,TIME_DEMO_MIN_SAMPLE,TIME_DEMO_MIN_CELL)
+        safe_gender=_privacy_safe_counts(gender_counts,gender_sample,TIME_DEMO_MIN_SAMPLE,TIME_DEMO_MIN_CELL)
+        return {
+            "available":bool(safe_age.get("available") or safe_gender.get("available")),
+            "age_available":safe_age.get("available",False),"gender_available":safe_gender.get("available",False),
+            "age_sample_size":age_sample,"gender_sample_size":gender_sample,
+            "minimum_sample":TIME_DEMO_MIN_SAMPLE,"minimum_cell":TIME_DEMO_MIN_CELL,
+            "age":safe_age.get("counts"),"gender":safe_gender.get("counts"),
+            "age_suppressed":safe_age.get("suppressed",False),"gender_suppressed":safe_gender.get("suppressed",False),
+            "secondary_suppression":True,
+        }
 
     activity_period_for_time = list(stamps_period)
     reward_period_for_time = list(redeems_period)
@@ -19948,8 +19968,6 @@ async def get_analytics(
                 "sales_count": cell['sales_count'],
                 "sales_amount": round(cell['sales_amount'], 2),
                 "demographic_sample_size": len(demo_ids),
-                "demographics_suppressed": len(demo_ids) < 5,
-                "demographics": _demographics_for_ids(demo_ids),
             })
         weekdays_out.append({
             "day": day_index,
@@ -19974,13 +19992,60 @@ async def get_analytics(
             "sales_count": sum(c['sales_count'] for c in day_cells),
             "sales_amount": round(sum(c['sales_amount'] for c in day_cells), 2),
             "demographic_sample_size": len(demo_ids),
-            "demographics_suppressed": len(demo_ids) < 5,
-            "demographics": _demographics_for_ids(demo_ids),
+        })
+
+    # Age-bracket reporting uses two-hour windows. The operational hour cards
+    # above remain hourly, while this wider window reduces re-identification risk.
+    demographic_windows_by_day = []
+    for day_index, day_label in enumerate(weekday_labels):
+        windows = []
+        for start_hour in builtins.range(0, 24, TIME_DEMO_BUCKET_HOURS):
+            ids = set()
+            for hour_offset in builtins.range(TIME_DEMO_BUCKET_HOURS):
+                ids |= cells[(day_index, start_hour + hour_offset)]['demographic_customer_ids']
+            payload = _time_demographic_payload(ids)
+            windows.append({
+                "start_hour": start_hour,
+                "end_hour": start_hour + TIME_DEMO_BUCKET_HOURS,
+                "label": (
+                    f"{datetime(2000, 1, 1, start_hour, 0).strftime('%-I %p')}–"
+                    f"{datetime(2000, 1, 1, (start_hour + TIME_DEMO_BUCKET_HOURS) % 24, 0).strftime('%-I %p')}"
+                ),
+                **payload,
+            })
+        demographic_windows_by_day.append({
+            "day": day_index,
+            "label": day_label,
+            "windows": windows,
+        })
+
+    demographic_windows_all_days = []
+    for start_hour in builtins.range(0, 24, TIME_DEMO_BUCKET_HOURS):
+        ids = set()
+        for day_index in builtins.range(7):
+            for hour_offset in builtins.range(TIME_DEMO_BUCKET_HOURS):
+                ids |= cells[(day_index, start_hour + hour_offset)]['demographic_customer_ids']
+        payload = _time_demographic_payload(ids)
+        demographic_windows_all_days.append({
+            "start_hour": start_hour,
+            "end_hour": start_hour + TIME_DEMO_BUCKET_HOURS,
+            "label": (
+                f"{datetime(2000, 1, 1, start_hour, 0).strftime('%-I %p')}–"
+                f"{datetime(2000, 1, 1, (start_hour + TIME_DEMO_BUCKET_HOURS) % 24, 0).strftime('%-I %p')}"
+            ),
+            **payload,
         })
 
     time_analytics = {
         "timezone": str(LOYALTY_TIMEZONE),
-        "privacy_minimum": 5,
+        "privacy_minimum": TIME_DEMO_MIN_SAMPLE,
+        "demographic_windows": {
+            "bucket_hours": TIME_DEMO_BUCKET_HOURS,
+            "minimum_sample": TIME_DEMO_MIN_SAMPLE,
+            "minimum_cell": TIME_DEMO_MIN_CELL,
+            "hours": demographic_windows_all_days,
+            "weekdays": demographic_windows_by_day,
+        },
         "sales_source": sales_source,
         "sales_tracked": bool(sales_rows),
         "demographics_source": demographic_source,
@@ -28938,12 +29003,12 @@ async def customer_join_page(business_public_id: str):
             '<form id="signupForm">'
             '<input type="text" id="name" placeholder="Full name" required>'
             '<input type="text" id="address" placeholder="Address">'
-            '<input type="number" id="age" placeholder="Age" min="0" max="120">'
+            '<select id="ageBracket"><option value="">Age bracket (optional)</option><option value="under_18">Under 18</option><option value="18_24">18–24</option><option value="25_34">25–34</option><option value="35_44">35–44</option><option value="45_54">45–54</option><option value="55_64">55–64</option><option value="65_plus">65+</option></select>'
             '<input type="tel" id="phone" placeholder="Phone number" required>'
             '<input type="email" id="email" placeholder="Email (optional)">'
-            '<label style="display:block;text-align:left;font-size:13px;color:#64748b;margin-bottom:6px;">Birthday (optional, MM/DD/YYYY)</label>'
-            '<input type="date" id="birthday" placeholder="Birthday"' + (' required' if card_type == 'employee' else '') + '>'
-            '<div style="font-size:11px;color:#64748b;margin:-6px 0 10px;">Birthday is used for optional greetings/rewards and can only be corrected later by the business.</div>'
+            '<label style="display:block;text-align:left;font-size:13px;color:#64748b;margin-bottom:6px;">Birthday month/day</label>'
+            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;"><input type="number" id="birthdayMonth" min="1" max="12" placeholder="Month"><input type="number" id="birthdayDay" min="1" max="31" placeholder="Day"></div>'
+            '<div style="font-size:11px;color:#64748b;margin:-2px 0 10px;">Birth year is not collected.</div>'
             + (
                 '<input type="text" id="employeeIdNumber" placeholder="Employee ID number" required>'
                 '<label style="display:block;text-align:left;font-size:13px;color:#64748b;margin-bottom:6px;">Employment start date</label>'
@@ -28960,11 +29025,12 @@ async def customer_join_page(business_public_id: str):
             '<option value="">Gender (optional)</option>'
             '<option value="male">Male</option>'
             '<option value="female">Female</option>'
-            '<option value="rather_not_say">Rather not say</option>'
+            '<option value="lgbtq">LGBTQ+</option>'
+            '<option value="rather_not_say">Prefer not to say</option>'
             '</select>'
             '<div class="consent-box">'
             '<div class="consent-title">Privacy &amp; Membership Consent</div>'
-            '<p class="consent-text">By joining, you agree that the information you provide may be collected and used by this business and LoyaltyTree to create and manage your digital loyalty membership, provide rewards and membership services, and send relevant membership or promotional updates.</p>'
+            '<p class="consent-text">By joining, you agree that the information you provide may be collected and used by this business and LoyaltyTree to create and manage your digital loyalty membership, provide rewards and membership services, send relevant membership or promotional updates, and produce privacy-protected aggregate analytics. Age is collected only as a bracket; demographic reports do not reveal individual customer identities.</p>'
             '<label class="consent-row" for="privacyConsent">'
             '<input type="checkbox" id="privacyConsent" required>'
             '<span>I have read and agree to the Privacy &amp; Membership Consent, and I confirm that the information I provided is accurate.</span>'
@@ -28989,10 +29055,10 @@ async def customer_join_page(business_public_id: str):
             'if(!consent.checked){consentError.style.display="block";return;}'
             'const name=document.getElementById("name").value;'
             'const address=document.getElementById("address").value;'
-            'const age=document.getElementById("age").value;'
+            'const ageBracket=document.getElementById("ageBracket").value;'
             'const phone=document.getElementById("phone").value;'
             'const email=document.getElementById("email").value;'
-            'const birthday=document.getElementById("birthday").value;'
+            'const birthdayMonth=document.getElementById("birthdayMonth").value;const birthdayDay=document.getElementById("birthdayDay").value;'
             'const employeeIdEl=document.getElementById("employeeIdNumber");const employeeStartEl=document.getElementById("employeeStartDate");'
             'const employeeIdNumber=employeeIdEl?employeeIdEl.value:null;const employeeStartDate=employeeStartEl?employeeStartEl.value:null;'
             'const occupation=document.getElementById("occupation").value;'
@@ -29001,7 +29067,7 @@ async def customer_join_page(business_public_id: str):
             'const res=await fetch(API_BASE+"/api/v1/join/"+BIZ_ID,{'
             'method:"POST",'
             'headers:{"Content-Type":"application/json"},'
-            'body:JSON.stringify({name:name,address:address||null,age:age?parseInt(age,10):null,phone:phone,email:email||null,birthday:birthday||null,occupation:occupation||null,gender:gender||null,employee_id_number:employeeIdNumber||null,employee_start_date:employeeStartDate||null,privacy_consent:true,privacy_consent_version:"2026-08-09-v1"})'
+            'body:JSON.stringify({name:name,address:address||null,age_bracket:ageBracket||null,phone:phone,email:email||null,birthday_month:birthdayMonth?parseInt(birthdayMonth,10):null,birthday_day:birthdayDay?parseInt(birthdayDay,10):null,occupation:occupation||null,gender:gender||null,employee_id_number:employeeIdNumber||null,employee_start_date:employeeStartDate||null,privacy_consent:true,privacy_consent_version:"2026-09-27-v2"})'
             '});'
             'const data=await res.json();'
             'if(res.ok){'
@@ -29106,8 +29172,19 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
         if employee_membership and not (signup.employee_position or '').strip():
             raise HTTPException(status_code=400, detail='Position is required for an Employee Membership.')
         # Legacy Employee Card keeps its historical birthday requirement. Employee Membership does not.
-        if legacy_employee_card and not signup.birthday:
-            raise HTTPException(status_code=400, detail='Birthday is required for an Employee Card.')
+        if legacy_employee_card and not (signup.birthday_month and signup.birthday_day):
+            raise HTTPException(status_code=400, detail='Birthday month and day are required for an Employee Card.')
+
+    if (signup.birthday_month is None) != (signup.birthday_day is None):
+        raise HTTPException(status_code=400, detail='Birthday month and day must be provided together.')
+    if signup.birthday_month and signup.birthday_day:
+        try:
+            date(2000, int(signup.birthday_month), int(signup.birthday_day))
+        except ValueError:
+            raise HTTPException(status_code=400, detail='Birthday month/day is not valid.')
+
+    signup_age_bracket = signup.age_bracket or _age_to_bracket(signup.age)
+    signup_gender = signup.gender if signup.gender in GENDER_OPTIONS else None
 
     dup_field = find_customer_duplicate(
         business.get('id'), signup.phone, signup.email, program_id=program.get('id')
@@ -29127,12 +29204,15 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
         'public_id': customer_public_id,
         'name': signup.name,
         'address': signup.address,
-        'age': signup.age,
+        'age': None,
+        'age_bracket': signup_age_bracket,
         'phone': signup.phone,
         'email': signup.email,
-        'birthday': signup.birthday,
+        'birthday': None,
+        'birthday_month': signup.birthday_month,
+        'birthday_day': signup.birthday_day,
         'occupation': signup.occupation,
-        'gender': signup.gender,
+        'gender': signup_gender,
         'last_order_date': signup.last_order_date,
         'privacy_consent': True,
         'privacy_consent_at': datetime.utcnow().isoformat(),
@@ -29203,7 +29283,7 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
                 status_code=500,
                 detail=(
                     f"Database schema mismatch: {error_msg}. One or more columns sent by the "
-                    f"app (e.g. address, age, birthday, occupation, gender, last_order_date) are "
+                    f"app (e.g. address, age_bracket, birthday_month/day, occupation, gender, last_order_date) are "
                     f"missing from the 'customers' table in Supabase, or the PostgREST schema "
                     f"cache is stale. Add the missing column(s) and run "
                     f"NOTIFY pgrst, 'reload schema'; (or use 'Reload schema' in the Supabase "

@@ -229,21 +229,32 @@ function AnalyticsDashboard({ API_BASE, user }) {
   const timeHasData = displayedHourRows.some(row =>
     Number(row.activity_count || 0) > 0 || Number(row.sales_count || 0) > 0 || Number(row.reward_count || 0) > 0
   )
-  const timeDemographics = selectedTimeRow?.demographics || null
-  const timeGenderRows = timeDemographics?.gender ? [
-    ['Female', timeDemographics.gender.female || 0],
-    ['Male', timeDemographics.gender.male || 0],
-    ['Rather not say', timeDemographics.gender.rather_not_say || 0],
-  ] : []
-  const timeAgeRows = timeDemographics?.age ? [
-    ['Under 18', timeDemographics.age.under_18 || 0],
-    ['18–24', timeDemographics.age['18_24'] || 0],
-    ['25–34', timeDemographics.age['25_34'] || 0],
-    ['35–44', timeDemographics.age['35_44'] || 0],
-    ['45–54', timeDemographics.age['45_54'] || 0],
-    ['55–64', timeDemographics.age['55_64'] || 0],
-    ['65+', timeDemographics.age['65_plus'] || 0],
-  ] : []
+  const demographicWindowAnalytics = time_analytics?.demographic_windows || {}
+  const ageWindowStart = effectiveSelectedHour == null
+    ? null
+    : Math.floor(Number(effectiveSelectedHour) / Number(demographicWindowAnalytics.bucket_hours || 2)) * Number(demographicWindowAnalytics.bucket_hours || 2)
+  const selectedAgeWeekday = selectedWeekday === 'all'
+    ? null
+    : (Array.isArray(demographicWindowAnalytics.weekdays) ? demographicWindowAnalytics.weekdays : [])
+        .find(row => String(row.day) === String(selectedWeekday))
+  const selectedAgeWindow = ageWindowStart == null
+    ? null
+    : (selectedAgeWeekday?.windows || demographicWindowAnalytics.hours || [])
+        .find(row => Number(row.start_hour) === Number(ageWindowStart)) || null
+  const selectedAgeCounts = selectedAgeWindow?.age || null
+  const timeAgeRows = selectedAgeCounts ? [
+    ['Under 18', selectedAgeCounts.under_18],
+    ['18–24', selectedAgeCounts['18_24']],
+    ['25–34', selectedAgeCounts['25_34']],
+    ['35–44', selectedAgeCounts['35_44']],
+    ['45–54', selectedAgeCounts['45_54']],
+    ['55–64', selectedAgeCounts['55_64']],
+    ['65+', selectedAgeCounts['65_plus']],
+  ].filter(([,value]) => value != null) : []
+  const selectedGenderCounts = selectedAgeWindow?.gender || null
+  const timeGenderRows = selectedGenderCounts ? [
+    ['Female', selectedGenderCounts.female],['Male', selectedGenderCounts.male],['LGBTQ+', selectedGenderCounts.lgbtq],['Prefer not to say', selectedGenderCounts.rather_not_say],
+  ].filter(([,value]) => value != null) : []
 
   // Keep the default owner view concise. Deeper metrics remain available in
   // Customers / Activity / Reports instead of competing for attention at once.
@@ -265,21 +276,15 @@ function AnalyticsDashboard({ API_BASE, user }) {
   const quietActivity = sortedPeakActivity.length ? sortedPeakActivity[sortedPeakActivity.length - 1] : null
 
   const ageRows = demographics?.age ? [
-    ['Under 18', demographics.age.under_18 || 0],
-    ['18–24', demographics.age['18_24'] || 0],
-    ['25–34', demographics.age['25_34'] || 0],
-    ['35–44', demographics.age['35_44'] || 0],
-    ['45–54', demographics.age['45_54'] || 0],
-    ['55–64', demographics.age['55_64'] || 0],
-    ['65+', demographics.age['65_plus'] || 0],
-  ] : []
+    ['Under 18', demographics.age.under_18],['18–24', demographics.age['18_24']],['25–34', demographics.age['25_34']],
+    ['35–44', demographics.age['35_44']],['45–54', demographics.age['45_54']],['55–64', demographics.age['55_64']],['65+', demographics.age['65_plus']],
+  ].filter(([,value]) => value != null) : []
   const largestAgeGroup = ageRows.reduce((best,row) => Number(row[1]) > Number(best?.[1] || 0) ? row : best, null)
 
   const genderRows = demographics?.gender ? [
-    ['Female', demographics.gender.female || 0],
-    ['Male', demographics.gender.male || 0],
-    ['Rather not say', demographics.gender.rather_not_say || 0],
-  ] : []
+    ['Female', demographics.gender.female],['Male', demographics.gender.male],['LGBTQ+', demographics.gender.lgbtq],['Prefer not to say', demographics.gender.rather_not_say],
+  ].filter(([,value]) => value != null) : []
+  const demographicPrivacy = demographics?.privacy || {}
 
   // Location reporting intentionally uses only aggregate city/municipality/barangay
   // fields when present. Raw street addresses are never surfaced in Analytics.
@@ -299,11 +304,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
   const topAreas = areaEntries.filter(([,count]) => Number(count) >= locationPrivacyMinimum).slice(0,5)
   const hiddenSmallAreaCount = areaEntries.filter(([,count]) => Number(count) < locationPrivacyMinimum).reduce((sum,[,count]) => sum + Number(count || 0), 0)
   if (hiddenSmallAreaCount >= locationPrivacyMinimum && topAreas.length < 5) topAreas.push(['Other / small groups', hiddenSmallAreaCount])
-  const demographicProfileCount = Math.max(
-    genderRows.reduce((sum,row)=>sum+Number(row[1]||0),0),
-    ageRows.reduce((sum,row)=>sum+Number(row[1]||0),0),
-  )
-  const demographicsSafeToShow = demographicProfileCount >= 5
+  const demographicsSafeToShow = Boolean(demographicPrivacy.age_available || demographicPrivacy.gender_available)
 
   const headlineActivity = isPoints
     ? Number(overview.total_stamps || 0)
@@ -326,7 +327,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
     title:`${Number(customers.churn_risk || 0).toLocaleString()} customers may need a win-back`,
     text:'These customers have no recorded loyalty activity for 30+ days.',
   })
-  if (largestAgeGroup && Number(largestAgeGroup[1]) > 0) insightItems.push({
+  if (!demographicPrivacy.age_suppressed && largestAgeGroup && Number(largestAgeGroup[1]) > 0) insightItems.push({
     icon:'👥',
     title:`Largest saved age group: ${largestAgeGroup[0]}`,
     text:`${Number(largestAgeGroup[1]).toLocaleString()} customer profiles currently fall in this age band.`,
@@ -375,8 +376,8 @@ function AnalyticsDashboard({ API_BASE, user }) {
       ['Rewards / redemptions', overview.total_rewards ?? 0],
       ['30-day retention', `${customers?.retention_rate || 0}%`],
     ]
-    const ageHtml = demographicsSafeToShow && ageRows.length ? ageRows.map(([label,value])=>`<tr><td>${escapeReportHtml(label)}</td><td>${Number(value||0).toLocaleString()}</td></tr>`).join('') : '<tr><td colspan="2">No saved age data yet.</td></tr>'
-    const genderHtml = demographicsSafeToShow && genderRows.length ? genderRows.map(([label,value])=>`<tr><td>${escapeReportHtml(label)}</td><td>${Number(value||0).toLocaleString()}</td></tr>`).join('') : '<tr><td colspan="2">Not enough saved gender data to show a private aggregate yet.</td></tr>'
+    const ageHtml = demographicPrivacy.age_available && ageRows.length ? ageRows.map(([label,value])=>`<tr><td>${escapeReportHtml(label)}</td><td>${Number(value||0).toLocaleString()}</td></tr>`).join('') : '<tr><td colspan="2">No saved age data yet.</td></tr>'
+    const genderHtml = demographicPrivacy.gender_available && genderRows.length ? genderRows.map(([label,value])=>`<tr><td>${escapeReportHtml(label)}</td><td>${Number(value||0).toLocaleString()}</td></tr>`).join('') : '<tr><td colspan="2">Not enough saved gender data to show a private aggregate yet.</td></tr>'
     const areaHtml = topAreas.length ? topAreas.map(([label,value])=>`<tr><td>${escapeReportHtml(label)}</td><td>${Number(value||0).toLocaleString()}</td></tr>`).join('') : '<tr><td colspan="2">No aggregate city / municipality data yet.</td></tr>'
     const insightsHtml = insightItems.slice(0,5).map(item=>`<li><strong>${escapeReportHtml(item.title)}</strong><br><span>${escapeReportHtml(item.text)}</span></li>`).join('')
     return `<!doctype html><html><head><meta charset="utf-8"><title>Loyalty Tree Weekly Report</title><style>body{font-family:Arial,sans-serif;color:#0f172a;margin:38px;line-height:1.5}h1{margin:0}h2{margin-top:28px;border-bottom:1px solid #e2e8f0;padding-bottom:7px}small,.muted{color:#64748b}table{width:100%;border-collapse:collapse;margin:10px 0 18px}td{padding:8px 6px;border-bottom:1px solid #f1f5f9}td:last-child{text-align:right;font-weight:700}.source{display:inline-block;padding:6px 10px;border-radius:999px;background:#ecfdf5;color:#047857;font-weight:700}li{margin:9px 0}.footer{margin-top:34px;padding-top:14px;border-top:1px solid #e2e8f0;font-size:12px;color:#64748b}@media print{body{margin:18mm}.no-print{display:none}}</style></head><body><h1>Loyalty Tree Weekly Report</h1><div class="muted">${escapeReportHtml(reportRangeLabel)} · Generated ${escapeReportHtml(reportDate)}</div><p><span class="source">Data source: ${escapeReportHtml(dataSourceLabel)}</span></p><h2>Weekly Summary</h2><table>${metricRows.map(([a,b])=>`<tr><td>${escapeReportHtml(a)}</td><td>${escapeReportHtml(b)}</td></tr>`).join('')}</table><h2>Customer Demographics</h2><h3>Age</h3><table>${ageHtml}</table><h3>Gender</h3><table>${genderHtml}</table><h3>Top Customer Areas</h3><table>${areaHtml}</table><h2>Peak Activity</h2><p><strong>${escapeReportHtml(peakActivity?.label || 'No peak activity available')}</strong>${peakActivity ? ` · ${Number(peakActivity.value||0).toLocaleString()} recorded activities` : ''}</p><h2>Insights & Suggestions</h2><ul>${insightsHtml || '<li>No suggestions available yet.</li>'}</ul><div class="footer">${escapeReportHtml(dataSourceDescription)} Individual street addresses are not included in demographic reporting.</div><script>window.onload=()=>setTimeout(()=>window.print(),250)<\/script></body></html>`
@@ -622,28 +623,19 @@ function AnalyticsDashboard({ API_BASE, user }) {
             </div>
 
             <div style={styles.insightCard}>
-              <h4 style={styles.insightTitle}>Gender</h4>
-              {!demographicsSafeToShow || genderRows.length === 0 ? <div style={styles.noData}>Not enough saved gender data to show a private aggregate yet.</div> : (()=>{
-                const total=genderRows.reduce((sum,row)=>sum+Number(row[1]||0),0)
-                return genderRows.map(([label,value])=>{
-                  const pct=total?Math.round((Number(value||0)/total)*100):0
-                  return <div key={label} style={{marginBottom:10}}><div style={styles.barLabelRow}><span>{label}</span><span>{Number(value||0).toLocaleString()} · {pct}%</span></div><div style={styles.retentionBar}><div style={{...styles.retentionFill,width:`${pct}%`}}/></div></div>
-                })
-              })()}
+              <div style={{display:'flex',justifyContent:'space-between',gap:10}}><h4 style={styles.insightTitle}>Gender</h4><span style={styles.statusPill}>🔒 Aggregate only</span></div>
+              {!demographicPrivacy.gender_available || !genderRows.length ? <div style={styles.noData}>Not enough gender responses to show a private aggregate yet.</div> : <>
+                {genderRows.map(([label,value])=><div key={label} style={styles.customerRow}><span style={styles.customerName}>{label}</span><strong>{Number(value||0).toLocaleString()}</strong></div>)}
+                {demographicPrivacy.gender_suppressed && <div style={styles.mutedText}>Small groups plus one additional category are suppressed to prevent reconstruction.</div>}
+              </>}
             </div>
 
             <div style={styles.insightCard}>
-              <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'flex-start'}}>
-                <h4 style={styles.insightTitle}>Age groups</h4>
-                {largestAgeGroup && Number(largestAgeGroup[1])>0 && <span style={styles.statusPill}>Largest · {largestAgeGroup[0]}</span>}
-              </div>
-              {!demographicsSafeToShow || ageRows.length === 0 ? <div style={styles.noData}>Not enough saved age / birthday data to show a private aggregate yet.</div> : (()=>{
-                const total=ageRows.reduce((sum,row)=>sum+Number(row[1]||0),0)
-                return ageRows.map(([label,value])=>{
-                  const pct=total?Math.round((Number(value||0)/total)*100):0
-                  return <div key={label} style={{marginBottom:9}}><div style={styles.barLabelRow}><span>{label}</span><span>{Number(value||0).toLocaleString()} · {pct}%</span></div><div style={styles.retentionBar}><div style={{...styles.retentionFill,width:`${pct}%`}}/></div></div>
-                })
-              })()}
+              <div style={{display:'flex',justifyContent:'space-between',gap:10}}><h4 style={styles.insightTitle}>Age brackets</h4><span style={styles.statusPill}>🔒 Aggregate only</span></div>
+              {!demographicPrivacy.age_available || !ageRows.length ? <div style={styles.noData}>Not enough age-bracket responses to show a private aggregate yet.</div> : <>
+                {ageRows.map(([label,value])=><div key={label} style={styles.customerRow}><span style={styles.customerName}>{label}</span><strong>{Number(value||0).toLocaleString()}</strong></div>)}
+                {demographicPrivacy.age_suppressed && <div style={styles.mutedText}>Small brackets plus one additional bracket are suppressed to prevent reconstruction.</div>}
+              </>}
             </div>
 
             <div style={styles.insightCard}>
@@ -777,41 +769,26 @@ function AnalyticsDashboard({ API_BASE, user }) {
                 </div>
 
                 <div style={styles.insightCard}>
-                  <h4 style={styles.insightTitle}>
-                    {time_analytics?.demographics_are_purchase_linked ? 'Buyer demographics at this time' : 'Customer demographics at this activity time'}
-                  </h4>
-                  <div style={{...styles.mutedText,marginBottom:12}}>
-                    {time_analytics?.demographics_are_purchase_linked
-                      ? 'Based only on transactions linked to a Loyalty Tree customer profile.'
-                      : 'Purchase linkage is not available for this time slot, so this reflects loyalty activity rather than confirmed buyers.'}
+                  <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'flex-start',marginBottom:8}}>
+                    <h4 style={{...styles.insightTitle,marginBottom:0}}>{time_analytics?.demographics_are_purchase_linked ? 'Buyer demographics' : 'Customer demographics'}</h4>
+                    <span style={styles.statusPill}>🔒 Aggregate only</span>
                   </div>
-
-                  {selectedTimeRow.demographics_suppressed || !timeDemographics ? (
-                    <div style={styles.noData}>
-                      Fewer than {Number(time_analytics?.privacy_minimum || 5)} known customers in this time slot. Demographics are hidden to protect privacy.
+                  <div style={{...styles.mutedText,marginBottom:12}}>{selectedAgeWindow ? `${selectedWeekdayRow ? selectedWeekdayRow.label : 'All Days'} · ${selectedAgeWindow.label}` : 'Select an hour to view its two-hour demographic window.'}</div>
+                  <div className="an-charts-row" style={{...styles.chartsRow,marginBottom:0}}>
+                    <div><div style={styles.miniLabel}>Age brackets</div>
+                      {!selectedAgeWindow?.age_available || !timeAgeRows.length ? <div style={{...styles.noData,padding:18}}>At least {Number(selectedAgeWindow?.minimum_sample || demographicWindowAnalytics?.minimum_sample || 10)} age-bracket responses are required.</div> : <>
+                        {timeAgeRows.map(([label,value])=><div key={label} style={styles.customerRow}><span style={styles.customerName}>{label}</span><strong>{Number(value||0).toLocaleString()}</strong></div>)}
+                        {selectedAgeWindow.age_suppressed && <div style={styles.mutedText}>Small brackets plus one additional bracket are suppressed.</div>}
+                      </>}
                     </div>
-                  ) : (
-                    <div style={styles.timeDemoGrid}>
-                      <div>
-                        <div style={styles.miniLabel}>Gender</div>
-                        {timeGenderRows.map(([label,value]) => (
-                          <div key={label} style={styles.customerRow}>
-                            <span style={styles.customerName}>{label}</span>
-                            <strong>{Number(value || 0).toLocaleString()}</strong>
-                          </div>
-                        ))}
-                      </div>
-                      <div>
-                        <div style={styles.miniLabel}>Age Groups</div>
-                        {timeAgeRows.filter(([,value]) => Number(value || 0) > 0).map(([label,value]) => (
-                          <div key={label} style={styles.customerRow}>
-                            <span style={styles.customerName}>{label}</span>
-                            <strong>{Number(value || 0).toLocaleString()}</strong>
-                          </div>
-                        ))}
-                      </div>
+                    <div><div style={styles.miniLabel}>Gender</div>
+                      {!selectedAgeWindow?.gender_available || !timeGenderRows.length ? <div style={{...styles.noData,padding:18}}>At least {Number(selectedAgeWindow?.minimum_sample || demographicWindowAnalytics?.minimum_sample || 10)} gender responses are required.</div> : <>
+                        {timeGenderRows.map(([label,value])=><div key={label} style={styles.customerRow}><span style={styles.customerName}>{label}</span><strong>{Number(value||0).toLocaleString()}</strong></div>)}
+                        {selectedAgeWindow.gender_suppressed && <div style={styles.mutedText}>Small groups plus one additional category are suppressed.</div>}
+                      </>}
                     </div>
-                  )}
+                  </div>
+                  <div style={{...styles.mutedText,marginTop:12}}>{time_analytics?.demographics_are_purchase_linked ? 'Based only on linked purchase records. No customer list or drill-down is provided from demographic reports.' : 'Based on recorded loyalty activity. No customer list or drill-down is provided from demographic reports.'}</div>
                 </div>
               </div>
             )}
@@ -1333,7 +1310,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           <div className="an-charts-row" style={styles.chartsRow}>
             <div style={styles.insightCard}>
               <h4 style={styles.insightTitle}>Customer profile snapshot</h4>
-              <div style={styles.customerRow}><span style={styles.customerName}>Largest age group</span><strong>{largestAgeGroup?.[0] || '—'}</strong></div>
+              <div style={styles.customerRow}><span style={styles.customerName}>Largest age group</span><strong>{!demographicPrivacy.age_suppressed ? (largestAgeGroup?.[0] || '—') : 'Suppressed'}</strong></div>
               <div style={styles.customerRow}><span style={styles.customerName}>Top customer area</span><strong>{topAreas?.[0]?.[0] || '—'}</strong></div>
               <div style={styles.customerRow}><span style={styles.customerName}>Upcoming birthdays</span><strong>{birthdayData.counts?.next_30_days || 0}</strong></div>
             </div>

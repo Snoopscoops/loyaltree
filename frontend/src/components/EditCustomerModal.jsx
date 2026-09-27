@@ -19,12 +19,25 @@ function legacyBirthdayParts(value) {
   return { month: String(Number(match[1])), day: String(Number(match[2])) }
 }
 
+function legacyAgeBracket(value) {
+  const age = Number(value)
+  if (!Number.isFinite(age) || age < 0 || age > 120) return ''
+  if (age < 18) return 'under_18'
+  if (age <= 24) return '18_24'
+  if (age <= 34) return '25_34'
+  if (age <= 44) return '35_44'
+  if (age <= 54) return '45_54'
+  if (age <= 64) return '55_64'
+  return '65_plus'
+}
+
 function EditCustomerModal({ API_BASE, businessSlug, customer, onClose, onSave }) {
   const [form, setForm] = useState({
     name: '',
     phone: '',
     email: '',
-    age: '',
+    age_bracket: '',
+    gender: '',
     birthday_month: '',
     birthday_day: '',
   })
@@ -47,7 +60,8 @@ function EditCustomerModal({ API_BASE, businessSlug, customer, onClose, onSave }
         name: customer.name || '',
         phone: customer.phone || '',
         email: customer.email || '',
-        age: customer.age ?? '',
+        age_bracket: customer.age_bracket || legacyAgeBracket(customer.age),
+        gender: customer.gender || '',
         birthday_month: customer.birthday_month ? String(customer.birthday_month) : legacy.month,
         birthday_day: customer.birthday_day ? String(customer.birthday_day) : legacy.day,
       })
@@ -131,7 +145,8 @@ function EditCustomerModal({ API_BASE, businessSlug, customer, onClose, onSave }
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...form,
-          age: form.age === '' ? null : Number(form.age),
+          age_bracket: form.age_bracket || null,
+          gender: form.gender || null,
           birthday_month: Number(form.birthday_month),
           birthday_day: Number(form.birthday_day),
         })
@@ -210,17 +225,39 @@ function EditCustomerModal({ API_BASE, businessSlug, customer, onClose, onSave }
           </div>
 
           <div style={styles.inputGroup}>
-            <label style={styles.label}>Age <span style={styles.optional}>(optional)</span></label>
-            <input
-              type="number"
-              min="0"
-              max="120"
-              inputMode="numeric"
-              value={form.age}
-              onChange={e => setForm({...form, age: e.target.value})}
+            <label style={styles.label}>Age bracket <span style={styles.optional}>(optional)</span></label>
+            <select
+              value={form.age_bracket}
+              onChange={e => setForm({...form, age_bracket: e.target.value})}
               style={styles.input}
-              placeholder="25"
-            />
+            >
+              <option value="">Select age bracket</option>
+              <option value="under_18">Under 18</option>
+              <option value="18_24">18–24</option>
+              <option value="25_34">25–34</option>
+              <option value="35_44">35–44</option>
+              <option value="45_54">45–54</option>
+              <option value="55_64">55–64</option>
+              <option value="65_plus">65+</option>
+            </select>
+            <div style={{fontSize:11,color:'#64748b',marginTop:6}}>
+              Exact age is not collected or stored for new updates.
+            </div>
+          </div>
+
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>Gender <span style={styles.optional}>(optional)</span></label>
+            <select
+              value={form.gender}
+              onChange={e => setForm({...form, gender: e.target.value})}
+              style={styles.input}
+            >
+              <option value="">Select one</option>
+              <option value="male">Male</option>
+              <option value="female">Female</option>
+              <option value="lgbtq">LGBTQ+</option>
+              <option value="rather_not_say">Prefer not to say</option>
+            </select>
           </div>
 
           <div style={styles.inputGroup}>
