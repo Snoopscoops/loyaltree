@@ -1,4 +1,5 @@
 import os
+import builtins
 import re
 import asyncio
 from collections import defaultdict, deque
@@ -19889,7 +19890,7 @@ async def get_analytics(
     weekday_labels = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
     cells = {}
     for day_index, day_label in enumerate(weekday_labels):
-        for hour in range(24):
+        for hour in builtins.range(24):
             cells[(day_index, hour)] = {
                 "day": day_index,
                 "day_label": day_label,
@@ -19935,7 +19936,7 @@ async def get_analytics(
     weekdays_out = []
     for day_index, day_label in enumerate(weekday_labels):
         hours_out = []
-        for hour in range(24):
+        for hour in builtins.range(24):
             cell = cells[(day_index, hour)]
             demo_ids = cell['demographic_customer_ids']
             hours_out.append({
@@ -19957,8 +19958,8 @@ async def get_analytics(
         })
 
     hourly_out = []
-    for hour in range(24):
-        day_cells = [cells[(day, hour)] for day in range(7)]
+    for hour in builtins.range(24):
+        day_cells = [cells[(day, hour)] for day in builtins.range(7)]
         demo_ids = set()
         activity_ids = set()
         for cell in day_cells:
