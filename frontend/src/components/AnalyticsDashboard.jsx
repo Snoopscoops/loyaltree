@@ -2,12 +2,14 @@ import React, { useState, useEffect } from 'react'
 
 function AnalyticsDashboard({ API_BASE, user }) {
   const [timeRange, setTimeRange] = useState('7d')
+  const [selectedBranch, setSelectedBranch] = useState('all')
+  const [selectedWeekday, setSelectedWeekday] = useState('all')
+  const [selectedHour, setSelectedHour] = useState(null)
   const [activeTab, setActiveTab] = useState('overview')
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [analytics, setAnalytics] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [branchStats, setBranchStats] = useState([])
   const [walletQueue, setWalletQueue] = useState({ jobs: [], pending: 0, failed: 0 })
   const [crmData, setCrmData] = useState({ customers: [], segments: {}, total_customers: 0 })
   const [retentionData, setRetentionData] = useState({})
@@ -46,18 +48,11 @@ function AnalyticsDashboard({ API_BASE, user }) {
 
   useEffect(() => {
     fetchAnalytics()
-  }, [timeRange])
+  }, [timeRange, selectedBranch])
 
   useEffect(() => {
-    // All-time, not scoped to timeRange - this is "which branch is driving
-    // activity overall", a separate question from the trend charts above.
-    fetch(`${API_BASE}/api/v1/business/${user.business_slug}/branches/stamp-counts`, {
-      headers: { 'Authorization': `Bearer ${user.token}` }
-    })
-      .then(res => res.json())
-      .then(data => setBranchStats(Array.isArray(data) ? data : []))
-      .catch(() => {})
-  }, [user.business_slug])
+    setSelectedHour(null)
+  }, [timeRange, selectedBranch, selectedWeekday])
 
   useEffect(() => {
     fetchExtendedAnalytics()
@@ -145,7 +140,8 @@ function AnalyticsDashboard({ API_BASE, user }) {
     setRedemptionDrilldown({ open: true, loading: true, error: '', rows: [], total: 0 })
     try {
       const base = `${API_BASE}/api/v1/business/${user.business_slug}`
-      const res = await authFetch(`${base}/analytics/redemptions?range=${encodeURIComponent(timeRange)}`)
+      const branchQuery = selectedBranch !== 'all' ? `&branch_id=${encodeURIComponent(selectedBranch)}` : ''
+      const res = await authFetch(`${base}/analytics/redemptions?range=${encodeURIComponent(timeRange)}${branchQuery}`)
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Could not load redemption details')
       setRedemptionDrilldown({
@@ -165,7 +161,8 @@ function AnalyticsDashboard({ API_BASE, user }) {
   const fetchAnalytics = async () => {
     setLoading(true)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/analytics?range=${timeRange}`, {
+      const branchQuery = selectedBranch !== 'all' ? `&branch_id=${encodeURIComponent(selectedBranch)}` : ''
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/analytics?range=${timeRange}${branchQuery}`, {
         headers: { 'Authorization': `Bearer ${user.token}` }
       })
       const data = await res.json()
@@ -194,7 +191,10 @@ function AnalyticsDashboard({ API_BASE, user }) {
 
   if (!analytics) return null
 
-  const { overview, trends, customers, demographics, stamps, rewards, revenue } = analytics
+  const {
+    overview, trends, customers, demographics, stamps, rewards, revenue,
+    scope = {}, branches = [], branch_performance = [], time_analytics = {},
+  } = analytics
   const birthdayRows = (birthdayData.customers || []).filter(c => {
     if (birthdayFilter === 'all') return true
     if (birthdayFilter === 'today') return c.is_today
@@ -211,6 +211,39 @@ function AnalyticsDashboard({ API_BASE, user }) {
   const isMultipass = overview.card_type === 'multipass'
   const isMembership = overview.card_type === 'membership'
   const isVip = overview.card_type === 'vip'
+  const branchScoped = scope?.branch_filtered === true
+  const branchScopeName = scope?.branch_name || ''
+  const timeWeekdays = Array.isArray(time_analytics?.weekdays) ? time_analytics.weekdays : []
+  const allHourRows = Array.isArray(time_analytics?.hours) ? time_analytics.hours : []
+  const selectedWeekdayRow = selectedWeekday === 'all'
+    ? null
+    : timeWeekdays.find(row => String(row.day) === String(selectedWeekday))
+  const displayedHourRows = selectedWeekdayRow?.hours || allHourRows
+  const busiestHour = [...displayedHourRows].sort((a,b) => {
+    const aPrimary = time_analytics?.sales_tracked ? Number(a.sales_count || 0) : Number(a.activity_count || 0)
+    const bPrimary = time_analytics?.sales_tracked ? Number(b.sales_count || 0) : Number(b.activity_count || 0)
+    return bPrimary - aPrimary
+  })[0] || null
+  const effectiveSelectedHour = selectedHour == null ? busiestHour?.hour : selectedHour
+  const selectedTimeRow = displayedHourRows.find(row => Number(row.hour) === Number(effectiveSelectedHour)) || busiestHour || null
+  const timeHasData = displayedHourRows.some(row =>
+    Number(row.activity_count || 0) > 0 || Number(row.sales_count || 0) > 0 || Number(row.reward_count || 0) > 0
+  )
+  const timeDemographics = selectedTimeRow?.demographics || null
+  const timeGenderRows = timeDemographics?.gender ? [
+    ['Female', timeDemographics.gender.female || 0],
+    ['Male', timeDemographics.gender.male || 0],
+    ['Rather not say', timeDemographics.gender.rather_not_say || 0],
+  ] : []
+  const timeAgeRows = timeDemographics?.age ? [
+    ['Under 18', timeDemographics.age.under_18 || 0],
+    ['18–24', timeDemographics.age['18_24'] || 0],
+    ['25–34', timeDemographics.age['25_34'] || 0],
+    ['35–44', timeDemographics.age['35_44'] || 0],
+    ['45–54', timeDemographics.age['45_54'] || 0],
+    ['55–64', timeDemographics.age['55_64'] || 0],
+    ['65+', timeDemographics.age['65_plus'] || 0],
+  ] : []
 
   // Keep the default owner view concise. Deeper metrics remain available in
   // Customers / Activity / Reports instead of competing for attention at once.
@@ -222,6 +255,9 @@ function AnalyticsDashboard({ API_BASE, user }) {
   const dataSourceDescription = posEnhanced
     ? 'Enhanced transaction and loyalty analytics'
     : 'Based on card joins, loyalty activity, redemptions and membership activity — not claimed as sales.'
+  const scopeDescription = branchScoped
+    ? `${branchScopeName} · customers are counted here when they have recorded activity at this branch.`
+    : 'All branches combined.'
 
   const peakActivityRows = Array.isArray(trends?.peak_hours) ? trends.peak_hours.filter(row => row && Number.isFinite(Number(row.value))) : []
   const sortedPeakActivity = [...peakActivityRows].sort((a,b) => Number(b.value || 0) - Number(a.value || 0))
@@ -388,6 +424,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           .an-actionbtn { width: 100% !important; padding: 11px 16px !important; }
           .an-module-grid { grid-template-columns: 1fr !important; }
           .an-table-row { grid-template-columns: 1fr !important; gap: 4px !important; }
+          .an-header select { width: 100% !important; min-width: 0 !important; }
         }
         @media (max-width: 420px) {
           .an-overview-grid { grid-template-columns: 1fr 1fr !important; }
@@ -395,27 +432,49 @@ function AnalyticsDashboard({ API_BASE, user }) {
         }
       `}</style>
       <div className="an-header" style={styles.header}>
-        <h1 className="an-title" style={styles.title}>📊 Analytics Dashboard</h1>
-        {activeTab === 'reports' ? (
-          <div style={{...styles.sourceBadge,background:'#ecfdf5',borderColor:'#a7f3d0',color:'#047857'}}>Weekly · Last 7 Days</div>
-        ) : (
-          <div className="an-timerange" style={styles.timeRange}>
-            {['7d', '30d', '90d', 'all'].map(range => (
-              <button
-                key={range}
-                className="an-rangebtn"
-                onClick={() => setTimeRange(range)}
-                style={{
-                  ...styles.rangeBtn,
-                  background: timeRange === range ? '#0d9488' : '#f1f5f9',
-                  color: timeRange === range ? 'white' : '#64748b'
-                }}
+        <div>
+          <h1 className="an-title" style={styles.title}>📊 Analytics Dashboard</h1>
+          <div style={{...styles.mutedText,marginTop:4}}>{scopeDescription}</div>
+        </div>
+        <div style={styles.analyticsHeaderControls}>
+          {Array.isArray(branches) && branches.length > 0 && (
+            <label style={styles.branchFilterLabel}>
+              <span style={styles.miniLabel}>Branch</span>
+              <select
+                value={selectedBranch}
+                onChange={e => setSelectedBranch(e.target.value)}
+                style={styles.branchSelect}
               >
-                {range === '7d' ? 'Last 7 Days' : range === '30d' ? 'Last 30 Days' : range === '90d' ? 'Last 90 Days' : 'All Time'}
-              </button>
-            ))}
-          </div>
-        )}
+                <option value="all">All Branches</option>
+                {branches.map(branch => (
+                  <option key={branch.public_id} value={branch.public_id}>
+                    {branch.name}{branch.is_active === false ? ' (Inactive)' : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {activeTab === 'reports' ? (
+            <div style={{...styles.sourceBadge,background:'#ecfdf5',borderColor:'#a7f3d0',color:'#047857'}}>Weekly · Last 7 Days</div>
+          ) : (
+            <div className="an-timerange" style={styles.timeRange}>
+              {['7d', '30d', '90d', 'all'].map(range => (
+                <button
+                  key={range}
+                  className="an-rangebtn"
+                  onClick={() => setTimeRange(range)}
+                  style={{
+                    ...styles.rangeBtn,
+                    background: timeRange === range ? '#0d9488' : '#f1f5f9',
+                    color: timeRange === range ? 'white' : '#64748b'
+                  }}
+                >
+                  {range === '7d' ? 'Last 7 Days' : range === '30d' ? 'Last 30 Days' : range === '90d' ? 'Last 90 Days' : 'All Time'}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       <div style={styles.analyticsTopBar}>
@@ -445,7 +504,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
       {activeTab === 'overview' && <>
         <div className="an-overview-grid" style={styles.overviewGrid}>
           <StatCard title="Active Members" value={overview.active_members ?? 0} change={overview.active_change} icon="⭐" color="#0d9488" />
-          <StatCard title="New Customers" value={overview.new_customers ?? 0} change={overview.customer_change} icon="🆕" color="#10b981" />
+          <StatCard title={branchScoped ? "New Known Customers" : "New Customers"} value={overview.new_customers ?? 0} change={overview.customer_change} icon="🆕" color="#10b981" />
           <StatCard title={headlineActivityLabel} value={headlineActivity} change={overview.stamp_change} icon={isMembership?'✅':isMultipass?'🎫':isVip?'👑':isPoints?'💎':'🎯'} color="#3b82f6" />
           <StatCard title={isVip?'Tier Upgrades':isMembership?'Membership Actions':isMultipass?'Packs Completed':'Rewards Redeemed'} value={overview.total_rewards ?? 0} change={overview.reward_change} icon="🎁" color="#ec4899" onClick={openRedemptionDrilldown} hint="View redemptions" />
           <StatCard title="30-Day Retention" value={`${customers?.retention_rate || 0}%`} icon="🔁" color="#8b5cf6" />
@@ -557,7 +616,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           <div className="an-insights-grid" style={styles.insightsGrid}>
             <div style={styles.insightCard}>
               <h4 style={styles.insightTitle}>New vs. returning</h4>
-              <div style={styles.customerRow}><span style={styles.customerName}>New customers</span><strong>{Number(overview.new_customers||0).toLocaleString()}</strong></div>
+              <div style={styles.customerRow}><span style={styles.customerName}>{branchScoped ? 'New known customers' : 'New customers'}</span><strong>{Number(overview.new_customers||0).toLocaleString()}</strong></div>
               <div style={styles.customerRow}><span style={styles.customerName}>30-day retention</span><strong>{Number(customers.retention_rate||0)}%</strong></div>
               <div style={styles.customerRow}><span style={styles.customerName}>Churn risk</span><strong>{Number(customers.churn_risk||0).toLocaleString()}</strong></div>
             </div>
@@ -628,6 +687,146 @@ function AnalyticsDashboard({ API_BASE, user }) {
       </>}
 
       {activeTab === 'activity' && <>
+
+      {/* Time-Based Analytics */}
+      <div style={styles.section}>
+        <div style={styles.sectionHeadingRow}>
+          <div>
+            <h2 className="an-section-title" style={{...styles.sectionTitle,marginBottom:4}}>🕒 Time-Based Analytics</h2>
+            <div style={styles.mutedText}>
+              {time_analytics?.sales_tracked
+                ? `Sales and customer activity by local hour · ${time_analytics?.timezone || 'Asia/Manila'}`
+                : `Customer activity by local hour · ${time_analytics?.timezone || 'Asia/Manila'}`}
+            </div>
+          </div>
+          <span style={styles.statusPill}>
+            {time_analytics?.demographics_are_purchase_linked ? 'Purchase-linked demographics' : 'Activity demographics'}
+          </span>
+        </div>
+
+        <div style={styles.timeDayFilters}>
+          <button
+            type="button"
+            onClick={() => setSelectedWeekday('all')}
+            style={{...styles.timeDayBtn,...(selectedWeekday==='all'?styles.timeDayBtnActive:{})}}
+          >
+            All Days
+          </button>
+          {timeWeekdays.map(day => (
+            <button
+              key={day.day}
+              type="button"
+              onClick={() => setSelectedWeekday(String(day.day))}
+              style={{...styles.timeDayBtn,...(String(selectedWeekday)===String(day.day)?styles.timeDayBtnActive:{})}}
+            >
+              {String(day.label || '').slice(0,3)}
+            </button>
+          ))}
+        </div>
+
+        {!timeHasData ? (
+          <div style={styles.noData}>No time-based activity recorded for this range yet.</div>
+        ) : (
+          <>
+            <div style={styles.hourGrid}>
+              {displayedHourRows.map(row => {
+                const isSelected = Number(row.hour) === Number(effectiveSelectedHour)
+                const primaryCount = time_analytics?.sales_tracked ? Number(row.sales_count || 0) : Number(row.activity_count || 0)
+                return (
+                  <button
+                    key={row.hour}
+                    type="button"
+                    onClick={() => setSelectedHour(Number(row.hour))}
+                    style={{...styles.hourButton,...(isSelected?styles.hourButtonActive:{})}}
+                    title={`${row.label}: ${primaryCount} ${time_analytics?.sales_tracked ? 'sales' : 'activities'}`}
+                  >
+                    <span style={styles.hourLabel}>{row.label}</span>
+                    <strong style={styles.hourValue}>{primaryCount.toLocaleString()}</strong>
+                    <small style={styles.hourMeta}>
+                      {time_analytics?.sales_tracked
+                        ? (Number(row.sales_amount || 0) > 0 ? `₱${Number(row.sales_amount || 0).toLocaleString(undefined,{maximumFractionDigits:0})}` : 'sales')
+                        : `${Number(row.unique_customers || 0)} customers`}
+                    </small>
+                  </button>
+                )
+              })}
+            </div>
+
+            {selectedTimeRow && (
+              <div className="an-charts-row" style={{...styles.chartsRow,marginTop:16}}>
+                <div style={styles.insightCard}>
+                  <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'flex-start',marginBottom:12}}>
+                    <div>
+                      <h4 style={{...styles.insightTitle,marginBottom:3}}>
+                        {selectedWeekdayRow ? selectedWeekdayRow.label : 'All Days'} · {selectedTimeRow.label}
+                      </h4>
+                      <div style={styles.mutedText}>
+                        {time_analytics?.sales_tracked ? 'Recorded sales and loyalty activity in this time slot.' : 'Recorded Loyalty Tree activity in this time slot.'}
+                      </div>
+                    </div>
+                    {busiestHour && Number(busiestHour.hour) === Number(selectedTimeRow.hour) && <span style={styles.statusPill}>Peak Hour</span>}
+                  </div>
+
+                  <div style={styles.timeMetricGrid}>
+                    <MiniMetric label="Loyalty Activities" value={Number(selectedTimeRow.activity_count || 0).toLocaleString()} />
+                    <MiniMetric label="Unique Customers" value={Number(selectedTimeRow.unique_customers || 0).toLocaleString()} />
+                    <MiniMetric label="Rewards" value={Number(selectedTimeRow.reward_count || 0).toLocaleString()} />
+                    {time_analytics?.sales_tracked && <MiniMetric label="Recorded Sales" value={Number(selectedTimeRow.sales_count || 0).toLocaleString()} />}
+                    {time_analytics?.sales_tracked && <MiniMetric label="Sales Value" value={`₱${Number(selectedTimeRow.sales_amount || 0).toLocaleString(undefined,{maximumFractionDigits:2})}`} />}
+                  </div>
+                </div>
+
+                <div style={styles.insightCard}>
+                  <h4 style={styles.insightTitle}>
+                    {time_analytics?.demographics_are_purchase_linked ? 'Buyer demographics at this time' : 'Customer demographics at this activity time'}
+                  </h4>
+                  <div style={{...styles.mutedText,marginBottom:12}}>
+                    {time_analytics?.demographics_are_purchase_linked
+                      ? 'Based only on transactions linked to a Loyalty Tree customer profile.'
+                      : 'Purchase linkage is not available for this time slot, so this reflects loyalty activity rather than confirmed buyers.'}
+                  </div>
+
+                  {selectedTimeRow.demographics_suppressed || !timeDemographics ? (
+                    <div style={styles.noData}>
+                      Fewer than {Number(time_analytics?.privacy_minimum || 5)} known customers in this time slot. Demographics are hidden to protect privacy.
+                    </div>
+                  ) : (
+                    <div style={styles.timeDemoGrid}>
+                      <div>
+                        <div style={styles.miniLabel}>Gender</div>
+                        {timeGenderRows.map(([label,value]) => (
+                          <div key={label} style={styles.customerRow}>
+                            <span style={styles.customerName}>{label}</span>
+                            <strong>{Number(value || 0).toLocaleString()}</strong>
+                          </div>
+                        ))}
+                      </div>
+                      <div>
+                        <div style={styles.miniLabel}>Age Groups</div>
+                        {timeAgeRows.filter(([,value]) => Number(value || 0) > 0).map(([label,value]) => (
+                          <div key={label} style={styles.customerRow}>
+                            <span style={styles.customerName}>{label}</span>
+                            <strong>{Number(value || 0).toLocaleString()}</strong>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        <div style={{...styles.mutedText,marginTop:12}}>
+          {time_analytics?.sales_source === 'pos'
+            ? 'Sales-by-time uses recorded POS transactions. Anonymous POS sales can contribute to sales totals, but demographic breakdowns only use customer-linked transactions.'
+            : time_analytics?.sales_source === 'points_recorded_amount'
+              ? 'Sales-by-time uses recorded spend from Points transactions.'
+              : 'No purchase amount is recorded for this program yet. Connect POS or record spend with Points to unlock buyer-by-time analytics.'}
+        </div>
+      </div>
+
       {/* Revenue Insights */}
       <div style={styles.section}>
         <h2 className="an-section-title" style={styles.sectionTitle}>{posEnhanced ? '💰 POS Sales Insights' : '💰 Recorded Transaction Value'}</h2>
@@ -706,32 +905,39 @@ function AnalyticsDashboard({ API_BASE, user }) {
         </div>
       </div>
 
-      {/* Branch Performance - separate from the aggregate Overview above;
-          only worth showing once there's more than one branch to compare */}
-      {branchStats.length > 1 && (
+      {/* Branch Performance */}
+      {Array.isArray(branch_performance) && branch_performance.length > 1 && (
         <div style={styles.section}>
-          <h2 className="an-section-title" style={styles.sectionTitle}>🏢 Branch Performance</h2>
-          <div className="an-insights-grid" style={styles.insightsGrid}>
-            <div style={styles.insightCard}>
-              <h4 style={styles.insightTitle}>{isPoints ? 'Transactions by Branch' : isMultipass ? 'Sessions by Branch' : 'Stamps by Branch'}</h4>
-              {[...branchStats].sort((a, b) => b.stamp_count - a.stamp_count).map((b, i) => (
-                <div key={b.branch_public_id} style={styles.customerRow}>
-                  <span style={styles.rank}>#{i + 1}</span>
-                  <span style={styles.customerName}>{b.name}</span>
-                  <span style={styles.customerStamps}>{b.stamp_count} {b.card_type === 'points' ? 'transactions' : b.card_type === 'multipass' ? 'sessions' : 'stamps'}</span>
-                </div>
-              ))}
+          <div style={styles.sectionHeadingRow}>
+            <div>
+              <h2 className="an-section-title" style={{...styles.sectionTitle,marginBottom:4}}>🏢 Branch Performance</h2>
+              <div style={styles.mutedText}>Compare branches inside the selected date range. Sales value appears only when a real transaction amount was recorded.</div>
             </div>
-            <div style={styles.insightCard}>
-              <h4 style={styles.insightTitle}>{isMultipass ? 'Packs Completed by Branch' : 'Redemptions by Branch'}</h4>
-              {[...branchStats].sort((a, b) => b.redemption_count - a.redemption_count).map((b, i) => (
-                <div key={b.branch_public_id} style={styles.customerRow}>
-                  <span style={styles.rank}>#{i + 1}</span>
-                  <span style={styles.customerName}>{b.name}</span>
-                  <span style={styles.customerStamps}>{b.redemption_count} {isMultipass ? 'completed' : 'redeemed'}</span>
-                </div>
-              ))}
+          </div>
+          <div style={styles.branchTableWrap}>
+            <div style={{...styles.branchTableRow,...styles.branchTableHeader}}>
+              <span>Branch</span>
+              <span>Active Customers</span>
+              <span>Activities</span>
+              <span>Rewards</span>
+              <span>Tracked Sales</span>
+              <span>Avg. Transaction</span>
+              <span>Top Staff</span>
             </div>
+            {branch_performance.map((branch, i) => (
+              <div key={branch.branch_public_id || `${branch.name}-${i}`} style={styles.branchTableRow}>
+                <span>
+                  <strong>{branch.name || 'Branch'}</strong>
+                  {branch.address && <small style={styles.branchSubtext}>{branch.address}</small>}
+                </span>
+                <span>{Number(branch.active_customers || 0).toLocaleString()}</span>
+                <span>{Number(branch.activities || 0).toLocaleString()}</span>
+                <span>{Number(branch.rewards || 0).toLocaleString()}</span>
+                <span>{branch.tracked_sales == null ? '—' : `₱${Number(branch.tracked_sales || 0).toLocaleString(undefined,{maximumFractionDigits:2})}`}</span>
+                <span>{branch.avg_transaction == null ? '—' : `₱${Number(branch.avg_transaction || 0).toLocaleString(undefined,{maximumFractionDigits:2})}`}</span>
+                <span>{branch.top_staff?.name || '—'}{branch.top_staff?.activities ? <small style={styles.branchSubtext}>{branch.top_staff.activities} actions</small> : null}</span>
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -1841,6 +2047,70 @@ const styles = {
   redemptionRow: {
     display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:14,
     padding:14, border:'1px solid #e2e8f0', borderRadius:12, background:'#fff',
+  },
+
+  analyticsHeaderControls: {
+    display:'flex', alignItems:'flex-end', justifyContent:'flex-end', gap:12, flexWrap:'wrap',
+  },
+  branchFilterLabel: {
+    display:'grid', gap:5, minWidth:190,
+  },
+  miniLabel: {
+    fontSize:11, fontWeight:850, color:'#64748b', textTransform:'uppercase', letterSpacing:'.04em',
+  },
+  branchSelect: {
+    minWidth:190, border:'1px solid #cbd5e1', borderRadius:9, background:'#fff', color:'#334155',
+    padding:'9px 11px', fontSize:13, fontWeight:700,
+  },
+  branchTableWrap: {
+    overflowX:'auto', background:'#fff', border:'1px solid #e2e8f0', borderRadius:12,
+    boxShadow:'0 1px 3px rgba(15,23,42,.05)',
+  },
+  branchTableRow: {
+    minWidth:900, display:'grid', gridTemplateColumns:'minmax(180px,1.5fr) repeat(5,minmax(110px,1fr)) minmax(140px,1fr)',
+    gap:12, alignItems:'center', padding:'12px 14px', borderBottom:'1px solid #f1f5f9',
+    fontSize:12.5, color:'#334155',
+  },
+  branchTableHeader: {
+    background:'#f8fafc', fontWeight:850, color:'#64748b', textTransform:'uppercase', fontSize:10.5, letterSpacing:'.03em',
+  },
+  branchSubtext: {
+    display:'block', marginTop:2, color:'#94a3b8', fontSize:10.5, fontWeight:500,
+  },
+  timeDayFilters: {
+    display:'flex', gap:6, flexWrap:'wrap', marginBottom:12,
+  },
+  timeDayBtn: {
+    border:'1px solid #cbd5e1', background:'#fff', color:'#475569', borderRadius:999,
+    padding:'7px 10px', fontSize:11, fontWeight:800, cursor:'pointer',
+  },
+  timeDayBtnActive: {
+    background:'#0d9488', color:'#fff', borderColor:'#0d9488',
+  },
+  hourGrid: {
+    display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(82px,1fr))', gap:8,
+  },
+  hourButton: {
+    border:'1px solid #e2e8f0', background:'#fff', borderRadius:10, padding:'10px 8px',
+    cursor:'pointer', textAlign:'left', display:'grid', gap:3, minHeight:76,
+  },
+  hourButtonActive: {
+    borderColor:'#0d9488', background:'#f0fdfa', boxShadow:'0 0 0 1px #0d9488',
+  },
+  hourLabel: {
+    fontSize:10.5, fontWeight:800, color:'#64748b',
+  },
+  hourValue: {
+    fontSize:20, color:'#1e293b', lineHeight:1,
+  },
+  hourMeta: {
+    fontSize:10, color:'#94a3b8',
+  },
+  timeMetricGrid: {
+    display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(120px,1fr))', gap:10,
+  },
+  timeDemoGrid: {
+    display:'grid', gridTemplateColumns:'repeat(2,minmax(0,1fr))', gap:18,
   },
 
   analyticsTopBar: {

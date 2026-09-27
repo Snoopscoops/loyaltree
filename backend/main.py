@@ -19003,6 +19003,7 @@ def analytics_redemption_details(
     public_id: str,
     range: str = '30d',
     program_id: Optional[str] = Query(default=None),
+    branch_id: Optional[str] = Query(default=None),
     limit: int = Query(default=300, ge=1, le=1000),
     authorization: str = Header(default=''),
 ):
@@ -19173,6 +19174,15 @@ def analytics_redemption_details(
                 **identity_fields(row, redeemed_at),
             })
 
+    selected_branch_public_id = str(branch_id or '').strip()
+    if selected_branch_public_id and selected_branch_public_id.lower() != 'all':
+        if not any(str(row.get('public_id') or '') == selected_branch_public_id for row in branch_rows):
+            raise HTTPException(status_code=404, detail='Branch not found for this business')
+        details = [
+            row for row in details
+            if str(row.get('branch_public_id') or '') == selected_branch_public_id
+        ]
+
     details.sort(key=lambda r: _parse_ts(r.get('redeemed_at')) or datetime.min, reverse=True)
     total = len(details)
     return {
@@ -19184,7 +19194,19 @@ def analytics_redemption_details(
 
 
 @app.get("/api/v1/business/{public_id}/analytics")
-async def get_analytics(public_id: str, range: str = '30d', program_id: Optional[str] = Query(default=None)):
+async def get_analytics(
+    public_id: str,
+    range: str = '30d',
+    program_id: Optional[str] = Query(default=None),
+    branch_id: Optional[str] = Query(default=None),
+):
+    """Owner analytics with optional program + branch scope.
+
+    `branch_id` is the LoyaltyTree branch public_id. When supplied, event-driven
+    metrics are scoped to that branch. Customers are not permanently assigned to
+    branches, so branch customer counts represent known members who have recorded
+    activity at that branch.
+    """
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -19198,7 +19220,9 @@ async def get_analytics(public_id: str, range: str = '30d', program_id: Optional
         )
 
     all_programs = str(program_id or '').lower() == 'all'
-    program = None if all_programs else safe_get_loyalty_program(business_id, program_public_id=program_id)
+    program = None if all_programs else safe_get_loyalty_program(
+        business_id, program_public_id=program_id
+    )
     if program_id and not all_programs and not program:
         raise HTTPException(status_code=404, detail='Program not found for this business')
 
@@ -19206,25 +19230,61 @@ async def get_analytics(public_id: str, range: str = '30d', program_id: Optional
         customer_query = supabase.table("customers").select("*").eq("business_id", business_id)
         if program:
             customer_query = customer_query.eq('program_id', program.get('id'))
-        customers = customer_query.execute().data or []
-        customer_ids = {c.get('id') for c in customers if c.get('id') is not None}
+        customers_all = customer_query.execute().data or []
+        customer_ids = {c.get('id') for c in customers_all if c.get('id') is not None}
+        customer_map = {str(c.get('id')): c for c in customers_all if c.get('id') is not None}
+
+        branch_rows = (
+            supabase.table('branches')
+            .select('id,public_id,name,address,is_active')
+            .eq('business_id', business_id)
+            .order('created_at')
+            .execute().data or []
+        )
+        staff_rows = (
+            supabase.table('staff')
+            .select('id,public_id,name,branch_id,is_active')
+            .eq('business_id', business_id)
+            .execute().data or []
+        )
+        staff_map = {str(s.get('id')): s for s in staff_rows if s.get('id') is not None}
 
         stamp_events = supabase.table("stamp_events").select("*").eq("business_id", business_id).execute().data or []
         redemption_events = supabase.table("redemption_events").select("*").eq("business_id", business_id).execute().data or []
         points_events = supabase.table("points_events").select("*").eq("business_id", business_id).execute().data or []
         multipass_events = supabase.table("multipass_events").select("*").eq("business_id", business_id).execute().data or []
         try:
-            employee_attendance_events = supabase.table("employee_attendance_events").select("*").eq("business_id", business_id).execute().data or []
+            employee_attendance_events = (
+                supabase.table("employee_attendance_events").select("*")
+                .eq("business_id", business_id).execute().data or []
+            )
         except Exception:
             employee_attendance_events = []
         try:
-            benefit_redemption_events = supabase.table("membership_benefit_redemptions").select("*").eq("business_id", business_id).execute().data or []
+            benefit_redemption_events = (
+                supabase.table("membership_benefit_redemptions").select("*")
+                .eq("business_id", business_id).execute().data or []
+            )
         except Exception:
             benefit_redemption_events = []
 
-        # Event tables predate multi-program and are customer-linked. Filtering
-        # by the selected program's customer IDs keeps analytics correct without
-        # rewriting historical event rows or requiring a second migration.
+        try:
+            pos_transactions = (
+                supabase.table('pos_transactions').select('*')
+                .eq('business_id', business_id).execute().data or []
+            )
+        except Exception:
+            pos_transactions = []
+        try:
+            pos_integrations = (
+                supabase.table('pos_integrations').select('id,provider,is_active')
+                .eq('business_id', business_id).execute().data or []
+            )
+        except Exception:
+            pos_integrations = []
+
+        # Event tables predate multi-program and are customer-linked. Filtering by
+        # the selected program's customer IDs keeps analytics program-correct.
         if program:
             stamp_events = [e for e in stamp_events if e.get('customer_id') in customer_ids]
             redemption_events = [e for e in redemption_events if e.get('customer_id') in customer_ids]
@@ -19232,48 +19292,44 @@ async def get_analytics(public_id: str, range: str = '30d', program_id: Optional
             multipass_events = [e for e in multipass_events if e.get('customer_id') in customer_ids]
             employee_attendance_events = [e for e in employee_attendance_events if e.get('customer_id') in customer_ids]
             benefit_redemption_events = [e for e in benefit_redemption_events if e.get('customer_id') in customer_ids]
+            # Anonymous POS rows cannot be safely attributed to one loyalty program.
+            pos_transactions = [e for e in pos_transactions if e.get('customer_id') in customer_ids]
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
+    selected_branch = None
+    normalized_branch_public_id = str(branch_id or '').strip()
+    if normalized_branch_public_id and normalized_branch_public_id.lower() != 'all':
+        selected_branch = next(
+            (b for b in branch_rows if str(b.get('public_id') or '') == normalized_branch_public_id),
+            None,
+        )
+        if not selected_branch:
+            raise HTTPException(status_code=404, detail='Branch not found for this business')
+
     card_type = 'all' if all_programs else (program.get('card_type', 'stamp') if program else 'stamp')
     loyalty_type = effective_loyalty_type(program)
-    # Points-card businesses never generate stamp_events (add_stamp rejects
-    # them - see the card_type guard there), so all "activity" metrics below
-    # - active members, trend charts, peak-activity heatmap, per-customer
-    # averages - read from points_events instead of stamp_events when the
-    # business is on a points card. Keeping the same downstream field names
-    # (total_stamps, trends.stamps, etc.) so the dashboard keeps working
-    # either way; card_type is included below for a frontend that wants to
-    # relabel them ("points sales" vs "stamps").
-    #
-    # Multipass "activity" is sessions used (the day-to-day equivalent of a
-    # stamp punch / points sale) - pack issues are a separate signal (a new
-    # or renewed pack), not routine activity, so they're excluded the same
-    # way a points top-up wouldn't count as "activity" either.
+
     multipass_used_events = [e for e in multipass_events if e.get('action') == 'used']
-    # A 'used' event that leaves 0 sessions remaining is a completed pack -
-    # the multipass equivalent of a redeemed reward. multipass_events
-    # already stores the resulting sessions_remaining on every 'used' row
-    # (see log_multipass_event), so this is derived rather than needing a
-    # separate completion log; redemption_events is never written for
-    # multipass businesses.
-    multipass_completed_events = [e for e in multipass_used_events if (e.get('sessions_remaining') or 0) <= 0]
+    multipass_completed_events = [
+        e for e in multipass_used_events if (e.get('sessions_remaining') or 0) <= 0
+    ]
 
     if all_programs:
-        activity_events = stamp_events + points_events + multipass_used_events + employee_attendance_events
-        reward_events = redemption_events + multipass_completed_events + benefit_redemption_events
+        activity_events_all = stamp_events + points_events + multipass_used_events + employee_attendance_events
+        reward_events_all = redemption_events + multipass_completed_events + benefit_redemption_events
     elif card_type == 'employee':
-        activity_events = employee_attendance_events
-        reward_events = benefit_redemption_events
+        activity_events_all = employee_attendance_events
+        reward_events_all = benefit_redemption_events
     elif loyalty_type == 'points':
-        activity_events = points_events
-        reward_events = redemption_events
+        activity_events_all = points_events
+        reward_events_all = redemption_events
     elif card_type == 'multipass':
-        activity_events = multipass_used_events
-        reward_events = multipass_completed_events
+        activity_events_all = multipass_used_events
+        reward_events_all = multipass_completed_events
     else:
-        activity_events = stamp_events
-        reward_events = redemption_events
+        activity_events_all = stamp_events
+        reward_events_all = redemption_events
 
     now = datetime.utcnow()
     days = _range_to_days(range)
@@ -19284,12 +19340,55 @@ async def get_analytics(public_id: str, range: str = '30d', program_id: Optional
     else:
         candidates = [t for t in (
             [_parse_ts(business.get('created_at'))] +
-            [_parse_ts(c.get('created_at')) for c in customers]
+            [_parse_ts(c.get('created_at')) for c in customers_all]
         ) if t]
         period_start = min(candidates) if candidates else now - timedelta(days=90)
         span = max((now - period_start).days, 1)
         prev_start = period_start - timedelta(days=span)
         prev_end = period_start
+
+    def _same_branch(row: dict, internal_branch_id) -> bool:
+        return str((row or {}).get('branch_id')) == str(internal_branch_id)
+
+    def _in_period(row: dict, field: str = 'created_at') -> bool:
+        ts = _parse_ts((row or {}).get(field))
+        return bool(ts and period_start <= ts <= now)
+
+    def _in_prev_period(row: dict, field: str = 'created_at') -> bool:
+        ts = _parse_ts((row or {}).get(field))
+        return bool(ts and prev_start <= ts < prev_end)
+
+    def _valid_pos_sale(row: dict) -> bool:
+        if str((row or {}).get('transaction_type') or 'sale').lower() != 'sale':
+            return False
+        status = str((row or {}).get('status') or '').lower()
+        if status in ('failed', 'voided', 'refunded', 'cancelled', 'canceled'):
+            return False
+        return _parse_ts((row or {}).get('transacted_at') or (row or {}).get('created_at')) is not None
+
+    pos_sales_all = [row for row in pos_transactions if _valid_pos_sale(row)]
+
+    # Keep complete program-scoped copies for branch comparison, then apply the
+    # selected branch only to the main analytics view.
+    activity_events = list(activity_events_all)
+    reward_events = list(reward_events_all)
+    pos_sales = list(pos_sales_all)
+    customers = list(customers_all)
+
+    if selected_branch:
+        selected_branch_internal = selected_branch.get('id')
+        activity_events = [e for e in activity_events if _same_branch(e, selected_branch_internal)]
+        reward_events = [e for e in reward_events if _same_branch(e, selected_branch_internal)]
+        pos_sales = [e for e in pos_sales if _same_branch(e, selected_branch_internal)]
+
+        # Customers are business/program members, not permanently branch-owned.
+        # For a branch view, use customers with at least one recorded event or
+        # linked POS transaction at that branch.
+        branch_customer_ids = {
+            e.get('customer_id') for e in activity_events + reward_events + pos_sales
+            if e.get('customer_id') is not None
+        }
+        customers = [c for c in customers_all if c.get('id') in branch_customer_ids]
 
     cust_period = _filter_between(customers, 'created_at', period_start, now)
     cust_prev = _filter_between(customers, 'created_at', prev_start, prev_end)
@@ -19300,8 +19399,27 @@ async def get_analytics(public_id: str, range: str = '30d', program_id: Optional
     redeems_period = _filter_between(reward_events, 'created_at', period_start, now)
     redeems_prev = _filter_between(reward_events, 'created_at', prev_start, prev_end)
 
-    active_ids_period = {e.get('customer_id') for e in stamps_period}
-    active_ids_prev = {e.get('customer_id') for e in stamps_prev}
+    pos_sales_period = [
+        row for row in pos_sales
+        if (
+            (_parse_ts(row.get('transacted_at') or row.get('created_at')) or datetime.min) >= period_start
+            and (_parse_ts(row.get('transacted_at') or row.get('created_at')) or datetime.min) <= now
+        )
+    ]
+    pos_sales_prev = [
+        row for row in pos_sales
+        if (
+            (_parse_ts(row.get('transacted_at') or row.get('created_at')) or datetime.min) >= prev_start
+            and (_parse_ts(row.get('transacted_at') or row.get('created_at')) or datetime.min) < prev_end
+        )
+    ]
+
+    active_ids_period = {
+        e.get('customer_id') for e in stamps_period if e.get('customer_id') is not None
+    }
+    active_ids_prev = {
+        e.get('customer_id') for e in stamps_prev if e.get('customer_id') is not None
+    }
 
     total_customers = len(customers)
     new_customers = len(cust_period)
@@ -19318,11 +19436,16 @@ async def get_analytics(public_id: str, range: str = '30d', program_id: Optional
 
     avg_stamps = round(total_stamps / active_members, 1) if active_members else 0
     avg_stamps_prev = round(total_stamps_prev / active_members_prev, 1) if active_members_prev else 0
-
     adoption_rate = round((active_members / total_customers) * 100, 1) if total_customers else 0
 
-    total_points_earned = sum(e.get('points_earned', 0) or 0 for e in stamps_period) if loyalty_type == 'points' else None
-    total_points_earned_prev = sum(e.get('points_earned', 0) or 0 for e in stamps_prev) if loyalty_type == 'points' else None
+    total_points_earned = (
+        sum(e.get('points_earned', 0) or 0 for e in stamps_period)
+        if loyalty_type == 'points' else None
+    )
+    total_points_earned_prev = (
+        sum(e.get('points_earned', 0) or 0 for e in stamps_prev)
+        if loyalty_type == 'points' else None
+    )
 
     overview = {
         "card_type": card_type,
@@ -19341,7 +19464,11 @@ async def get_analytics(public_id: str, range: str = '30d', program_id: Optional
         "avg_change": _pct_change(avg_stamps, avg_stamps_prev),
         "adoption_rate": adoption_rate,
         "total_points_earned": total_points_earned,
-        "points_change": _pct_change(total_points_earned, total_points_earned_prev) if loyalty_type == 'points' else None,
+        "points_change": (
+            _pct_change(total_points_earned, total_points_earned_prev)
+            if loyalty_type == 'points' else None
+        ),
+        "branch_scoped": bool(selected_branch),
     }
 
     trends = {
@@ -19351,79 +19478,128 @@ async def get_analytics(public_id: str, range: str = '30d', program_id: Optional
         "peak_hours": _day_of_week_series(activity_events, 'created_at', period_start, now),
     }
 
-    if card_type == 'employee':
+    # Top customers: for a branch-specific view rank by actual activity in that
+    # branch; for the overall view preserve the existing card-specific behavior.
+    if selected_branch:
+        activity_counts = defaultdict(int)
+        for event in activity_events:
+            cid = event.get('customer_id')
+            if cid is not None:
+                activity_counts[cid] += 1
+        top_customers = sorted(
+            customers,
+            key=lambda c: activity_counts.get(c.get('id'), 0),
+            reverse=True,
+        )[:5]
+        top_customers_out = [
+            {
+                "name": c.get("name") or "Customer",
+                "stamps": activity_counts.get(c.get('id'), 0),
+                "metric": "branch_activity",
+            }
+            for c in top_customers if activity_counts.get(c.get('id'), 0) > 0
+        ]
+    elif card_type == 'employee':
         attendance_counts = defaultdict(int)
         for event in employee_attendance_events:
             if event.get('customer_id') is not None:
                 attendance_counts[event.get('customer_id')] += 1
-        top_customers = sorted(customers, key=lambda c: attendance_counts.get(c.get('id'), 0), reverse=True)[:5]
+        top_customers = sorted(
+            customers, key=lambda c: attendance_counts.get(c.get('id'), 0), reverse=True
+        )[:5]
         top_customers_out = [
-            {"name": c.get("name") or "Employee", "stamps": attendance_counts.get(c.get('id'), 0), "metric": "attendance_actions"}
+            {
+                "name": c.get("name") or "Employee",
+                "stamps": attendance_counts.get(c.get('id'), 0),
+                "metric": "attendance_actions",
+            }
             for c in top_customers if attendance_counts.get(c.get('id'), 0) > 0
         ]
     elif card_type == 'multipass':
-        # No single "sessions used" field on the customer row - derive it
-        # from the pack size vs what's left, same arithmetic the wallet
-        # pass and cashier app use to show progress.
         def _sessions_used(c):
             total = c.get('multipass_total_sessions', 0) or 0
             remaining = c.get('multipass_sessions_remaining', 0) or 0
             return max(total - remaining, 0)
         top_customers = sorted(customers, key=_sessions_used, reverse=True)[:5]
         top_customers_out = [
-            {"name": c.get("name") or "Customer", "stamps": _sessions_used(c), "metric": "sessions_used"}
+            {
+                "name": c.get("name") or "Customer",
+                "stamps": _sessions_used(c),
+                "metric": "sessions_used",
+            }
             for c in top_customers if _sessions_used(c) > 0
         ]
     else:
         top_sort_field = 'points_balance' if loyalty_type == 'points' else 'stamp_count'
-        top_customers = sorted(customers, key=lambda c: c.get(top_sort_field, 0), reverse=True)[:5]
+        top_customers = sorted(
+            customers, key=lambda c: c.get(top_sort_field, 0), reverse=True
+        )[:5]
         top_customers_out = [
-            {"name": c.get("name") or "Customer", "stamps": c.get(top_sort_field, 0), "metric": top_sort_field}
+            {
+                "name": c.get("name") or "Customer",
+                "stamps": c.get(top_sort_field, 0),
+                "metric": top_sort_field,
+            }
             for c in top_customers if c.get(top_sort_field, 0) > 0
         ]
 
     returning = active_ids_period & active_ids_prev
-    retention_rate = round((len(returning) / len(active_ids_prev)) * 100, 1) if active_ids_prev else 0
+    retention_rate = (
+        round((len(returning) / len(active_ids_prev)) * 100, 1)
+        if active_ids_prev else 0
+    )
 
     thirty_days_ago = now - timedelta(days=30)
     if card_type == 'employee':
-        # Employee cards are operational identities rather than visit-loyalty balances.
-        # Treat an employee as inactive in analytics only when no attendance/profile
-        # activity has been recorded in the last 30 days.
         latest_attendance = {}
-        for event in employee_attendance_events:
+        scoped_attendance = (
+            activity_events if selected_branch else employee_attendance_events
+        )
+        for event in scoped_attendance:
             cid = event.get('customer_id')
             ts = _parse_ts(event.get('created_at'))
-            if cid is not None and ts and (cid not in latest_attendance or ts > latest_attendance[cid]):
+            if cid is not None and ts and (
+                cid not in latest_attendance or ts > latest_attendance[cid]
+            ):
                 latest_attendance[cid] = ts
         churn_risk = sum(
             1 for c in customers
-            if (latest_attendance.get(c.get('id')) or _parse_ts(c.get('updated_at')) or _parse_ts(c.get('created_at')) or now) < thirty_days_ago
+            if (
+                latest_attendance.get(c.get('id'))
+                or _parse_ts(c.get('updated_at'))
+                or _parse_ts(c.get('created_at'))
+                or now
+            ) < thirty_days_ago
         )
     elif loyalty_type == 'points':
-        # "At risk" for a points card is a customer sitting on an unspent
-        # balance who hasn't earned or redeemed anything in 30+ days -
-        # stamp_count doesn't exist for these customers, so gate on
-        # points_balance instead.
         churn_risk = sum(
             1 for c in customers
             if c.get('points_balance', 0) > 0
-            and (_parse_ts(c.get('updated_at')) or _parse_ts(c.get('created_at')) or now) < thirty_days_ago
+            and (
+                _parse_ts(c.get('updated_at'))
+                or _parse_ts(c.get('created_at'))
+                or now
+            ) < thirty_days_ago
         )
     elif card_type == 'multipass':
-        # "At risk" here means sessions still sitting on an active pack
-        # that haven't been touched in 30+ days - mirrors the points-card
-        # gate above, keyed on the outstanding session balance instead.
         churn_risk = sum(
             1 for c in customers
             if (c.get('multipass_sessions_remaining', 0) or 0) > 0
-            and (_parse_ts(c.get('updated_at')) or _parse_ts(c.get('created_at')) or now) < thirty_days_ago
+            and (
+                _parse_ts(c.get('updated_at'))
+                or _parse_ts(c.get('created_at'))
+                or now
+            ) < thirty_days_ago
         )
     else:
         churn_risk = sum(
             1 for c in customers
             if c.get('stamp_count', 0) > 0
-            and (_parse_ts(c.get('updated_at')) or _parse_ts(c.get('created_at')) or now) < thirty_days_ago
+            and (
+                _parse_ts(c.get('updated_at'))
+                or _parse_ts(c.get('created_at'))
+                or now
+            ) < thirty_days_ago
         )
 
     customers_block = {
@@ -19433,20 +19609,13 @@ async def get_analytics(public_id: str, range: str = '30d', program_id: Optional
         "engagement_rate": adoption_rate,
     }
 
-    # Gender breakdown - all-time distribution across every customer on file,
-    # not scoped to the selected date range (same treatment as top_customers
-    # above). Anyone who signed up before this field existed, or chose not
-    # to answer, falls under "rather_not_say" alongside people who picked it.
     gender_counts = {"male": 0, "female": 0, "rather_not_say": 0}
     for c in customers:
         g = (c.get('gender') or 'rather_not_say')
         if g not in gender_counts:
             g = 'rather_not_say'
         gender_counts[g] += 1
-    # Age breakdown - all-time distribution. Prefer the explicitly stored
-    # customers.age value; when it is missing, derive age from birthday so
-    # older customer records can still be included. Unknown/invalid values
-    # stay visible instead of being silently dropped.
+
     age_counts = {
         "under_18": 0,
         "18_24": 0,
@@ -19468,65 +19637,370 @@ async def get_analytics(public_id: str, range: str = '30d', program_id: Optional
             pass
 
         birthday = customer.get("birthday")
-        if not birthday:
-            return None
-        try:
-            birthday_date = datetime.fromisoformat(str(birthday).replace("Z", "+00:00")).date()
-        except (TypeError, ValueError):
+        if birthday:
             try:
-                birthday_date = datetime.strptime(str(birthday)[:10], "%Y-%m-%d").date()
+                birthday_date = datetime.fromisoformat(
+                    str(birthday).replace("Z", "+00:00")
+                ).date()
             except (TypeError, ValueError):
-                return None
+                try:
+                    birthday_date = datetime.strptime(
+                        str(birthday)[:10], "%Y-%m-%d"
+                    ).date()
+                except (TypeError, ValueError):
+                    birthday_date = None
+            if birthday_date:
+                today = now.date()
+                derived_age = today.year - birthday_date.year - (
+                    (today.month, today.day) < (birthday_date.month, birthday_date.day)
+                )
+                return derived_age if 0 <= derived_age <= 120 else None
 
-        today = now.date()
-        derived_age = today.year - birthday_date.year - (
-            (today.month, today.day) < (birthday_date.month, birthday_date.day)
-        )
-        return derived_age if 0 <= derived_age <= 120 else None
+        # New privacy-preserving signups may store month/day + age instead of a
+        # full birth year. Age is already handled above, so there is nothing to
+        # infer here when it is absent.
+        return None
+
+    def _age_bucket(customer: dict) -> str:
+        age_value = _customer_age(customer)
+        if age_value is None:
+            return "unknown"
+        if age_value < 18:
+            return "under_18"
+        if age_value <= 24:
+            return "18_24"
+        if age_value <= 34:
+            return "25_34"
+        if age_value <= 44:
+            return "35_44"
+        if age_value <= 54:
+            return "45_54"
+        if age_value <= 64:
+            return "55_64"
+        return "65_plus"
 
     for c in customers:
-        age_value = _customer_age(c)
-        if age_value is None:
-            age_counts["unknown"] += 1
-        elif age_value < 18:
-            age_counts["under_18"] += 1
-        elif age_value <= 24:
-            age_counts["18_24"] += 1
-        elif age_value <= 34:
-            age_counts["25_34"] += 1
-        elif age_value <= 44:
-            age_counts["35_44"] += 1
-        elif age_value <= 54:
-            age_counts["45_54"] += 1
-        elif age_value <= 64:
-            age_counts["55_64"] += 1
-        else:
-            age_counts["65_plus"] += 1
+        age_counts[_age_bucket(c)] += 1
 
     demographics_block = {
         "gender": gender_counts,
         "age": age_counts,
     }
 
-    # Proxy for "how many customers hit the goal": for stamp cards, that's
-    # reward_unlocked (goal reached, not yet redeemed) plus redemptions this
-    # period - there's no separate "goal reached" event logged, only stamp
-    # and redemption events. For points cards there's no single goal, so the
-    # closest equivalent is "can currently afford at least one prize" (using
-    # the cheapest configured prize), plus redemptions this period.
+    # ---------------- Branch performance ----------------
+    # Comparison is always calculated from the complete program-scoped event set
+    # so owners can compare branches even while one branch is selected above.
+    branch_performance = []
+    for branch in branch_rows:
+        bid = branch.get('id')
+        branch_activity = [
+            e for e in activity_events_all if _same_branch(e, bid) and _in_period(e)
+        ]
+        branch_rewards = [
+            e for e in reward_events_all if _same_branch(e, bid) and _in_period(e)
+        ]
+        branch_pos_sales = [
+            e for e in pos_sales_all
+            if _same_branch(e, bid)
+            and (
+                (_parse_ts(e.get('transacted_at') or e.get('created_at')) or datetime.min) >= period_start
+                and (_parse_ts(e.get('transacted_at') or e.get('created_at')) or datetime.min) <= now
+            )
+        ]
+        branch_points_sales = [
+            e for e in points_events
+            if _same_branch(e, bid)
+            and _in_period(e)
+            and float(e.get('amount_spent_pesos') or 0) > 0
+        ]
+        branch_sales = branch_pos_sales if branch_pos_sales else branch_points_sales
+        unique_customers = {
+            e.get('customer_id')
+            for e in branch_activity + branch_rewards + branch_sales
+            if e.get('customer_id') is not None
+        }
+        staff_counts = defaultdict(int)
+        for event in branch_activity + branch_rewards:
+            sid = event.get('staff_id')
+            if sid is not None:
+                staff_counts[sid] += 1
+        top_staff_id = max(staff_counts, key=staff_counts.get) if staff_counts else None
+        top_staff = staff_map.get(str(top_staff_id)) if top_staff_id is not None else None
+
+        tracked_sales = round(
+            sum(
+                float(
+                    e.get('gross_amount')
+                    or e.get('net_amount')
+                    or e.get('amount_spent_pesos')
+                    or 0
+                )
+                for e in branch_sales
+            ),
+            2,
+        )
+        branch_performance.append({
+            "branch_public_id": branch.get('public_id'),
+            "name": branch.get('name') or 'Branch',
+            "address": branch.get('address'),
+            "is_active": branch.get('is_active') is not False,
+            "unique_customers": len(unique_customers),
+            "active_customers": len({
+                e.get('customer_id') for e in branch_activity if e.get('customer_id') is not None
+            }),
+            "activities": len(branch_activity),
+            "rewards": len(branch_rewards),
+            "tracked_sales_count": len(branch_sales),
+            "tracked_sales": tracked_sales if branch_sales else None,
+            "sales_source": "pos" if branch_pos_sales else ("points_events" if branch_points_sales else "untracked"),
+            "avg_transaction": (
+                round(tracked_sales / len(branch_sales), 2) if branch_sales else None
+            ),
+            "rewards_per_100_activities": (
+                round((len(branch_rewards) / len(branch_activity)) * 100, 1)
+                if branch_activity else 0
+            ),
+            "top_staff": (
+                {
+                    "name": (top_staff or {}).get('name') or 'Staff',
+                    "activities": staff_counts.get(top_staff_id, 0),
+                }
+                if top_staff_id is not None else None
+            ),
+        })
+
+    branch_performance.sort(
+        key=lambda row: (
+            float(row.get('tracked_sales') or 0),
+            int(row.get('activities') or 0),
+        ),
+        reverse=True,
+    )
+
+    # ---------------- Time-of-day analytics ----------------
+    # Timestamps are stored in UTC; reporting uses the loyalty market timezone
+    # (Asia/Manila by default) so "2 PM" matches what the branch actually saw.
+    def _analytics_local_dt(raw) -> Optional[datetime]:
+        parsed = _parse_ts(raw)
+        if not parsed:
+            return None
+        return parsed.replace(tzinfo=timezone.utc).astimezone(LOYALTY_TIMEZONE)
+
+    def _empty_demo_counts():
+        return {
+            "gender": {"male": 0, "female": 0, "rather_not_say": 0},
+            "age": {
+                "under_18": 0, "18_24": 0, "25_34": 0, "35_44": 0,
+                "45_54": 0, "55_64": 0, "65_plus": 0, "unknown": 0,
+            },
+        }
+
+    def _demographics_for_ids(ids: set) -> Optional[dict]:
+        clean_ids = {cid for cid in ids if cid is not None}
+        # Do not expose tiny hour/day demographic cells.
+        if len(clean_ids) < 5:
+            return None
+        out = _empty_demo_counts()
+        for cid in clean_ids:
+            customer = customer_map.get(str(cid))
+            if not customer:
+                continue
+            gender = customer.get('gender') or 'rather_not_say'
+            if gender not in out['gender']:
+                gender = 'rather_not_say'
+            out['gender'][gender] += 1
+            out['age'][_age_bucket(customer)] += 1
+        return out
+
+    activity_period_for_time = list(stamps_period)
+    reward_period_for_time = list(redeems_period)
+
+    # Purchase rows used for demographic-by-time:
+    # 1) linked POS sales are strongest;
+    # 2) points events carry a real recorded amount and are a valid fallback;
+    # 3) otherwise label the demographic view as loyalty activity, not buyers.
+    linked_pos_sales_period = [
+        e for e in pos_sales_period if e.get('customer_id') in customer_ids
+    ]
+
+    scoped_points_events = points_events
+    if selected_branch:
+        scoped_points_events = [
+            e for e in scoped_points_events
+            if _same_branch(e, selected_branch.get('id'))
+        ]
+    points_purchase_period = [
+        e for e in scoped_points_events
+        if _in_period(e) and float(e.get('amount_spent_pesos') or 0) > 0
+    ]
+
+    if linked_pos_sales_period:
+        demographic_source = 'pos_linked_purchases'
+        demographic_rows = [
+            {
+                "customer_id": e.get('customer_id'),
+                "when": e.get('transacted_at') or e.get('created_at'),
+            }
+            for e in linked_pos_sales_period
+        ]
+    elif points_purchase_period:
+        demographic_source = 'points_recorded_purchases'
+        demographic_rows = [
+            {
+                "customer_id": e.get('customer_id'),
+                "when": e.get('created_at'),
+            }
+            for e in points_purchase_period
+        ]
+    else:
+        demographic_source = 'loyalty_activity'
+        demographic_rows = [
+            {
+                "customer_id": e.get('customer_id'),
+                "when": e.get('created_at'),
+            }
+            for e in activity_period_for_time
+        ]
+
+    if pos_sales_period:
+        sales_source = 'pos'
+        sales_rows = [
+            {
+                "customer_id": e.get('customer_id'),
+                "when": e.get('transacted_at') or e.get('created_at'),
+                "amount": float(e.get('gross_amount') or e.get('net_amount') or 0),
+            }
+            for e in pos_sales_period
+        ]
+    elif points_purchase_period:
+        sales_source = 'points_recorded_amount'
+        sales_rows = [
+            {
+                "customer_id": e.get('customer_id'),
+                "when": e.get('created_at'),
+                "amount": float(e.get('amount_spent_pesos') or 0),
+            }
+            for e in points_purchase_period
+        ]
+    else:
+        sales_source = 'untracked'
+        sales_rows = []
+
+    weekday_labels = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+    cells = {}
+    for day_index, day_label in enumerate(weekday_labels):
+        for hour in range(24):
+            cells[(day_index, hour)] = {
+                "day": day_index,
+                "day_label": day_label,
+                "hour": hour,
+                "activity_count": 0,
+                "reward_count": 0,
+                "sales_count": 0,
+                "sales_amount": 0.0,
+                "activity_customer_ids": set(),
+                "demographic_customer_ids": set(),
+            }
+
+    for event in activity_period_for_time:
+        local = _analytics_local_dt(event.get('created_at'))
+        if not local:
+            continue
+        cell = cells[(local.weekday(), local.hour)]
+        cell['activity_count'] += 1
+        if event.get('customer_id') is not None:
+            cell['activity_customer_ids'].add(event.get('customer_id'))
+
+    for event in reward_period_for_time:
+        local = _analytics_local_dt(event.get('created_at'))
+        if not local:
+            continue
+        cells[(local.weekday(), local.hour)]['reward_count'] += 1
+
+    for row in sales_rows:
+        local = _analytics_local_dt(row.get('when'))
+        if not local:
+            continue
+        cell = cells[(local.weekday(), local.hour)]
+        cell['sales_count'] += 1
+        cell['sales_amount'] += float(row.get('amount') or 0)
+
+    for row in demographic_rows:
+        local = _analytics_local_dt(row.get('when'))
+        if not local:
+            continue
+        if row.get('customer_id') is not None:
+            cells[(local.weekday(), local.hour)]['demographic_customer_ids'].add(row.get('customer_id'))
+
+    weekdays_out = []
+    for day_index, day_label in enumerate(weekday_labels):
+        hours_out = []
+        for hour in range(24):
+            cell = cells[(day_index, hour)]
+            demo_ids = cell['demographic_customer_ids']
+            hours_out.append({
+                "hour": hour,
+                "label": datetime(2000, 1, 1, hour, 0).strftime('%-I %p'),
+                "activity_count": cell['activity_count'],
+                "unique_customers": len(cell['activity_customer_ids']),
+                "reward_count": cell['reward_count'],
+                "sales_count": cell['sales_count'],
+                "sales_amount": round(cell['sales_amount'], 2),
+                "demographic_sample_size": len(demo_ids),
+                "demographics_suppressed": len(demo_ids) < 5,
+                "demographics": _demographics_for_ids(demo_ids),
+            })
+        weekdays_out.append({
+            "day": day_index,
+            "label": day_label,
+            "hours": hours_out,
+        })
+
+    hourly_out = []
+    for hour in range(24):
+        day_cells = [cells[(day, hour)] for day in range(7)]
+        demo_ids = set()
+        activity_ids = set()
+        for cell in day_cells:
+            demo_ids |= cell['demographic_customer_ids']
+            activity_ids |= cell['activity_customer_ids']
+        hourly_out.append({
+            "hour": hour,
+            "label": datetime(2000, 1, 1, hour, 0).strftime('%-I %p'),
+            "activity_count": sum(c['activity_count'] for c in day_cells),
+            "unique_customers": len(activity_ids),
+            "reward_count": sum(c['reward_count'] for c in day_cells),
+            "sales_count": sum(c['sales_count'] for c in day_cells),
+            "sales_amount": round(sum(c['sales_amount'] for c in day_cells), 2),
+            "demographic_sample_size": len(demo_ids),
+            "demographics_suppressed": len(demo_ids) < 5,
+            "demographics": _demographics_for_ids(demo_ids),
+        })
+
+    time_analytics = {
+        "timezone": str(LOYALTY_TIMEZONE),
+        "privacy_minimum": 5,
+        "sales_source": sales_source,
+        "sales_tracked": bool(sales_rows),
+        "demographics_source": demographic_source,
+        "demographics_are_purchase_linked": demographic_source in (
+            'pos_linked_purchases', 'points_recorded_purchases'
+        ),
+        "hours": hourly_out,
+        "weekdays": weekdays_out,
+    }
+
+    # Proxy for goal completion / reward redemption health.
     if card_type == 'employee':
         currently_unlocked = 0
     elif loyalty_type == 'points':
-        prize_costs = [p.get('points_cost', 0) for p in (program.get('points_prizes') or [])]
+        prize_costs = [p.get('points_cost', 0) for p in ((program or {}).get('points_prizes') or [])]
         cheapest_prize_cost = min(prize_costs) if prize_costs else None
         currently_unlocked = (
             sum(1 for c in customers if c.get('points_balance', 0) >= cheapest_prize_cost)
             if cheapest_prize_cost is not None else 0
         )
     elif card_type == 'multipass':
-        # Pack exhausted right now (0 sessions left, pack was actually
-        # issued) - the multipass equivalent of reward_unlocked: goal
-        # reached, awaiting the customer to come back and renew.
         currently_unlocked = sum(
             1 for c in customers
             if (c.get('multipass_total_sessions', 0) or 0) > 0
@@ -19534,22 +20008,47 @@ async def get_analytics(public_id: str, range: str = '30d', program_id: Optional
         )
     else:
         currently_unlocked = sum(1 for c in customers if c.get('reward_unlocked'))
-    reached_goal_period = currently_unlocked + total_rewards
 
+    reached_goal_period = currently_unlocked + total_rewards
     stamps_block = {
-        "completion_rate": round((reached_goal_period / active_members) * 100, 1) if active_members else 0,
+        "completion_rate": (
+            round((reached_goal_period / active_members) * 100, 1)
+            if active_members else 0
+        ),
     }
     rewards_block = {
-        "redemption_rate": round((total_rewards / reached_goal_period) * 100, 1) if reached_goal_period else 0,
+        "redemption_rate": (
+            round((total_rewards / reached_goal_period) * 100, 1)
+            if reached_goal_period else 0
+        ),
     }
 
-    # Stamp cards still have no price/amount field anywhere in the schema
-    # (stamps and stamp-goal redemptions don't capture a dollar value), so
-    # revenue stays untracked for them rather than guessed at. Points cards
-    # are different: every points_events row already stores the real sale
-    # amount (amount_spent_pesos) via log_points_event, so revenue for those
-    # businesses is genuinely trackable.
-    if loyalty_type == 'points':
+    # Prefer POS-linked transaction values when available. Otherwise preserve the
+    # existing Points-card amount tracking. Never estimate revenue for Stamp-only
+    # programs that did not record a purchase amount.
+    if pos_sales_period:
+        revenue_period = sum(
+            float(e.get('gross_amount') or e.get('net_amount') or 0)
+            for e in pos_sales_period
+        )
+        revenue_prev = sum(
+            float(e.get('gross_amount') or e.get('net_amount') or 0)
+            for e in pos_sales_prev
+        )
+        transaction_count = len(pos_sales_period)
+        revenue = {
+            "tracked": True,
+            "stamp_revenue": round(revenue_period, 2),
+            "revenue_change": _pct_change(revenue_period, revenue_prev),
+            "reward_cost": None,
+            "net_value": None,
+            "avg_transaction": (
+                round(revenue_period / transaction_count, 2)
+                if transaction_count else 0
+            ),
+            "source": "pos",
+        }
+    elif loyalty_type == 'points':
         revenue_period = sum(e.get('amount_spent_pesos', 0) or 0 for e in stamps_period)
         revenue_prev = sum(e.get('amount_spent_pesos', 0) or 0 for e in stamps_prev)
         transaction_count = len(stamps_period)
@@ -19559,7 +20058,11 @@ async def get_analytics(public_id: str, range: str = '30d', program_id: Optional
             "revenue_change": _pct_change(revenue_period, revenue_prev),
             "reward_cost": None,
             "net_value": None,
-            "avg_transaction": round(revenue_period / transaction_count, 2) if transaction_count else 0,
+            "avg_transaction": (
+                round(revenue_period / transaction_count, 2)
+                if transaction_count else 0
+            ),
+            "source": "points_events",
         }
     else:
         revenue = {
@@ -19568,12 +20071,40 @@ async def get_analytics(public_id: str, range: str = '30d', program_id: Optional
             "reward_cost": None,
             "net_value": None,
             "avg_transaction": None,
+            "source": "untracked",
         }
+
+    branches_public = [
+        {
+            "public_id": b.get('public_id'),
+            "name": b.get('name'),
+            "address": b.get('address'),
+            "is_active": b.get('is_active') is not False,
+        }
+        for b in branch_rows
+    ]
+
+    pos_integrated = any(row.get('is_active') is not False for row in pos_integrations) or bool(pos_transactions)
 
     return {
         "range": range,
         "program_public_id": (program or {}).get('public_id'),
         "program_name": (program or {}).get('program_name') or (program or {}).get('card_name'),
+        "scope": {
+            "branch_filtered": bool(selected_branch),
+            "branch_public_id": (selected_branch or {}).get('public_id'),
+            "branch_name": (selected_branch or {}).get('name'),
+            "branch_note": (
+                "Branch customer counts represent members with recorded activity at this branch; customers are not permanently assigned to one branch."
+                if selected_branch else None
+            ),
+            "timezone": str(LOYALTY_TIMEZONE),
+        },
+        "branches": branches_public,
+        "branch_performance": branch_performance,
+        "time_analytics": time_analytics,
+        "pos_integrated": pos_integrated,
+        "data_source": "pos_linked" if pos_integrated else "loyalty_activity",
         "overview": overview,
         "trends": trends,
         "customers": customers_block,
