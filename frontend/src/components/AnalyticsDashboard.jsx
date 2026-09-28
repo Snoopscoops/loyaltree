@@ -327,10 +327,10 @@ function AnalyticsDashboard({ API_BASE, user }) {
     title:`${Number(customers.churn_risk || 0).toLocaleString()} customers may need a win-back`,
     text:'These customers have no recorded loyalty activity for 30+ days.',
   })
-  if (!demographicPrivacy.age_suppressed && largestAgeGroup && Number(largestAgeGroup[1]) > 0) insightItems.push({
+  if (largestAgeGroup && Number(largestAgeGroup[1]) > 0) insightItems.push({
     icon:'👥',
     title:`Largest saved age group: ${largestAgeGroup[0]}`,
-    text:`${Number(largestAgeGroup[1]).toLocaleString()} customer profiles currently fall in this age band.`,
+    text:`${Number(largestAgeGroup[1]).toLocaleString()} customer profiles currently fall in this privacy-safe visible age band.`,
   })
   if (!posEnhanced) insightItems.push({
     icon:'ℹ️',
@@ -1310,7 +1310,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           <div className="an-charts-row" style={styles.chartsRow}>
             <div style={styles.insightCard}>
               <h4 style={styles.insightTitle}>Customer profile snapshot</h4>
-              <div style={styles.customerRow}><span style={styles.customerName}>Largest age group</span><strong>{!demographicPrivacy.age_suppressed ? (largestAgeGroup?.[0] || '—') : 'Suppressed'}</strong></div>
+              <div style={styles.customerRow}><span style={styles.customerName}>Largest age group</span><strong>{largestAgeGroup?.[0] || '—'}</strong></div>
               <div style={styles.customerRow}><span style={styles.customerName}>Top customer area</span><strong>{topAreas?.[0]?.[0] || '—'}</strong></div>
               <div style={styles.customerRow}><span style={styles.customerName}>Upcoming birthdays</span><strong>{birthdayData.counts?.next_30_days || 0}</strong></div>
             </div>
