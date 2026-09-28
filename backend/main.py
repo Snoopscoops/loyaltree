@@ -2769,6 +2769,49 @@ class PartnerOperationalExpenseReview(BaseModel):
     status: Literal['approved','rejected']
     admin_notes: Optional[str] = Field(default=None, max_length=500)
 
+
+class SpecialBusinessBillingCreate(BaseModel):
+    business_public_id: str = Field(min_length=3, max_length=200)
+    billing_email: str = Field(min_length=3, max_length=320)
+    billing_contact_name: Optional[str] = Field(default=None, max_length=160)
+    pricing_model: Literal['flat','per_branch'] = 'flat'
+    contracted_branch_count: int = Field(default=1, ge=1, le=10000)
+    monthly_rate: float = Field(ge=0, le=100000000)
+    cycle_amount_override: Optional[float] = Field(default=None, ge=0, le=100000000)
+    setup_fee: float = Field(default=0, ge=0, le=100000000)
+    billing_cycle: Literal['monthly','3_months','6_months','annual'] = 'monthly'
+    due_days: int = Field(default=7, ge=1, le=90)
+    auto_invoice: bool = True
+    next_invoice_date: Optional[str] = Field(default=None, max_length=10)
+    contract_start_date: Optional[str] = Field(default=None, max_length=10)
+    contract_end_date: Optional[str] = Field(default=None, max_length=10)
+    invoice_description: Optional[str] = Field(default=None, max_length=500)
+    payment_instructions: Optional[str] = Field(default=None, max_length=1000)
+    is_active: bool = True
+
+class SpecialBusinessBillingUpdate(BaseModel):
+    billing_email: Optional[str] = Field(default=None, min_length=3, max_length=320)
+    billing_contact_name: Optional[str] = Field(default=None, max_length=160)
+    pricing_model: Optional[Literal['flat','per_branch']] = None
+    contracted_branch_count: Optional[int] = Field(default=None, ge=1, le=10000)
+    monthly_rate: Optional[float] = Field(default=None, ge=0, le=100000000)
+    cycle_amount_override: Optional[float] = Field(default=None, ge=0, le=100000000)
+    setup_fee: Optional[float] = Field(default=None, ge=0, le=100000000)
+    billing_cycle: Optional[Literal['monthly','3_months','6_months','annual']] = None
+    due_days: Optional[int] = Field(default=None, ge=1, le=90)
+    auto_invoice: Optional[bool] = None
+    next_invoice_date: Optional[str] = Field(default=None, max_length=10)
+    contract_start_date: Optional[str] = Field(default=None, max_length=10)
+    contract_end_date: Optional[str] = Field(default=None, max_length=10)
+    invoice_description: Optional[str] = Field(default=None, max_length=500)
+    payment_instructions: Optional[str] = Field(default=None, max_length=1000)
+    is_active: Optional[bool] = None
+
+class SpecialInvoiceAdminUpdate(BaseModel):
+    status: Literal['paid','void']
+    admin_notes: Optional[str] = Field(default=None, max_length=500)
+
+
 class AdminLoginRequest(BaseModel):
     email: str
     password: str
@@ -16471,6 +16514,437 @@ def _partner_demo_payload(partner: dict, business: dict) -> dict:
 
 
 
+
+# ---- Special Business Billing / Sales Invoices ------------------------------
+
+_SPECIAL_BILLING_CYCLE_MONTHS = {
+    'monthly': 1,
+    '3_months': 3,
+    '6_months': 6,
+    'annual': 12,
+}
+
+def _special_parse_date(value, field_name: str = 'date') -> Optional[date]:
+    if value in (None, ''):
+        return None
+    try:
+        return datetime.strptime(str(value)[:10], '%Y-%m-%d').date()
+    except Exception:
+        raise HTTPException(status_code=400, detail=f'{field_name} must use YYYY-MM-DD')
+
+def _special_add_months(value: date, months: int) -> date:
+    month_index = (value.month - 1) + int(months)
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+def _special_monthly_total(profile: dict) -> float:
+    rate = float(profile.get('monthly_rate') or 0)
+    branches = max(1, int(profile.get('contracted_branch_count') or 1))
+    return round(rate * branches if profile.get('pricing_model') == 'per_branch' else rate, 2)
+
+def _special_cycle_total(profile: dict) -> float:
+    override = profile.get('cycle_amount_override')
+    if override not in (None, ''):
+        return round(float(override or 0), 2)
+    months = _SPECIAL_BILLING_CYCLE_MONTHS.get(str(profile.get('billing_cycle') or 'monthly'), 1)
+    return round(_special_monthly_total(profile) * months, 2)
+
+def _special_profile_public(profile: dict, business: Optional[dict] = None) -> dict:
+    business = business or {}
+    out = {
+        k: profile.get(k) for k in (
+            'public_id','billing_email','billing_contact_name','pricing_model',
+            'contracted_branch_count','monthly_rate','cycle_amount_override','setup_fee','setup_fee_invoiced',
+            'billing_cycle','due_days','auto_invoice','next_invoice_date',
+            'contract_start_date','contract_end_date','invoice_description',
+            'payment_instructions','currency','is_active','created_at','updated_at',
+        )
+    }
+    out.update({
+        'business_public_id': business.get('public_id'),
+        'business_name': business.get('name') or 'Business',
+        'business_email': business.get('email'),
+        'monthly_total': _special_monthly_total(profile),
+        'cycle_total': _special_cycle_total(profile),
+    })
+    return out
+
+def _special_invoice_public(row: dict, business: Optional[dict] = None) -> dict:
+    business = business or {}
+    out = {
+        k: row.get(k) for k in (
+            'public_id','access_token','invoice_number','billing_email','billing_contact_name',
+            'pricing_model','contracted_branch_count','monthly_rate','billing_cycle',
+            'period_start','period_end','issue_date','due_date','subtotal','setup_fee',
+            'total_amount','currency','status','email_status','sent_at','paid_at',
+            'voided_at','email_last_error','admin_notes','created_at','updated_at',
+        )
+    }
+    out['business_public_id'] = business.get('public_id')
+    out['business_name'] = business.get('name') or 'Business'
+    out['invoice_url'] = f"{BASE_URL.rstrip('/')}/api/v1/public/special-invoices/{row.get('access_token')}"
+    return out
+
+def _next_special_invoice_number() -> str:
+    try:
+        result = supabase.rpc('next_special_business_invoice_number').execute().data
+        if isinstance(result, str) and result.strip():
+            return result.strip()
+        if isinstance(result, list) and result and isinstance(result[0], str):
+            return result[0]
+    except Exception as exc:
+        print(f"SPECIAL INVOICE number fallback: {exc}")
+    return f"LT-SI-{datetime.utcnow().year}-{uuid.uuid4().hex[:8].upper()}"
+
+def _special_invoice_email_html(invoice: dict, profile: dict, business: dict) -> str:
+    invoice_url = f"{BASE_URL.rstrip('/')}/api/v1/public/special-invoices/{invoice.get('access_token')}"
+    total = float(invoice.get('total_amount') or 0)
+    currency = invoice.get('currency') or 'PHP'
+    amount_text = money_text(total, currency)
+    business_name = html_lib.escape(str(business.get('name') or 'Business'))
+    invoice_no = html_lib.escape(str(invoice.get('invoice_number') or 'Invoice'))
+    due = html_lib.escape(str(invoice.get('due_date') or ''))
+    desc = html_lib.escape(str(profile.get('invoice_description') or 'LoyaltyTree custom service subscription'))
+    payment = html_lib.escape(str(profile.get('payment_instructions') or '')).replace('\n','<br>')
+    payment_block = f"<p><b>Payment instructions</b><br>{payment}</p>" if payment else ''
+    return (
+        f"<div style='font-family:Arial,sans-serif;max-width:680px;margin:auto;color:#0f172a'>"
+        f"<h2 style='margin-bottom:4px'>LoyaltyTree Sales Invoice</h2>"
+        f"<div style='color:#64748b'>{invoice_no}</div>"
+        f"<p>Hello {html_lib.escape(str(profile.get('billing_contact_name') or business.get('contact_person') or business.get('name') or 'there'))},</p>"
+        f"<p>Your LoyaltyTree invoice for <b>{business_name}</b> is ready.</p>"
+        f"<table style='width:100%;border-collapse:collapse;margin:20px 0'>"
+        f"<tr><td style='padding:8px;border-bottom:1px solid #e2e8f0'>Service</td><td style='padding:8px;border-bottom:1px solid #e2e8f0;text-align:right'>{desc}</td></tr>"
+        f"<tr><td style='padding:8px;border-bottom:1px solid #e2e8f0'>Billing period</td><td style='padding:8px;border-bottom:1px solid #e2e8f0;text-align:right'>{invoice.get('period_start')} – {invoice.get('period_end')}</td></tr>"
+        f"<tr><td style='padding:8px;border-bottom:1px solid #e2e8f0'>Contracted branches</td><td style='padding:8px;border-bottom:1px solid #e2e8f0;text-align:right'>{int(invoice.get('contracted_branch_count') or 1)}</td></tr>"
+        f"<tr><td style='padding:10px 8px;font-weight:bold'>Amount due</td><td style='padding:10px 8px;font-weight:bold;text-align:right;font-size:18px'>{html_lib.escape(amount_text)}</td></tr>"
+        f"</table>"
+        f"<p><b>Due date:</b> {due}</p>{payment_block}"
+        f"<p><a href='{html_lib.escape(invoice_url)}' style='display:inline-block;background:#0f766e;color:#fff;text-decoration:none;padding:11px 16px;border-radius:8px;font-weight:bold'>View / Print Invoice</a></p>"
+        f"<p style='font-size:12px;color:#64748b'>This is a system-generated LoyaltyTree billing invoice. Tax or official-invoice treatment depends on the seller's registered invoicing setup.</p>"
+        f"</div>"
+    )
+
+def _send_special_invoice(invoice: dict, profile: dict, business: dict) -> dict:
+    to_email = (invoice.get('billing_email') or profile.get('billing_email') or business.get('email') or '').strip().lower()
+    if not to_email:
+        raise HTTPException(status_code=400, detail='Billing email is required before sending an invoice')
+    subject = f"{invoice.get('invoice_number')} · LoyaltyTree invoice for {business.get('name') or 'your business'}"
+    body = _special_invoice_email_html(invoice, profile, business)
+    ok = send_email(
+        to_email,
+        subject,
+        body,
+        from_email=SUBSCRIPTION_REMINDER_FROM,
+        reply_to=TRANSACTIONAL_REPLY_TO,
+    )
+    now = datetime.utcnow().isoformat()
+    patch = {
+        'email_status': 'sent' if ok else 'failed',
+        'sent_at': now if ok else invoice.get('sent_at'),
+        'email_last_error': None if ok else 'Transactional email provider did not accept the send.',
+        'updated_at': now,
+    }
+    if ok and str(invoice.get('status') or 'draft') == 'draft':
+        patch['status'] = 'sent'
+    updated = (
+        supabase.table('special_business_invoices').update(patch)
+        .eq('id', invoice.get('id')).execute().data or []
+    )
+    return (updated or [{**invoice, **patch}])[0]
+
+def _generate_special_invoice(profile: dict, period_start: Optional[date] = None, send_now: bool = True) -> dict:
+    business = safe_get_business_by_id(profile.get('business_id'))
+    if not business:
+        raise HTTPException(status_code=404, detail='Business for special billing profile not found')
+    if not profile.get('is_active', True):
+        raise HTTPException(status_code=400, detail='Special billing profile is inactive')
+
+    today = datetime.utcnow().date()
+    start = period_start or _special_parse_date(profile.get('next_invoice_date')) or today
+    months = _SPECIAL_BILLING_CYCLE_MONTHS.get(str(profile.get('billing_cycle') or 'monthly'), 1)
+    end = _special_add_months(start, months) - timedelta(days=1)
+
+    existing = (
+        supabase.table('special_business_invoices').select('*')
+        .eq('profile_id', profile.get('id')).eq('period_start', start.isoformat())
+        .maybe_single().execute().data
+    )
+    if existing:
+        return _send_special_invoice(existing, profile, business) if send_now else existing
+
+    subtotal = _special_cycle_total(profile)
+    setup_fee = 0.0 if profile.get('setup_fee_invoiced') else float(profile.get('setup_fee') or 0)
+    total = round(subtotal + setup_fee, 2)
+    due_date = today + timedelta(days=max(1, int(profile.get('due_days') or 7)))
+    payload = {
+        'public_id': 'sbi_' + uuid.uuid4().hex[:24],
+        'access_token': secrets.token_urlsafe(32),
+        'profile_id': profile.get('id'),
+        'business_id': business.get('id'),
+        'invoice_number': _next_special_invoice_number(),
+        'billing_email': (profile.get('billing_email') or business.get('email') or '').strip().lower(),
+        'billing_contact_name': profile.get('billing_contact_name'),
+        'pricing_model': profile.get('pricing_model') or 'flat',
+        'contracted_branch_count': max(1, int(profile.get('contracted_branch_count') or 1)),
+        'monthly_rate': float(profile.get('monthly_rate') or 0),
+        'billing_cycle': profile.get('billing_cycle') or 'monthly',
+        'period_start': start.isoformat(),
+        'period_end': end.isoformat(),
+        'issue_date': today.isoformat(),
+        'due_date': due_date.isoformat(),
+        'subtotal': subtotal,
+        'setup_fee': setup_fee,
+        'total_amount': total,
+        'currency': profile.get('currency') or 'PHP',
+        'status': 'draft',
+        'email_status': 'pending',
+        'created_at': datetime.utcnow().isoformat(),
+        'updated_at': datetime.utcnow().isoformat(),
+    }
+    row = (supabase.table('special_business_invoices').insert(payload).execute().data or [payload])[0]
+
+    profile_patch = {
+        'next_invoice_date': _special_add_months(start, months).isoformat(),
+        'updated_at': datetime.utcnow().isoformat(),
+    }
+    if setup_fee > 0:
+        profile_patch['setup_fee_invoiced'] = True
+    supabase.table('special_business_billing').update(profile_patch).eq('id', profile.get('id')).execute()
+
+    return _send_special_invoice(row, {**profile, **profile_patch}, business) if send_now else row
+
+@app.get("/api/v1/admin/special-businesses")
+async def admin_special_businesses(_: bool = Depends(require_admin)):
+    try:
+        profiles = supabase.table('special_business_billing').select('*').order('created_at', desc=True).execute().data or []
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail='Special billing storage is not ready. Run special_business_billing_migration.sql in Supabase.') from exc
+    business_ids = list({p.get('business_id') for p in profiles if p.get('business_id') is not None})
+    business_map = {}
+    if business_ids:
+        rows = supabase.table('businesses').select('id,public_id,name,email,status,billing_mode').in_('id', business_ids).execute().data or []
+        business_map = {b.get('id'): b for b in rows}
+    return [_special_profile_public(p, business_map.get(p.get('business_id'))) for p in profiles]
+
+@app.post("/api/v1/admin/special-businesses")
+async def admin_create_special_business(req: SpecialBusinessBillingCreate, _: bool = Depends(require_admin)):
+    business = safe_get_business(req.business_public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    existing = supabase.table('special_business_billing').select('public_id').eq('business_id', business.get('id')).maybe_single().execute().data
+    if existing:
+        raise HTTPException(status_code=409, detail='This business already has a special billing profile')
+
+    start = _special_parse_date(req.contract_start_date, 'contract_start_date') or datetime.utcnow().date()
+    end = _special_parse_date(req.contract_end_date, 'contract_end_date')
+    next_invoice = _special_parse_date(req.next_invoice_date, 'next_invoice_date') or start
+    if end and end < start:
+        raise HTTPException(status_code=400, detail='Contract end date cannot be before contract start date')
+
+    payload = req.model_dump(exclude={'business_public_id'})
+    payload.update({
+        'public_id': 'sb_' + uuid.uuid4().hex[:24],
+        'business_id': business.get('id'),
+        'billing_email': req.billing_email.strip().lower(),
+        'billing_contact_name': (req.billing_contact_name or '').strip() or None,
+        'contract_start_date': start.isoformat(),
+        'contract_end_date': end.isoformat() if end else None,
+        'next_invoice_date': next_invoice.isoformat(),
+        'invoice_description': (req.invoice_description or '').strip() or None,
+        'payment_instructions': (req.payment_instructions or '').strip() or None,
+        'currency': 'PHP',
+        'created_at': datetime.utcnow().isoformat(),
+        'updated_at': datetime.utcnow().isoformat(),
+    })
+    try:
+        row = (supabase.table('special_business_billing').insert(payload).execute().data or [payload])[0]
+        supabase.table('businesses').update({'billing_mode':'special'}).eq('id', business.get('id')).execute()
+        return _special_profile_public(row, {**business, 'billing_mode':'special'})
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=friendly_db_error(exc)) from exc
+
+@app.patch("/api/v1/admin/special-businesses/{profile_public_id}")
+async def admin_update_special_business(profile_public_id: str, req: SpecialBusinessBillingUpdate, _: bool = Depends(require_admin)):
+    profile = supabase.table('special_business_billing').select('*').eq('public_id', profile_public_id).maybe_single().execute().data
+    if not profile:
+        raise HTTPException(status_code=404, detail='Special billing profile not found')
+    patch = req.model_dump(exclude_unset=True)
+    if 'billing_email' in patch and patch['billing_email'] is not None:
+        patch['billing_email'] = patch['billing_email'].strip().lower()
+    if 'billing_contact_name' in patch:
+        patch['billing_contact_name'] = (patch.get('billing_contact_name') or '').strip() or None
+    for key in ('next_invoice_date','contract_start_date','contract_end_date'):
+        if key in patch:
+            parsed = _special_parse_date(patch.get(key), key)
+            patch[key] = parsed.isoformat() if parsed else None
+    for key in ('invoice_description','payment_instructions'):
+        if key in patch:
+            patch[key] = (patch.get(key) or '').strip() or None
+    merged = {**profile, **patch}
+    start = _special_parse_date(merged.get('contract_start_date'), 'contract_start_date')
+    end = _special_parse_date(merged.get('contract_end_date'), 'contract_end_date')
+    if start and end and end < start:
+        raise HTTPException(status_code=400, detail='Contract end date cannot be before contract start date')
+    patch['updated_at'] = datetime.utcnow().isoformat()
+    row = (supabase.table('special_business_billing').update(patch).eq('id', profile.get('id')).execute().data or [None])[0]
+    business = safe_get_business_by_id(profile.get('business_id')) or {}
+    return _special_profile_public(row or {**profile, **patch}, business)
+
+@app.post("/api/v1/admin/special-businesses/{profile_public_id}/generate-invoice")
+async def admin_generate_special_invoice(profile_public_id: str, _: bool = Depends(require_admin)):
+    profile = supabase.table('special_business_billing').select('*').eq('public_id', profile_public_id).maybe_single().execute().data
+    if not profile:
+        raise HTTPException(status_code=404, detail='Special billing profile not found')
+    # Manual generation starts a billing period today and advances the next
+    # invoice date from today, making it suitable for first invoices and ad-hoc starts.
+    invoice = _generate_special_invoice(profile, period_start=datetime.utcnow().date(), send_now=True)
+    business = safe_get_business_by_id(profile.get('business_id')) or {}
+    return _special_invoice_public(invoice, business)
+
+@app.get("/api/v1/admin/special-invoices")
+async def admin_special_invoices(_: bool = Depends(require_admin)):
+    try:
+        rows = supabase.table('special_business_invoices').select('*').order('issue_date', desc=True).order('created_at', desc=True).limit(2000).execute().data or []
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail='Special invoice storage is not ready. Run special_business_billing_migration.sql in Supabase.') from exc
+    business_ids = list({r.get('business_id') for r in rows if r.get('business_id') is not None})
+    business_map = {}
+    if business_ids:
+        biz = supabase.table('businesses').select('id,public_id,name,email').in_('id', business_ids).execute().data or []
+        business_map = {b.get('id'): b for b in biz}
+    return [_special_invoice_public(r, business_map.get(r.get('business_id'))) for r in rows]
+
+@app.post("/api/v1/admin/special-invoices/{invoice_public_id}/resend")
+async def admin_resend_special_invoice(invoice_public_id: str, _: bool = Depends(require_admin)):
+    invoice = supabase.table('special_business_invoices').select('*').eq('public_id', invoice_public_id).maybe_single().execute().data
+    if not invoice:
+        raise HTTPException(status_code=404, detail='Invoice not found')
+    profile = supabase.table('special_business_billing').select('*').eq('id', invoice.get('profile_id')).maybe_single().execute().data or {}
+    business = safe_get_business_by_id(invoice.get('business_id')) or {}
+    sent = _send_special_invoice(invoice, profile, business)
+    return _special_invoice_public(sent, business)
+
+@app.patch("/api/v1/admin/special-invoices/{invoice_public_id}")
+async def admin_update_special_invoice(invoice_public_id: str, req: SpecialInvoiceAdminUpdate, _: bool = Depends(require_admin)):
+    invoice = supabase.table('special_business_invoices').select('*').eq('public_id', invoice_public_id).maybe_single().execute().data
+    if not invoice:
+        raise HTTPException(status_code=404, detail='Invoice not found')
+    now = datetime.utcnow().isoformat()
+    patch = {'status': req.status, 'admin_notes': (req.admin_notes or '').strip() or None, 'updated_at': now}
+    if req.status == 'paid':
+        patch['paid_at'] = now
+    else:
+        patch['voided_at'] = now
+    row = (supabase.table('special_business_invoices').update(patch).eq('id', invoice.get('id')).execute().data or [{**invoice, **patch}])[0]
+    business = safe_get_business_by_id(invoice.get('business_id')) or {}
+    if req.status == 'paid' and business:
+        business_patch = {
+            'billing_mode': 'special',
+            'last_paid_at': datetime.utcnow().date().isoformat(),
+            'subscription_expires_at': str(invoice.get('period_end')),
+        }
+        if str(business.get('status') or '').upper() == 'PENDING':
+            business_patch['status'] = 'ACTIVE'
+        supabase.table('businesses').update(business_patch).eq('id', business.get('id')).execute()
+    return _special_invoice_public(row, business)
+
+@app.get("/api/v1/public/special-invoices/{access_token}", response_class=HTMLResponse)
+async def public_special_invoice(access_token: str):
+    row = supabase.table('special_business_invoices').select('*').eq('access_token', access_token).maybe_single().execute().data
+    if not row:
+        raise HTTPException(status_code=404, detail='Invoice not found')
+    business = safe_get_business_by_id(row.get('business_id')) or {}
+    profile = supabase.table('special_business_billing').select('*').eq('id', row.get('profile_id')).maybe_single().execute().data or {}
+    amount = money_text(row.get('total_amount') or 0, row.get('currency') or 'PHP')
+    service = html_lib.escape(str(profile.get('invoice_description') or 'LoyaltyTree custom service subscription'))
+    payment = html_lib.escape(str(profile.get('payment_instructions') or '')).replace('\n','<br>')
+    pricing_line = (
+        f"{money_text(row.get('monthly_rate') or 0, row.get('currency') or 'PHP')} × {int(row.get('contracted_branch_count') or 1)} branches / month"
+        if row.get('pricing_model') == 'per_branch'
+        else f"{money_text(row.get('monthly_rate') or 0, row.get('currency') or 'PHP')} flat / month"
+    )
+    setup_line = f"<tr><td>One-time / setup fee</td><td>{html_lib.escape(money_text(row.get('setup_fee') or 0, row.get('currency') or 'PHP'))}</td></tr>" if float(row.get('setup_fee') or 0) > 0 else ''
+    html = f"""<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{html_lib.escape(str(row.get('invoice_number') or 'LoyaltyTree Invoice'))}</title>
+<style>
+body{{font-family:Arial,sans-serif;background:#f8fafc;color:#0f172a;margin:0;padding:24px}}
+.sheet{{max-width:820px;margin:auto;background:#fff;border:1px solid #e2e8f0;border-radius:18px;padding:34px}}
+.top{{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;border-bottom:2px solid #0f766e;padding-bottom:20px}}
+h1{{margin:0;font-size:28px}} .muted{{color:#64748b}} table{{width:100%;border-collapse:collapse;margin-top:24px}}
+td{{padding:11px 8px;border-bottom:1px solid #e2e8f0}} td:last-child{{text-align:right;font-weight:700}}
+.total{{font-size:21px;font-weight:900;color:#0f766e}} .pill{{display:inline-block;padding:6px 9px;border-radius:999px;background:#f1f5f9;font-weight:700;text-transform:capitalize}}
+.note{{margin-top:24px;padding:14px;background:#f8fafc;border-radius:10px;line-height:1.5}}
+.actions{{max-width:820px;margin:14px auto;text-align:right}} button{{border:0;background:#0f766e;color:#fff;padding:10px 14px;border-radius:8px;font-weight:700;cursor:pointer}}
+@media print{{body{{background:#fff;padding:0}}.sheet{{border:0;border-radius:0;padding:0}}.actions{{display:none}}}}
+</style></head>
+<body><div class="actions"><button onclick="window.print()">Print / Save PDF</button></div>
+<div class="sheet">
+<div class="top"><div><div class="muted">Loyalty Tree Information and Technology Solutions</div><h1>SALES INVOICE</h1><div class="muted">{html_lib.escape(str(row.get('invoice_number') or ''))}</div></div>
+<div><div><b>Issue date</b> {row.get('issue_date')}</div><div><b>Due date</b> {row.get('due_date')}</div><div style="margin-top:8px"><span class="pill">{html_lib.escape(str(row.get('status') or 'draft'))}</span></div></div></div>
+<h3>Bill to</h3><div><b>{html_lib.escape(str(business.get('name') or 'Business'))}</b></div><div class="muted">{html_lib.escape(str(row.get('billing_email') or ''))}</div>
+<table>
+<tr><td>Service</td><td>{service}</td></tr>
+<tr><td>Pricing</td><td>{html_lib.escape(pricing_line)}</td></tr>
+<tr><td>Billing cycle</td><td>{html_lib.escape(str(row.get('billing_cycle') or '').replace('_',' '))}</td></tr>
+<tr><td>Billing period</td><td>{row.get('period_start')} – {row.get('period_end')}</td></tr>
+<tr><td>Subscription subtotal</td><td>{html_lib.escape(money_text(row.get('subtotal') or 0, row.get('currency') or 'PHP'))}</td></tr>
+{setup_line}
+<tr><td class="total">Amount due</td><td class="total">{html_lib.escape(amount)}</td></tr>
+</table>
+{f'<div class="note"><b>Payment instructions</b><br>{payment}</div>' if payment else ''}
+<div class="note muted">System-generated LoyaltyTree billing invoice. Tax or official-invoice treatment depends on the seller's registered invoicing setup.</div>
+</div></body></html>"""
+    return HTMLResponse(content=html, headers={'Cache-Control':'no-store'})
+
+@app.post("/api/v1/cron/special-business-invoices")
+async def run_special_business_invoices(_: bool = Depends(require_cron)):
+    today = datetime.utcnow().date()
+    generated = sent = failed = overdue = 0
+    try:
+        due_rows = (
+            supabase.table('special_business_invoices').select('id,due_date,status')
+            .in_('status',['sent']).lt('due_date',today.isoformat()).execute().data or []
+        )
+        for row in due_rows:
+            supabase.table('special_business_invoices').update({
+                'status':'overdue','updated_at':datetime.utcnow().isoformat()
+            }).eq('id',row.get('id')).execute()
+            overdue += 1
+    except Exception as exc:
+        print(f"SPECIAL INVOICE overdue warning: {exc}")
+
+    try:
+        profiles = (
+            supabase.table('special_business_billing').select('*')
+            .eq('is_active',True).eq('auto_invoice',True)
+            .lte('next_invoice_date',today.isoformat()).execute().data or []
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail='Special billing storage is not ready. Run special_business_billing_migration.sql in Supabase.') from exc
+
+    for profile in profiles:
+        try:
+            contract_end = _special_parse_date(profile.get('contract_end_date'))
+            if contract_end and today > contract_end:
+                continue
+            period_start = _special_parse_date(profile.get('next_invoice_date')) or today
+            invoice = _generate_special_invoice(profile, period_start=period_start, send_now=True)
+            generated += 1
+            if invoice.get('email_status') == 'sent':
+                sent += 1
+            else:
+                failed += 1
+        except Exception as exc:
+            print(f"SPECIAL INVOICE cron error profile={profile.get('public_id')}: {exc}")
+            failed += 1
+    return {'generated':generated,'sent':sent,'email_failed':failed,'marked_overdue':overdue}
+
+
+
 # ---- Region / Province / City Partner Network ------------------------------
 @app.get("/api/v1/public/network-partner/{partner_code}")
 async def public_network_partner(partner_code: str):
@@ -17222,6 +17696,11 @@ async def create_subscription_checkout(public_id: str, req: Optional[Subscriptio
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
+    if str(business.get('billing_mode') or 'standard').lower() == 'special':
+        raise HTTPException(
+            status_code=403,
+            detail='Billing for this account is managed under a custom LoyaltyTree agreement. Please use the invoice sent to your billing email.'
+        )
 
     try:
         branch_res = supabase.table("branches").select("id", count="exact").eq("business_id", business.get("id")).execute()
@@ -35440,6 +35919,8 @@ async def run_subscription_reminders(_: bool = Depends(require_cron)):
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
     for business in businesses:
+        if str(business.get('billing_mode') or 'standard').lower() == 'special':
+            continue
         expires_raw = business.get('subscription_expires_at')
         if not expires_raw:
             continue  # never paid yet - nothing to remind about here

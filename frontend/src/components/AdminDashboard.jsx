@@ -14,6 +14,9 @@ const businessTypeLabel=v=>BUSINESS_TYPE_OPTIONS.find(([k])=>k===v)?.[1]||'🏪 
 const kitStatusLabel=s=>({requested:'Requested',paid:'Paid',preparing:'Preparing',ready_to_ship:'Ready to ship',shipped:'Shipped',delivered:'Delivered',cancelled:'Cancelled'})[String(s||'').toLowerCase()]||'Not requested'
 const kitStatusStyle=s=>({requested:{background:'#fff7ed',color:'#9a3412'},paid:{background:'#ecfdf5',color:'#166534'},preparing:{background:'#fefce8',color:'#854d0e'},ready_to_ship:{background:'#eff6ff',color:'#1d4ed8'},shipped:{background:'#eef2ff',color:'#4338ca'},delivered:{background:'#dcfce7',color:'#166534'},cancelled:{background:'#fef2f2',color:'#b91c1c'}}[String(s||'').toLowerCase()]||{background:'#f1f5f9',color:'#64748b'})
 
+const SPECIAL_BILLING_CYCLE_MONTHS={monthly:1,'3_months':3,'6_months':6,annual:12}
+const specialBillingCycleLabel=v=>({monthly:'Monthly','3_months':'3 Months','6_months':'6 Months',annual:'Annual'})[v]||v
+
 const OA_DESIGN_DEFAULTS = {
   template:'modern', primary_color:'#0f766e', background_color:'#f8fafc', surface_color:'#ffffff', text_color:'#0f172a', muted_color:'#64748b',
   header_style:'logo_name', logo_shape:'rounded', branch_card_style:'soft', button_style:'text', show_banner:true, show_greeting:true,
@@ -62,6 +65,18 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const [networkPartners,setNetworkPartners]=useState([])
   const [partnerExpenses,setPartnerExpenses]=useState([])
   const [expenseReviewing,setExpenseReviewing]=useState('')
+  const [specialBusinesses,setSpecialBusinesses]=useState([])
+  const [specialInvoices,setSpecialInvoices]=useState([])
+  const [specialSaving,setSpecialSaving]=useState(false)
+  const [specialInvoiceBusy,setSpecialInvoiceBusy]=useState('')
+  const [editingSpecialId,setEditingSpecialId]=useState('')
+  const [specialForm,setSpecialForm]=useState({
+    business_public_id:'',billing_email:'',billing_contact_name:'',pricing_model:'flat',
+    contracted_branch_count:1,monthly_rate:0,cycle_amount_override:'',setup_fee:0,billing_cycle:'monthly',due_days:7,
+    auto_invoice:true,next_invoice_date:new Date().toISOString().slice(0,10),
+    contract_start_date:new Date().toISOString().slice(0,10),contract_end_date:'',
+    invoice_description:'LoyaltyTree custom service subscription',payment_instructions:'',is_active:true,
+  })
   const [networkPartnerSaving,setNetworkPartnerSaving]=useState(false)
   const [networkPartnerForm,setNetworkPartnerForm]=useState({name:'',email:'',password:'',partner_type:'city',region:'',province:'',city:'',partner_code:'',commission_type:'percent',commission_value:10,is_active:true})
   const [networkPartnerAssignForm,setNetworkPartnerAssignForm]=useState({partner_public_id:'',business_public_id:''})
@@ -134,7 +149,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
       if (statusFilter) params.set('status', statusFilter)
       if (planFilter) params.set('plan', planFilter)
 
-      const [ovRes, plansRes, bizRes, pendingRes, partnersRes, kitRes, networkPartnersRes, partnerExpensesRes] = await Promise.all([
+      const [ovRes, plansRes, bizRes, pendingRes, partnersRes, kitRes, networkPartnersRes, partnerExpensesRes, specialBusinessesRes, specialInvoicesRes] = await Promise.all([
         authedFetch('/api/v1/admin/overview'),
         authedFetch('/api/v1/admin/plans'),
         authedFetch(`/api/v1/admin/businesses?${params.toString()}`),
@@ -143,6 +158,8 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
         authedFetch('/api/v1/admin/setup-kit-orders'),
         authedFetch('/api/v1/admin/network-partners'),
         authedFetch('/api/v1/admin/partner-operational-expenses'),
+        authedFetch('/api/v1/admin/special-businesses'),
+        authedFetch('/api/v1/admin/special-invoices'),
       ])
       if (ovRes.status === 401 || bizRes.status === 401) { onLogout(); return }
       setOverview(await ovRes.json().catch(() => null))
@@ -154,6 +171,10 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
       setNetworkPartners(await networkPartnersRes.json().catch(() => []))
       const expensePayload=await partnerExpensesRes.json().catch(() => [])
       setPartnerExpenses(partnerExpensesRes.ok&&Array.isArray(expensePayload)?expensePayload:[])
+      const specialBusinessPayload=await specialBusinessesRes.json().catch(() => [])
+      setSpecialBusinesses(specialBusinessesRes.ok&&Array.isArray(specialBusinessPayload)?specialBusinessPayload:[])
+      const specialInvoicePayload=await specialInvoicesRes.json().catch(() => [])
+      setSpecialInvoices(specialInvoicesRes.ok&&Array.isArray(specialInvoicePayload)?specialInvoicePayload:[])
     } catch (err) {
       console.error('Admin load error:', err)
     }
@@ -567,6 +588,103 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
     }
   }
 
+  const resetSpecialForm=()=>{
+    setEditingSpecialId('')
+    setSpecialForm({
+      business_public_id:'',billing_email:'',billing_contact_name:'',pricing_model:'flat',
+      contracted_branch_count:1,monthly_rate:0,cycle_amount_override:'',setup_fee:0,billing_cycle:'monthly',due_days:7,
+      auto_invoice:true,next_invoice_date:new Date().toISOString().slice(0,10),
+      contract_start_date:new Date().toISOString().slice(0,10),contract_end_date:'',
+      invoice_description:'LoyaltyTree custom service subscription',payment_instructions:'',is_active:true,
+    })
+  }
+
+  const selectSpecialBusiness=e=>{
+    const businessPublicId=e.target.value
+    const biz=businesses.find(b=>b.public_id===businessPublicId)
+    setSpecialForm(f=>({...f,business_public_id:businessPublicId,billing_email:biz?.email||f.billing_email,billing_contact_name:biz?.contact_person||''}))
+  }
+
+  const saveSpecialBusiness=async e=>{
+    e.preventDefault()
+    if(!specialForm.business_public_id&&!editingSpecialId){setMessage('Choose a business');return}
+    setSpecialSaving(true)
+    try{
+      const payload={
+        ...specialForm,
+        contracted_branch_count:Number(specialForm.contracted_branch_count)||1,
+        monthly_rate:Number(specialForm.monthly_rate)||0,
+        cycle_amount_override:specialForm.cycle_amount_override===''?null:Number(specialForm.cycle_amount_override),
+        setup_fee:Number(specialForm.setup_fee)||0,
+        due_days:Number(specialForm.due_days)||7,
+        next_invoice_date:specialForm.next_invoice_date||null,
+        contract_start_date:specialForm.contract_start_date||null,
+        contract_end_date:specialForm.contract_end_date||null,
+      }
+      if(editingSpecialId) delete payload.business_public_id
+      const res=await authedFetch(editingSpecialId?`/api/v1/admin/special-businesses/${editingSpecialId}`:'/api/v1/admin/special-businesses',{
+        method:editingSpecialId?'PATCH':'POST',body:JSON.stringify(payload)
+      })
+      const d=await res.json().catch(()=>({}))
+      if(!res.ok)throw new Error(d.detail||'Could not save special billing profile')
+      setMessage(editingSpecialId?'Special billing updated':'Special business added')
+      resetSpecialForm()
+      await loadData()
+    }catch(err){setMessage(err.message||'Could not save special business')}
+    setSpecialSaving(false)
+  }
+
+  const editSpecialBusiness=p=>{
+    setEditingSpecialId(p.public_id)
+    setSpecialForm({
+      business_public_id:p.business_public_id||'',billing_email:p.billing_email||'',billing_contact_name:p.billing_contact_name||'',
+      pricing_model:p.pricing_model||'flat',contracted_branch_count:p.contracted_branch_count||1,monthly_rate:p.monthly_rate||0,cycle_amount_override:p.cycle_amount_override??'',
+      setup_fee:p.setup_fee||0,billing_cycle:p.billing_cycle||'monthly',due_days:p.due_days||7,auto_invoice:p.auto_invoice!==false,
+      next_invoice_date:p.next_invoice_date||'',contract_start_date:p.contract_start_date||'',contract_end_date:p.contract_end_date||'',
+      invoice_description:p.invoice_description||'',payment_instructions:p.payment_instructions||'',is_active:p.is_active!==false,
+    })
+    setActiveAdminTab('special')
+    window.scrollTo({top:0,behavior:'smooth'})
+  }
+
+  const generateSpecialInvoice=async p=>{
+    if(!window.confirm(`Generate and email an invoice for ${p.business_name}?`))return
+    setSpecialInvoiceBusy(p.public_id)
+    try{
+      const res=await authedFetch(`/api/v1/admin/special-businesses/${p.public_id}/generate-invoice`,{method:'POST'})
+      const d=await res.json().catch(()=>({}))
+      if(!res.ok)throw new Error(d.detail||'Could not generate invoice')
+      setMessage(`${d.invoice_number||'Invoice'} generated and email ${d.email_status==='sent'?'sent':'attempted'}`)
+      await loadData()
+    }catch(err){setMessage(err.message||'Could not generate invoice')}
+    setSpecialInvoiceBusy('')
+  }
+
+  const resendSpecialInvoice=async inv=>{
+    setSpecialInvoiceBusy(inv.public_id)
+    try{
+      const res=await authedFetch(`/api/v1/admin/special-invoices/${inv.public_id}/resend`,{method:'POST'})
+      const d=await res.json().catch(()=>({}))
+      if(!res.ok)throw new Error(d.detail||'Could not resend invoice')
+      setMessage(d.email_status==='sent'?'Invoice email resent':'Invoice email send failed')
+      await loadData()
+    }catch(err){setMessage(err.message||'Could not resend invoice')}
+    setSpecialInvoiceBusy('')
+  }
+
+  const updateSpecialInvoiceStatus=async(inv,status)=>{
+    const note=window.prompt(status==='paid'?'Optional payment reference / admin note':'Reason for voiding (optional)','')||''
+    setSpecialInvoiceBusy(inv.public_id)
+    try{
+      const res=await authedFetch(`/api/v1/admin/special-invoices/${inv.public_id}`,{method:'PATCH',body:JSON.stringify({status,admin_notes:note})})
+      const d=await res.json().catch(()=>({}))
+      if(!res.ok)throw new Error(d.detail||'Could not update invoice')
+      setMessage(`Invoice marked ${status}`)
+      await loadData()
+    }catch(err){setMessage(err.message||'Could not update invoice')}
+    setSpecialInvoiceBusy('')
+  }
+
   const filteredCount = businessTypeFilter ? businesses.filter(b => b.business_type === businessTypeFilter).length : businesses.length
   const latestKitByBusiness=setupKitOrders.reduce((m,o)=>{if(o.business_public_id&&!m[o.business_public_id])m[o.business_public_id]=o;return m},{})
   const businessKitStatus=b=>latestKitByBusiness[b.public_id]?.fulfillment_status||b.setup_kit_status||(b.setup_kit_requested?(b.setup_kit_paid?'paid':'requested'):'')
@@ -604,6 +722,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const adminTabs = [
     { key:'overview', label:'Overview', icon:'⌂', description:'Platform health, applications and the few numbers that need attention.' },
     { key:'businesses', label:'Businesses', icon:'▦', description:'Search, manage and open individual client accounts.' },
+    { key:'special', label:'Special Businesses', icon:'₱', description:'Custom contracts, branch-based pricing and automated invoice delivery.' },
     { key:'performance', label:'Client Performance', icon:'↗', description:'CRM and retention movement across LoyaltyTree clients.' },
     { key:'platform', label:'Platform Analytics', icon:'◫', description:'Website traffic, acquisition, join conversion and Wallet activity.' },
     { key:'operations', label:'Operations', icon:'⚙', description:'Announcements, print requests and QR / PR kit fulfillment.' },
@@ -673,6 +792,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
             <p style={styles.adminTabDescription}>{activeAdminTabMeta.description}</p>
           </div>
           {activeAdminTab === 'businesses' && <div style={styles.adminTabContext}>{businesses.length} loaded client{businesses.length===1?'':'s'}</div>}
+          {activeAdminTab === 'special' && <div style={styles.adminTabContext}>{specialBusinesses.length} special billing account{specialBusinesses.length===1?'':'s'} · {specialInvoices.filter(i=>i.status==='overdue').length} overdue</div>}
           {activeAdminTab === 'overview' && pendingApps.length > 0 && <div style={{...styles.adminTabContext,color:'#92400e',background:'#fffbeb',borderColor:'#fde68a'}}>{pendingApps.length} application{pendingApps.length===1?'':'s'} waiting</div>}
         </div>
 
@@ -1243,6 +1363,103 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
             <PlatformAnnouncementsAdmin API_BASE={API_BASE} token={token} />
             <GiftCardPrintRequestsAdmin API_BASE={API_BASE} token={token} />
           </>
+        )}
+
+        {activeAdminTab === 'special' && (
+        <section style={styles.specialSection}>
+          <div style={styles.specialHeader}>
+            <div>
+              <div style={styles.analyticsEyebrow}>CUSTOM COMMERCIAL ACCOUNTS</div>
+              <h2 style={styles.analyticsTitle}>Special Businesses & Automated Invoices</h2>
+              <p style={styles.analyticsSubtitle}>Keep custom enterprise pricing separate from normal Starter / Growth / Pro billing. Set contracted branches, custom monthly pricing and the next invoice date.</p>
+            </div>
+            <div style={styles.specialMetricRow}>
+              <span style={styles.adminTabContext}>{specialBusinesses.filter(x=>x.is_active).length} active</span>
+              <span style={{...styles.adminTabContext,color:'#b45309',background:'#fffbeb',borderColor:'#fde68a'}}>{specialInvoices.filter(x=>x.status==='overdue').length} overdue</span>
+            </div>
+          </div>
+
+          <form onSubmit={saveSpecialBusiness} style={styles.specialFormCard}>
+            <div style={styles.sectionHead}>
+              <div><div style={styles.analyticsEyebrow}>{editingSpecialId?'EDIT CONTRACT':'NEW SPECIAL BUSINESS'}</div><h3 style={{margin:'3px 0 4px'}}>Commercial billing setup</h3></div>
+              {editingSpecialId&&<button type="button" style={styles.refreshBtn} onClick={resetSpecialForm}>Cancel edit</button>}
+            </div>
+            <div style={styles.specialFormGrid}>
+              <label style={styles.specialField}><span>Business</span>
+                <select style={styles.select} disabled={!!editingSpecialId} value={specialForm.business_public_id} onChange={selectSpecialBusiness} required={!editingSpecialId}>
+                  <option value="">Select business…</option>
+                  {businesses.map(b=><option key={b.public_id} value={b.public_id}>{b.name} · {b.email||'no email'}</option>)}
+                </select>
+              </label>
+              <label style={styles.specialField}><span>Billing email</span><input type="email" style={styles.input} value={specialForm.billing_email} onChange={e=>setSpecialForm(f=>({...f,billing_email:e.target.value}))} required/></label>
+              <label style={styles.specialField}><span>Billing contact</span><input style={styles.input} value={specialForm.billing_contact_name} onChange={e=>setSpecialForm(f=>({...f,billing_contact_name:e.target.value}))} placeholder="Accounting / contact person"/></label>
+              <label style={styles.specialField}><span>Pricing model</span><select style={styles.select} value={specialForm.pricing_model} onChange={e=>setSpecialForm(f=>({...f,pricing_model:e.target.value}))}><option value="flat">Flat monthly price</option><option value="per_branch">Price per branch / month</option></select></label>
+              <label style={styles.specialField}><span>Contracted branches</span><input type="number" min="1" max="10000" style={styles.input} value={specialForm.contracted_branch_count} onChange={e=>setSpecialForm(f=>({...f,contracted_branch_count:e.target.value}))}/></label>
+              <label style={styles.specialField}><span>{specialForm.pricing_model==='per_branch'?'Price / branch / month':'Flat price / month'}</span><input type="number" min="0" step="0.01" style={styles.input} value={specialForm.monthly_rate} onChange={e=>setSpecialForm(f=>({...f,monthly_rate:e.target.value}))}/></label>
+              <label style={styles.specialField}><span>One-time / setup fee</span><input type="number" min="0" step="0.01" style={styles.input} value={specialForm.setup_fee} onChange={e=>setSpecialForm(f=>({...f,setup_fee:e.target.value}))}/></label>
+              <label style={styles.specialField}><span>Billing cycle</span><select style={styles.select} value={specialForm.billing_cycle} onChange={e=>setSpecialForm(f=>({...f,billing_cycle:e.target.value}))}><option value="monthly">Monthly</option><option value="3_months">Every 3 months</option><option value="6_months">Every 6 months</option><option value="annual">Annual</option></select></label>
+              <label style={styles.specialField}><span>Exact cycle subtotal override (optional)</span><input type="number" min="0" step="0.01" style={styles.input} value={specialForm.cycle_amount_override} onChange={e=>setSpecialForm(f=>({...f,cycle_amount_override:e.target.value}))} placeholder="Leave blank to calculate from monthly rate"/></label>
+              <label style={styles.specialField}><span>Payment due after</span><div style={{display:'flex',alignItems:'center',gap:8}}><input type="number" min="1" max="90" style={styles.input} value={specialForm.due_days} onChange={e=>setSpecialForm(f=>({...f,due_days:e.target.value}))}/><small>days</small></div></label>
+              <label style={styles.specialField}><span>Contract start</span><input type="date" style={styles.input} value={specialForm.contract_start_date} onChange={e=>setSpecialForm(f=>({...f,contract_start_date:e.target.value}))}/></label>
+              <label style={styles.specialField}><span>Contract end (optional)</span><input type="date" style={styles.input} value={specialForm.contract_end_date} onChange={e=>setSpecialForm(f=>({...f,contract_end_date:e.target.value}))}/></label>
+              <label style={styles.specialField}><span>Next invoice date</span><input type="date" style={styles.input} value={specialForm.next_invoice_date} onChange={e=>setSpecialForm(f=>({...f,next_invoice_date:e.target.value}))}/></label>
+              <label style={{...styles.specialField,gridColumn:'1 / -1'}}><span>Invoice description</span><input style={styles.input} value={specialForm.invoice_description} onChange={e=>setSpecialForm(f=>({...f,invoice_description:e.target.value}))} placeholder="e.g. LoyaltyTree Enterprise - up to 60 branches"/></label>
+              <label style={{...styles.specialField,gridColumn:'1 / -1'}}><span>Payment instructions</span><textarea style={{...styles.input,minHeight:76}} value={specialForm.payment_instructions} onChange={e=>setSpecialForm(f=>({...f,payment_instructions:e.target.value}))} placeholder="Bank transfer / payment instructions shown on the invoice"/></label>
+            </div>
+            <div style={styles.specialFormFooter}>
+              <label style={styles.specialCheckbox}><input type="checkbox" checked={specialForm.auto_invoice} onChange={e=>setSpecialForm(f=>({...f,auto_invoice:e.target.checked}))}/> Automatically generate & email on the next invoice date</label>
+              <label style={styles.specialCheckbox}><input type="checkbox" checked={specialForm.is_active} onChange={e=>setSpecialForm(f=>({...f,is_active:e.target.checked}))}/> Active custom billing</label>
+              <div style={styles.specialCalc}>
+                Estimated cycle invoice: <b>₱{(specialForm.cycle_amount_override!==''?Number(specialForm.cycle_amount_override||0):((specialForm.pricing_model==='per_branch'?Number(specialForm.monthly_rate||0)*Number(specialForm.contracted_branch_count||1):Number(specialForm.monthly_rate||0))*(SPECIAL_BILLING_CYCLE_MONTHS[specialForm.billing_cycle]||1))).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</b>
+                {Number(specialForm.setup_fee||0)>0&&<span> + ₱{Number(specialForm.setup_fee).toLocaleString()} one-time</span>}
+              </div>
+              <button type="submit" style={styles.approveBtn} disabled={specialSaving}>{specialSaving?'Saving…':editingSpecialId?'Save changes':'+ Add special business'}</button>
+            </div>
+          </form>
+
+          <div style={styles.specialProfileGrid}>
+            {specialBusinesses.map(p=><article key={p.public_id} style={styles.specialProfileCard}>
+              <div style={styles.sectionHead}><div><b style={{fontSize:15}}>{p.business_name}</b><div style={styles.bizEmail}>{p.billing_email}</div></div><span style={p.is_active?styles.expenseApproved:styles.expenseRejected}>{p.is_active?'active':'inactive'}</span></div>
+              <div style={styles.specialProfileStats}>
+                <div><span>Branches</span><b>{p.contracted_branch_count}</b></div>
+                <div><span>Monthly</span><b>₱{Number(p.monthly_total||0).toLocaleString()}</b></div>
+                <div><span>Cycle</span><b>{specialBillingCycleLabel(p.billing_cycle)}</b></div>
+                <div><span>Next invoice</span><b>{p.next_invoice_date||'—'}</b></div>
+              </div>
+              <div style={styles.specialProfileMeta}>{p.pricing_model==='per_branch'?`₱${Number(p.monthly_rate||0).toLocaleString()} per branch / month`:`₱${Number(p.monthly_rate||0).toLocaleString()} flat / month`}{p.cycle_amount_override!=null?` · Exact ${specialBillingCycleLabel(p.billing_cycle)} subtotal ₱${Number(p.cycle_amount_override).toLocaleString()}`:''}{Number(p.setup_fee||0)>0?` · Setup ₱${Number(p.setup_fee).toLocaleString()}`:''}</div>
+              <div style={{display:'flex',gap:7,flexWrap:'wrap',marginTop:12}}>
+                <button style={styles.refreshBtn} onClick={()=>editSpecialBusiness(p)}>Edit</button>
+                <button style={styles.approveBtn} disabled={specialInvoiceBusy===p.public_id} onClick={()=>generateSpecialInvoice(p)}>{specialInvoiceBusy===p.public_id?'Generating…':'Generate & Email Now'}</button>
+              </div>
+            </article>)}
+            {!specialBusinesses.length&&<div style={styles.partnerEmpty}>No special billing accounts yet.</div>}
+          </div>
+
+          <div style={{...styles.specialFormCard,marginTop:18}}>
+            <div style={styles.sectionHead}><div><div style={styles.analyticsEyebrow}>INVOICE LEDGER</div><h3 style={{margin:'3px 0 4px'}}>Special business invoices</h3></div><span style={styles.adminTabContext}>{specialInvoices.length} invoices</span></div>
+            <div style={{overflowX:'auto',marginTop:12}}>
+              <table style={styles.expenseTable}>
+                <thead><tr><th>Invoice</th><th>Business</th><th>Period</th><th>Amount</th><th>Due</th><th>Status</th><th>Email</th><th>Action</th></tr></thead>
+                <tbody>{specialInvoices.map(inv=><tr key={inv.public_id}>
+                  <td><b>{inv.invoice_number}</b><small style={styles.expenseSub}>{inv.issue_date}</small></td>
+                  <td><b>{inv.business_name}</b><small style={styles.expenseSub}>{inv.billing_email}</small></td>
+                  <td>{inv.period_start}<small style={styles.expenseSub}>to {inv.period_end}</small></td>
+                  <td><b>₱{Number(inv.total_amount||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</b></td>
+                  <td>{inv.due_date}</td>
+                  <td><span style={inv.status==='paid'?styles.expenseApproved:inv.status==='overdue'?styles.expenseRejected:styles.expensePending}>{inv.status}</span></td>
+                  <td><span style={inv.email_status==='sent'?styles.expenseApproved:inv.email_status==='failed'?styles.expenseRejected:styles.expensePending}>{inv.email_status}</span></td>
+                  <td><div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
+                    <a href={`${API_BASE}/api/v1/public/special-invoices/${inv.access_token}`} target="_blank" rel="noreferrer" style={{...styles.refreshBtn,textDecoration:'none'}}>View</a>
+                    {inv.status!=='void'&&<button style={styles.refreshBtn} disabled={specialInvoiceBusy===inv.public_id} onClick={()=>resendSpecialInvoice(inv)}>Resend</button>}
+                    {!['paid','void'].includes(inv.status)&&<button style={styles.approveBtn} disabled={specialInvoiceBusy===inv.public_id} onClick={()=>updateSpecialInvoiceStatus(inv,'paid')}>Mark paid</button>}
+                    {inv.status!=='void'&&inv.status!=='paid'&&<button style={styles.rejectBtn} disabled={specialInvoiceBusy===inv.public_id} onClick={()=>updateSpecialInvoiceStatus(inv,'void')}>Void</button>}
+                  </div></td>
+                </tr>)}</tbody>
+              </table>
+            </div>
+            {!specialInvoices.length&&<div style={styles.partnerEmpty}>No special invoices generated yet.</div>}
+          </div>
+        </section>
         )}
 
         {activeAdminTab === 'businesses' && (
@@ -2271,6 +2488,19 @@ const styles = {
   kitAddress:{display:'flex',flexDirection:'column',gap:3,background:'#f0fdfa',borderRadius:10,padding:11,fontSize:12,lineHeight:1.45},
   categoryBadge:{display:'inline-flex',padding:'5px 8px',borderRadius:999,background:'#f8fafc',border:'1px solid #e2e8f0',fontSize:10.5,fontWeight:800,color:'#475569',whiteSpace:'nowrap'},
   kitTableBadge:{display:'inline-flex',padding:'5px 8px',borderRadius:999,fontSize:10.5,fontWeight:800,whiteSpace:'nowrap'},
+  specialSection:{background:'#fff',border:'1px solid #e2e8f0',borderRadius:20,padding:22,marginBottom:24,boxShadow:'0 10px 30px rgba(15,23,42,.045)'},
+  specialHeader:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:14,flexWrap:'wrap',marginBottom:18},
+  specialMetricRow:{display:'flex',gap:7,flexWrap:'wrap'},
+  specialFormCard:{background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:16,padding:17,marginBottom:16},
+  specialFormGrid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(210px,1fr))',gap:11,marginTop:14},
+  specialField:{display:'grid',gap:5,fontSize:10.5,fontWeight:850,color:'#64748b',textTransform:'uppercase',letterSpacing:.35},
+  specialFormFooter:{display:'flex',gap:12,alignItems:'center',flexWrap:'wrap',marginTop:14,paddingTop:13,borderTop:'1px solid #e2e8f0'},
+  specialCheckbox:{display:'flex',gap:7,alignItems:'center',fontSize:11.5,fontWeight:750,color:'#475569',textTransform:'none',letterSpacing:0},
+  specialCalc:{marginLeft:'auto',fontSize:12,color:'#475569'},
+  specialProfileGrid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(300px,1fr))',gap:11},
+  specialProfileCard:{border:'1px solid #e2e8f0',borderRadius:14,padding:15,background:'#fff'},
+  specialProfileStats:{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:7,marginTop:12},
+  specialProfileMeta:{fontSize:11,color:'#64748b',marginTop:9,lineHeight:1.45},
   analyticsSection:{background:'#fff',border:'1px solid #e2e8f0',borderRadius:20,padding:22,marginBottom:24,boxShadow:'0 10px 30px rgba(15,23,42,.045)'},
   analyticsHeader:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:16,flexWrap:'wrap',marginBottom:18},
   analyticsEyebrow:{fontSize:10,fontWeight:850,letterSpacing:1.3,color:'#0f766e',marginBottom:5},
