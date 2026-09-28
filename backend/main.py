@@ -41953,7 +41953,21 @@ def _storehub_recent_rows(rows: list, limit: int, external_branch_id: Optional[s
         rank = happened.timestamp() if happened else float('-inf')
         ranked.append((rank, index, raw))
     ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    return [item[2] for item in ranked[:safe_limit]]
+
+    # Companion checkout only matches completed sales. Put non-cancelled sales
+    # first, while retaining void/refund rows afterward for audit/sync purposes.
+    active_sales = []
+    other_rows = []
+    for item in ranked:
+        raw = item[2]
+        raw_type = str(raw.get('transactionType') or '').lower()
+        is_cancelled = bool(raw.get('isCancelled'))
+        if not is_cancelled and not any(token in raw_type for token in ('refund', 'return', 'void', 'cancel')):
+            active_sales.append(item)
+        else:
+            other_rows.append(item)
+    ordered = active_sales + other_rows
+    return [item[2] for item in ordered[:safe_limit]]
 
 
 def _companion_provider_rows(device: dict, integration: dict, limit: int) -> list:
@@ -42266,13 +42280,36 @@ async def _companion_process_transaction(
             if redemption.get('branch_id') and device.get('branch_id') and str(redemption.get('branch_id')) != str(device.get('branch_id')):
                 raise HTTPException(status_code=409, detail='Points reservation belongs to a different branch.')
 
-            tx_gross = float(tx.get('gross_amount') or 0)
+            # Real StoreHub payload evidence: `total` is the final amount after
+            # StoreHub discounts (e.g. subtotal 258.93, discount 51.79, total
+            # 207.14). A Loyalty Tree redemption is therefore reserved against
+            # the pre-LT-discount checkout amount, while the pushed StoreHub sale
+            # should equal that reserved amount minus the LT peso discount.
+            tx_final_total = float(
+                tx.get('net_amount')
+                if tx.get('net_amount') is not None
+                else tx.get('gross_amount') or 0
+            )
             reserved_gross = float(redemption.get('gross_amount') or 0)
-            if abs(tx_gross - reserved_gross) > 0.01:
+            reserved_discount = float(redemption.get('redemption_amount') or 0)
+            expected_final_total = float(
+                Decimal(str(max(reserved_gross - reserved_discount, 0))).quantize(
+                    Decimal('0.01'), rounding=ROUND_HALF_UP
+                )
+            )
+            if abs(tx_final_total - expected_final_total) > 0.01:
                 raise HTTPException(
                     status_code=409,
-                    detail=f'POS total changed after redemption. Reserved for PHP {reserved_gross:.2f}; completed sale is PHP {tx_gross:.2f}.',
+                    detail=(
+                        f'POS total does not match the reserved redemption. '
+                        f'Expected PHP {expected_final_total:.2f} after the Loyalty Tree discount; '
+                        f'completed StoreHub sale is PHP {tx_final_total:.2f}.'
+                    ),
                 )
+
+            # For redeemed sales, treat the reservation amount as gross and the
+            # actual pushed StoreHub total as net/final.
+            tx_gross = reserved_gross
 
             bound_tx = str(redemption.get('external_transaction_id') or '').strip()
             if bound_tx and bound_tx != external_tx:
@@ -42312,10 +42349,9 @@ async def _companion_process_transaction(
 
             redemption_amount = float(committed_redemption.get('redemption_amount') or 0)
             points_redeemed = int(committed_redemption.get('points_reserved') or 0)
-            redemption_net_amount = float(
-                committed_redemption.get('net_amount')
-                or max(tx_gross - redemption_amount, 0)
-            )
+            # The StoreHub `total` observed in the pushed transaction is the
+            # authoritative final/net amount for the completed checkout.
+            redemption_net_amount = tx_final_total
 
             # Record the actual POS point deduction as its own immutable activity.
             redeem_audit = start_transaction_audit(
@@ -42377,24 +42413,40 @@ async def _companion_process_transaction(
                 f"pos-companion-redemption-{external_tx}",
             )
 
-        if points_active and committed_redemption:
-            # A redemption transaction spends points; it must never earn points
-            # from the same purchase.
-            points_result = {
-                'message': f'{points_redeemed} points redeemed. No points earned on this transaction.',
-                'amount_spent': redemption_net_amount,
-                'points_earned': 0,
-                'points_redeemed': points_redeemed,
-                'points_balance': int(committed_redemption.get('balance_after') or 0),
-            }
-        elif points_active and amount > 0:
+        # ANGKAN / StoreHub rule: redemption is a peso discount, but the same
+        # completed purchase still earns points on the eligible amount.  When
+        # earn_on_net_amount is enabled (the ANGKAN setup), earn only on the
+        # amount left after the Loyalty Tree peso discount.
+        earning_amount = amount
+        if committed_redemption:
+            redemption_config = _pos_redemption_config(integration)
+            earning_amount = (
+                redemption_net_amount
+                if redemption_config.get('earn_on_net_amount')
+                else float(tx.get('gross_amount') or amount)
+            )
+        earning_amount = float(
+            Decimal(str(max(earning_amount, 0))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        )
+
+        if points_active and earning_amount > 0:
             points_result = await add_points_sale(
                 business.get('public_id'),
-                PointsSaleRequest(customer_public_id=customer.get('public_id'), amount_spent=amount, as_owner=True),
+                PointsSaleRequest(
+                    customer_public_id=customer.get('public_id'),
+                    amount_spent=earning_amount,
+                    as_owner=True,
+                ),
                 background_tasks, authorization='', x_idempotency_key=f'{base_key}:points',
             )
         elif points_active:
-            points_result = {'message': 'Eligible amount is zero; no points earned.', 'points_earned': 0}
+            fresh = safe_get_customer(customer.get('public_id')) or customer
+            points_result = {
+                'message': 'Eligible amount is zero; no points earned.',
+                'amount_spent': 0,
+                'points_earned': 0,
+                'points_balance': int(fresh.get('points_balance') or 0),
+            }
 
         if stamps_active:
             try:
@@ -42422,14 +42474,21 @@ async def _companion_process_transaction(
             }
 
         if committed_redemption:
+            earned_now = int((points_result or {}).get('points_earned') or 0)
+            final_balance = int(
+                (points_result or {}).get('points_balance')
+                if (points_result or {}).get('points_balance') is not None
+                else committed_redemption.get('balance_after') or 0
+            )
             result = {
-                'message': f'{points_redeemed} points redeemed. No points earned on this redemption transaction.',
-                'points_earned': 0,
+                'message': f'{points_redeemed} points redeemed and {earned_now} points earned from the eligible amount.',
+                'points_earned': earned_now,
                 'points_redeemed': points_redeemed,
-                'points_balance': int(committed_redemption.get('balance_after') or 0),
-                'gross_amount': float(tx.get('gross_amount') or 0),
+                'points_balance': final_balance,
+                'gross_amount': tx_gross,
                 'discount_amount': redemption_amount,
                 'net_amount': redemption_net_amount,
+                'eligible_amount': earning_amount,
                 'redemption_reservation_id': str(committed_redemption.get('id')),
                 'redemption': _pos_redemption_public(committed_redemption),
                 'stamps': stamp_result or {},
@@ -42472,9 +42531,10 @@ async def _companion_process_transaction(
 
         if committed_redemption:
             transaction_patch.update({
+                'gross_amount': tx_gross,
                 'discount_amount': redemption_amount,
                 'net_amount': redemption_net_amount,
-                'eligible_amount': redemption_net_amount,
+                'eligible_amount': earning_amount,
                 'points_redeemed': points_redeemed,
             })
 
