@@ -2771,9 +2771,21 @@ class PartnerOperationalExpenseReview(BaseModel):
 
 
 class SpecialBusinessBillingCreate(BaseModel):
-    business_public_id: str = Field(min_length=3, max_length=200)
+    # A Special Business is created here as a NEW LoyaltyTree account. It is
+    # not attached to an already-existing standard-plan business.
+    business_name: str = Field(min_length=2, max_length=200)
+    business_email: str = Field(min_length=3, max_length=320)
+    business_password: str = Field(min_length=8, max_length=200)
+    business_phone: Optional[str] = Field(default=None, max_length=80)
+    business_type: str = Field(default='other', min_length=2, max_length=80)
+    business_address: Optional[str] = Field(default=None, max_length=500)
+    feature_plan: Literal['starter','growth','pro'] = 'pro'
+
     billing_email: str = Field(min_length=3, max_length=320)
     billing_contact_name: Optional[str] = Field(default=None, max_length=160)
+    billing_tin: Optional[str] = Field(default=None, max_length=60)
+    billing_address: Optional[str] = Field(default=None, max_length=500)
+
     pricing_model: Literal['flat','per_branch'] = 'flat'
     contracted_branch_count: int = Field(default=1, ge=1, le=10000)
     monthly_rate: float = Field(ge=0, le=100000000)
@@ -2781,6 +2793,14 @@ class SpecialBusinessBillingCreate(BaseModel):
     setup_fee: float = Field(default=0, ge=0, le=100000000)
     billing_cycle: Literal['monthly','3_months','6_months','annual'] = 'monthly'
     due_days: int = Field(default=7, ge=1, le=90)
+
+    # Commercial invoice tax treatment. This is deliberately selected by the
+    # super admin; LoyaltyTree does not infer tax exemption from the client.
+    tax_treatment: Literal['vat_registered','non_vat','vat_exempt'] = 'non_vat'
+    vat_rate: float = Field(default=12, ge=0, le=100)
+    price_includes_vat: bool = False
+    vat_exemption_basis: Optional[str] = Field(default=None, max_length=500)
+
     auto_invoice: bool = True
     next_invoice_date: Optional[str] = Field(default=None, max_length=10)
     contract_start_date: Optional[str] = Field(default=None, max_length=10)
@@ -2792,6 +2812,8 @@ class SpecialBusinessBillingCreate(BaseModel):
 class SpecialBusinessBillingUpdate(BaseModel):
     billing_email: Optional[str] = Field(default=None, min_length=3, max_length=320)
     billing_contact_name: Optional[str] = Field(default=None, max_length=160)
+    billing_tin: Optional[str] = Field(default=None, max_length=60)
+    billing_address: Optional[str] = Field(default=None, max_length=500)
     pricing_model: Optional[Literal['flat','per_branch']] = None
     contracted_branch_count: Optional[int] = Field(default=None, ge=1, le=10000)
     monthly_rate: Optional[float] = Field(default=None, ge=0, le=100000000)
@@ -2799,6 +2821,10 @@ class SpecialBusinessBillingUpdate(BaseModel):
     setup_fee: Optional[float] = Field(default=None, ge=0, le=100000000)
     billing_cycle: Optional[Literal['monthly','3_months','6_months','annual']] = None
     due_days: Optional[int] = Field(default=None, ge=1, le=90)
+    tax_treatment: Optional[Literal['vat_registered','non_vat','vat_exempt']] = None
+    vat_rate: Optional[float] = Field(default=None, ge=0, le=100)
+    price_includes_vat: Optional[bool] = None
+    vat_exemption_basis: Optional[str] = Field(default=None, max_length=500)
     auto_invoice: Optional[bool] = None
     next_invoice_date: Optional[str] = Field(default=None, max_length=10)
     contract_start_date: Optional[str] = Field(default=None, max_length=10)
@@ -16551,6 +16577,55 @@ def _special_cycle_total(profile: dict) -> float:
     months = _SPECIAL_BILLING_CYCLE_MONTHS.get(str(profile.get('billing_cycle') or 'monthly'), 1)
     return round(_special_monthly_total(profile) * months, 2)
 
+def _special_tax_breakdown(profile: dict, commercial_amount: float) -> dict:
+    """Return net/VAT/total without silently deciding tax treatment.
+
+    commercial_amount is the negotiated service amount INCLUDING any setup fee.
+    For VAT-inclusive contracts, that amount remains the final amount due and
+    VAT is carved out of it. For VAT-exclusive contracts, VAT is added on top.
+    """
+    amount = round(max(0.0, float(commercial_amount or 0)), 2)
+    treatment = str(profile.get('tax_treatment') or 'non_vat')
+    rate = float(profile.get('vat_rate') or 0)
+    includes = bool(profile.get('price_includes_vat'))
+
+    if treatment != 'vat_registered' or rate <= 0:
+        return {
+            'net_amount': amount,
+            'vat_amount': 0.0,
+            'total_amount': amount,
+            'tax_treatment': treatment,
+            'vat_rate': rate if treatment == 'vat_registered' else 0.0,
+            'price_includes_vat': includes if treatment == 'vat_registered' else False,
+        }
+
+    if includes:
+        divisor = 1.0 + (rate / 100.0)
+        net = round(amount / divisor, 2)
+        vat = round(amount - net, 2)
+        total = amount
+    else:
+        net = amount
+        vat = round(net * rate / 100.0, 2)
+        total = round(net + vat, 2)
+
+    return {
+        'net_amount': net,
+        'vat_amount': vat,
+        'total_amount': total,
+        'tax_treatment': treatment,
+        'vat_rate': rate,
+        'price_includes_vat': includes,
+    }
+
+def _special_tax_label(treatment: str, rate: float = 0) -> str:
+    treatment = str(treatment or 'non_vat')
+    if treatment == 'vat_registered':
+        return f"VAT taxable ({float(rate or 0):g}%)"
+    if treatment == 'vat_exempt':
+        return 'VAT-exempt'
+    return 'Non-VAT'
+
 def _special_profile_public(profile: dict, business: Optional[dict] = None) -> dict:
     business = business or {}
     out = {
@@ -16559,7 +16634,9 @@ def _special_profile_public(profile: dict, business: Optional[dict] = None) -> d
             'contracted_branch_count','monthly_rate','cycle_amount_override','setup_fee','setup_fee_invoiced',
             'billing_cycle','due_days','auto_invoice','next_invoice_date',
             'contract_start_date','contract_end_date','invoice_description',
-            'payment_instructions','currency','is_active','created_at','updated_at',
+            'payment_instructions','currency','billing_tin','billing_address',
+            'tax_treatment','vat_rate','price_includes_vat','vat_exemption_basis',
+            'is_active','created_at','updated_at',
         )
     }
     out.update({
@@ -16578,7 +16655,9 @@ def _special_invoice_public(row: dict, business: Optional[dict] = None) -> dict:
             'public_id','access_token','invoice_number','billing_email','billing_contact_name',
             'pricing_model','contracted_branch_count','monthly_rate','billing_cycle',
             'period_start','period_end','issue_date','due_date','subtotal','setup_fee',
-            'total_amount','currency','status','email_status','sent_at','paid_at',
+            'net_amount','vat_amount','total_amount','tax_treatment','vat_rate',
+            'price_includes_vat','vat_exemption_basis','billing_tin','billing_address',
+            'currency','status','email_status','sent_at','paid_at',
             'voided_at','email_last_error','admin_notes','created_at','updated_at',
         )
     }
@@ -16609,6 +16688,20 @@ def _special_invoice_email_html(invoice: dict, profile: dict, business: dict) ->
     desc = html_lib.escape(str(profile.get('invoice_description') or 'LoyaltyTree custom service subscription'))
     payment = html_lib.escape(str(profile.get('payment_instructions') or '')).replace('\n','<br>')
     payment_block = f"<p><b>Payment instructions</b><br>{payment}</p>" if payment else ''
+
+    treatment = invoice.get('tax_treatment') or profile.get('tax_treatment') or 'non_vat'
+    vat_rate = float(invoice.get('vat_rate') or profile.get('vat_rate') or 0)
+    tax_label = html_lib.escape(_special_tax_label(treatment, vat_rate))
+    net_text = html_lib.escape(money_text(invoice.get('net_amount') or 0, currency))
+    vat_text = html_lib.escape(money_text(invoice.get('vat_amount') or 0, currency))
+    tax_rows = (
+        f"<tr><td style='padding:8px;border-bottom:1px solid #e2e8f0'>VATable sales</td><td style='padding:8px;border-bottom:1px solid #e2e8f0;text-align:right'>{net_text}</td></tr>"
+        f"<tr><td style='padding:8px;border-bottom:1px solid #e2e8f0'>VAT ({vat_rate:g}%)</td><td style='padding:8px;border-bottom:1px solid #e2e8f0;text-align:right'>{vat_text}</td></tr>"
+        if treatment == 'vat_registered'
+        else f"<tr><td style='padding:8px;border-bottom:1px solid #e2e8f0'>{'VAT-exempt sales' if treatment == 'vat_exempt' else 'Non-VAT sales'}</td><td style='padding:8px;border-bottom:1px solid #e2e8f0;text-align:right'>{net_text}</td></tr>"
+    )
+    exemption = html_lib.escape(str(invoice.get('vat_exemption_basis') or profile.get('vat_exemption_basis') or ''))
+    exemption_block = f"<p><b>VAT exemption basis/reference:</b> {exemption}</p>" if treatment == 'vat_exempt' and exemption else ''
     return (
         f"<div style='font-family:Arial,sans-serif;max-width:680px;margin:auto;color:#0f172a'>"
         f"<h2 style='margin-bottom:4px'>LoyaltyTree Sales Invoice</h2>"
@@ -16619,11 +16712,13 @@ def _special_invoice_email_html(invoice: dict, profile: dict, business: dict) ->
         f"<tr><td style='padding:8px;border-bottom:1px solid #e2e8f0'>Service</td><td style='padding:8px;border-bottom:1px solid #e2e8f0;text-align:right'>{desc}</td></tr>"
         f"<tr><td style='padding:8px;border-bottom:1px solid #e2e8f0'>Billing period</td><td style='padding:8px;border-bottom:1px solid #e2e8f0;text-align:right'>{invoice.get('period_start')} – {invoice.get('period_end')}</td></tr>"
         f"<tr><td style='padding:8px;border-bottom:1px solid #e2e8f0'>Contracted branches</td><td style='padding:8px;border-bottom:1px solid #e2e8f0;text-align:right'>{int(invoice.get('contracted_branch_count') or 1)}</td></tr>"
+        f"<tr><td style='padding:8px;border-bottom:1px solid #e2e8f0'>Tax treatment</td><td style='padding:8px;border-bottom:1px solid #e2e8f0;text-align:right'>{tax_label}</td></tr>"
+        f"{tax_rows}"
         f"<tr><td style='padding:10px 8px;font-weight:bold'>Amount due</td><td style='padding:10px 8px;font-weight:bold;text-align:right;font-size:18px'>{html_lib.escape(amount_text)}</td></tr>"
         f"</table>"
-        f"<p><b>Due date:</b> {due}</p>{payment_block}"
+        f"<p><b>Due date:</b> {due}</p>{exemption_block}{payment_block}"
         f"<p><a href='{html_lib.escape(invoice_url)}' style='display:inline-block;background:#0f766e;color:#fff;text-decoration:none;padding:11px 16px;border-radius:8px;font-weight:bold'>View / Print Invoice</a></p>"
-        f"<p style='font-size:12px;color:#64748b'>This is a system-generated LoyaltyTree billing invoice. Tax or official-invoice treatment depends on the seller's registered invoicing setup.</p>"
+        f"<p style='font-size:12px;color:#64748b'>This is a system-generated LoyaltyTree commercial billing invoice. Use it as a BIR-registered VAT/Non-VAT invoice only if your registered invoicing setup authorizes this system/document format.</p>"
         f"</div>"
     )
 
@@ -16677,7 +16772,8 @@ def _generate_special_invoice(profile: dict, period_start: Optional[date] = None
 
     subtotal = _special_cycle_total(profile)
     setup_fee = 0.0 if profile.get('setup_fee_invoiced') else float(profile.get('setup_fee') or 0)
-    total = round(subtotal + setup_fee, 2)
+    tax = _special_tax_breakdown(profile, subtotal + setup_fee)
+    total = tax['total_amount']
     due_date = today + timedelta(days=max(1, int(profile.get('due_days') or 7)))
     payload = {
         'public_id': 'sbi_' + uuid.uuid4().hex[:24],
@@ -16697,7 +16793,15 @@ def _generate_special_invoice(profile: dict, period_start: Optional[date] = None
         'due_date': due_date.isoformat(),
         'subtotal': subtotal,
         'setup_fee': setup_fee,
+        'net_amount': tax['net_amount'],
+        'vat_amount': tax['vat_amount'],
         'total_amount': total,
+        'tax_treatment': tax['tax_treatment'],
+        'vat_rate': tax['vat_rate'],
+        'price_includes_vat': tax['price_includes_vat'],
+        'vat_exemption_basis': profile.get('vat_exemption_basis'),
+        'billing_tin': profile.get('billing_tin'),
+        'billing_address': profile.get('billing_address'),
         'currency': profile.get('currency') or 'PHP',
         'status': 'draft',
         'email_status': 'pending',
@@ -16731,39 +16835,112 @@ async def admin_special_businesses(_: bool = Depends(require_admin)):
 
 @app.post("/api/v1/admin/special-businesses")
 async def admin_create_special_business(req: SpecialBusinessBillingCreate, _: bool = Depends(require_admin)):
-    business = safe_get_business(req.business_public_id)
-    if not business:
-        raise HTTPException(status_code=404, detail='Business not found')
-    existing = supabase.table('special_business_billing').select('public_id').eq('business_id', business.get('id')).maybe_single().execute().data
-    if existing:
-        raise HTTPException(status_code=409, detail='This business already has a special billing profile')
+    if not supabase:
+        raise HTTPException(status_code=503, detail='Database not connected')
+
+    email = req.business_email.strip().lower()
+    phone = (req.business_phone or '').strip() or None
+    dup_field = find_business_duplicate(email, phone)
+    if dup_field:
+        raise HTTPException(status_code=400, detail=f"An account with this {dup_field} already exists.")
 
     start = _special_parse_date(req.contract_start_date, 'contract_start_date') or datetime.utcnow().date()
     end = _special_parse_date(req.contract_end_date, 'contract_end_date')
     next_invoice = _special_parse_date(req.next_invoice_date, 'next_invoice_date') or start
     if end and end < start:
         raise HTTPException(status_code=400, detail='Contract end date cannot be before contract start date')
+    if req.tax_treatment == 'vat_exempt' and not (req.vat_exemption_basis or '').strip():
+        raise HTTPException(status_code=400, detail='VAT-exempt invoices require an exemption basis/reference')
 
-    payload = req.model_dump(exclude={'business_public_id'})
-    payload.update({
-        'public_id': 'sb_' + uuid.uuid4().hex[:24],
-        'business_id': business.get('id'),
-        'billing_email': req.billing_email.strip().lower(),
-        'billing_contact_name': (req.billing_contact_name or '').strip() or None,
-        'contract_start_date': start.isoformat(),
-        'contract_end_date': end.isoformat() if end else None,
-        'next_invoice_date': next_invoice.isoformat(),
-        'invoice_description': (req.invoice_description or '').strip() or None,
-        'payment_instructions': (req.payment_instructions or '').strip() or None,
-        'currency': 'PHP',
+    public_id = generate_business_public_id(req.business_name)
+    months = _SPECIAL_BILLING_CYCLE_MONTHS.get(req.billing_cycle, 1)
+    initial_paid_through = _special_add_months(start, months) - timedelta(days=1)
+    business_data = {
+        'public_id': public_id,
+        'name': req.business_name.strip(),
+        'email': email,
+        'phone': phone,
+        'password_hash': hash_password(req.business_password),
+        'business_type': (req.business_type or 'other').strip() or 'other',
+        'address': (req.business_address or '').strip() or None,
+        'contact_person': (req.billing_contact_name or '').strip() or None,
+        # Plan controls product/features only. Commercial price comes exclusively
+        # from special_business_billing.
+        'plan': req.feature_plan,
+        'country_code': 'PH',
+        'pricing_region': 'PH',
+        'display_currency': 'PHP',
+        'billing_mode': 'special',
+        'billing_cycle': req.billing_cycle,
+        'status': 'ACTIVE',
+        'subscription_expires_at': initial_paid_through.isoformat(),
         'created_at': datetime.utcnow().isoformat(),
-        'updated_at': datetime.utcnow().isoformat(),
-    })
+    }
+
+    business_id = None
     try:
-        row = (supabase.table('special_business_billing').insert(payload).execute().data or [payload])[0]
-        supabase.table('businesses').update({'billing_mode':'special'}).eq('id', business.get('id')).execute()
-        return _special_profile_public(row, {**business, 'billing_mode':'special'})
+        inserted = supabase.table('businesses').insert(business_data).execute().data or []
+        if not inserted:
+            raise RuntimeError('Business insert returned no row')
+        business = inserted[0]
+        business_id = business.get('id')
+
+        # For special accounts the contracted branch count is also the initial
+        # branch footprint. This intentionally bypasses the normal 10-branch
+        # standard-plan commercial limit because pricing is governed here.
+        branch_rows = []
+        for i in range(max(1, int(req.contracted_branch_count or 1))):
+            branch_rows.append({
+                'business_id': business_id,
+                'public_id': generate_public_id(),
+                'name': 'Main Branch' if i == 0 else f'Branch {i + 1}',
+                'is_active': True,
+                'created_at': datetime.utcnow().isoformat(),
+            })
+        if branch_rows:
+            supabase.table('branches').insert(branch_rows).execute()
+
+        profile_payload = {
+            'public_id': 'sb_' + uuid.uuid4().hex[:24],
+            'business_id': business_id,
+            'billing_email': req.billing_email.strip().lower(),
+            'billing_contact_name': (req.billing_contact_name or '').strip() or None,
+            'billing_tin': (req.billing_tin or '').strip() or None,
+            'billing_address': (req.billing_address or req.business_address or '').strip() or None,
+            'pricing_model': req.pricing_model,
+            'contracted_branch_count': req.contracted_branch_count,
+            'monthly_rate': req.monthly_rate,
+            'cycle_amount_override': req.cycle_amount_override,
+            'setup_fee': req.setup_fee,
+            'billing_cycle': req.billing_cycle,
+            'due_days': req.due_days,
+            'tax_treatment': req.tax_treatment,
+            'vat_rate': req.vat_rate if req.tax_treatment == 'vat_registered' else 0,
+            'price_includes_vat': req.price_includes_vat if req.tax_treatment == 'vat_registered' else False,
+            'vat_exemption_basis': (req.vat_exemption_basis or '').strip() or None,
+            'auto_invoice': req.auto_invoice,
+            'next_invoice_date': next_invoice.isoformat(),
+            'contract_start_date': start.isoformat(),
+            'contract_end_date': end.isoformat() if end else None,
+            'invoice_description': (req.invoice_description or '').strip() or None,
+            'payment_instructions': (req.payment_instructions or '').strip() or None,
+            'currency': 'PHP',
+            'is_active': req.is_active,
+            'created_at': datetime.utcnow().isoformat(),
+            'updated_at': datetime.utcnow().isoformat(),
+        }
+        row = (supabase.table('special_business_billing').insert(profile_payload).execute().data or [profile_payload])[0]
+        return _special_profile_public(row, business)
+    except HTTPException:
+        raise
     except Exception as exc:
+        # Avoid leaving a half-created special account if billing-profile creation
+        # fails after the business insert.
+        if business_id:
+            try:
+                supabase.table('businesses').delete().eq('id', business_id).execute()
+            except Exception:
+                pass
         raise HTTPException(status_code=400, detail=friendly_db_error(exc)) from exc
 
 @app.patch("/api/v1/admin/special-businesses/{profile_public_id}")
@@ -16780,10 +16957,15 @@ async def admin_update_special_business(profile_public_id: str, req: SpecialBusi
         if key in patch:
             parsed = _special_parse_date(patch.get(key), key)
             patch[key] = parsed.isoformat() if parsed else None
-    for key in ('invoice_description','payment_instructions'):
+    for key in ('invoice_description','payment_instructions','vat_exemption_basis','billing_tin','billing_address'):
         if key in patch:
             patch[key] = (patch.get(key) or '').strip() or None
     merged = {**profile, **patch}
+    if merged.get('tax_treatment') == 'vat_exempt' and not (merged.get('vat_exemption_basis') or '').strip():
+        raise HTTPException(status_code=400, detail='VAT-exempt invoices require an exemption basis/reference')
+    if merged.get('tax_treatment') != 'vat_registered':
+        patch['vat_rate'] = 0
+        patch['price_includes_vat'] = False
     start = _special_parse_date(merged.get('contract_start_date'), 'contract_start_date')
     end = _special_parse_date(merged.get('contract_end_date'), 'contract_end_date')
     if start and end and end < start:
@@ -16858,15 +17040,34 @@ async def public_special_invoice(access_token: str):
         raise HTTPException(status_code=404, detail='Invoice not found')
     business = safe_get_business_by_id(row.get('business_id')) or {}
     profile = supabase.table('special_business_billing').select('*').eq('id', row.get('profile_id')).maybe_single().execute().data or {}
-    amount = money_text(row.get('total_amount') or 0, row.get('currency') or 'PHP')
+
+    currency = row.get('currency') or 'PHP'
+    amount = money_text(row.get('total_amount') or 0, currency)
     service = html_lib.escape(str(profile.get('invoice_description') or 'LoyaltyTree custom service subscription'))
     payment = html_lib.escape(str(profile.get('payment_instructions') or '')).replace('\n','<br>')
     pricing_line = (
-        f"{money_text(row.get('monthly_rate') or 0, row.get('currency') or 'PHP')} × {int(row.get('contracted_branch_count') or 1)} branches / month"
+        f"{money_text(row.get('monthly_rate') or 0, currency)} × {int(row.get('contracted_branch_count') or 1)} branches / month"
         if row.get('pricing_model') == 'per_branch'
-        else f"{money_text(row.get('monthly_rate') or 0, row.get('currency') or 'PHP')} flat / month"
+        else f"{money_text(row.get('monthly_rate') or 0, currency)} flat / month"
     )
-    setup_line = f"<tr><td>One-time / setup fee</td><td>{html_lib.escape(money_text(row.get('setup_fee') or 0, row.get('currency') or 'PHP'))}</td></tr>" if float(row.get('setup_fee') or 0) > 0 else ''
+    setup_line = f"<tr><td>One-time / setup fee</td><td>{html_lib.escape(money_text(row.get('setup_fee') or 0, currency))}</td></tr>" if float(row.get('setup_fee') or 0) > 0 else ''
+
+    treatment = row.get('tax_treatment') or profile.get('tax_treatment') or 'non_vat'
+    vat_rate = float(row.get('vat_rate') or profile.get('vat_rate') or 0)
+    tax_label = _special_tax_label(treatment, vat_rate)
+    if treatment == 'vat_registered':
+        tax_rows = (
+            f"<tr><td>VATable sales</td><td>{html_lib.escape(money_text(row.get('net_amount') or 0, currency))}</td></tr>"
+            f"<tr><td>VAT ({vat_rate:g}%)</td><td>{html_lib.escape(money_text(row.get('vat_amount') or 0, currency))}</td></tr>"
+        )
+    else:
+        tax_rows = f"<tr><td>{'VAT-exempt sales' if treatment == 'vat_exempt' else 'Non-VAT sales'}</td><td>{html_lib.escape(money_text(row.get('net_amount') or 0, currency))}</td></tr>"
+
+    exemption = html_lib.escape(str(row.get('vat_exemption_basis') or profile.get('vat_exemption_basis') or ''))
+    exemption_note = f"<div class='note'><b>VAT exemption basis/reference</b><br>{exemption}</div>" if treatment == 'vat_exempt' and exemption else ''
+    billing_address = html_lib.escape(str(row.get('billing_address') or profile.get('billing_address') or business.get('address') or ''))
+    billing_tin = html_lib.escape(str(row.get('billing_tin') or profile.get('billing_tin') or ''))
+
     html = f"""<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html_lib.escape(str(row.get('invoice_number') or 'LoyaltyTree Invoice'))}</title>
@@ -16883,20 +17084,25 @@ td{{padding:11px 8px;border-bottom:1px solid #e2e8f0}} td:last-child{{text-align
 </style></head>
 <body><div class="actions"><button onclick="window.print()">Print / Save PDF</button></div>
 <div class="sheet">
-<div class="top"><div><div class="muted">Loyalty Tree Information and Technology Solutions</div><h1>SALES INVOICE</h1><div class="muted">{html_lib.escape(str(row.get('invoice_number') or ''))}</div></div>
+<div class="top"><div><div class="muted">Loyalty Tree Information and Technology Solutions</div><h1>SALES INVOICE</h1><div class="muted">{html_lib.escape(str(row.get('invoice_number') or ''))}</div><div style="margin-top:8px"><span class="pill">{html_lib.escape(tax_label)}</span></div></div>
 <div><div><b>Issue date</b> {row.get('issue_date')}</div><div><b>Due date</b> {row.get('due_date')}</div><div style="margin-top:8px"><span class="pill">{html_lib.escape(str(row.get('status') or 'draft'))}</span></div></div></div>
-<h3>Bill to</h3><div><b>{html_lib.escape(str(business.get('name') or 'Business'))}</b></div><div class="muted">{html_lib.escape(str(row.get('billing_email') or ''))}</div>
+<h3>Bill to</h3><div><b>{html_lib.escape(str(business.get('name') or 'Business'))}</b></div>
+<div class="muted">{billing_address}</div><div class="muted">{html_lib.escape(str(row.get('billing_email') or ''))}</div>
+{f'<div class="muted">TIN: {billing_tin}</div>' if billing_tin else ''}
 <table>
 <tr><td>Service</td><td>{service}</td></tr>
 <tr><td>Pricing</td><td>{html_lib.escape(pricing_line)}</td></tr>
+<tr><td>Contracted branches</td><td>{int(row.get('contracted_branch_count') or 1)}</td></tr>
 <tr><td>Billing cycle</td><td>{html_lib.escape(str(row.get('billing_cycle') or '').replace('_',' '))}</td></tr>
 <tr><td>Billing period</td><td>{row.get('period_start')} – {row.get('period_end')}</td></tr>
-<tr><td>Subscription subtotal</td><td>{html_lib.escape(money_text(row.get('subtotal') or 0, row.get('currency') or 'PHP'))}</td></tr>
+<tr><td>Subscription subtotal</td><td>{html_lib.escape(money_text(row.get('subtotal') or 0, currency))}</td></tr>
 {setup_line}
+{tax_rows}
 <tr><td class="total">Amount due</td><td class="total">{html_lib.escape(amount)}</td></tr>
 </table>
+{exemption_note}
 {f'<div class="note"><b>Payment instructions</b><br>{payment}</div>' if payment else ''}
-<div class="note muted">System-generated LoyaltyTree billing invoice. Tax or official-invoice treatment depends on the seller's registered invoicing setup.</div>
+<div class="note muted">System-generated LoyaltyTree commercial billing invoice. Use as a BIR-registered VAT/Non-VAT invoice only if LoyaltyTree's registered invoicing setup authorizes this system/document format.</div>
 </div></body></html>"""
     return HTMLResponse(content=html, headers={'Cache-Control':'no-store'})
 

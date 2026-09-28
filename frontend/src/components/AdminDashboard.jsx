@@ -15,6 +15,20 @@ const kitStatusLabel=s=>({requested:'Requested',paid:'Paid',preparing:'Preparing
 const kitStatusStyle=s=>({requested:{background:'#fff7ed',color:'#9a3412'},paid:{background:'#ecfdf5',color:'#166534'},preparing:{background:'#fefce8',color:'#854d0e'},ready_to_ship:{background:'#eff6ff',color:'#1d4ed8'},shipped:{background:'#eef2ff',color:'#4338ca'},delivered:{background:'#dcfce7',color:'#166534'},cancelled:{background:'#fef2f2',color:'#b91c1c'}}[String(s||'').toLowerCase()]||{background:'#f1f5f9',color:'#64748b'})
 
 const SPECIAL_BILLING_CYCLE_MONTHS={monthly:1,'3_months':3,'6_months':6,annual:12}
+function specialInvoicePreview(f){
+  const months=SPECIAL_BILLING_CYCLE_MONTHS[f.billing_cycle]||1
+  const monthly=f.pricing_model==='per_branch'?Number(f.monthly_rate||0)*Number(f.contracted_branch_count||1):Number(f.monthly_rate||0)
+  const cycle=f.cycle_amount_override!==''?Number(f.cycle_amount_override||0):monthly*months
+  const commercial=Math.max(0,cycle+Number(f.setup_fee||0))
+  const rate=Number(f.vat_rate||0)
+  if(f.tax_treatment!=='vat_registered'||rate<=0)return {net:commercial,vat:0,total:commercial}
+  if(f.price_includes_vat){
+    const net=commercial/(1+rate/100)
+    return {net,vat:commercial-net,total:commercial}
+  }
+  const vat=commercial*rate/100
+  return {net:commercial,vat,total:commercial+vat}
+}
 const specialBillingCycleLabel=v=>({monthly:'Monthly','3_months':'3 Months','6_months':'6 Months',annual:'Annual'})[v]||v
 
 const OA_DESIGN_DEFAULTS = {
@@ -71,8 +85,10 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const [specialInvoiceBusy,setSpecialInvoiceBusy]=useState('')
   const [editingSpecialId,setEditingSpecialId]=useState('')
   const [specialForm,setSpecialForm]=useState({
-    business_public_id:'',billing_email:'',billing_contact_name:'',pricing_model:'flat',
-    contracted_branch_count:1,monthly_rate:0,cycle_amount_override:'',setup_fee:0,billing_cycle:'monthly',due_days:7,
+    business_name:'',business_email:'',business_password:'',business_phone:'',business_type:'other',business_address:'',feature_plan:'pro',
+    billing_email:'',billing_contact_name:'',billing_tin:'',billing_address:'',
+    pricing_model:'flat',contracted_branch_count:1,monthly_rate:0,cycle_amount_override:'',setup_fee:0,billing_cycle:'monthly',due_days:7,
+    tax_treatment:'non_vat',vat_rate:12,price_includes_vat:false,vat_exemption_basis:'',
     auto_invoice:true,next_invoice_date:new Date().toISOString().slice(0,10),
     contract_start_date:new Date().toISOString().slice(0,10),contract_end_date:'',
     invoice_description:'LoyaltyTree custom service subscription',payment_instructions:'',is_active:true,
@@ -591,23 +607,28 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const resetSpecialForm=()=>{
     setEditingSpecialId('')
     setSpecialForm({
-      business_public_id:'',billing_email:'',billing_contact_name:'',pricing_model:'flat',
-      contracted_branch_count:1,monthly_rate:0,cycle_amount_override:'',setup_fee:0,billing_cycle:'monthly',due_days:7,
+      business_name:'',business_email:'',business_password:'',business_phone:'',business_type:'other',business_address:'',feature_plan:'pro',
+      billing_email:'',billing_contact_name:'',billing_tin:'',billing_address:'',
+      pricing_model:'flat',contracted_branch_count:1,monthly_rate:0,cycle_amount_override:'',setup_fee:0,billing_cycle:'monthly',due_days:7,
+      tax_treatment:'non_vat',vat_rate:12,price_includes_vat:false,vat_exemption_basis:'',
       auto_invoice:true,next_invoice_date:new Date().toISOString().slice(0,10),
       contract_start_date:new Date().toISOString().slice(0,10),contract_end_date:'',
       invoice_description:'LoyaltyTree custom service subscription',payment_instructions:'',is_active:true,
     })
   }
 
-  const selectSpecialBusiness=e=>{
-    const businessPublicId=e.target.value
-    const biz=businesses.find(b=>b.public_id===businessPublicId)
-    setSpecialForm(f=>({...f,business_public_id:businessPublicId,billing_email:biz?.email||f.billing_email,billing_contact_name:biz?.contact_person||''}))
-  }
-
   const saveSpecialBusiness=async e=>{
     e.preventDefault()
-    if(!specialForm.business_public_id&&!editingSpecialId){setMessage('Choose a business');return}
+    if(!editingSpecialId){
+      if(!specialForm.business_name.trim()||!specialForm.business_email.trim()||specialForm.business_password.length<8){
+        setMessage('Business name, email, and a password of at least 8 characters are required')
+        return
+      }
+    }
+    if(specialForm.tax_treatment==='vat_exempt'&&!specialForm.vat_exemption_basis.trim()){
+      setMessage('Enter the VAT exemption basis/reference')
+      return
+    }
     setSpecialSaving(true)
     try{
       const payload={
@@ -617,17 +638,21 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
         cycle_amount_override:specialForm.cycle_amount_override===''?null:Number(specialForm.cycle_amount_override),
         setup_fee:Number(specialForm.setup_fee)||0,
         due_days:Number(specialForm.due_days)||7,
+        vat_rate:specialForm.tax_treatment==='vat_registered'?Number(specialForm.vat_rate||0):0,
+        price_includes_vat:specialForm.tax_treatment==='vat_registered'&&!!specialForm.price_includes_vat,
         next_invoice_date:specialForm.next_invoice_date||null,
         contract_start_date:specialForm.contract_start_date||null,
         contract_end_date:specialForm.contract_end_date||null,
       }
-      if(editingSpecialId) delete payload.business_public_id
+      if(editingSpecialId){
+        ;['business_name','business_email','business_password','business_phone','business_type','business_address','feature_plan'].forEach(k=>delete payload[k])
+      }
       const res=await authedFetch(editingSpecialId?`/api/v1/admin/special-businesses/${editingSpecialId}`:'/api/v1/admin/special-businesses',{
         method:editingSpecialId?'PATCH':'POST',body:JSON.stringify(payload)
       })
       const d=await res.json().catch(()=>({}))
-      if(!res.ok)throw new Error(d.detail||'Could not save special billing profile')
-      setMessage(editingSpecialId?'Special billing updated':'Special business added')
+      if(!res.ok)throw new Error(typeof d.detail==='string'?d.detail:'Could not save special business')
+      setMessage(editingSpecialId?'Special billing updated':`${d.business_name||specialForm.business_name} created as a Special Business`)
       resetSpecialForm()
       await loadData()
     }catch(err){setMessage(err.message||'Could not save special business')}
@@ -637,10 +662,12 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const editSpecialBusiness=p=>{
     setEditingSpecialId(p.public_id)
     setSpecialForm({
-      business_public_id:p.business_public_id||'',billing_email:p.billing_email||'',billing_contact_name:p.billing_contact_name||'',
+      business_name:p.business_name||'',business_email:p.business_email||'',business_password:'',business_phone:'',business_type:'other',business_address:'',feature_plan:'pro',
+      billing_email:p.billing_email||'',billing_contact_name:p.billing_contact_name||'',billing_tin:p.billing_tin||'',billing_address:p.billing_address||'',
       pricing_model:p.pricing_model||'flat',contracted_branch_count:p.contracted_branch_count||1,monthly_rate:p.monthly_rate||0,cycle_amount_override:p.cycle_amount_override??'',
-      setup_fee:p.setup_fee||0,billing_cycle:p.billing_cycle||'monthly',due_days:p.due_days||7,auto_invoice:p.auto_invoice!==false,
-      next_invoice_date:p.next_invoice_date||'',contract_start_date:p.contract_start_date||'',contract_end_date:p.contract_end_date||'',
+      setup_fee:p.setup_fee||0,billing_cycle:p.billing_cycle||'monthly',due_days:p.due_days||7,
+      tax_treatment:p.tax_treatment||'non_vat',vat_rate:p.vat_rate??12,price_includes_vat:!!p.price_includes_vat,vat_exemption_basis:p.vat_exemption_basis||'',
+      auto_invoice:p.auto_invoice!==false,next_invoice_date:p.next_invoice_date||'',contract_start_date:p.contract_start_date||'',contract_end_date:p.contract_end_date||'',
       invoice_description:p.invoice_description||'',payment_instructions:p.payment_instructions||'',is_active:p.is_active!==false,
     })
     setActiveAdminTab('special')
@@ -1371,7 +1398,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
             <div>
               <div style={styles.analyticsEyebrow}>CUSTOM COMMERCIAL ACCOUNTS</div>
               <h2 style={styles.analyticsTitle}>Special Businesses & Automated Invoices</h2>
-              <p style={styles.analyticsSubtitle}>Keep custom enterprise pricing separate from normal Starter / Growth / Pro billing. Set contracted branches, custom monthly pricing and the next invoice date.</p>
+              <p style={styles.analyticsSubtitle}>Create enterprise/custom accounts directly here. Set branch count, negotiated pricing, invoice tax treatment, and automated billing without using the normal Starter / Growth / Pro price list.</p>
             </div>
             <div style={styles.specialMetricRow}>
               <span style={styles.adminTabContext}>{specialBusinesses.filter(x=>x.is_active).length} active</span>
@@ -1381,39 +1408,76 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
 
           <form onSubmit={saveSpecialBusiness} style={styles.specialFormCard}>
             <div style={styles.sectionHead}>
-              <div><div style={styles.analyticsEyebrow}>{editingSpecialId?'EDIT CONTRACT':'NEW SPECIAL BUSINESS'}</div><h3 style={{margin:'3px 0 4px'}}>Commercial billing setup</h3></div>
+              <div>
+                <div style={styles.analyticsEyebrow}>{editingSpecialId?'EDIT SPECIAL BILLING':'CREATE SPECIAL BUSINESS'}</div>
+                <h3 style={{margin:'3px 0 4px'}}>{editingSpecialId?specialForm.business_name:'Business account + commercial billing'}</h3>
+                <p style={{...styles.analyticsSubtitle,margin:0}}>{editingSpecialId?'Update pricing, tax treatment, and invoice schedule.':'This creates a brand-new LoyaltyTree business account and its custom billing contract in one step.'}</p>
+              </div>
               {editingSpecialId&&<button type="button" style={styles.refreshBtn} onClick={resetSpecialForm}>Cancel edit</button>}
             </div>
+
+            {!editingSpecialId&&<>
+              <div style={{...styles.analyticsEyebrow,marginTop:16}}>BUSINESS ACCOUNT</div>
+              <div style={styles.specialFormGrid}>
+                <label style={styles.specialField}><span>Business name</span><input style={styles.input} value={specialForm.business_name} onChange={e=>setSpecialForm(f=>({...f,business_name:e.target.value}))} required/></label>
+                <label style={styles.specialField}><span>Owner / login email</span><input type="email" style={styles.input} value={specialForm.business_email} onChange={e=>setSpecialForm(f=>({...f,business_email:e.target.value,billing_email:f.billing_email||e.target.value}))} required/></label>
+                <label style={styles.specialField}><span>Initial password</span><input type="password" minLength="8" style={styles.input} value={specialForm.business_password} onChange={e=>setSpecialForm(f=>({...f,business_password:e.target.value}))} required/></label>
+                <label style={styles.specialField}><span>Phone</span><input style={styles.input} value={specialForm.business_phone} onChange={e=>setSpecialForm(f=>({...f,business_phone:e.target.value}))}/></label>
+                <label style={styles.specialField}><span>Business type</span><input style={styles.input} value={specialForm.business_type} onChange={e=>setSpecialForm(f=>({...f,business_type:e.target.value}))} placeholder="restaurant, cafe, gym, salon…"/></label>
+                <label style={styles.specialField}><span>Product feature access</span><select style={styles.select} value={specialForm.feature_plan} onChange={e=>setSpecialForm(f=>({...f,feature_plan:e.target.value}))}><option value="starter">Starter features</option><option value="growth">Growth features</option><option value="pro">Pro features</option></select></label>
+                <label style={{...styles.specialField,gridColumn:'1 / -1'}}><span>Business address</span><input style={styles.input} value={specialForm.business_address} onChange={e=>setSpecialForm(f=>({...f,business_address:e.target.value,billing_address:f.billing_address||e.target.value}))}/></label>
+              </div>
+            </>}
+
+            <div style={{...styles.analyticsEyebrow,marginTop:18}}>COMMERCIAL TERMS</div>
             <div style={styles.specialFormGrid}>
-              <label style={styles.specialField}><span>Business</span>
-                <select style={styles.select} disabled={!!editingSpecialId} value={specialForm.business_public_id} onChange={selectSpecialBusiness} required={!editingSpecialId}>
-                  <option value="">Select business…</option>
-                  {businesses.map(b=><option key={b.public_id} value={b.public_id}>{b.name} · {b.email||'no email'}</option>)}
-                </select>
-              </label>
               <label style={styles.specialField}><span>Billing email</span><input type="email" style={styles.input} value={specialForm.billing_email} onChange={e=>setSpecialForm(f=>({...f,billing_email:e.target.value}))} required/></label>
               <label style={styles.specialField}><span>Billing contact</span><input style={styles.input} value={specialForm.billing_contact_name} onChange={e=>setSpecialForm(f=>({...f,billing_contact_name:e.target.value}))} placeholder="Accounting / contact person"/></label>
+              <label style={styles.specialField}><span>Customer TIN (optional)</span><input style={styles.input} value={specialForm.billing_tin} onChange={e=>setSpecialForm(f=>({...f,billing_tin:e.target.value}))} placeholder="TIN shown on invoice"/></label>
               <label style={styles.specialField}><span>Pricing model</span><select style={styles.select} value={specialForm.pricing_model} onChange={e=>setSpecialForm(f=>({...f,pricing_model:e.target.value}))}><option value="flat">Flat monthly price</option><option value="per_branch">Price per branch / month</option></select></label>
               <label style={styles.specialField}><span>Contracted branches</span><input type="number" min="1" max="10000" style={styles.input} value={specialForm.contracted_branch_count} onChange={e=>setSpecialForm(f=>({...f,contracted_branch_count:e.target.value}))}/></label>
               <label style={styles.specialField}><span>{specialForm.pricing_model==='per_branch'?'Price / branch / month':'Flat price / month'}</span><input type="number" min="0" step="0.01" style={styles.input} value={specialForm.monthly_rate} onChange={e=>setSpecialForm(f=>({...f,monthly_rate:e.target.value}))}/></label>
               <label style={styles.specialField}><span>One-time / setup fee</span><input type="number" min="0" step="0.01" style={styles.input} value={specialForm.setup_fee} onChange={e=>setSpecialForm(f=>({...f,setup_fee:e.target.value}))}/></label>
               <label style={styles.specialField}><span>Billing cycle</span><select style={styles.select} value={specialForm.billing_cycle} onChange={e=>setSpecialForm(f=>({...f,billing_cycle:e.target.value}))}><option value="monthly">Monthly</option><option value="3_months">Every 3 months</option><option value="6_months">Every 6 months</option><option value="annual">Annual</option></select></label>
-              <label style={styles.specialField}><span>Exact cycle subtotal override (optional)</span><input type="number" min="0" step="0.01" style={styles.input} value={specialForm.cycle_amount_override} onChange={e=>setSpecialForm(f=>({...f,cycle_amount_override:e.target.value}))} placeholder="Leave blank to calculate from monthly rate"/></label>
+              <label style={styles.specialField}><span>Exact cycle amount override (optional)</span><input type="number" min="0" step="0.01" style={styles.input} value={specialForm.cycle_amount_override} onChange={e=>setSpecialForm(f=>({...f,cycle_amount_override:e.target.value}))} placeholder="Leave blank to calculate from monthly rate"/></label>
               <label style={styles.specialField}><span>Payment due after</span><div style={{display:'flex',alignItems:'center',gap:8}}><input type="number" min="1" max="90" style={styles.input} value={specialForm.due_days} onChange={e=>setSpecialForm(f=>({...f,due_days:e.target.value}))}/><small>days</small></div></label>
+              <label style={{...styles.specialField,gridColumn:'1 / -1'}}><span>Billing address</span><input style={styles.input} value={specialForm.billing_address} onChange={e=>setSpecialForm(f=>({...f,billing_address:e.target.value}))}/></label>
+            </div>
+
+            <div style={{...styles.analyticsEyebrow,marginTop:18}}>INVOICE TAX TREATMENT</div>
+            <div style={styles.specialFormGrid}>
+              <label style={styles.specialField}><span>Tax treatment</span><select style={styles.select} value={specialForm.tax_treatment} onChange={e=>setSpecialForm(f=>({...f,tax_treatment:e.target.value}))}>
+                <option value="vat_registered">VAT taxable</option>
+                <option value="non_vat">Non-VAT</option>
+                <option value="vat_exempt">VAT-exempt transaction</option>
+              </select></label>
+              {specialForm.tax_treatment==='vat_registered'&&<label style={styles.specialField}><span>VAT rate (%)</span><input type="number" min="0" max="100" step="0.01" style={styles.input} value={specialForm.vat_rate} onChange={e=>setSpecialForm(f=>({...f,vat_rate:e.target.value}))}/></label>}
+              {specialForm.tax_treatment==='vat_registered'&&<label style={styles.specialCheckbox}><input type="checkbox" checked={specialForm.price_includes_vat} onChange={e=>setSpecialForm(f=>({...f,price_includes_vat:e.target.checked}))}/> Negotiated price is VAT-inclusive</label>}
+              {specialForm.tax_treatment==='vat_exempt'&&<label style={{...styles.specialField,gridColumn:'1 / -1'}}><span>VAT exemption basis / reference</span><input style={styles.input} value={specialForm.vat_exemption_basis} onChange={e=>setSpecialForm(f=>({...f,vat_exemption_basis:e.target.value}))} placeholder="Required — legal/exemption basis or reference"/></label>}
+            </div>
+
+            <div style={{...styles.analyticsEyebrow,marginTop:18}}>CONTRACT & DELIVERY</div>
+            <div style={styles.specialFormGrid}>
               <label style={styles.specialField}><span>Contract start</span><input type="date" style={styles.input} value={specialForm.contract_start_date} onChange={e=>setSpecialForm(f=>({...f,contract_start_date:e.target.value}))}/></label>
               <label style={styles.specialField}><span>Contract end (optional)</span><input type="date" style={styles.input} value={specialForm.contract_end_date} onChange={e=>setSpecialForm(f=>({...f,contract_end_date:e.target.value}))}/></label>
               <label style={styles.specialField}><span>Next invoice date</span><input type="date" style={styles.input} value={specialForm.next_invoice_date} onChange={e=>setSpecialForm(f=>({...f,next_invoice_date:e.target.value}))}/></label>
               <label style={{...styles.specialField,gridColumn:'1 / -1'}}><span>Invoice description</span><input style={styles.input} value={specialForm.invoice_description} onChange={e=>setSpecialForm(f=>({...f,invoice_description:e.target.value}))} placeholder="e.g. LoyaltyTree Enterprise - up to 60 branches"/></label>
               <label style={{...styles.specialField,gridColumn:'1 / -1'}}><span>Payment instructions</span><textarea style={{...styles.input,minHeight:76}} value={specialForm.payment_instructions} onChange={e=>setSpecialForm(f=>({...f,payment_instructions:e.target.value}))} placeholder="Bank transfer / payment instructions shown on the invoice"/></label>
             </div>
+
+            {(()=>{
+              const p=specialInvoicePreview(specialForm)
+              return <div style={{...styles.specialCalc,marginTop:14}}>
+                <span>Net / sales amount: <b>₱{p.net.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</b></span>
+                <span>VAT: <b>₱{p.vat.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</b></span>
+                <span>Invoice total: <b>₱{p.total.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</b></span>
+              </div>
+            })()}
+
             <div style={styles.specialFormFooter}>
               <label style={styles.specialCheckbox}><input type="checkbox" checked={specialForm.auto_invoice} onChange={e=>setSpecialForm(f=>({...f,auto_invoice:e.target.checked}))}/> Automatically generate & email on the next invoice date</label>
               <label style={styles.specialCheckbox}><input type="checkbox" checked={specialForm.is_active} onChange={e=>setSpecialForm(f=>({...f,is_active:e.target.checked}))}/> Active custom billing</label>
-              <div style={styles.specialCalc}>
-                Estimated cycle invoice: <b>₱{(specialForm.cycle_amount_override!==''?Number(specialForm.cycle_amount_override||0):((specialForm.pricing_model==='per_branch'?Number(specialForm.monthly_rate||0)*Number(specialForm.contracted_branch_count||1):Number(specialForm.monthly_rate||0))*(SPECIAL_BILLING_CYCLE_MONTHS[specialForm.billing_cycle]||1))).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</b>
-                {Number(specialForm.setup_fee||0)>0&&<span> + ₱{Number(specialForm.setup_fee).toLocaleString()} one-time</span>}
-              </div>
-              <button type="submit" style={styles.approveBtn} disabled={specialSaving}>{specialSaving?'Saving…':editingSpecialId?'Save changes':'+ Add special business'}</button>
+              <button type="submit" style={styles.approveBtn} disabled={specialSaving}>{specialSaving?'Saving…':editingSpecialId?'Save changes':'+ Create Special Business'}</button>
             </div>
           </form>
 
@@ -1426,7 +1490,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 <div><span>Cycle</span><b>{specialBillingCycleLabel(p.billing_cycle)}</b></div>
                 <div><span>Next invoice</span><b>{p.next_invoice_date||'—'}</b></div>
               </div>
-              <div style={styles.specialProfileMeta}>{p.pricing_model==='per_branch'?`₱${Number(p.monthly_rate||0).toLocaleString()} per branch / month`:`₱${Number(p.monthly_rate||0).toLocaleString()} flat / month`}{p.cycle_amount_override!=null?` · Exact ${specialBillingCycleLabel(p.billing_cycle)} subtotal ₱${Number(p.cycle_amount_override).toLocaleString()}`:''}{Number(p.setup_fee||0)>0?` · Setup ₱${Number(p.setup_fee).toLocaleString()}`:''}</div>
+              <div style={styles.specialProfileMeta}>{p.pricing_model==='per_branch'?`₱${Number(p.monthly_rate||0).toLocaleString()} per branch / month`:`₱${Number(p.monthly_rate||0).toLocaleString()} flat / month`}{p.cycle_amount_override!=null?` · Exact ${specialBillingCycleLabel(p.billing_cycle)} amount ₱${Number(p.cycle_amount_override).toLocaleString()}`:''}{Number(p.setup_fee||0)>0?` · Setup ₱${Number(p.setup_fee).toLocaleString()}`:''} · {p.tax_treatment==='vat_registered'?`VAT ${Number(p.vat_rate||0)}%${p.price_includes_vat?' inclusive':' exclusive'}`:p.tax_treatment==='vat_exempt'?'VAT-exempt':'Non-VAT'}</div>
               <div style={{display:'flex',gap:7,flexWrap:'wrap',marginTop:12}}>
                 <button style={styles.refreshBtn} onClick={()=>editSpecialBusiness(p)}>Edit</button>
                 <button style={styles.approveBtn} disabled={specialInvoiceBusy===p.public_id} onClick={()=>generateSpecialInvoice(p)}>{specialInvoiceBusy===p.public_id?'Generating…':'Generate & Email Now'}</button>
@@ -1444,7 +1508,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                   <td><b>{inv.invoice_number}</b><small style={styles.expenseSub}>{inv.issue_date}</small></td>
                   <td><b>{inv.business_name}</b><small style={styles.expenseSub}>{inv.billing_email}</small></td>
                   <td>{inv.period_start}<small style={styles.expenseSub}>to {inv.period_end}</small></td>
-                  <td><b>₱{Number(inv.total_amount||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</b></td>
+                  <td><b>₱{Number(inv.total_amount||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</b><small style={styles.expenseSub}>{inv.tax_treatment==='vat_registered'?`VAT ₱${Number(inv.vat_amount||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`:inv.tax_treatment==='vat_exempt'?'VAT-exempt':'Non-VAT'}</small></td>
                   <td>{inv.due_date}</td>
                   <td><span style={inv.status==='paid'?styles.expenseApproved:inv.status==='overdue'?styles.expenseRejected:styles.expensePending}>{inv.status}</span></td>
                   <td><span style={inv.email_status==='sent'?styles.expenseApproved:inv.email_status==='failed'?styles.expenseRejected:styles.expensePending}>{inv.email_status}</span></td>
