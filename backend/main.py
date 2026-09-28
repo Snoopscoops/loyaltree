@@ -16558,6 +16558,18 @@ def _special_parse_date(value, field_name: str = 'date') -> Optional[date]:
     except Exception:
         raise HTTPException(status_code=400, detail=f'{field_name} must use YYYY-MM-DD')
 
+def _special_first(query):
+    """Return the first row safely for Special Billing lookups.
+
+    Avoid maybe_single(): with the deployed Supabase/PostgREST client,
+    a zero-row result can yield None from execute(), and then `.data`
+    raises AttributeError. Zero rows are normal when creating a first invoice.
+    """
+    response = query.limit(1).execute()
+    rows = getattr(response, 'data', None) if response is not None else None
+    rows = rows or []
+    return rows[0] if rows else None
+
 def _special_add_months(value: date, months: int) -> date:
     month_index = (value.month - 1) + int(months)
     year = value.year + month_index // 12
@@ -16762,10 +16774,9 @@ def _generate_special_invoice(profile: dict, period_start: Optional[date] = None
     months = _SPECIAL_BILLING_CYCLE_MONTHS.get(str(profile.get('billing_cycle') or 'monthly'), 1)
     end = _special_add_months(start, months) - timedelta(days=1)
 
-    existing = (
+    existing = _special_first(
         supabase.table('special_business_invoices').select('*')
         .eq('profile_id', profile.get('id')).eq('period_start', start.isoformat())
-        .maybe_single().execute().data
     )
     if existing:
         return _send_special_invoice(existing, profile, business) if send_now else existing
@@ -16945,7 +16956,9 @@ async def admin_create_special_business(req: SpecialBusinessBillingCreate, _: bo
 
 @app.patch("/api/v1/admin/special-businesses/{profile_public_id}")
 async def admin_update_special_business(profile_public_id: str, req: SpecialBusinessBillingUpdate, _: bool = Depends(require_admin)):
-    profile = supabase.table('special_business_billing').select('*').eq('public_id', profile_public_id).maybe_single().execute().data
+    profile = _special_first(
+        supabase.table('special_business_billing').select('*').eq('public_id', profile_public_id)
+    )
     if not profile:
         raise HTTPException(status_code=404, detail='Special billing profile not found')
     patch = req.model_dump(exclude_unset=True)
@@ -16977,7 +16990,9 @@ async def admin_update_special_business(profile_public_id: str, req: SpecialBusi
 
 @app.post("/api/v1/admin/special-businesses/{profile_public_id}/generate-invoice")
 async def admin_generate_special_invoice(profile_public_id: str, _: bool = Depends(require_admin)):
-    profile = supabase.table('special_business_billing').select('*').eq('public_id', profile_public_id).maybe_single().execute().data
+    profile = _special_first(
+        supabase.table('special_business_billing').select('*').eq('public_id', profile_public_id)
+    )
     if not profile:
         raise HTTPException(status_code=404, detail='Special billing profile not found')
     # Manual generation starts a billing period today and advances the next
@@ -17001,17 +17016,23 @@ async def admin_special_invoices(_: bool = Depends(require_admin)):
 
 @app.post("/api/v1/admin/special-invoices/{invoice_public_id}/resend")
 async def admin_resend_special_invoice(invoice_public_id: str, _: bool = Depends(require_admin)):
-    invoice = supabase.table('special_business_invoices').select('*').eq('public_id', invoice_public_id).maybe_single().execute().data
+    invoice = _special_first(
+        supabase.table('special_business_invoices').select('*').eq('public_id', invoice_public_id)
+    )
     if not invoice:
         raise HTTPException(status_code=404, detail='Invoice not found')
-    profile = supabase.table('special_business_billing').select('*').eq('id', invoice.get('profile_id')).maybe_single().execute().data or {}
+    profile = _special_first(
+        supabase.table('special_business_billing').select('*').eq('id', invoice.get('profile_id'))
+    ) or {}
     business = safe_get_business_by_id(invoice.get('business_id')) or {}
     sent = _send_special_invoice(invoice, profile, business)
     return _special_invoice_public(sent, business)
 
 @app.patch("/api/v1/admin/special-invoices/{invoice_public_id}")
 async def admin_update_special_invoice(invoice_public_id: str, req: SpecialInvoiceAdminUpdate, _: bool = Depends(require_admin)):
-    invoice = supabase.table('special_business_invoices').select('*').eq('public_id', invoice_public_id).maybe_single().execute().data
+    invoice = _special_first(
+        supabase.table('special_business_invoices').select('*').eq('public_id', invoice_public_id)
+    )
     if not invoice:
         raise HTTPException(status_code=404, detail='Invoice not found')
     now = datetime.utcnow().isoformat()
@@ -17035,11 +17056,15 @@ async def admin_update_special_invoice(invoice_public_id: str, req: SpecialInvoi
 
 @app.get("/api/v1/public/special-invoices/{access_token}", response_class=HTMLResponse)
 async def public_special_invoice(access_token: str):
-    row = supabase.table('special_business_invoices').select('*').eq('access_token', access_token).maybe_single().execute().data
+    row = _special_first(
+        supabase.table('special_business_invoices').select('*').eq('access_token', access_token)
+    )
     if not row:
         raise HTTPException(status_code=404, detail='Invoice not found')
     business = safe_get_business_by_id(row.get('business_id')) or {}
-    profile = supabase.table('special_business_billing').select('*').eq('id', row.get('profile_id')).maybe_single().execute().data or {}
+    profile = _special_first(
+        supabase.table('special_business_billing').select('*').eq('id', row.get('profile_id'))
+    ) or {}
 
     currency = row.get('currency') or 'PHP'
     amount = money_text(row.get('total_amount') or 0, currency)
