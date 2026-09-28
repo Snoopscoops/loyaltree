@@ -61,7 +61,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const [kitSearch,setKitSearch]=useState('')
   const [networkPartners,setNetworkPartners]=useState([])
   const [networkPartnerSaving,setNetworkPartnerSaving]=useState(false)
-  const [networkPartnerForm,setNetworkPartnerForm]=useState({name:'',email:'',password:'',partner_type:'city',region:'',city:'',partner_code:'',commission_type:'percent',commission_value:10,is_active:true})
+  const [networkPartnerForm,setNetworkPartnerForm]=useState({name:'',email:'',password:'',partner_type:'city',region:'',province:'',city:'',partner_code:'',commission_type:'percent',commission_value:10,is_active:true})
   const [networkPartnerAssignForm,setNetworkPartnerAssignForm]=useState({partner_public_id:'',business_public_id:''})
   const [networkPartnerAssigning,setNetworkPartnerAssigning]=useState(false)
   const [platformAnalytics,setPlatformAnalytics]=useState(null)
@@ -458,7 +458,50 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
     return <div style={styles.loadingScreen}>Loading platform data…</div>
   }
 
-  const createNetworkPartner=async(e)=>{e.preventDefault();setNetworkPartnerSaving(true);try{const res=await authedFetch('/api/v1/admin/network-partners',{method:'POST',body:JSON.stringify({...networkPartnerForm,commission_value:Number(networkPartnerForm.commission_value)||0,partner_code:networkPartnerForm.partner_code.toUpperCase()})});const d=await res.json().catch(()=>({}));if(!res.ok)throw new Error(d.detail||'Could not create partner');setNetworkPartnerForm({name:'',email:'',password:'',partner_type:'city',region:'',city:'',partner_code:'',commission_type:'percent',commission_value:10,is_active:true});setMessage('City/region partner created');loadData()}catch(err){setMessage(err.message)}setNetworkPartnerSaving(false)}
+  const networkPartnerErrorMessage=(detail)=>{
+    if(Array.isArray(detail)){
+      return detail.map(item=>{
+        const field=Array.isArray(item?.loc)?item.loc[item.loc.length-1]:'field'
+        return `${String(field||'field').replaceAll('_',' ')}: ${item?.msg||'Invalid value'}`
+      }).join(' · ')
+    }
+    return typeof detail==='string'?detail:'Could not create partner'
+  }
+  const createNetworkPartner=async(e)=>{
+    e.preventDefault()
+    const form={
+      ...networkPartnerForm,
+      name:networkPartnerForm.name.trim(),
+      email:networkPartnerForm.email.trim().toLowerCase(),
+      region:networkPartnerForm.region.trim(),
+      province:networkPartnerForm.province.trim()||null,
+      city:networkPartnerForm.city.trim()||null,
+      partner_code:networkPartnerForm.partner_code.trim().toUpperCase(),
+      commission_value:Number(networkPartnerForm.commission_value)||0,
+    }
+    if(form.name.length<2)return setMessage('Partner name must be at least 2 characters')
+    if(form.password.length<8)return setMessage('Temporary password must be at least 8 characters')
+    if(form.region.length<2)return setMessage('Enter the partner region')
+    if(form.partner_type==='province'&&!form.province)return setMessage('Province is required for a province partner')
+    if(form.partner_type==='city'&&!form.city)return setMessage('City is required for a city partner')
+    if(form.partner_code.length<3)return setMessage('Partner code must be at least 3 characters')
+    if(form.partner_type==='region'){form.province=null;form.city=null}
+    if(form.partner_type==='province')form.city=null
+
+    setNetworkPartnerSaving(true)
+    try{
+      const res=await authedFetch('/api/v1/admin/network-partners',{method:'POST',body:JSON.stringify(form)})
+      const d=await res.json().catch(()=>({}))
+      if(!res.ok)throw new Error(networkPartnerErrorMessage(d.detail))
+      setNetworkPartnerForm({name:'',email:'',password:'',partner_type:'city',region:'',province:'',city:'',partner_code:'',commission_type:'percent',commission_value:10,is_active:true})
+      setMessage('Local partner created')
+      loadData()
+    }catch(err){
+      setMessage(err.message||'Could not create partner')
+    }finally{
+      setNetworkPartnerSaving(false)
+    }
+  }
   const patchNetworkPartner=async(p,patch)=>{try{const res=await authedFetch(`/api/v1/admin/network-partners/${p.public_id}`,{method:'PATCH',body:JSON.stringify(patch)});const d=await res.json().catch(()=>({}));if(!res.ok)throw new Error(d.detail||'Partner update failed');setMessage('Partner updated');loadData()}catch(err){setMessage(err.message)}}
 
   const assignNetworkPartnerBusiness=async(e)=>{
@@ -538,7 +581,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
     { key:'performance', label:'Client Performance', icon:'↗', description:'CRM and retention movement across LoyaltyTree clients.' },
     { key:'platform', label:'Platform Analytics', icon:'◫', description:'Website traffic, acquisition, join conversion and Wallet activity.' },
     { key:'operations', label:'Operations', icon:'⚙', description:'Announcements, print requests and QR / PR kit fulfillment.' },
-    { key:'partners', label:'Partners', icon:'◎', description:'Region / city operators and homepage partner management.' },
+    { key:'partners', label:'Partners', icon:'◎', description:'Region / province / city operators and homepage partner management.' },
   ]
   const activeAdminTabMeta = adminTabs.find(tab => tab.key === activeAdminTab) || adminTabs[0]
 
@@ -857,17 +900,18 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
 
         {activeAdminTab === 'partners' && (
         <section style={styles.partnerAdminSection}>
-          <h2 style={styles.partnerAdminTitle}>🌎 Region / City Partner Network</h2>
-          <p style={styles.partnerAdminSubtitle}>Create local LoyaltyTree operators with controlled access to assigned businesses, onboarding/setup status and commission activity. They cannot access customer personal data.</p>
+          <h2 style={styles.partnerAdminTitle}>🌎 Region / Province / City Partner Network</h2>
+          <p style={styles.partnerAdminSubtitle}>Create local LoyaltyTree operators at region, province, or city level with controlled access to assigned businesses, onboarding/setup status and commission activity. They cannot access customer personal data.</p>
           <form onSubmit={createNetworkPartner} style={styles.partnerForm}>
             <div style={styles.partnerFormGrid}>
-              <div><label style={styles.partnerLabel}>Partner name</label><input style={styles.input} value={networkPartnerForm.name} onChange={e=>setNetworkPartnerForm({...networkPartnerForm,name:e.target.value})} required/></div>
+              <div><label style={styles.partnerLabel}>Partner name</label><input style={styles.input} minLength="2" value={networkPartnerForm.name} onChange={e=>setNetworkPartnerForm({...networkPartnerForm,name:e.target.value})} required/></div>
               <div><label style={styles.partnerLabel}>Login email</label><input style={styles.input} type="email" value={networkPartnerForm.email} onChange={e=>setNetworkPartnerForm({...networkPartnerForm,email:e.target.value})} required/></div>
               <div><label style={styles.partnerLabel}>Temporary password</label><input style={styles.input} type="password" minLength="8" value={networkPartnerForm.password} onChange={e=>setNetworkPartnerForm({...networkPartnerForm,password:e.target.value})} required/></div>
-              <div><label style={styles.partnerLabel}>Partner type</label><select style={styles.select} value={networkPartnerForm.partner_type} onChange={e=>setNetworkPartnerForm({...networkPartnerForm,partner_type:e.target.value,city:e.target.value==='region'?'':networkPartnerForm.city})}><option value="city">City Partner</option><option value="region">Region Partner</option></select></div>
-              <div><label style={styles.partnerLabel}>Region</label><input style={styles.input} value={networkPartnerForm.region} onChange={e=>setNetworkPartnerForm({...networkPartnerForm,region:e.target.value})} placeholder="Region II" required/></div>
-              {networkPartnerForm.partner_type==='city'&&<div><label style={styles.partnerLabel}>City</label><input style={styles.input} value={networkPartnerForm.city} onChange={e=>setNetworkPartnerForm({...networkPartnerForm,city:e.target.value})} placeholder="Cauayan City" required/></div>}
-              <div><label style={styles.partnerLabel}>Partner code</label><input style={styles.input} value={networkPartnerForm.partner_code} onChange={e=>setNetworkPartnerForm({...networkPartnerForm,partner_code:e.target.value.toUpperCase()})} placeholder="LT-CAUAYAN" required/></div>
+              <div><label style={styles.partnerLabel}>Partner type</label><select style={styles.select} value={networkPartnerForm.partner_type} onChange={e=>{const type=e.target.value;setNetworkPartnerForm({...networkPartnerForm,partner_type:type,province:type==='region'?'':networkPartnerForm.province,city:type==='city'?networkPartnerForm.city:''})}}><option value="city">City Partner</option><option value="province">Province Partner</option><option value="region">Region Partner</option></select></div>
+              <div><label style={styles.partnerLabel}>Region</label><input style={styles.input} minLength="2" value={networkPartnerForm.region} onChange={e=>setNetworkPartnerForm({...networkPartnerForm,region:e.target.value})} placeholder="Region III" required/></div>
+              {networkPartnerForm.partner_type!=='region'&&<div><label style={styles.partnerLabel}>Province {networkPartnerForm.partner_type==='city'?'(optional for NCR / independent cities)':''}</label><input style={styles.input} value={networkPartnerForm.province} onChange={e=>setNetworkPartnerForm({...networkPartnerForm,province:e.target.value})} placeholder="Pampanga" required={networkPartnerForm.partner_type==='province'}/></div>}
+              {networkPartnerForm.partner_type==='city'&&<div><label style={styles.partnerLabel}>City</label><input style={styles.input} value={networkPartnerForm.city} onChange={e=>setNetworkPartnerForm({...networkPartnerForm,city:e.target.value})} placeholder="Angeles City" required/></div>}
+              <div><label style={styles.partnerLabel}>Partner code</label><input style={styles.input} minLength="3" value={networkPartnerForm.partner_code} onChange={e=>setNetworkPartnerForm({...networkPartnerForm,partner_code:e.target.value.toUpperCase()})} placeholder={networkPartnerForm.partner_type==='province'?'LT-PAMPANGA':networkPartnerForm.partner_type==='region'?'LT-R3':'LT-ANGELES'} required/></div>
               <div><label style={styles.partnerLabel}>Commission</label><div style={{display:'flex',gap:6}}><select style={{...styles.select,width:110}} value={networkPartnerForm.commission_type} onChange={e=>setNetworkPartnerForm({...networkPartnerForm,commission_type:e.target.value})}><option value="percent">Percent</option><option value="fixed">Fixed ₱</option></select><input style={styles.input} type="number" min="0" step="0.01" value={networkPartnerForm.commission_value} onChange={e=>setNetworkPartnerForm({...networkPartnerForm,commission_value:e.target.value})}/></div></div>
             </div><button style={styles.approveBtn} disabled={networkPartnerSaving}>{networkPartnerSaving?'Creating…':'+ Create local partner'}</button>
           </form>
@@ -920,7 +964,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
             </div>
           </form>
 
-          <div style={{...styles.partnerList,marginTop:16}}>{networkPartners.map(p=><div key={p.public_id} style={styles.partnerRow}><div style={{flex:1,minWidth:220}}><b>{p.name}</b><div style={{fontSize:12,color:'#64748b',marginTop:4}}>{p.partner_type==='region'?'Region':'City'} · {p.city?`${p.city}, `:''}{p.region}</div><div style={{fontSize:12,color:'#0f766e',fontWeight:700,marginTop:4}}>{p.partner_code} · {p.business_count||0} businesses</div></div><div style={{fontSize:12,minWidth:150}}>Earned <b>₱{Number(p.commission_earned||0).toLocaleString()}</b><br/>Unpaid <b>₱{Number(p.commission_unpaid||0).toLocaleString()}</b></div><button style={p.is_active?styles.rejectBtn:styles.approveBtn} onClick={()=>patchNetworkPartner(p,{is_active:!p.is_active})}>{p.is_active?'Deactivate':'Activate'}</button></div>)}{!networkPartners.length&&<div style={styles.partnerEmpty}>No city or region partners yet.</div>}</div>
+          <div style={{...styles.partnerList,marginTop:16}}>{networkPartners.map(p=>{const typeLabel=p.partner_type==='region'?'Region':p.partner_type==='province'?'Province':'City';const territory=[p.city,p.province,p.region].filter(Boolean).join(', ');return <div key={p.public_id} style={styles.partnerRow}><div style={{flex:1,minWidth:220}}><b>{p.name}</b><div style={{fontSize:12,color:'#64748b',marginTop:4}}>{typeLabel} · {territory}</div><div style={{fontSize:12,color:'#0f766e',fontWeight:700,marginTop:4}}>{p.partner_code} · {p.business_count||0} businesses</div></div><div style={{fontSize:12,minWidth:150}}>Earned <b>₱{Number(p.commission_earned||0).toLocaleString()}</b><br/>Unpaid <b>₱{Number(p.commission_unpaid||0).toLocaleString()}</b></div><button style={p.is_active?styles.rejectBtn:styles.approveBtn} onClick={()=>patchNetworkPartner(p,{is_active:!p.is_active})}>{p.is_active?'Deactivate':'Activate'}</button></div>})}{!networkPartners.length&&<div style={styles.partnerEmpty}>No region, province, or city partners yet.</div>}</div>
         </section>
         )}
 

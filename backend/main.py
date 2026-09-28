@@ -2734,8 +2734,9 @@ class NetworkPartnerCreate(BaseModel):
     name: str = Field(min_length=2, max_length=160)
     email: str = Field(min_length=3, max_length=320)
     password: str = Field(min_length=8, max_length=200)
-    partner_type: Literal['region','city'] = 'city'
+    partner_type: Literal['region','province','city'] = 'city'
     region: str = Field(min_length=2, max_length=120)
+    province: Optional[str] = Field(default=None, max_length=120)
     city: Optional[str] = Field(default=None, max_length=120)
     partner_code: str = Field(min_length=3, max_length=40)
     commission_type: Literal['percent','fixed'] = 'percent'
@@ -2746,8 +2747,9 @@ class NetworkPartnerUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=2, max_length=160)
     email: Optional[str] = Field(default=None, min_length=3, max_length=320)
     password: Optional[str] = Field(default=None, min_length=8, max_length=200)
-    partner_type: Optional[Literal['region','city']] = None
+    partner_type: Optional[Literal['region','province','city']] = None
     region: Optional[str] = Field(default=None, min_length=2, max_length=120)
+    province: Optional[str] = Field(default=None, max_length=120)
     city: Optional[str] = Field(default=None, max_length=120)
     partner_code: Optional[str] = Field(default=None, min_length=3, max_length=40)
     commission_type: Optional[Literal['percent','fixed']] = None
@@ -5315,7 +5317,7 @@ def require_partner(authorization: str = Header(default='')) -> dict:
     return claims
 
 def _network_partner_public(row: dict) -> dict:
-    return {k: row.get(k) for k in ('public_id','name','email','partner_type','region','city','partner_code','commission_type','commission_value','is_active','created_at')}
+    return {k: row.get(k) for k in ('public_id','name','email','partner_type','region','province','city','partner_code','commission_type','commission_value','is_active','created_at')}
 
 def business_summary(biz: dict) -> dict:
     """Lightweight per-business row for the admin businesses list - counts
@@ -12161,7 +12163,7 @@ async def login(req: LoginRequest, request: Request):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database not connected")
 
-    # Region/city partner accounts are platform-scoped and intentionally
+    # Region/province/city partner accounts are platform-scoped and intentionally
     # separate from businesses and homepage-logo partners.
     try:
         partner = supabase.table("network_partners").select("*").ilike("email", req.email.strip()).maybe_single().execute().data
@@ -16440,15 +16442,15 @@ def _partner_demo_payload(partner: dict, business: dict) -> dict:
 
 
 
-# ---- Region / City Partner Network -----------------------------------------
+# ---- Region / Province / City Partner Network ------------------------------
 @app.get("/api/v1/public/network-partner/{partner_code}")
 async def public_network_partner(partner_code: str):
     try:
-        row = supabase.table('network_partners').select('name,partner_type,region,city,partner_code,is_active').eq('partner_code', partner_code.strip().upper()).eq('is_active', True).maybe_single().execute().data
+        row = supabase.table('network_partners').select('name,partner_type,region,province,city,partner_code,is_active').eq('partner_code', partner_code.strip().upper()).eq('is_active', True).maybe_single().execute().data
     except Exception:
         row = None
     if not row: raise HTTPException(status_code=404, detail='Partner code not found')
-    return {k:row.get(k) for k in ('name','partner_type','region','city','partner_code')}
+    return {k:row.get(k) for k in ('name','partner_type','region','province','city','partner_code')}
 
 @app.get("/api/v1/admin/network-partners")
 async def admin_network_partners(_: bool = Depends(require_admin)):
@@ -16468,10 +16470,35 @@ async def admin_network_partners(_: bool = Depends(require_admin)):
 @app.post("/api/v1/admin/network-partners")
 async def admin_create_network_partner(req: NetworkPartnerCreate, _: bool = Depends(require_admin)):
     code=re.sub(r'[^A-Z0-9_-]','',req.partner_code.strip().upper())
-    if len(code)<3: raise HTTPException(status_code=400,detail='Partner code must contain at least 3 letters/numbers')
-    if req.partner_type=='city' and not (req.city or '').strip(): raise HTTPException(status_code=400,detail='City is required for a city partner')
+    if len(code)<3:
+        raise HTTPException(status_code=400,detail='Partner code must contain at least 3 letters/numbers')
+
+    region=(req.region or '').strip()
+    province=(req.province or '').strip() or None
+    city=(req.city or '').strip() or None
+    if req.partner_type=='province' and not province:
+        raise HTTPException(status_code=400,detail='Province is required for a province partner')
+    if req.partner_type=='city' and not city:
+        raise HTTPException(status_code=400,detail='City is required for a city partner')
+    if req.partner_type=='region':
+        province=None
+        city=None
+    elif req.partner_type=='province':
+        city=None
+
     payload=req.model_dump(exclude={'password','partner_code'})
-    payload.update({'public_id':'np_'+uuid.uuid4().hex[:20],'partner_code':code,'email':req.email.strip().lower(),'password_hash':hash_password(req.password),'created_at':datetime.utcnow().isoformat(),'updated_at':datetime.utcnow().isoformat()})
+    payload.update({
+        'name':req.name.strip(),
+        'email':req.email.strip().lower(),
+        'region':region,
+        'province':province,
+        'city':city,
+        'public_id':'np_'+uuid.uuid4().hex[:20],
+        'partner_code':code,
+        'password_hash':hash_password(req.password),
+        'created_at':datetime.utcnow().isoformat(),
+        'updated_at':datetime.utcnow().isoformat(),
+    })
     try:
         row = (supabase.table('network_partners').insert(payload).execute().data or [payload])[0]
         try:
@@ -16486,17 +16513,51 @@ async def admin_create_network_partner(req: NetworkPartnerCreate, _: bool = Depe
 
 @app.patch("/api/v1/admin/network-partners/{public_id}")
 async def admin_update_network_partner(public_id:str, req:NetworkPartnerUpdate, _:bool=Depends(require_admin)):
+    existing=(
+        supabase.table('network_partners').select('*')
+        .eq('public_id',public_id).maybe_single().execute().data
+    )
+    if not existing:
+        raise HTTPException(status_code=404,detail='Partner not found')
+
     data={k:v for k,v in req.model_dump(exclude={'password'}).items() if v is not None}
-    if req.password: data['password_hash']=hash_password(req.password)
-    if 'partner_code' in data: data['partner_code']=re.sub(r'[^A-Z0-9_-]','',data['partner_code'].strip().upper())
-    if 'email' in data: data['email']=data['email'].strip().lower()
+    if req.password:
+        data['password_hash']=hash_password(req.password)
+    if 'partner_code' in data:
+        data['partner_code']=re.sub(r'[^A-Z0-9_-]','',data['partner_code'].strip().upper())
+        if len(data['partner_code']) < 3:
+            raise HTTPException(status_code=400,detail='Partner code must contain at least 3 letters/numbers')
+    if 'email' in data:
+        data['email']=data['email'].strip().lower()
+    for field in ('name','region','province','city'):
+        if field in data and isinstance(data[field],str):
+            data[field]=data[field].strip() or None
+
+    merged={**existing,**data}
+    partner_type=merged.get('partner_type') or 'city'
+    if not (merged.get('region') or '').strip():
+        raise HTTPException(status_code=400,detail='Region is required')
+    if partner_type=='province' and not (merged.get('province') or '').strip():
+        raise HTTPException(status_code=400,detail='Province is required for a province partner')
+    if partner_type=='city' and not (merged.get('city') or '').strip():
+        raise HTTPException(status_code=400,detail='City is required for a city partner')
+
+    if partner_type=='region':
+        data['province']=None
+        data['city']=None
+    elif partner_type=='province':
+        data['city']=None
+
     data['updated_at']=datetime.utcnow().isoformat()
     try:
         row=(supabase.table('network_partners').update(data).eq('public_id',public_id).execute().data or [None])[0]
-        if not row: raise HTTPException(status_code=404,detail='Partner not found')
+        if not row:
+            raise HTTPException(status_code=404,detail='Partner not found')
         return _network_partner_public(row)
-    except HTTPException: raise
-    except Exception as e: raise HTTPException(status_code=400,detail=friendly_db_error(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400,detail=friendly_db_error(e))
 
 @app.get("/api/v1/admin/network-partners/{public_id}/businesses")
 async def admin_network_partner_businesses(public_id:str, _:bool=Depends(require_admin)):
