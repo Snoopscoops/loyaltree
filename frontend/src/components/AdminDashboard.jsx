@@ -83,6 +83,15 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const [specialInvoices,setSpecialInvoices]=useState([])
   const [specialSaving,setSpecialSaving]=useState(false)
   const [specialInvoiceBusy,setSpecialInvoiceBusy]=useState('')
+  const [paymentReceivedModal,setPaymentReceivedModal]=useState(null)
+  const [paymentReceivedSaving,setPaymentReceivedSaving]=useState(false)
+  const [paymentReceivedForm,setPaymentReceivedForm]=useState({
+    payment_date:new Date().toISOString().slice(0,10),
+    payment_method:'bank_transfer',
+    payment_reference:'',
+    amount_received:'',
+    remarks:'',
+  })
   const [editingSpecialId,setEditingSpecialId]=useState('')
   const [specialForm,setSpecialForm]=useState({
     business_name:'',business_email:'',business_password:'',business_phone:'',business_type:'other',business_address:'',feature_plan:'pro',
@@ -699,16 +708,68 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
     setSpecialInvoiceBusy('')
   }
 
-  const updateSpecialInvoiceStatus=async(inv,status)=>{
-    const note=window.prompt(status==='paid'?'Optional payment reference / admin note':'Reason for voiding (optional)','')||''
+  const openPaymentReceived=inv=>{
+    setPaymentReceivedModal(inv)
+    setPaymentReceivedForm({
+      payment_date:new Date().toISOString().slice(0,10),
+      payment_method:'bank_transfer',
+      payment_reference:'',
+      amount_received:Number(inv.total_amount||0).toFixed(2),
+      remarks:'',
+    })
+  }
+
+  const confirmPaymentReceived=async e=>{
+    e.preventDefault()
+    const inv=paymentReceivedModal
+    if(!inv)return
+    const amount=Number(paymentReceivedForm.amount_received||0)
+    if(!(amount>0)){setMessage('Enter the amount received');return}
+    setPaymentReceivedSaving(true)
     setSpecialInvoiceBusy(inv.public_id)
     try{
-      const res=await authedFetch(`/api/v1/admin/special-invoices/${inv.public_id}`,{method:'PATCH',body:JSON.stringify({status,admin_notes:note})})
+      const res=await authedFetch(`/api/v1/admin/special-invoices/${inv.public_id}/confirm-payment`,{
+        method:'POST',
+        body:JSON.stringify({...paymentReceivedForm,amount_received:amount,send_receipt:true}),
+      })
       const d=await res.json().catch(()=>({}))
-      if(!res.ok)throw new Error(d.detail||'Could not update invoice')
-      setMessage(`Invoice marked ${status}`)
+      if(!res.ok)throw new Error(d.detail||'Could not confirm payment')
+      const ar=d.acknowledgement_receipt
+      setMessage(ar?.email_status==='sent'
+        ? `${ar.receipt_number||'Acknowledgement receipt'} generated and emailed`
+        : `${ar?.receipt_number||'Acknowledgement receipt'} generated; email send failed`)
+      setPaymentReceivedModal(null)
       await loadData()
-    }catch(err){setMessage(err.message||'Could not update invoice')}
+    }catch(err){setMessage(err.message||'Could not confirm payment')}
+    setPaymentReceivedSaving(false)
+    setSpecialInvoiceBusy('')
+  }
+
+  const resendSpecialReceipt=async receipt=>{
+    if(!receipt?.public_id)return
+    setSpecialInvoiceBusy(receipt.public_id)
+    try{
+      const res=await authedFetch(`/api/v1/admin/special-receipts/${receipt.public_id}/resend`,{method:'POST'})
+      const d=await res.json().catch(()=>({}))
+      if(!res.ok)throw new Error(d.detail||'Could not resend acknowledgement receipt')
+      setMessage(d.email_status==='sent'?'Acknowledgement receipt emailed':'Acknowledgement receipt email failed')
+      await loadData()
+    }catch(err){setMessage(err.message||'Could not resend acknowledgement receipt')}
+    setSpecialInvoiceBusy('')
+  }
+
+  const voidSpecialInvoice=async inv=>{
+    const note=window.prompt('Reason for voiding (optional)','')||''
+    setSpecialInvoiceBusy(inv.public_id)
+    try{
+      const res=await authedFetch(`/api/v1/admin/special-invoices/${inv.public_id}`,{
+        method:'PATCH',body:JSON.stringify({status:'void',admin_notes:note})
+      })
+      const d=await res.json().catch(()=>({}))
+      if(!res.ok)throw new Error(d.detail||'Could not void invoice')
+      setMessage('Invoice voided')
+      await loadData()
+    }catch(err){setMessage(err.message||'Could not void invoice')}
     setSpecialInvoiceBusy('')
   }
 
@@ -1515,8 +1576,13 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                   <td><div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
                     <a href={`${API_BASE}/api/v1/public/special-invoices/${inv.access_token}`} target="_blank" rel="noreferrer" style={{...styles.refreshBtn,textDecoration:'none'}}>View</a>
                     {inv.status!=='void'&&<button style={styles.refreshBtn} disabled={specialInvoiceBusy===inv.public_id} onClick={()=>resendSpecialInvoice(inv)}>Resend</button>}
-                    {!['paid','void'].includes(inv.status)&&<button style={styles.approveBtn} disabled={specialInvoiceBusy===inv.public_id} onClick={()=>updateSpecialInvoiceStatus(inv,'paid')}>Mark paid</button>}
-                    {inv.status!=='void'&&inv.status!=='paid'&&<button style={styles.rejectBtn} disabled={specialInvoiceBusy===inv.public_id} onClick={()=>updateSpecialInvoiceStatus(inv,'void')}>Void</button>}
+                    {!['paid','void'].includes(inv.status)&&<button style={styles.approveBtn} disabled={specialInvoiceBusy===inv.public_id} onClick={()=>openPaymentReceived(inv)}>Payment Received</button>}
+                    {inv.status==='paid'&&!inv.acknowledgement_receipt&&<button style={styles.approveBtn} disabled={specialInvoiceBusy===inv.public_id} onClick={()=>openPaymentReceived(inv)}>Create AR</button>}
+                    {inv.acknowledgement_receipt&&<>
+                      <a href={`${API_BASE}/api/v1/public/special-receipts/${inv.acknowledgement_receipt.access_token}`} target="_blank" rel="noreferrer" style={{...styles.refreshBtn,textDecoration:'none'}}>View AR</a>
+                      <button style={styles.refreshBtn} disabled={specialInvoiceBusy===inv.acknowledgement_receipt.public_id} onClick={()=>resendSpecialReceipt(inv.acknowledgement_receipt)}>Resend AR</button>
+                    </>}
+                    {inv.status!=='void'&&inv.status!=='paid'&&<button style={styles.rejectBtn} disabled={specialInvoiceBusy===inv.public_id} onClick={()=>voidSpecialInvoice(inv)}>Void</button>}
                   </div></td>
                 </tr>)}</tbody>
               </table>
@@ -2109,6 +2175,41 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
               Methodology: “Returning member” means active during the selected period with earlier recorded LoyaltyTree activity. Client-level personal data is excluded. Non-POS metrics should not be described as sales or revenue.
             </div>
           </div>
+        </div>
+      )}
+
+      {paymentReceivedModal && (
+        <div style={styles.modalOverlay} onClick={()=>!paymentReceivedSaving&&setPaymentReceivedModal(null)}>
+          <form style={styles.modal} onSubmit={confirmPaymentReceived} onClick={e=>e.stopPropagation()}>
+            <div style={styles.analyticsEyebrow}>PAYMENT CONFIRMATION</div>
+            <h2 style={styles.modalTitle}>Payment Received</h2>
+            <p style={{color:'#64748b',fontSize:12.5,lineHeight:1.5,marginTop:-8}}>
+              Confirm only after Loyalty Tree has actually received the payment. This marks <b>{paymentReceivedModal.invoice_number}</b> as paid and automatically generates and emails an acknowledgement receipt.
+            </p>
+            <div style={{...styles.specialCalc,margin:'12px 0'}}>
+              Invoice total: <b>₱{Number(paymentReceivedModal.total_amount||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</b>
+            </div>
+            <div style={styles.detailGrid}>
+              <label style={styles.specialField}><span>Payment date</span><input required type="date" style={styles.input} value={paymentReceivedForm.payment_date} onChange={e=>setPaymentReceivedForm(f=>({...f,payment_date:e.target.value}))}/></label>
+              <label style={styles.specialField}><span>Payment method</span><select style={styles.select} value={paymentReceivedForm.payment_method} onChange={e=>setPaymentReceivedForm(f=>({...f,payment_method:e.target.value}))}>
+                <option value="bank_transfer">Bank Transfer</option>
+                <option value="gcash">GCash</option>
+                <option value="paymongo">PayMongo</option>
+                <option value="cash">Cash</option>
+                <option value="other">Other</option>
+              </select></label>
+              <label style={styles.specialField}><span>Amount received</span><input required type="number" min="0.01" step="0.01" style={styles.input} value={paymentReceivedForm.amount_received} onChange={e=>setPaymentReceivedForm(f=>({...f,amount_received:e.target.value}))}/></label>
+              <label style={styles.specialField}><span>Reference / transaction no.</span><input style={styles.input} value={paymentReceivedForm.payment_reference} onChange={e=>setPaymentReceivedForm(f=>({...f,payment_reference:e.target.value}))} placeholder="Bank ref, GCash ref, PayMongo ID…"/></label>
+              <label style={styles.specialField}><span>Remarks</span><textarea style={{...styles.input,minHeight:72}} value={paymentReceivedForm.remarks} onChange={e=>setPaymentReceivedForm(f=>({...f,remarks:e.target.value}))} placeholder="Optional payment note"/></label>
+            </div>
+            {Number(paymentReceivedForm.amount_received||0)!==Number(paymentReceivedModal.total_amount||0)&&(
+              <div style={styles.backendNote}>Amount received differs from the invoice total. You can still confirm intentionally; the acknowledgement receipt will show the actual amount received.</div>
+            )}
+            <div style={{display:'flex',gap:10,marginTop:14,flexWrap:'wrap'}}>
+              <button type="submit" style={styles.approveBtn} disabled={paymentReceivedSaving}>{paymentReceivedSaving?'Confirming…':'Confirm Payment Received & Send AR'}</button>
+              <button type="button" style={styles.closeBtn} disabled={paymentReceivedSaving} onClick={()=>setPaymentReceivedModal(null)}>Cancel</button>
+            </div>
+          </form>
         </div>
       )}
 

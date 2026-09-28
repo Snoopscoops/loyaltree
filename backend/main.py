@@ -2834,8 +2834,16 @@ class SpecialBusinessBillingUpdate(BaseModel):
     is_active: Optional[bool] = None
 
 class SpecialInvoiceAdminUpdate(BaseModel):
-    status: Literal['paid','void']
+    status: Literal['void']
     admin_notes: Optional[str] = Field(default=None, max_length=500)
+
+class SpecialPaymentReceivedRequest(BaseModel):
+    payment_date: str = Field(min_length=10, max_length=10)
+    payment_method: Literal['bank_transfer','gcash','paymongo','cash','other'] = 'bank_transfer'
+    payment_reference: Optional[str] = Field(default=None, max_length=200)
+    amount_received: float = Field(gt=0, le=1000000000)
+    remarks: Optional[str] = Field(default=None, max_length=1000)
+    send_receipt: bool = True
 
 
 class AdminLoginRequest(BaseModel):
@@ -16689,6 +16697,96 @@ def _next_special_invoice_number() -> str:
         print(f"SPECIAL INVOICE number fallback: {exc}")
     return f"LT-SI-{datetime.utcnow().year}-{uuid.uuid4().hex[:8].upper()}"
 
+def _next_special_receipt_number() -> str:
+    try:
+        response = supabase.rpc('next_special_business_receipt_number').execute()
+        result = getattr(response, 'data', None) if response is not None else None
+        if isinstance(result, str) and result.strip():
+            return result.strip()
+        if isinstance(result, list) and result and isinstance(result[0], str):
+            return result[0]
+    except Exception as exc:
+        print(f"SPECIAL RECEIPT number fallback: {exc}")
+    return f"LT-AR-{datetime.utcnow().year}-{uuid.uuid4().hex[:8].upper()}"
+
+def _special_receipt_public(row: dict, business: Optional[dict] = None) -> dict:
+    business = business or {}
+    return {
+        'public_id': row.get('public_id'),
+        'access_token': row.get('access_token'),
+        'receipt_number': row.get('receipt_number'),
+        'invoice_public_id': row.get('invoice_public_id'),
+        'invoice_number': row.get('invoice_number'),
+        'billing_email': row.get('billing_email'),
+        'amount_received': row.get('amount_received'),
+        'currency': row.get('currency') or 'PHP',
+        'payment_date': row.get('payment_date'),
+        'payment_method': row.get('payment_method'),
+        'payment_reference': row.get('payment_reference'),
+        'remarks': row.get('remarks'),
+        'email_status': row.get('email_status'),
+        'sent_at': row.get('sent_at'),
+        'email_last_error': row.get('email_last_error'),
+        'created_at': row.get('created_at'),
+        'updated_at': row.get('updated_at'),
+        'business_public_id': business.get('public_id'),
+        'business_name': business.get('name') or 'Business',
+        'receipt_url': f"{BASE_URL.rstrip('/')}/api/v1/public/special-receipts/{row.get('access_token')}",
+    }
+
+def _special_receipt_email_html(receipt: dict, invoice: dict, business: dict) -> str:
+    receipt_url = f"{BASE_URL.rstrip('/')}/api/v1/public/special-receipts/{receipt.get('access_token')}"
+    amount = html_lib.escape(money_text(receipt.get('amount_received') or 0, receipt.get('currency') or 'PHP'))
+    business_name = html_lib.escape(str(business.get('name') or 'Business'))
+    receipt_no = html_lib.escape(str(receipt.get('receipt_number') or 'Acknowledgement Receipt'))
+    invoice_no = html_lib.escape(str(receipt.get('invoice_number') or invoice.get('invoice_number') or ''))
+    payment_method = html_lib.escape(str(receipt.get('payment_method') or '').replace('_',' ').title())
+    payment_reference = html_lib.escape(str(receipt.get('payment_reference') or '—'))
+    remarks = html_lib.escape(str(receipt.get('remarks') or '')).replace('\n','<br>')
+    remarks_block = f"<p><b>Remarks</b><br>{remarks}</p>" if remarks else ''
+    return (
+        f"<div style='font-family:Arial,sans-serif;max-width:680px;margin:auto;color:#0f172a'>"
+        f"<h2 style='margin-bottom:4px'>LoyaltyTree Acknowledgement Receipt</h2>"
+        f"<div style='color:#64748b'>{receipt_no}</div>"
+        f"<p>Payment for <b>{business_name}</b> has been recorded.</p>"
+        f"<table style='width:100%;border-collapse:collapse;margin:20px 0'>"
+        f"<tr><td style='padding:8px;border-bottom:1px solid #e2e8f0'>Related Sales Invoice</td><td style='padding:8px;border-bottom:1px solid #e2e8f0;text-align:right'>{invoice_no}</td></tr>"
+        f"<tr><td style='padding:8px;border-bottom:1px solid #e2e8f0'>Payment date</td><td style='padding:8px;border-bottom:1px solid #e2e8f0;text-align:right'>{html_lib.escape(str(receipt.get('payment_date') or ''))}</td></tr>"
+        f"<tr><td style='padding:8px;border-bottom:1px solid #e2e8f0'>Payment method</td><td style='padding:8px;border-bottom:1px solid #e2e8f0;text-align:right'>{payment_method}</td></tr>"
+        f"<tr><td style='padding:8px;border-bottom:1px solid #e2e8f0'>Reference</td><td style='padding:8px;border-bottom:1px solid #e2e8f0;text-align:right'>{payment_reference}</td></tr>"
+        f"<tr><td style='padding:10px 8px;font-weight:bold'>Amount received</td><td style='padding:10px 8px;font-weight:bold;text-align:right;font-size:18px'>{amount}</td></tr>"
+        f"</table>{remarks_block}"
+        f"<p><a href='{html_lib.escape(receipt_url)}' style='display:inline-block;background:#0f766e;color:#fff;text-decoration:none;padding:11px 16px;border-radius:8px;font-weight:bold'>View / Print Acknowledgement Receipt</a></p>"
+        f"<p style='font-size:12px;color:#64748b'>This acknowledgement receipt confirms payment received and is linked to Sales Invoice {invoice_no}. It does not replace the Sales Invoice as the sales/tax document.</p>"
+        f"</div>"
+    )
+
+def _send_special_receipt(receipt: dict, invoice: dict, business: dict) -> dict:
+    to_email = (receipt.get('billing_email') or invoice.get('billing_email') or business.get('email') or '').strip().lower()
+    if not to_email:
+        raise HTTPException(status_code=400, detail='Billing email is required before sending the acknowledgement receipt')
+    subject = f"{receipt.get('receipt_number')} · Payment received for {business.get('name') or 'your business'}"
+    ok = send_email(
+        to_email,
+        subject,
+        _special_receipt_email_html(receipt, invoice, business),
+        from_email=SUBSCRIPTION_REMINDER_FROM,
+        reply_to=TRANSACTIONAL_REPLY_TO,
+    )
+    now = datetime.utcnow().isoformat()
+    patch = {
+        'email_status': 'sent' if ok else 'failed',
+        'sent_at': now if ok else receipt.get('sent_at'),
+        'email_last_error': None if ok else 'Transactional email provider did not accept the acknowledgement receipt send.',
+        'updated_at': now,
+    }
+    response = (
+        supabase.table('special_business_acknowledgement_receipts').update(patch)
+        .eq('id', receipt.get('id')).execute()
+    )
+    rows = getattr(response, 'data', None) if response is not None else None
+    return (rows or [{**receipt, **patch}])[0]
+
 def _special_invoice_email_html(invoice: dict, profile: dict, business: dict) -> str:
     invoice_url = f"{BASE_URL.rstrip('/')}/api/v1/public/special-invoices/{invoice.get('access_token')}"
     total = float(invoice.get('total_amount') or 0)
@@ -17012,7 +17110,27 @@ async def admin_special_invoices(_: bool = Depends(require_admin)):
     if business_ids:
         biz = supabase.table('businesses').select('id,public_id,name,email').in_('id', business_ids).execute().data or []
         business_map = {b.get('id'): b for b in biz}
-    return [_special_invoice_public(r, business_map.get(r.get('business_id'))) for r in rows]
+
+    receipt_map = {}
+    invoice_ids = [r.get('id') for r in rows if r.get('id') is not None]
+    if invoice_ids:
+        try:
+            receipt_rows = (
+                supabase.table('special_business_acknowledgement_receipts').select('*')
+                .in_('invoice_id', invoice_ids).execute().data or []
+            )
+            receipt_map = {r.get('invoice_id'): r for r in receipt_rows}
+        except Exception:
+            receipt_map = {}
+
+    result = []
+    for r in rows:
+        business = business_map.get(r.get('business_id'))
+        item = _special_invoice_public(r, business)
+        receipt = receipt_map.get(r.get('id'))
+        item['acknowledgement_receipt'] = _special_receipt_public(receipt, business) if receipt else None
+        result.append(item)
+    return result
 
 @app.post("/api/v1/admin/special-invoices/{invoice_public_id}/resend")
 async def admin_resend_special_invoice(invoice_public_id: str, _: bool = Depends(require_admin)):
@@ -17036,23 +17154,177 @@ async def admin_update_special_invoice(invoice_public_id: str, req: SpecialInvoi
     if not invoice:
         raise HTTPException(status_code=404, detail='Invoice not found')
     now = datetime.utcnow().isoformat()
-    patch = {'status': req.status, 'admin_notes': (req.admin_notes or '').strip() or None, 'updated_at': now}
-    if req.status == 'paid':
-        patch['paid_at'] = now
-    else:
-        patch['voided_at'] = now
-    row = (supabase.table('special_business_invoices').update(patch).eq('id', invoice.get('id')).execute().data or [{**invoice, **patch}])[0]
+    patch = {
+        'status': 'void',
+        'admin_notes': (req.admin_notes or '').strip() or None,
+        'voided_at': now,
+        'updated_at': now,
+    }
+    response = supabase.table('special_business_invoices').update(patch).eq('id', invoice.get('id')).execute()
+    rows = getattr(response, 'data', None) if response is not None else None
+    row = (rows or [{**invoice, **patch}])[0]
     business = safe_get_business_by_id(invoice.get('business_id')) or {}
-    if req.status == 'paid' and business:
+    return _special_invoice_public(row, business)
+
+@app.post("/api/v1/admin/special-invoices/{invoice_public_id}/confirm-payment")
+async def admin_confirm_special_invoice_payment(
+    invoice_public_id: str,
+    req: SpecialPaymentReceivedRequest,
+    _: bool = Depends(require_admin),
+):
+    invoice = _special_first(
+        supabase.table('special_business_invoices').select('*').eq('public_id', invoice_public_id)
+    )
+    if not invoice:
+        raise HTTPException(status_code=404, detail='Invoice not found')
+    if str(invoice.get('status') or '').lower() == 'void':
+        raise HTTPException(status_code=400, detail='A void invoice cannot be marked as payment received')
+
+    payment_date = _special_parse_date(req.payment_date, 'payment_date')
+    business = safe_get_business_by_id(invoice.get('business_id')) or {}
+    profile = _special_first(
+        supabase.table('special_business_billing').select('*').eq('id', invoice.get('profile_id'))
+    ) or {}
+
+    existing_receipt = _special_first(
+        supabase.table('special_business_acknowledgement_receipts').select('*')
+        .eq('invoice_id', invoice.get('id'))
+    )
+
+    now = datetime.utcnow().isoformat()
+    receipt_payload = {
+        'invoice_id': invoice.get('id'),
+        'profile_id': invoice.get('profile_id'),
+        'business_id': invoice.get('business_id'),
+        'invoice_public_id': invoice.get('public_id'),
+        'invoice_number': invoice.get('invoice_number'),
+        'billing_email': invoice.get('billing_email') or profile.get('billing_email') or business.get('email'),
+        'amount_received': round(float(req.amount_received or 0), 2),
+        'currency': invoice.get('currency') or 'PHP',
+        'payment_date': payment_date.isoformat(),
+        'payment_method': req.payment_method,
+        'payment_reference': (req.payment_reference or '').strip() or None,
+        'remarks': (req.remarks or '').strip() or None,
+        'updated_at': now,
+    }
+
+    if existing_receipt:
+        response = (
+            supabase.table('special_business_acknowledgement_receipts')
+            .update(receipt_payload).eq('id', existing_receipt.get('id')).execute()
+        )
+        rows = getattr(response, 'data', None) if response is not None else None
+        receipt = (rows or [{**existing_receipt, **receipt_payload}])[0]
+    else:
+        receipt_payload.update({
+            'public_id': 'ar_' + uuid.uuid4().hex[:24],
+            'access_token': secrets.token_urlsafe(32),
+            'receipt_number': _next_special_receipt_number(),
+            'email_status': 'pending',
+            'created_at': now,
+        })
+        response = supabase.table('special_business_acknowledgement_receipts').insert(receipt_payload).execute()
+        rows = getattr(response, 'data', None) if response is not None else None
+        receipt = (rows or [receipt_payload])[0]
+
+    invoice_patch = {
+        'status': 'paid',
+        'paid_at': now,
+        'admin_notes': (req.remarks or '').strip() or invoice.get('admin_notes'),
+        'updated_at': now,
+    }
+    inv_response = (
+        supabase.table('special_business_invoices').update(invoice_patch)
+        .eq('id', invoice.get('id')).execute()
+    )
+    inv_rows = getattr(inv_response, 'data', None) if inv_response is not None else None
+    paid_invoice = (inv_rows or [{**invoice, **invoice_patch}])[0]
+
+    if business:
         business_patch = {
             'billing_mode': 'special',
-            'last_paid_at': datetime.utcnow().date().isoformat(),
+            'last_paid_at': payment_date.isoformat(),
             'subscription_expires_at': str(invoice.get('period_end')),
         }
         if str(business.get('status') or '').upper() == 'PENDING':
             business_patch['status'] = 'ACTIVE'
         supabase.table('businesses').update(business_patch).eq('id', business.get('id')).execute()
-    return _special_invoice_public(row, business)
+
+    if req.send_receipt:
+        receipt = _send_special_receipt(receipt, paid_invoice, business)
+
+    return {
+        'invoice': _special_invoice_public(paid_invoice, business),
+        'acknowledgement_receipt': _special_receipt_public(receipt, business),
+    }
+
+@app.post("/api/v1/admin/special-receipts/{receipt_public_id}/resend")
+async def admin_resend_special_acknowledgement_receipt(
+    receipt_public_id: str,
+    _: bool = Depends(require_admin),
+):
+    receipt = _special_first(
+        supabase.table('special_business_acknowledgement_receipts').select('*')
+        .eq('public_id', receipt_public_id)
+    )
+    if not receipt:
+        raise HTTPException(status_code=404, detail='Acknowledgement receipt not found')
+    invoice = _special_first(
+        supabase.table('special_business_invoices').select('*').eq('id', receipt.get('invoice_id'))
+    ) or {}
+    business = safe_get_business_by_id(receipt.get('business_id')) or {}
+    receipt = _send_special_receipt(receipt, invoice, business)
+    return _special_receipt_public(receipt, business)
+
+@app.get("/api/v1/public/special-receipts/{access_token}", response_class=HTMLResponse)
+async def public_special_acknowledgement_receipt(access_token: str):
+    receipt = _special_first(
+        supabase.table('special_business_acknowledgement_receipts').select('*')
+        .eq('access_token', access_token)
+    )
+    if not receipt:
+        raise HTTPException(status_code=404, detail='Acknowledgement receipt not found')
+    invoice = _special_first(
+        supabase.table('special_business_invoices').select('*').eq('id', receipt.get('invoice_id'))
+    ) or {}
+    business = safe_get_business_by_id(receipt.get('business_id')) or {}
+
+    currency = receipt.get('currency') or 'PHP'
+    amount = html_lib.escape(money_text(receipt.get('amount_received') or 0, currency))
+    method = html_lib.escape(str(receipt.get('payment_method') or '').replace('_',' ').title())
+    reference = html_lib.escape(str(receipt.get('payment_reference') or '—'))
+    remarks = html_lib.escape(str(receipt.get('remarks') or '')).replace('\\n','<br>')
+    remarks_block = f"<div class='note'><b>Remarks</b><br>{remarks}</div>" if remarks else ''
+
+    html = f"""<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{html_lib.escape(str(receipt.get('receipt_number') or 'Acknowledgement Receipt'))}</title>
+<style>
+body{{font-family:Arial,sans-serif;background:#f8fafc;color:#0f172a;margin:0;padding:24px}}
+.sheet{{max-width:820px;margin:auto;background:#fff;border:1px solid #e2e8f0;border-radius:18px;padding:34px}}
+.top{{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;border-bottom:2px solid #0f766e;padding-bottom:20px}}
+h1{{margin:0;font-size:28px}} .muted{{color:#64748b}} table{{width:100%;border-collapse:collapse;margin-top:24px}}
+td{{padding:11px 8px;border-bottom:1px solid #e2e8f0}} td:last-child{{text-align:right;font-weight:700}}
+.total{{font-size:21px;font-weight:900;color:#0f766e}} .note{{margin-top:24px;padding:14px;background:#f8fafc;border-radius:10px;line-height:1.5}}
+.actions{{max-width:820px;margin:14px auto;text-align:right}} button{{border:0;background:#0f766e;color:#fff;padding:10px 14px;border-radius:8px;font-weight:700;cursor:pointer}}
+@media print{{body{{background:#fff;padding:0}}.sheet{{border:0;border-radius:0;padding:0}}.actions{{display:none}}}}
+</style></head>
+<body><div class="actions"><button onclick="window.print()">Print / Save PDF</button></div>
+<div class="sheet">
+<div class="top"><div><div class="muted">Loyalty Tree Information and Technology Solutions</div><h1>ACKNOWLEDGEMENT RECEIPT</h1><div class="muted">{html_lib.escape(str(receipt.get('receipt_number') or ''))}</div></div>
+<div><div><b>Payment date</b> {html_lib.escape(str(receipt.get('payment_date') or ''))}</div><div class="muted">Payment received</div></div></div>
+<h3>Received from</h3><div><b>{html_lib.escape(str(business.get('name') or 'Business'))}</b></div>
+<div class="muted">{html_lib.escape(str(receipt.get('billing_email') or ''))}</div>
+<table>
+<tr><td>Related Sales Invoice</td><td>{html_lib.escape(str(receipt.get('invoice_number') or invoice.get('invoice_number') or ''))}</td></tr>
+<tr><td>Payment method</td><td>{method}</td></tr>
+<tr><td>Payment reference</td><td>{reference}</td></tr>
+<tr><td class="total">Amount received</td><td class="total">{amount}</td></tr>
+</table>
+{remarks_block}
+<div class="note muted">This acknowledgement receipt confirms payment received and is linked to the related Sales Invoice. It does not replace the Sales Invoice as the sales/tax document.</div>
+</div></body></html>"""
+    return HTMLResponse(content=html, headers={'Cache-Control':'no-store'})
 
 @app.get("/api/v1/public/special-invoices/{access_token}", response_class=HTMLResponse)
 async def public_special_invoice(access_token: str):
