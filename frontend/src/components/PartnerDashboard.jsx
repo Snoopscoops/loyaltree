@@ -11,6 +11,9 @@ function statusLabel(v){return String(v||'').replaceAll('_',' ').trim()||'Not av
 function PartnerDashboard({API_BASE,user,onLogout}){
   const [data,setData]=useState(null)
   const [error,setError]=useState('')
+  const [expenseForm,setExpenseForm]=useState({category:'transportation',description:'',amount:'',expense_date:new Date().toISOString().slice(0,10),reference_no:'',receipt_url:''})
+  const [expenseSaving,setExpenseSaving]=useState(false)
+  const [expenseMessage,setExpenseMessage]=useState('')
 
   const authHeaders={Authorization:`Bearer ${user?.token}`}
 
@@ -27,9 +30,32 @@ function PartnerDashboard({API_BASE,user,onLogout}){
 
   useEffect(()=>{load()},[user?.token])
 
+  const submitExpense=async(e)=>{
+    e.preventDefault()
+    setExpenseSaving(true)
+    setExpenseMessage('')
+    try{
+      const payload={...expenseForm,amount:Number(expenseForm.amount)}
+      const r=await fetch(`${API_BASE}/api/v1/partner/operational-expenses`,{
+        method:'POST',
+        headers:{...authHeaders,'Content-Type':'application/json'},
+        body:JSON.stringify(payload),
+      })
+      const d=await r.json().catch(()=>({}))
+      if(r.status===401||r.status===403){onLogout();return}
+      if(!r.ok)throw new Error(d.detail||'Could not submit operational expense')
+      setExpenseForm({category:'transportation',description:'',amount:'',expense_date:new Date().toISOString().slice(0,10),reference_no:'',receipt_url:''})
+      setExpenseMessage('Expense submitted for Super Admin approval ✓')
+      await load()
+    }catch(err){setExpenseMessage(err.message||'Expense submission failed')}
+    finally{setExpenseSaving(false)}
+  }
+
   if(!data)return <div style={s.page}><div style={s.loadingCard}>{error||'Loading partner dashboard…'}</div></div>
 
   const {partner={},stats={},businesses=[],commissions=[]}=data
+  const operationalExpenses=Array.isArray(data.operational_expenses)?data.operational_expenses:[]
+  const expenseStorageReady=data.expense_storage_ready!==false
   const payouts=data.payouts||data.payout_history||[]
   const rawCommissionRate=Number(partner.commission_value??partner.commission_rate??0)
   const normalizedCommissionRate=partner.commission_value==null&&rawCommissionRate>0&&rawCommissionRate<1?rawCommissionRate*100:rawCommissionRate
@@ -57,9 +83,9 @@ function PartnerDashboard({API_BASE,user,onLogout}){
   return <div style={s.page}>
     <header style={s.header}>
       <div>
-        <div style={s.kicker}>{partner.partner_type==='region'?'REGION PARTNER':'CITY PARTNER'}</div>
+        <div style={s.kicker}>{partner.partner_type==='region'?'REGION PARTNER':partner.partner_type==='province'?'PROVINCE PARTNER':'CITY PARTNER'}</div>
         <h1 style={s.h1}>{partner.name}</h1>
-        <div style={s.sub}>{partner.city?`${partner.city}, `:''}{partner.region} · Code <b>{partner.partner_code}</b></div>
+        <div style={s.sub}>{[partner.city,partner.province,partner.region].filter(Boolean).join(', ')} · Code <b>{partner.partner_code}</b></div>
       </div>
       <button style={s.logout} onClick={onLogout}>Log out</button>
     </header>
@@ -113,7 +139,9 @@ function PartnerDashboard({API_BASE,user,onLogout}){
           <div style={s.summaryGrid}>
             <MiniStat label="Paying businesses" value={payingBusinesses.length}/>
             <MiniStat label="Commission earned" value={money(stats.commission_earned)}/>
-            <MiniStat label="Unpaid" value={money(amountDue)}/>
+            <MiniStat label="Unpaid commission" value={money(amountDue)}/>
+            <MiniStat label="Pending expenses" value={money(stats.pending_expense_total)}/>
+            <MiniStat label="Approved expenses" value={money(stats.approved_expense_total)}/>
             <MiniStat label="Partner code" value={partner.partner_code||'—'}/>
           </div>
         </div>
@@ -146,6 +174,45 @@ function PartnerDashboard({API_BASE,user,onLogout}){
           </table>
         </div>
         {!payingBusinesses.length&&<div style={s.empty}>No paying businesses recorded yet.</div>}
+      </section>
+
+      <section style={s.card}>
+        <div style={s.sectionHead}>
+          <div>
+            <div style={s.eyebrow}>OPERATIONAL EXPENSES</div>
+            <h2 style={s.h2}>Submit expenses for approval</h2>
+            <p style={s.note}>Record legitimate LoyaltyTree field/operational costs. Every submission stays pending until reviewed by Super Admin and does not change your commission balance.</p>
+          </div>
+          <span style={s.infoPill}>{Number(stats.pending_expense_count||0)} pending</span>
+        </div>
+
+        {!expenseStorageReady&&<div style={s.backendNote}>Operational expense storage is not ready yet. Super Admin must run the expense migration in Supabase.</div>}
+        {expenseStorageReady&&<form onSubmit={submitExpense} style={s.expenseForm}>
+          <div style={s.expenseGrid}>
+            <div><label style={s.formLabel}>Category</label><select style={s.formInput} value={expenseForm.category} onChange={e=>setExpenseForm({...expenseForm,category:e.target.value})}><option value="transportation">Transportation</option><option value="meals">Meals / Client meeting</option><option value="marketing">Marketing / Promotion</option><option value="supplies">Supplies / Materials</option><option value="communication">Communication / Load</option><option value="events">Events / Activation</option><option value="other">Other</option></select></div>
+            <div><label style={s.formLabel}>Expense date</label><input style={s.formInput} type="date" max={new Date().toISOString().slice(0,10)} value={expenseForm.expense_date} onChange={e=>setExpenseForm({...expenseForm,expense_date:e.target.value})} required/></div>
+            <div><label style={s.formLabel}>Amount</label><input style={s.formInput} type="number" min="0.01" step="0.01" value={expenseForm.amount} onChange={e=>setExpenseForm({...expenseForm,amount:e.target.value})} placeholder="0.00" required/></div>
+            <div><label style={s.formLabel}>Reference / OR no. <span style={s.optional}>(optional)</span></label><input style={s.formInput} value={expenseForm.reference_no} onChange={e=>setExpenseForm({...expenseForm,reference_no:e.target.value})} maxLength={120} placeholder="Receipt or reference number"/></div>
+          </div>
+          <div style={{marginTop:10}}><label style={s.formLabel}>Description</label><textarea style={s.formTextarea} value={expenseForm.description} onChange={e=>setExpenseForm({...expenseForm,description:e.target.value})} maxLength={500} rows={3} placeholder="What was this expense for?" required/></div>
+          <div style={{marginTop:10}}><label style={s.formLabel}>Receipt / proof link <span style={s.optional}>(optional)</span></label><input style={s.formInput} type="url" value={expenseForm.receipt_url} onChange={e=>setExpenseForm({...expenseForm,receipt_url:e.target.value})} placeholder="https://..."/></div>
+          <div style={s.expenseSubmitRow}><button type="submit" style={s.submitBtn} disabled={expenseSaving}>{expenseSaving?'Submitting…':'Submit for approval'}</button>{expenseMessage&&<span style={{...s.expenseMessage,color:expenseMessage.includes('✓')?'#047857':'#b91c1c'}}>{expenseMessage}</span>}</div>
+        </form>}
+
+        <div style={{overflowX:'auto',marginTop:18}}>
+          <table style={s.table}>
+            <thead><tr><th>Date</th><th>Category / details</th><th>Amount</th><th>Status</th><th>Admin note</th><th>Proof</th></tr></thead>
+            <tbody>{operationalExpenses.map(x=><tr key={x.public_id}>
+              <td>{dateLabel(x.expense_date||x.submitted_at)}</td>
+              <td><b>{statusLabel(x.category)}</b><small style={s.cellSub}>{x.description}{x.reference_no?` · Ref: ${x.reference_no}`:''}</small></td>
+              <td><b>{money(x.amount)}</b></td>
+              <td><StatusPill value={x.status}/></td>
+              <td>{x.admin_notes||'—'}{x.reviewed_at&&<small style={s.cellSub}>Reviewed {dateLabel(x.reviewed_at)}</small>}</td>
+              <td>{x.receipt_url?<a href={x.receipt_url} target="_blank" rel="noreferrer" style={s.receiptLink}>View proof ↗</a>:'—'}</td>
+            </tr>)}</tbody>
+          </table>
+        </div>
+        {!operationalExpenses.length&&<div style={s.empty}>No operational expenses submitted yet.</div>}
       </section>
 
       <section style={s.card}>
@@ -206,9 +273,10 @@ function MiniStat({label,value}){
 
 function StatusPill({value}){
   const raw=String(value||'').toUpperCase()
-  const positive=['PAID','ACTIVE','PAYABLE','COMPLETED'].some(x=>raw.includes(x))
+  const positive=['PAID','ACTIVE','PAYABLE','COMPLETED','APPROVED'].some(x=>raw.includes(x))
   const warning=['DUE','PENDING','PROCESSING','OVERDUE','PAST_DUE'].some(x=>raw.includes(x))
-  const style=positive?s.statusGood:warning?s.statusWarn:s.statusNeutral
+  const negative=['REJECTED','VOID','CANCELLED'].some(x=>raw.includes(x))
+  const style=positive?s.statusGood:warning?s.statusWarn:negative?s.statusBad:s.statusNeutral
   return <span style={style}>{statusLabel(value)}</span>
 }
 
@@ -235,6 +303,16 @@ const s={
   statusGood:{display:'inline-flex',background:'#ecfdf5',color:'#047857',padding:'4px 8px',borderRadius:999,fontSize:10,fontWeight:900,textTransform:'capitalize'},
   statusWarn:{display:'inline-flex',background:'#fff7ed',color:'#9a3412',padding:'4px 8px',borderRadius:999,fontSize:10,fontWeight:900,textTransform:'capitalize'},
   statusNeutral:{display:'inline-flex',background:'#f1f5f9',color:'#64748b',padding:'4px 8px',borderRadius:999,fontSize:10,fontWeight:900,textTransform:'capitalize'},
+  statusBad:{display:'inline-flex',background:'#fef2f2',color:'#b91c1c',padding:'4px 8px',borderRadius:999,fontSize:10,fontWeight:900,textTransform:'capitalize'},
+  expenseForm:{marginTop:14,padding:14,border:'1px solid #dbeafe',background:'#f8fbff',borderRadius:12},
+  expenseGrid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',gap:10},
+  formLabel:{display:'block',fontSize:11,fontWeight:800,color:'#475569',marginBottom:5},
+  optional:{fontWeight:500,color:'#94a3b8'},
+  formInput:{width:'100%',boxSizing:'border-box',border:'1px solid #cbd5e1',borderRadius:8,padding:'9px 10px',fontSize:12,color:'#0f172a',background:'white'},
+  formTextarea:{width:'100%',boxSizing:'border-box',border:'1px solid #cbd5e1',borderRadius:8,padding:'9px 10px',fontSize:12,color:'#0f172a',background:'white',resize:'vertical',fontFamily:'inherit'},
+  expenseSubmitRow:{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',marginTop:12},
+  submitBtn:{border:'none',background:'#0f766e',color:'white',borderRadius:8,padding:'9px 13px',fontSize:12,fontWeight:800,cursor:'pointer'},
+  expenseMessage:{fontSize:11.5,fontWeight:700},
   empty:{padding:18,color:'#94a3b8',textAlign:'center'},
 }
 

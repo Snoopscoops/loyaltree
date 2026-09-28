@@ -60,6 +60,8 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const [setupKitOrders,setSetupKitOrders]=useState([])
   const [kitSearch,setKitSearch]=useState('')
   const [networkPartners,setNetworkPartners]=useState([])
+  const [partnerExpenses,setPartnerExpenses]=useState([])
+  const [expenseReviewing,setExpenseReviewing]=useState('')
   const [networkPartnerSaving,setNetworkPartnerSaving]=useState(false)
   const [networkPartnerForm,setNetworkPartnerForm]=useState({name:'',email:'',password:'',partner_type:'city',region:'',province:'',city:'',partner_code:'',commission_type:'percent',commission_value:10,is_active:true})
   const [networkPartnerAssignForm,setNetworkPartnerAssignForm]=useState({partner_public_id:'',business_public_id:''})
@@ -132,7 +134,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
       if (statusFilter) params.set('status', statusFilter)
       if (planFilter) params.set('plan', planFilter)
 
-      const [ovRes, plansRes, bizRes, pendingRes, partnersRes, kitRes, networkPartnersRes] = await Promise.all([
+      const [ovRes, plansRes, bizRes, pendingRes, partnersRes, kitRes, networkPartnersRes, partnerExpensesRes] = await Promise.all([
         authedFetch('/api/v1/admin/overview'),
         authedFetch('/api/v1/admin/plans'),
         authedFetch(`/api/v1/admin/businesses?${params.toString()}`),
@@ -140,6 +142,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
         authedFetch('/api/v1/admin/partners'),
         authedFetch('/api/v1/admin/setup-kit-orders'),
         authedFetch('/api/v1/admin/network-partners'),
+        authedFetch('/api/v1/admin/partner-operational-expenses'),
       ])
       if (ovRes.status === 401 || bizRes.status === 401) { onLogout(); return }
       setOverview(await ovRes.json().catch(() => null))
@@ -149,6 +152,8 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
       setPartners(await partnersRes.json().catch(() => []))
       setSetupKitOrders(await kitRes.json().catch(() => []))
       setNetworkPartners(await networkPartnersRes.json().catch(() => []))
+      const expensePayload=await partnerExpensesRes.json().catch(() => [])
+      setPartnerExpenses(partnerExpensesRes.ok&&Array.isArray(expensePayload)?expensePayload:[])
     } catch (err) {
       console.error('Admin load error:', err)
     }
@@ -504,6 +509,27 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   }
   const patchNetworkPartner=async(p,patch)=>{try{const res=await authedFetch(`/api/v1/admin/network-partners/${p.public_id}`,{method:'PATCH',body:JSON.stringify(patch)});const d=await res.json().catch(()=>({}));if(!res.ok)throw new Error(d.detail||'Partner update failed');setMessage('Partner updated');loadData()}catch(err){setMessage(err.message)}}
 
+  const reviewPartnerExpense=async(expense,status)=>{
+    const action=status==='approved'?'Approve':'Reject'
+    let adminNotes=''
+    if(status==='rejected'){
+      const entered=window.prompt('Reason for rejection (optional):','')
+      if(entered===null)return
+      adminNotes=entered.trim()
+    }else if(!window.confirm(`Approve ${expense.partner_name||'partner'} expense of ₱${Number(expense.amount||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}?`)){
+      return
+    }
+    setExpenseReviewing(expense.public_id)
+    try{
+      const res=await authedFetch(`/api/v1/admin/partner-operational-expenses/${expense.public_id}`,{method:'PATCH',body:JSON.stringify({status,admin_notes:adminNotes||null})})
+      const d=await res.json().catch(()=>({}))
+      if(!res.ok)throw new Error(d.detail||`${action} expense failed`)
+      setMessage(`Expense ${status}`)
+      await loadData()
+    }catch(err){setMessage(err.message||`${action} expense failed`)}
+    finally{setExpenseReviewing('');setTimeout(()=>setMessage(''),3500)}
+  }
+
   const assignNetworkPartnerBusiness=async(e)=>{
     e.preventDefault()
     const partnerPublicId=networkPartnerAssignForm.partner_public_id
@@ -581,7 +607,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
     { key:'performance', label:'Client Performance', icon:'↗', description:'CRM and retention movement across LoyaltyTree clients.' },
     { key:'platform', label:'Platform Analytics', icon:'◫', description:'Website traffic, acquisition, join conversion and Wallet activity.' },
     { key:'operations', label:'Operations', icon:'⚙', description:'Announcements, print requests and QR / PR kit fulfillment.' },
-    { key:'partners', label:'Partners', icon:'◎', description:'Region / province / city operators and homepage partner management.' },
+    { key:'partners', label:'Partners', icon:'◎', description:'Region / province / city operators, expense approvals and homepage partner management.' },
   ]
   const activeAdminTabMeta = adminTabs.find(tab => tab.key === activeAdminTab) || adminTabs[0]
 
@@ -965,6 +991,34 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
           </form>
 
           <div style={{...styles.partnerList,marginTop:16}}>{networkPartners.map(p=>{const typeLabel=p.partner_type==='region'?'Region':p.partner_type==='province'?'Province':'City';const territory=[p.city,p.province,p.region].filter(Boolean).join(', ');return <div key={p.public_id} style={styles.partnerRow}><div style={{flex:1,minWidth:220}}><b>{p.name}</b><div style={{fontSize:12,color:'#64748b',marginTop:4}}>{typeLabel} · {territory}</div><div style={{fontSize:12,color:'#0f766e',fontWeight:700,marginTop:4}}>{p.partner_code} · {p.business_count||0} businesses</div></div><div style={{fontSize:12,minWidth:150}}>Earned <b>₱{Number(p.commission_earned||0).toLocaleString()}</b><br/>Unpaid <b>₱{Number(p.commission_unpaid||0).toLocaleString()}</b></div><button style={p.is_active?styles.rejectBtn:styles.approveBtn} onClick={()=>patchNetworkPartner(p,{is_active:!p.is_active})}>{p.is_active?'Deactivate':'Activate'}</button></div>})}{!networkPartners.length&&<div style={styles.partnerEmpty}>No region, province, or city partners yet.</div>}</div>
+
+          <div style={styles.expenseReviewSection}>
+            <div style={styles.expenseReviewHead}>
+              <div>
+                <h3 style={{...styles.partnerAdminTitle,fontSize:15}}>🧾 Operational Expense Approvals</h3>
+                <p style={{...styles.partnerAdminSubtitle,marginBottom:0}}>Partners submit operating costs here for your approval. Approved expenses remain separate from their commission ledger.</p>
+              </div>
+              <div style={styles.expenseSummaryPills}>
+                <span style={{...styles.adminTabContext,color:'#92400e',background:'#fffbeb',borderColor:'#fde68a'}}>{partnerExpenses.filter(x=>x.status==='pending').length} pending</span>
+                <span style={styles.adminTabContext}>₱{partnerExpenses.filter(x=>x.status==='pending').reduce((sum,x)=>sum+Number(x.amount||0),0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} pending value</span>
+              </div>
+            </div>
+            <div style={{overflowX:'auto'}}>
+              <table style={styles.expenseTable}>
+                <thead><tr><th>Partner</th><th>Date</th><th>Expense</th><th>Amount</th><th>Status</th><th>Proof</th><th>Action</th></tr></thead>
+                <tbody>{[...partnerExpenses].sort((a,b)=>Number(b.status==='pending')-Number(a.status==='pending')||new Date(b.submitted_at||0)-new Date(a.submitted_at||0)).map(x=><tr key={x.public_id}>
+                  <td><b>{x.partner_name||'Partner'}</b><small style={styles.expenseSub}>{x.partner_code||''}</small></td>
+                  <td>{x.expense_date?new Date(`${x.expense_date}T00:00:00`).toLocaleDateString(): '—'}</td>
+                  <td><b>{String(x.category||'Expense').replaceAll('_',' ')}</b><small style={styles.expenseSub}>{x.description}{x.reference_no?` · Ref: ${x.reference_no}`:''}</small>{x.admin_notes&&<small style={{...styles.expenseSub,color:'#b45309'}}>Admin note: {x.admin_notes}</small>}</td>
+                  <td><b>₱{Number(x.amount||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</b></td>
+                  <td><span style={x.status==='approved'?styles.expenseApproved:x.status==='rejected'?styles.expenseRejected:styles.expensePending}>{String(x.status||'pending').replaceAll('_',' ')}</span></td>
+                  <td>{x.receipt_url?<a href={x.receipt_url} target="_blank" rel="noreferrer" style={{color:'#0f766e',fontWeight:800}}>View proof ↗</a>:'—'}</td>
+                  <td>{x.status==='pending'?<div style={{display:'flex',gap:6,flexWrap:'wrap'}}><button style={styles.approveBtn} disabled={expenseReviewing===x.public_id} onClick={()=>reviewPartnerExpense(x,'approved')}>Approve</button><button style={styles.rejectBtn} disabled={expenseReviewing===x.public_id} onClick={()=>reviewPartnerExpense(x,'rejected')}>Reject</button></div>:<span style={{fontSize:11,color:'#64748b'}}>{x.reviewed_at?`Reviewed ${new Date(x.reviewed_at).toLocaleDateString()}`:'Reviewed'}</span>}</td>
+                </tr>)}</tbody>
+              </table>
+            </div>
+            {!partnerExpenses.length&&<div style={styles.partnerEmpty}>No operational expense submissions yet.</div>}
+          </div>
         </section>
         )}
 
@@ -2058,6 +2112,15 @@ const styles = {
   partnerRowControls: { width:155, minWidth:135 },
   partnerMiniLabel: { display:'block', marginBottom:4, fontSize:10.5, fontWeight:800, color:'#64748b', textTransform:'uppercase', letterSpacing:.35 },
   partnerActionStack: { display:'flex', flexDirection:'column', gap:6, marginLeft:'auto' },
+
+  expenseReviewSection:{marginTop:22,paddingTop:18,borderTop:'1px solid #e2e8f0'},
+  expenseReviewHead:{display:'flex',justifyContent:'space-between',gap:14,alignItems:'flex-start',flexWrap:'wrap',marginBottom:12},
+  expenseSummaryPills:{display:'flex',gap:7,flexWrap:'wrap'},
+  expenseTable:{width:'100%',minWidth:920,borderCollapse:'collapse',fontSize:12},
+  expenseSub:{display:'block',marginTop:3,color:'#94a3b8',fontWeight:500,maxWidth:320,lineHeight:1.35},
+  expensePending:{display:'inline-flex',padding:'4px 8px',borderRadius:999,background:'#fffbeb',color:'#92400e',fontSize:10.5,fontWeight:900,textTransform:'capitalize'},
+  expenseApproved:{display:'inline-flex',padding:'4px 8px',borderRadius:999,background:'#ecfdf5',color:'#047857',fontSize:10.5,fontWeight:900,textTransform:'capitalize'},
+  expenseRejected:{display:'inline-flex',padding:'4px 8px',borderRadius:999,background:'#fef2f2',color:'#b91c1c',fontSize:10.5,fontWeight:900,textTransform:'capitalize'},
 
   applicationsSection: {
     background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 14,

@@ -2756,6 +2756,19 @@ class NetworkPartnerUpdate(BaseModel):
     commission_value: Optional[float] = Field(default=None, ge=0, le=100000)
     is_active: Optional[bool] = None
 
+
+class PartnerOperationalExpenseCreate(BaseModel):
+    category: str = Field(min_length=2, max_length=80)
+    description: str = Field(min_length=3, max_length=500)
+    amount: float = Field(gt=0, le=10000000)
+    expense_date: Optional[str] = Field(default=None, max_length=10)  # YYYY-MM-DD
+    reference_no: Optional[str] = Field(default=None, max_length=120)
+    receipt_url: Optional[str] = Field(default=None, max_length=1000)
+
+class PartnerOperationalExpenseReview(BaseModel):
+    status: Literal['approved','rejected']
+    admin_notes: Optional[str] = Field(default=None, max_length=500)
+
 class AdminLoginRequest(BaseModel):
     email: str
     password: str
@@ -5318,6 +5331,22 @@ def require_partner(authorization: str = Header(default='')) -> dict:
 
 def _network_partner_public(row: dict) -> dict:
     return {k: row.get(k) for k in ('public_id','name','email','partner_type','region','province','city','partner_code','commission_type','commission_value','is_active','created_at')}
+
+
+def _partner_expense_public(row: dict, partner: Optional[dict] = None) -> dict:
+    item = {k: row.get(k) for k in (
+        'public_id','category','description','amount','expense_date','reference_no',
+        'receipt_url','status','admin_notes','submitted_at','reviewed_at','reviewed_by','created_at','updated_at'
+    )}
+    if partner:
+        item['partner_name'] = partner.get('name')
+        item['partner_code'] = partner.get('partner_code')
+        item['partner_public_id'] = partner.get('public_id')
+        item['partner_type'] = partner.get('partner_type')
+        item['region'] = partner.get('region')
+        item['province'] = partner.get('province')
+        item['city'] = partner.get('city')
+    return item
 
 def business_summary(biz: dict) -> dict:
     """Lightweight per-business row for the admin businesses list - counts
@@ -16559,6 +16588,76 @@ async def admin_update_network_partner(public_id:str, req:NetworkPartnerUpdate, 
     except Exception as e:
         raise HTTPException(status_code=400,detail=friendly_db_error(e))
 
+@app.get("/api/v1/admin/partner-operational-expenses")
+async def admin_partner_operational_expenses(_: bool = Depends(require_admin)):
+    try:
+        rows=(
+            supabase.table('partner_operational_expenses').select('*')
+            .order('submitted_at',desc=True).limit(1000).execute().data or []
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail='Partner operational expense storage is not ready. Run partner_operational_expenses_migration.sql in Supabase.'
+        ) from exc
+
+    partner_ids=list({row.get('partner_id') for row in rows if row.get('partner_id') is not None})
+    partner_map={}
+    if partner_ids:
+        try:
+            partner_rows=(
+                supabase.table('network_partners')
+                .select('id,public_id,name,partner_code,partner_type,region,province,city')
+                .in_('id',partner_ids).execute().data or []
+            )
+            partner_map={p.get('id'):p for p in partner_rows}
+        except Exception:
+            partner_map={}
+    return [_partner_expense_public(row,partner_map.get(row.get('partner_id'))) for row in rows]
+
+
+@app.patch("/api/v1/admin/partner-operational-expenses/{expense_public_id}")
+async def admin_review_partner_operational_expense(
+    expense_public_id: str,
+    req: PartnerOperationalExpenseReview,
+    _: bool = Depends(require_admin),
+):
+    try:
+        existing=(
+            supabase.table('partner_operational_expenses').select('*')
+            .eq('public_id',expense_public_id).maybe_single().execute().data
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503,detail='Partner operational expense storage is not ready.') from exc
+    if not existing:
+        raise HTTPException(status_code=404,detail='Operational expense not found')
+
+    now=datetime.utcnow().isoformat()
+    patch={
+        'status':req.status,
+        'admin_notes':(req.admin_notes or '').strip() or None,
+        'reviewed_at':now,
+        'reviewed_by':'super_admin',
+        'updated_at':now,
+    }
+    try:
+        row=(
+            supabase.table('partner_operational_expenses').update(patch)
+            .eq('id',existing.get('id')).execute().data or [None]
+        )[0]
+    except Exception as exc:
+        raise HTTPException(status_code=400,detail=friendly_db_error(exc)) from exc
+    if not row:
+        raise HTTPException(status_code=404,detail='Operational expense not found')
+
+    partner=(
+        supabase.table('network_partners')
+        .select('public_id,name,partner_code,partner_type,region,province,city')
+        .eq('id',row.get('partner_id')).maybe_single().execute().data
+    ) or {}
+    return _partner_expense_public(row,partner)
+
+
 @app.get("/api/v1/admin/network-partners/{public_id}/businesses")
 async def admin_network_partner_businesses(public_id:str, _:bool=Depends(require_admin)):
     p=supabase.table('network_partners').select('id').eq('public_id',public_id).maybe_single().execute().data
@@ -16579,6 +16678,59 @@ async def partner_me(claims:dict=Depends(require_partner)):
     p=supabase.table('network_partners').select('*').eq('id',claims.get('partner_id')).maybe_single().execute().data
     if not p or not p.get('is_active',True): raise HTTPException(status_code=403,detail='Partner account inactive')
     return _network_partner_public(p)
+
+@app.post("/api/v1/partner/operational-expenses")
+async def partner_create_operational_expense(
+    req: PartnerOperationalExpenseCreate,
+    claims: dict = Depends(require_partner),
+):
+    pid=claims.get('partner_id')
+    partner=(
+        supabase.table('network_partners').select('*')
+        .eq('id',pid).maybe_single().execute().data
+    )
+    if not partner or not partner.get('is_active',True):
+        raise HTTPException(status_code=403,detail='Partner account inactive')
+
+    category=(req.category or '').strip()
+    description=(req.description or '').strip()
+    local_today=datetime.now(LOYALTY_TIMEZONE).date()
+    expense_date=(req.expense_date or '').strip() or local_today.isoformat()
+    try:
+        parsed_date=datetime.strptime(expense_date,'%Y-%m-%d').date()
+    except ValueError:
+        raise HTTPException(status_code=400,detail='Expense date must use YYYY-MM-DD')
+    if parsed_date > local_today:
+        raise HTTPException(status_code=400,detail='Expense date cannot be in the future')
+
+    now=datetime.utcnow().isoformat()
+    receipt_url=(req.receipt_url or '').strip() or None
+    if receipt_url and not re.match(r'^https?://', receipt_url, flags=re.I):
+        raise HTTPException(status_code=400,detail='Receipt / proof link must start with http:// or https://')
+
+    payload={
+        'public_id':'poe_'+uuid.uuid4().hex[:20],
+        'partner_id':pid,
+        'category':category,
+        'description':description,
+        'amount':round(float(req.amount),2),
+        'expense_date':parsed_date.isoformat(),
+        'reference_no':(req.reference_no or '').strip() or None,
+        'receipt_url':receipt_url,
+        'status':'pending',
+        'submitted_at':now,
+        'created_at':now,
+        'updated_at':now,
+    }
+    try:
+        row=(supabase.table('partner_operational_expenses').insert(payload).execute().data or [payload])[0]
+    except Exception as exc:
+        detail=friendly_db_error(exc)
+        if 'partner_operational_expenses' in str(exc):
+            detail='Partner operational expense storage is not ready. Run partner_operational_expenses_migration.sql in Supabase.'
+        raise HTTPException(status_code=503,detail=detail) from exc
+    return _partner_expense_public(row)
+
 
 @app.get("/api/v1/partner/dashboard")
 async def partner_dashboard(claims:dict=Depends(require_partner)):
@@ -16602,6 +16754,17 @@ async def partner_dashboard(claims:dict=Depends(require_partner)):
         .select('public_id,business_id,gross_amount,commission_amount,status,earned_at,paid_at')
         .eq('partner_id',pid).order('earned_at',desc=True).limit(200).execute().data or []
     )
+    operational_expenses=[]
+    expense_storage_ready=True
+    try:
+        operational_expenses=(
+            supabase.table('partner_operational_expenses')
+            .select('public_id,category,description,amount,expense_date,reference_no,receipt_url,status,admin_notes,submitted_at,reviewed_at,reviewed_by,created_at,updated_at')
+            .eq('partner_id',pid).order('submitted_at',desc=True).limit(500).execute().data or []
+        )
+    except Exception as expense_exc:
+        expense_storage_ready=False
+        print(f"PARTNER EXPENSE storage warning partner_id={pid}: {expense_exc}")
     name_by_id={}
     try:
         for b in supabase.table('businesses').select('id,name').eq('partner_id',pid).execute().data or []:
@@ -16614,18 +16777,28 @@ async def partner_dashboard(claims:dict=Depends(require_partner)):
 
     earned=sum(float(c.get('commission_amount') or 0) for c in commissions)
     unpaid=sum(float(c.get('commission_amount') or 0) for c in commissions if c.get('status') in ('earned','approved'))
+    pending_expense_total=round(sum(float(e.get('amount') or 0) for e in operational_expenses if e.get('status')=='pending'),2)
+    approved_expense_total=round(sum(float(e.get('amount') or 0) for e in operational_expenses if e.get('status')=='approved'),2)
+    rejected_expense_total=round(sum(float(e.get('amount') or 0) for e in operational_expenses if e.get('status')=='rejected'),2)
 
     return {
         'partner':_network_partner_public(p),
         'demo': _partner_demo_payload(p, demo_business),
         'businesses':businesses,
         'commissions':commissions,
+        'operational_expenses':operational_expenses,
+        'expense_storage_ready':expense_storage_ready,
         'stats':{
             'businesses':len(businesses),
             'active_businesses':sum(1 for b in businesses if str(b.get('status','')).upper()=='ACTIVE'),
             'pending_businesses':sum(1 for b in businesses if str(b.get('status','')).upper()=='PENDING'),
             'commission_earned':round(earned,2),
             'commission_unpaid':round(unpaid,2),
+            'pending_expense_total':pending_expense_total,
+            'approved_expense_total':approved_expense_total,
+            'rejected_expense_total':rejected_expense_total,
+            'pending_expense_count':sum(1 for e in operational_expenses if e.get('status')=='pending'),
+            'approved_expense_count':sum(1 for e in operational_expenses if e.get('status')=='approved'),
         }
     }
 
