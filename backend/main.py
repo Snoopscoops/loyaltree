@@ -3742,6 +3742,109 @@ def _storehub_basic_auth_header(store_name: str, api_token: str) -> str:
     return f"Basic {token}"
 
 
+def _storehub_safe_response_headers(response) -> dict:
+    """Return only diagnostic StoreHub response headers that are safe to log.
+
+    Never include cookies, authorization, API keys/tokens, signatures, or other
+    arbitrary headers.  The goal is only to discover provider pagination,
+    versioning, cache/range, and rate-limit hints while debugging ANGKAN's
+    historical 5,000-row transaction feed.
+    """
+    if response is None:
+        return {}
+
+    safe_exact = {
+        'link',
+        'content-range',
+        'content-length',
+        'date',
+        'server',
+        'via',
+        'age',
+        'etag',
+        'last-modified',
+        'retry-after',
+        'deprecation',
+        'sunset',
+        'api-version',
+        'x-api-version',
+        'x-request-id',
+        'request-id',
+        'x-correlation-id',
+        'x-total',
+        'x-total-count',
+        'total',
+        'total-count',
+        'x-count',
+        'x-page',
+        'x-current-page',
+        'x-page-count',
+        'x-total-pages',
+        'x-per-page',
+        'x-page-size',
+        'x-limit',
+        'x-offset',
+        'x-next-page',
+        'x-prev-page',
+        'x-next-cursor',
+        'x-prev-cursor',
+        'x-cursor',
+        'next-cursor',
+        'cursor',
+        'x-ratelimit-limit',
+        'x-ratelimit-remaining',
+        'x-ratelimit-reset',
+        'ratelimit-limit',
+        'ratelimit-remaining',
+        'ratelimit-reset',
+    }
+    safe_terms = (
+        'page',
+        'cursor',
+        'pagination',
+        'total',
+        'count',
+        'range',
+        'version',
+        'deprecat',
+        'sunset',
+        'ratelimit',
+        'rate-limit',
+    )
+    blocked_terms = (
+        'authorization',
+        'cookie',
+        'token',
+        'secret',
+        'signature',
+        'api-key',
+        'apikey',
+        'set-cookie',
+    )
+
+    result = {}
+    try:
+        items = response.headers.items()
+    except Exception:
+        return result
+
+    for key, value in items:
+        name = str(key or '').strip().lower()
+        if not name:
+            continue
+        if any(term in name for term in blocked_terms):
+            continue
+        if name not in safe_exact and not any(term in name for term in safe_terms):
+            continue
+
+        clean = str(value or '').replace('\r', ' ').replace('\n', ' ').strip()
+        if len(clean) > 500:
+            clean = clean[:500] + '…'
+        result[name] = clean
+
+    return result
+
+
 def _storehub_request_with_credentials(
     store_name: str,
     api_token: str,
@@ -3774,6 +3877,32 @@ def _storehub_request_with_credentials(
         raise HTTPException(
             status_code=502,
             detail=f'Could not reach StoreHub API: {exc}',
+        )
+
+    # ANGKAN pilot diagnostic: StoreHub currently returns the same historical
+    # 5,000 transaction rows despite a current date window. Log only safe
+    # response metadata so we can detect an official Link/cursor/page/version
+    # mechanism without exposing credentials or cookies.
+    if POS_COMPANION_DEBUG and safe_path == '/transactions':
+        request_params = {}
+        for key, value in (params or {}).items():
+            safe_key = str(key or '').strip()
+            lower_key = safe_key.lower()
+            if any(term in lower_key for term in ('token', 'secret', 'key', 'auth', 'signature', 'cookie')):
+                continue
+            request_params[safe_key] = value
+        print(
+            'STOREHUB_RESPONSE_META '
+            + json.dumps(
+                {
+                    'path': safe_path,
+                    'status_code': int(res.status_code),
+                    'request_params': request_params,
+                    'headers': _storehub_safe_response_headers(res),
+                },
+                default=str,
+                sort_keys=True,
+            )
         )
 
     if res.status_code >= 400:
