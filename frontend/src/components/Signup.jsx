@@ -21,6 +21,39 @@ const BILLING_TERMS = {
   annual: { label: '1 Year', unit: '/year', multiplier: 10, savings: '2 months free' },
 }
 
+const SELF_SERVE_BILLING_CYCLES = new Set(['3_months', '6_months', 'annual'])
+
+function normalizeSelfServeBillingCycle(value) {
+  return SELF_SERVE_BILLING_CYCLES.has(value) ? value : '3_months'
+}
+
+function apiErrorMessage(payload, fallback) {
+  const detail = payload?.detail
+
+  if (typeof detail === 'string' && detail.trim()) return detail
+
+  if (Array.isArray(detail)) {
+    const messages = detail.map(item => {
+      if (typeof item === 'string') return item
+
+      const location = Array.isArray(item?.loc)
+        ? item.loc.filter(part => part !== 'body').join(' → ')
+        : ''
+      const message = item?.msg || item?.message || ''
+
+      return [location, message].filter(Boolean).join(': ')
+    }).filter(Boolean)
+
+    if (messages.length) return messages.join(' · ')
+  }
+
+  if (detail && typeof detail === 'object') {
+    return detail.msg || detail.message || fallback
+  }
+
+  return fallback
+}
+
 function priceFor(planData, branchCount, billingCycle = '3_months') {
   if (!planData) return null
 
@@ -218,16 +251,37 @@ function Signup({ API_BASE }) {
     const params=new URLSearchParams(window.location.search)
     const requestedCountry=params.get('country')
     const requestedBillingCycle=params.get('billing_cycle')
-    const supportedBillingCycles=new Set(['monthly','3_months','6_months','annual'])
-    if(requestedBillingCycle&&supportedBillingCycles.has(requestedBillingCycle)){
-      setForm(f=>({...f,billing_cycle:requestedBillingCycle}))
+
+    if(requestedBillingCycle){
+      const normalizedBillingCycle=normalizeSelfServeBillingCycle(requestedBillingCycle)
+      setForm(f=>({...f,billing_cycle:normalizedBillingCycle}))
+
+      // Monthly can still be displayed as a pricing reference on the homepage,
+      // but new self-serve subscriptions start at the 3-month prepaid minimum.
+      // Rewrite stale/legacy signup URLs so Step 5 never sends "monthly" to the
+      // agreement API.
+      if(requestedBillingCycle!==normalizedBillingCycle){
+        params.set('billing_cycle',normalizedBillingCycle)
+        const query=params.toString()
+        window.history.replaceState(
+          {},
+          '',
+          `${window.location.pathname}${query?`?${query}`:''}${window.location.hash||''}`
+        )
+      }
     }
+
     let restored=null
     if(params.get('paymongo_return')==='1'){
       try{restored=JSON.parse(localStorage.getItem('loyaltree_pending_onboarding')||'null')}catch(_){restored=null}
       if(restored?.business_slug){
         setBusinessSlug(restored.business_slug);setRegistered(true);setWizardStep(6)
-        setForm(f=>({...f,billing_cycle:restored.billing_cycle||f.billing_cycle,country_code:restored.pricing_region||f.country_code,pricing_region:restored.pricing_region||f.pricing_region}))
+        setForm(f=>({
+          ...f,
+          billing_cycle:normalizeSelfServeBillingCycle(restored.billing_cycle||f.billing_cycle),
+          country_code:restored.pricing_region||f.country_code,
+          pricing_region:restored.pricing_region||f.pricing_region
+        }))
       }
     }
     loadPricingContext(restored?.pricing_region||requestedCountry||undefined)
@@ -276,18 +330,19 @@ function Signup({ API_BASE }) {
       authority_confirmed:false, agreement_confirmed:false, policies_acknowledged:false,
     }))
     try{
+      const billingCycle=normalizeSelfServeBillingCycle(form.billing_cycle)
       const res=await fetch(`${API_BASE}/api/v1/legal/signup-agreement/preview`,{
         method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({
           name:form.name,email:form.email,phone:form.phone,address:form.address,
           contact_person:form.contact_person,plan:form.plan,branch_count:branchCount,
-          billing_cycle:form.billing_cycle,
+          billing_cycle:billingCycle,
           country_code:form.country_code,pricing_region:form.pricing_region,
           setup_kit_requested:Boolean(form.setup_kit_requested && pricingContext.setup_kit_available),
         })
       })
       const data=await res.json()
-      if(!res.ok)throw new Error(data.detail||'Could not load the agreement')
+      if(!res.ok)throw new Error(apiErrorMessage(data,'Could not load the agreement'))
       setAgreementDoc(data)
     }catch(err){setError(err.message||'Could not load the agreement')}
     finally{setAgreementLoading(false)}
@@ -324,8 +379,9 @@ function Signup({ API_BASE }) {
     setAgreement(a=>({...a,signature_data_url:capturedSignature}))
     setLoading(true);setError('')
     try{
+      const billingCycle=normalizeSelfServeBillingCycle(form.billing_cycle)
       const res=await fetch(`${API_BASE}/api/v1/register`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-        ...form,branch_count:branchCount,setup_kit_requested:Boolean(form.setup_kit_requested && pricingContext.setup_kit_available),
+        ...form,billing_cycle:billingCycle,branch_count:branchCount,setup_kit_requested:Boolean(form.setup_kit_requested && pricingContext.setup_kit_available),
         agreement:{
           ...agreement,
           signature_data_url:capturedSignature,
@@ -337,9 +393,9 @@ function Signup({ API_BASE }) {
         }
       })})
       const data=await res.json()
-      if(!res.ok)throw new Error(data.detail||'Signup failed')
+      if(!res.ok)throw new Error(apiErrorMessage(data,'Signup failed'))
       setBusinessSlug(data.business_slug); setRegistered(true)
-      localStorage.setItem('loyaltree_pending_onboarding',JSON.stringify({business_slug:data.business_slug,contact_person:form.contact_person,billing_cycle:form.billing_cycle,pricing_region:form.pricing_region||form.country_code,started_at:new Date().toISOString()}))
+      localStorage.setItem('loyaltree_pending_onboarding',JSON.stringify({business_slug:data.business_slug,contact_person:form.contact_person,billing_cycle:billingCycle,pricing_region:form.pricing_region||form.country_code,started_at:new Date().toISOString()}))
       setWizardStep(6)
       return true
     }catch(err){

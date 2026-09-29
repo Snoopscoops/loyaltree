@@ -635,6 +635,10 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
   }
 
   const applyBusiness = (placement = 'homepage') => {
+    // The homepage may show the monthly-equivalent price, but a new
+    // self-serve account starts with the 3-month prepaid minimum.
+    const signupBillingCycle = homeBillingCycle === 'monthly' ? '3_months' : homeBillingCycle
+
     trackEvent(API_BASE, 'apply_business_click', {
       page_name: 'Homepage',
       metadata: {
@@ -642,9 +646,10 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         pricing_region: pricingContext.country_code,
         currency: pricingContext.currency,
         billing_cycle: homeBillingCycle,
+        signup_billing_cycle: signupBillingCycle,
       },
     })
-    navigate(`/signup?country=${encodeURIComponent(pricingContext.country_code || 'PH')}&billing_cycle=${encodeURIComponent(homeBillingCycle)}`)
+    navigate(`/signup?country=${encodeURIComponent(pricingContext.country_code || 'PH')}&billing_cycle=${encodeURIComponent(signupBillingCycle)}`)
   }
 
   const homePlanPrice = (planKey, fallbackMonthly) => {
