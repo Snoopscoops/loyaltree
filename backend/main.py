@@ -144,6 +144,28 @@ POS_COMPANION_SESSION_TTL_SECONDS = max(30, min(300, int(os.getenv('POS_COMPANIO
 # matching; it never prints API tokens, device tokens, customer names, or full raw
 # StoreHub payloads. Set POS_COMPANION_DEBUG=false in Render after pilot validation.
 POS_COMPANION_DEBUG = _env_bool('POS_COMPANION_DEBUG', True)
+
+# StoreHub transaction-feed compatibility.
+# ANGKAN's /transactions endpoint has been observed returning exactly 5,000
+# historical rows even when startDate/endDate target the current day.  Keep the
+# normal single-request path, but allow the read-only POS Peek / owner preview
+# to discover a working tail-page cursor (offset or page) without changing any
+# StoreHub data.  Once discovered, the cursor is persisted in the integration
+# config and reused by live Companion polling so every checkout does not have
+# to rescan years of history.
+STOREHUB_TX_PAGE_SIZE = max(
+    100,
+    min(5000, int(os.getenv('STOREHUB_TX_PAGE_SIZE', '5000') or '5000')),
+)
+STOREHUB_TX_MAX_PROBE_PAGES = max(
+    2,
+    min(40, int(os.getenv('STOREHUB_TX_MAX_PROBE_PAGES', '30') or '30')),
+)
+STOREHUB_TX_PROBE_SLEEP_SECONDS = max(
+    0.0,
+    min(1.0, float(os.getenv('STOREHUB_TX_PROBE_SLEEP_SECONDS', '0.38') or '0.38')),
+)
+
 WALLET_QUEUE_BATCH_SIZE = max(1, min(100, int(os.getenv('WALLET_QUEUE_BATCH_SIZE', '25') or '25')))
 WALLET_QUEUE_POLL_SECONDS = max(1, min(30, int(os.getenv('WALLET_QUEUE_POLL_SECONDS', '3') or '3')))
 
@@ -26499,17 +26521,15 @@ async def storehub_transactions_preview(
     if not (integration.get('config') or {}).get('real_api_tested'):
         raise HTTPException(status_code=409, detail='Test the StoreHub API connection first.')
 
-    end = datetime.utcnow()
+    end = datetime.now(timezone.utc)
     start = end - timedelta(days=int(req.days))
-    payload = _storehub_get(
+    payload, rows, fetch_meta = _storehub_fetch_recent_transaction_rows(
         integration,
-        '/transactions',
-        params={
-            'startDate': start.strftime('%Y-%m-%d'),
-            'endDate': end.strftime('%Y-%m-%d'),
-        },
+        start=start,
+        end=end,
+        external_branch_id=None,
+        deep_probe=True,
     )
-    rows = _storehub_list(payload)
     # StoreHub does not reliably return the newest transaction first for this
     # merchant account, so preview the newest timestamps rather than rows[0:n].
     recent_rows = _storehub_recent_rows(rows, int(req.limit))
@@ -26529,6 +26549,7 @@ async def storehub_transactions_preview(
         'read_only': True,
         'days': int(req.days),
         'returned': len(summaries),
+        'fetch': fetch_meta,
         'transactions': summaries,
         'message': 'Read-only StoreHub transaction preview. No LoyaltyTree balances were changed.',
     }
@@ -42158,23 +42179,447 @@ def _storehub_recent_rows(rows: list, limit: int, external_branch_id: Optional[s
     return [item[2] for item in ordered[:safe_limit]]
 
 
-def _companion_provider_rows(device: dict, integration: dict, limit: int) -> list:
+
+def _storehub_page_fingerprint(rows: list) -> tuple:
+    """Small, non-sensitive fingerprint used only to detect ignored pagination."""
+    def row_key(row):
+        if not isinstance(row, dict):
+            return ''
+        return str(
+            row.get('refId')
+            or row.get('id')
+            or row.get('invoiceNumber')
+            or row.get('transactionTime')
+            or ''
+        )
+    if not rows:
+        return (0, '', '')
+    return (len(rows), row_key(rows[0]), row_key(rows[-1]))
+
+
+def _storehub_rows_for_outlet(rows: list, external_branch_id: Optional[str]) -> list:
+    store_id = str(external_branch_id or '').strip()
+    if not store_id:
+        return [row for row in (rows or []) if isinstance(row, dict)]
+    return [
+        row for row in (rows or [])
+        if isinstance(row, dict)
+        and str(row.get('storeId') or row.get('store_id') or '').strip() == store_id
+    ]
+
+
+def _storehub_rows_time_bounds(rows: list, external_branch_id: Optional[str] = None) -> tuple[Optional[datetime], Optional[datetime]]:
+    times = []
+    for row in _storehub_rows_for_outlet(rows, external_branch_id):
+        happened = _storehub_transaction_event_time(row)
+        if happened:
+            times.append(happened)
+    if not times:
+        return None, None
+    return min(times), max(times)
+
+
+def _storehub_paging_hint(integration: dict) -> dict:
+    config = integration.get('config') if isinstance(integration.get('config'), dict) else {}
+    raw = config.get('storehub_transaction_paging')
+    return raw if isinstance(raw, dict) else {}
+
+
+def _storehub_save_paging_hint(
+    integration: dict,
+    *,
+    strategy: str,
+    cursor: int,
+    page_size: int,
+    external_branch_id: Optional[str],
+) -> None:
+    """Best-effort persistence; a paging hint must never break POS reads."""
+    if not supabase or not integration.get('id') or strategy not in ('offset', 'page'):
+        return
+    try:
+        config = dict(integration.get('config') or {})
+        config['storehub_transaction_paging'] = {
+            'strategy': strategy,
+            'cursor': int(cursor),
+            'page_size': int(page_size),
+            'external_branch_id': str(external_branch_id or ''),
+            'verified_at': datetime.now(timezone.utc).isoformat(),
+        }
+        supabase.table('pos_integrations').update({'config': config}).eq('id', integration.get('id')).execute()
+        integration['config'] = config
+    except Exception as exc:
+        _companion_debug(
+            'storehub_paging_hint_warning',
+            integration_id=str(integration.get('id') or ''),
+            detail=str(exc)[:300],
+        )
+
+
+def _storehub_tx_fetch_log(
+    *,
+    event: str,
+    integration: dict,
+    strategy: str,
+    cursor,
+    rows: list,
+    external_branch_id: Optional[str],
+    requested_start: datetime,
+) -> None:
+    if not POS_COMPANION_DEBUG:
+        return
+    outlet_rows = _storehub_rows_for_outlet(rows, external_branch_id)
+    oldest, newest = _storehub_rows_time_bounds(rows, external_branch_id)
+    _companion_debug(
+        event,
+        integration_id=str(integration.get('id') or ''),
+        strategy=strategy,
+        cursor=cursor,
+        row_count=len(rows or []),
+        outlet_row_count=len(outlet_rows),
+        mapped_store_id=str(external_branch_id or ''),
+        requested_start=requested_start.isoformat(),
+        oldest_transaction_time=oldest.isoformat() if oldest else None,
+        newest_transaction_time=newest.isoformat() if newest else None,
+    )
+
+
+def _storehub_fetch_recent_transaction_rows(
+    integration: dict,
+    *,
+    start: datetime,
+    end: datetime,
+    external_branch_id: Optional[str] = None,
+    deep_probe: bool = False,
+) -> tuple[object, list, dict]:
+    """Read the freshest StoreHub transaction page available.
+
+    The known-safe StoreHub request remains startDate/endDate only. During the
+    ANGKAN pilot that request returns a capped 5,000-row historical page, so the
+    explicitly read-only POS Peek / owner preview may probe common pagination
+    variants (`offset` first, then `page`). A variant is accepted only when its
+    response fingerprint is different from the first page.
+
+    Tail discovery uses exponential jumps plus a short binary search rather
+    than walking every historical page. This matters for a multi-year merchant
+    account that may have hundreds of thousands or millions of transactions.
+    Once a working tail cursor is found, it is persisted in the integration
+    config and normal Companion checkout polling reuses it.
+    """
+    start_utc = start if start.tzinfo else start.replace(tzinfo=timezone.utc)
+    end_utc = end if end.tzinfo else end.replace(tzinfo=timezone.utc)
+    store_id = str(external_branch_id or '').strip()
+    page_size = int(STOREHUB_TX_PAGE_SIZE)
+
+    # Keep the baseline request identical to the already-working StoreHub call.
+    # storeId is enforced locally below; we do not assume StoreHub accepts it as
+    # a transaction-query parameter.
+    base_params = {
+        'startDate': start_utc.strftime('%Y-%m-%d'),
+        'endDate': end_utc.strftime('%Y-%m-%d'),
+    }
+
+    def cursor_for_page(strategy: str, page_number: int) -> int:
+        page_number = max(1, int(page_number))
+        return (page_number - 1) * page_size if strategy == 'offset' else page_number
+
+    def fetch_with(strategy: Optional[str] = None, cursor: Optional[int] = None):
+        params = dict(base_params)
+        if strategy == 'offset':
+            params.update({'limit': page_size, 'offset': max(0, int(cursor or 0))})
+        elif strategy == 'page':
+            params.update({'limit': page_size, 'page': max(1, int(cursor or 1))})
+        payload = _storehub_get(integration, '/transactions', params=params)
+        return payload, _storehub_list(payload)
+
+    def sleep_for_probe():
+        if STOREHUB_TX_PROBE_SLEEP_SECONDS:
+            time.sleep(STOREHUB_TX_PROBE_SLEEP_SECONDS)
+
+    # If a previous read-only probe already found the provider tail, use it
+    # immediately. If that page later fills, advance exactly one page.
+    hint = _storehub_paging_hint(integration)
+    hint_strategy = str(hint.get('strategy') or '').lower()
+    hint_store = str(hint.get('external_branch_id') or '')
+    hint_cursor = hint.get('cursor')
+    if (
+        hint_strategy in ('offset', 'page')
+        and hint_cursor is not None
+        and (not hint_store or not store_id or hint_store == store_id)
+    ):
+        try:
+            payload, rows = fetch_with(hint_strategy, int(hint_cursor))
+            _storehub_tx_fetch_log(
+                event='storehub_tx_hint_page',
+                integration=integration,
+                strategy=hint_strategy,
+                cursor=int(hint_cursor),
+                rows=rows,
+                external_branch_id=store_id,
+                requested_start=start_utc,
+            )
+
+            final_cursor = int(hint_cursor)
+            if len(rows) >= page_size:
+                next_cursor = (
+                    final_cursor + page_size
+                    if hint_strategy == 'offset'
+                    else final_cursor + 1
+                )
+                next_payload, next_rows = fetch_with(hint_strategy, next_cursor)
+                if next_rows and _storehub_page_fingerprint(next_rows) != _storehub_page_fingerprint(rows):
+                    payload, rows = next_payload, next_rows
+                    final_cursor = next_cursor
+                    _storehub_save_paging_hint(
+                        integration,
+                        strategy=hint_strategy,
+                        cursor=final_cursor,
+                        page_size=page_size,
+                        external_branch_id=store_id,
+                    )
+                    _storehub_tx_fetch_log(
+                        event='storehub_tx_hint_advanced',
+                        integration=integration,
+                        strategy=hint_strategy,
+                        cursor=final_cursor,
+                        rows=rows,
+                        external_branch_id=store_id,
+                        requested_start=start_utc,
+                    )
+
+            return payload, rows, {
+                'strategy': hint_strategy,
+                'cursor': final_cursor,
+                'used_persisted_hint': True,
+                'deep_probe': False,
+            }
+        except HTTPException as exc:
+            _companion_debug(
+                'storehub_tx_hint_failed',
+                integration_id=str(integration.get('id') or ''),
+                strategy=hint_strategy,
+                cursor=hint_cursor,
+                detail=str(exc.detail)[:300],
+            )
+            # Fall through to the known baseline request.
+
+    payload, first_rows = fetch_with()
+    _storehub_tx_fetch_log(
+        event='storehub_tx_base_page',
+        integration=integration,
+        strategy='date_filter',
+        cursor=0,
+        rows=first_rows,
+        external_branch_id=store_id,
+        requested_start=start_utc,
+    )
+
+    _, first_newest = _storehub_rows_time_bounds(first_rows, store_id)
+    first_is_fresh = bool(first_newest and first_newest >= start_utc)
+
+    # No evidence of a hidden tail.
+    if len(first_rows) < page_size or first_is_fresh or not deep_probe:
+        return payload, first_rows, {
+            'strategy': 'date_filter',
+            'cursor': 0,
+            'used_persisted_hint': False,
+            'deep_probe': bool(deep_probe),
+            'stale_capped_page': bool(len(first_rows) >= page_size and not first_is_fresh),
+        }
+
+    first_fingerprint = _storehub_page_fingerprint(first_rows)
+    collected = _storehub_rows_for_outlet(first_rows, store_id) if store_id else list(first_rows)
+    if len(collected) > 500:
+        collected = _storehub_recent_rows(collected, 500, store_id or None)
+
+    # Detect which read-only pagination shape, if any, actually advances.
+    strategy = None
+    current_page_number = 1
+    current_payload = payload
+    current_rows = first_rows
+    request_count = 1
+
+    for probe_strategy in ('offset', 'page'):
+        page_number = 2
+        probe_cursor = cursor_for_page(probe_strategy, page_number)
+        sleep_for_probe()
+        try:
+            probe_payload, probe_rows = fetch_with(probe_strategy, probe_cursor)
+            request_count += 1
+        except HTTPException as exc:
+            _companion_debug(
+                'storehub_tx_probe_variant_failed',
+                integration_id=str(integration.get('id') or ''),
+                strategy=probe_strategy,
+                cursor=probe_cursor,
+                detail=str(exc.detail)[:300],
+            )
+            continue
+
+        _storehub_tx_fetch_log(
+            event='storehub_tx_probe_variant',
+            integration=integration,
+            strategy=probe_strategy,
+            cursor=probe_cursor,
+            rows=probe_rows,
+            external_branch_id=store_id,
+            requested_start=start_utc,
+        )
+
+        if probe_rows and _storehub_page_fingerprint(probe_rows) != first_fingerprint:
+            strategy = probe_strategy
+            current_page_number = page_number
+            current_payload = probe_payload
+            current_rows = probe_rows
+            break
+
+    if not strategy:
+        _companion_debug(
+            'storehub_tx_pagination_unavailable',
+            integration_id=str(integration.get('id') or ''),
+            mapped_store_id=store_id,
+            row_count=len(first_rows),
+            message='StoreHub returned the same capped page for date, offset and page probes.',
+        )
+        return payload, first_rows, {
+            'strategy': 'date_filter',
+            'cursor': 0,
+            'used_persisted_hint': False,
+            'deep_probe': True,
+            'pagination_supported': False,
+            'stale_capped_page': True,
+        }
+
+    # Track the newest outlet rows encountered without retaining full history.
+    def collect_page(rows):
+        nonlocal collected
+        piece = _storehub_rows_for_outlet(rows, store_id) if store_id else [
+            row for row in (rows or []) if isinstance(row, dict)
+        ]
+        collected.extend(piece)
+        if len(collected) > 1000:
+            collected = _storehub_recent_rows(collected, 500, store_id or None)
+
+    collect_page(current_rows)
+    last_nonempty_page = current_page_number
+    last_nonempty_payload = current_payload
+    last_nonempty_rows = current_rows
+    empty_page = None
+
+    # Exponentially jump toward the tail. This finds page 256 in eight jumps
+    # instead of issuing 255 historical requests.
+    while request_count < int(STOREHUB_TX_MAX_PROBE_PAGES):
+        _, newest = _storehub_rows_time_bounds(current_rows, store_id)
+        current_cursor = cursor_for_page(strategy, current_page_number)
+        _storehub_tx_fetch_log(
+            event='storehub_tx_probe_page',
+            integration=integration,
+            strategy=strategy,
+            cursor=current_cursor,
+            rows=current_rows,
+            external_branch_id=store_id,
+            requested_start=start_utc,
+        )
+
+        if len(current_rows) < page_size or (newest and newest >= start_utc):
+            break
+
+        next_page_number = max(current_page_number + 1, current_page_number * 2)
+        next_cursor = cursor_for_page(strategy, next_page_number)
+
+        sleep_for_probe()
+        next_payload, next_rows = fetch_with(strategy, next_cursor)
+        request_count += 1
+
+        if not next_rows:
+            empty_page = next_page_number
+            break
+        if _storehub_page_fingerprint(next_rows) in (
+            first_fingerprint,
+            _storehub_page_fingerprint(current_rows),
+        ):
+            # Provider accepted the request but ignored/aliased the cursor.
+            break
+
+        current_page_number = next_page_number
+        current_payload = next_payload
+        current_rows = next_rows
+        last_nonempty_page = current_page_number
+        last_nonempty_payload = current_payload
+        last_nonempty_rows = current_rows
+        collect_page(current_rows)
+
+    # If exponential search jumped past the tail, binary-search the last
+    # populated page. Keep the same provider pagination strategy.
+    if empty_page is not None and request_count < int(STOREHUB_TX_MAX_PROBE_PAGES):
+        low = last_nonempty_page
+        high = empty_page
+        while high - low > 1 and request_count < int(STOREHUB_TX_MAX_PROBE_PAGES):
+            mid = (low + high) // 2
+            mid_cursor = cursor_for_page(strategy, mid)
+            sleep_for_probe()
+            mid_payload, mid_rows = fetch_with(strategy, mid_cursor)
+            request_count += 1
+
+            if mid_rows and _storehub_page_fingerprint(mid_rows) != first_fingerprint:
+                low = mid
+                last_nonempty_page = mid
+                last_nonempty_payload = mid_payload
+                last_nonempty_rows = mid_rows
+                collect_page(mid_rows)
+            else:
+                high = mid
+
+        current_page_number = last_nonempty_page
+        current_payload = last_nonempty_payload
+        current_rows = last_nonempty_rows
+
+    final_cursor = cursor_for_page(strategy, current_page_number)
+    _storehub_save_paging_hint(
+        integration,
+        strategy=strategy,
+        cursor=final_cursor,
+        page_size=page_size,
+        external_branch_id=store_id,
+    )
+
+    if collected:
+        result_rows = _storehub_recent_rows(collected, 500, store_id or None)
+    else:
+        result_rows = current_rows
+
+    _, final_newest = _storehub_rows_time_bounds(result_rows, store_id)
+    _companion_debug(
+        'storehub_tx_probe_complete',
+        integration_id=str(integration.get('id') or ''),
+        strategy=strategy,
+        cursor=final_cursor,
+        provider_page_number=current_page_number,
+        provider_requests=request_count,
+        mapped_store_id=store_id,
+        returned_row_count=len(result_rows),
+        newest_transaction_time=final_newest.isoformat() if final_newest else None,
+        current_window_found=bool(final_newest and final_newest >= start_utc),
+    )
+
+    return current_payload, result_rows, {
+        'strategy': strategy,
+        'cursor': final_cursor,
+        'provider_page_number': current_page_number,
+        'provider_requests': request_count,
+        'used_persisted_hint': False,
+        'deep_probe': True,
+        'pagination_supported': True,
+        'current_window_found': bool(final_newest and final_newest >= start_utc),
+    }
+
+
+def _companion_provider_rows(device: dict, integration: dict, limit: int, deep_probe: bool = False) -> list:
     provider = str(device.get('provider') or '').lower()
     now = datetime.now(timezone.utc)
     if provider == 'storehub':
         config = integration.get('config') if isinstance(integration.get('config'), dict) else {}
         if not config.get('real_api_tested'):
             raise HTTPException(status_code=409, detail='Test the StoreHub API connection from the owner dashboard before polling sales.')
-        payload = _storehub_get(integration, '/transactions', params={
-            'startDate': (now - timedelta(days=1)).strftime('%Y-%m-%d'),
-            'endDate': now.strftime('%Y-%m-%d'),
-        })
-        provider_rows = _storehub_list(payload)
-        # The transaction schema is already known.  Keep the verbose Render trace
-        # opt-in so live polling does not print thousands of rows every few seconds.
-        if config.get('trace_transactions'):
-            _storehub_trace_transactions(payload, provider_rows)
-
         mapping = _companion_mock_mapping(device)
         mapped_store_id = mapping.get('external_branch_id') if isinstance(mapping, dict) else None
         mapped_store_id = str(mapped_store_id or '').strip()
@@ -42222,6 +42667,17 @@ def _companion_provider_rows(device: dict, integration: dict, limit: int) -> lis
                 ),
             )
 
+        payload, provider_rows, fetch_meta = _storehub_fetch_recent_transaction_rows(
+            integration,
+            start=now - timedelta(days=1),
+            end=now,
+            external_branch_id=mapped_store_id,
+            deep_probe=bool(deep_probe),
+        )
+        # The transaction schema is already known. Keep full row tracing opt-in.
+        if config.get('trace_transactions'):
+            _storehub_trace_transactions(payload, provider_rows)
+
         rows = _storehub_recent_rows(provider_rows, limit, mapped_store_id)
         _companion_debug(
             'storehub_poll_rows',
@@ -42230,6 +42686,10 @@ def _companion_provider_rows(device: dict, integration: dict, limit: int) -> lis
             mapped_store_id=str(mapped_store_id or ''),
             provider_row_count=len(provider_rows),
             selected_row_count=len(rows),
+            fetch_strategy=str((fetch_meta or {}).get('strategy') or ''),
+            fetch_cursor=(fetch_meta or {}).get('cursor'),
+            fetch_pages_read=(fetch_meta or {}).get('pages_read'),
+            fetch_current_window_found=(fetch_meta or {}).get('current_window_found'),
             selected=[{
                 'refId': str((row or {}).get('refId') or (row or {}).get('id') or ''),
                 'invoiceNumber': str((row or {}).get('invoiceNumber') or ''),
@@ -42981,7 +43441,11 @@ def companion_pos_peek(
     if not integration:
         raise HTTPException(status_code=409, detail='POS integration not found for this Companion device.')
     safe_limit = max(1, min(int(limit or 10), 50))
-    transactions = _companion_provider_rows(device, integration, safe_limit)
+    # POS Peek is explicitly read-only, so it is the safe place to discover
+    # StoreHub's tail-page cursor if this merchant's date filters return the
+    # historical 5,000-row cap. The discovered cursor is then reused by normal
+    # checkout polling.
+    transactions = _companion_provider_rows(device, integration, safe_limit, deep_probe=True)
     rows = []
     for tx in transactions:
         if str(tx.get('integration_id')) != str(device.get('integration_id')):
