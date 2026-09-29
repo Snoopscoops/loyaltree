@@ -135,6 +135,15 @@ POS_CREDENTIALS_ENCRYPTION_KEY = os.getenv('POS_CREDENTIALS_ENCRYPTION_KEY', '')
 # the same checkout while keeping revocation latency bounded.
 POS_DEVICE_CACHE_TTL_SECONDS = max(1, min(60, int(os.getenv('POS_DEVICE_CACHE_TTL_SECONDS', '15') or '15')))
 POS_DEVICE_HEARTBEAT_SECONDS = max(15, min(300, int(os.getenv('POS_DEVICE_HEARTBEAT_SECONDS', '60') or '60')))
+# Companion checkout matching is server-authoritative. Older APK builds still send
+# ttl_seconds=120, but ANGKAN pilot checkouts need more time for cashier payment +
+# StoreHub sync. Keep the accepted request field for backwards compatibility while
+# using this backend setting as the actual window.
+POS_COMPANION_SESSION_TTL_SECONDS = max(30, min(300, int(os.getenv('POS_COMPANION_SESSION_TTL_SECONDS', '300') or '300')))
+# Pilot-safe structured tracing. Logs only IDs/counts/timestamps/amounts used for
+# matching; it never prints API tokens, device tokens, customer names, or full raw
+# StoreHub payloads. Set POS_COMPANION_DEBUG=false in Render after pilot validation.
+POS_COMPANION_DEBUG = _env_bool('POS_COMPANION_DEBUG', True)
 WALLET_QUEUE_BATCH_SIZE = max(1, min(100, int(os.getenv('WALLET_QUEUE_BATCH_SIZE', '25') or '25')))
 WALLET_QUEUE_POLL_SECONDS = max(1, min(30, int(os.getenv('WALLET_QUEUE_POLL_SECONDS', '3') or '3')))
 
@@ -40034,7 +40043,9 @@ class POSCompanionReservationCommitRequest(BaseModel):
 
 class POSCompanionSessionStartRequest(BaseModel):
     scan_value: str = Field(min_length=2, max_length=1000)
-    ttl_seconds: int = Field(default=120, ge=30, le=300)
+    # Backwards-compatible client hint. The backend setting below remains
+    # authoritative so older APKs that still send 120 seconds get the full window.
+    ttl_seconds: int = Field(default=300, ge=30, le=300)
 
 
 class POSCompanionBridgePollRequest(BaseModel):
@@ -41931,6 +41942,26 @@ def _storehub_transaction_event_time(raw: dict) -> Optional[datetime]:
     return _pos_parse_timestamp(value)
 
 
+def _companion_debug(event: str, **fields) -> None:
+    """Structured, pilot-safe Companion trace for Render logs."""
+    if not POS_COMPANION_DEBUG:
+        return
+    cleaned = {}
+    for key, value in fields.items():
+        if isinstance(value, datetime):
+            cleaned[key] = value.isoformat()
+        elif isinstance(value, (str, int, float, bool)) or value is None:
+            cleaned[key] = value
+        elif isinstance(value, (list, dict)):
+            cleaned[key] = value
+        else:
+            cleaned[key] = str(value)
+    try:
+        print('COMPANION_DEBUG ' + json.dumps({'event': event, **cleaned}, ensure_ascii=False, default=str))
+    except Exception:
+        print(f'COMPANION_DEBUG event={event} fields={cleaned}')
+
+
 def _storehub_recent_rows(rows: list, limit: int, external_branch_id: Optional[str] = None) -> list:
     """Pick the newest StoreHub rows locally instead of trusting provider ordering.
 
@@ -41990,6 +42021,24 @@ def _companion_provider_rows(device: dict, integration: dict, limit: int) -> lis
         mapping = _companion_mock_mapping(device)
         mapped_store_id = mapping.get('external_branch_id') if isinstance(mapping, dict) else None
         rows = _storehub_recent_rows(provider_rows, limit, mapped_store_id)
+        _companion_debug(
+            'storehub_poll_rows',
+            device_id=str(device.get('id') or ''),
+            branch_id=str(device.get('branch_id') or ''),
+            mapped_store_id=str(mapped_store_id or ''),
+            provider_row_count=len(provider_rows),
+            selected_row_count=len(rows),
+            selected=[{
+                'refId': str((row or {}).get('refId') or (row or {}).get('id') or ''),
+                'invoiceNumber': str((row or {}).get('invoiceNumber') or ''),
+                'storeId': str((row or {}).get('storeId') or (row or {}).get('store_id') or ''),
+                'terminal': str((row or {}).get('terminalId') or (row or {}).get('registerId') or ''),
+                'transactionTime': (row or {}).get('transactionTime') or (row or {}).get('createdAt'),
+                'total': (row or {}).get('total'),
+                'transactionType': str((row or {}).get('transactionType') or ''),
+                'isCancelled': bool((row or {}).get('isCancelled')),
+            } for row in rows[:5]],
+        )
     elif provider == 'loyverse':
         payload = _loyverse_get(integration, '/receipts', params={
             'created_at_min': (now - timedelta(hours=6)).isoformat().replace('+00:00', 'Z'),
@@ -42050,7 +42099,7 @@ def _companion_recent_mock_transactions(device: dict, session: dict, limit: int 
         raise _pos_schema_error(exc)
 
     scanned_at = _pos_parse_timestamp(session.get('scanned_at')) or datetime.now(timezone.utc)
-    expires_at = _pos_parse_timestamp(session.get('expires_at')) or (scanned_at + timedelta(minutes=2))
+    expires_at = _pos_parse_timestamp(session.get('expires_at')) or (scanned_at + timedelta(seconds=POS_COMPANION_SESSION_TTL_SECONDS))
     earliest = scanned_at - timedelta(seconds=5)
     latest = expires_at + timedelta(seconds=15)
     filtered = []
@@ -42156,24 +42205,34 @@ def _companion_mock_upsert_transaction(
 
 def _companion_session_candidates(device: dict, session: dict, transactions: list) -> list:
     scanned_at = _pos_parse_timestamp(session.get('scanned_at')) or datetime.now(timezone.utc)
-    expires_at = _pos_parse_timestamp(session.get('expires_at')) or (scanned_at + timedelta(minutes=2))
+    expires_at = _pos_parse_timestamp(session.get('expires_at')) or (scanned_at + timedelta(seconds=POS_COMPANION_SESSION_TTL_SECONDS))
     metadata = device.get('metadata') if isinstance(device.get('metadata'), dict) else {}
     mapping = _companion_mock_mapping(device)
     device_terminal = metadata.get('external_terminal_id') or mapping.get('external_terminal_id')
     candidates = []
+    skipped = {
+        'integration': 0, 'non_sale': 0, 'status': 0, 'branch': 0,
+        'customer': 0, 'time_window': 0, 'terminal': 0,
+    }
     for tx in transactions:
         if str(tx.get('integration_id')) != str(device.get('integration_id')):
+            skipped['integration'] += 1
             continue
         if tx.get('transaction_type') != 'sale':
+            skipped['non_sale'] += 1
             continue
         if tx.get('status') in ('loyalty_applied', 'refunded', 'voided', 'ignored', 'failed'):
+            skipped['status'] += 1
             continue
         if tx.get('branch_id') is None or str(tx.get('branch_id')) != str(device.get('branch_id')):
+            skipped['branch'] += 1
             continue
         if tx.get('customer_id') and str(tx.get('customer_id')) != str(session.get('customer_id')):
+            skipped['customer'] += 1
             continue
         happened = _pos_parse_timestamp(tx.get('transacted_at') or tx.get('created_at'))
         if not happened or happened < (scanned_at - timedelta(seconds=5)) or happened > (expires_at + timedelta(seconds=15)):
+            skipped['time_window'] += 1
             continue
         processing = tx.get('processing_metadata') if isinstance(tx.get('processing_metadata'), dict) else {}
         tx_terminal = processing.get('bridge_external_terminal_id')
@@ -42181,6 +42240,7 @@ def _companion_session_candidates(device: dict, session: dict, transactions: lis
         if _companion_is_mock_transaction(tx) and not expected_terminal:
             expected_terminal = f'MOCK-{str(device.get("id") or "DEVICE")[:8].upper()}'
         if expected_terminal and tx_terminal and str(expected_terminal) != str(tx_terminal):
+            skipped['terminal'] += 1
             continue
         candidates.append({
             'id': str(tx.get('id')),
@@ -42192,6 +42252,24 @@ def _companion_session_candidates(device: dict, session: dict, transactions: lis
             'status': tx.get('status'),
         })
     candidates.sort(key=lambda row: row.get('transacted_at') or '')
+    _companion_debug(
+        'candidate_filter',
+        device_id=str(device.get('id') or ''),
+        session_id=str(session.get('id') or ''),
+        branch_id=str(device.get('branch_id') or ''),
+        expected_terminal=str(device_terminal or ''),
+        scanned_at=scanned_at.isoformat(),
+        expires_at=expires_at.isoformat(),
+        input_count=len(transactions or []),
+        candidate_count=len(candidates),
+        skipped=skipped,
+        candidates=[{
+            'external_transaction_id': row.get('external_transaction_id'),
+            'receipt_number': row.get('receipt_number'),
+            'gross_amount': row.get('gross_amount'),
+            'transacted_at': row.get('transacted_at'),
+        } for row in candidates[:5]],
+    )
     return candidates
 
 
@@ -42248,6 +42326,18 @@ async def _companion_process_transaction(
     amount = float(tx.get('eligible_amount') if tx.get('eligible_amount') is not None else (tx.get('net_amount') if tx.get('net_amount') is not None else tx.get('gross_amount') or 0))
     amount = max(0.0, amount)
     external_tx = str(tx.get('external_transaction_id') or '')
+    _companion_debug(
+        'process_start',
+        device_id=str(device.get('id') or ''),
+        session_id=str(session.get('id') or ''),
+        external_transaction_id=external_tx,
+        receipt_number=str(tx.get('external_receipt_number') or ''),
+        branch_id=str(tx.get('branch_id') or ''),
+        transaction_type=str(tx.get('transaction_type') or ''),
+        gross_amount=float(tx.get('gross_amount') or 0),
+        net_amount=float(tx.get('net_amount') or 0),
+        transacted_at=tx.get('transacted_at'),
+    )
     base_key = f'companion:{provider}:{device.get("integration_id")}:{external_tx}'[:180]
     points_active = program_reward_uses_points(program)
     stamps_active = program_reward_uses_stamps(program)
@@ -42296,6 +42386,16 @@ async def _companion_process_transaction(
                 Decimal(str(max(reserved_gross - reserved_discount, 0))).quantize(
                     Decimal('0.01'), rounding=ROUND_HALF_UP
                 )
+            )
+            _companion_debug(
+                'redemption_total_check',
+                session_id=str(session.get('id') or ''),
+                external_transaction_id=external_tx,
+                reservation_id=str(redemption.get('id') or ''),
+                reserved_gross=reserved_gross,
+                reserved_discount=reserved_discount,
+                expected_final_total=expected_final_total,
+                storehub_final_total=tx_final_total,
             )
             if abs(tx_final_total - expected_final_total) > 0.01:
                 raise HTTPException(
@@ -42429,6 +42529,18 @@ async def _companion_process_transaction(
             Decimal(str(max(earning_amount, 0))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
         )
 
+        _companion_debug(
+            'earning_calculation',
+            session_id=str(session.get('id') or ''),
+            external_transaction_id=external_tx,
+            points_active=bool(points_active),
+            committed_redemption=bool(committed_redemption),
+            points_redeemed=int(points_redeemed or 0),
+            redemption_amount=float(redemption_amount or 0),
+            redemption_net_amount=float(redemption_net_amount or 0),
+            earning_amount=earning_amount,
+            earn_on_net_amount=(bool(_pos_redemption_config(integration).get('earn_on_net_amount')) if committed_redemption else None),
+        )
         if points_active and earning_amount > 0:
             points_result = await add_points_sale(
                 business.get('public_id'),
@@ -42555,6 +42667,18 @@ async def _companion_process_transaction(
             'updated_at': datetime.now(timezone.utc).isoformat(),
         }
         supabase.table('pos_companion_sessions').update(patch).eq('id', session.get('id')).execute()
+        _companion_debug(
+            'process_complete',
+            device_id=str(device.get('id') or ''),
+            session_id=str(session.get('id') or ''),
+            external_transaction_id=external_tx,
+            points_earned=points_earned,
+            points_redeemed=int(points_redeemed or 0),
+            stamps_earned=stamps_earned,
+            gross_amount=float(tx.get('gross_amount') or 0),
+            net_amount=float(tx.get('net_amount') or 0),
+            eligible_amount=float(tx.get('eligible_amount') or 0),
+        )
         return {
             'ok': True, 'test_mode': bool(allow_test_mode and integration.get('mode') != 'live'),
             'session': _companion_session_public({**session, **patch}),
@@ -42562,6 +42686,14 @@ async def _companion_process_transaction(
             'loyalty_result': result,
         }
     except HTTPException as exc:
+        _companion_debug(
+            'process_error',
+            device_id=str(device.get('id') or ''),
+            session_id=str(session.get('id') or ''),
+            external_transaction_id=str(tx.get('external_transaction_id') or tx.get('id') or ''),
+            status_code=exc.status_code,
+            detail=str(exc.detail)[:500],
+        )
         try:
             supabase.table('pos_companion_sessions').update({'status': 'failed', 'error_message': str(exc.detail)[:1000], 'updated_at': datetime.now(timezone.utc).isoformat()}).eq('id', session.get('id')).execute()
         except Exception:
@@ -42582,7 +42714,22 @@ def companion_session_start(
         raise HTTPException(status_code=404, detail='Scanned Loyalty Tree member was not found.')
     earning_customer = _companion_choose_earning_membership(source_customer, device.get('business_id'))
     now = datetime.now(timezone.utc)
-    expires = now + timedelta(seconds=int(req.ttl_seconds))
+    requested_ttl_seconds = int(req.ttl_seconds)
+    effective_ttl_seconds = int(POS_COMPANION_SESSION_TTL_SECONDS)
+    expires = now + timedelta(seconds=effective_ttl_seconds)
+    _companion_debug(
+        'session_start',
+        device_id=str(device.get('id') or ''),
+        branch_id=str(device.get('branch_id') or ''),
+        integration_id=str(device.get('integration_id') or ''),
+        provider=str(device.get('provider') or 'storehub'),
+        source_customer_public_id=str(source_customer.get('public_id') or ''),
+        earning_customer_public_id=str(earning_customer.get('public_id') or ''),
+        requested_ttl_seconds=requested_ttl_seconds,
+        effective_ttl_seconds=effective_ttl_seconds,
+        scanned_at=now.isoformat(),
+        expires_at=expires.isoformat(),
+    )
     try:
         supabase.table('pos_companion_sessions').update({
             'status': 'cancelled', 'error_message': 'Replaced by a newer customer scan on this Companion device.',
@@ -42696,6 +42843,15 @@ async def companion_session_poll(
                 raise
 
     candidates = _companion_session_candidates(device, session, transactions)
+    _companion_debug(
+        'poll_result',
+        device_id=str(device.get('id') or ''),
+        session_id=str(session.get('id') or ''),
+        provider=provider,
+        integration_mode=str(integration.get('mode') or ''),
+        transaction_count=len(transactions or []),
+        candidate_count=len(candidates),
+    )
 
     if len(candidates) == 1:
         tx_rows = supabase.table('pos_transactions').select('*').eq('id', candidates[0]['id']).limit(1).execute().data or []
