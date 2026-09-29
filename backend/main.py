@@ -3806,6 +3806,97 @@ def _storehub_store_summary(row: dict) -> dict:
     }
 
 
+def _storehub_is_placeholder_location_id(value) -> bool:
+    """True only for LoyaltyTree-generated simulator/mock outlet ids."""
+    raw = str(value or '').strip().lower()
+    return bool(raw and raw.startswith(('test-', 'mock-')))
+
+
+def _storehub_outlets_from_transactions(rows: list) -> list:
+    """Derive real StoreHub outlet ids from transaction storeId values."""
+    outlets = []
+    seen = set()
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        raw_id = row.get('storeId') or row.get('store_id')
+        store_id = str(raw_id or '').strip()
+        if not store_id or store_id in seen:
+            continue
+        seen.add(store_id)
+        name = (
+            row.get('storeName')
+            or row.get('store_name')
+            or row.get('outletName')
+            or row.get('branchName')
+            or row.get('branch_name')
+            or f'StoreHub outlet {store_id}'
+        )
+        outlets.append({'id': store_id, 'name': str(name)})
+    outlets.sort(key=lambda row: (str(row.get('name') or '').lower(), str(row.get('id') or '')))
+    return outlets
+
+
+def _storehub_discover_outlets_with_credentials(store_name: str, api_token: str) -> tuple[list, str, Optional[str]]:
+    """Return (outlets, source, warning), preferring /stores then transaction storeId fallback."""
+    stores_error = None
+    stores = []
+    try:
+        stores_payload = _storehub_request_with_credentials(store_name, api_token, '/stores')
+        stores = [
+            summary
+            for summary in (_storehub_store_summary(row) for row in _storehub_list(stores_payload))
+            if str(summary.get('id') or '').strip()
+        ]
+    except HTTPException as exc:
+        stores_error = str(exc.detail)
+
+    if stores:
+        return stores[:200], 'stores', None
+
+    now = datetime.now(timezone.utc)
+    transactions_error = None
+    try:
+        transactions_payload = _storehub_request_with_credentials(
+            store_name,
+            api_token,
+            '/transactions',
+            params={
+                'startDate': (now - timedelta(days=1)).strftime('%Y-%m-%d'),
+                'endDate': now.strftime('%Y-%m-%d'),
+            },
+        )
+        stores = _storehub_outlets_from_transactions(_storehub_list(transactions_payload))
+    except HTTPException as exc:
+        transactions_error = str(exc.detail)
+
+    if stores:
+        warning = (
+            f'StoreHub /stores was unavailable, so outlet ids were discovered from real transactions. {stores_error}'
+            if stores_error
+            else 'StoreHub /stores returned no usable outlets, so outlet ids were discovered from real transactions.'
+        )
+        return stores[:200], 'transactions', warning
+
+    if stores_error and transactions_error:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                'StoreHub credential validation could not discover an outlet. '
+                f'/stores: {stores_error} /transactions: {transactions_error}'
+            ),
+        )
+    if transactions_error:
+        raise HTTPException(status_code=502, detail=transactions_error)
+
+    warning = (
+        f'StoreHub /stores was unavailable ({stores_error}), and /transactions returned no outlet ids.'
+        if stores_error
+        else 'StoreHub API authenticated, but neither /stores nor /transactions returned a usable outlet id.'
+    )
+    return [], 'none', warning
+
+
 def _storehub_transaction_summary(row: dict) -> dict:
     if not isinstance(row, dict):
         return {'raw': row}
@@ -25855,12 +25946,22 @@ async def save_pos_branch_mappings(public_id: str, req: POSBranchMappingsUpdate,
         provider_label = 'StoreHub' if req.provider == 'storehub' else 'Loyverse'
         external_name = (item.external_branch_name or '').strip() or branch.get('name') or f'{provider_label} location'
         external_id = (item.external_branch_id or '').strip()
+        integration_config = integration.get('config') if isinstance(integration.get('config'), dict) else {}
+        real_api_tested = bool(integration_config.get('real_api_tested'))
         if not external_id:
-            # Simulator mode may not have provider location IDs yet. Generate a
-            # deterministic TEST identifier that will be replaced after API access.
-            if integration.get('mode') != 'test':
+            # Simulator-only integrations may use a deterministic LoyaltyTree id.
+            # Once StoreHub's real API is connected, require a real provider outlet.
+            if integration.get('mode') != 'test' or (req.provider == 'storehub' and real_api_tested):
                 raise HTTPException(status_code=400, detail=f'POS location ID is required for {branch.get("name")}.')
             external_id = f'test-{item.branch_public_id}'
+        if req.provider == 'storehub' and real_api_tested and _storehub_is_placeholder_location_id(external_id):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f'{branch.get("name") or "This branch"} is still using a LoyaltyTree Test outlet. '
+                    'Choose a real StoreHub outlet before saving this mapping.'
+                ),
+            )
         if external_id in seen_external:
             raise HTTPException(status_code=400, detail=f'POS location is mapped more than once: {external_id}')
         location_key = 'storehub_outlets' if req.provider == 'storehub' else 'loyverse_stores'
@@ -26175,12 +26276,10 @@ async def connect_storehub_account(
     # persist credentials.
     _pos_credentials_cipher()
 
-    stores_payload = _storehub_request_with_credentials(
+    stores, outlet_source, outlet_warning = _storehub_discover_outlets_with_credentials(
         store_name,
         api_token,
-        '/stores',
     )
-    stores = [_storehub_store_summary(row) for row in _storehub_list(stores_payload)]
     encrypted = _encrypt_pos_credentials({
         'store_name': store_name,
         'api_token': api_token,
@@ -26188,40 +26287,49 @@ async def connect_storehub_account(
 
     now = datetime.utcnow().isoformat()
     existing = _get_pos_integration(business.get('id'), 'storehub')
+    existing_config = (existing or {}).get('config') if isinstance((existing or {}).get('config'), dict) else {}
+    existing_capabilities = (existing or {}).get('capabilities') if isinstance((existing or {}).get('capabilities'), dict) else {}
+    existing_mode = str((existing or {}).get('mode') or 'test').lower()
+    next_mode = 'live' if existing_mode == 'live' else 'test'
+    next_status = 'live' if next_mode == 'live' else 'connected'
+    simulator_enabled = next_mode == 'test'
+
     config = _merge_pos_config(existing or {}, {
         'member_identification': 'qr',
         'loyalty_source': 'existing_loyaltytree_program',
-        'earning_enabled': True,
-        # Test/simulator mode exposes redemption directly in the Companion POS overlay.
-        'redemption_enabled': True,
-        'redemption_value_per_point': float(((existing or {}).get('config') or {}).get('redemption_value_per_point') or 1.0),
-        'redemption_min_points': int(((existing or {}).get('config') or {}).get('redemption_min_points') or 1),
-        'redemption_increment_points': int(((existing or {}).get('config') or {}).get('redemption_increment_points') or 1),
-        'redemption_max_percent': float(((existing or {}).get('config') or {}).get('redemption_max_percent') or 100.0),
-        'reservation_hold_minutes': int(((existing or {}).get('config') or {}).get('reservation_hold_minutes') or 10),
-        'earn_on_net_amount': ((existing or {}).get('config') or {}).get('earn_on_net_amount') is not False,
-        'simulator': True,
+        'earning_enabled': existing_config.get('earning_enabled') is not False,
+        'redemption_enabled': bool(existing_config.get('redemption_enabled')) if existing else True,
+        'redemption_value_per_point': float(existing_config.get('redemption_value_per_point') or 1.0),
+        'redemption_min_points': int(existing_config.get('redemption_min_points') or 1),
+        'redemption_increment_points': int(existing_config.get('redemption_increment_points') or 1),
+        'redemption_max_percent': float(existing_config.get('redemption_max_percent') or 100.0),
+        'reservation_hold_minutes': int(existing_config.get('reservation_hold_minutes') or 10),
+        'earn_on_net_amount': existing_config.get('earn_on_net_amount') is not False,
+        'simulator': simulator_enabled,
         'real_api_tested': True,
         'real_api_tested_at': now,
         'storehub_outlets': stores[:200],
-        'setup_step': max(int(((existing or {}).get('config') or {}).get('setup_step') or 1), 2),
+        'storehub_outlet_source': outlet_source,
+        'storehub_outlet_warning': outlet_warning,
+        'setup_step': max(int(existing_config.get('setup_step') or 1), 2),
     })
     capabilities = {
-        **(((existing or {}).get('capabilities') or {}) if isinstance((existing or {}).get('capabilities'), dict) else {}),
+        **existing_capabilities,
         'api_read': True,
-        'stores_read': True,
+        'stores_read': outlet_source == 'stores',
         'transactions': True,
+        'transactions_read': True,
         'redemption': True,
-        'redemption_simulator': True,
-        'discount_write': False,
-        'simulator': True,
+        'redemption_simulator': simulator_enabled,
+        'discount_write': bool(existing_capabilities.get('discount_write')),
+        'simulator': simulator_enabled,
         'real_api_tested': True,
     }
     payload = {
         'business_id': business.get('id'),
         'provider': 'storehub',
-        'status': 'connected',
-        'mode': 'test',
+        'status': next_status,
+        'mode': next_mode,
         'external_account_name': store_name,
         'credentials_ciphertext': encrypted,
         'config': config,
@@ -26248,7 +26356,12 @@ async def connect_storehub_account(
         'stores': stores[:200],
         'integration': _pos_public_integration(saved),
         'loyalty_contract': _pos_loyalty_contract(business),
-        'message': 'StoreHub account connected securely. API token was encrypted and saved.',
+        'outlet_source': outlet_source,
+        'outlet_warning': outlet_warning,
+        'message': (
+            'StoreHub account connected securely. API token was encrypted and saved. '
+            + ('Real outlet ids were discovered from the transaction feed because /stores was unavailable.' if outlet_source == 'transactions' else '')
+        ).strip(),
     }
 
 
@@ -26308,8 +26421,11 @@ async def storehub_connection_test(
     if not integration:
         raise HTTPException(status_code=409, detail='Set up StoreHub Test Mode first.')
 
-    stores_payload = _storehub_get(integration, '/stores')
-    stores = [_storehub_store_summary(row) for row in _storehub_list(stores_payload)]
+    credentials = _decrypt_pos_credentials(integration)
+    stores, outlet_source, outlet_warning = _storehub_discover_outlets_with_credentials(
+        credentials.get('store_name'),
+        credentials.get('api_token'),
+    )
 
     now = datetime.utcnow().isoformat()
     config = _merge_pos_config(integration, {
@@ -26317,19 +26433,23 @@ async def storehub_connection_test(
         'real_api_tested_at': now,
         'storehub_store_name': integration.get('external_account_name'),
         'storehub_outlets': stores[:200],
-        'simulator': True,  # Keep loyalty writes simulated until transaction matching is proven.
+        'storehub_outlet_source': outlet_source,
+        'storehub_outlet_warning': outlet_warning,
+        'simulator': str(integration.get('mode') or 'test').lower() != 'live',
     })
     capabilities = integration.get('capabilities') if isinstance(integration.get('capabilities'), dict) else {}
     capabilities = {
         **capabilities,
         'api_read': True,
-        'stores_read': True,
+        'stores_read': outlet_source == 'stores',
+        'transactions_read': True,
         'real_api_tested': True,
     }
+    preserved_status = 'live' if str(integration.get('mode') or '').lower() == 'live' else 'connected'
 
     try:
         res = supabase.table('pos_integrations').update({
-            'status': 'connected',
+            'status': preserved_status,
             'external_account_name': integration.get('external_account_name'),
             'config': config,
             'capabilities': capabilities,
@@ -26338,7 +26458,7 @@ async def storehub_connection_test(
         }).eq('id', integration.get('id')).execute()
         updated = (res.data or [None])[0] or {
             **integration,
-            'status': 'connected',
+            'status': preserved_status,
             'external_account_name': integration.get('external_account_name'),
             'config': config,
             'capabilities': capabilities,
@@ -26354,9 +26474,14 @@ async def storehub_connection_test(
         'store_name': integration.get('external_account_name'),
         'stores': stores[:100],
         'store_count': len(stores),
+        'outlet_source': outlet_source,
+        'outlet_warning': outlet_warning,
         'integration': _pos_public_integration(updated),
         'loyalty_contract': _pos_loyalty_contract(business),
-        'message': 'StoreHub API authentication succeeded. No loyalty transaction was created.',
+        'message': (
+            'StoreHub API authentication succeeded. No loyalty transaction was created. '
+            + ('Outlet ids were discovered from real transactions because /stores was unavailable.' if outlet_source == 'transactions' else '')
+        ).strip(),
     }
 
 
@@ -27336,13 +27461,45 @@ async def pos_go_live(public_id: str, req: POSGoLiveRequest, authorization: str 
     except Exception as exc:
         raise _pos_schema_error(exc)
 
-    valid_mappings = [m for m in mappings if str(m.get('external_branch_id') or '').strip()]
-    if not valid_mappings:
+    mapped_rows = [m for m in mappings if str(m.get('external_branch_id') or '').strip()]
+    if not mapped_rows:
         raise HTTPException(
             status_code=409,
             detail='Map at least one Loyalty Tree branch to a StoreHub outlet before enabling Go Live.',
         )
 
+    placeholder_mappings = [
+        m for m in mapped_rows
+        if _storehub_is_placeholder_location_id(m.get('external_branch_id'))
+    ]
+    if placeholder_mappings:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                'One or more branches are still mapped to a LoyaltyTree Test outlet. '
+                'Refresh StoreHub, choose the real StoreHub outlet for every active branch, then retry Go Live.'
+            ),
+        )
+
+    known_store_ids = {
+        str(row.get('id')).strip()
+        for row in (config.get('storehub_outlets') or [])
+        if isinstance(row, dict) and str(row.get('id') or '').strip()
+    }
+    stale_mappings = [
+        m for m in mapped_rows
+        if known_store_ids and str(m.get('external_branch_id') or '').strip() not in known_store_ids
+    ]
+    if stale_mappings:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                'A saved StoreHub branch mapping no longer belongs to the connected StoreHub account. '
+                'Refresh the StoreHub outlet list and remap the affected branch before enabling Go Live.'
+            ),
+        )
+
+    valid_mappings = mapped_rows
     now = datetime.now(timezone.utc).isoformat()
     live_config = {
         **config,
@@ -42020,6 +42177,51 @@ def _companion_provider_rows(device: dict, integration: dict, limit: int) -> lis
 
         mapping = _companion_mock_mapping(device)
         mapped_store_id = mapping.get('external_branch_id') if isinstance(mapping, dict) else None
+        mapped_store_id = str(mapped_store_id or '').strip()
+
+        if not mapped_store_id:
+            raise HTTPException(
+                status_code=409,
+                detail='This Companion device has no StoreHub outlet mapping. Map its Loyalty Tree branch to a StoreHub outlet first.',
+            )
+        if _storehub_is_placeholder_location_id(mapped_store_id):
+            _companion_debug(
+                'mapping_blocked',
+                device_id=str(device.get('id') or ''),
+                branch_id=str(device.get('branch_id') or ''),
+                mapped_store_id=mapped_store_id,
+                reason='placeholder_storehub_mapping',
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    'This branch is still mapped to a LoyaltyTree Test StoreHub outlet. '
+                    'Refresh StoreHub in the owner dashboard and remap this branch to its real StoreHub outlet before processing sales.'
+                ),
+            )
+
+        known_store_ids = {
+            str(row.get('id')).strip()
+            for row in (config.get('storehub_outlets') or [])
+            if isinstance(row, dict) and str(row.get('id') or '').strip()
+        }
+        if known_store_ids and mapped_store_id not in known_store_ids:
+            _companion_debug(
+                'mapping_blocked',
+                device_id=str(device.get('id') or ''),
+                branch_id=str(device.get('branch_id') or ''),
+                mapped_store_id=mapped_store_id,
+                reason='stale_storehub_mapping',
+                known_store_count=len(known_store_ids),
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    'This branch is mapped to a StoreHub outlet that is not in the currently connected account. '
+                    'Refresh StoreHub and remap the branch before processing sales.'
+                ),
+            )
+
         rows = _storehub_recent_rows(provider_rows, limit, mapped_store_id)
         _companion_debug(
             'storehub_poll_rows',
