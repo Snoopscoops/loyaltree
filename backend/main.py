@@ -5841,9 +5841,23 @@ def _hex_to_rgb(hex_color: Optional[str]) -> tuple:
     except Exception:
         return (13, 148, 136)  # fallback teal if primary_color is malformed
 
-def generate_hero_image_bytes(primary_color: str) -> bytes:
-    """Plain gradient, no text - used as the class-level fallback banner
-    (shared by every customer before any personalized object image exists)."""
+def generate_hero_image_bytes(
+    primary_color: str,
+    wallet_style: str = 'modern',
+) -> bytes:
+    """Generated class-level Wallet banner.
+
+    Classic/minimal is intentionally one exact brand color. Other styles keep
+    the existing generated gradient treatment.
+    """
+    style = str(wallet_style or 'modern').strip().lower()
+    if style == 'classic':
+        style = 'minimal'
+    elif style == 'gradient':
+        style = 'modern'
+
+    if style == 'minimal':
+        return _hero_to_png(Image.new('RGB', HERO_SIZE, _hex_to_rgb(primary_color)))
     return _hero_to_png(_render_hero(primary_color))
 
 def _render_hero(primary_color: str) -> "Image.Image":
@@ -6187,12 +6201,23 @@ def generate_personalized_hero_image_bytes(
     instead of a reward name (points cards have no single fixed reward -
     see points_prizes on loyalty_programs) and the progress line reports
     the points balance instead of a stamp count."""
-    # Wallet 2.0 branded hero. Keep the image static (Google requirement)
-    # but make it look like a deliberate digital card instead of a plain gradient.
-    img = _render_wallet_hero_base(primary_color, background_image_url)
+    # Wallet 2.0 branded hero. Keep the image static (Google requirement).
+    # Classic/minimal means one clean exact brand color unless the owner
+    # explicitly uploaded a photo banner.
+    normalized_wallet_style = str(wallet_style or 'modern').strip().lower()
+    if normalized_wallet_style == 'classic':
+        normalized_wallet_style = 'minimal'
+    elif normalized_wallet_style == 'gradient':
+        normalized_wallet_style = 'modern'
+
+    if normalized_wallet_style == 'minimal' and not background_image_url:
+        img = Image.new('RGBA', HERO_SIZE, (*_hex_to_rgb(primary_color), 255))
+    else:
+        img = _render_wallet_hero_base(primary_color, background_image_url)
+
     from PIL import ImageDraw, ImageFont
 
-    if secondary_color:
+    if secondary_color and normalized_wallet_style != 'minimal':
         overlay = Image.new('RGBA', HERO_SIZE, (*_hex_to_rgb(secondary_color), 0))
         overlay_px = overlay.load()
         for y in range(HERO_SIZE[1]):
@@ -6212,9 +6237,10 @@ def generate_personalized_hero_image_bytes(
     # a soft accent - same bug, not just the wrong shape.)
     deco = Image.new('RGBA', HERO_SIZE, (0, 0, 0, 0))
     deco_draw = ImageDraw.Draw(deco)
-    if wallet_style in ('premium', 'dark'):
+    if normalized_wallet_style in ('premium', 'dark'):
         deco_draw.rounded_rectangle((18,18,HERO_SIZE[0]-18,HERO_SIZE[1]-18), radius=34, outline=(255,255,255,45), width=2)
-    deco_draw.rounded_rectangle((HERO_SIZE[0]-300, -60, HERO_SIZE[0]+40, 150), radius=36, fill=(255,255,255,22))
+    if normalized_wallet_style != 'minimal':
+        deco_draw.rounded_rectangle((HERO_SIZE[0]-300, -60, HERO_SIZE[0]+40, 150), radius=36, fill=(255,255,255,22))
     img = Image.alpha_composite(img, deco)
     draw = ImageDraw.Draw(img)
 
@@ -6378,8 +6404,9 @@ def wallet_20_design(business: dict, program: Optional[dict]) -> dict:
         background = _mix_hex(primary, '#050505', .58)
         secondary = _mix_hex(primary, '#d4af37', .28)
     elif style == 'minimal':
-        background = _mix_hex(primary, '#ffffff', .12)
-        secondary = _mix_hex(primary, '#ffffff', .35)
+        # Classic = one exact clean brand color.
+        background = primary
+        secondary = primary
     else:
         background = primary
 
@@ -6689,7 +6716,12 @@ def build_loyalty_class(
         # same primary_color -> same URL -> Google can keep using its cached
         # copy; a color change produces a new URL, forcing Google to refetch.
         color_key = primary_color.lstrip('#')
-        hero_url = f'{BASE_URL}/api/v1/business/{biz_public_id}/hero-image.png?c={color_key}'
+        program_key = quote(str((program or {}).get('public_id') or ''), safe='')
+        style_key = quote(str(design.get('style') or 'modern'), safe='')
+        hero_url = (
+            f'{BASE_URL}/api/v1/business/{biz_public_id}/hero-image.png'
+            f'?c={color_key}&p={program_key}&ws={style_key}'
+        )
     if hero_url:
         loyalty_class['heroImage'] = {'sourceUri': {'uri': hero_url}}
 
@@ -7123,7 +7155,12 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         else:
             progress_key = stamps
         visual_key = hashlib.sha256(
-            f"{stamp_display_style}|{stamp_icon}|{stamp_logo_url}|{(program or {}).get('hero_image_url') or ''}".encode()
+            (
+                f"{stamp_display_style}|{stamp_icon}|{stamp_logo_url}|"
+                f"{(program or {}).get('hero_image_url') or ''}|"
+                f"{design.get('style') or ''}|{design.get('background') or ''}|"
+                f"{design.get('secondary') or ''}"
+            ).encode()
         ).hexdigest()[:12]
         hero_url = (
             f'{BASE_URL}/api/v1/customer/{cust_public_id}/hero-image.png'
@@ -29766,20 +29803,42 @@ async def get_campaign_report(public_id: str, campaign_public_id: str, authoriza
 
 
 @app.get("/api/v1/business/{public_id}/hero-image.png")
-async def get_hero_image(public_id: str, c: Optional[str] = None):
-    """Serves the generated gradient hero image that build_loyalty_class()
-    points heroImage at when a business hasn't uploaded their own hero photo.
-    `c` is just the cache-busting color key from the URL - the color itself
-    always comes fresh from the business's saved program, so this can't be
-    used to render an arbitrary color."""
+async def get_hero_image(
+    public_id: str,
+    c: Optional[str] = None,
+    p: Optional[str] = None,
+    ws: Optional[str] = None,
+):
+    """Serve the generated class-level Wallet hero.
+
+    `p` keeps multi-program businesses on the exact program that generated the
+    Wallet class. `c` and `ws` are also cache-busters so Google refetches when
+    the owner changes color or switches Gradient <-> Classic.
+    """
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
-    program = safe_get_loyalty_program(business.get('id'))
-    primary_color = program.get('primary_color', '#3b82f6') if program else '#3b82f6'
+    program = safe_get_loyalty_program(
+        business.get('id'),
+        program_public_id=(str(p).strip() if p else None),
+    )
+    design = wallet_20_design(business, program)
 
-    png_bytes = generate_hero_image_bytes(primary_color)
+    # build_loyalty_class() generated this URL itself. Keeping the color in the
+    # URL preserves tier/background overrides and makes the resource immutable
+    # enough for Google's cache. Malformed external values fall back safely.
+    color_key = str(c or '').strip().lstrip('#')
+    primary_color = (
+        f'#{color_key.lower()}'
+        if re.fullmatch(r'[0-9a-fA-F]{6}', color_key)
+        else design.get('background') or '#3b82f6'
+    )
+
+    png_bytes = generate_hero_image_bytes(
+        primary_color,
+        wallet_style=design.get('style') or ws or 'modern',
+    )
     return Response(
         content=png_bytes,
         media_type="image/png",
