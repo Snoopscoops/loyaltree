@@ -193,6 +193,20 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
   const [branches, setBranches] = useState([])
   const [branchesLoading, setBranchesLoading] = useState(false)
   const [branchReviewError, setBranchReviewError] = useState('')
+  const [agreementSettings, setAgreementSettings] = useState({
+    program_exists: false,
+    mode: 'off',
+    draft_title: 'Customer Terms & Conditions',
+    draft_body: '',
+    draft_acknowledgment_text: 'I have read and agree to these terms.',
+    current_version: null,
+    versions: [],
+  })
+  const [agreementLoading, setAgreementLoading] = useState(false)
+  const [agreementSaving, setAgreementSaving] = useState(false)
+  const [agreementPublishing, setAgreementPublishing] = useState(false)
+  const [agreementError, setAgreementError] = useState('')
+  const [agreementSaved, setAgreementSaved] = useState(false)
 
   useEffect(() => {
     const onResize = () => setGuidedMobile(window.innerWidth <= 640)
@@ -230,6 +244,12 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     fetchBranches()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.business_slug, user?.token])
+
+
+  useEffect(() => {
+    fetchCustomerAgreement()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [programPublicId, user?.business_slug, user?.token])
 
   const fetchConfig = async () => {
     setLoading(true)
@@ -401,6 +421,115 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
       setBranchReviewError(err?.message || 'Could not load branch review links')
     } finally {
       setBranchesLoading(false)
+    }
+  }
+
+  const fetchCustomerAgreement = async () => {
+    if (!user?.business_slug || !user?.token) return
+    setAgreementLoading(true)
+    setAgreementError('')
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/v1/business/${user.business_slug}/customer-agreement${programQuery}`,
+        {
+          cache: 'no-store',
+          headers: { 'Authorization': `Bearer ${user.token}` },
+        }
+      )
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(typeof data?.detail === 'string' ? data.detail : 'Could not load customer agreement')
+      setAgreementSettings(current => ({
+        ...current,
+        ...data,
+        mode: ['off','checkbox','signature'].includes(data.mode) ? data.mode : 'off',
+        draft_title: data.draft_title || 'Customer Terms & Conditions',
+        draft_body: data.draft_body || '',
+        draft_acknowledgment_text: data.draft_acknowledgment_text || 'I have read and agree to these terms.',
+        versions: Array.isArray(data.versions) ? data.versions : [],
+      }))
+    } catch (err) {
+      setAgreementError(err?.message || 'Could not load customer agreement')
+    } finally {
+      setAgreementLoading(false)
+    }
+  }
+
+  const updateAgreement = (key, value) => {
+    setAgreementSettings(current => ({ ...current, [key]: value }))
+    setAgreementSaved(false)
+    setAgreementError('')
+  }
+
+  const saveCustomerAgreementDraft = async () => {
+    if (!user?.token) throw new Error('Your owner session expired. Please sign in again.')
+    if (!agreementSettings.program_exists) throw new Error('Publish/save this loyalty card first, then add customer terms.')
+    const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customer-agreement${programQuery}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${user.token}`,
+      },
+      body: JSON.stringify({
+        mode: agreementSettings.mode || 'off',
+        draft_title: String(agreementSettings.draft_title || '').trim() || null,
+        draft_body: String(agreementSettings.draft_body || '').trim() || null,
+        draft_acknowledgment_text: String(agreementSettings.draft_acknowledgment_text || '').trim() || 'I have read and agree to these terms.',
+      }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(typeof data?.detail === 'string' ? data.detail : 'Could not save customer agreement draft')
+    setAgreementSettings(current => ({ ...current, ...data }))
+    return data
+  }
+
+  const handleSaveAgreementDraft = async () => {
+    if (agreementSaving || agreementPublishing) return
+    setAgreementSaving(true)
+    setAgreementError('')
+    setAgreementSaved(false)
+    try {
+      await saveCustomerAgreementDraft()
+      setAgreementSaved(true)
+      setTimeout(() => setAgreementSaved(false), 2500)
+    } catch (err) {
+      setAgreementError(err?.message || 'Could not save customer agreement draft')
+    } finally {
+      setAgreementSaving(false)
+    }
+  }
+
+  const handlePublishAgreement = async () => {
+    if (agreementSaving || agreementPublishing) return
+    if (agreementSettings.mode === 'off') {
+      setAgreementError('Choose Checkbox Only or Terms + Signature before publishing.')
+      return
+    }
+    if (!String(agreementSettings.draft_title || '').trim()) {
+      setAgreementError('Enter an agreement title before publishing.')
+      return
+    }
+    if (!String(agreementSettings.draft_body || '').trim()) {
+      setAgreementError('Enter the customer terms before publishing.')
+      return
+    }
+    setAgreementPublishing(true)
+    setAgreementError('')
+    setAgreementSaved(false)
+    try {
+      await saveCustomerAgreementDraft()
+      const res = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/customer-agreement/publish${programQuery}`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${user.token}` },
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(typeof data?.detail === 'string' ? data.detail : 'Could not publish customer agreement')
+      setAgreementSettings(current => ({ ...current, ...data }))
+      setAgreementSaved(true)
+      setTimeout(() => setAgreementSaved(false), 3000)
+    } catch (err) {
+      setAgreementError(err?.message || 'Could not publish customer agreement')
+    } finally {
+      setAgreementPublishing(false)
     }
   }
 
@@ -1176,6 +1305,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
 
       setWalletClassId(published.class_id)
       setSaved(true)
+      await fetchCustomerAgreement()
       if (onSaved) await onSaved()
       setTimeout(() => setSaved(false), 3500)
     } catch (err) {
@@ -2164,6 +2294,134 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
               <textarea style={styles.textarea} placeholder={isEmployee ? 'e.g. Official employee card and staff benefits.' : hasMembership ? 'e.g. Monthly subscription benefits plus loyalty rewards.' : 'e.g. Collect rewards every time you visit.'} value={form.description} maxLength={DESCRIPTION_LIMIT} onChange={e => update('description', e.target.value)} rows={3}/>
               <p style={styles.hint}>Keep this short; Wallet details can carry the deeper reward information.</p>
             </div>
+          </section>
+
+          <section style={{...styles.editorSection,border:'1px solid #ddd6fe',background:'#faf8ff'}}>
+            <div style={styles.editorSectionHead}>
+              <div>
+                <div style={styles.editorSectionEyebrow}>CUSTOMER AGREEMENT · OPTIONAL PER CARD</div>
+                <h3 style={styles.editorSectionTitle}>Terms & agreement shown when customers join</h3>
+              </div>
+              <span style={{...styles.editorSectionBadge,background:'#ede9fe',color:'#6d28d9'}}>✍</span>
+            </div>
+
+            <p style={{...styles.hint,margin:'0 0 14px'}}>
+              This applies only to this loyalty card/program. Keep it Off for normal signup, require a checkbox acknowledgment, or require both acknowledgment and a drawn signature.
+            </p>
+
+            {agreementLoading ? (
+              <div style={{padding:12,border:'1px solid #e2e8f0',borderRadius:10,background:'#fff',fontSize:12,color:'#64748b'}}>Loading customer agreement…</div>
+            ) : <>
+              {!agreementSettings.program_exists && (
+                <div style={{padding:12,border:'1px solid #fde68a',borderRadius:10,background:'#fffbeb',fontSize:12,color:'#92400e',marginBottom:12}}>
+                  Publish/save this card first. After the program exists, this section will unlock automatically.
+                </div>
+              )}
+
+              <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'220px 1fr',gap:12,alignItems:'start'}}>
+                <label style={{display:'grid',gap:6}}>
+                  <span style={styles.label}>Agreement requirement</span>
+                  <select
+                    style={styles.input}
+                    value={agreementSettings.mode || 'off'}
+                    disabled={!agreementSettings.program_exists}
+                    onChange={e=>updateAgreement('mode',e.target.value)}
+                  >
+                    <option value="off">Off · normal signup</option>
+                    <option value="checkbox">Terms checkbox only</option>
+                    <option value="signature">Terms + customer signature</option>
+                  </select>
+                </label>
+                <div style={{padding:12,border:'1px solid #e2e8f0',borderRadius:11,background:'#fff',fontSize:12,lineHeight:1.55,color:'#475569'}}>
+                  {agreementSettings.current_version
+                    ? <>Current published version: <b>v{agreementSettings.current_version.version_number}</b> · {agreementSettings.current_version.mode === 'signature' ? 'Signature required' : 'Checkbox only'}.</>
+                    : 'No published agreement yet. Draft changes are not shown to customers until you publish a version.'}
+                </div>
+              </div>
+
+              {agreementSettings.mode !== 'off' && (
+                <div style={{display:'grid',gap:12,marginTop:14}}>
+                  <label style={{display:'grid',gap:6}}>
+                    <span style={styles.label}>Agreement title</span>
+                    <input
+                      style={styles.input}
+                      maxLength={160}
+                      disabled={!agreementSettings.program_exists}
+                      placeholder="e.g. Membership Terms & Conditions"
+                      value={agreementSettings.draft_title || ''}
+                      onChange={e=>updateAgreement('draft_title',e.target.value)}
+                    />
+                  </label>
+
+                  <label style={{display:'grid',gap:6}}>
+                    <span style={styles.label}>Terms & conditions</span>
+                    <textarea
+                      style={{...styles.textarea,minHeight:220,width:'100%',boxSizing:'border-box'}}
+                      maxLength={20000}
+                      disabled={!agreementSettings.program_exists}
+                      placeholder={'Add the exact terms customers should review before joining this card.\n\nExample:\n1. Rewards are non-transferable.\n2. Rewards cannot be converted to cash.\n3. The business may apply the published loyalty mechanics.'}
+                      value={agreementSettings.draft_body || ''}
+                      onChange={e=>updateAgreement('draft_body',e.target.value)}
+                    />
+                    <span style={{...styles.hint,margin:0,textAlign:'right'}}>{String(agreementSettings.draft_body || '').length.toLocaleString()} / 20,000</span>
+                  </label>
+
+                  <label style={{display:'grid',gap:6}}>
+                    <span style={styles.label}>Customer acknowledgment text</span>
+                    <input
+                      style={styles.input}
+                      maxLength={500}
+                      disabled={!agreementSettings.program_exists}
+                      value={agreementSettings.draft_acknowledgment_text || ''}
+                      onChange={e=>updateAgreement('draft_acknowledgment_text',e.target.value)}
+                      placeholder="I have read and agree to these terms."
+                    />
+                  </label>
+
+                  <div style={{padding:13,border:'1px solid #ddd6fe',borderRadius:12,background:'#fff'}}>
+                    <div style={{fontSize:10,fontWeight:900,letterSpacing:1,color:'#7c3aed',marginBottom:7}}>CUSTOMER PREVIEW</div>
+                    <div style={{fontSize:14,fontWeight:850,color:'#0f172a'}}>{agreementSettings.draft_title || 'Customer Terms & Conditions'}</div>
+                    <div style={{fontSize:12,color:'#64748b',whiteSpace:'pre-wrap',lineHeight:1.6,maxHeight:120,overflow:'auto',marginTop:7}}>{agreementSettings.draft_body || 'Your terms will appear here.'}</div>
+                    <div style={{fontSize:12,fontWeight:750,color:'#334155',marginTop:10}}>☐ {agreementSettings.draft_acknowledgment_text || 'I have read and agree to these terms.'}</div>
+                    {agreementSettings.mode === 'signature' && <div style={{marginTop:9,padding:16,border:'1px dashed #c4b5fd',borderRadius:10,color:'#7c3aed',fontSize:11}}>Customer signature box</div>}
+                  </div>
+
+                  <div style={{display:'flex',gap:9,flexWrap:'wrap'}}>
+                    <button type="button" onClick={handleSaveAgreementDraft} disabled={!agreementSettings.program_exists || agreementSaving || agreementPublishing} style={{...styles.addPrizeBtn,...((!agreementSettings.program_exists || agreementSaving || agreementPublishing)?{opacity:.5,cursor:'not-allowed'}:{})}}>
+                      {agreementSaving ? 'Saving draft…' : 'Save Draft'}
+                    </button>
+                    <button type="button" onClick={handlePublishAgreement} disabled={!agreementSettings.program_exists || agreementSaving || agreementPublishing} style={{...styles.publishBtn,width:'auto',minHeight:42,padding:'0 16px',...((!agreementSettings.program_exists || agreementSaving || agreementPublishing)?{opacity:.5,cursor:'not-allowed'}:{})}}>
+                      {agreementPublishing ? 'Publishing agreement…' : (agreementSettings.current_version ? 'Publish New Version' : 'Publish Agreement')}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {agreementSettings.mode === 'off' && agreementSettings.program_exists && (
+                <div style={{marginTop:12,display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                  <button type="button" onClick={handleSaveAgreementDraft} disabled={agreementSaving || agreementPublishing} style={styles.addPrizeBtn}>
+                    {agreementSaving ? 'Saving…' : 'Save Off Setting'}
+                  </button>
+                  <span style={{fontSize:11.5,color:'#64748b'}}>Turning this Off stops showing the agreement to new joiners; previously signed versions remain preserved.</span>
+                </div>
+              )}
+
+              {agreementSaved && <div style={{marginTop:10,padding:'9px 11px',borderRadius:9,background:'#ecfdf5',border:'1px solid #a7f3d0',fontSize:12,fontWeight:750,color:'#047857'}}>✓ Customer agreement saved</div>}
+              {agreementError && <div style={{marginTop:10,padding:'10px 12px',borderRadius:9,background:'#fff1f2',border:'1px solid #fecdd3',fontSize:12,color:'#be123c'}}>{agreementError}</div>}
+
+              {(agreementSettings.versions || []).length > 0 && (
+                <details style={{marginTop:12}}>
+                  <summary style={{cursor:'pointer',fontSize:12,fontWeight:800,color:'#475569'}}>Version history ({agreementSettings.versions.length})</summary>
+                  <div style={{display:'grid',gap:7,marginTop:9}}>
+                    {(agreementSettings.versions || []).slice(0,10).map(version => (
+                      <div key={version.public_id || version.version_number} style={{padding:'9px 11px',border:'1px solid #e2e8f0',borderRadius:9,background:'#fff',fontSize:11.5,color:'#64748b'}}>
+                        <b style={{color:'#334155'}}>v{version.version_number}</b> · {version.title || 'Customer Agreement'} · {version.mode === 'signature' ? 'Signature' : 'Checkbox'}
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+            </>}
           </section>
 
           {renderWelcomeRewardEditor()}

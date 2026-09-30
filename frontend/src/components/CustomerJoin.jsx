@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 
 const EMPLOYEE_POSITION_OPTIONS = [
@@ -20,6 +20,80 @@ function birthdayDayCount(monthValue) {
   if ([4, 6, 9, 11].includes(month)) return 30
   return 31
 }
+
+function SignaturePad({ value, onChange, color = '#0f766e' }) {
+  const canvasRef = useRef(null)
+  const drawingRef = useRef(false)
+
+  const pointerPosition = (event) => {
+    const canvas = canvasRef.current
+    const rect = canvas.getBoundingClientRect()
+    return {
+      x: (event.clientX - rect.left) * (canvas.width / rect.width),
+      y: (event.clientY - rect.top) * (canvas.height / rect.height),
+    }
+  }
+
+  const startDrawing = (event) => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    drawingRef.current = true
+    try { canvas.setPointerCapture(event.pointerId) } catch (_) {}
+    const ctx = canvas.getContext('2d')
+    const pos = pointerPosition(event)
+    ctx.strokeStyle = color
+    ctx.lineWidth = 3
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+    ctx.beginPath()
+    ctx.moveTo(pos.x, pos.y)
+  }
+
+  const draw = (event) => {
+    if (!drawingRef.current || !canvasRef.current) return
+    const ctx = canvasRef.current.getContext('2d')
+    const pos = pointerPosition(event)
+    ctx.lineTo(pos.x, pos.y)
+    ctx.stroke()
+  }
+
+  const finishDrawing = () => {
+    if (!drawingRef.current || !canvasRef.current) return
+    drawingRef.current = false
+    const ctx = canvasRef.current.getContext('2d')
+    ctx.closePath()
+    onChange(canvasRef.current.toDataURL('image/png'))
+  }
+
+  const clear = () => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height)
+    onChange('')
+  }
+
+  return (
+    <div>
+      <canvas
+        ref={canvasRef}
+        width={600}
+        height={180}
+        onPointerDown={startDrawing}
+        onPointerMove={draw}
+        onPointerUp={finishDrawing}
+        onPointerCancel={finishDrawing}
+        onPointerLeave={finishDrawing}
+        style={{width:'100%',height:150,border:'1px solid #cbd5e1',borderRadius:12,background:'#fff',touchAction:'none',display:'block',cursor:'crosshair'}}
+        aria-label="Customer signature pad"
+      />
+      <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'center',marginTop:7}}>
+        <span style={{fontSize:10.5,color:value?'#047857':'#94a3b8'}}>{value ? 'Signature captured' : 'Sign inside the box using your finger or pointer.'}</span>
+        <button type="button" onClick={clear} style={{border:'1px solid #cbd5e1',background:'#fff',borderRadius:8,padding:'6px 9px',fontSize:10.5,fontWeight:800,color:'#475569',cursor:'pointer'}}>Clear</button>
+      </div>
+    </div>
+  )
+}
+
 
 function CustomerJoin({ API_BASE }) {
   const { businessSlug } = useParams()
@@ -50,10 +124,16 @@ function CustomerJoin({ API_BASE }) {
   const [walletLoading, setWalletLoading] = useState(false)
   const [businessInfo,setBusinessInfo]=useState(null)
   const [privacyConsent,setPrivacyConsent]=useState(false)
+  const [agreementAccepted,setAgreementAccepted]=useState(false)
+  const [agreementSignature,setAgreementSignature]=useState('')
+  const [agreementOpen,setAgreementOpen]=useState(false)
   // Legacy Employee Card records remain readable, but new employee programs now use Membership.
   const isEmployeeCard = businessInfo?.card_type === 'employee'
   const isEmployeeMembership = businessInfo?.card_type === 'membership' && businessInfo?.membership_employee_mode === true
   const isEmployeeExperience = isEmployeeCard || isEmployeeMembership
+  const customerAgreement = businessInfo?.customer_agreement?.enabled === true ? businessInfo.customer_agreement : null
+  const agreementRequiresSignature = customerAgreement?.mode === 'signature'
+  const agreementComplete = !customerAgreement || (agreementAccepted && (!agreementRequiresSignature || Boolean(agreementSignature)))
 
   const rewardSummary = (() => {
     if (!businessInfo) return null
@@ -181,6 +261,14 @@ function CustomerJoin({ API_BASE }) {
       setError('Please review and accept the Privacy & Membership Consent before continuing.')
       return
     }
+    if (customerAgreement && !agreementAccepted) {
+      setError('Please review and accept this card’s Customer Terms & Conditions before continuing.')
+      return
+    }
+    if (customerAgreement && agreementRequiresSignature && !agreementSignature) {
+      setError('Please sign the Customer Terms & Conditions before continuing.')
+      return
+    }
     if (isEmployeeExperience && !form.employee_id_number.trim()) {
       setError('Employee ID number is required.')
       return
@@ -213,6 +301,9 @@ function CustomerJoin({ API_BASE }) {
           employee_start_date: isEmployeeExperience ? (form.employee_start_date || null) : null,
           privacy_consent: true,
           privacy_consent_version: '2026-09-27-v2',
+          customer_agreement_accepted: customerAgreement ? agreementAccepted : false,
+          customer_agreement_version_id: customerAgreement?.version_id || null,
+          customer_agreement_signature_data: customerAgreement && agreementRequiresSignature ? (agreementSignature || null) : null,
         })
       })
       const data = await res.json()
@@ -620,6 +711,45 @@ function CustomerJoin({ API_BASE }) {
               )}
             </div>
 
+            {customerAgreement && (
+              <div style={styles.agreementCard}>
+                <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start'}}>
+                  <div>
+                    <div style={styles.agreementEyebrow}>CUSTOMER AGREEMENT · VERSION {customerAgreement.version_number || 1}</div>
+                    <div style={styles.agreementTitle}>{customerAgreement.title || 'Customer Terms & Conditions'}</div>
+                  </div>
+                  <button type="button" onClick={()=>setAgreementOpen(v=>!v)} style={styles.agreementViewBtn}>
+                    {agreementOpen ? 'Hide terms' : 'View terms'}
+                  </button>
+                </div>
+
+                {agreementOpen && (
+                  <div style={styles.agreementBody}>{customerAgreement.body || ''}</div>
+                )}
+
+                <label style={{...styles.consentCard,marginTop:12,background:'#fff'}}>
+                  <input
+                    type="checkbox"
+                    checked={agreementAccepted}
+                    onChange={e => setAgreementAccepted(e.target.checked)}
+                    style={styles.consentCheckbox}
+                  />
+                  <span>
+                    <strong style={styles.consentTitle}>Customer Terms & Conditions</strong>
+                    <span style={styles.consentText}>{customerAgreement.acknowledgment_text || 'I have read and agree to these terms.'}</span>
+                  </span>
+                </label>
+
+                {agreementRequiresSignature && (
+                  <div style={{marginTop:13}}>
+                    <div style={{fontSize:12,fontWeight:800,color:'#334155',marginBottom:7}}>Customer signature</div>
+                    <SignaturePad value={agreementSignature} onChange={setAgreementSignature} color={brandColor} />
+                    <div style={{fontSize:10.5,color:'#64748b',lineHeight:1.5,marginTop:6}}>Your signature is stored with the exact published version of these terms as the business&apos;s acceptance record.</div>
+                  </div>
+                )}
+              </div>
+            )}
+
             <label style={styles.consentCard}>
               <input
                 type="checkbox"
@@ -645,11 +775,11 @@ function CustomerJoin({ API_BASE }) {
 
             <button
               type="submit"
-              disabled={loading || !privacyConsent}
+              disabled={loading || !privacyConsent || !agreementComplete}
               style={{
                 ...styles.button,
                 background: `linear-gradient(135deg, ${brandColor}, #0f172a)`,
-                ...(loading || !privacyConsent ? styles.buttonDisabled : {}),
+                ...(loading || !privacyConsent || !agreementComplete ? styles.buttonDisabled : {}),
               }}
             >
               <span>{loading ? 'Creating your card…' : (isEmployeeMembership ? 'Get My Employee Membership' : isEmployeeCard ? 'Get My Employee Card' : 'Create My Loyalty Card')}</span>
@@ -765,6 +895,13 @@ const styles = {
     border:'1px solid #dfe7eb',background:'#fbfcfd',fontSize:14,color:'#0f172a',
     outline:'none',fontFamily:'inherit',minHeight:47,
   },
+  agreementCard:{
+    padding:'15px',border:'1px solid #ddd6fe',background:'#faf8ff',borderRadius:16,
+  },
+  agreementEyebrow:{fontSize:9.5,fontWeight:900,letterSpacing:'1px',color:'#7c3aed',marginBottom:5},
+  agreementTitle:{fontSize:14,fontWeight:850,color:'#0f172a'},
+  agreementViewBtn:{border:'1px solid #c4b5fd',background:'#fff',color:'#6d28d9',borderRadius:9,padding:'7px 9px',fontSize:10.5,fontWeight:800,cursor:'pointer',flexShrink:0},
+  agreementBody:{marginTop:12,maxHeight:220,overflow:'auto',whiteSpace:'pre-wrap',padding:'12px 13px',border:'1px solid #e2e8f0',borderRadius:11,background:'#fff',fontSize:11.5,lineHeight:1.65,color:'#475569'},
   consentCard:{
     display:'flex',alignItems:'flex-start',gap:11,padding:'14px 15px',
     border:'1px solid #e2e8f0',background:'#f8fafc',borderRadius:14,cursor:'pointer',

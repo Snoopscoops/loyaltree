@@ -2421,9 +2421,21 @@ class CustomerSignup(BaseModel):
     last_order_date: Optional[str] = None
     privacy_consent: bool = False
     privacy_consent_version: Optional[str] = Field(default=None, max_length=40)
+    # Optional per-card customer agreement. These are ignored unless the
+    # selected loyalty program currently has a published agreement enabled.
+    customer_agreement_accepted: bool = False
+    customer_agreement_version_id: Optional[str] = Field(default=None, max_length=80)
+    customer_agreement_signature_data: Optional[str] = Field(default=None, max_length=300000)
     employee_id_number: Optional[str] = Field(default=None, max_length=80)
     employee_position: Optional[str] = Field(default=None, max_length=100)
     employee_start_date: Optional[str] = None
+
+
+class CustomerAgreementDraftUpdate(BaseModel):
+    mode: Literal['off', 'checkbox', 'signature'] = 'off'
+    draft_title: Optional[str] = Field(default=None, max_length=160)
+    draft_body: Optional[str] = Field(default=None, max_length=20000)
+    draft_acknowledgment_text: Optional[str] = Field(default=None, max_length=500)
 
 class PlatformAnalyticsEventCreate(BaseModel):
     event_name: str = Field(min_length=1, max_length=80)
@@ -4392,6 +4404,176 @@ def safe_get_loyalty_program(
     except Exception as e:
         print(f"LOYALTY PROGRAM lookup error for business {business_id}: {e}")
         return None
+
+
+
+CUSTOMER_AGREEMENT_DEFAULT_ACK = 'I have read and agree to these terms.'
+
+
+def _customer_agreement_settings(program_id: int, strict: bool = False) -> Optional[dict]:
+    if not supabase or not program_id:
+        return None
+    try:
+        rows = (
+            supabase.table('customer_agreement_settings').select('*')
+            .eq('program_id', int(program_id)).limit(1).execute().data or []
+        )
+        return rows[0] if rows else None
+    except Exception as exc:
+        if strict:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    'Customer agreement storage is not ready. Run the customer agreements '
+                    f'Supabase migration first. Database error: {friendly_db_error(exc)}'
+                ),
+            ) from exc
+        print(f'CUSTOMER AGREEMENT settings warning program={program_id}: {exc}')
+        return None
+
+
+def _customer_agreement_version_by_id(version_id, program_id: Optional[int] = None, strict: bool = False) -> Optional[dict]:
+    if not supabase or not version_id:
+        return None
+    try:
+        query = supabase.table('customer_agreement_versions').select('*').eq('id', int(version_id))
+        if program_id:
+            query = query.eq('program_id', int(program_id))
+        rows = query.limit(1).execute().data or []
+        return rows[0] if rows else None
+    except Exception as exc:
+        if strict:
+            raise HTTPException(status_code=503, detail=f'Could not read customer agreement version: {friendly_db_error(exc)}') from exc
+        return None
+
+
+def _customer_agreement_snapshot_hash(title: str, body: str, acknowledgment_text: str, mode: str) -> str:
+    canonical = json.dumps({
+        'title': str(title or '').strip(),
+        'body': str(body or '').strip(),
+        'acknowledgment_text': str(acknowledgment_text or '').strip(),
+        'mode': str(mode or '').strip(),
+    }, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    return hashlib.sha256(canonical.encode('utf-8')).hexdigest()
+
+
+def _public_customer_agreement(program: Optional[dict]) -> dict:
+    """Return only the currently published customer-facing agreement.
+
+    Draft edits are never exposed. Setting mode=off disables the agreement
+    immediately while preserving historical versions/acceptances.
+    """
+    program = program or {}
+    program_id = program.get('id')
+    settings = _customer_agreement_settings(program_id, strict=False)
+    if not settings or not bool(settings.get('published_enabled')) or str(settings.get('mode') or 'off') == 'off':
+        return {'enabled': False, 'mode': 'off'}
+
+    current_id = settings.get('current_version_id')
+    version = _customer_agreement_version_by_id(current_id, program_id=program_id, strict=False) if current_id else None
+    if not version:
+        return {'enabled': False, 'mode': 'off'}
+
+    mode = str(version.get('mode') or 'checkbox')
+    if mode not in ('checkbox', 'signature'):
+        mode = 'checkbox'
+    return {
+        'enabled': True,
+        'mode': mode,
+        'version_id': version.get('public_id'),
+        'version_number': int(version.get('version_number') or 1),
+        'title': version.get('title') or 'Customer Terms & Conditions',
+        'body': version.get('body') or '',
+        'acknowledgment_text': version.get('acknowledgment_text') or CUSTOMER_AGREEMENT_DEFAULT_ACK,
+        'sha256': version.get('sha256'),
+        'published_at': version.get('published_at'),
+    }
+
+
+def _customer_agreement_owner_payload(business: dict, program: Optional[dict]) -> dict:
+    if not program or not program.get('id'):
+        return {
+            'program_exists': False,
+            'program_public_id': None,
+            'mode': 'off',
+            'published_enabled': False,
+            'draft_title': 'Customer Terms & Conditions',
+            'draft_body': '',
+            'draft_acknowledgment_text': CUSTOMER_AGREEMENT_DEFAULT_ACK,
+            'current_version': None,
+            'versions': [],
+        }
+
+    settings = _customer_agreement_settings(program.get('id'), strict=True)
+    if settings:
+        mode = str(settings.get('mode') or 'off')
+        published_enabled = bool(settings.get('published_enabled'))
+        draft_title = settings.get('draft_title') or 'Customer Terms & Conditions'
+        draft_body = settings.get('draft_body') or ''
+        draft_ack = settings.get('draft_acknowledgment_text') or CUSTOMER_AGREEMENT_DEFAULT_ACK
+        current = _customer_agreement_version_by_id(
+            settings.get('current_version_id'),
+            program_id=program.get('id'),
+            strict=True,
+        ) if settings.get('current_version_id') else None
+    else:
+        mode = 'off'
+        published_enabled = False
+        draft_title = 'Customer Terms & Conditions'
+        draft_body = ''
+        draft_ack = CUSTOMER_AGREEMENT_DEFAULT_ACK
+        current = None
+
+    try:
+        versions = (
+            supabase.table('customer_agreement_versions')
+            .select('public_id,version_number,title,mode,sha256,published_at,created_at')
+            .eq('business_id', business.get('id'))
+            .eq('program_id', program.get('id'))
+            .order('version_number', desc=True)
+            .limit(20)
+            .execute().data or []
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f'Could not load customer agreement history: {friendly_db_error(exc)}') from exc
+
+    return {
+        'program_exists': True,
+        'program_public_id': program.get('public_id'),
+        'mode': mode if mode in ('off', 'checkbox', 'signature') else 'off',
+        'published_enabled': published_enabled,
+        'draft_title': draft_title,
+        'draft_body': draft_body,
+        'draft_acknowledgment_text': draft_ack,
+        'current_version': ({
+            'version_id': current.get('public_id'),
+            'version_number': int(current.get('version_number') or 1),
+            'title': current.get('title'),
+            'mode': current.get('mode'),
+            'sha256': current.get('sha256'),
+            'published_at': current.get('published_at'),
+        } if current else None),
+        'versions': versions,
+    }
+
+
+def _validate_customer_signature_data(value: Optional[str]) -> Optional[str]:
+    raw = str(value or '').strip()
+    if not raw:
+        return None
+    prefix = 'data:image/png;base64,'
+    if not raw.startswith(prefix):
+        raise HTTPException(status_code=400, detail='Customer signature must be a PNG signature from the signup form.')
+    encoded = raw[len(prefix):]
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail='Customer signature data is invalid.') from exc
+    if len(decoded) < 50:
+        raise HTTPException(status_code=400, detail='Please provide a valid customer signature.')
+    if len(decoded) > 200000:
+        raise HTTPException(status_code=400, detail='Customer signature is too large. Please sign again.')
+    return raw
 
 
 def safe_get_customer_program(customer: Optional[dict], business_id: Optional[int] = None):
@@ -21873,6 +22055,149 @@ async def get_loyalty_config(public_id: str, response: Response, program_id: Opt
     }
 
 
+
+@app.get('/api/v1/business/{public_id}/customer-agreement')
+async def get_customer_agreement_settings(
+    public_id: str,
+    program_id: Optional[str] = Query(default=None),
+    authorization: str = Header(default=''),
+):
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    program = safe_get_loyalty_program(business.get('id'), program_public_id=program_id)
+    if program_id and not program:
+        raise HTTPException(status_code=404, detail='Program not found for this business')
+    return _customer_agreement_owner_payload(business, program)
+
+
+@app.put('/api/v1/business/{public_id}/customer-agreement')
+async def save_customer_agreement_draft(
+    public_id: str,
+    req: CustomerAgreementDraftUpdate,
+    program_id: Optional[str] = Query(default=None),
+    authorization: str = Header(default=''),
+):
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    program = safe_get_loyalty_program(business.get('id'), program_public_id=program_id)
+    if not program:
+        raise HTTPException(status_code=409, detail='Save/publish this loyalty card first, then add customer terms.')
+
+    title = str(req.draft_title or '').strip()
+    body = str(req.draft_body or '').strip()
+    ack = str(req.draft_acknowledgment_text or '').strip() or CUSTOMER_AGREEMENT_DEFAULT_ACK
+    now = datetime.utcnow().isoformat()
+    payload = {
+        'business_id': business.get('id'),
+        'program_id': program.get('id'),
+        'mode': req.mode,
+        'draft_title': title or None,
+        'draft_body': body or None,
+        'draft_acknowledgment_text': ack,
+        'updated_at': now,
+    }
+
+    existing = _customer_agreement_settings(program.get('id'), strict=True)
+    # Off takes effect immediately. Turning it back on never exposes an old
+    # version merely because a draft was saved; Publish explicitly re-enables.
+    if req.mode == 'off':
+        payload['published_enabled'] = False
+    elif not existing:
+        payload['published_enabled'] = False
+    try:
+        if existing and existing.get('id'):
+            supabase.table('customer_agreement_settings').update(payload).eq('id', existing.get('id')).execute()
+        else:
+            payload['created_at'] = now
+            supabase.table('customer_agreement_settings').insert(payload).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f'Could not save customer agreement draft: {friendly_db_error(exc)}') from exc
+
+    return _customer_agreement_owner_payload(business, program)
+
+
+@app.post('/api/v1/business/{public_id}/customer-agreement/publish')
+async def publish_customer_agreement(
+    public_id: str,
+    program_id: Optional[str] = Query(default=None),
+    authorization: str = Header(default=''),
+):
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    program = safe_get_loyalty_program(business.get('id'), program_public_id=program_id)
+    if not program:
+        raise HTTPException(status_code=409, detail='Save/publish this loyalty card first, then publish customer terms.')
+
+    settings = _customer_agreement_settings(program.get('id'), strict=True)
+    if not settings:
+        raise HTTPException(status_code=400, detail='Save an agreement draft first.')
+    mode = str(settings.get('mode') or 'off')
+    if mode == 'off':
+        raise HTTPException(status_code=400, detail='Turn Customer Agreement on before publishing a version.')
+    if mode not in ('checkbox', 'signature'):
+        raise HTTPException(status_code=400, detail='Invalid customer agreement mode.')
+
+    title = str(settings.get('draft_title') or '').strip()
+    body = str(settings.get('draft_body') or '').strip()
+    ack = str(settings.get('draft_acknowledgment_text') or '').strip() or CUSTOMER_AGREEMENT_DEFAULT_ACK
+    if not title:
+        raise HTTPException(status_code=400, detail='Enter an agreement title before publishing.')
+    if not body:
+        raise HTTPException(status_code=400, detail='Enter the customer terms before publishing.')
+
+    try:
+        previous = (
+            supabase.table('customer_agreement_versions').select('version_number')
+            .eq('program_id', program.get('id'))
+            .order('version_number', desc=True).limit(1).execute().data or []
+        )
+        next_version = int(previous[0].get('version_number') or 0) + 1 if previous else 1
+        now = datetime.utcnow().isoformat()
+        sha256 = _customer_agreement_snapshot_hash(title, body, ack, mode)
+        inserted = (
+            supabase.table('customer_agreement_versions').insert({
+                'public_id': generate_public_id(),
+                'business_id': business.get('id'),
+                'program_id': program.get('id'),
+                'version_number': next_version,
+                'title': title,
+                'body': body,
+                'acknowledgment_text': ack,
+                'mode': mode,
+                'sha256': sha256,
+                'published_at': now,
+                'created_at': now,
+            }).execute().data or []
+        )
+        if not inserted:
+            raise RuntimeError('Agreement version insert returned no row')
+        version = inserted[0]
+        supabase.table('customer_agreement_settings').update({
+            'current_version_id': version.get('id'),
+            'published_enabled': True,
+            'updated_at': now,
+        }).eq('id', settings.get('id')).execute()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f'Could not publish customer agreement: {friendly_db_error(exc)}') from exc
+
+    payload = _customer_agreement_owner_payload(business, program)
+    payload['published_version'] = {
+        'version_id': version.get('public_id'),
+        'version_number': next_version,
+        'sha256': sha256,
+        'published_at': version.get('published_at'),
+    }
+    return payload
+
+
 @app.get("/api/v1/business/{public_id}/cashier-program")
 async def get_cashier_program(public_id: str, response: Response, program_id: Optional[str] = Query(default=None)):
     """Cashier-facing alias of loyalty-config.
@@ -30755,6 +31080,17 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
     if not program:
         raise HTTPException(status_code=400, detail='This business has not configured a loyalty program yet')
 
+    customer_agreement = _public_customer_agreement(program)
+    if customer_agreement.get('enabled'):
+        if not signup.customer_agreement_accepted:
+            raise HTTPException(status_code=400, detail='Please review and accept this card’s Customer Terms & Conditions before joining.')
+        expected_version = str(customer_agreement.get('version_id') or '')
+        submitted_version = str(signup.customer_agreement_version_id or '')
+        if not expected_version or submitted_version != expected_version:
+            raise HTTPException(status_code=409, detail='These customer terms were updated. Refresh the signup page and review the latest version before joining.')
+        if customer_agreement.get('mode') == 'signature':
+            _validate_customer_signature_data(signup.customer_agreement_signature_data)
+
     legacy_employee_card = program.get('card_type') == 'employee'
     employee_membership = program_is_employee_membership(program)
     if legacy_employee_card or employee_membership:
@@ -30882,6 +31218,41 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
                 ),
             )
         raise HTTPException(status_code=500, detail=error_msg)
+
+    if inserted_customer and customer_agreement.get('enabled'):
+        accepted_at = datetime.utcnow().isoformat()
+        signature_data = None
+        if customer_agreement.get('mode') == 'signature':
+            signature_data = _validate_customer_signature_data(signup.customer_agreement_signature_data)
+        try:
+            supabase.table('customer_agreement_acceptances').insert({
+                'public_id': generate_public_id(),
+                'business_id': business.get('id'),
+                'program_id': program.get('id'),
+                'customer_id': inserted_customer.get('id'),
+                'agreement_version_public_id': customer_agreement.get('version_id'),
+                'agreement_version_number': customer_agreement.get('version_number'),
+                'agreement_sha256': customer_agreement.get('sha256'),
+                'agreement_title_snapshot': customer_agreement.get('title'),
+                'agreement_body_snapshot': customer_agreement.get('body'),
+                'acknowledgment_text_snapshot': customer_agreement.get('acknowledgment_text'),
+                'acceptance_mode': customer_agreement.get('mode'),
+                'signer_name': signup.name,
+                'signature_data': signature_data,
+                'accepted_at': accepted_at,
+                'created_at': accepted_at,
+            }).execute()
+        except Exception as exc:
+            # Agreement proof is mandatory when this card requires it. Avoid
+            # leaving a newly-created membership with no matching acceptance.
+            try:
+                supabase.table('customers').delete().eq('id', inserted_customer.get('id')).execute()
+            except Exception as rollback_exc:
+                print(f'CUSTOMER AGREEMENT rollback warning customer={inserted_customer.get("id")}: {rollback_exc}')
+            raise HTTPException(
+                status_code=503,
+                detail=f'Could not record the required customer agreement. Please try again. Database error: {friendly_db_error(exc)}',
+            ) from exc
 
     welcome_reward = None
     tier0_coupons_issued = []
@@ -35749,6 +36120,7 @@ async def public_business_join_config(public_id: str):
         'is_employee_membership': program_is_employee_membership(program),
         'employee_attendance_enabled': bool(program.get('employee_attendance_enabled')),
         'employee_time_tracking_enabled': bool(program.get('employee_time_tracking_enabled')),
+        'customer_agreement': _public_customer_agreement(program),
     }
 
 @app.get("/api/v1/customer/{customer_public_id}/wallet-pass")
