@@ -117,6 +117,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     points_per_amount: 10,
     points_amount_pesos: 100,
     points_cap_limit: '',
+    points_notes: '',
     points_prizes: [],
     // Welcome Reward (issued once per customer identity + program)
     welcome_reward_enabled: false,
@@ -315,6 +316,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
           points_per_amount: data.points_per_amount ?? 10,
           points_amount_pesos: data.points_amount_pesos ?? 100,
           points_cap_limit: data.points_cap_limit ?? '',
+          points_notes: data.points_notes || '',
           points_prizes: Array.isArray(data.points_prizes) ? data.points_prizes : [],
           welcome_reward_enabled: data.welcome_reward_enabled === true,
           welcome_reward_trigger: data.welcome_reward_trigger === 'first_purchase' ? 'first_purchase' : 'join',
@@ -907,6 +909,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     points_cap_limit: form.points_cap_limit === '' || form.points_cap_limit == null
       ? null
       : Math.max(1, Math.floor(Number(form.points_cap_limit) || 1)),
+    points_notes: String(form.points_notes || '').trim() || null,
     points_prizes: form.points_prizes,
     welcome_reward_enabled: form.welcome_reward_enabled === true,
     welcome_reward_trigger: form.welcome_reward_trigger === 'first_purchase' ? 'first_purchase' : 'join',
@@ -2874,6 +2877,22 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                   <span style={styles.earnRateText}>spent</span>
                 </div>
                 <p style={styles.hint}>Adjustable any time — a change only affects points earned on transactions going forward.</p>
+              </div>
+
+              <div style={styles.fieldGroup}>
+                <label style={styles.label}>Points notes / additional mechanics <span style={{fontWeight:500,color:'#94a3b8'}}>(optional)</span></label>
+                <textarea
+                  style={styles.textarea}
+                  rows={4}
+                  maxLength={2000}
+                  value={form.points_notes || ''}
+                  onChange={e => update('points_notes', e.target.value)}
+                  placeholder={'e.g. Points are based on net purchases after discounts. Promo items are excluded. Points cannot be converted to cash.'}
+                />
+                <p style={styles.hint}>
+                  Customer-facing. Shown on the Join page and Wallet details when this card uses Points. Use this for exclusions, special earning rules, expiry reminders, or other points mechanics.
+                  {' '}{String(form.points_notes || '').length}/2000
+                </p>
               </div>
 
               <div style={styles.fieldGroup}>

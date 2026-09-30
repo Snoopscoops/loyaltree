@@ -190,6 +190,13 @@ function CustomerJoin({ API_BASE }) {
     return null
   })()
 
+  const pointsNotes = (() => {
+    if (!businessInfo) return ''
+    const usesPoints = businessInfo.card_type === 'points'
+      || (businessInfo.card_type === 'hybrid' && businessInfo.hybrid_points_enabled === true)
+    return usesPoints ? String(businessInfo.points_notes || '').trim() : ''
+  })()
+
   const hybridMembership = (() => {
     if (!businessInfo || businessInfo.card_type !== 'hybrid') return null
     return {
@@ -489,6 +496,13 @@ function CustomerJoin({ API_BASE }) {
               </div>
             )}
           </div>
+
+          {pointsNotes && (
+            <div style={styles.pointsNotesCard}>
+              <div style={styles.pointsNotesTitle}>Points mechanics</div>
+              <div style={styles.pointsNotesText}>{pointsNotes}</div>
+            </div>
+          )}
 
           {hybridMembership && (
             <div style={styles.membershipStrip}>
@@ -851,6 +865,12 @@ const styles = {
   },
   heroSubtitle:{fontSize:15,lineHeight:1.75,color:'rgba(255,255,255,.78)',maxWidth:500,margin:0},
   heroHighlights:{display:'grid',gap:10,marginTop:36},
+  pointsNotesCard:{
+    marginTop:14,padding:'13px 14px',borderRadius:16,
+    background:'rgba(255,255,255,.10)',border:'1px solid rgba(255,255,255,.12)',
+  },
+  pointsNotesTitle:{fontSize:11,fontWeight:850,letterSpacing:'.35px',textTransform:'uppercase',color:'rgba(255,255,255,.86)',marginBottom:6},
+  pointsNotesText:{fontSize:12,lineHeight:1.6,color:'rgba(255,255,255,.74)',whiteSpace:'pre-wrap'},
   heroHighlight:{
     display:'flex',alignItems:'flex-start',gap:12,padding:'13px 14px',borderRadius:16,
     background:'rgba(255,255,255,.10)',border:'1px solid rgba(255,255,255,.12)',
