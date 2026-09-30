@@ -7414,7 +7414,10 @@ async def refresh_existing_member_wallets(business: dict, program: dict, refresh
         # Google: keep concurrency deliberately modest.  This is publish-time
         # work, not a latency-critical checkout transaction, so stability wins
         # over firing many simultaneous external requests.
-        semaphore = asyncio.Semaphore(4)
+        # Keep publish refresh deliberately conservative on small Render
+        # instances. The dashboard can be issuing normal Supabase requests at the
+        # same time, so two external sync workers are enough without starving it.
+        semaphore = asyncio.Semaphore(2)
 
         async def refresh_google(member):
             async with semaphore:
@@ -7576,12 +7579,15 @@ def sync_wallet_object(customer: dict, business: dict, program: dict,
     try:
         import httpx
 
-        if program_has_tier(program):
-            ensure_google_wallet_tier_class(customer, business, program or {})
-
-        desired = build_loyalty_object(customer, business, program)
-        object_id = desired['id']
-        desired_class_id = desired.get('classId')
+        # Probe Google first using only the deterministic object id. Building the
+        # full loyalty object can perform extra Supabase lookups (membership
+        # summaries, benefit status, redeemables, etc.). Most publish-time refresh
+        # candidates have never saved the pass, so doing that work before Google's
+        # 404 check needlessly consumes DB/network/thread resources.
+        cust_public_id = str((customer or {}).get('public_id') or '').strip()
+        if not cust_public_id:
+            return {"status": "not_saved", "detail": "Customer has no public id"}
+        object_id = f'{GOOGLE_WALLET_ISSUER_ID}.{cust_public_id}'
         headers = {"Authorization": f"Bearer {access_token}"}
 
         with httpx.Client(timeout=20) as client:
@@ -7601,6 +7607,14 @@ def sync_wallet_object(customer: dict, business: dict, program: dict,
 
             current = current_resp.json()
             current_class_id = current.get('classId')
+
+            # Only customers with an actually-saved Google pass need the expensive
+            # desired-object build and any tier-class preparation.
+            if program_has_tier(program):
+                ensure_google_wallet_tier_class(customer, business, program or {})
+
+            desired = build_loyalty_object(customer, business, program)
+            desired_class_id = desired.get('classId')
 
             member_patch = {
                 'loyaltyPoints': desired.get('loyaltyPoints'),
