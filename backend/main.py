@@ -2336,6 +2336,7 @@ class LoyaltyConfig(BaseModel):
     points_per_amount: Optional[float] = Field(default=10, ge=0)     # points earned...
     points_amount_pesos: Optional[float] = Field(default=100, ge=1)  # ...per this many pesos spent
     points_cap_limit: Optional[int] = Field(default=None, ge=1)       # null = unlimited member balance
+    points_notes: Optional[str] = Field(default=None, max_length=2000)  # optional customer-facing points mechanics / exclusions
     points_prizes: Optional[List[PointsPrize]] = None                # catalog of prizes customers can redeem points for
     # --- Welcome Reward (program-level, one issue per customer identity + program) ---
     welcome_reward_enabled: bool = False
@@ -6879,9 +6880,9 @@ def build_loyalty_class(
         loyalty_class['rewardsTierLabel'] = 'TIER'
         loyalty_class['rewardsTier'] = vip_tier_name or 'Member'
 
-    logo_url = business.get('logo_url')
-    if not logo_url and program:
-        logo_url = program.get('program_logo_url')
+    # Card/program branding wins. Fall back to the business-wide logo only
+    # when this specific loyalty card has no logo of its own.
+    logo_url = (program or {}).get('program_logo_url') or business.get('logo_url')
     if not logo_url:
         # Google Wallet requires a programLogo to create a class - fall back to a
         # generic placeholder so publishing never hard-fails when a business hasn't
@@ -6934,6 +6935,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
     stamps = int(customer.get('stamp_count', 0) or 0)
     points_balance = int(customer.get('points_balance', 0) or 0)
+    points_notes = str((program or {}).get('points_notes') or '').strip()
     stamp_display_style = normalize_stamp_display_style(program)
     stamp_icon = normalize_stamp_icon(program)
     stamp_logo_url = (
@@ -7080,6 +7082,8 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
             details.append(('points_balance', 'REWARD POINTS', f'{points_balance:,}'))
             details.append(('points_next_reward', 'NEXT POINTS REWARD', _points_next_reward_value()))
             details.append(('points_earning', 'HOW TO EARN POINTS', _points_earning_rule()))
+            if points_notes:
+                details.append(('points_notes', 'POINTS NOTES', points_notes[:1500]))
         if has_stamps:
             stamp_primary_text, stamp_progress_visual = wallet_stamp_balance_and_module(
                 program,
@@ -7127,6 +7131,8 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         loyalty_points_balance = str(points_balance)
         details.append(('next_reward', 'NEXT REWARD', _points_next_reward_value()))
         details.append(('how_to_earn', 'HOW TO EARN', _points_earning_rule()))
+        if points_notes:
+            details.append(('points_notes', 'POINTS NOTES', points_notes[:1500]))
 
     elif card_type == 'multipass':
         loyalty_points_label = 'SESSIONS'
@@ -8646,6 +8652,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     cust_name = customer.get('name', 'Member')
     biz_name = business.get('name', 'Loyalty')
     card_type = program.get('card_type', 'stamp') if program else 'stamp'
+    points_notes = str((program or {}).get('points_notes') or '').strip()
     loyalty_type = effective_loyalty_type(program)
     stamp_goal = program.get('stamp_goal', 8) if program else 8
     reward_name = program.get('reward_name', 'Free Reward') if program else 'Free Reward'
@@ -8869,6 +8876,8 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         if hybrid_points_enabled(program):
             apple_details.append(('points_balance', 'REWARD POINTS', f'{current_points:,}'))
             apple_details.append(('points_next_reward', 'NEXT POINTS REWARD', points_next_reward_value))
+            if points_notes:
+                apple_details.append(('points_notes', 'POINTS NOTES', points_notes[:1500]))
         if hybrid_stamps_enabled(program):
             hybrid_stamp_primary = not hybrid_points_enabled(program)
             hybrid_stamp_value, hybrid_stamp_visual = wallet_stamp_balance_and_module(
@@ -8906,6 +8915,8 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     elif card_type == 'points':
         apple_details.append(('points_balance', 'POINTS BALANCE', f'{current_points:,} points'))
         apple_details.append(('next_reward_detail', 'NEXT REWARD', points_next_reward_value))
+        if points_notes:
+            apple_details.append(('points_notes', 'POINTS NOTES', points_notes[:1500]))
     elif card_type == 'multipass':
         apple_details.append(('valid_until', 'VALID UNTIL', multipass_expires_at or 'No expiry set'))
     elif card_type == 'vip':
@@ -10137,7 +10148,7 @@ def build_apple_order_ahead_event_pkpass_bytes(customer: dict, business: dict, p
         return None
 
     biz_name = str((business or {}).get('name') or 'LoyaltyTree').strip() or 'LoyaltyTree'
-    logo_url = (business or {}).get('logo_url') or (program or {}).get('program_logo_url')
+    logo_url = (program or {}).get('program_logo_url') or (business or {}).get('logo_url')
     source_logo = _fetch_image_bytes(logo_url)
 
     # Apple Wallet icon: 38pt.
@@ -10377,7 +10388,7 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
     # Google Wallet already uses (see build_loyalty_class) - so both wallets
     # end up matching. Each falls back to the existing generated placeholder
     # on any missing URL, fetch failure, or unreadable image.
-    logo_url = business.get('logo_url') or ((program or {}).get('program_logo_url'))
+    logo_url = (program or {}).get('program_logo_url') or business.get('logo_url')
     logo_bytes = _fetch_image_bytes(logo_url)
     pass_json = build_apple_pass_json(customer, business, program, announcement)
 
@@ -21993,6 +22004,7 @@ async def get_loyalty_config(public_id: str, response: Response, program_id: Opt
             "points_per_amount": 10,
             "points_amount_pesos": 100,
             "points_cap_limit": None,
+            "points_notes": None,
             "points_prizes": [],
             "welcome_reward_enabled": False,
             "welcome_reward_trigger": "join",
@@ -22390,6 +22402,7 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
         data['points_per_amount'] = config.points_per_amount
         data['points_amount_pesos'] = config.points_amount_pesos
         data['points_cap_limit'] = config.points_cap_limit
+        data['points_notes'] = (config.points_notes or '').strip() or None
         # Backfill an id for any prize the owner added client-side without one,
         # so it can be referenced (e.g. from the cashier redemption flow) later.
         prizes = []
@@ -34642,6 +34655,9 @@ async def customer_wallet_page(customer_public_id: str):
         details = [('Membership', status), ('Active until', expiry)]
         if hybrid_points_enabled(program):
             details.append(('Reward points', f'{points:,} points'))
+            points_notes = str(program.get('points_notes') or '').strip()
+            if points_notes:
+                details.append(('Points notes', points_notes))
         if hybrid_stamps_enabled(program):
             details.append(('Reward stamps', f'{current} / {goal} stamps'))
         if hybrid_tier_enabled(program):
@@ -34715,6 +34731,9 @@ async def customer_wallet_page(customer_public_id: str):
             earning_rule = 'Ask in-store how to earn points'
 
         details = [('Next reward', next_reward), ('How to earn', earning_rule)]
+        points_notes = str(program.get('points_notes') or '').strip()
+        if points_notes:
+            details.append(('Points notes', points_notes))
     elif card_type == 'multipass':
         remaining = int(customer.get('multipass_sessions_remaining') or 0)
         total = int(customer.get('multipass_total_sessions') or program.get('multipass_session_count') or 0)
@@ -35043,7 +35062,7 @@ async def order_ahead_branch_page(customer_public_id: str, token: str = Query(de
     ui = _resolve_order_ahead_ui_config(business)
     biz_name = html_lib.escape(str(business.get('name') or 'Business'))
     member_name = html_lib.escape(str(customer.get('name') or 'Member'))
-    logo_url = html_lib.escape(str(business.get('logo_url') or program.get('program_logo_url') or DEFAULT_LOGO_URL))
+    logo_url = html_lib.escape(str(program.get('program_logo_url') or business.get('logo_url') or DEFAULT_LOGO_URL))
     hero_url = html_lib.escape(str(program.get('hero_image_url') or ''))
     primary = ui['primary_color']
     bg = ui['background_color']
@@ -35198,7 +35217,7 @@ async def order_ahead_branch_selected(customer_public_id: str, branch_public_id:
     ui_json = json.dumps(ui).replace('</', '<\\/')
     biz_name = html_lib.escape(str(business.get('name') or 'Business'))
     branch_name = html_lib.escape(str(branch.get('name') or 'Branch'))
-    logo = html_lib.escape(str(business.get('logo_url') or program.get('program_logo_url') or DEFAULT_LOGO_URL))
+    logo = html_lib.escape(str(program.get('program_logo_url') or business.get('logo_url') or DEFAULT_LOGO_URL))
     hero = html_lib.escape(str(program.get('hero_image_url') or ''))
     banner_html = '<img class="banner" src="' + hero + '" alt="">' if ui['show_banner'] and hero else ''
     branch_picker_url = f"{PUBLIC_ORDER_BASE_URL}/order-ahead/{quote(customer_public_id)}?token={quote(token)}"
@@ -36089,7 +36108,9 @@ async def public_business_join_config(public_id: str):
         'program_public_id': program.get('public_id'),
         'program_name': program.get('program_name') or program.get('card_name'),
         'name': business.get('name'),
-        'logo_url': business.get('logo_url'),
+        # The join page is for a specific card/program, so its logo should
+        # match that card. Business logo remains the fallback.
+        'logo_url': program.get('program_logo_url') or business.get('logo_url'),
         'business_type': normalize_business_type(business.get('business_type')),
         'category': category,
         'card_type': program.get('card_type', 'stamp'),
@@ -36105,6 +36126,7 @@ async def public_business_join_config(public_id: str):
         'stamp_rewards': program.get('stamp_rewards') or [],
         'points_per_amount': program.get('points_per_amount') or 0,
         'points_amount_pesos': program.get('points_amount_pesos') or 1,
+        'points_notes': program.get('points_notes'),
         'points_prizes': program.get('points_prizes') or [],
         'welcome_reward': normalize_welcome_reward(program),
         'membership_name': program.get('membership_name'),
