@@ -2005,48 +2005,71 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
     e.preventDefault()
     setSavingCustomer(true)
     try {
-      // Subscription expiry has a dedicated owner-only endpoint. This keeps a
-      // simple date correction isolated from profile fields, balances and the
-      // Hybrid Rewards/Tier expiry clocks.
+      // Only send fields that actually belong to the current card experience.
+      // Previously Edit Customer spread every hidden card field into one PATCH
+      // (employee_start_date='', vip_manual_tier_id='', multipass fields, etc.).
+      // A Points customer could therefore fail to save because an unrelated
+      // blank/legacy field was rejected by Postgres even though only points changed.
       const expiryChanged = String(editForm.membership_expires_at || '') !== String(editOriginal.membership_expires_at || '')
 
-      const {
-        public_id,
-        membership_status: _membershipStatus,
-        membership_visit_count: _membershipVisitCount,
-        membership_last_visit_at: _membershipLastVisitAt,
-        last_points_at: _lastPointsAt,
-        membership_start_date: _membershipStartDate,
-        membership_expires_at: _membershipExpiresAt,
-        ...fields
-      } = editForm
+      const intOrNull = value => value === '' || value === null || value === undefined
+        ? null
+        : Math.max(0, parseInt(value, 10) || 0)
 
-      const payload = {
-        ...fields,
-        age: fields.age === '' ? null : parseInt(fields.age, 10),
-        stamp_count: fields.stamp_count === '' ? null : parseInt(fields.stamp_count, 10),
-        tier_stamp_count: fields.tier_stamp_count === '' ? null : parseInt(fields.tier_stamp_count, 10),
-        points_balance: fields.points_balance === '' ? null : parseInt(fields.points_balance, 10),
-        multipass_sessions_remaining: fields.multipass_sessions_remaining === '' ? null : parseInt(fields.multipass_sessions_remaining, 10),
+      const buildCustomerPayload = source => {
+        const payload = {
+          name: source.name || '',
+          address: source.address || '',
+          age: source.age === '' || source.age === null || source.age === undefined ? null : parseInt(source.age, 10),
+          phone: source.phone || '',
+          email: source.email || '',
+          birthday: source.birthday || '',
+          occupation: source.occupation || '',
+          last_order_date: source.last_order_date || '',
+        }
+
+        if (isEmployeeExperience) {
+          payload.employee_id_number = source.employee_id_number || ''
+          payload.employee_start_date = source.employee_start_date || ''
+        }
+
+        if (isPointsCard) {
+          payload.points_balance = intOrNull(source.points_balance)
+        } else if (isMultipassCard) {
+          payload.multipass_sessions_remaining = intOrNull(source.multipass_sessions_remaining)
+        } else if (isVipCard) {
+          if (vipUsesStamps) payload.tier_stamp_count = intOrNull(source.tier_stamp_count)
+          else payload.vip_points = intOrNull(source.vip_points)
+          payload.vip_manual_tier_id = source.vip_manual_tier_id || ''
+        } else if (isHybridCard) {
+          if (hybridUsesPoints) payload.points_balance = intOrNull(source.points_balance)
+          if (hybridUsesStamps) payload.stamp_count = intOrNull(source.stamp_count)
+          if (hybridTierEnabled) {
+            if (hybridTierUsesStamps) payload.tier_stamp_count = intOrNull(source.tier_stamp_count)
+            else payload.vip_points = intOrNull(source.vip_points)
+            payload.vip_manual_tier_id = source.vip_manual_tier_id || ''
+          }
+        } else if (!isMembershipCard && !isEmployeeCard) {
+          payload.stamp_count = intOrNull(source.stamp_count)
+        }
+
+        return payload
       }
 
-      const comparableOriginal = {
-        ...editOriginal,
-        age: editOriginal.age === '' ? null : parseInt(editOriginal.age, 10),
-        stamp_count: editOriginal.stamp_count === '' ? null : parseInt(editOriginal.stamp_count, 10),
-        tier_stamp_count: editOriginal.tier_stamp_count === '' ? null : parseInt(editOriginal.tier_stamp_count, 10),
-        points_balance: editOriginal.points_balance === '' ? null : parseInt(editOriginal.points_balance, 10),
-        multipass_sessions_remaining: editOriginal.multipass_sessions_remaining === '' ? null : parseInt(editOriginal.multipass_sessions_remaining, 10),
-      }
-      const profileChanged = Object.keys(payload).some(key =>
-        String(payload[key] ?? '') !== String(comparableOriginal[key] ?? '')
+      const payload = buildCustomerPayload(editForm)
+      const comparableOriginal = buildCustomerPayload(editOriginal)
+      const changedPayload = Object.fromEntries(
+        Object.keys(payload)
+          .filter(key => String(payload[key] ?? '') !== String(comparableOriginal[key] ?? ''))
+          .map(key => [key, payload[key]])
       )
+      const profileChanged = Object.keys(changedPayload).length > 0
 
       if (profileChanged) {
-        const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${public_id}`, {
+        const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${editForm.public_id}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
+          body: JSON.stringify(changedPayload)
         })
         if (!res.ok) {
           const data = await res.json().catch(() => ({}))
@@ -2058,7 +2081,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
         if (!editForm.membership_expires_at) {
           throw new Error('Choose a subscription expiry date.')
         }
-        const expiryRes = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${public_id}/membership-expiry`, {
+        const expiryRes = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${editForm.public_id}/membership-expiry`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ membership_expires_at: editForm.membership_expires_at })

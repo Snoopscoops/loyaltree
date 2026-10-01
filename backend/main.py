@@ -19621,7 +19621,7 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
     # syntax for type timestamp/date: \"\""). Treat a blank date field as
     # "not provided" rather than "clear it", same as the other Optional
     # fields already behave via exclude_unset above.
-    for date_field in ('birthday', 'last_order_date', 'membership_start_date', 'membership_expires_at'):
+    for date_field in ('birthday', 'last_order_date', 'membership_start_date', 'membership_expires_at', 'employee_start_date'):
         if update_data.get(date_field) == '':
             del update_data[date_field]
 
