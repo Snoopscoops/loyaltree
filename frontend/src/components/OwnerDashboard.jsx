@@ -7,6 +7,7 @@ import GiftCards from './GiftCards'
 import SubscriptionPayment from './SubscriptionPayment'
 import POSIntegration from './POSIntegration'
 import Campaigns from './Campaigns'
+import HelpChat from './HelpChat'
 import logo192 from './logo-192.png'
 import logo64 from './logo-64.png'
 import { formatMoney, currencySymbol } from './currency'
@@ -677,6 +678,11 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
           onClose={()=>setShowAnnouncements(false)}
         />
       )}
+      <HelpChat
+        role="manager"
+        businessName={data?.business?.name || user?.business_name}
+        currentPage="branch-manager"
+      />
       <style>{`@media(max-width:760px){.lt-manager-grid,.lt-companion-map-grid{grid-template-columns:1fr!important}}`}</style>
     </div>
   )
@@ -5146,6 +5152,14 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
           </div>
         )
       })()}
+
+      {!showOnboarding && (
+        <HelpChat
+          role="owner"
+          businessName={business?.business_name || business?.name || user?.business_name}
+          currentPage={activeTab}
+        />
+      )}
     </div>
   )
 }
