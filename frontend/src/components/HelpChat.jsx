@@ -346,7 +346,7 @@ const HELP_ARTICLES = [
       'If it still fails, contact Loyalty Tree Support and include the customer name/ID and the exact error.'
     ],
     note: 'Avoid repeated submissions so you do not accidentally create duplicate adjustments.'
-  },,
+  },
 
   {
     id: 'dashboard-overview',
