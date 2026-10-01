@@ -346,6 +346,430 @@ const HELP_ARTICLES = [
       'If it still fails, contact Loyalty Tree Support and include the customer name/ID and the exact error.'
     ],
     note: 'Avoid repeated submissions so you do not accidentally create duplicate adjustments.'
+  },,
+
+  {
+    id: 'dashboard-overview',
+    roles: ['owner'],
+    category: 'Dashboard',
+    title: 'What can I see on the Owner Dashboard overview?',
+    shortLabel: 'What is on the Owner Dashboard?',
+    keywords: [
+      'owner dashboard', 'dashboard overview', 'overview page', 'home dashboard',
+      'ano nasa dashboard', 'ano makikita sa dashboard',
+      'ania ti makita iti dashboard', 'unsa makita sa dashboard'
+    ],
+    answer: [
+      'The Overview gives you a quick picture of your current loyalty program.',
+      'You can see customer/member totals and the main balance or activity metrics for the selected card type.',
+      'Use the quick actions to open customers, scan a customer, manage your team, or share the Join QR.',
+      'Recent activity helps you quickly check the latest customer loyalty records.',
+      'If you have more than one loyalty program, choose the program you want to manage before using program-specific actions.'
+    ],
+    note: 'The numbers shown change depending on whether your card uses stamps, points, memberships, tiers, multi-pass sessions, hybrid rewards, or employee cards.'
+  },
+  {
+    id: 'customers-owner',
+    roles: ['owner'],
+    category: 'Customers',
+    title: 'What can I do in the Customers section?',
+    shortLabel: 'What can I do with Customers?',
+    keywords: [
+      'customers section', 'customer list', 'manage customers', 'members list',
+      'customer records', 'ano pwede sa customers', 'customer management',
+      'customer ti dashboard', 'unsa mahimo sa customers'
+    ],
+    answer: [
+      'See the customers or members enrolled in the selected loyalty program.',
+      'Search by the customer information available in the dashboard.',
+      'Open a customer record to review their loyalty status and card information.',
+      'Use the available controls for the current card type, such as stamps, points, membership status, sessions, or tier progress.',
+      'Open Analytics when you need a broader view of customer activity instead of a single customer record.'
+    ],
+    note: 'The exact customer controls depend on the loyalty card type configured for that program.'
+  },
+  {
+    id: 'customer-card-owner',
+    roles: ['owner'],
+    category: 'Customers',
+    title: 'Can I view a customer’s digital loyalty card?',
+    shortLabel: 'How do I view a customer card?',
+    keywords: [
+      'view customer card', 'customer loyalty card', 'member card', 'digital card preview',
+      'tingnan customer card', 'makita customer card',
+      'makita ti customer card', 'tan aw customer card'
+    ],
+    answer: [
+      'Open the Customers section.',
+      'Select the customer you want to review.',
+      'Open the available card/customer detail view.',
+      'The preview can show the customer identity and the progress that belongs to the configured card type.',
+      'Use this for verification and support; normal earning activity should still follow the business operating flow.'
+    ],
+    note: 'The displayed fields can differ for stamps, points, memberships, VIP tiers, hybrid cards, multi-pass, and employee cards.'
+  },
+  {
+    id: 'card-types-owner',
+    roles: ['owner'],
+    category: 'Card & Rewards',
+    title: 'What loyalty card types can I manage?',
+    shortLabel: 'What card types are available?',
+    keywords: [
+      'card types', 'stamp card', 'points card', 'membership card', 'vip card',
+      'multipass', 'hybrid card', 'employee card', 'loyalty program types',
+      'anong card types', 'ania card types', 'unsa card types'
+    ],
+    answer: [
+      'LoyaltyTree can support different loyalty experiences depending on your account and program setup.',
+      'Examples in the Owner Dashboard include stamp rewards, points, memberships/subscriptions, VIP or tier programs, multi-pass/session cards, hybrid programs, and employee cards.',
+      'Each type changes the customer metrics, card details, and operating controls shown in the dashboard.',
+      'Choose the card structure that matches how your business actually rewards or serves customers.'
+    ],
+    note: 'Available program limits and advanced features can depend on the business plan or custom account setup.'
+  },
+  {
+    id: 'card-customizer-owner',
+    roles: ['owner'],
+    category: 'Card & Rewards',
+    title: 'How do I edit my loyalty card and program rules?',
+    shortLabel: 'How do I edit my card?',
+    keywords: [
+      'edit card', 'card design', 'card customizer', 'program rules', 'reward rules',
+      'change logo', 'change banner', 'change colors', 'edit loyalty program',
+      'palitan card design', 'baguhin card', 'urnosen card', 'usba card'
+    ],
+    answer: [
+      'Open Card from the Owner Dashboard.',
+      'Select the loyalty program you want to edit when your business has multiple programs.',
+      'Use the available card/program controls to update the program configuration and branding.',
+      'Review the reward or membership rules carefully before saving.',
+      'After saving, check the dashboard and customer card experience to confirm the intended setup.'
+    ],
+    note: 'Only change live loyalty rules intentionally because they affect how future customer activity is interpreted.'
+  },
+  {
+    id: 'multiple-programs-owner',
+    roles: ['owner'],
+    category: 'Card & Rewards',
+    title: 'Can my business have more than one loyalty program?',
+    shortLabel: 'Can I manage multiple loyalty programs?',
+    keywords: [
+      'multiple programs', 'more than one card', 'second loyalty card', 'add program',
+      'many loyalty programs', 'dalawang card', 'multiple cards',
+      'adu a program', 'daghang loyalty program'
+    ],
+    answer: [
+      'If your account allows multiple programs, the Owner Dashboard shows a program selector.',
+      'Select one program before using program-specific actions such as scanning, sharing a Join QR, or editing card rules.',
+      'Customer counts can be viewed per program, while the dashboard can also show an all-program view when available.',
+      'Keep each program purpose clear so staff know which card to use for each customer.'
+    ],
+    note: 'The number of programs available depends on the business plan or account configuration.'
+  },
+  {
+    id: 'setup-guide-owner',
+    roles: ['owner'],
+    category: 'Getting Started',
+    title: 'What is the Setup Guide for?',
+    shortLabel: 'What does the Setup Guide do?',
+    keywords: [
+      'setup guide', 'onboarding guide', 'setup business', 'first setup',
+      'paano setup', 'guide setup', 'kasano setup', 'unsaon setup'
+    ],
+    answer: [
+      'The Setup Guide walks you through the important first-time configuration steps.',
+      'Use it when you want a guided path instead of opening dashboard sections one by one.',
+      'It helps you prepare the loyalty card/program and the operating setup needed before daily use.',
+      'You can reopen the Setup Guide later from More if you need to review the setup flow.'
+    ],
+    note: 'The guide is especially useful when a new owner or administrator is learning LoyaltyTree for the first time.'
+  },
+  {
+    id: 'home-screen-owner',
+    roles: ['owner'],
+    category: 'Getting Started',
+    title: 'Can I add LoyaltyTree to my phone Home Screen?',
+    shortLabel: 'How do I add LoyaltyTree to Home Screen?',
+    keywords: [
+      'add to home screen', 'install app', 'pwa', 'phone home screen',
+      'install loyaltytree', 'add app', 'ilagay sa home screen',
+      'ikabil home screen', 'ibutang home screen'
+    ],
+    answer: [
+      'On supported phones, use Add to Home Screen from the LoyaltyTree dashboard or your browser.',
+      'On iPhone/iPad, open the dashboard in Safari, use Share, then choose Add to Home Screen.',
+      'On Android, use the browser Install app or Add to Home screen option when available.',
+      'After installation, LoyaltyTree can open from the Home Screen like an app shortcut.'
+    ],
+    note: 'This installs the web app experience; customers still do not need to download a separate LoyaltyTree customer app.'
+  },
+  {
+    id: 'campaigns-owner',
+    roles: ['owner'],
+    category: 'Grow & Marketing',
+    title: 'What is the Campaigns section for?',
+    shortLabel: 'What can I do with Campaigns?',
+    keywords: [
+      'campaigns', 'marketing campaigns', 'customer campaign', 'promo campaign',
+      'campaign section', 'promo', 'marketing', 'kampanya',
+      'campaign iti dashboard', 'campaign sa dashboard'
+    ],
+    answer: [
+      'Open Grow, then Campaigns.',
+      'Use Campaigns for the campaign tools available to your business account.',
+      'Keep each campaign tied to a clear customer objective such as engagement, return visits, or a specific promotion.',
+      'Use Analytics and customer activity to review whether customers are engaging with your loyalty program over time.'
+    ],
+    note: 'The exact campaign controls available can depend on the enabled LoyaltyTree features for your account.'
+  },
+  {
+    id: 'satisfaction-owner',
+    roles: ['owner'],
+    category: 'Grow & Marketing',
+    title: 'How does Customer Satisfaction work?',
+    shortLabel: 'How do I see customer feedback?',
+    keywords: [
+      'customer satisfaction', 'feedback', 'ratings', 'reviews', 'customer rating',
+      'service rating', 'quality rating', 'value rating', 'feedback customers',
+      'satisfaction', 'komento customer', 'customer feedback'
+    ],
+    answer: [
+      'Open Grow, then Satisfaction.',
+      'The dashboard shows feedback submitted by customers through the LoyaltyTree Wallet card experience.',
+      'Review the overall rating, response count, positive rating share, and available service, quality, and value ratings.',
+      'Read customer comments to identify recurring service issues or strengths.',
+      'Refresh the section when you want the latest recorded feedback.'
+    ],
+    note: 'Feedback appears only when customers submit a rating through the available LoyaltyTree customer experience.'
+  },
+  {
+    id: 'gift-cards-owner',
+    roles: ['owner'],
+    category: 'Operate',
+    title: 'What is the Gift Cards section for?',
+    shortLabel: 'What can I do with Gift Cards?',
+    keywords: [
+      'gift cards', 'gift card', 'giftcards', 'sell gift card', 'gift voucher',
+      'regalo card', 'gift card dashboard', 'gift card owner'
+    ],
+    answer: [
+      'Open Operate, then Gift Cards.',
+      'Use the Gift Cards section for the gift-card tools enabled for your business.',
+      'Keep gift-card operations separate from normal loyalty earning so staff can clearly distinguish stored gift value from loyalty rewards.',
+      'Use the section’s current controls and records when managing gift-card activity.'
+    ],
+    note: 'Gift-card capabilities shown in the dashboard depend on the features enabled for the business.'
+  },
+  {
+    id: 'order-ahead-owner',
+    roles: ['owner'],
+    category: 'Operate',
+    title: 'What is Order Ahead?',
+    shortLabel: 'How does Order Ahead work?',
+    keywords: [
+      'order ahead', 'advance order', 'pre order', 'customer order', 'pickup order',
+      'order ahead dashboard', 'order before arrival', 'preorder',
+      'advance order customer', 'order daan'
+    ],
+    answer: [
+      'Order Ahead appears under Operate when Super Admin has enabled it for the business.',
+      'It provides the business-side setup and operating controls for the enabled customer ordering experience.',
+      'Use the available branch and menu/product controls to keep the customer ordering flow accurate.',
+      'Only use this section when Order Ahead is part of your LoyaltyTree account setup.'
+    ],
+    note: 'If you do not see Order Ahead, it may not be enabled for your business.'
+  },
+  {
+    id: 'pos-owner',
+    roles: ['owner'],
+    category: 'Operate',
+    title: 'What is POS Integration for?',
+    shortLabel: 'What does POS Integration do?',
+    keywords: [
+      'pos integration', 'storehub', 'loyverse', 'connect pos', 'pos system',
+      'pos loyalty', 'point of sale integration', 'connect storehub',
+      'ikabit pos', 'pos iti loyaltytree', 'pos sa loyaltytree'
+    ],
+    answer: [
+      'Open Operate, then POS Integration.',
+      'POS Integration is used when your LoyaltyTree account is configured to connect loyalty activity with a supported POS workflow.',
+      'The owner handles the business-level POS connection and configuration available to the account.',
+      'Branch managers can then use allowed branch-level Companion controls when those features are enabled.',
+      'Follow the specific integration instructions for your POS provider because the setup can differ by provider.'
+    ],
+    note: 'The dashboard marks POS Integration as a Pro feature unless your account has custom access.'
+  },
+  {
+    id: 'setup-kit-owner',
+    roles: ['owner'],
+    category: 'Operate',
+    title: 'What is the Physical QR / PR Kit?',
+    shortLabel: 'What is the QR / PR Kit?',
+    keywords: [
+      'qr kit', 'pr kit', 'physical qr', 'setup kit', 'printed qr',
+      'delivery qr', 'join qr print', 'qr materials', 'kit delivery'
+    ],
+    answer: [
+      'When a setup kit is available for your account, the Overview shows a Physical QR / PR Kit panel.',
+      'Confirm the final logo, recipient, contact number, delivery address, and delivery instructions.',
+      'The Join QR is generated for the business and can be used in the printed materials.',
+      'Save the kit details so LoyaltyTree operations has the correct fulfillment information.'
+    ],
+    note: 'The panel appears only for businesses with a setup-kit record.'
+  },
+  {
+    id: 'billing-owner',
+    roles: ['owner'],
+    category: 'Billing & Account',
+    title: 'Where do I manage my LoyaltyTree subscription?',
+    shortLabel: 'Where do I manage billing?',
+    keywords: [
+      'billing', 'subscription', 'renew', 'payment', 'subscription payment',
+      'plan expires', 'renew loyaltytree', 'bayad', 'renewal',
+      'billing iti dashboard', 'bayad sa loyaltytree'
+    ],
+    answer: [
+      'Open More, then Billing.',
+      'Review the subscription information and payment options shown for your account.',
+      'If the subscription is expiring soon or expired, the dashboard can show a renewal warning.',
+      'Complete the available payment/renewal flow before the account reaches an expired state when possible.'
+    ],
+    note: 'Billing details and plan pricing shown in the dashboard are based on the business account configuration.'
+  },
+  {
+    id: 'support-owner',
+    roles: ['owner'],
+    category: 'Billing & Account',
+    title: 'How do I contact LoyaltyTree Support?',
+    shortLabel: 'How do I contact Support?',
+    keywords: [
+      'support', 'contact support', 'help loyaltytree', 'contact loyaltytree',
+      'need help', 'technical support', 'customer support', 'tulong',
+      'kasapulan tulong', 'tabang loyaltytree'
+    ],
+    answer: [
+      'Open More from the Owner Dashboard.',
+      'Choose Support.',
+      'Use the available LoyaltyTree support contact flow for concerns that cannot be solved by the Help Center.',
+      'When reporting a problem, include the business, affected feature, exact error message, and the customer or transaction reference when relevant.'
+    ],
+    note: 'Check the Help Center first for common operating questions so support can focus on account-specific or technical issues.'
+  },
+  {
+    id: 'benefits-overview',
+    roles: ['owner'],
+    category: 'Business Benefits',
+    title: 'What are the main benefits of LoyaltyTree for my business?',
+    shortLabel: 'What are the main business benefits?',
+    keywords: [
+      'loyaltytree benefits', 'business benefits', 'why loyaltytree', 'benefit owner',
+      'what can loyaltytree do', 'ano benefit', 'bakit loyaltytree',
+      'ania benefit loyaltytree', 'unsa benefit loyaltytree'
+    ],
+    answer: [
+      'Give customers a digital loyalty card they can keep in Apple Wallet or Google Wallet instead of requiring a separate customer app or physical card.',
+      'Use Scan to Join and Scan to Stamp to make loyalty enrollment and repeat-visit activity easier to operate.',
+      'Use configurable loyalty programs such as stamps, points, memberships, tiers, multi-pass, or other enabled card types.',
+      'Communicate with members through the announcement and campaign tools available to your account.',
+      'Use customer activity, analytics, satisfaction feedback, and branch/team controls to improve retention operations.',
+      'Add optional operational features such as POS integration, Gift Cards, Order Ahead, or custom business features when enabled.'
+    ],
+    note: 'The exact feature set depends on your LoyaltyTree plan and any custom features enabled for the business.'
+  },
+  {
+    id: 'benefit-no-app',
+    roles: ['owner'],
+    category: 'Business Benefits',
+    title: 'Why is the Wallet-based setup useful?',
+    shortLabel: 'Why use Apple/Google Wallet?',
+    keywords: [
+      'wallet benefit', 'why wallet', 'no app', 'apple wallet benefit', 'google wallet benefit',
+      'customer app download', 'digital loyalty card benefit', 'wallet loyalty'
+    ],
+    answer: [
+      'Customers can keep the loyalty card in Apple Wallet or Google Wallet instead of managing a separate physical loyalty card.',
+      'The join flow is designed around scanning a QR and saving the card, reducing the need for a separate customer app download.',
+      'Returning customers can present the Wallet card during future visits.',
+      'This keeps the loyalty experience close to tools customers already use on their phones.'
+    ],
+    note: 'Customers still need to complete the Join flow and save the pass to their Wallet for the Wallet card to be available on the device.'
+  },
+  {
+    id: 'benefit-retention',
+    roles: ['owner'],
+    category: 'Business Benefits',
+    title: 'How can LoyaltyTree help with repeat visits and retention?',
+    shortLabel: 'How does LoyaltyTree help retention?',
+    keywords: [
+      'retention', 'repeat visits', 'returning customers', 'bring customers back',
+      'customer loyalty benefit', 'repeat customer', 'customer retention',
+      'balik customer', 'agsubli customer', 'mobalik customer'
+    ],
+    answer: [
+      'A loyalty program gives customers a visible reason to progress toward rewards, benefits, membership access, tiers, or sessions.',
+      'The Wallet card gives returning customers a consistent card they can present again on future visits.',
+      'Announcements and campaigns can be used to communicate relevant offers or updates to members when those tools are enabled.',
+      'Analytics and activity records help you observe whether customers are joining, returning, redeeming, or becoming inactive.',
+      'Use these signals to improve your loyalty rules and customer follow-up instead of relying only on guesswork.'
+    ],
+    note: 'LoyaltyTree records loyalty activity; actual business results also depend on your offer, service, staff execution, and customer experience.'
+  },
+  {
+    id: 'benefit-analytics',
+    roles: ['owner'],
+    category: 'Business Benefits',
+    title: 'What business decisions can LoyaltyTree data support?',
+    shortLabel: 'How can the data help my business?',
+    keywords: [
+      'analytics benefit', 'data benefit', 'business decisions', 'loyalty data',
+      'customer insights', 'what can analytics tell me', 'retention analytics'
+    ],
+    answer: [
+      'Use customer/member counts to understand the size of your loyalty audience.',
+      'Use recorded activity and repeat-visit information to understand how members are engaging with the program.',
+      'Use reward, membership, session, or tier metrics according to the program type you operate.',
+      'Use branch filters and reporting views when available to compare activity across locations.',
+      'Use satisfaction feedback to identify customer experience issues that loyalty balances alone cannot explain.'
+    ],
+    note: 'Treat non-POS LoyaltyTree metrics as loyalty/customer activity, not as complete sales or revenue reporting.'
+  },
+  {
+    id: 'benefit-team-branches',
+    roles: ['owner'],
+    category: 'Business Benefits',
+    title: 'How does LoyaltyTree help multi-branch and staff operations?',
+    shortLabel: 'How does it help branches and staff?',
+    keywords: [
+      'multi branch benefit', 'branches benefit', 'staff benefit', 'team management benefit',
+      'multiple branches loyalty', 'branch operations', 'cashier access', 'manager access'
+    ],
+    answer: [
+      'Create and manage the branches available to the business account.',
+      'Assign staff or managers to the appropriate operational role and branch instead of sharing the owner login.',
+      'Keep customer and transaction activity associated with the correct branch when the feature flow supports branch tracking.',
+      'Use branch-level views and analytics where available to understand how locations are operating.',
+      'Use manager permissions for day-to-day operations while keeping owner-level controls with the business owner.'
+    ],
+    note: 'Available branch counts and manager controls depend on the account configuration and enabled features.'
+  },
+  {
+    id: 'benefit-marketing',
+    roles: ['owner'],
+    category: 'Business Benefits',
+    title: 'How can I use LoyaltyTree for customer engagement?',
+    shortLabel: 'How can I engage customers?',
+    keywords: [
+      'customer engagement', 'marketing benefit', 'announcements benefit', 'campaign benefit',
+      'send updates customers', 'wallet notification benefit', 'engage members'
+    ],
+    answer: [
+      'Use Announcements to send relevant business or loyalty updates through the available LoyaltyTree notification flow.',
+      'Use Campaigns for the campaign tools enabled on your account.',
+      'Use rewards, memberships, tiers, or program benefits to give customers a reason to interact again.',
+      'Use Satisfaction feedback and Analytics to decide what messages or offers are worth repeating.',
+      'Keep communication useful and targeted so loyalty messaging supports the customer relationship rather than becoming spam.'
+    ],
+    note: 'Notification delivery depends on the customer card/Wallet state and the messaging capabilities enabled for the business.'
   },
 ]
 
@@ -374,6 +798,89 @@ const MANAGER_FAQ_IDS = [
   'manager-activation-code',
   'wallet-not-added',
   'save-error',
+]
+
+const HELP_CATEGORIES = [
+  {
+    id: 'getting-started',
+    label: 'Getting Started',
+    icon: '🚀',
+    description: 'Set up LoyaltyTree and learn the basic customer flow.',
+    roles: ['owner'],
+    articleIds: ['dashboard-overview','setup-guide-owner','scan-to-join','share-join-qr','scan-to-stamp','home-screen-owner'],
+  },
+  {
+    id: 'customers',
+    label: 'Customers',
+    icon: '👥',
+    description: 'Members, customer cards, balances, and customer records.',
+    roles: ['owner','manager'],
+    articleIds: ['customers-owner','manager-search-member','customer-card-owner','owner-points-stamps','manager-points','manager-stamps','wallet-not-added'],
+  },
+  {
+    id: 'cards-rewards',
+    label: 'Cards & Rewards',
+    icon: '🎟️',
+    description: 'Card types, program rules, rewards, and redemption.',
+    roles: ['owner','manager'],
+    articleIds: ['card-types-owner','card-customizer-owner','multiple-programs-owner','redeem-reward'],
+  },
+  {
+    id: 'team-branches',
+    label: 'Team & Branches',
+    icon: '🏪',
+    description: 'Staff, cashiers, managers, branches, and access.',
+    roles: ['owner'],
+    articleIds: ['staff','branches'],
+  },
+  {
+    id: 'grow',
+    label: 'Grow & Marketing',
+    icon: '📣',
+    description: 'Announcements, campaigns, feedback, and analytics.',
+    roles: ['owner','manager'],
+    articleIds: ['announcements-owner','announcements-manager','campaigns-owner','satisfaction-owner','analytics'],
+  },
+  {
+    id: 'operate',
+    label: 'Operate',
+    icon: '⚙️',
+    description: 'POS, Companion, Order Ahead, Gift Cards, and setup kit.',
+    roles: ['owner','manager'],
+    articleIds: ['pos-owner','manager-companion','manager-activation-code','order-ahead-owner','gift-cards-owner','setup-kit-owner'],
+  },
+  {
+    id: 'billing-account',
+    label: 'Billing & Account',
+    icon: '💳',
+    description: 'Subscription, renewal, setup help, and support.',
+    roles: ['owner'],
+    articleIds: ['billing-owner','support-owner'],
+  },
+  {
+    id: 'business-benefits',
+    label: 'Business Benefits',
+    icon: '🌳',
+    description: 'Why each LoyaltyTree capability matters to your business.',
+    roles: ['owner'],
+    articleIds: ['benefits-overview','benefit-no-app','benefit-retention','benefit-analytics','benefit-team-branches','benefit-marketing'],
+  },
+  {
+    id: 'troubleshooting',
+    label: 'Troubleshooting',
+    icon: '🛟',
+    description: 'Common errors and quick fixes.',
+    roles: ['owner','manager'],
+    articleIds: ['save-error','wallet-not-added'],
+  },
+  {
+    id: 'manager-daily',
+    label: 'Daily Branch Operations',
+    icon: '📷',
+    description: 'Scan, search, correct balances, and redeem rewards.',
+    roles: ['manager'],
+    articleIds: ['scan-to-stamp','manager-search-member','manager-points','manager-stamps','redeem-reward'],
+  },
 ]
 
 const STOP_WORDS = new Set([
@@ -618,16 +1125,27 @@ export default function HelpChat({
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [selectedArticle, setSelectedArticle] = useState(null)
+  const [selectedCategory, setSelectedCategory] = useState('')
   const [messages, setMessages] = useState([])
   const inputRef = useRef(null)
   const scrollRef = useRef(null)
 
-  const faqArticles = useMemo(() => {
-    const ids = normalizedRole === 'manager' ? MANAGER_FAQ_IDS : OWNER_FAQ_IDS
-    return ids
-      .map(id => HELP_ARTICLES.find(article => article.id === id))
-      .filter(Boolean)
+  const helpCategories = useMemo(() => {
+    return HELP_CATEGORIES
+      .filter(category => !category.roles || category.roles.includes(normalizedRole))
+      .map(category => ({
+        ...category,
+        articles: category.articleIds
+          .map(id => HELP_ARTICLES.find(article => article.id === id))
+          .filter(article => article && (!article.roles || article.roles.includes(normalizedRole))),
+      }))
+      .filter(category => category.articles.length > 0)
   }, [normalizedRole])
+
+  const selectedCategoryData = useMemo(
+    () => helpCategories.find(category => category.id === selectedCategory) || null,
+    [helpCategories, selectedCategory]
+  )
 
   const pageLabel = useMemo(() => {
     const text = String(currentPage || '').replace(/[-_]/g, ' ').trim()
@@ -682,6 +1200,13 @@ export default function HelpChat({
     }
   }
 
+  function openCategory(categoryId) {
+    setSelectedCategory(categoryId)
+    setSelectedArticle(null)
+    setMessages([])
+    setQuery('')
+  }
+
   function openArticle(article) {
     setSelectedArticle(article)
     setMessages([])
@@ -694,7 +1219,14 @@ export default function HelpChat({
     })
   }
 
+  function showCategory() {
+    setSelectedArticle(null)
+    setMessages([])
+    setQuery('')
+  }
+
   function showFaqHome() {
+    setSelectedCategory('')
     setSelectedArticle(null)
     setMessages([])
     setQuery('')
@@ -794,34 +1326,66 @@ export default function HelpChat({
 
           <div ref={scrollRef} style={styles.messages}>
             {selectedArticle ? (
-              <AnswerCard article={selectedArticle} onBack={showFaqHome} />
+              <AnswerCard article={selectedArticle} onBack={selectedCategory ? showCategory : showFaqHome} />
             ) : messages.length === 0 ? (
-              <>
-                <div style={styles.botBubble}>
-                  <div style={styles.welcomeTitle}>
-                    Hi{businessName ? `, ${businessName}` : ''}! 👋
+              selectedCategoryData ? (
+                <>
+                  <button type="button" onClick={showFaqHome} style={styles.categoryBackBtn}>← All categories</button>
+                  <div style={styles.categoryHero}>
+                    <div style={styles.categoryHeroIcon}>{selectedCategoryData.icon}</div>
+                    <div>
+                      <div style={styles.categoryHeroTitle}>{selectedCategoryData.label}</div>
+                      <div style={styles.categoryHeroText}>{selectedCategoryData.description}</div>
+                    </div>
                   </div>
-                  <div style={styles.welcomeText}>
-                    Choose a common question below, or type naturally in English, Filipino/Taglish, Ilocano, or Bisaya/Cebuano.
-                  </div>
-                </div>
 
-                <div style={styles.quickLabel}>FREQUENTLY ASKED QUESTIONS</div>
-                <div style={styles.faqGrid}>
-                  {faqArticles.map((article, index) => (
-                    <button
-                      key={article.id}
-                      type="button"
-                      style={styles.faqBtn}
-                      onClick={() => openArticle(article)}
-                    >
-                      <span style={styles.faqNumber}>{index + 1}</span>
-                      <span style={styles.faqText}>{article.shortLabel || article.title}</span>
-                      <span style={styles.faqArrow}>›</span>
-                    </button>
-                  ))}
-                </div>
-              </>
+                  <div style={styles.quickLabel}>CHOOSE A QUESTION</div>
+                  <div style={styles.faqGrid}>
+                    {selectedCategoryData.articles.map((article, index) => (
+                      <button
+                        key={article.id}
+                        type="button"
+                        style={styles.faqBtn}
+                        onClick={() => openArticle(article)}
+                      >
+                        <span style={styles.faqNumber}>{index + 1}</span>
+                        <span style={styles.faqText}>{article.shortLabel || article.title}</span>
+                        <span style={styles.faqArrow}>›</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={styles.botBubble}>
+                    <div style={styles.welcomeTitle}>
+                      Hi{businessName ? `, ${businessName}` : ''}! 👋
+                    </div>
+                    <div style={styles.welcomeText}>
+                      Choose what you need help with. You can also type naturally in English, Filipino/Taglish, Ilocano, or Bisaya/Cebuano.
+                    </div>
+                  </div>
+
+                  <div style={styles.quickLabel}>HELP CATEGORIES</div>
+                  <div style={styles.categoryGrid}>
+                    {helpCategories.map(category => (
+                      <button
+                        key={category.id}
+                        type="button"
+                        style={styles.categoryBtn}
+                        onClick={() => openCategory(category.id)}
+                      >
+                        <span style={styles.categoryIcon}>{category.icon}</span>
+                        <span style={styles.categoryBody}>
+                          <strong style={styles.categoryTitle}>{category.label}</strong>
+                          <small style={styles.categoryDescription}>{category.description}</small>
+                        </span>
+                        <span style={styles.faqArrow}>›</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )
             ) : (
               messages.map(message => (
                 <div key={message.id}>
@@ -1049,6 +1613,89 @@ const styles = {
     fontWeight: 900,
     color: '#94a3b8',
     letterSpacing: '.08em'
+  },
+  categoryGrid: {
+    display: 'grid',
+    gap: 8
+  },
+  categoryBtn: {
+    width: '100%',
+    border: '1px solid #dbe5e1',
+    background: '#fff',
+    borderRadius: 14,
+    padding: '11px 10px',
+    display: 'grid',
+    gridTemplateColumns: '38px minmax(0,1fr) 18px',
+    alignItems: 'center',
+    gap: 9,
+    color: '#0f172a',
+    cursor: 'pointer',
+    textAlign: 'left',
+    boxShadow: '0 2px 8px rgba(15,23,42,.025)'
+  },
+  categoryIcon: {
+    width: 36,
+    height: 36,
+    display: 'grid',
+    placeItems: 'center',
+    borderRadius: 11,
+    background: '#f0fdfa',
+    fontSize: 18
+  },
+  categoryBody: {
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 2
+  },
+  categoryTitle: {
+    fontSize: 11.8,
+    color: '#0f172a',
+    lineHeight: 1.3
+  },
+  categoryDescription: {
+    fontSize: 9.7,
+    color: '#64748b',
+    lineHeight: 1.35
+  },
+  categoryBackBtn: {
+    border: 0,
+    background: 'transparent',
+    color: '#0f766e',
+    fontSize: 10.5,
+    fontWeight: 850,
+    padding: '0 2px 9px',
+    cursor: 'pointer'
+  },
+  categoryHero: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    padding: 12,
+    borderRadius: 15,
+    border: '1px solid #ccfbf1',
+    background: '#f0fdfa'
+  },
+  categoryHeroIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    background: '#fff',
+    display: 'grid',
+    placeItems: 'center',
+    fontSize: 21,
+    border: '1px solid #ccfbf1'
+  },
+  categoryHeroTitle: {
+    fontSize: 13.5,
+    fontWeight: 900,
+    color: '#0f172a'
+  },
+  categoryHeroText: {
+    marginTop: 3,
+    fontSize: 10.3,
+    lineHeight: 1.4,
+    color: '#64748b'
   },
   faqGrid: {
     display: 'grid',
