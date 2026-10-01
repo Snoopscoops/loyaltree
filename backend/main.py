@@ -37393,6 +37393,14 @@ SHOWROOM_CSS += r'''
 }
 '''
 
+# --- Help / FAQ analytics registration ---
+try:
+    from help_routes import help_router
+    app.include_router(help_router)
+    print("HELP analytics router registered")
+except Exception as exc:
+    print("HELP analytics router registration failed:", exc)
+
 
 if __name__ == "__main__":
     import uvicorn

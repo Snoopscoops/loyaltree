@@ -45,14 +45,30 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+_QUESTION_NORMALIZATION_ALIASES = [
+    ("paano mag", "how"), ("pano mag", "how"), ("paano", "how"), ("pano", "how"),
+    ("unsaon pag", "how"), ("unsaon", "how"), ("kasano nga", "how"), ("kasano", "how"),
+    ("magdagdag", "add"), ("dagdagan", "add"), ("dagdag", "add"),
+    ("pagdugang", "add"), ("dugangi", "add"), ("dugang", "add"),
+    ("mangnayon", "add"), ("inayon", "add"),
+    ("empleyado", "staff"), ("tauhan", "staff"), ("miyembro", "member"),
+    ("hanapin", "search"), ("pangitaa", "search"), ("pangita", "search"), ("biroken", "search"),
+    ("puntos", "points"), ("anunsyo", "announcement"), ("pahibalo", "announcement"), ("pakdaar", "announcement"),
+    ("hindi", "not"), ("dili", "not"),
+]
+
+
 def _normalize_question(value: str) -> str:
     text = str(value or "").lower().strip()
     text = re.sub(r"[^a-z0-9\s]", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
+    for source, target in _QUESTION_NORMALIZATION_ALIASES:
+        text = re.sub(rf"\b{re.escape(source)}\b", target, text)
+    text = re.sub(r"\s+", " ", text).strip()
     return text[:500]
 
 
-def _verify_business_session(authorization: str, business_public_id: str) -> dict:
+def _verify_business_session(authorization: str, business_identifier: str, business: Optional[dict] = None) -> dict:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Authentication required")
     if not STAFF_SESSION_SECRET:
@@ -67,8 +83,21 @@ def _verify_business_session(authorization: str, business_public_id: str) -> dic
     role = str(claims.get("role") or "").lower()
     if role not in {"owner", "manager"}:
         raise HTTPException(status_code=403, detail="Owner or manager access required")
-    if str(claims.get("business_public_id") or "") != str(business_public_id):
-        raise HTTPException(status_code=403, detail="Session does not match this business")
+
+    allowed_business_values = {
+        str(claims.get("business_public_id") or "").strip(),
+        str(claims.get("business_slug") or "").strip(),
+    }
+    if business:
+        allowed_business_values.add(str(business.get("public_id") or "").strip())
+    allowed_business_values.discard("")
+
+    if str(business_identifier or "").strip() not in allowed_business_values:
+        # If the request used a slug but the token only carries public_id (or vice versa),
+        # the resolved business public_id is also accepted above.
+        resolved_public_id = str((business or {}).get("public_id") or "").strip()
+        if not resolved_public_id or resolved_public_id not in allowed_business_values:
+            raise HTTPException(status_code=403, detail="Session does not match this business")
 
     return claims
 
@@ -83,20 +112,30 @@ def _require_admin(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Admin authentication required")
 
 
-def _business_row(public_id: str) -> Optional[dict]:
+def _business_row(identifier: str) -> Optional[dict]:
     if not supabase:
         return None
-    try:
-        result = (
-            supabase.table("businesses")
-            .select("id,public_id,name")
-            .eq("public_id", public_id)
-            .maybe_single()
-            .execute()
-        )
-        return result.data if result else None
-    except Exception:
+
+    value = str(identifier or "").strip()
+    if not value:
         return None
+
+    # Public ID is preferred. Slug fallbacks keep Help logging compatible with
+    # the existing Owner/Manager dashboard user object.
+    for field in ("public_id", "slug", "business_slug"):
+        try:
+            result = (
+                supabase.table("businesses")
+                .select("id,public_id,name")
+                .eq(field, value)
+                .maybe_single()
+                .execute()
+            )
+            if result and result.data:
+                return result.data
+        except Exception:
+            continue
+    return None
 
 
 class HelpQuestionEventCreate(BaseModel):
@@ -113,19 +152,19 @@ class HelpQuestionReviewUpdate(BaseModel):
     admin_note: Optional[str] = Field(default=None, max_length=2000)
 
 
-@help_router.post("/api/v1/business/{business_public_id}/help/question-event")
+@help_router.post("/api/v1/business/{business_identifier}/help/question-event")
 async def record_help_question_event(
-    business_public_id: str,
+    business_identifier: str,
     payload: HelpQuestionEventCreate,
     authorization: str = Header(default=""),
 ):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database not connected")
 
-    claims = _verify_business_session(authorization, business_public_id)
-    business = _business_row(business_public_id)
+    business = _business_row(business_identifier)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
+    claims = _verify_business_session(authorization, business_identifier, business)
 
     raw_question = payload.question_text.strip()
     normalized = _normalize_question(raw_question)

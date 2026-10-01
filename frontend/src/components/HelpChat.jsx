@@ -11,7 +11,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
  *  - Clicking a FAQ shows the prepared step-by-step answer
  *  - Typing remains available as a fallback
  *
- * No backend/API call is required.
+ * Help usage can be logged to the Loyalty Tree backend when API/user context is provided.
  */
 
 const HELP_ARTICLES = [
@@ -379,10 +379,120 @@ const MANAGER_FAQ_IDS = [
 const STOP_WORDS = new Set([
   'a','an','the','to','of','for','and','or','is','are','i','we','you','my','our',
   'how','do','does','can','could','please','po','yung','ang','ng','mga','ako','ko',
-  'namin','natin','ba','paano','mag','may','sa','si','ito','yan'
+  'namin','natin','ba','paano','pano','mag','may','sa','si','ito','yan','nga','ti','dagiti',
+  'unsaon','asa','ang','ug','og','sa','si','mga','ba','man','lang'
 ])
 
-function normalize(text = '') {
+// Common phrasing seen in English, Filipino/Taglish, Ilocano and Bisaya/Cebuano.
+// This remains deterministic: no translation API or AI model is called.
+const MULTILINGUAL_REPLACEMENTS = [
+  // Filipino / Taglish
+  ['paano mag', 'how'], ['pano mag', 'how'], ['paano', 'how'], ['pano', 'how'],
+  ['magdagdag', 'add'], ['dagdagan', 'add'], ['dagdag', 'add'], ['idagdag', 'add'],
+  ['empleyado', 'staff'], ['tauhan', 'staff'], ['miyembro', 'member'], ['hanapin', 'search'],
+  ['nasaan', 'where'], ['saan', 'where'], ['hindi ma save', 'cannot save'], ['di ma save', 'cannot save'],
+  ['ayaw ma save', 'cannot save'], ['hindi', 'not'], ['wala', 'not'], ['puntos', 'points'],
+  ['tatak', 'stamp'], ['gantimpala', 'reward'], ['anunsyo', 'announcement'],
+
+  // Ilocano
+  ['kasano nga', 'how'], ['kasano', 'how'], ['sadino', 'where'], ['mangnayon', 'add'],
+  ['inayon', 'add'], ['nayonan', 'add'], ['agbirok', 'search'], ['biroken', 'search'],
+  ['miyembro', 'member'], ['empleyado', 'staff'], ['saan nga ma save', 'cannot save'],
+  ['saan ma save', 'cannot save'], ['awan', 'not'], ['saan', 'not'], ['puntos', 'points'],
+  ['premio', 'reward'], ['pakdaar', 'announcement'],
+
+  // Bisaya / Cebuano
+  ['unsaon pag', 'how'], ['unsaon', 'how'], ['asa', 'where'], ['pagdugang', 'add'],
+  ['dugangi', 'add'], ['dugang', 'add'], ['pangitaa', 'search'], ['pangita', 'search'],
+  ['miyembro', 'member'], ['empleyado', 'staff'], ['dili ma save', 'cannot save'],
+  ['di ma save', 'cannot save'], ['dili', 'not'], ['walay', 'not'], ['puntos', 'points'],
+  ['ganti', 'reward'], ['pahibalo', 'announcement'],
+]
+
+const ARTICLE_LANGUAGE_KEYWORDS = {
+  'scan-to-join': [
+    'paano sumali sa loyalty', 'paano mag join customer',
+    'kasano ti panag join ti customer', 'kasano sumali ti customer',
+    'unsaon pag join sa customer', 'unsaon pag apil sa loyalty'
+  ],
+  'share-join-qr': [
+    'paano ishare join qr', 'saan join qr',
+    'kasano i share ti join qr', 'sadino ti join qr',
+    'unsaon pag share sa join qr', 'asa ang join qr'
+  ],
+  'scan-to-stamp': [
+    'paano mag stamp ng customer', 'paano i scan customer card',
+    'kasano ag stamp ti customer', 'kasano i scan ti card',
+    'unsaon pag stamp sa customer', 'unsaon pag scan sa customer card'
+  ],
+  'owner-points-stamps': [
+    'paano ayusin points', 'paano dagdag points', 'paano ayusin stamps',
+    'kasano ayusen ti points', 'kasano mangnayon points',
+    'unsaon pag ayo sa points', 'unsaon pagdugang points', 'unsaon pag ayo sa stamps'
+  ],
+  'manager-points': [
+    'paano ayusin customer points', 'kasano ayusen ti customer points',
+    'unsaon pag ayo sa customer points'
+  ],
+  'manager-stamps': [
+    'paano ayusin customer stamps', 'kasano ayusen ti customer stamps',
+    'unsaon pag ayo sa customer stamps'
+  ],
+  'redeem-reward': [
+    'paano mag claim reward', 'paano mag redeem',
+    'kasano ag claim ti reward', 'kasano ag redeem',
+    'unsaon pag claim sa reward', 'unsaon pag redeem sa reward'
+  ],
+  'announcements-owner': [
+    'paano mag send notification', 'paano mag announcement',
+    'kasano ag send ti pakdaar', 'kasano ag send notification',
+    'unsaon pag send pahibalo', 'unsaon pag send notification'
+  ],
+  'announcements-manager': [
+    'paano mag branch announcement', 'kasano ag branch announcement',
+    'unsaon pag branch announcement'
+  ],
+  'staff': [
+    'paano magdagdag cashier', 'paano magdagdag empleyado',
+    'kasano mangnayon ti cashier', 'kasano mangnayon ti empleyado',
+    'unsaon pagdugang og cashier', 'unsaon pagdugang og empleyado', 'dugang staff'
+  ],
+  'branches': [
+    'paano magdagdag branch', 'paano gumawa bagong branch',
+    'kasano mangnayon ti branch', 'kasano agaramid baro a branch',
+    'unsaon pagdugang og branch', 'unsaon paghimo bag ong branch'
+  ],
+  'analytics': [
+    'saan analytics', 'paano makita reports',
+    'sadino ti analytics', 'kasano makita ti reports',
+    'asa ang analytics', 'unsaon pagtan aw sa reports'
+  ],
+  'manager-search-member': [
+    'paano hanapin customer', 'saan hanapin member',
+    'kasano agbirok customer', 'sadino ti member',
+    'unsaon pagpangita customer', 'asa pangitaon ang member'
+  ],
+  'manager-companion': [
+    'paano setup companion', 'kasano i setup ti companion',
+    'unsaon pag setup sa companion'
+  ],
+  'manager-activation-code': [
+    'paano kumuha activation code', 'kasano alaen ti activation code',
+    'unsaon pagkuha activation code'
+  ],
+  'wallet-not-added': [
+    'wala sa wallet customer', 'hindi na add sa wallet',
+    'awan ti card iti wallet', 'saan na add ti wallet',
+    'wala sa wallet ang card', 'dili ma add sa wallet'
+  ],
+  'save-error': [
+    'hindi ma save customer', 'ayaw ma save points', 'di ma save stamps',
+    'saan ma save ti customer', 'saan ma save ti points',
+    'dili ma save ang customer', 'dili ma save points', 'di ma save stamps'
+  ],
+}
+
+function baseNormalize(text = '') {
   return String(text)
     .toLowerCase()
     .normalize('NFD')
@@ -390,6 +500,22 @@ function normalize(text = '') {
     .replace(/[^a-z0-9\s-]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+function escapeRegExp(text = '') {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function normalize(text = '') {
+  let value = baseNormalize(text)
+  for (const [fromRaw, toRaw] of MULTILINGUAL_REPLACEMENTS) {
+    const from = baseNormalize(fromRaw)
+    const to = baseNormalize(toRaw)
+    if (!from) continue
+    const pattern = new RegExp(`\\b${escapeRegExp(from).replace(/\\ /g, '\\s+')}\\b`, 'g')
+    value = value.replace(pattern, to)
+  }
+  return value.replace(/\s+/g, ' ').trim()
 }
 
 function tokens(text = '') {
@@ -409,7 +535,8 @@ function scoreArticle(query, article) {
 
   if (q.includes(title) || title.includes(q)) score += 10
 
-  for (const keywordRaw of article.keywords || []) {
+  const multilingualKeywords = ARTICLE_LANGUAGE_KEYWORDS[article.id] || []
+  for (const keywordRaw of [...(article.keywords || []), ...multilingualKeywords]) {
     const keyword = normalize(keywordRaw)
     if (!keyword) continue
 
@@ -481,6 +608,9 @@ export default function HelpChat({
   role = 'owner',
   businessName = '',
   currentPage = '',
+  API_BASE = '',
+  user = null,
+  businessIdentifier = '',
   bottom = 22,
   right = 22,
 }) {
@@ -514,10 +644,54 @@ export default function HelpChat({
     }
   }, [messages, selectedArticle, open])
 
+  const resolvedBusinessIdentifier = String(
+    businessIdentifier || user?.business_public_id || user?.business_slug || ''
+  ).trim()
+
+  async function recordQuestionEvent({ source, questionText, article = null, answered = false }) {
+    if (!API_BASE || !user?.token || !resolvedBusinessIdentifier || !questionText) return false
+
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/v1/business/${encodeURIComponent(resolvedBusinessIdentifier)}/help/question-event`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${user.token}`,
+          },
+          body: JSON.stringify({
+            source,
+            question_text: String(questionText).trim(),
+            matched_article_id: article?.id || null,
+            matched_article_title: article?.title || null,
+            answered: !!answered,
+            current_page: String(currentPage || '').trim() || null,
+          }),
+        }
+      )
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        console.warn('Help analytics record failed:', body?.detail || res.status)
+        return false
+      }
+      return true
+    } catch (err) {
+      console.warn('Help analytics record failed:', err)
+      return false
+    }
+  }
+
   function openArticle(article) {
     setSelectedArticle(article)
     setMessages([])
     setQuery('')
+    void recordQuestionEvent({
+      source: 'faq_click',
+      questionText: article.title,
+      article,
+      answered: true,
+    })
   }
 
   function showFaqHome() {
@@ -526,25 +700,47 @@ export default function HelpChat({
     setQuery('')
   }
 
-  function submitQuestion(rawQuestion) {
+  async function submitQuestion(rawQuestion) {
     const text = String(rawQuestion || '').trim()
     if (!text) return
 
     const article = findBestArticle(text, normalizedRole)
     setSelectedArticle(null)
+    setQuery('')
+
+    if (article) {
+      setMessages(current => [
+        ...current,
+        { id: `${Date.now()}-user`, role: 'user', text },
+        { id: `${Date.now()}-bot`, role: 'bot', article },
+      ])
+      void recordQuestionEvent({
+        source: 'typed',
+        questionText: text,
+        article,
+        answered: true,
+      })
+      return
+    }
+
+    const recorded = await recordQuestionEvent({
+      source: 'typed',
+      questionText: text,
+      article: null,
+      answered: false,
+    })
 
     setMessages(current => [
       ...current,
       { id: `${Date.now()}-user`, role: 'user', text },
-      article
-        ? { id: `${Date.now()}-bot`, role: 'bot', article }
-        : {
-            id: `${Date.now()}-fallback`,
-            role: 'bot',
-            text: 'I could not find an exact answer. Please choose one of the FAQs below or try using the feature name in your question.'
-          }
+      {
+        id: `${Date.now()}-fallback`,
+        role: 'bot',
+        text: recorded
+          ? 'I could not find an exact answer. I recorded this question for Loyalty Tree to review and add to the Help Center.'
+          : 'I could not find an exact answer. Please choose one of the FAQs below or try using the feature name in your question.'
+      }
     ])
-    setQuery('')
   }
 
   const assistantLabel = normalizedRole === 'manager'
@@ -606,7 +802,7 @@ export default function HelpChat({
                     Hi{businessName ? `, ${businessName}` : ''}! 👋
                   </div>
                   <div style={styles.welcomeText}>
-                    Choose a common question below. You only need to type if your concern is not listed.
+                    Choose a common question below, or type naturally in English, Filipino/Taglish, Ilocano, or Bisaya/Cebuano.
                   </div>
                 </div>
 
@@ -686,7 +882,7 @@ export default function HelpChat({
           </form>
 
           <div style={styles.footer}>
-            Built-in Loyalty Tree guide · No AI or token usage
+            English · Filipino · Ilocano · Bisaya/Cebuano · No AI or token usage
           </div>
         </div>
       )}

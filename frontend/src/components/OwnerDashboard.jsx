@@ -682,6 +682,9 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
         role="manager"
         businessName={data?.business?.name || user?.business_name}
         currentPage="branch-manager"
+        API_BASE={API_BASE}
+        user={user}
+        businessIdentifier={data?.business?.public_id || user?.business_public_id || user?.business_slug}
       />
       <style>{`@media(max-width:760px){.lt-manager-grid,.lt-companion-map-grid{grid-template-columns:1fr!important}}`}</style>
     </div>
@@ -5158,6 +5161,9 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
           role="owner"
           businessName={business?.business_name || business?.name || user?.business_name}
           currentPage={activeTab}
+          API_BASE={API_BASE}
+          user={user}
+          businessIdentifier={business?.public_id || user?.business_public_id || user?.business_slug}
         />
       )}
     </div>
