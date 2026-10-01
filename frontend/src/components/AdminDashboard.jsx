@@ -119,6 +119,12 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const [showClientPresentation,setShowClientPresentation]=useState(false)
   const [presentationAnonymized,setPresentationAnonymized]=useState(true)
 
+  const [helpInsights,setHelpInsights]=useState(null)
+  const [helpDays,setHelpDays]=useState(30)
+  const [helpLoading,setHelpLoading]=useState(false)
+  const [helpError,setHelpError]=useState('')
+  const [helpReviewing,setHelpReviewing]=useState('')
+
   const authedFetch = async (path, opts = {}) => {
     const res = await fetch(`${API_BASE}${path}`, {
       ...opts,
@@ -164,6 +170,64 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
       setClientPerfError(err.message || 'Could not load client performance')
     } finally {
       setClientPerfLoading(false)
+    }
+  }
+
+  const loadHelpInsights = async () => {
+    if (!token) return
+    setHelpLoading(true)
+    setHelpError('')
+    try {
+      const res = await authedFetch(`/api/v1/admin/help-insights?days=${helpDays}`, { cache:'no-store' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not load Help Questions')
+      setHelpInsights(data)
+    } catch (err) {
+      setHelpError(err.message || 'Could not load Help Questions')
+    } finally {
+      setHelpLoading(false)
+    }
+  }
+
+  const updateHelpQuestionStatus = async (question, reviewStatus) => {
+    if (!question?.key) return
+
+    const promptText = reviewStatus === 'resolved'
+      ? 'Optional note: what answer / FAQ update did you add?'
+      : reviewStatus === 'reviewed'
+        ? 'Optional review note:'
+        : 'Optional note:'
+
+    const note = window.prompt(promptText, question.admin_note || '')
+    if (note === null) return
+
+    setHelpReviewing(question.key)
+    try {
+      const res = await authedFetch(
+        `/api/v1/admin/help-question-groups?normalized_question=${encodeURIComponent(question.key)}`,
+        {
+          method:'PATCH',
+          body:JSON.stringify({
+            review_status: reviewStatus,
+            admin_note: note.trim() || null,
+          }),
+        }
+      )
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not update Help question')
+      setMessage(
+        reviewStatus === 'resolved'
+          ? 'Help question marked resolved / added to FAQ'
+          : reviewStatus === 'reviewed'
+            ? 'Help question marked reviewed'
+            : 'Help question reopened'
+      )
+      await loadHelpInsights()
+    } catch (err) {
+      setMessage(err.message || 'Could not update Help question')
+    } finally {
+      setHelpReviewing('')
+      setTimeout(() => setMessage(''), 3500)
     }
   }
 
@@ -228,6 +292,11 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
     if (!token || activeAdminTab !== 'performance') return
     loadClientPerformance()
   }, [token, clientPerfDays, activeAdminTab])
+
+  useEffect(() => {
+    if (!token || activeAdminTab !== 'help') return
+    loadHelpInsights()
+  }, [token, helpDays, activeAdminTab])
 
   const openDetail = async (biz) => {
     setSelected(biz)
@@ -813,6 +882,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
     { key:'special', label:'Special Businesses', icon:'₱', description:'Custom contracts, branch-based pricing and automated invoice delivery.' },
     { key:'performance', label:'Client Performance', icon:'↗', description:'CRM and retention movement across LoyaltyTree clients.' },
     { key:'platform', label:'Platform Analytics', icon:'◫', description:'Website traffic, acquisition, join conversion and Wallet activity.' },
+    { key:'help', label:'Help Questions', icon:'?', description:'See what owners and managers ask most, review unanswered questions, and grow the FAQ from real usage.' },
     { key:'operations', label:'Operations', icon:'⚙', description:'Announcements, print requests and QR / PR kit fulfillment.' },
     { key:'partners', label:'Partners', icon:'◎', description:'Region / province / city operators, expense approvals and homepage partner management.' },
   ]
@@ -856,7 +926,14 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
         <div className="admin-tab-nav" style={styles.adminTabNav}>
           {adminTabs.map(tab => {
             const active = activeAdminTab === tab.key
-            const badge = tab.key === 'businesses' ? businesses.length : tab.key === 'overview' && pendingApps.length ? pendingApps.length : null
+            const badge =
+              tab.key === 'businesses'
+                ? businesses.length
+                : tab.key === 'overview' && pendingApps.length
+                  ? pendingApps.length
+                  : tab.key === 'help' && helpInsights?.open_unanswered_groups
+                    ? helpInsights.open_unanswered_groups
+                    : null
             return (
               <button
                 key={tab.key}
@@ -882,6 +959,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
           {activeAdminTab === 'businesses' && <div style={styles.adminTabContext}>{businesses.length} loaded client{businesses.length===1?'':'s'}</div>}
           {activeAdminTab === 'special' && <div style={styles.adminTabContext}>{specialBusinesses.length} special billing account{specialBusinesses.length===1?'':'s'} · {specialInvoices.filter(i=>i.status==='overdue').length} overdue</div>}
           {activeAdminTab === 'overview' && pendingApps.length > 0 && <div style={{...styles.adminTabContext,color:'#92400e',background:'#fffbeb',borderColor:'#fde68a'}}>{pendingApps.length} application{pendingApps.length===1?'':'s'} waiting</div>}
+          {activeAdminTab === 'help' && <div style={{...styles.adminTabContext,color:helpInsights?.open_unanswered_groups?'#92400e':'#166534',background:helpInsights?.open_unanswered_groups?'#fffbeb':'#ecfdf5',borderColor:helpInsights?.open_unanswered_groups?'#fde68a':'#bbf7d0'}}>{helpInsights?.open_unanswered_groups ?? 0} unanswered group{helpInsights?.open_unanswered_groups===1?'':'s'}</div>}
         </div>
 
         {activeAdminTab === 'platform' && (
@@ -1024,6 +1102,152 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
               </div>
             )}
             {!platformAnalytics?.recent?.length && <div style={styles.analyticsEmpty}>No tracked public activity yet.</div>}
+          </div>
+        </section>
+        )}
+
+        {activeAdminTab === 'help' && (
+        <section style={styles.analyticsSection}>
+          <div style={styles.analyticsHeader}>
+            <div>
+              <div style={styles.analyticsEyebrow}>HELP CENTER LEARNING</div>
+              <h2 style={styles.analyticsTitle}>Questions owners and managers actually ask</h2>
+              <p style={styles.analyticsSubtitle}>
+                Typed questions and FAQ clicks are recorded here so the Help Center can improve from real usage. Prioritize repeated unanswered questions, add the answer to HelpChat, then mark the question resolved.
+              </p>
+            </div>
+            <div style={styles.analyticsControls}>
+              <select value={helpDays} onChange={e=>setHelpDays(Number(e.target.value))} style={styles.select}>
+                <option value={7}>Last 7 days</option>
+                <option value={30}>Last 30 days</option>
+                <option value={90}>Last 90 days</option>
+                <option value={365}>Last 12 months</option>
+              </select>
+              <button onClick={loadHelpInsights} disabled={helpLoading} style={styles.viewBtn}>{helpLoading?'Refreshing…':'↻ Refresh'}</button>
+            </div>
+          </div>
+
+          {helpError && <div style={styles.analyticsError}>{helpError}</div>}
+
+          <div style={styles.analyticsMetricGrid}>
+            <AnalyticsMetric label="Questions / clicks" value={(helpInsights?.total_events ?? 0).toLocaleString()} hint={`${helpInsights?.typed_questions ?? 0} typed · ${helpInsights?.faq_clicks ?? 0} FAQ clicks`} />
+            <AnalyticsMetric label="Unanswered" value={(helpInsights?.unanswered_events ?? 0).toLocaleString()} hint={`${helpInsights?.open_unanswered_groups ?? 0} open question groups`} />
+            <AnalyticsMetric label="Answered" value={(helpInsights?.answered_events ?? 0).toLocaleString()} hint="matched to an existing FAQ" />
+            <AnalyticsMetric label="Unique questions" value={(helpInsights?.unique_questions ?? 0).toLocaleString()} hint={`last ${helpDays} days`} />
+          </div>
+
+          <div style={styles.analyticsListCard}>
+            <div style={styles.analyticsSectionHeadingInline}>
+              <div>
+                <div style={styles.analyticsCardTitle}>Needs review</div>
+                <div style={styles.analyticsSectionHeadingSub}>Repeated unanswered questions come first. Review these daily and turn the useful ones into new FAQ entries.</div>
+              </div>
+            </div>
+
+            <div style={{overflowX:'auto',marginTop:10}}>
+              <table style={styles.expenseTable}>
+                <thead>
+                  <tr>
+                    <th>Question</th>
+                    <th>Asked</th>
+                    <th>Businesses</th>
+                    <th>Role</th>
+                    <th>Last asked</th>
+                    <th>Status</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(helpInsights?.unanswered_questions || []).map(row=>
+                    <tr key={row.key}>
+                      <td style={{minWidth:300}}>
+                        <b>{row.sample_question}</b>
+                        {row.admin_note&&<small style={{...styles.expenseSub,color:'#0f766e'}}>Admin note: {row.admin_note}</small>}
+                      </td>
+                      <td><b>{Number(row.unanswered_count||0).toLocaleString()}×</b><small style={styles.expenseSub}>{Number(row.count||0).toLocaleString()} total</small></td>
+                      <td>{Number(row.business_count||0).toLocaleString()}</td>
+                      <td>{(row.roles||[]).map(role=><span key={role} style={{...styles.adminTabContext,padding:'4px 7px',marginRight:4,textTransform:'capitalize'}}>{role}</span>)}</td>
+                      <td>{row.last_asked_at?new Date(row.last_asked_at).toLocaleString():'—'}</td>
+                      <td><span style={row.review_status==='reviewed'?styles.expensePending:styles.expenseRejected}>{row.review_status||'open'}</span></td>
+                      <td>
+                        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                          <button
+                            style={styles.refreshBtn}
+                            disabled={helpReviewing===row.key}
+                            onClick={()=>updateHelpQuestionStatus(row,'reviewed')}
+                          >Reviewed</button>
+                          <button
+                            style={styles.approveBtn}
+                            disabled={helpReviewing===row.key}
+                            onClick={()=>updateHelpQuestionStatus(row,'resolved')}
+                          >Resolved / Added to FAQ</button>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {!helpLoading && !(helpInsights?.unanswered_questions || []).length && (
+              <div style={styles.analyticsEmpty}>No unanswered questions in this period. The current FAQ handled everything recorded.</div>
+            )}
+          </div>
+
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(320px,1fr))',gap:12,marginTop:12}}>
+            <div style={{...styles.analyticsListCard,marginTop:0}}>
+              <div style={styles.analyticsCardTitle}>Most asked questions</div>
+              <div style={styles.analyticsSectionHeadingSub}>Overall frequency — answered and unanswered combined.</div>
+              {(helpInsights?.top_questions || []).slice(0,15).map((row,index)=>
+                <div key={row.key} style={styles.analyticsRankRow}>
+                  <span>
+                    <b>{index+1}. {row.sample_question}</b>
+                    <small style={styles.analyticsRankSub}>
+                      {row.unanswered_count||0} unanswered · {row.answered_count||0} answered · {row.business_count||0} businesses
+                    </small>
+                  </span>
+                  <b>{Number(row.count||0).toLocaleString()}×</b>
+                </div>
+              )}
+              {!helpLoading && !(helpInsights?.top_questions || []).length && <div style={styles.analyticsEmpty}>No questions recorded yet.</div>}
+            </div>
+
+            <div style={{...styles.analyticsListCard,marginTop:0}}>
+              <div style={styles.analyticsCardTitle}>Most opened FAQs</div>
+              <div style={styles.analyticsSectionHeadingSub}>Shows which prepared answers are used most often.</div>
+              {(helpInsights?.top_faqs || []).slice(0,15).map((row,index)=>
+                <div key={row.article_id || index} style={styles.analyticsRankRow}>
+                  <span><b>{index+1}. {row.title || row.article_id || 'FAQ'}</b></span>
+                  <b>{Number(row.count||0).toLocaleString()}×</b>
+                </div>
+              )}
+              {!helpLoading && !(helpInsights?.top_faqs || []).length && <div style={styles.analyticsEmpty}>No FAQ clicks recorded yet.</div>}
+            </div>
+          </div>
+
+          <div style={styles.analyticsListCard}>
+            <div style={styles.analyticsCardTitle}>Recent Help activity</div>
+            <div style={styles.analyticsSectionHeadingSub}>Latest typed questions and FAQ clicks across businesses.</div>
+            <div style={{overflowX:'auto',marginTop:10}}>
+              <table style={styles.expenseTable}>
+                <thead><tr><th>Time</th><th>Business</th><th>Role</th><th>Question</th><th>Result</th></tr></thead>
+                <tbody>
+                  {(helpInsights?.recent || []).slice(0,30).map((row,index)=>
+                    <tr key={`${row.public_id||row.created_at}-${index}`}>
+                      <td>{row.created_at?new Date(row.created_at).toLocaleString():'—'}</td>
+                      <td><b>{row.business_name||'Unknown business'}</b><small style={styles.expenseSub}>{row.current_page||'—'}</small></td>
+                      <td style={{textTransform:'capitalize'}}>{row.user_role||'—'}</td>
+                      <td style={{minWidth:280}}>{row.question_text}</td>
+                      <td>
+                        <span style={row.answered?styles.expenseApproved:styles.expenseRejected}>{row.answered?'answered':'unanswered'}</span>
+                        <small style={styles.expenseSub}>{row.source==='faq_click'?'FAQ click':row.matched_article_title||'Typed question'}</small>
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            {!helpLoading && !(helpInsights?.recent || []).length && <div style={styles.analyticsEmpty}>No Help activity recorded yet.</div>}
           </div>
         </section>
         )}

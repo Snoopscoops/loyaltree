@@ -284,10 +284,27 @@ async def admin_help_insights(
             business_map = {}
 
     grouped = _group_help_rows(rows)
-    open_unanswered = [
-        item for item in grouped
-        if item["unanswered_count"] > 0 and item["review_status"] != "resolved"
-    ]
+    open_unanswered = sorted(
+        [
+            item for item in grouped
+            if item["unanswered_count"] > 0 and item["review_status"] != "resolved"
+        ],
+        key=lambda item: (
+            item["unanswered_count"],
+            item["count"],
+            item["last_asked_at"] or "",
+        ),
+        reverse=True,
+    )
+    most_asked = sorted(
+        grouped,
+        key=lambda item: (
+            item["count"],
+            item["unanswered_count"],
+            item["last_asked_at"] or "",
+        ),
+        reverse=True,
+    )
 
     top_faq = defaultdict(lambda: {"article_id": None, "title": None, "count": 0})
     for row in rows:
@@ -328,7 +345,7 @@ async def admin_help_insights(
         "unanswered_events": sum(1 for row in rows if not row.get("answered")),
         "unique_questions": len(grouped),
         "open_unanswered_groups": len(open_unanswered),
-        "top_questions": grouped[:100],
+        "top_questions": most_asked[:100],
         "unanswered_questions": open_unanswered[:100],
         "top_faqs": sorted(top_faq.values(), key=lambda item: item["count"], reverse=True)[:50],
         "recent": recent,
