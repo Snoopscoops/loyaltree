@@ -22224,6 +22224,157 @@ async def publish_customer_agreement(
     return payload
 
 
+
+@app.get('/api/v1/business/{public_id}/customers/{customer_public_id}/agreements')
+async def list_customer_agreement_acceptances(
+    public_id: str,
+    customer_public_id: str,
+    authorization: str = Header(default=''),
+):
+    """Owner-only list of immutable customer agreement acceptance records.
+
+    This endpoint intentionally returns metadata only. The potentially large
+    signature PNG and full signed text snapshot are fetched only when the owner
+    opens one record in the customer card.
+    """
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+
+    customer = safe_get_customer(customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail='Customer not found for this business')
+
+    try:
+        rows = (
+            supabase.table('customer_agreement_acceptances')
+            .select(
+                'public_id,program_id,agreement_version_public_id,agreement_version_number,'
+                'agreement_sha256,agreement_title_snapshot,acceptance_mode,signer_name,accepted_at,created_at'
+            )
+            .eq('business_id', business.get('id'))
+            .eq('customer_id', customer.get('id'))
+            .order('accepted_at', desc=True)
+            .limit(50)
+            .execute().data or []
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f'Could not load signed customer agreements: {friendly_db_error(exc)}',
+        ) from exc
+
+    program_cache = {}
+    for row in rows:
+        program_id = row.get('program_id')
+        if program_id and program_id not in program_cache:
+            program_cache[program_id] = safe_get_loyalty_program(
+                business.get('id'),
+                program_id=program_id,
+            ) or {}
+
+    agreements = []
+    for row in rows:
+        program_row = program_cache.get(row.get('program_id')) or {}
+        mode = str(row.get('acceptance_mode') or 'checkbox')
+        agreements.append({
+            'public_id': row.get('public_id'),
+            'agreement_version_public_id': row.get('agreement_version_public_id'),
+            'agreement_version_number': int(row.get('agreement_version_number') or 1),
+            'agreement_sha256': row.get('agreement_sha256'),
+            'title': row.get('agreement_title_snapshot') or 'Customer Terms & Conditions',
+            'acceptance_mode': mode,
+            'has_signature': mode == 'signature',
+            'signer_name': row.get('signer_name'),
+            'accepted_at': row.get('accepted_at') or row.get('created_at'),
+            'program_public_id': program_row.get('public_id'),
+            'program_name': program_row.get('program_name') or program_row.get('card_name') or 'Loyalty Program',
+            'card_type': program_row.get('card_type'),
+        })
+
+    return {
+        'customer_public_id': customer_public_id,
+        'count': len(agreements),
+        'agreements': agreements,
+    }
+
+
+@app.get('/api/v1/business/{public_id}/customers/{customer_public_id}/agreements/{acceptance_public_id}')
+async def get_customer_agreement_acceptance(
+    public_id: str,
+    customer_public_id: str,
+    acceptance_public_id: str,
+    authorization: str = Header(default=''),
+):
+    """Owner-only immutable signed/accepted agreement snapshot for one customer."""
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+
+    customer = safe_get_customer(customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail='Customer not found for this business')
+
+    try:
+        rows = (
+            supabase.table('customer_agreement_acceptances')
+            .select('*')
+            .eq('public_id', acceptance_public_id)
+            .eq('business_id', business.get('id'))
+            .eq('customer_id', customer.get('id'))
+            .limit(1)
+            .execute().data or []
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f'Could not load signed customer agreement: {friendly_db_error(exc)}',
+        ) from exc
+
+    if not rows:
+        raise HTTPException(status_code=404, detail='Signed agreement not found for this customer')
+
+    row = rows[0]
+    program_row = safe_get_loyalty_program(
+        business.get('id'),
+        program_id=row.get('program_id'),
+    ) or {}
+
+    mode = str(row.get('acceptance_mode') or 'checkbox')
+    title = row.get('agreement_title_snapshot') or 'Customer Terms & Conditions'
+    body = row.get('agreement_body_snapshot') or ''
+    acknowledgment = row.get('acknowledgment_text_snapshot') or ''
+    stored_hash = str(row.get('agreement_sha256') or '')
+    calculated_hash = _customer_agreement_snapshot_hash(title, body, acknowledgment, mode)
+    hash_verified = bool(
+        stored_hash
+        and len(stored_hash) == 64
+        and hmac.compare_digest(stored_hash, calculated_hash)
+    )
+
+    return {
+        'public_id': row.get('public_id'),
+        'customer_public_id': customer_public_id,
+        'agreement_version_public_id': row.get('agreement_version_public_id'),
+        'agreement_version_number': int(row.get('agreement_version_number') or 1),
+        'agreement_sha256': stored_hash,
+        'hash_verified': hash_verified,
+        'title': title,
+        'body': body,
+        'acknowledgment_text': acknowledgment,
+        'acceptance_mode': mode,
+        'signer_name': row.get('signer_name'),
+        'signature_data': row.get('signature_data') if mode == 'signature' else None,
+        'accepted_at': row.get('accepted_at') or row.get('created_at'),
+        'created_at': row.get('created_at'),
+        'program_public_id': program_row.get('public_id'),
+        'program_name': program_row.get('program_name') or program_row.get('card_name') or 'Loyalty Program',
+        'card_type': program_row.get('card_type'),
+    }
+
+
 @app.get("/api/v1/business/{public_id}/cashier-program")
 async def get_cashier_program(public_id: str, response: Response, program_id: Optional[str] = Query(default=None)):
     """Cashier-facing alias of loyalty-config.

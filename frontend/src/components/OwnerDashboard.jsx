@@ -867,6 +867,11 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
   const [membershipActionLoading, setMembershipActionLoading] = useState(false)
   const [memberHistory, setMemberHistory] = useState([])
   const [memberHistoryLoading, setMemberHistoryLoading] = useState(false)
+  const [customerAgreements, setCustomerAgreements] = useState([])
+  const [customerAgreementsLoading, setCustomerAgreementsLoading] = useState(false)
+  const [customerAgreementsError, setCustomerAgreementsError] = useState('')
+  const [selectedCustomerAgreement, setSelectedCustomerAgreement] = useState(null)
+  const [customerAgreementDetailLoading, setCustomerAgreementDetailLoading] = useState('')
   const [membershipBenefitStatus, setMembershipBenefitStatus] = useState([])
   const [memberVisitService, setMemberVisitService] = useState('')
   const [memberVisitNote, setMemberVisitNote] = useState('')
@@ -1080,6 +1085,9 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
     if (programStorageKey) localStorage.setItem(programStorageKey, programPublicId)
     setSelectedProgramPublicId(programPublicId)
     setSelectedCustomer(null)
+    setCustomerAgreements([])
+    setCustomerAgreementsError('')
+    setSelectedCustomerAgreement(null)
     setCustomerSearch('')
     setShowCardModal(false)
     setShowQRModal(false)
@@ -1790,6 +1798,47 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
     setMemberHistoryLoading(false)
   }
 
+  const fetchCustomerAgreements = async (customerPublicId) => {
+    if (!customerPublicId || !user?.business_slug) {
+      setCustomerAgreements([])
+      setCustomerAgreementsError('')
+      return
+    }
+    setCustomerAgreementsLoading(true)
+    setCustomerAgreementsError('')
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/customers/${customerPublicId}/agreements`, {
+        cache: 'no-store',
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not load signed agreements')
+      setCustomerAgreements(Array.isArray(data.agreements) ? data.agreements : [])
+    } catch (err) {
+      setCustomerAgreements([])
+      setCustomerAgreementsError(err.message || 'Could not load signed agreements')
+    } finally {
+      setCustomerAgreementsLoading(false)
+    }
+  }
+
+  const openCustomerAgreement = async (agreement) => {
+    if (!selectedCustomer?.public_id || !agreement?.public_id) return
+    setCustomerAgreementDetailLoading(agreement.public_id)
+    try {
+      const res = await authFetch(
+        `${API_BASE}/api/v1/business/${user.business_slug}/customers/${selectedCustomer.public_id}/agreements/${agreement.public_id}`,
+        { cache: 'no-store' }
+      )
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not load signed agreement')
+      setSelectedCustomerAgreement(data)
+    } catch (err) {
+      setMessage(err.message || 'Could not load signed agreement')
+    } finally {
+      setCustomerAgreementDetailLoading('')
+    }
+  }
+
   const fetchMembershipBenefitStatus = async (customerPublicId) => {
     if (!customerPublicId || !['membership','hybrid','employee'].includes(program?.card_type)) { setMembershipBenefitStatus([]); return }
     try {
@@ -2303,8 +2352,10 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
 
   const viewCustomerCard = (customer) => {
     setSelectedCustomer(customer)
+    setSelectedCustomerAgreement(null)
     fetchCoupons(customer.public_id)
     fetchCurrentRedeemables(customer.public_id)
+    fetchCustomerAgreements(customer.public_id)
     setMemberVisitService('')
     setMemberVisitNote('')
     if (['stamp', 'membership', 'multipass', 'points', 'vip', 'hybrid'].includes(program?.card_type)) {
@@ -3796,7 +3847,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
 
       {/* Customer Loyalty Card Modal */}
       {showCardModal && selectedCustomer && (
-        <div style={styles.modalOverlay} onClick={() => setShowCardModal(false)}>
+        <div style={styles.modalOverlay} onClick={() => { setShowCardModal(false); setSelectedCustomerAgreement(null) }}>
           <div style={{...styles.modal, maxWidth: 900}} onClick={e => e.stopPropagation()}>
             {/* Digital Card Preview */}
             <div style={{
@@ -3980,6 +4031,82 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                   </>
                 )}
               </div>
+            </div>
+
+            <div style={{
+              marginBottom:18,
+              padding:16,
+              border:'1px solid #e9d5ff',
+              background:'linear-gradient(135deg, #faf5ff 0%, #fdf4ff 100%)',
+              borderRadius:14,
+            }}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12,marginBottom:12}}>
+                <div>
+                  <div style={{fontSize:11,fontWeight:900,letterSpacing:1.1,color:'#7e22ce',textTransform:'uppercase'}}>Signed Agreements & Waivers</div>
+                  <div style={{fontSize:17,fontWeight:900,color:'#0f172a',marginTop:2}}>📄 Customer agreement records</div>
+                  <div style={{fontSize:12.5,color:'#64748b',marginTop:4}}>
+                    Read-only proof of the exact terms this customer accepted for this loyalty card.
+                  </div>
+                </div>
+                <span style={{
+                  minWidth:34,height:34,padding:'0 9px',borderRadius:999,background:'#f3e8ff',color:'#7e22ce',
+                  fontSize:13,fontWeight:900,display:'inline-flex',alignItems:'center',justifyContent:'center'
+                }}>
+                  {customerAgreementsLoading ? '…' : customerAgreements.length}
+                </span>
+              </div>
+
+              {customerAgreementsLoading ? (
+                <div style={{background:'white',border:'1px solid #e9d5ff',borderRadius:12,padding:12,color:'#64748b',fontSize:13}}>
+                  Loading signed agreements…
+                </div>
+              ) : customerAgreementsError ? (
+                <div style={{background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:12,padding:12,color:'#9a3412',fontSize:12.5}}>
+                  {customerAgreementsError}
+                </div>
+              ) : customerAgreements.length === 0 ? (
+                <div style={{background:'white',border:'1px solid #e9d5ff',borderRadius:12,padding:12,color:'#64748b',fontSize:13}}>
+                  No signed waiver or customer agreement is on file for this customer.
+                </div>
+              ) : (
+                <div style={{display:'grid',gap:8}}>
+                  {customerAgreements.map((agreement) => (
+                    <div key={agreement.public_id} style={{
+                      display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',
+                      background:'white',border:'1px solid #e9d5ff',borderRadius:12,padding:'11px 12px'
+                    }}>
+                      <div style={{minWidth:0}}>
+                        <div style={{display:'flex',gap:7,alignItems:'center',flexWrap:'wrap'}}>
+                          <strong style={{fontSize:13.5,color:'#0f172a'}}>{agreement.title || 'Customer Terms & Conditions'}</strong>
+                          <span style={{fontSize:9.5,fontWeight:900,color:'#7e22ce',background:'#f3e8ff',padding:'3px 6px',borderRadius:999}}>
+                            v{agreement.agreement_version_number || 1}
+                          </span>
+                          <span style={{fontSize:9.5,fontWeight:900,color:agreement.acceptance_mode==='signature'?'#166534':'#1d4ed8',background:agreement.acceptance_mode==='signature'?'#dcfce7':'#dbeafe',padding:'3px 6px',borderRadius:999}}>
+                            {agreement.acceptance_mode==='signature' ? 'SIGNED' : 'ACCEPTED'}
+                          </span>
+                        </div>
+                        <div style={{fontSize:11.5,color:'#64748b',marginTop:4}}>
+                          {agreement.program_name || 'Loyalty Program'} · {agreement.signer_name || selectedCustomer.name}
+                        </div>
+                        <div style={{fontSize:11,color:'#94a3b8',marginTop:3}}>
+                          {agreement.accepted_at ? new Date(agreement.accepted_at).toLocaleString('en-PH', {year:'numeric',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : 'Acceptance date unavailable'}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => openCustomerAgreement(agreement)}
+                        disabled={customerAgreementDetailLoading === agreement.public_id}
+                        style={{
+                          border:'1px solid #d8b4fe',background:'#faf5ff',color:'#7e22ce',borderRadius:9,
+                          padding:'8px 10px',fontSize:11,fontWeight:900,cursor:'pointer',whiteSpace:'nowrap'
+                        }}
+                      >
+                        {customerAgreementDetailLoading === agreement.public_id ? 'Loading…' : (agreement.acceptance_mode==='signature' ? 'View signed waiver' : 'View acceptance')}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div style={{
@@ -4401,10 +4528,109 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
             </div>
 
             <button 
-              onClick={() => setShowCardModal(false)} 
+              onClick={() => { setShowCardModal(false); setSelectedCustomerAgreement(null) }} 
               style={{...styles.submitBtn, background: 'transparent', color: '#64748b', marginTop: 12}}
             >
               Close
+            </button>
+          </div>
+        </div>
+      )}
+
+      {selectedCustomerAgreement && (
+        <div
+          style={{...styles.modalOverlay,zIndex:2200}}
+          onClick={() => setSelectedCustomerAgreement(null)}
+        >
+          <div
+            style={{...styles.modal,maxWidth:780,maxHeight:'90vh',overflowY:'auto'}}
+            onClick={e => e.stopPropagation()}
+          >
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12,borderBottom:'1px solid #e2e8f0',paddingBottom:12,marginBottom:14}}>
+              <div>
+                <div style={{fontSize:10.5,fontWeight:900,letterSpacing:1,color:'#7e22ce',textTransform:'uppercase'}}>
+                  {selectedCustomerAgreement.acceptance_mode === 'signature' ? 'Signed waiver' : 'Accepted agreement'}
+                </div>
+                <h3 style={{margin:'4px 0 4px',fontSize:20,color:'#0f172a'}}>
+                  {selectedCustomerAgreement.title || 'Customer Terms & Conditions'}
+                </h3>
+                <div style={{fontSize:11.5,color:'#64748b'}}>
+                  {selectedCustomerAgreement.program_name || 'Loyalty Program'} · Version {selectedCustomerAgreement.agreement_version_number || 1}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedCustomerAgreement(null)}
+                style={{border:'1px solid #e2e8f0',background:'#fff',borderRadius:9,padding:'7px 10px',fontWeight:900,cursor:'pointer'}}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))',gap:8,marginBottom:14}}>
+              {[
+                ['Signed / accepted by', selectedCustomerAgreement.signer_name || selectedCustomer?.name || '—'],
+                ['Date & time', selectedCustomerAgreement.accepted_at ? new Date(selectedCustomerAgreement.accepted_at).toLocaleString('en-PH', {year:'numeric',month:'long',day:'numeric',hour:'numeric',minute:'2-digit'}) : '—'],
+                ['Acceptance method', selectedCustomerAgreement.acceptance_mode === 'signature' ? 'Electronic signature' : 'Checkbox acknowledgment'],
+                ['Snapshot integrity', selectedCustomerAgreement.hash_verified ? 'Verified' : 'Could not verify'],
+              ].map(([label,value]) => (
+                <div key={label} style={{border:'1px solid #e2e8f0',background:'#f8fafc',borderRadius:10,padding:'10px 11px'}}>
+                  <div style={{fontSize:9.5,fontWeight:900,color:'#64748b',textTransform:'uppercase',letterSpacing:.6}}>{label}</div>
+                  <div style={{fontSize:12.5,fontWeight:800,color:value==='Verified'?'#166534':'#0f172a',marginTop:4}}>{value}</div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{border:'1px solid #e2e8f0',borderRadius:12,padding:14,background:'#fff'}}>
+              <div style={{fontSize:10,fontWeight:900,color:'#64748b',textTransform:'uppercase',letterSpacing:.7,marginBottom:7}}>Exact accepted terms</div>
+              <div style={{fontSize:13.5,lineHeight:1.65,color:'#1e293b',whiteSpace:'pre-wrap'}}>
+                {selectedCustomerAgreement.body || 'No agreement text was stored.'}
+              </div>
+            </div>
+
+            <div style={{marginTop:12,border:'1px solid #dbeafe',borderRadius:12,padding:12,background:'#f8fbff'}}>
+              <div style={{fontSize:10,fontWeight:900,color:'#1d4ed8',textTransform:'uppercase',letterSpacing:.7}}>Acknowledgment</div>
+              <div style={{fontSize:12.5,color:'#334155',lineHeight:1.55,marginTop:5,whiteSpace:'pre-wrap'}}>
+                {selectedCustomerAgreement.acknowledgment_text || 'Acknowledgment text unavailable.'}
+              </div>
+            </div>
+
+            {selectedCustomerAgreement.acceptance_mode === 'signature' && (
+              <div style={{marginTop:12,border:'1px solid #bbf7d0',borderRadius:12,padding:12,background:'#f0fdf4'}}>
+                <div style={{fontSize:10,fontWeight:900,color:'#166534',textTransform:'uppercase',letterSpacing:.7}}>Electronic signature</div>
+                {selectedCustomerAgreement.signature_data ? (
+                  <div style={{marginTop:8,background:'#fff',border:'1px solid #d1fae5',borderRadius:10,padding:10}}>
+                    <img
+                      src={selectedCustomerAgreement.signature_data}
+                      alt={`Signature of ${selectedCustomerAgreement.signer_name || selectedCustomer?.name || 'customer'}`}
+                      style={{display:'block',maxWidth:'100%',maxHeight:180,margin:'0 auto',objectFit:'contain'}}
+                    />
+                  </div>
+                ) : (
+                  <div style={{fontSize:12,color:'#b45309',marginTop:7}}>Signature image is not available for this record.</div>
+                )}
+              </div>
+            )}
+
+            <div style={{marginTop:12,padding:'10px 11px',borderRadius:10,background:'#f8fafc',border:'1px solid #e2e8f0'}}>
+              <div style={{fontSize:9.5,fontWeight:900,color:'#64748b',textTransform:'uppercase'}}>Agreement proof</div>
+              <div style={{fontSize:10.5,color:'#64748b',marginTop:5,overflowWrap:'anywhere'}}>
+                Acceptance ID: {selectedCustomerAgreement.public_id || '—'}
+              </div>
+              <div style={{fontSize:10.5,color:'#64748b',marginTop:3,overflowWrap:'anywhere'}}>
+                Version ID: {selectedCustomerAgreement.agreement_version_public_id || '—'}
+              </div>
+              <div style={{fontSize:10.5,color:'#64748b',marginTop:3,overflowWrap:'anywhere'}}>
+                SHA-256: {selectedCustomerAgreement.agreement_sha256 || '—'}
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setSelectedCustomerAgreement(null)}
+              style={{...styles.submitBtn,marginTop:14}}
+            >
+              Close signed record
             </button>
           </div>
         </div>
