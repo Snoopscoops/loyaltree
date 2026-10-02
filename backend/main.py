@@ -2438,6 +2438,15 @@ class CustomerAgreementDraftUpdate(BaseModel):
     draft_body: Optional[str] = Field(default=None, max_length=20000)
     draft_acknowledgment_text: Optional[str] = Field(default=None, max_length=500)
 
+
+class LegacyCustomerAgreementSignatureCreate(BaseModel):
+    # Backup/remediation only: an existing member who joined before signature
+    # collection was first published for this card may sign the CURRENT version
+    # in person on the owner's device.
+    agreement_version_public_id: str = Field(min_length=1, max_length=80)
+    signature_data: str = Field(min_length=100, max_length=300000)
+    customer_confirmed: bool = False
+
 class PlatformAnalyticsEventCreate(BaseModel):
     event_name: str = Field(min_length=1, max_length=80)
     session_id: Optional[str] = Field(default=None, max_length=160)
@@ -4575,6 +4584,100 @@ def _validate_customer_signature_data(value: Optional[str]) -> Optional[str]:
     if len(decoded) > 200000:
         raise HTTPException(status_code=400, detail='Customer signature is too large. Please sign again.')
     return raw
+
+
+def _legacy_customer_signature_offer(
+    business: dict,
+    customer: dict,
+    *,
+    acceptance_rows: Optional[list] = None,
+    include_document: bool = False,
+) -> Optional[dict]:
+    """Return the backup in-person signature offer for a true legacy member.
+
+    This is intentionally narrow:
+    - the card must CURRENTLY publish a signature-mode agreement;
+    - the member must have joined BEFORE the first signature-mode version for
+      that exact program was published; and
+    - the member must not already have a signature acceptance on file.
+
+    Customers who joined after signature collection was enabled are never
+    eligible for this owner-dashboard backup path. Their normal Join flow is
+    the authoritative signing path.
+    """
+    if not business or not customer:
+        return None
+
+    program = safe_get_customer_program(customer, business.get('id'))
+    if not program or program.get('business_id') != business.get('id'):
+        return None
+
+    current = _public_customer_agreement(program)
+    if not current.get('enabled') or str(current.get('mode') or '') != 'signature':
+        return None
+
+    if acceptance_rows is None:
+        try:
+            acceptance_rows = (
+                supabase.table('customer_agreement_acceptances')
+                .select('public_id,acceptance_mode,agreement_version_public_id')
+                .eq('business_id', business.get('id'))
+                .eq('customer_id', customer.get('id'))
+                .limit(50)
+                .execute().data or []
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f'Could not verify legacy customer agreement status: {friendly_db_error(exc)}',
+            ) from exc
+
+    if any(str(row.get('acceptance_mode') or '').lower() == 'signature' for row in (acceptance_rows or [])):
+        return None
+
+    try:
+        first_signature_rows = (
+            supabase.table('customer_agreement_versions')
+            .select('public_id,published_at,version_number')
+            .eq('business_id', business.get('id'))
+            .eq('program_id', program.get('id'))
+            .eq('mode', 'signature')
+            .order('published_at', desc=False)
+            .limit(1)
+            .execute().data or []
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f'Could not verify when customer signing was enabled: {friendly_db_error(exc)}',
+        ) from exc
+
+    if not first_signature_rows:
+        return None
+
+    first_signature = first_signature_rows[0]
+    joined_at = _parse_ts(customer.get('created_at'))
+    signature_enabled_at = _parse_ts(first_signature.get('published_at'))
+    if not joined_at or not signature_enabled_at or joined_at >= signature_enabled_at:
+        return None
+
+    offer = {
+        'eligible': True,
+        'reason': 'joined_before_signature_collection_enabled',
+        'customer_joined_at': customer.get('created_at'),
+        'signature_enabled_at': first_signature.get('published_at'),
+        'program_public_id': program.get('public_id'),
+        'program_name': program.get('program_name') or program.get('card_name') or 'Loyalty Program',
+        'agreement_version_public_id': current.get('version_id'),
+        'agreement_version_number': int(current.get('version_number') or 1),
+        'agreement_sha256': current.get('sha256'),
+        'title': current.get('title') or 'Customer Terms & Conditions',
+        'acknowledgment_text': current.get('acknowledgment_text') or CUSTOMER_AGREEMENT_DEFAULT_ACK,
+        'published_at': current.get('published_at'),
+    }
+    if include_document:
+        offer['body'] = current.get('body') or ''
+    return offer
 
 
 def safe_get_customer_program(customer: Optional[dict], business_id: Optional[int] = None):
@@ -22293,10 +22396,131 @@ async def list_customer_agreement_acceptances(
             'card_type': program_row.get('card_type'),
         })
 
+    legacy_signature = _legacy_customer_signature_offer(
+        business,
+        customer,
+        acceptance_rows=rows,
+        include_document=True,
+    )
+
     return {
         'customer_public_id': customer_public_id,
         'count': len(agreements),
         'agreements': agreements,
+        # Present only for members who joined before signature collection was
+        # first enabled for this card and who still have no signature on file.
+        'legacy_signature': legacy_signature,
+    }
+
+
+@app.post('/api/v1/business/{public_id}/customers/{customer_public_id}/agreements/legacy-signature')
+async def create_legacy_customer_agreement_signature(
+    public_id: str,
+    customer_public_id: str,
+    request: LegacyCustomerAgreementSignatureCreate,
+    authorization: str = Header(default=''),
+):
+    """Collect an in-person signature from a legacy member on the owner's device.
+
+    This is NOT an alternate normal signup flow. It is restricted to customers
+    whose membership predates the first signature-mode agreement published for
+    their exact loyalty program.
+    """
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+
+    customer = safe_get_customer(customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail='Customer not found for this business')
+
+    if not request.customer_confirmed:
+        raise HTTPException(
+            status_code=400,
+            detail='The customer must review the agreement and confirm before signing.',
+        )
+
+    offer = _legacy_customer_signature_offer(
+        business,
+        customer,
+        include_document=True,
+    )
+    if not offer:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                'Backup signing is only available to customers who joined before '
+                'signature collection was enabled and who do not already have a signature on file.'
+            ),
+        )
+
+    if str(request.agreement_version_public_id or '') != str(offer.get('agreement_version_public_id') or ''):
+        raise HTTPException(
+            status_code=409,
+            detail='The customer agreement has changed. Close this window and reopen the customer before signing.',
+        )
+
+    signature_data = _validate_customer_signature_data(request.signature_data)
+    if not signature_data:
+        raise HTTPException(status_code=400, detail='Please ask the customer to draw their signature.')
+
+    accepted_at = datetime.utcnow().isoformat()
+    signer_name = str(customer.get('name') or '').strip() or 'Customer'
+    row_payload = {
+        'public_id': generate_public_id(),
+        'business_id': business.get('id'),
+        'program_id': safe_get_customer_program(customer, business.get('id')).get('id'),
+        'customer_id': customer.get('id'),
+        'agreement_version_public_id': offer.get('agreement_version_public_id'),
+        'agreement_version_number': offer.get('agreement_version_number'),
+        'agreement_sha256': offer.get('agreement_sha256'),
+        'agreement_title_snapshot': offer.get('title'),
+        'agreement_body_snapshot': offer.get('body') or '',
+        'acknowledgment_text_snapshot': offer.get('acknowledgment_text') or '',
+        'acceptance_mode': 'signature',
+        'signer_name': signer_name,
+        'signature_data': signature_data,
+        'accepted_at': accepted_at,
+        'created_at': accepted_at,
+    }
+
+    try:
+        inserted = (
+            supabase.table('customer_agreement_acceptances')
+            .insert(row_payload)
+            .execute().data or []
+        )
+    except Exception as exc:
+        error_text = str(exc).lower()
+        if 'duplicate' in error_text or 'unique' in error_text:
+            raise HTTPException(status_code=409, detail='A signature for this agreement is already on file.') from exc
+        raise HTTPException(
+            status_code=503,
+            detail=f'Could not save the customer signature: {friendly_db_error(exc)}',
+        ) from exc
+
+    if not inserted:
+        raise HTTPException(status_code=503, detail='Customer signature was not saved. Please try again.')
+
+    saved = inserted[0]
+    program = safe_get_customer_program(customer, business.get('id')) or {}
+    return {
+        'message': 'Customer signature saved.',
+        'acceptance': {
+            'public_id': saved.get('public_id'),
+            'agreement_version_public_id': saved.get('agreement_version_public_id'),
+            'agreement_version_number': int(saved.get('agreement_version_number') or 1),
+            'agreement_sha256': saved.get('agreement_sha256'),
+            'title': saved.get('agreement_title_snapshot') or 'Customer Terms & Conditions',
+            'acceptance_mode': 'signature',
+            'has_signature': True,
+            'signer_name': saved.get('signer_name'),
+            'accepted_at': saved.get('accepted_at') or saved.get('created_at'),
+            'program_public_id': program.get('public_id'),
+            'program_name': program.get('program_name') or program.get('card_name') or 'Loyalty Program',
+            'card_type': program.get('card_type'),
+        },
     }
 
 

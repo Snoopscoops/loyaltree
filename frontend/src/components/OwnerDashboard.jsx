@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Announcements from './Announcements'
 import PlatformPromoBanner from './PlatformPromoBanner'
@@ -872,6 +872,13 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
   const [customerAgreementsError, setCustomerAgreementsError] = useState('')
   const [selectedCustomerAgreement, setSelectedCustomerAgreement] = useState(null)
   const [customerAgreementDetailLoading, setCustomerAgreementDetailLoading] = useState('')
+  const [legacyCustomerSignature, setLegacyCustomerSignature] = useState(null)
+  const [showLegacySignatureModal, setShowLegacySignatureModal] = useState(false)
+  const [legacySignatureSaving, setLegacySignatureSaving] = useState(false)
+  const [legacySignatureConfirmed, setLegacySignatureConfirmed] = useState(false)
+  const [legacySignatureHasInk, setLegacySignatureHasInk] = useState(false)
+  const legacySignatureCanvasRef = useRef(null)
+  const legacySignatureDrawingRef = useRef(false)
   const [membershipBenefitStatus, setMembershipBenefitStatus] = useState([])
   const [memberVisitService, setMemberVisitService] = useState('')
   const [memberVisitNote, setMemberVisitNote] = useState('')
@@ -1088,6 +1095,8 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
     setCustomerAgreements([])
     setCustomerAgreementsError('')
     setSelectedCustomerAgreement(null)
+    setLegacyCustomerSignature(null)
+    setShowLegacySignatureModal(false)
     setCustomerSearch('')
     setShowCardModal(false)
     setShowQRModal(false)
@@ -1802,6 +1811,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
     if (!customerPublicId || !user?.business_slug) {
       setCustomerAgreements([])
       setCustomerAgreementsError('')
+      setLegacyCustomerSignature(null)
       return
     }
     setCustomerAgreementsLoading(true)
@@ -1813,11 +1823,120 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Could not load signed agreements')
       setCustomerAgreements(Array.isArray(data.agreements) ? data.agreements : [])
+      setLegacyCustomerSignature(data.legacy_signature?.eligible ? data.legacy_signature : null)
     } catch (err) {
       setCustomerAgreements([])
+      setLegacyCustomerSignature(null)
       setCustomerAgreementsError(err.message || 'Could not load signed agreements')
     } finally {
       setCustomerAgreementsLoading(false)
+    }
+  }
+
+  const legacySignaturePoint = (event) => {
+    const canvas = legacySignatureCanvasRef.current
+    if (!canvas) return null
+    const rect = canvas.getBoundingClientRect()
+    if (!rect.width || !rect.height) return null
+    return {
+      x: (event.clientX - rect.left) * (canvas.width / rect.width),
+      y: (event.clientY - rect.top) * (canvas.height / rect.height),
+    }
+  }
+
+  const beginLegacySignature = (event) => {
+    const canvas = legacySignatureCanvasRef.current
+    const point = legacySignaturePoint(event)
+    if (!canvas || !point) return
+    event.preventDefault()
+    const ctx = canvas.getContext('2d')
+    ctx.lineWidth = 4
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+    ctx.strokeStyle = '#0f172a'
+    ctx.beginPath()
+    ctx.moveTo(point.x, point.y)
+    legacySignatureDrawingRef.current = true
+    canvas.setPointerCapture?.(event.pointerId)
+  }
+
+  const drawLegacySignature = (event) => {
+    if (!legacySignatureDrawingRef.current) return
+    const canvas = legacySignatureCanvasRef.current
+    const point = legacySignaturePoint(event)
+    if (!canvas || !point) return
+    event.preventDefault()
+    const ctx = canvas.getContext('2d')
+    ctx.lineTo(point.x, point.y)
+    ctx.stroke()
+    setLegacySignatureHasInk(true)
+  }
+
+  const endLegacySignature = (event) => {
+    if (!legacySignatureDrawingRef.current) return
+    legacySignatureDrawingRef.current = false
+    try { legacySignatureCanvasRef.current?.releasePointerCapture?.(event.pointerId) } catch (_) {}
+  }
+
+  const clearLegacySignature = () => {
+    const canvas = legacySignatureCanvasRef.current
+    if (canvas) canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height)
+    legacySignatureDrawingRef.current = false
+    setLegacySignatureHasInk(false)
+  }
+
+  const openLegacySignature = () => {
+    if (!legacyCustomerSignature || !selectedCustomer) return
+    setLegacySignatureConfirmed(false)
+    setLegacySignatureHasInk(false)
+    setShowLegacySignatureModal(true)
+    window.setTimeout(clearLegacySignature, 0)
+  }
+
+  const saveLegacyCustomerSignature = async () => {
+    if (!selectedCustomer?.public_id || !legacyCustomerSignature?.agreement_version_public_id) return
+    if (!legacySignatureConfirmed) {
+      setMessage('The customer must review and confirm the agreement before signing.')
+      return
+    }
+    if (!legacySignatureHasInk) {
+      setMessage('Please ask the customer to draw their signature first.')
+      return
+    }
+    const canvas = legacySignatureCanvasRef.current
+    if (!canvas) return
+
+    setLegacySignatureSaving(true)
+    try {
+      const res = await authFetch(
+        `${API_BASE}/api/v1/business/${user.business_slug}/customers/${selectedCustomer.public_id}/agreements/legacy-signature`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            agreement_version_public_id: legacyCustomerSignature.agreement_version_public_id,
+            signature_data: canvas.toDataURL('image/png'),
+            customer_confirmed: true,
+          }),
+        }
+      )
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not save customer signature')
+      if (data.acceptance?.public_id) {
+        setCustomerAgreements(current => [
+          data.acceptance,
+          ...current.filter(row => row.public_id !== data.acceptance.public_id),
+        ])
+      }
+      setLegacyCustomerSignature(null)
+      setShowLegacySignatureModal(false)
+      setLegacySignatureConfirmed(false)
+      setLegacySignatureHasInk(false)
+      setMessage('Customer signature saved.')
+    } catch (err) {
+      setMessage(err.message || 'Could not save customer signature')
+    } finally {
+      setLegacySignatureSaving(false)
     }
   }
 
@@ -2353,6 +2472,10 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
   const viewCustomerCard = (customer) => {
     setSelectedCustomer(customer)
     setSelectedCustomerAgreement(null)
+    setLegacyCustomerSignature(null)
+    setShowLegacySignatureModal(false)
+    setLegacySignatureConfirmed(false)
+    setLegacySignatureHasInk(false)
     fetchCoupons(customer.public_id)
     fetchCurrentRedeemables(customer.public_id)
     fetchCustomerAgreements(customer.public_id)
@@ -4056,6 +4179,32 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                 </span>
               </div>
 
+              {!customerAgreementsLoading && !customerAgreementsError && legacyCustomerSignature && (
+                <div style={{
+                  background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:12,padding:12,
+                  marginBottom:10,display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'
+                }}>
+                  <div style={{minWidth:0}}>
+                    <div style={{fontSize:11,fontWeight:900,color:'#c2410c',textTransform:'uppercase',letterSpacing:.7}}>
+                      Legacy customer · backup signing
+                    </div>
+                    <div style={{fontSize:12.5,color:'#7c2d12',marginTop:3,lineHeight:1.45}}>
+                      This customer joined before signature collection was enabled for this card and still has no customer signature on file.
+                    </div>
+                    <div style={{fontSize:10.5,color:'#9a3412',marginTop:4}}>
+                      Customer joined {legacyCustomerSignature.customer_joined_at ? new Date(legacyCustomerSignature.customer_joined_at).toLocaleDateString('en-PH',{year:'numeric',month:'short',day:'numeric'}) : 'earlier'} · signing enabled {legacyCustomerSignature.signature_enabled_at ? new Date(legacyCustomerSignature.signature_enabled_at).toLocaleDateString('en-PH',{year:'numeric',month:'short',day:'numeric'}) : 'later'}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={openLegacySignature}
+                    style={{border:'none',background:'#c2410c',color:'#fff',borderRadius:9,padding:'9px 12px',fontSize:11.5,fontWeight:900,cursor:'pointer',whiteSpace:'nowrap'}}
+                  >
+                    ✍️ Collect customer signature
+                  </button>
+                </div>
+              )}
+
               {customerAgreementsLoading ? (
                 <div style={{background:'white',border:'1px solid #e9d5ff',borderRadius:12,padding:12,color:'#64748b',fontSize:13}}>
                   Loading signed agreements…
@@ -4528,11 +4677,121 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
             </div>
 
             <button 
-              onClick={() => { setShowCardModal(false); setSelectedCustomerAgreement(null) }} 
+              onClick={() => { setShowCardModal(false); setSelectedCustomerAgreement(null); setShowLegacySignatureModal(false) }} 
               style={{...styles.submitBtn, background: 'transparent', color: '#64748b', marginTop: 12}}
             >
               Close
             </button>
+          </div>
+        </div>
+      )}
+
+      {showLegacySignatureModal && selectedCustomer && legacyCustomerSignature && (
+        <div
+          style={{...styles.modalOverlay,zIndex:2300}}
+          onClick={() => !legacySignatureSaving && setShowLegacySignatureModal(false)}
+        >
+          <div
+            style={{...styles.modal,maxWidth:780,maxHeight:'92vh',overflowY:'auto'}}
+            onClick={event => event.stopPropagation()}
+          >
+            <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start',borderBottom:'1px solid #e2e8f0',paddingBottom:12,marginBottom:14}}>
+              <div>
+                <div style={{fontSize:10.5,fontWeight:900,letterSpacing:1,color:'#c2410c',textTransform:'uppercase'}}>Legacy customer · backup signing</div>
+                <h3 style={{margin:'4px 0',fontSize:20,color:'#0f172a'}}>Collect customer signature</h3>
+                <div style={{fontSize:11.5,color:'#64748b'}}>
+                  {selectedCustomer.name} · {legacyCustomerSignature.program_name || 'Loyalty Program'} · Version {legacyCustomerSignature.agreement_version_number || 1}
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={legacySignatureSaving}
+                onClick={() => setShowLegacySignatureModal(false)}
+                style={{border:'none',background:'#f1f5f9',color:'#475569',borderRadius:9,width:32,height:32,fontSize:18,cursor:'pointer'}}
+              >
+                ×
+              </button>
+            </div>
+
+            <div style={{padding:'10px 12px',background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:10,color:'#9a3412',fontSize:11.5,lineHeight:1.5,marginBottom:14}}>
+              Backup only. This option is available because this membership was created before signature collection was first enabled for this card. Hand the device to the customer so they can personally review and sign the current published agreement.
+            </div>
+
+            <div style={{fontSize:11,color:'#64748b',marginBottom:5}}>CURRENT PUBLISHED AGREEMENT</div>
+            <h4 style={{margin:'0 0 10px',fontSize:16,color:'#0f172a'}}>{legacyCustomerSignature.title || 'Customer Terms & Conditions'}</h4>
+            <div style={{
+              whiteSpace:'pre-wrap',fontSize:12.5,lineHeight:1.65,color:'#334155',
+              background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:12,padding:14,maxHeight:260,overflowY:'auto'
+            }}>
+              {legacyCustomerSignature.body || 'Agreement text unavailable.'}
+            </div>
+
+            <label style={{display:'flex',alignItems:'flex-start',gap:9,marginTop:14,padding:'11px 12px',border:'1px solid #cbd5e1',borderRadius:10,background:'#fff'}}>
+              <input
+                type="checkbox"
+                checked={legacySignatureConfirmed}
+                onChange={event => setLegacySignatureConfirmed(event.target.checked)}
+                style={{width:18,height:18,marginTop:1,accentColor:'#0f766e',flex:'0 0 auto'}}
+              />
+              <span style={{fontSize:12.5,lineHeight:1.5,color:'#334155'}}>
+                {legacyCustomerSignature.acknowledgment_text || 'I have read and agree to the Customer Terms & Conditions.'}
+              </span>
+            </label>
+
+            <div style={{marginTop:15}}>
+              <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'center',marginBottom:7}}>
+                <div>
+                  <div style={{fontSize:11,fontWeight:900,color:'#0f172a'}}>CUSTOMER SIGNATURE</div>
+                  <div style={{fontSize:10.5,color:'#64748b',marginTop:2}}>Customer signs directly inside the box below.</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={clearLegacySignature}
+                  disabled={legacySignatureSaving}
+                  style={{border:'1px solid #cbd5e1',background:'#fff',color:'#475569',borderRadius:8,padding:'6px 9px',fontSize:10.5,fontWeight:800,cursor:'pointer'}}
+                >
+                  Clear
+                </button>
+              </div>
+              <canvas
+                ref={legacySignatureCanvasRef}
+                width={900}
+                height={260}
+                onPointerDown={beginLegacySignature}
+                onPointerMove={drawLegacySignature}
+                onPointerUp={endLegacySignature}
+                onPointerCancel={endLegacySignature}
+                onPointerLeave={endLegacySignature}
+                style={{
+                  display:'block',width:'100%',height:190,boxSizing:'border-box',
+                  border:'2px dashed #94a3b8',borderRadius:12,background:'#fff',touchAction:'none',cursor:'crosshair'
+                }}
+              />
+              <div style={{fontSize:10,color:'#94a3b8',marginTop:6}}>Signed today. The customer's original membership/join date is not changed.</div>
+            </div>
+
+            <div style={{display:'flex',gap:9,marginTop:16,flexWrap:'wrap'}}>
+              <button
+                type="button"
+                onClick={() => setShowLegacySignatureModal(false)}
+                disabled={legacySignatureSaving}
+                style={{flex:'1 1 160px',border:'1px solid #cbd5e1',background:'#fff',color:'#475569',borderRadius:10,padding:'11px 12px',fontWeight:850,cursor:'pointer'}}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={saveLegacyCustomerSignature}
+                disabled={legacySignatureSaving || !legacySignatureConfirmed || !legacySignatureHasInk}
+                style={{
+                  flex:'2 1 240px',border:'none',borderRadius:10,padding:'11px 12px',fontWeight:900,
+                  background:(legacySignatureConfirmed && legacySignatureHasInk) ? '#0f766e' : '#cbd5e1',
+                  color:'#fff',cursor:(legacySignatureConfirmed && legacySignatureHasInk) ? 'pointer' : 'default'
+                }}
+              >
+                {legacySignatureSaving ? 'Saving signature…' : 'Confirm & save customer signature'}
+              </button>
+            </div>
           </div>
         </div>
       )}
