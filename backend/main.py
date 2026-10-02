@@ -93,7 +93,18 @@ APPLE_PASS_PRIVATE_KEY = os.getenv('APPLE_PASS_PRIVATE_KEY', '')
 APPLE_PASS_CERTIFICATE_PASSWORD = os.getenv('APPLE_PASS_CERTIFICATE_PASSWORD', '')
 APPLE_WWDR_CERTIFICATE = os.getenv('APPLE_WWDR_CERTIFICATE', '')
 APPLE_PASS_AUTH_SECRET = os.getenv('APPLE_PASS_AUTH_SECRET', '')
-APPLE_PASS_WEB_SERVICE_URL = f'{BASE_URL}/api/v1/apple-wallet'
+# PassKit calls this server after the user adds a pass. Keep the callback base
+# explicit/configurable and canonical (no trailing slash) so Wallet appends
+# /v1/devices/... exactly once. Existing Render deployments continue to use
+# BASE_URL automatically unless APPLE_PASS_WEB_SERVICE_URL is set.
+APPLE_PASS_WEB_SERVICE_URL = (
+    (os.getenv('APPLE_PASS_WEB_SERVICE_URL', '') or '').strip()
+    or f"{BASE_URL.rstrip('/')}/api/v1/apple-wallet"
+).rstrip('/')
+# Bump whenever registration metadata/behavior changes. It is included in the
+# pkpass cache fingerprint so a process can never keep serving a cached pass
+# built with older webServiceURL/authentication settings.
+APPLE_PASS_REGISTRATION_RELEASE = 'apple-registration-2026-10-02-v1'
 # Experimental Apple Event Ticket renderer for Order Ahead businesses.
 # Uses a separate serial namespace so it can coexist with the production Store Card.
 APPLE_ORDER_AHEAD_EVENT_BETA_PREFIX = 'oa-7b-'
@@ -10616,6 +10627,12 @@ def _apple_pkpass_fingerprint(customer: dict, business: dict, program: dict, ann
             "id": (announcement or {}).get("id"),
             "updated_at": (announcement or {}).get("updated_at") or (announcement or {}).get("created_at"),
         },
+        "passkit_registration": {
+            "release": APPLE_PASS_REGISTRATION_RELEASE,
+            "web_service_url": APPLE_PASS_WEB_SERVICE_URL,
+            "pass_type_identifier": APPLE_PASS_TYPE_IDENTIFIER,
+            "auth_secret_configured": bool(APPLE_PASS_AUTH_SECRET),
+        },
     }
     return hashlib.sha1(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
@@ -10921,7 +10938,7 @@ def push_apple_wallet_update(serial_number: str):
     return {"status": status, "registrations": len(tokens), "pushes_sent": sent, "serials": registered_serials}
 
 
-APPLE_PASS_LAYOUT_RELEASE = "wallet-layout-2026-09-11-v9-unique-reset-field"
+APPLE_PASS_LAYOUT_RELEASE = "wallet-registration-2026-10-02-v10"
 
 
 def refresh_business_apple_wallet_passes(business_id: int, reason: str = "card_config_change", program_id: Optional[int] = None):
@@ -37032,67 +37049,217 @@ async def get_business_satisfaction(public_id: str, authorization: str = Header(
 # up to date instead of going stale the moment they leave the join page.
 # webServiceURL in the pass points here (see APPLE_PASS_WEB_SERVICE_URL).
 
+def _apple_registration_transient_error(exc: Exception) -> bool:
+    """Errors worth retrying inside the one registration callback from iOS."""
+    raw = str(exc or '').lower()
+    return any(marker in raw for marker in (
+        'resource temporarily unavailable',
+        'errno 11',
+        'read operation timed out',
+        'read timeout',
+        'connect timeout',
+        'connection reset',
+        'connection aborted',
+        'temporarily unavailable',
+        '503',
+        '502',
+    ))
+
+
+def _persist_apple_wallet_registration(
+    device_library_identifier: str,
+    pass_type_identifier: str,
+    serial_number: str,
+    push_token: str,
+) -> bool:
+    """Persist/refresh one PassKit registration with short transient retries.
+
+    Returns True when this device+serial already existed, False when a new row
+    was inserted. The table's unique(device_library_identifier, serial_number)
+    constraint remains the race-safety backstop.
+    """
+    last_error = None
+    for attempt in range(1, 4):
+        try:
+            # Update-first makes repeat registrations one DB write and avoids a
+            # separate SELECT on the common path. It also refreshes a rotated
+            # APNs token or Pass Type ID value for the same device+serial pair.
+            updated = (
+                supabase.table('apple_wallet_registrations')
+                .update({
+                    'push_token': push_token,
+                    'pass_type_identifier': pass_type_identifier,
+                })
+                .eq('device_library_identifier', device_library_identifier)
+                .eq('serial_number', serial_number)
+                .execute()
+            )
+            if updated and getattr(updated, 'data', None):
+                return True
+
+            try:
+                supabase.table('apple_wallet_registrations').insert({
+                    'device_library_identifier': device_library_identifier,
+                    'pass_type_identifier': pass_type_identifier,
+                    'serial_number': serial_number,
+                    'push_token': push_token,
+                    'created_at': datetime.utcnow().isoformat(),
+                }).execute()
+                return False
+            except Exception as insert_exc:
+                # If two identical registration callbacks race, the unique
+                # constraint can make the insert lose. Refreshing the existing
+                # row is the correct idempotent result (HTTP 200).
+                raw = str(insert_exc or '').lower()
+                if 'duplicate' in raw or 'unique' in raw or '23505' in raw:
+                    supabase.table('apple_wallet_registrations').update({
+                        'push_token': push_token,
+                        'pass_type_identifier': pass_type_identifier,
+                    }).eq('device_library_identifier', device_library_identifier).eq(
+                        'serial_number', serial_number
+                    ).execute()
+                    return True
+                raise
+        except Exception as exc:
+            last_error = exc
+            if attempt >= 3 or not _apple_registration_transient_error(exc):
+                raise
+            print(
+                f"APPLE WALLET REGISTER transient DB retry: serial={serial_number} "
+                f"attempt={attempt}/3 error={exc}"
+            )
+            time.sleep(0.15 * (2 ** (attempt - 1)))
+
+    if last_error:
+        raise last_error
+    raise RuntimeError('Apple Wallet registration persistence failed')
+
+
 @app.post("/api/v1/apple-wallet/v1/devices/{device_library_identifier}/registrations/{pass_type_identifier}/{serial_number}")
 async def apple_register_device(device_library_identifier: str, pass_type_identifier: str, serial_number: str, request: Request, authorization: Optional[str] = Header(None)):
+    # A pass can only register against the exact Pass Type ID embedded in its
+    # signed pass.json. Reject mismatches before touching the database.
+    if not APPLE_PASS_TYPE_IDENTIFIER or not hmac.compare_digest(
+        str(pass_type_identifier or ''), str(APPLE_PASS_TYPE_IDENTIFIER or '')
+    ):
+        print(
+            f"APPLE WALLET REGISTER rejected pass type: serial={serial_number} "
+            f"received={pass_type_identifier}"
+        )
+        raise HTTPException(status_code=401, detail='Unauthorized')
+
     if not apple_auth_ok(serial_number, authorization):
-        raise HTTPException(status_code=401, detail="Unauthorized")
+        print(
+            f"APPLE WALLET REGISTER rejected auth: serial={serial_number} "
+            f"device={str(device_library_identifier)[:12]}..."
+        )
+        raise HTTPException(status_code=401, detail='Unauthorized')
     if not supabase:
-        raise HTTPException(status_code=500, detail="Not configured")
+        raise HTTPException(status_code=500, detail='Not configured')
+
     try:
         body = await request.json()
     except Exception:
         body = {}
-    push_token = body.get('pushToken', '')
-    if not push_token:
-        raise HTTPException(status_code=400, detail="Missing pushToken")
+    push_token = str(body.get('pushToken') or '').strip()
+    if not push_token or len(push_token) > 4096:
+        print(f"APPLE WALLET REGISTER missing/invalid push token: serial={serial_number}")
+        raise HTTPException(status_code=400, detail='Missing pushToken')
+
+    print(
+        f"APPLE WALLET REGISTER request: serial={serial_number} "
+        f"device={str(device_library_identifier)[:12]}... "
+        f"push_token={push_token[:12]}..."
+    )
     try:
-        existing = (
-            supabase.table("apple_wallet_registrations")
-            .select("id")
-            .eq("device_library_identifier", device_library_identifier)
-            .eq("serial_number", serial_number)
-            .maybe_single()
-            .execute()
+        existed = await asyncio.to_thread(
+            _persist_apple_wallet_registration,
+            device_library_identifier,
+            pass_type_identifier,
+            serial_number,
+            push_token,
         )
-        # supabase-py's maybe_single().execute() returns None outright (not a
-        # response object with .data = None) when zero rows match - which is
-        # exactly the case for every brand-new registration, since this table
-        # starts out empty for that device+serial pair. Guard against that
-        # instead of assuming `existing` is always a response object.
-        existing_id = existing.data['id'] if existing and existing.data else None
-        if existing_id:
-            supabase.table("apple_wallet_registrations").update({
-                "push_token": push_token,
-            }).eq("id", existing_id).execute()
-            return Response(status_code=200)
-        supabase.table("apple_wallet_registrations").insert({
-            "device_library_identifier": device_library_identifier,
-            "pass_type_identifier": pass_type_identifier,
-            "serial_number": serial_number,
-            "push_token": push_token,
-            "created_at": datetime.utcnow().isoformat(),
-        }).execute()
-        print(f"APPLE WALLET: registered device for {serial_number}")
-        return Response(status_code=201)
-    except Exception as e:
-        print(f"APPLE WALLET register error: {e}")
-        raise HTTPException(status_code=500, detail="Registration failed")
+        print(
+            f"APPLE WALLET REGISTER {'refreshed' if existed else 'created'}: "
+            f"serial={serial_number} device={str(device_library_identifier)[:12]}..."
+        )
+        # Apple specifies 201 for a brand-new registration, 200 when the
+        # device+serial was already registered.
+        return Response(status_code=200 if existed else 201)
+    except Exception as exc:
+        print(f"APPLE WALLET REGISTER failed: serial={serial_number} error={exc}")
+        raise HTTPException(status_code=500, detail='Registration failed')
+
 
 @app.delete("/api/v1/apple-wallet/v1/devices/{device_library_identifier}/registrations/{pass_type_identifier}/{serial_number}")
 async def apple_unregister_device(device_library_identifier: str, pass_type_identifier: str, serial_number: str, authorization: Optional[str] = Header(None)):
+    if not APPLE_PASS_TYPE_IDENTIFIER or not hmac.compare_digest(
+        str(pass_type_identifier or ''), str(APPLE_PASS_TYPE_IDENTIFIER or '')
+    ):
+        raise HTTPException(status_code=401, detail='Unauthorized')
     if not apple_auth_ok(serial_number, authorization):
-        raise HTTPException(status_code=401, detail="Unauthorized")
+        raise HTTPException(status_code=401, detail='Unauthorized')
     try:
         if supabase:
-            supabase.table("apple_wallet_registrations").delete().eq(
-                "device_library_identifier", device_library_identifier
-            ).eq("serial_number", serial_number).execute()
-    except Exception as e:
-        print(f"APPLE WALLET unregister error: {e}")
+            await asyncio.to_thread(
+                lambda: supabase.table('apple_wallet_registrations').delete().eq(
+                    'device_library_identifier', device_library_identifier
+                ).eq('serial_number', serial_number).execute()
+            )
+            print(
+                f"APPLE WALLET UNREGISTER: serial={serial_number} "
+                f"device={str(device_library_identifier)[:12]}..."
+            )
+    except Exception as exc:
+        print(f"APPLE WALLET unregister error: {exc}")
     return Response(status_code=200)
+
+
+@app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/apple-wallet-registration")
+async def owner_apple_wallet_registration_status(public_id: str, customer_public_id: str, authorization: str = Header(default='')):
+    """Owner-safe registration diagnostic. Never returns APNs push tokens."""
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    customer = safe_get_customer(customer_public_id)
+    if not customer or customer.get('business_id') != business.get('id'):
+        raise HTTPException(status_code=404, detail='Customer not found for this business')
+    try:
+        rows = await asyncio.to_thread(
+            lambda: (
+                supabase.table('apple_wallet_registrations')
+                .select('device_library_identifier,pass_type_identifier,serial_number,created_at')
+                .eq('serial_number', customer_public_id)
+                .eq('pass_type_identifier', APPLE_PASS_TYPE_IDENTIFIER)
+                .execute()
+            ).data or []
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+    return {
+        'registered': bool(rows),
+        'registration_count': len(rows),
+        'serial_number': customer_public_id,
+        'pass_type_identifier': APPLE_PASS_TYPE_IDENTIFIER,
+        'web_service_url': APPLE_PASS_WEB_SERVICE_URL,
+        'registration_release': APPLE_PASS_REGISTRATION_RELEASE,
+        'devices': [
+            {
+                'device_library_identifier_prefix': str(row.get('device_library_identifier') or '')[:12],
+                'created_at': row.get('created_at'),
+            }
+            for row in rows
+        ],
+    }
+
 
 @app.get("/api/v1/apple-wallet/v1/devices/{device_library_identifier}/registrations/{pass_type_identifier}")
 async def apple_list_updated_serials(device_library_identifier: str, pass_type_identifier: str, passesUpdatedSince: Optional[str] = None):
+    if not APPLE_PASS_TYPE_IDENTIFIER or not hmac.compare_digest(
+        str(pass_type_identifier or ''), str(APPLE_PASS_TYPE_IDENTIFIER or '')
+    ):
+        return Response(status_code=204)
     # 204 must carry no body at all - Apple's Wallet daemon (an HTTP/2 client)
     # can misread a 204 with a JSON body attached, so this uses a bare
     # Response() rather than HTTPException (which always attaches
@@ -37203,6 +37370,10 @@ async def apple_list_updated_serials(device_library_identifier: str, pass_type_i
 
 @app.get("/api/v1/apple-wallet/v1/passes/{pass_type_identifier}/{serial_number}")
 async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, authorization: Optional[str] = Header(None), if_modified_since: Optional[str] = Header(None, alias="If-Modified-Since")):
+    if not APPLE_PASS_TYPE_IDENTIFIER or not hmac.compare_digest(
+        str(pass_type_identifier or ''), str(APPLE_PASS_TYPE_IDENTIFIER or '')
+    ):
+        raise HTTPException(status_code=401, detail="Unauthorized")
     if not apple_auth_ok(serial_number, authorization):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
