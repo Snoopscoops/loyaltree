@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react'
+import InterBranchAnalytics from './InterBranchAnalytics'
 
 function AnalyticsDashboard({ API_BASE, user }) {
   const [timeRange, setTimeRange] = useState('7d')
@@ -285,6 +286,27 @@ function AnalyticsDashboard({ API_BASE, user }) {
     ['Female', demographics.gender.female],['Male', demographics.gender.male],['LGBTQ+', demographics.gender.lgbtq],['Prefer not to say', demographics.gender.rather_not_say],
   ].filter(([,value]) => value != null) : []
   const demographicPrivacy = demographics?.privacy || {}
+  const joinerDemographics = analytics?.joiner_demographics || {}
+  const joinerPrivacy = joinerDemographics?.privacy || {}
+  const joinerDailyRows = Array.isArray(joinerDemographics?.daily) ? joinerDemographics.daily : []
+  const joinerAgeRows = joinerDemographics?.age ? [
+    ['Under 18', joinerDemographics.age.under_18],['18–24', joinerDemographics.age['18_24']],['25–34', joinerDemographics.age['25_34']],
+    ['35–44', joinerDemographics.age['35_44']],['45–54', joinerDemographics.age['45_54']],['55–64', joinerDemographics.age['55_64']],['65+', joinerDemographics.age['65_plus']],
+  ].filter(([,value]) => value != null) : []
+  const joinerGenderRows = joinerDemographics?.gender ? [
+    ['Female', joinerDemographics.gender.female],['Male', joinerDemographics.gender.male],['LGBTQ+', joinerDemographics.gender.lgbtq],['Prefer not to say', joinerDemographics.gender.rather_not_say],
+  ].filter(([,value]) => value != null) : []
+  const topJoinerAge = joinerAgeRows.reduce((best,row) => Number(row[1] || 0) > Number(best?.[1] || 0) ? row : best, null)
+  const topJoinerGender = joinerGenderRows.reduce((best,row) => Number(row[1] || 0) > Number(best?.[1] || 0) ? row : best, null)
+  const joinerRangeLabel = timeRange === '7d' ? 'Last 7 Days' : timeRange === '30d' ? 'Last 30 Days' : timeRange === '90d' ? 'Last 90 Days' : 'All Time'
+  const joinerMixText = (counts, kind) => {
+    if (!counts) return 'Below privacy threshold'
+    const rows = kind === 'age'
+      ? [['Under 18',counts.under_18],['18–24',counts['18_24']],['25–34',counts['25_34']],['35–44',counts['35_44']],['45–54',counts['45_54']],['55–64',counts['55_64']],['65+',counts['65_plus']]]
+      : [['Female',counts.female],['Male',counts.male],['LGBTQ+',counts.lgbtq],['Prefer not to say',counts.rather_not_say]]
+    const visible = rows.filter(([,value]) => value != null && Number(value) > 0)
+    return visible.length ? visible.map(([label,value]) => `${label}: ${Number(value).toLocaleString()}`).join(' · ') : 'No visible demographic cells'
+  }
 
   // Location reporting intentionally uses only aggregate city/municipality/barangay
   // fields when present. Raw street addresses are never surfaced in Analytics.
@@ -392,6 +414,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
 
   const selectTab = tab => {
     setActiveTab(tab)
+    if (tab === 'interbranch' && selectedBranch !== 'all') setSelectedBranch('all')
     if (tab === 'reports' && timeRange !== '7d') setTimeRange('7d')
   }
 
@@ -438,7 +461,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           <div style={{...styles.mutedText,marginTop:4}}>{scopeDescription}</div>
         </div>
         <div style={styles.analyticsHeaderControls}>
-          {Array.isArray(branches) && branches.length > 0 && (
+          {activeTab !== 'interbranch' && Array.isArray(branches) && branches.length > 0 && (
             <label style={styles.branchFilterLabel}>
               <span style={styles.miniLabel}>Branch</span>
               <select
@@ -483,6 +506,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           {[
             ['overview','Overview'],
             ['customers','Customers'],
+            ['interbranch','Inter-Branch'],
             ['activity','Activity'],
             ['reports','Reports'],
           ].map(([key,label]) => (
@@ -501,6 +525,15 @@ function AnalyticsDashboard({ API_BASE, user }) {
           <span style={styles.sourceHint}>{dataSourceDescription}</span>
         </div>
       </div>
+
+      {activeTab === 'interbranch' && (
+        <InterBranchAnalytics
+          API_BASE={API_BASE}
+          user={user}
+          timeRange={timeRange}
+          branches={branches}
+        />
+      )}
 
       {activeTab === 'overview' && <>
         <div className="an-overview-grid" style={styles.overviewGrid}>
@@ -607,6 +640,68 @@ function AnalyticsDashboard({ API_BASE, user }) {
       </>}
 
       {activeTab === 'customers' && <>
+        <div style={styles.section}>
+          <div style={styles.sectionHeadingRow}>
+            <div>
+              <h2 className="an-section-title" style={{...styles.sectionTitle,marginBottom:4}}>🆕 New Joiner Demographics</h2>
+              <div style={styles.mutedText}>
+                Registrations grouped by join date · {joinerRangeLabel} · {joinerDemographics?.timezone || 'Asia/Manila'}.
+                {branchScoped ? ' This branch view means newly registered customers who have recorded activity at this branch.' : ''}
+              </div>
+            </div>
+            <span style={styles.statusPill}>🔒 Aggregate only</span>
+          </div>
+
+          <div className="an-overview-grid" style={styles.overviewGrid}>
+            <MiniMetric label={branchScoped ? 'New known customers' : 'New joiners'} value={Number(joinerDemographics?.total_joiners || 0).toLocaleString()} />
+            <MiniMetric label="Joined today" value={Number(joinerDemographics?.today?.total_joiners || 0).toLocaleString()} />
+            <MiniMetric label="Top age bracket" value={topJoinerAge?.[0] || '—'} />
+            <MiniMetric label="Top gender group" value={topJoinerGender?.[0] || '—'} />
+          </div>
+
+          <div className="an-charts-row" style={styles.chartsRow}>
+            <div style={styles.insightCard}>
+              <div style={{display:'flex',justifyContent:'space-between',gap:10}}><h4 style={styles.insightTitle}>Age of new joiners</h4><span style={styles.statusPill}>Selected range</span></div>
+              {!joinerPrivacy.age_available || !joinerAgeRows.length ? <div style={styles.noData}>Not enough new-joiner age responses to show a private aggregate yet.</div> : <>
+                {joinerAgeRows.map(([label,value])=><div key={label} style={styles.customerRow}><span style={styles.customerName}>{label}</span><strong>{Number(value||0).toLocaleString()}</strong></div>)}
+                {joinerPrivacy.age_suppressed && <div style={styles.mutedText}>Small brackets plus one additional bracket are suppressed to prevent reconstruction.</div>}
+              </>}
+            </div>
+            <div style={styles.insightCard}>
+              <div style={{display:'flex',justifyContent:'space-between',gap:10}}><h4 style={styles.insightTitle}>Gender of new joiners</h4><span style={styles.statusPill}>Selected range</span></div>
+              {!joinerPrivacy.gender_available || !joinerGenderRows.length ? <div style={styles.noData}>Not enough new-joiner gender responses to show a private aggregate yet.</div> : <>
+                {joinerGenderRows.map(([label,value])=><div key={label} style={styles.customerRow}><span style={styles.customerName}>{label}</span><strong>{Number(value||0).toLocaleString()}</strong></div>)}
+                {joinerPrivacy.gender_suppressed && <div style={styles.mutedText}>Small groups plus one additional category are suppressed to prevent reconstruction.</div>}
+              </>}
+            </div>
+          </div>
+
+          <div style={styles.insightCard}>
+            <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start',flexWrap:'wrap',marginBottom:10}}>
+              <div>
+                <h4 style={{...styles.insightTitle,marginBottom:4}}>Daily joiner mix</h4>
+                <div style={styles.mutedText}>Join counts remain visible. Age and gender are hidden automatically when a day's sample is too small.</div>
+              </div>
+              {joinerDemographics?.daily_truncated && <span style={styles.statusPill}>Daily view: latest 90 days</span>}
+            </div>
+            {!joinerDailyRows.length ? <div style={styles.noData}>No registrations in this view yet.</div> : (
+              <div style={{overflowX:'auto'}}>
+                <div style={{minWidth:760}}>
+                  {[...joinerDailyRows].reverse().map(day => (
+                    <div key={day.date} style={{display:'grid',gridTemplateColumns:'120px 90px minmax(220px,1fr) minmax(220px,1fr)',gap:12,alignItems:'start',padding:'11px 0',borderBottom:'1px solid #f1f5f9',fontSize:12}}>
+                      <strong style={{color:'#1e293b'}}>{day.date ? new Date(`${day.date}T00:00:00`).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}) : '—'}</strong>
+                      <span style={{fontWeight:850,color:'#0f766e'}}>{Number(day.total_joiners || 0).toLocaleString()} join{Number(day.total_joiners || 0)===1?'':'s'}</span>
+                      <span style={{color:'#475569'}}><b>Age:</b> {joinerMixText(day.age,'age')}</span>
+                      <span style={{color:'#475569'}}><b>Gender:</b> {joinerMixText(day.gender,'gender')}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div style={{...styles.mutedText,marginTop:10}}>{joinerDemographics?.scope?.note || 'New joiners are grouped by customer registration timestamp.'}</div>
+          </div>
+        </div>
+
         <div style={styles.section}>
           <div style={styles.sectionHeadingRow}>
             <div>

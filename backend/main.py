@@ -21519,6 +21519,116 @@ async def get_analytics(
         },
     }
 
+    # ---------------- New-joiner demographics ----------------
+    # Reuse the analytics response instead of adding another dashboard request.
+    # These cohorts are based on the immutable customer created_at timestamp, so
+    # they describe registrations rather than repeat visits or transactions.
+    # When a branch is selected, customers remain activity-scoped because the
+    # current schema does not permanently assign a signup to a branch.
+    def _customer_local_join_date(customer: dict):
+        ts = _parse_ts((customer or {}).get('created_at'))
+        if not ts:
+            return None
+        return ts.replace(tzinfo=timezone.utc).astimezone(LOYALTY_TIMEZONE).date()
+
+    def _joiner_demographic_payload(rows: list) -> dict:
+        raw_age = {k: 0 for k in AGE_BRACKETS}
+        raw_gender = {"male": 0, "female": 0, "lgbtq": 0, "rather_not_say": 0}
+        age_sample = 0
+        gender_sample = 0
+        for customer in rows:
+            bucket = _age_bucket(customer)
+            if bucket in raw_age:
+                raw_age[bucket] += 1
+                age_sample += 1
+            gender = str(customer.get('gender') or '').strip().lower()
+            if gender in raw_gender:
+                raw_gender[gender] += 1
+                gender_sample += 1
+
+        safe_age = _privacy_safe_counts(raw_age, age_sample, DEMO_MIN_SAMPLE, DEMO_MIN_CELL)
+        safe_gender = _privacy_safe_counts(raw_gender, gender_sample, DEMO_MIN_SAMPLE, DEMO_MIN_CELL)
+        return {
+            "total_joiners": len(rows),
+            "age": safe_age.get("counts"),
+            "gender": safe_gender.get("counts"),
+            "privacy": {
+                "minimum_sample": DEMO_MIN_SAMPLE,
+                "minimum_cell": DEMO_MIN_CELL,
+                "age_sample_size": age_sample,
+                "gender_sample_size": gender_sample,
+                "age_available": safe_age.get("available", False),
+                "gender_available": safe_gender.get("available", False),
+                "age_suppressed": safe_age.get("suppressed", False),
+                "gender_suppressed": safe_gender.get("suppressed", False),
+                "secondary_suppression": True,
+            },
+        }
+
+    local_today = datetime.now(LOYALTY_TIMEZONE).date()
+    if days:
+        # Registration reporting is calendar-day based in the business timezone,
+        # so 7d means exactly today + the previous 6 local dates.
+        daily_start = local_today - timedelta(days=max(int(days) - 1, 0))
+        joiner_rows = [
+            customer for customer in customers
+            if (
+                (_customer_local_join_date(customer) is not None)
+                and daily_start <= _customer_local_join_date(customer) <= local_today
+            )
+        ]
+        daily_truncated = False
+    else:
+        joiner_rows = list(customers)
+        join_dates = [
+            _customer_local_join_date(customer) for customer in joiner_rows
+            if _customer_local_join_date(customer) is not None
+        ]
+        daily_start = min(join_dates) if join_dates else local_today
+        # All Time can become extremely long for mature accounts. Preserve the
+        # full aggregate but keep the daily payload bounded to recent history.
+        daily_truncated = (local_today - daily_start).days > 89
+        if daily_truncated:
+            daily_start = local_today - timedelta(days=89)
+
+    joiner_summary = _joiner_demographic_payload(joiner_rows)
+    joiners_by_date = defaultdict(list)
+    for customer in joiner_rows:
+        joined_on = _customer_local_join_date(customer)
+        if joined_on and daily_start <= joined_on <= local_today:
+            joiners_by_date[joined_on].append(customer)
+
+    joiner_daily = []
+    day_cursor = daily_start
+    while day_cursor <= local_today:
+        payload = _joiner_demographic_payload(joiners_by_date.get(day_cursor, []))
+        joiner_daily.append({"date": day_cursor.isoformat(), **payload})
+        day_cursor += timedelta(days=1)
+
+    today_payload = _joiner_demographic_payload(joiners_by_date.get(local_today, []))
+    joiner_demographics = {
+        "timezone": str(LOYALTY_TIMEZONE),
+        "range": range,
+        "total_joiners": joiner_summary.get("total_joiners", 0),
+        "age": joiner_summary.get("age"),
+        "gender": joiner_summary.get("gender"),
+        "privacy": joiner_summary.get("privacy") or {},
+        "today": {"date": local_today.isoformat(), **today_payload},
+        "daily": joiner_daily,
+        "daily_truncated": daily_truncated,
+        "scope": {
+            "branch_filtered": bool(selected_branch),
+            "branch_public_id": (selected_branch or {}).get('public_id'),
+            "branch_name": (selected_branch or {}).get('name'),
+            "branch_mode": "known_customer_activity" if selected_branch else "business_membership",
+            "note": (
+                "For a branch view, new customers are registrations in this period who also have recorded activity at this branch; signup branch is not stored on the customer record."
+                if selected_branch else
+                "New joiners are grouped by their customer registration timestamp."
+            ),
+        },
+    }
+
     # ---------------- Branch performance ----------------
     # Comparison is always calculated from the complete program-scoped event set
     # so owners can compare branches even while one branch is selected above.
@@ -21989,6 +22099,7 @@ async def get_analytics(
         "trends": trends,
         "customers": customers_block,
         "demographics": demographics_block,
+        "joiner_demographics": joiner_demographics,
         "stamps": stamps_block,
         "rewards": rewards_block,
         "revenue": revenue,
