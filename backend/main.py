@@ -277,6 +277,7 @@ SUBSCRIPTION_PLANS = {
         'hybrid_cards': False,
         'gift_cards': False,
         'pos_integration': False,
+        'dynamic_progress_banner': False,
     },
     'growth': {
         'label': 'Growth',
@@ -296,6 +297,7 @@ SUBSCRIPTION_PLANS = {
         'hybrid_cards': True,
         'gift_cards': True,
         'pos_integration': False,
+        'dynamic_progress_banner': False,
     },
     'pro': {
         'label': 'Pro',
@@ -317,6 +319,7 @@ SUBSCRIPTION_PLANS = {
         'hybrid_cards': True,
         'gift_cards': True,
         'pos_integration': True,
+        'dynamic_progress_banner': True,
     },
 }
 
@@ -6211,7 +6214,7 @@ def normalize_wallet_progress_type(program: Optional[dict]) -> str:
     return value if value in ('auto', 'stamps', 'sessions', 'points', 'tier') else 'auto'
 
 
-def wallet_progress_state(customer: Optional[dict], program: Optional[dict]) -> Optional[dict]:
+def wallet_progress_state(customer: Optional[dict], program: Optional[dict], business: Optional[dict] = None) -> Optional[dict]:
     """Resolve the member-specific progress shown in a Dynamic Progress Banner.
 
     Exact-count programs (Stamp and smaller Multi-Pass cards) use one icon per
@@ -6222,6 +6225,11 @@ def wallet_progress_state(customer: Optional[dict], program: Optional[dict]) -> 
     """
     customer = customer or {}
     program = program or {}
+    # Dynamic Progress Banner is a Pro-only Wallet feature. Passing the business
+    # lets every runtime renderer immediately fall back to the standard banner
+    # after a downgrade, even if the program still has older saved progress settings.
+    if business is not None and not business_has_plan_feature(business, 'dynamic_progress_banner'):
+        return None
     if normalize_wallet_banner_mode(program) != 'progress':
         return None
 
@@ -7686,7 +7694,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     # remains clean/static, while the generated fallback can still carry the
     # normal LoyaltyTree live text. Dynamic Progress mode always uses a
     # per-customer composite so the filled/empty artwork changes with balance.
-    progress_state = wallet_progress_state(customer, program)
+    progress_state = wallet_progress_state(customer, program, business)
     progress_visual_requested = progress_state is not None
     if progress_visual_requested or (
         design['show_background'] and not (program and program.get('hero_image_url'))
@@ -10717,7 +10725,7 @@ def generate_apple_strip_bytes(customer: dict, business: dict, program: dict, wi
         stamp_icon=normalize_stamp_icon(program),
         stamp_logo_url=(program or {}).get('program_logo_url') or (business or {}).get('logo_url') or DEFAULT_LOGO_URL,
         background_image_url=(program or {}).get('hero_image_url'),
-        dynamic_progress_state=wallet_progress_state(customer, program),
+        dynamic_progress_state=wallet_progress_state(customer, program, business),
         progress_filled_icon_url=(program or {}).get('wallet_progress_filled_icon_url'),
         progress_empty_icon_url=(program or {}).get('wallet_progress_empty_icon_url'),
     )
@@ -10806,7 +10814,7 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
         'logo@2x.png': logo_320,
         'logo@3x.png': logo_480,
     }
-    progress_state = wallet_progress_state(customer, program)
+    progress_state = wallet_progress_state(customer, program, business)
     if design['show_background'] or progress_state is not None:
         # Standard mode keeps the uploaded banner untouched. Dynamic Progress
         # mode always renders a per-member composite so the same two source
@@ -19308,6 +19316,7 @@ async def get_subscription_status(public_id: str):
         "features": {
             "hybrid_cards": business_has_plan_feature(business, 'hybrid_cards'),
             "gift_cards": business_has_plan_feature(business, 'gift_cards'),
+            "dynamic_progress_banner": business_has_plan_feature(business, 'dynamic_progress_banner'),
         },
     }
 
@@ -22553,6 +22562,7 @@ async def get_loyalty_config(public_id: str, response: Response, program_id: Opt
             "plan_features": {
                 "hybrid_cards": business_has_plan_feature(business, 'hybrid_cards'),
                 "gift_cards": business_has_plan_feature(business, 'gift_cards'),
+                "dynamic_progress_banner": business_has_plan_feature(business, 'dynamic_progress_banner'),
             },
             # No loyalty_programs row saved yet - this is placeholder defaults,
             # not a real choice the business made. is_configured lets the
@@ -22577,6 +22587,7 @@ async def get_loyalty_config(public_id: str, response: Response, program_id: Opt
         "plan_features": {
             "hybrid_cards": business_has_plan_feature(business, 'hybrid_cards'),
             "gift_cards": business_has_plan_feature(business, 'gift_cards'),
+            "dynamic_progress_banner": business_has_plan_feature(business, 'dynamic_progress_banner'),
         },
     }
 
@@ -23045,6 +23056,14 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
     selected_program = safe_get_loyalty_program(business.get('id'), program_public_id=program_id)
     if program_id and not selected_program:
         raise HTTPException(status_code=404, detail='Program not found for this business')
+
+    # Dynamic Progress Banner is reserved for Pro. Enforce this server-side so
+    # a Starter/Growth account cannot unlock it by bypassing the React UI.
+    if config.wallet_banner_mode == 'progress' and not business_has_plan_feature(business, 'dynamic_progress_banner'):
+        raise HTTPException(
+            status_code=403,
+            detail="Dynamic Progress Banner is available on the Pro plan only. Upgrade to Pro to enable it.",
+        )
 
     # Hybrid is a Growth-tier module. Keep existing live Hybrid cards usable
     # after a downgrade, but Starter owners cannot create/edit/publish Hybrid.
@@ -31090,7 +31109,7 @@ async def get_customer_hero_image(customer_public_id: str, s: Optional[str] = No
         stamp_icon=normalize_stamp_icon(program),
         stamp_logo_url=(program or {}).get('program_logo_url') or business.get('logo_url') or DEFAULT_LOGO_URL,
         background_image_url=(program or {}).get('hero_image_url'),
-        dynamic_progress_state=wallet_progress_state(customer, program),
+        dynamic_progress_state=wallet_progress_state(customer, program, business),
         progress_filled_icon_url=(program or {}).get('wallet_progress_filled_icon_url'),
         progress_empty_icon_url=(program or {}).get('wallet_progress_empty_icon_url'),
     )

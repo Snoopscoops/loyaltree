@@ -196,7 +196,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
   const [hybridRewardEditorType, setHybridRewardEditorType] = useState('points')
   const [showMobilePreview, setShowMobilePreview] = useState(false)
   const [plan, setPlan] = useState('starter')
-  const [planFeatures, setPlanFeatures] = useState({ hybrid_cards: false, gift_cards: false })
+  const [planFeatures, setPlanFeatures] = useState({ hybrid_cards: false, gift_cards: false, dynamic_progress_banner: false })
   const [branches, setBranches] = useState([])
   const [branchesLoading, setBranchesLoading] = useState(false)
   const [branchReviewError, setBranchReviewError] = useState('')
@@ -272,6 +272,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
         setPlanFeatures({
           hybrid_cards: data.plan_features?.hybrid_cards === true,
           gift_cards: data.plan_features?.gift_cards === true,
+          dynamic_progress_banner: data.plan_features?.dynamic_progress_banner === true,
         })
         setForm(f => ({
           ...f,
@@ -305,7 +306,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
           hybrid_tier_validity_days: data.hybrid_tier_validity_days ?? 365,
           program_logo_url: data.program_logo_url || '',
           hero_image_url: data.hero_image_url || '',
-          wallet_banner_mode: data.wallet_banner_mode === 'progress' ? 'progress' : 'standard',
+          wallet_banner_mode: data.plan_features?.dynamic_progress_banner === true && data.wallet_banner_mode === 'progress' ? 'progress' : 'standard',
           wallet_progress_type: ['auto','stamps','sessions','points','tier'].includes(data.wallet_progress_type) ? data.wallet_progress_type : 'auto',
           wallet_progress_filled_icon_url: data.wallet_progress_filled_icon_url || '',
           wallet_progress_empty_icon_url: data.wallet_progress_empty_icon_url || '',
@@ -900,7 +901,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     hybrid_tier_validity_days: Math.max(1, Math.min(3650, Number(form.hybrid_tier_validity_days) || 365)),
     program_logo_url: form.program_logo_url || null,
     hero_image_url: form.hero_image_url || null,
-    wallet_banner_mode: form.wallet_banner_mode === 'progress' ? 'progress' : 'standard',
+    wallet_banner_mode: planFeatures.dynamic_progress_banner === true && form.wallet_banner_mode === 'progress' ? 'progress' : 'standard',
     wallet_progress_type: ['auto','stamps','sessions','points','tier'].includes(form.wallet_progress_type) ? form.wallet_progress_type : 'auto',
     wallet_progress_filled_icon_url: form.wallet_progress_filled_icon_url || null,
     wallet_progress_empty_icon_url: form.wallet_progress_empty_icon_url || null,
@@ -1370,10 +1371,11 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
   if ((form.card_type === 'points' || (isHybrid && hybridPointsEnabled)) && hasPointsProgressGoal) walletProgressOptions.push({value:'points',label:'Next reward progress'})
   if (form.card_type === 'vip' || (isHybrid && hybridTierEnabled)) walletProgressOptions.push({value:'tier',label:'Tier progress'})
   const dynamicProgressSupported = walletProgressOptions.length > 0
+  const dynamicProgressProAllowed = planFeatures.dynamic_progress_banner === true
   const effectiveWalletProgressType = walletProgressOptions.some(opt => opt.value === form.wallet_progress_type)
     ? form.wallet_progress_type
     : (walletProgressOptions[0]?.value || 'stamps')
-  const dynamicBannerActive = form.wallet_banner_mode === 'progress' && dynamicProgressSupported
+  const dynamicBannerActive = form.wallet_banner_mode === 'progress' && dynamicProgressSupported && dynamicProgressProAllowed
 
   const dynamicProgressPreview = (() => {
     const type = effectiveWalletProgressType
@@ -3267,23 +3269,27 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
 
             <div style={{...styles.fieldGroup,marginTop:16,padding:14,border:'1px solid #dbeafe',borderRadius:14,background:'#f8fbff'}}>
               <label style={styles.label}>4. Banner behavior</label>
-              <p style={{...styles.hint,margin:'0 0 12px'}}>Standard keeps the normal one-image banner. Dynamic Progress automatically rebuilds the banner for each member as their balance changes on Apple Wallet and Google Wallet.</p>
+              <p style={{...styles.hint,margin:'0 0 12px'}}>Standard keeps the normal one-image banner. Dynamic Progress automatically rebuilds the banner for each member as their balance changes on Apple Wallet and Google Wallet. Dynamic Progress is a Pro feature.</p>
               <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:8}}>
                 {[
                   ['standard','Static / Standard','One banner image'],
-                  ['progress','Dynamic Progress','Filled + empty progress artwork'],
-                ].map(([value,label,desc])=><button key={value} type="button" onClick={()=>{update('wallet_banner_mode',value);if(value==='progress')update('wallet_show_background',true)}}
-                  disabled={value==='progress'&&!dynamicProgressSupported}
-                  style={{...styles.stampAppearanceOption,...(form.wallet_banner_mode===value?{borderColor:form.primary_color||'#0d9488',boxShadow:`0 0 0 2px ${(form.primary_color||'#0d9488')}18`,background:'#fff'}:{}),...(value==='progress'&&!dynamicProgressSupported?{opacity:.45,cursor:'not-allowed'}:{})}}>
-                  <span style={styles.stampAppearancePreview}>{value==='standard'?'▣':'● ○'}</span>
-                  <span style={styles.stampAppearanceLabel}>{label}</span>
-                  <span style={styles.stampAppearanceDesc}>{desc}</span>
-                </button>)}
+                  ['progress','Dynamic Progress · PRO','Filled + empty progress artwork'],
+                ].map(([value,label,desc])=>{
+                  const progressLocked = value==='progress' && (!dynamicProgressProAllowed || !dynamicProgressSupported)
+                  return <button key={value} type="button" onClick={()=>{update('wallet_banner_mode',value);if(value==='progress')update('wallet_show_background',true)}}
+                    disabled={progressLocked}
+                    style={{...styles.stampAppearanceOption,...(form.wallet_banner_mode===value?{borderColor:form.primary_color||'#0d9488',boxShadow:`0 0 0 2px ${(form.primary_color||'#0d9488')}18`,background:'#fff'}:{}),...(progressLocked?{opacity:.45,cursor:'not-allowed'}:{})}}>
+                    <span style={styles.stampAppearancePreview}>{value==='standard'?'▣':'● ○'}</span>
+                    <span style={styles.stampAppearanceLabel}>{label}</span>
+                    <span style={styles.stampAppearanceDesc}>{desc}</span>
+                  </button>
+                })}
               </div>
 
-              {!dynamicProgressSupported && <p style={{...styles.hint,marginTop:10,color:'#64748b'}}>This card does not currently have a fixed progress target. Dynamic Progress is available for Stamp, Multi-Pass, Points with prizes, Tier, and supported Hybrid reward engines.</p>}
+              {!dynamicProgressProAllowed && <p style={{...styles.hint,marginTop:10,color:'#7c3aed',fontWeight:800}}>Pro only · Upgrade to Pro to enable a live Dynamic Progress Banner.</p>}
+              {dynamicProgressProAllowed && !dynamicProgressSupported && <p style={{...styles.hint,marginTop:10,color:'#64748b'}}>This card does not currently have a fixed progress target. Dynamic Progress is available for Stamp, Multi-Pass, Points with prizes, Tier, and supported Hybrid reward engines.</p>}
 
-              {form.wallet_banner_mode==='progress' && dynamicProgressSupported && <div style={{marginTop:14}}>
+              {form.wallet_banner_mode==='progress' && dynamicProgressSupported && dynamicProgressProAllowed && <div style={{marginTop:14}}>
                 <label style={styles.miniLabel}>Progress shown on the banner</label>
                 <select style={{...styles.input,marginTop:6}} value={form.wallet_progress_type==='auto'?'auto':effectiveWalletProgressType} onChange={e=>update('wallet_progress_type',e.target.value)}>
                   <option value="auto">Automatic · recommended</option>
