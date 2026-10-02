@@ -2333,6 +2333,13 @@ class LoyaltyConfig(BaseModel):
     hybrid_tier_validity_days: int = Field(default=365, ge=1, le=3650)
     program_logo_url: Optional[str] = None
     hero_image_url: Optional[str] = None
+    # Wallet banner mode. `standard` preserves the current one-image / generated
+    # banner behavior. `progress` composites live member progress onto the banner
+    # using two optional transparent PNG assets (filled + empty).
+    wallet_banner_mode: Literal['standard', 'progress'] = 'standard'
+    wallet_progress_type: Literal['auto', 'stamps', 'sessions', 'points', 'tier'] = 'auto'
+    wallet_progress_filled_icon_url: Optional[str] = None
+    wallet_progress_empty_icon_url: Optional[str] = None
     card_name: Optional[str] = None
     # --- LoyaltyTree Wallet 2.0 ---
     wallet_style: Literal['modern', 'premium', 'minimal', 'dark', 'classic', 'gradient'] = 'modern'
@@ -6194,6 +6201,153 @@ def normalize_stamp_icon(program: Optional[dict]) -> str:
     return value if value in ('circle', 'star', 'heart', 'coffee', 'gift', 'leaf') else 'star'
 
 
+def normalize_wallet_banner_mode(program: Optional[dict]) -> str:
+    value = str((program or {}).get('wallet_banner_mode') or 'standard').strip().lower()
+    return value if value in ('standard', 'progress') else 'standard'
+
+
+def normalize_wallet_progress_type(program: Optional[dict]) -> str:
+    value = str((program or {}).get('wallet_progress_type') or 'auto').strip().lower()
+    return value if value in ('auto', 'stamps', 'sessions', 'points', 'tier') else 'auto'
+
+
+def wallet_progress_state(customer: Optional[dict], program: Optional[dict]) -> Optional[dict]:
+    """Resolve the member-specific progress shown in a Dynamic Progress Banner.
+
+    Exact-count programs (Stamp and smaller Multi-Pass cards) use one icon per
+    unit up to 20. Large numeric programs such as Points and Tier progression
+    use ten visual segments so a 3,000-point tier never tries to draw 3,000
+    icons. The returned state is presentation-only; balances still come from the
+    existing customer/program columns and remain the single source of truth.
+    """
+    customer = customer or {}
+    program = program or {}
+    if normalize_wallet_banner_mode(program) != 'progress':
+        return None
+
+    card_type = str(program.get('card_type') or 'stamp').strip().lower()
+    requested = normalize_wallet_progress_type(program)
+
+    available = []
+    if program_reward_uses_stamps(program):
+        available.append('stamps')
+    if card_type == 'multipass':
+        available.append('sessions')
+    if program_reward_uses_points(program):
+        has_points_goal = False
+        for prize in (program.get('points_prizes') or []):
+            if not isinstance(prize, dict):
+                continue
+            try:
+                if int(float(prize.get('points_cost') or 0)) > 0:
+                    has_points_goal = True
+                    break
+            except Exception:
+                continue
+        if has_points_goal:
+            available.append('points')
+    if program_has_tier(program):
+        available.append('tier')
+
+    if not available:
+        return None
+    progress_type = requested if requested in available else available[0]
+
+    current = 0
+    goal = 0
+    start = 0
+    label = ''
+    exact = False
+
+    if progress_type == 'stamps':
+        current = max(0, int(customer.get('stamp_count') or 0))
+        goals = []
+        try:
+            goals.append(int(program.get('stamp_goal') or 0))
+        except Exception:
+            pass
+        for reward in (program.get('stamp_rewards') or []):
+            if isinstance(reward, dict):
+                try:
+                    goals.append(int(reward.get('stamps') or 0))
+                except Exception:
+                    pass
+        goal = max([g for g in goals if g > 0] or [8])
+        label = f'{min(current, goal)} / {goal} stamps'
+        exact = goal <= 20
+
+    elif progress_type == 'sessions':
+        total = int(customer.get('multipass_total_sessions') or program.get('multipass_session_count') or 0)
+        remaining = max(0, int(customer.get('multipass_sessions_remaining') or 0))
+        goal = max(1, total)
+        current = max(0, min(goal, goal - remaining))
+        label = f'{remaining} of {goal} sessions left'
+        exact = goal <= 20
+
+    elif progress_type == 'points':
+        balance = max(0, int(customer.get('points_balance') or 0))
+        prizes = []
+        for prize in (program.get('points_prizes') or []):
+            if not isinstance(prize, dict):
+                continue
+            try:
+                cost = int(float(prize.get('points_cost') or 0))
+            except Exception:
+                cost = 0
+            if cost > 0:
+                prizes.append((cost, str(prize.get('name') or 'Reward').strip() or 'Reward'))
+        prizes.sort(key=lambda item: item[0])
+        if not prizes:
+            return None
+        next_prize = next((item for item in prizes if item[0] >= balance), prizes[-1])
+        goal = max(1, int(next_prize[0]))
+        current = min(balance, goal)
+        label = f'{balance:,} / {goal:,} points · {next_prize[1]}'
+        exact = False
+
+    elif progress_type == 'tier':
+        if not program_has_tier(program):
+            return None
+        absolute = max(0, int(tier_progress_value(customer, program)))
+        current_tier = get_vip_tier(customer, program)
+        next_tier = get_next_vip_tier(customer, program)
+        start = max(0, int((current_tier or {}).get('threshold') or 0))
+        if next_tier:
+            next_threshold = max(start + 1, int(next_tier.get('threshold') or 0))
+            current = max(0, min(next_threshold - start, absolute - start))
+            goal = max(1, next_threshold - start)
+            unit = 'stamps' if tier_stamps_enabled(program) else 'points'
+            label = f'{absolute:,} {unit} · {max(next_threshold-absolute, 0):,} to {next_tier.get("name") or "next tier"}'
+        else:
+            current = goal = 1
+            label = f'{(current_tier or {}).get("name") or "Top tier"} · top tier'
+        exact = False
+
+    goal = max(1, int(goal or 1))
+    current = max(0, min(int(current or 0), goal))
+    slots = goal if exact else 10
+    slots = max(1, min(20, int(slots)))
+    if exact:
+        filled_slots = min(slots, current)
+    else:
+        ratio = current / goal if goal else 0
+        filled_slots = int(round(ratio * slots))
+        if current > 0 and filled_slots == 0:
+            filled_slots = 1
+        filled_slots = max(0, min(slots, filled_slots))
+
+    return {
+        'type': progress_type,
+        'current': current,
+        'goal': goal,
+        'start': start,
+        'slots': slots,
+        'filled_slots': filled_slots,
+        'label': label,
+        'exact': exact,
+    }
+
+
 _STAMP_REMOTE_IMAGE_CACHE = {}
 _STAMP_REMOTE_IMAGE_CACHE_MAX = 24
 
@@ -6309,6 +6463,94 @@ def _circular_logo_tile(logo: "Image.Image", size: int) -> "Image.Image":
     ImageDraw.Draw(mask).ellipse((0, 0, size-1, size-1), fill=255)
     tile.putalpha(mask)
     return tile
+
+
+def _fit_transparent_icon(image: "Image.Image", size: int) -> "Image.Image":
+    """Contain an uploaded transparent icon inside a square without cropping."""
+    source = image.convert('RGBA')
+    source.thumbnail((size, size), Image.LANCZOS)
+    tile = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    x = (size - source.width) // 2
+    y = (size - source.height) // 2
+    tile.alpha_composite(source, (x, y))
+    return tile
+
+
+def _faded_icon(image: "Image.Image", opacity: float = .30) -> "Image.Image":
+    faded = image.convert('RGBA').copy()
+    alpha = faded.getchannel('A').point(lambda value: int(value * max(0.0, min(1.0, opacity))))
+    faded.putalpha(alpha)
+    return faded
+
+
+def _draw_dynamic_progress_row(
+    img: "Image.Image",
+    progress_state: Optional[dict],
+    center_y: int,
+    primary_color: str,
+    fallback_icon: str = 'star',
+    filled_icon_url: Optional[str] = None,
+    empty_icon_url: Optional[str] = None,
+) -> bool:
+    """Draw a reusable Wallet progress row from two owner-supplied PNGs.
+
+    If either remote asset is unavailable, rendering gracefully falls back to
+    the built-in vector stamp style. This keeps pass creation resilient to CDN
+    failures and also lets owners preview the feature before uploading artwork.
+    """
+    from PIL import ImageDraw
+
+    state = progress_state or {}
+    try:
+        slots = max(1, min(20, int(state.get('slots') or 0)))
+        filled_slots = max(0, min(slots, int(state.get('filled_slots') or 0)))
+    except Exception:
+        return False
+    if not slots:
+        return False
+
+    draw_layer = Image.new('RGBA', HERO_SIZE, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(draw_layer)
+    gap = 9
+    available = HERO_SIZE[0] - 100
+    size = max(28, min(54, int((available - gap * (slots - 1)) / slots)))
+    total_w = slots * size + gap * (slots - 1)
+    start_x = (HERO_SIZE[0] - total_w) // 2
+    y0 = int(center_y - size / 2)
+    y1 = y0 + size
+
+    draw.rounded_rectangle(
+        (start_x-18, y0-12, start_x+total_w+18, y1+12),
+        radius=max(18, size//2),
+        fill=(0, 0, 0, 58),
+        outline=(255, 255, 255, 38),
+        width=1,
+    )
+
+    filled_remote = _load_remote_wallet_image(filled_icon_url)
+    empty_remote = _load_remote_wallet_image(empty_icon_url)
+    filled_tile = _fit_transparent_icon(filled_remote, size) if filled_remote is not None else None
+    empty_tile = _fit_transparent_icon(empty_remote, size) if empty_remote is not None else None
+    if filled_tile is not None and empty_tile is None:
+        empty_tile = _faded_icon(filled_tile, .28)
+
+    accent = _hex_to_rgb(primary_color)
+    for i in range(slots):
+        x0 = start_x + i * (size + gap)
+        x1 = x0 + size
+        filled = i < filled_slots
+        custom_tile = filled_tile if filled else empty_tile
+        if custom_tile is not None:
+            draw_layer.alpha_composite(custom_tile, (x0, y0))
+            continue
+        if filled:
+            draw.ellipse((x0, y0, x1, y1), fill=(255,255,255,238), outline=(255,255,255,255), width=max(1, size//18))
+            _draw_stamp_symbol(draw, fallback_icon, (x0, y0, x1, y1), fill=(*accent, 255))
+        else:
+            draw.ellipse((x0, y0, x1, y1), fill=(255,255,255,22), outline=(255,255,255,115), width=max(1, size//16))
+
+    img.alpha_composite(draw_layer)
+    return True
 
 
 def _draw_stamp_progress_row(
@@ -6488,6 +6730,9 @@ def generate_personalized_hero_image_bytes(
     stamp_icon: str = 'star',
     stamp_logo_url: Optional[str] = None,
     background_image_url: Optional[str] = None,
+    dynamic_progress_state: Optional[dict] = None,
+    progress_filled_icon_url: Optional[str] = None,
+    progress_empty_icon_url: Optional[str] = None,
 ) -> bytes:
     """Same gradient as generate_hero_image_bytes, but with a bottom banner
     burned in showing the reward/progress and short description - the
@@ -6550,14 +6795,26 @@ def generate_personalized_hero_image_bytes(
         bbox = draw.textbbox((0,0), label, font=font_label)
         draw.text((HERO_SIZE[0]-40-(bbox[2]-bbox[0]), 30), label, font=font_label, fill=(255,255,255,185))
 
+    dynamic_progress_active = bool(dynamic_progress_state)
     stamp_visual_active = (
-        stamp_display_style == 'icon'
+        not dynamic_progress_active
+        and stamp_display_style == 'icon'
         and (
             card_type == 'stamp'
             or (card_type == 'hybrid' and (hybrid_stamps_enabled_flag or hybrid_loyalty_type == 'stamp'))
         )
     )
-    if stamp_visual_active:
+    if dynamic_progress_active:
+        _draw_dynamic_progress_row(
+            img,
+            progress_state=dynamic_progress_state,
+            center_y=168 if include_text_overlay else 170,
+            primary_color=primary_color,
+            fallback_icon=stamp_icon,
+            filled_icon_url=progress_filled_icon_url,
+            empty_icon_url=progress_empty_icon_url,
+        )
+    elif stamp_visual_active:
         _draw_stamp_progress_row(
             img,
             stamps=stamps,
@@ -7424,19 +7681,15 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         } if primary_wallet_action else {}),
     }
 
-    # Object-level heroImage overrides the class-level one for just this
-    # customer - used to burn live progress onto the generated gradient.
-    # When the business uploads a custom hero photo, keep that photo clean and
-    # inherit it from the class instead.
-    # Requested UX change: do not burn Stamp progress into the hero/cover image.
-    # Up to 10 stamps use the native STAMPS value; 11-20 use a text-module row below.
-    stamp_visual_requested = False
-    # Keep uploaded hero photos clean for Number Only. If visual stamps are
-    # selected, render a per-customer composite using that uploaded photo as
-    # the base so branding is preserved while progress stays dynamic.
-    if design['show_background'] and (
-        not (program and program.get('hero_image_url'))
-        or stamp_visual_requested
+    # Object-level heroImage overrides the class-level image for one member.
+    # Standard mode preserves the existing behavior: a custom uploaded banner
+    # remains clean/static, while the generated fallback can still carry the
+    # normal LoyaltyTree live text. Dynamic Progress mode always uses a
+    # per-customer composite so the filled/empty artwork changes with balance.
+    progress_state = wallet_progress_state(customer, program)
+    progress_visual_requested = progress_state is not None
+    if progress_visual_requested or (
+        design['show_background'] and not (program and program.get('hero_image_url'))
     ):
         primary_color = (
             get_vip_tier(customer, program or {}).get('color') or '#111827'
@@ -7444,8 +7697,11 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
             else design['background']
         )
         color_key = primary_color.lstrip('#')
-        if stamp_visual_requested:
-            progress_key = f'{points_balance}-{stamps}' if program_reward_uses_points(program) else stamps
+        if progress_visual_requested:
+            progress_key = (
+                f"{progress_state.get('type')}:{progress_state.get('current')}:"
+                f"{progress_state.get('goal')}:{progress_state.get('filled_slots')}"
+            )
         elif loyalty_type == 'points':
             progress_key = points_balance
         elif card_type == 'multipass':
@@ -7459,6 +7715,9 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         visual_key = hashlib.sha256(
             (
                 f"{stamp_display_style}|{stamp_icon}|{stamp_logo_url}|"
+                f"{normalize_wallet_banner_mode(program)}|{normalize_wallet_progress_type(program)}|"
+                f"{(program or {}).get('wallet_progress_filled_icon_url') or ''}|"
+                f"{(program or {}).get('wallet_progress_empty_icon_url') or ''}|"
                 f"{(program or {}).get('hero_image_url') or ''}|"
                 f"{design.get('style') or ''}|{design.get('background') or ''}|"
                 f"{design.get('secondary') or ''}"
@@ -7466,7 +7725,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         ).hexdigest()[:12]
         hero_url = (
             f'{BASE_URL}/api/v1/customer/{cust_public_id}/hero-image.png'
-            f'?s={progress_key}&g={stamp_goal}&c={color_key}&sv={visual_key}'
+            f'?s={quote(str(progress_key), safe="")}&g={stamp_goal}&c={color_key}&sv={visual_key}'
         )
         loyalty_object['heroImage'] = {'sourceUri': {'uri': hero_url}}
 
@@ -10458,6 +10717,9 @@ def generate_apple_strip_bytes(customer: dict, business: dict, program: dict, wi
         stamp_icon=normalize_stamp_icon(program),
         stamp_logo_url=(program or {}).get('program_logo_url') or (business or {}).get('logo_url') or DEFAULT_LOGO_URL,
         background_image_url=(program or {}).get('hero_image_url'),
+        dynamic_progress_state=wallet_progress_state(customer, program),
+        progress_filled_icon_url=(program or {}).get('wallet_progress_filled_icon_url'),
+        progress_empty_icon_url=(program or {}).get('wallet_progress_empty_icon_url'),
     )
     img = Image.open(BytesIO(raw)).convert('RGB')
     src_ratio = img.width / img.height
@@ -10544,14 +10806,17 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
         'logo@2x.png': logo_320,
         'logo@3x.png': logo_480,
     }
-    if design['show_background']:
-        # Restore the full-width Apple Wallet banner. Use the business's
-        # uploaded hero image when available; otherwise generate a branded
-        # LoyaltyTree fallback. Build @3x once and downscale for speed.
+    progress_state = wallet_progress_state(customer, program)
+    if design['show_background'] or progress_state is not None:
+        # Standard mode keeps the uploaded banner untouched. Dynamic Progress
+        # mode always renders a per-member composite so the same two source
+        # icons can represent every balance without storing N prebuilt banners.
         hero_url = (program or {}).get('hero_image_url')
         hero_bytes = _fetch_image_bytes(hero_url)
 
-        strip_3x = apple_strip_from_image_bytes(hero_bytes, 1125, 369) if hero_bytes else None
+        strip_3x = None
+        if progress_state is None and hero_bytes:
+            strip_3x = apple_strip_from_image_bytes(hero_bytes, 1125, 369)
         if not strip_3x:
             strip_3x = generate_apple_strip_bytes(customer, business, program, 1125, 369)
         strip_2x = _resize_png_bytes(strip_3x, 750, 246)
@@ -22239,6 +22504,10 @@ async def get_loyalty_config(public_id: str, response: Response, program_id: Opt
             "hybrid_tier_validity_days": 365,
             "program_logo_url": None,
             "hero_image_url": None,
+            "wallet_banner_mode": "standard",
+            "wallet_progress_type": "auto",
+            "wallet_progress_filled_icon_url": None,
+            "wallet_progress_empty_icon_url": None,
             "card_name": None,
             "wallet_style": "modern",
             "wallet_secondary_color": None,
@@ -22832,6 +23101,10 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
         'wallet_style': {'gradient': 'modern', 'classic': 'minimal'}.get(config.wallet_style, config.wallet_style),
         'wallet_secondary_color': config.wallet_secondary_color,
         'wallet_show_background': bool(config.wallet_show_background),
+        'wallet_banner_mode': config.wallet_banner_mode,
+        'wallet_progress_type': config.wallet_progress_type,
+        'wallet_progress_filled_icon_url': config.wallet_progress_filled_icon_url,
+        'wallet_progress_empty_icon_url': config.wallet_progress_empty_icon_url,
         'reward_expiry_days': config.reward_expiry_days,
         # Shared card expiry remains for standalone cards only. Hybrid engines
         # persist isolated clocks below.
@@ -30796,7 +31069,7 @@ async def get_customer_hero_image(customer_public_id: str, s: Optional[str] = No
     )
 
     design = wallet_20_design(business, program)
-    vip_tier = get_vip_tier(customer, program or {}) if card_type == 'vip' else None
+    vip_tier = get_vip_tier(customer, program or {}) if program_has_tier(program) else None
     rendered_primary_color = (vip_tier or {}).get('color') or design['background']
     png_bytes = generate_personalized_hero_image_bytes(
         rendered_primary_color, reward_name, stamps, stamp_goal, description,
@@ -30817,6 +31090,9 @@ async def get_customer_hero_image(customer_public_id: str, s: Optional[str] = No
         stamp_icon=normalize_stamp_icon(program),
         stamp_logo_url=(program or {}).get('program_logo_url') or business.get('logo_url') or DEFAULT_LOGO_URL,
         background_image_url=(program or {}).get('hero_image_url'),
+        dynamic_progress_state=wallet_progress_state(customer, program),
+        progress_filled_icon_url=(program or {}).get('wallet_progress_filled_icon_url'),
+        progress_empty_icon_url=(program or {}).get('wallet_progress_empty_icon_url'),
     )
     return Response(
         content=png_bytes,

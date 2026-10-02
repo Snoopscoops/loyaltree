@@ -104,6 +104,10 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     hybrid_tier_validity_days: 365,
     program_logo_url: '',
     hero_image_url: '',
+    wallet_banner_mode: 'standard',
+    wallet_progress_type: 'auto',
+    wallet_progress_filled_icon_url: '',
+    wallet_progress_empty_icon_url: '',
     wallet_style: 'gradient',
     wallet_secondary_color: '#14b8a6',
     wallet_show_background: true,
@@ -173,6 +177,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
   const [imageUpload, setImageUpload] = useState({
     program_logo_url: { uploading: false, error: '' },
     hero_image_url: { uploading: false, error: '' },
+    wallet_progress_filled_icon_url: { uploading: false, error: '' },
+    wallet_progress_empty_icon_url: { uploading: false, error: '' },
   })
   // 'picker' shows the Stamp vs Points choice first; 'form' shows the
   // full editor for whichever type is selected. Starts on 'form' once
@@ -299,6 +305,10 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
           hybrid_tier_validity_days: data.hybrid_tier_validity_days ?? 365,
           program_logo_url: data.program_logo_url || '',
           hero_image_url: data.hero_image_url || '',
+          wallet_banner_mode: data.wallet_banner_mode === 'progress' ? 'progress' : 'standard',
+          wallet_progress_type: ['auto','stamps','sessions','points','tier'].includes(data.wallet_progress_type) ? data.wallet_progress_type : 'auto',
+          wallet_progress_filled_icon_url: data.wallet_progress_filled_icon_url || '',
+          wallet_progress_empty_icon_url: data.wallet_progress_empty_icon_url || '',
           wallet_style: data.wallet_style === 'minimal' ? 'classic' : data.wallet_style === 'modern' ? 'gradient' : (['classic','gradient','premium'].includes(data.wallet_style) ? data.wallet_style : 'gradient'),
           wallet_secondary_color: data.wallet_secondary_color || '#14b8a6',
           wallet_show_background: data.wallet_show_background !== false,
@@ -890,6 +900,10 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     hybrid_tier_validity_days: Math.max(1, Math.min(3650, Number(form.hybrid_tier_validity_days) || 365)),
     program_logo_url: form.program_logo_url || null,
     hero_image_url: form.hero_image_url || null,
+    wallet_banner_mode: form.wallet_banner_mode === 'progress' ? 'progress' : 'standard',
+    wallet_progress_type: ['auto','stamps','sessions','points','tier'].includes(form.wallet_progress_type) ? form.wallet_progress_type : 'auto',
+    wallet_progress_filled_icon_url: form.wallet_progress_filled_icon_url || null,
+    wallet_progress_empty_icon_url: form.wallet_progress_empty_icon_url || null,
     // UI calls the legacy backend styles Gradient/Classic. Persist the
     // schema-compatible values so FastAPI + the DB CHECK constraint accept it.
     wallet_style: form.wallet_style === 'classic' ? 'minimal' : form.wallet_style === 'gradient' ? 'modern' : (['modern','premium','minimal','dark'].includes(form.wallet_style) ? form.wallet_style : 'modern'),
@@ -1348,6 +1362,70 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
   const tierUsesStamps = form.card_type === 'vip'
     ? form.vip_progression_type === 'stamps'
     : form.hybrid_tier_progression_type !== 'points'
+
+  const walletProgressOptions = []
+  const hasPointsProgressGoal = (form.points_prizes || []).some(prize => Number(prize?.points_cost || 0) > 0)
+  if (form.card_type === 'stamp' || (isHybrid && hybridStampsEnabled)) walletProgressOptions.push({value:'stamps',label:'Stamp progress'})
+  if (form.card_type === 'multipass') walletProgressOptions.push({value:'sessions',label:'Session progress'})
+  if ((form.card_type === 'points' || (isHybrid && hybridPointsEnabled)) && hasPointsProgressGoal) walletProgressOptions.push({value:'points',label:'Next reward progress'})
+  if (form.card_type === 'vip' || (isHybrid && hybridTierEnabled)) walletProgressOptions.push({value:'tier',label:'Tier progress'})
+  const dynamicProgressSupported = walletProgressOptions.length > 0
+  const effectiveWalletProgressType = walletProgressOptions.some(opt => opt.value === form.wallet_progress_type)
+    ? form.wallet_progress_type
+    : (walletProgressOptions[0]?.value || 'stamps')
+  const dynamicBannerActive = form.wallet_banner_mode === 'progress' && dynamicProgressSupported
+
+  const dynamicProgressPreview = (() => {
+    const type = effectiveWalletProgressType
+    if (type === 'stamps') {
+      const goal = Math.max(1, rawStampGoal)
+      const exact = goal <= 20
+      const slots = exact ? goal : 10
+      const current = Math.min(goal, Math.max(0, previewFilled))
+      const filled = exact ? current : Math.max(current > 0 ? 1 : 0, Math.min(slots, Math.round((current / goal) * slots)))
+      return {slots,filled,label:`${current} / ${goal} stamps`}
+    }
+    if (type === 'sessions') {
+      const goal = Math.max(2, multipassSessionCount)
+      const current = Math.max(0, Math.min(goal, multipassPreviewUsed))
+      const slots = goal <= 20 ? goal : 10
+      const filled = goal <= 20 ? current : Math.max(current > 0 ? 1 : 0, Math.min(slots, Math.round((current / goal) * slots)))
+      return {slots,filled,label:`${goal-current} of ${goal} sessions left`}
+    }
+    if (type === 'points') {
+      const costs = (form.points_prizes || []).map(p=>Number(p.points_cost)||0).filter(v=>v>0).sort((a,b)=>a-b)
+      const goal = costs[0] || 500
+      const current = Math.max(1, Math.round(goal * .58))
+      return {slots:10,filled:6,label:`${current.toLocaleString()} / ${goal.toLocaleString()} points`}
+    }
+    const tiers = ensureTierZero(form.vip_tiers, form.primary_color)
+    const next = tiers.find(t=>Number(t.threshold||0)>0)
+    const goal = Number(next?.threshold || (tierUsesStamps ? 10 : 1000))
+    const current = Math.max(1, Math.round(goal * .55))
+    return {slots:10,filled:6,label:`${current.toLocaleString()} / ${goal.toLocaleString()} ${tierUsesStamps?'stamps':'points'}`}
+  })()
+
+  const renderDynamicProgressPreview = (compact = false) => {
+    if (!dynamicBannerActive) return null
+    const filledUrl = String(form.wallet_progress_filled_icon_url || '').trim()
+    const emptyUrl = String(form.wallet_progress_empty_icon_url || '').trim()
+    const fallbackFilled = effectiveWalletProgressType === 'stamps' ? selectedStampIcon.symbol : '●'
+    const cellSize = compact ? 24 : 34
+    return (
+      <div style={{marginTop:compact?6:10}}>
+        <div style={{display:'flex',justifyContent:'center',gap:compact?4:6,flexWrap:'nowrap',overflow:'hidden'}}>
+          {Array.from({length:Math.min(20,dynamicProgressPreview.slots)}).map((_,i)=>{
+            const filled = i < dynamicProgressPreview.filled
+            const src = filled ? filledUrl : (emptyUrl || filledUrl)
+            return <span key={i} style={{width:cellSize,height:cellSize,display:'inline-flex',alignItems:'center',justifyContent:'center',flex:'0 0 auto',borderRadius:'50%',border:src?'none':'1px solid rgba(255,255,255,.48)',background:src?'transparent':(filled?'rgba(255,255,255,.94)':'rgba(255,255,255,.12)'),color:filled?(form.primary_color||'#0d9488'):'rgba(255,255,255,.6)',fontSize:compact?14:18,fontWeight:900,opacity:(!filled&&src&&!emptyUrl)?.32:1}}>
+              {src ? <img src={src} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/> : (filled ? fallbackFilled : '○')}
+            </span>
+          })}
+        </div>
+        {!compact && <div style={{textAlign:'center',fontSize:11,fontWeight:800,color:'rgba(255,255,255,.92)',marginTop:7}}>{dynamicProgressPreview.label}</div>}
+      </div>
+    )
+  }
 
   const walletPreset = form.wallet_style === 'minimal' ? 'classic' : (form.wallet_style || 'gradient')
   const previewVipTier = ensureTierZero(form.vip_tiers, form.primary_color)[0] || {}
@@ -2211,6 +2289,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                 </div>
                 <span style={styles.wallet20PreviewMenu}>•••</span>
               </div>
+              {dynamicBannerActive && <div style={{padding:'0 14px 5px'}}>{renderDynamicProgressPreview(true)}</div>}
               <div style={styles.wallet20PreviewBottom}>
                 <div style={styles.wallet20PreviewInfo}>
                   <div><small>CUSTOMER</small><strong>John Customer</strong></div>
@@ -2617,7 +2696,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
 
               <div style={{...styles.fieldGroup,padding:14,border:'1px solid #dbeafe',borderRadius:14,background:'#f8fbff'}}>
                 <label style={styles.label}>Stamp appearance</label>
-                <p style={{...styles.hint,margin:'0 0 12px'}}>Choose how customers see progress. Icon Stamps use a compact native Wallet layout: up to 10 replace the STAMPS count; 11–20 appear in a dedicated progress row below. The cover photo stays clean.</p>
+                <p style={{...styles.hint,margin:'0 0 12px'}}>Choose how customers see the native STAMPS field. Icon Stamps use a compact Wallet layout: up to 10 replace the count; 11–20 appear in a dedicated progress row below. A separate Dynamic Progress Banner can be enabled under Card Design.</p>
                 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:8}}>
                   {[
                     ['number','4 / 10','Number Only','Clean numeric progress'],
@@ -3185,6 +3264,60 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                 <p style={styles.hint}>Optional. A wide business photo can appear as branded artwork where the wallet platform supports it.</p>
               </div>
             </details>
+
+            <div style={{...styles.fieldGroup,marginTop:16,padding:14,border:'1px solid #dbeafe',borderRadius:14,background:'#f8fbff'}}>
+              <label style={styles.label}>4. Banner behavior</label>
+              <p style={{...styles.hint,margin:'0 0 12px'}}>Standard keeps the normal one-image banner. Dynamic Progress automatically rebuilds the banner for each member as their balance changes on Apple Wallet and Google Wallet.</p>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:8}}>
+                {[
+                  ['standard','Static / Standard','One banner image'],
+                  ['progress','Dynamic Progress','Filled + empty progress artwork'],
+                ].map(([value,label,desc])=><button key={value} type="button" onClick={()=>{update('wallet_banner_mode',value);if(value==='progress')update('wallet_show_background',true)}}
+                  disabled={value==='progress'&&!dynamicProgressSupported}
+                  style={{...styles.stampAppearanceOption,...(form.wallet_banner_mode===value?{borderColor:form.primary_color||'#0d9488',boxShadow:`0 0 0 2px ${(form.primary_color||'#0d9488')}18`,background:'#fff'}:{}),...(value==='progress'&&!dynamicProgressSupported?{opacity:.45,cursor:'not-allowed'}:{})}}>
+                  <span style={styles.stampAppearancePreview}>{value==='standard'?'▣':'● ○'}</span>
+                  <span style={styles.stampAppearanceLabel}>{label}</span>
+                  <span style={styles.stampAppearanceDesc}>{desc}</span>
+                </button>)}
+              </div>
+
+              {!dynamicProgressSupported && <p style={{...styles.hint,marginTop:10,color:'#64748b'}}>This card does not currently have a fixed progress target. Dynamic Progress is available for Stamp, Multi-Pass, Points with prizes, Tier, and supported Hybrid reward engines.</p>}
+
+              {form.wallet_banner_mode==='progress' && dynamicProgressSupported && <div style={{marginTop:14}}>
+                <label style={styles.miniLabel}>Progress shown on the banner</label>
+                <select style={{...styles.input,marginTop:6}} value={form.wallet_progress_type==='auto'?'auto':effectiveWalletProgressType} onChange={e=>update('wallet_progress_type',e.target.value)}>
+                  <option value="auto">Automatic · recommended</option>
+                  {walletProgressOptions.map(opt=><option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                </select>
+                <p style={styles.hint}>Automatic chooses the best live metric for this card. Hybrid cards can choose which enabled reward engine should be featured.</p>
+
+                <div style={{display:'grid',gridTemplateColumns:guidedMobile?'1fr':'1fr 1fr',gap:12,marginTop:12}}>
+                  <div>
+                    <label style={styles.miniLabel}>Filled / active image</label>
+                    <label style={{...styles.uploadBtn,display:'inline-flex',marginTop:6,...(imageUpload.wallet_progress_filled_icon_url.uploading?styles.uploadBtnDisabled:{})}}>
+                      {imageUpload.wallet_progress_filled_icon_url.uploading?'Uploading…':'📤 Upload filled PNG'}
+                      <input type="file" accept="image/png,image/webp,image/*" style={styles.uploadInputHidden} disabled={imageUpload.wallet_progress_filled_icon_url.uploading} onChange={e=>{uploadImage('wallet_progress_filled_icon_url',e.target.files?.[0]);e.target.value=''}}/>
+                    </label>
+                    {form.wallet_progress_filled_icon_url && <img src={form.wallet_progress_filled_icon_url} alt="Filled progress icon" style={{width:64,height:64,objectFit:'contain',display:'block',marginTop:8,border:'1px dashed #cbd5e1',borderRadius:10,padding:6,background:'#fff'}}/>}
+                    {imageUpload.wallet_progress_filled_icon_url.error && <p style={styles.uploadError}>{imageUpload.wallet_progress_filled_icon_url.error}</p>}
+                  </div>
+                  <div>
+                    <label style={styles.miniLabel}>Empty / inactive image</label>
+                    <label style={{...styles.uploadBtn,display:'inline-flex',marginTop:6,...(imageUpload.wallet_progress_empty_icon_url.uploading?styles.uploadBtnDisabled:{})}}>
+                      {imageUpload.wallet_progress_empty_icon_url.uploading?'Uploading…':'📤 Upload empty PNG'}
+                      <input type="file" accept="image/png,image/webp,image/*" style={styles.uploadInputHidden} disabled={imageUpload.wallet_progress_empty_icon_url.uploading} onChange={e=>{uploadImage('wallet_progress_empty_icon_url',e.target.files?.[0]);e.target.value=''}}/>
+                    </label>
+                    {form.wallet_progress_empty_icon_url && <img src={form.wallet_progress_empty_icon_url} alt="Empty progress icon" style={{width:64,height:64,objectFit:'contain',display:'block',marginTop:8,border:'1px dashed #cbd5e1',borderRadius:10,padding:6,background:'#fff'}}/>}
+                    {imageUpload.wallet_progress_empty_icon_url.error && <p style={styles.uploadError}>{imageUpload.wallet_progress_empty_icon_url.error}</p>}
+                  </div>
+                </div>
+                <p style={{...styles.hint,marginTop:10}}>Transparent PNG is recommended. You only upload these two source images once; LoyaltyTree composes every 0/N → N/N banner automatically. If the empty image is omitted, LoyaltyTree fades the filled image as a fallback.</p>
+                <div style={{marginTop:12,padding:12,borderRadius:14,background:walletPreviewBackground,color:'#fff',overflow:'hidden'}}>
+                  <div style={{fontSize:10,fontWeight:900,letterSpacing:.8,opacity:.8}}>DYNAMIC BANNER PREVIEW</div>
+                  {renderDynamicProgressPreview(false)}
+                </div>
+              </div>}
+            </div>
 
             <div style={styles.walletPlatformNote}>
               <div><b> Apple Wallet</b><span>Uses your main color plus LoyaltyTree's branded artwork for the closest match.</span></div>
