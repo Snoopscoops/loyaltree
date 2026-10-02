@@ -25971,11 +25971,39 @@ def owner_fraud_alerts(public_id: str, hours: int = 24, authorization: str = Hea
     return {'alerts': alerts, 'total': len(alerts), 'reviewed_transactions': len(rows),
             'window_hours': hours, 'generated_at': datetime.utcnow().isoformat()}
 
+def _wallet_provider_sync_failed(result: dict, provider: str) -> bool:
+    """Return True only for provider outcomes that are worth retrying.
+
+    `not_saved` and `not_configured` are valid terminal states for a member who
+    has not installed that Wallet provider. Apple `push_failed` is different:
+    a registered pass exists, but APNs did not accept the wake-up, so the
+    durable wallet queue must retry it.
+    """
+    if not isinstance(result, dict):
+        return False
+    status = str(result.get('status') or '').strip().lower()
+    if status == 'error':
+        return True
+    if str(provider or '').strip().lower() == 'apple' and status == 'push_failed':
+        return True
+    return False
+
+
 def sync_stamp_wallets_background(customer: dict, business: dict, program: dict,
                                   reward_unlocked: bool, new_count: int, goal: int):
-    """Durably queue Wallet refresh after the cashier transaction."""
-    result = enqueue_wallet_sync(customer, business, 'stamp_reward' if reward_unlocked else 'stamp_add')
-    print(f"STAMP WALLET QUEUE RESULT: {result}")
+    """Try the Wallet providers immediately after a persisted stamp.
+
+    This function still runs as a FastAPI background task, so cashier response
+    time stays fast. The durable queue is now the fallback only when a real
+    provider failure occurs instead of being the normal first hop.
+    """
+    reason = 'stamp_reward' if reward_unlocked else 'stamp_add'
+    print(
+        f"STAMP WALLET REALTIME START: reason={reason} "
+        f"business={business.get('public_id')} customer={customer.get('public_id')} "
+        f"stamp_count={new_count}/{goal}"
+    )
+    sync_loyalty_wallets_background(customer, business, program, reason)
 
 
 def sync_loyalty_wallets_background(
@@ -25987,17 +26015,32 @@ def sync_loyalty_wallets_background(
     notify_body: Optional[str] = None,
     notify_message_id: Optional[str] = None,
 ):
-    """Refresh Google + Apple Wallet after the cashier response is sent.
+    """Refresh Apple + Google immediately after the cashier response.
 
-    The database transaction is already complete before this runs, so Google
-    or Apple latency can never hold up checkout. If either provider fails,
-    enqueue the customer's pass in the existing durable retry queue.
+    The database transaction is already complete before this runs, so provider
+    latency can never hold up checkout. Apple is attempted first so a stamp can
+    wake an installed iPhone without waiting for a Google API round-trip. Each
+    provider is isolated: one provider throwing cannot prevent the other from
+    being attempted. Retryable failures are persisted to wallet_sync_jobs.
     """
     customer_snapshot = dict(customer or {})
     business_snapshot = dict(business or {})
     program_snapshot = dict(program or {})
 
     try:
+        # Apple first: APNs is only a wake-up. The iPhone then asks the existing
+        # PassKit web service for the latest pass built from current DB state.
+        try:
+            apple_result = sync_apple_wallet_pass(customer_snapshot)
+        except Exception as apple_exc:
+            apple_result = {
+                'status': 'error',
+                'stage': 'exception',
+                'detail': str(apple_exc),
+                'registrations': 0,
+                'pushes_sent': 0,
+            }
+
         # Routine loyalty movements should not use Google's TEXT_AND_NOTIFY
         # addMessage flow because those messages remain visible in Pass Details.
         # The object PATCH already sets NOTIFY_ON_UPDATE, so supported balance /
@@ -26012,19 +26055,38 @@ def sync_loyalty_wallets_background(
         use_custom_google_message = bool(
             notify_header and notify_message_id and reason not in routine_google_update_reasons
         )
-        google_result = sync_wallet_object(
-            customer_snapshot,
-            business_snapshot,
-            program_snapshot,
-            notify_header=notify_header if use_custom_google_message else None,
-            notify_body=notify_body if use_custom_google_message else None,
-            notify_message_id=notify_message_id if use_custom_google_message else None,
+        try:
+            google_result = sync_wallet_object(
+                customer_snapshot,
+                business_snapshot,
+                program_snapshot,
+                notify_header=notify_header if use_custom_google_message else None,
+                notify_body=notify_body if use_custom_google_message else None,
+                notify_message_id=notify_message_id if use_custom_google_message else None,
+            )
+        except Exception as google_exc:
+            google_result = {
+                'status': 'error',
+                'stage': 'exception',
+                'detail': str(google_exc),
+            }
+
+        apple_status = apple_result.get('status') if isinstance(apple_result, dict) else None
+        google_status = google_result.get('status') if isinstance(google_result, dict) else None
+        print(
+            f"WALLET REALTIME SYNC: reason={reason} "
+            f"business={business_snapshot.get('public_id')} "
+            f"customer={customer_snapshot.get('public_id')} "
+            f"stamp_count={customer_snapshot.get('stamp_count')} "
+            f"apple_status={apple_status} "
+            f"apple_registrations={(apple_result or {}).get('registrations') if isinstance(apple_result, dict) else None} "
+            f"apple_pushes_sent={(apple_result or {}).get('pushes_sent') if isinstance(apple_result, dict) else None} "
+            f"google_status={google_status}"
         )
-        apple_result = sync_apple_wallet_pass(customer_snapshot)
 
         failed = (
-            (isinstance(google_result, dict) and google_result.get('status') == 'error')
-            or (isinstance(apple_result, dict) and apple_result.get('status') == 'error')
+            _wallet_provider_sync_failed(google_result, 'google')
+            or _wallet_provider_sync_failed(apple_result, 'apple')
         )
         if failed:
             queued = enqueue_wallet_sync(customer_snapshot, business_snapshot, reason)
@@ -26035,6 +26097,7 @@ def sync_loyalty_wallets_background(
         else:
             print(
                 f"BACKGROUND WALLET SYNC complete: reason={reason}, "
+                f"business={business_snapshot.get('public_id')}, "
                 f"customer={customer_snapshot.get('public_id')}"
             )
     except Exception as exc:
@@ -37317,8 +37380,9 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
     if (last_modified_ts and since_ts and
             last_modified_ts.replace(microsecond=0) <= since_ts.replace(microsecond=0)):
         print(
-            f"APPLE PASS UPDATE 304: serial={serial_number} "
-            f"ims={if_modified_since} newest={last_modified}"
+            f"APPLE PASS UPDATE 304: business={business.get('public_id')} "
+            f"customer={customer.get('public_id')} stamp_count={customer.get('stamp_count')} "
+            f"serial={serial_number} ims={if_modified_since} newest={last_modified}"
         )
         # This device is already at/after the newest dirty timestamp. Keep
         # source timestamps as the durable truth and drop the transient hint
@@ -37327,8 +37391,10 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
         return Response(status_code=304)
 
     print(
-        f"APPLE PASS UPDATE 200: serial={serial_number} "
-        f"dirty={'yes' if dirty_ts else 'no'} ims={if_modified_since} newest={last_modified}"
+        f"APPLE PASS UPDATE 200: business={business.get('public_id')} "
+        f"customer={customer.get('public_id')} stamp_count={customer.get('stamp_count')} "
+        f"serial={serial_number} dirty={'yes' if dirty_ts else 'no'} "
+        f"ims={if_modified_since} newest={last_modified}"
     )
 
     pkpass_bytes = build_pkpass_bytes(customer, business, program, announcement)
@@ -38359,12 +38425,15 @@ except Exception as exc:
 # ============================================================
 
 def enqueue_wallet_sync(customer: dict, business: dict, reason: str = 'loyalty_update'):
-    """Persist a Wallet refresh job so cashier success never depends on Google/Apple latency."""
+    """Persist a retry job without losing an update behind an in-flight job."""
     try:
-        # Coalesce an already-pending job for the same customer.
+        # Coalesce only a job that is still waiting. A `processing` job may
+        # already have loaded the customer's older balance, so a newer stamp
+        # must be allowed to create its own pending retry instead of disappearing
+        # behind that in-flight snapshot.
         pending = (supabase.table('wallet_sync_jobs').select('id')
                    .eq('business_id', business.get('id')).eq('customer_id', customer.get('id'))
-                   .in_('status', ['pending','processing']).limit(1).execute().data or [])
+                   .eq('status', 'pending').limit(1).execute().data or [])
         if pending:
             return {'status':'queued','job_id':pending[0].get('id'),'coalesced':True}
         row=(supabase.table('wallet_sync_jobs').insert({
@@ -38404,9 +38473,17 @@ def process_wallet_sync_queue_once(limit: int = 10):
             business=safe_get_business_by_id(job.get('business_id'))
             if not customer or not business: raise RuntimeError('Customer/business no longer exists')
             program=safe_get_loyalty_program(business.get('id')) or {}
-            g=sync_wallet_object(customer,business,program)
+            # Apple first here too so retry jobs prioritize waking the phone.
             a=sync_apple_wallet_pass(customer)
-            failed=(isinstance(g,dict) and g.get('status')=='error') or (isinstance(a,dict) and a.get('status')=='error')
+            g=sync_wallet_object(customer,business,program)
+            failed=_wallet_provider_sync_failed(g, 'google') or _wallet_provider_sync_failed(a, 'apple')
+            print(
+                f"WALLET QUEUE SYNC: job={jid} business={business.get('public_id')} "
+                f"customer={customer.get('public_id')} stamp_count={customer.get('stamp_count')} "
+                f"apple_status={(a or {}).get('status') if isinstance(a,dict) else None} "
+                f"apple_pushes_sent={(a or {}).get('pushes_sent') if isinstance(a,dict) else None} "
+                f"google_status={(g or {}).get('status') if isinstance(g,dict) else None}"
+            )
             if failed: raise RuntimeError(f'Google={g}; Apple={a}')
             supabase.table('wallet_sync_jobs').update({'status':'completed','completed_at':datetime.utcnow().isoformat(),'last_error':None,'updated_at':datetime.utcnow().isoformat()}).eq('id',jid).execute()
         except Exception as e:
