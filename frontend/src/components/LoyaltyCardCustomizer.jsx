@@ -1425,7 +1425,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
         stride = 0
         totalWidth = cellSize
       } else {
-        stride = Math.max(1, Math.round((availableWidth - cellSize) / (slotCount - 1)))
+        stride = Math.max(1, Math.round(cellSize * .56))
         totalWidth = cellSize + ((slotCount - 1) * stride)
       }
     } else {

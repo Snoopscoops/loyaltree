@@ -6550,15 +6550,16 @@ def _draw_dynamic_progress_row(
         # so the row feels condensed even though it spans the full width.
         side_margin = 4
         size = max(78, min(164, int(round(HERO_SIZE[1] * 0.46))))
-        usable_w = HERO_SIZE[0] - (side_margin * 2)
         if slots <= 1:
             stride = 0
             total_w = size
             start_x = (HERO_SIZE[0] - size) // 2
         else:
-            stride = max(1, int(round((usable_w - size) / (slots - 1))))
+            # Keep the icons close together instead of stretching the row
+            # all the way to the banner edges.
+            stride = max(1, int(round(size * 0.56)))
             total_w = size + ((slots - 1) * stride)
-            start_x = side_margin
+            start_x = (HERO_SIZE[0] - total_w) // 2
     else:
         # Dense fallback for 11-20 markers.
         side_margin = 8
