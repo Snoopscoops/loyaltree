@@ -1420,7 +1420,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     let stride
     let totalWidth
     if (slotCount <= 10) {
-      cellSize = compact ? 66 : 126
+      cellSize = compact ? 60 : 114
       if (slotCount <= 1) {
         stride = 0
         totalWidth = cellSize
