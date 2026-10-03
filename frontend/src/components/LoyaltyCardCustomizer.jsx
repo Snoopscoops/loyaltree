@@ -1412,49 +1412,32 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     const filledUrl = String(form.wallet_progress_filled_icon_url || '').trim()
     const emptyUrl = String(form.wallet_progress_empty_icon_url || '').trim()
     const fallbackFilled = effectiveWalletProgressType === 'stamps' ? selectedStampIcon.symbol : '●'
-    const totalSlots = Math.min(20, dynamicProgressPreview.slots)
-    const useTwoRows = totalSlots > 10
-    const cols = useTwoRows ? Math.ceil(totalSlots / 2) : totalSlots
-    const cellSize = compact
-      ? (totalSlots <= 8 ? 38 : totalSlots <= 10 ? 32 : 28)
-      : (totalSlots <= 8 ? 54 : totalSlots <= 10 ? 46 : 38)
-
+    const slotCount = Math.min(20, dynamicProgressPreview.slots)
+    // Match the real Wallet renderer: large icons, tight horizontal stride,
+    // and a pronounced alternating up/down wave.
+    const maxCell = compact ? 46 : 82
+    const availableWidth = compact ? 310 : 620
+    const strideRatio = .72
+    const fittedCell = Math.floor(availableWidth / (1 + Math.max(0, slotCount - 1) * strideRatio))
+    const cellSize = Math.max(compact ? 20 : 30, Math.min(maxCell, fittedCell))
+    const stride = Math.max(16, Math.round(cellSize * strideRatio))
+    const totalWidth = cellSize + Math.max(0, slotCount - 1) * stride
+    const wave = Math.max(compact ? 7 : 10, Math.min(compact ? 15 : 25, Math.round(cellSize * .30)))
     return (
       <div style={{marginTop:compact?6:10}}>
-        <div style={{
-          display:'grid',
-          gridTemplateColumns:`repeat(${Math.max(1,cols)}, ${cellSize}px)`,
-          justifyContent:'center',
-          alignItems:'center',
-          columnGap:compact?7:10,
-          rowGap:compact?4:7,
-          overflow:'visible',
-          padding:compact?'4px 0':'8px 0',
-        }}>
-          {Array.from({length:totalSlots}).map((_,i)=>{
-            const filled = i < dynamicProgressPreview.filled
-            const src = filled ? filledUrl : (emptyUrl || filledUrl)
-            const stagger8 = !useTwoRows && totalSlots === 8
-            return <span key={i} style={{
-              width:cellSize,
-              height:cellSize,
-              display:'inline-flex',
-              alignItems:'center',
-              justifyContent:'center',
-              borderRadius:'50%',
-              border:src?'none':'1px solid rgba(255,255,255,.48)',
-              background:src?'transparent':(filled?'rgba(255,255,255,.94)':'rgba(255,255,255,.12)'),
-              color:filled?(form.primary_color||'#0d9488'):'rgba(255,255,255,.6)',
-              fontSize:compact?18:24,
-              fontWeight:900,
-              opacity:(!filled&&src&&!emptyUrl)?.32:1,
-              transform:stagger8 ? `translateY(${i%2===0?-5:5}px)` : 'none',
-            }}>
-              {src ? <img src={src} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/> : (filled ? fallbackFilled : '○')}
-            </span>
-          })}
+        <div style={{position:'relative',width:'100%',height:cellSize+(wave*2)+4,overflow:'hidden'}}>
+          <div style={{position:'absolute',left:'50%',top:'50%',width:totalWidth,height:cellSize,transform:'translate(-50%,-50%)'}}>
+            {Array.from({length:slotCount}).map((_,i)=>{
+              const filled = i < dynamicProgressPreview.filled
+              const src = filled ? filledUrl : (emptyUrl || filledUrl)
+              const y = i % 2 === 0 ? -wave : wave
+              return <span key={i} style={{position:'absolute',left:i*stride,top:y,width:cellSize,height:cellSize,display:'inline-flex',alignItems:'center',justifyContent:'center',borderRadius:'50%',border:src?'none':'1px solid rgba(255,255,255,.48)',background:src?'transparent':(filled?'rgba(255,255,255,.94)':'rgba(255,255,255,.12)'),color:filled?(form.primary_color||'#0d9488'):'rgba(255,255,255,.6)',fontSize:compact?16:22,fontWeight:900,opacity:(!filled&&src&&!emptyUrl)?.32:1}}>
+                {src ? <img src={src} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/> : (filled ? fallbackFilled : '○')}
+              </span>
+            })}
+          </div>
         </div>
-        {!compact && <div style={{textAlign:'center',fontSize:11,fontWeight:800,color:'rgba(255,255,255,.92)',marginTop:7}}>{dynamicProgressPreview.label}</div>}
+        {!compact && <div style={{textAlign:'center',fontSize:11,fontWeight:800,color:'rgba(255,255,255,.92)',marginTop:5}}>{dynamicProgressPreview.label}</div>}
       </div>
     )
   }
