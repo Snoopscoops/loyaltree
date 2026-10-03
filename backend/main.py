@@ -6474,12 +6474,32 @@ def _circular_logo_tile(logo: "Image.Image", size: int) -> "Image.Image":
 
 
 def _fit_transparent_icon(image: "Image.Image", size: int) -> "Image.Image":
-    """Contain an uploaded transparent icon inside a square without cropping."""
+    """Fill the progress tile with the visible icon artwork.
+
+    Crop transparent padding first, then explicitly upscale/downscale while
+    preserving aspect ratio. This makes uploaded icons visibly fill the Wallet
+    banner instead of staying tiny inside a large transparent PNG canvas.
+    """
     source = image.convert('RGBA')
-    source.thumbnail((size, size), Image.LANCZOS)
+
+    alpha = source.getchannel('A')
+    # Ignore almost-transparent edge pixels/shadows when finding visible bounds.
+    visible = alpha.point(lambda value: 255 if value >= 16 else 0)
+    bbox = visible.getbbox()
+    if bbox:
+        source = source.crop(bbox)
+
+    if source.width < 1 or source.height < 1:
+        return Image.new('RGBA', (size, size), (0, 0, 0, 0))
+
+    scale = min(size / source.width, size / source.height)
+    new_w = max(1, int(round(source.width * scale)))
+    new_h = max(1, int(round(source.height * scale)))
+    source = source.resize((new_w, new_h), Image.LANCZOS)
+
     tile = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-    x = (size - source.width) // 2
-    y = (size - source.height) // 2
+    x = (size - new_w) // 2
+    y = (size - new_h) // 2
     tile.alpha_composite(source, (x, y))
     return tile
 
@@ -6524,20 +6544,36 @@ def _draw_dynamic_progress_row(
     # For the common 8-stamp card this renders icons up to ~152 px tall instead
     # of the old ~54 px row. A 0.72 horizontal stride keeps the icons very close
     # together while still allowing up to 20 progress slots to fit the banner.
-    side_margin = 42
-    available = HERO_SIZE[0] - (side_margin * 2)
-    # V2 showcase: larger artwork with a tighter, more condensed overlap.
-    stride_ratio = 0.58
-    fit_size = int(available / (1 + max(0, slots - 1) * stride_ratio))
-    size = max(42, min(176, fit_size))
-    stride = max(22, int(round(size * stride_ratio)))
-    total_w = size + max(0, slots - 1) * stride
-    start_x = (HERO_SIZE[0] - total_w) // 2
+    if slots <= 10:
+        # Showcase mode: make the artwork deliberately large and run the row
+        # almost all the way to both banner edges. Larger tiles overlap more,
+        # so the row feels condensed even though it spans the full width.
+        side_margin = 4
+        size = max(96, min(220, int(round(HERO_SIZE[1] * 0.64))))
+        usable_w = HERO_SIZE[0] - (side_margin * 2)
+        if slots <= 1:
+            stride = 0
+            total_w = size
+            start_x = (HERO_SIZE[0] - size) // 2
+        else:
+            stride = max(1, int(round((usable_w - size) / (slots - 1))))
+            total_w = size + ((slots - 1) * stride)
+            start_x = side_margin
+    else:
+        # Dense fallback for 11-20 markers.
+        side_margin = 8
+        available = HERO_SIZE[0] - (side_margin * 2)
+        stride_ratio = 0.50
+        fit_size = int(available / (1 + max(0, slots - 1) * stride_ratio))
+        size = max(42, min(132, fit_size))
+        stride = max(20, int(round(size * stride_ratio)))
+        total_w = size + max(0, slots - 1) * stride
+        start_x = (HERO_SIZE[0] - total_w) // 2
 
     # Pronounced alternating wave: neighboring icons sit visibly higher/lower.
     # The offset scales with icon size so an 8-slot banner has a strong ~84 px
     # high-to-low difference while denser 15-20 slot banners stay readable.
-    wave_offset = max(14, min(48, int(round(size * 0.32))))
+    wave_offset = max(16, min(52, int(round(size * 0.25))))
 
     filled_remote = _load_remote_wallet_image(filled_icon_url)
     empty_remote = _load_remote_wallet_image(empty_icon_url)
@@ -8472,7 +8508,8 @@ def apple_logo_from_image_bytes(logo_bytes: bytes, width: int, height: int) -> O
     try:
         img = Image.open(BytesIO(logo_bytes)).convert('RGBA')
         alpha = img.getchannel('A')
-        bbox = alpha.getbbox()
+        visible = alpha.point(lambda value: 255 if value >= 16 else 0)
+        bbox = visible.getbbox()
         if bbox:
             img = img.crop(bbox)
         if img.width < 1 or img.height < 1:
