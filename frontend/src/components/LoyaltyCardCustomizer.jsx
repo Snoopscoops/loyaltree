@@ -1415,14 +1415,14 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     const slotCount = Math.min(20, dynamicProgressPreview.slots)
     // Match the real Wallet renderer: large icons, tight horizontal stride,
     // and a pronounced alternating up/down wave.
-    const maxCell = compact ? 46 : 82
+    const maxCell = compact ? 52 : 94
     const availableWidth = compact ? 310 : 620
-    const strideRatio = .72
+    const strideRatio = .58
     const fittedCell = Math.floor(availableWidth / (1 + Math.max(0, slotCount - 1) * strideRatio))
-    const cellSize = Math.max(compact ? 20 : 30, Math.min(maxCell, fittedCell))
-    const stride = Math.max(16, Math.round(cellSize * strideRatio))
+    const cellSize = Math.max(compact ? 22 : 34, Math.min(maxCell, fittedCell))
+    const stride = Math.max(14, Math.round(cellSize * strideRatio))
     const totalWidth = cellSize + Math.max(0, slotCount - 1) * stride
-    const wave = Math.max(compact ? 7 : 10, Math.min(compact ? 15 : 25, Math.round(cellSize * .30)))
+    const wave = Math.max(compact ? 8 : 12, Math.min(compact ? 17 : 30, Math.round(cellSize * .32)))
     return (
       <div style={{marginTop:compact?6:10}}>
         <div style={{position:'relative',width:'100%',height:cellSize+(wave*2)+4,overflow:'hidden'}}>
@@ -4052,8 +4052,8 @@ const styles = {
   wallet20PreviewShade:{position:'absolute',inset:0,background:'linear-gradient(180deg,rgba(0,0,0,.10),rgba(0,0,0,.58))'},
   wallet20PreviewTop:{position:'relative',zIndex:2,display:'flex',justifyContent:'space-between',alignItems:'flex-start'},
   wallet20PreviewBrand:{display:'flex',gap:10,alignItems:'center'},
-  wallet20PreviewLogo:{width:40,height:40,borderRadius:10,objectFit:'cover',background:'#fff'},
-  wallet20PreviewLogoFallback:{width:40,height:40,borderRadius:10,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(255,255,255,.16)'},
+  wallet20PreviewLogo:{width:48,height:48,borderRadius:11,objectFit:'cover',background:'#fff'},
+  wallet20PreviewLogoFallback:{width:48,height:48,borderRadius:11,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(255,255,255,.16)'},
   wallet20PreviewMenu:{fontWeight:900,letterSpacing:2},
   wallet20PreviewBottom:{position:'absolute',zIndex:2,left:18,right:18,bottom:18,display:'flex',justifyContent:'space-between',alignItems:'flex-end',gap:16},
   wallet20PreviewInfo:{display:'flex',flexDirection:'column',gap:12,minWidth:0},

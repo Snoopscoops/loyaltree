@@ -6524,19 +6524,20 @@ def _draw_dynamic_progress_row(
     # For the common 8-stamp card this renders icons up to ~152 px tall instead
     # of the old ~54 px row. A 0.72 horizontal stride keeps the icons very close
     # together while still allowing up to 20 progress slots to fit the banner.
-    side_margin = 54
+    side_margin = 42
     available = HERO_SIZE[0] - (side_margin * 2)
-    stride_ratio = 0.72
+    # V2 showcase: larger artwork with a tighter, more condensed overlap.
+    stride_ratio = 0.58
     fit_size = int(available / (1 + max(0, slots - 1) * stride_ratio))
-    size = max(38, min(152, fit_size))
-    stride = max(24, int(round(size * stride_ratio)))
+    size = max(42, min(176, fit_size))
+    stride = max(22, int(round(size * stride_ratio)))
     total_w = size + max(0, slots - 1) * stride
     start_x = (HERO_SIZE[0] - total_w) // 2
 
     # Pronounced alternating wave: neighboring icons sit visibly higher/lower.
     # The offset scales with icon size so an 8-slot banner has a strong ~84 px
     # high-to-low difference while denser 15-20 slot banners stay readable.
-    wave_offset = max(12, min(42, int(round(size * 0.30))))
+    wave_offset = max(14, min(48, int(round(size * 0.32))))
 
     filled_remote = _load_remote_wallet_image(filled_icon_url)
     empty_remote = _load_remote_wallet_image(empty_icon_url)
@@ -8470,14 +8471,23 @@ def apple_logo_from_image_bytes(logo_bytes: bytes, width: int, height: int) -> O
     available."""
     try:
         img = Image.open(BytesIO(logo_bytes)).convert('RGBA')
-        img.thumbnail((width, height), Image.LANCZOS)
+        alpha = img.getchannel('A')
+        bbox = alpha.getbbox()
+        if bbox:
+            img = img.crop(bbox)
+        if img.width < 1 or img.height < 1:
+            return None
+        scale = min(width / img.width, height / img.height)
+        new_w = max(1, int(round(img.width * scale)))
+        new_h = max(1, int(round(img.height * scale)))
+        img = img.resize((new_w, new_h), Image.LANCZOS)
         canvas = Image.new('RGBA', (width, height), (0, 0, 0, 0))
         # PassKit positions the logo slot itself, so we cannot remove Apple's
         # native outer margin. What we *can* remove is our own transparent
         # left padding. Anchor the uploaded logo at x=0 instead of centering
         # it inside the 160x50 / @2x / @3x logo canvas. This makes the visible
         # artwork sit as close to Apple's top-left edge as PassKit permits.
-        canvas.paste(img, (0, (height - img.height) // 2), img)
+        canvas.alpha_composite(img, (0, (height - img.height) // 2))
         return _hero_to_png(canvas)
     except Exception as e:
         print(f"APPLE LOGO from image error: {e}")
