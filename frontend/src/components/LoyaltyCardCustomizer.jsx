@@ -1412,14 +1412,44 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     const filledUrl = String(form.wallet_progress_filled_icon_url || '').trim()
     const emptyUrl = String(form.wallet_progress_empty_icon_url || '').trim()
     const fallbackFilled = effectiveWalletProgressType === 'stamps' ? selectedStampIcon.symbol : '●'
-    const cellSize = compact ? 24 : 34
+    const totalSlots = Math.min(20, dynamicProgressPreview.slots)
+    const useTwoRows = totalSlots > 10
+    const cols = useTwoRows ? Math.ceil(totalSlots / 2) : totalSlots
+    const cellSize = compact
+      ? (totalSlots <= 8 ? 38 : totalSlots <= 10 ? 32 : 28)
+      : (totalSlots <= 8 ? 54 : totalSlots <= 10 ? 46 : 38)
+
     return (
       <div style={{marginTop:compact?6:10}}>
-        <div style={{display:'flex',justifyContent:'center',gap:compact?4:6,flexWrap:'nowrap',overflow:'hidden'}}>
-          {Array.from({length:Math.min(20,dynamicProgressPreview.slots)}).map((_,i)=>{
+        <div style={{
+          display:'grid',
+          gridTemplateColumns:`repeat(${Math.max(1,cols)}, ${cellSize}px)`,
+          justifyContent:'center',
+          alignItems:'center',
+          columnGap:compact?7:10,
+          rowGap:compact?4:7,
+          overflow:'visible',
+          padding:compact?'4px 0':'8px 0',
+        }}>
+          {Array.from({length:totalSlots}).map((_,i)=>{
             const filled = i < dynamicProgressPreview.filled
             const src = filled ? filledUrl : (emptyUrl || filledUrl)
-            return <span key={i} style={{width:cellSize,height:cellSize,display:'inline-flex',alignItems:'center',justifyContent:'center',flex:'0 0 auto',borderRadius:'50%',border:src?'none':'1px solid rgba(255,255,255,.48)',background:src?'transparent':(filled?'rgba(255,255,255,.94)':'rgba(255,255,255,.12)'),color:filled?(form.primary_color||'#0d9488'):'rgba(255,255,255,.6)',fontSize:compact?14:18,fontWeight:900,opacity:(!filled&&src&&!emptyUrl)?.32:1}}>
+            const stagger8 = !useTwoRows && totalSlots === 8
+            return <span key={i} style={{
+              width:cellSize,
+              height:cellSize,
+              display:'inline-flex',
+              alignItems:'center',
+              justifyContent:'center',
+              borderRadius:'50%',
+              border:src?'none':'1px solid rgba(255,255,255,.48)',
+              background:src?'transparent':(filled?'rgba(255,255,255,.94)':'rgba(255,255,255,.12)'),
+              color:filled?(form.primary_color||'#0d9488'):'rgba(255,255,255,.6)',
+              fontSize:compact?18:24,
+              fontWeight:900,
+              opacity:(!filled&&src&&!emptyUrl)?.32:1,
+              transform:stagger8 ? `translateY(${i%2===0?-5:5}px)` : 'none',
+            }}>
               {src ? <img src={src} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/> : (filled ? fallbackFilled : '○')}
             </span>
           })}
