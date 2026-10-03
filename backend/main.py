@@ -9622,8 +9622,16 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         stamp_front_secondary_fields = [stamp_balance_front]
         stamp_front_auxiliary_fields = _apple_stamp_progress_fields('stamp_front_progress')
     else:
-        stamp_front_secondary_fields = [stamp_next_reward_front, stamp_balance_front]
-        stamp_front_auxiliary_fields = cycle_auxiliary_fields
+        # Apple PassKit does not expose an exact font-size property for native
+        # Store Card fields. Put the normal numeric NEXT REWARD + STAMPS row in
+        # auxiliaryFields instead of secondaryFields so iOS renders both values
+        # in its smaller native field style.
+        stamp_front_secondary_fields = []
+        stamp_front_auxiliary_fields = [
+            {**stamp_next_reward_front, 'textAlignment': 'PKTextAlignmentLeft'},
+            {**stamp_balance_front, 'textAlignment': 'PKTextAlignmentRight'},
+            *cycle_auxiliary_fields,
+        ]
 
     hybrid_has_points = card_type == 'hybrid' and hybrid_points_enabled(program)
     hybrid_has_stamps = card_type == 'hybrid' and hybrid_stamps_enabled(program)
