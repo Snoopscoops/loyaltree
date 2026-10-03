@@ -6549,7 +6549,7 @@ def _draw_dynamic_progress_row(
         # almost all the way to both banner edges. Larger tiles overlap more,
         # so the row feels condensed even though it spans the full width.
         side_margin = 4
-        size = max(78, min(164, int(round(HERO_SIZE[1] * 0.46))))
+        size = max(86, min(182, int(round(HERO_SIZE[1] * 0.52))))
         if slots <= 1:
             stride = 0
             total_w = size
