@@ -13774,6 +13774,92 @@ async def list_plans():
     """Legacy/default public pricing endpoint. Philippines remains the fallback."""
     return subscription_plans_payload('PH')
 
+# --- Public business inquiry ("Connect with LoyaltyTree") -------------------
+# Lead form on /start and /contact. Saves the lead (best-effort) and emails it
+# to LEAD_NOTIFY_EMAILS (comma-separated; defaults to the two LoyaltyTree inboxes).
+LEAD_NOTIFY_EMAILS = [
+    e.strip() for e in (os.getenv(
+        'LEAD_NOTIFY_EMAILS',
+        'alfredsomeros.theloyaltytree@gmail.com,theloyaltytree@gmail.com'
+    ) or '').split(',') if e.strip()
+]
+
+
+class BusinessInquiry(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    business_name: str = Field(min_length=2, max_length=160)
+    business_type: Optional[str] = Field(default=None, max_length=80)
+    phone: Optional[str] = Field(default=None, max_length=40)
+    email: Optional[str] = Field(default=None, max_length=200)
+    message: Optional[str] = Field(default=None, max_length=1000)
+    # Attribution: ?ref=wallet&biz=<slug>&utm_source=...
+    source: Optional[str] = Field(default=None, max_length=80)
+    source_business: Optional[str] = Field(default=None, max_length=120)
+    page: Optional[str] = Field(default=None, max_length=80)
+    website: Optional[str] = Field(default=None, max_length=200)  # honeypot - humans leave it empty
+
+
+@app.post("/api/v1/public/business-inquiry")
+async def submit_business_inquiry(req: BusinessInquiry, request: Request):
+    if (req.website or '').strip():
+        return {"ok": True}  # bot: pretend success, store nothing
+
+    ip = _security_client_ip(request)
+    allowed, retry_after = _rate_hit(f"business-inquiry:{ip}", 5, 3600)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Too many requests. Please try again later.",
+                            headers={"Retry-After": str(retry_after)})
+
+    phone = (req.phone or '').strip()
+    email = (req.email or '').strip().lower()
+    if not phone and not email:
+        raise HTTPException(status_code=400, detail="Please enter a mobile number or an email so we can reach you.")
+    if email and not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
+        raise HTTPException(status_code=400, detail="Please enter a valid email address.")
+    if phone and len(re.sub(r'\D', '', phone)) < 7:
+        raise HTTPException(status_code=400, detail="Please enter a valid mobile number.")
+
+    row = {
+        'name': req.name.strip(),
+        'business_name': req.business_name.strip(),
+        'business_type': (req.business_type or '').strip() or None,
+        'phone': phone or None,
+        'email': email or None,
+        'message': (req.message or '').strip() or None,
+        'source': (req.source or '').strip() or None,
+        'source_business': (req.source_business or '').strip() or None,
+        'page': (req.page or '').strip() or None,
+        'status': 'new',
+        'created_at': datetime.utcnow().isoformat(),
+    }
+    try:
+        supabase.table('business_leads').insert(row).execute()
+    except Exception as exc:
+        print(f"BUSINESS LEAD save skipped: {exc}")
+
+    esc = html_lib.escape
+    def line(label, value):
+        return f"<tr><td style='padding:6px 12px 6px 0;color:#64748b'>{label}</td><td style='padding:6px 0'><strong>{esc(str(value or '—'))}</strong></td></tr>"
+    body = (
+        "<div style='font-family:Arial,sans-serif;font-size:14px;color:#0f172a'>"
+        "<h2 style='margin:0 0 12px'>New LoyaltyTree business inquiry</h2><table>"
+        + line('Name', row['name']) + line('Business', row['business_name'])
+        + line('Type', row['business_type']) + line('Mobile', row['phone']) + line('Email', row['email'])
+        + line('Came from', ' / '.join(x for x in (row['source'], row['source_business'], row['page']) if x) or 'direct')
+        + "</table>"
+        + (f"<p style='margin-top:14px;white-space:pre-wrap'>{esc(row['message'])}</p>" if row['message'] else '')
+        + "</div>"
+    )
+    subject = f"New lead: {row['business_name']} ({row['name']})"
+    delivered = False
+    for to in LEAD_NOTIFY_EMAILS:
+        ok = await asyncio.to_thread(send_email, to, subject, body, None, email or None)
+        delivered = delivered or ok
+    if not delivered:
+        print(f"BUSINESS LEAD email NOT delivered (check RESEND_API_KEY / sender): {row}")
+    return {"ok": True}
+
+
 @app.get("/api/v1/public/pricing-context")
 async def public_pricing_context(request: Request, country: Optional[str] = Query(default=None)):
     """Resolve a supported pricing region for public visitors.

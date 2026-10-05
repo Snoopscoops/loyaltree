@@ -114,11 +114,18 @@ const PAGE_CONTENT = {
       ],
     },
   },
+  start: {
+    eyebrow: 'FOR BUSINESSES',
+    title: 'Bring LoyaltyTree to your business.',
+    intro: 'Give your customers a loyalty card that lives in Apple Wallet and Google Wallet. Tell us about your business and we will get in touch to help you get started.',
+    inquiry: true,
+  },
   contact: {
     eyebrow: 'CONTACT',
     title: 'Talk to LoyaltyTree.',
     intro: 'Have a question about LoyaltyTree, business setup, support, or partnership opportunities? Reach us directly by mobile or email.',
     contact: true,
+    inquiry: true,
   },
 }
 
@@ -141,6 +148,34 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
   const [customerStep, setCustomerStep] = useState(0)
   const [businessStep, setBusinessStep] = useState(0)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [inquiry, setInquiry] = useState({ name:'', business_name:'', business_type:'', phone:'', email:'', message:'', website:'' })
+  const [inquiryStatus, setInquiryStatus] = useState({ state:'idle', error:'' })
+
+  const submitInquiry = async (e) => {
+    e.preventDefault()
+    if (inquiryStatus.state === 'sending') return
+    setInquiryStatus({ state:'sending', error:'' })
+    const q = new URLSearchParams(window.location.search)
+    const base = (API_BASE || import.meta.env.VITE_API_BASE_URL || 'https://api.theloyaltytree.com').replace(/\/$/, '')
+    try {
+      const res = await fetch(`${base}/api/v1/public/business-inquiry`, {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json' },
+        body: JSON.stringify({
+          ...inquiry,
+          source: q.get('ref') || q.get('utm_source') || 'direct',
+          source_business: q.get('biz') || null,
+          page: `public-${type}`,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Could not send. Please check your details and try again.')
+      trackEvent(API_BASE, 'business_inquiry_submit', { page_name: `Public Info - ${type}`, metadata: { source: q.get('ref') || 'direct' } })
+      setInquiryStatus({ state:'sent', error:'' })
+    } catch (err) {
+      setInquiryStatus({ state:'error', error: err.message || 'Could not send. Please try again.' })
+    }
+  }
   const [pricingBranchTier, setPricingBranchTier] = useState('1')
   const [pricingBillingCycle, setPricingBillingCycle] = useState('monthly')
   const [pricingStep, setPricingStep] = useState(0)
@@ -1134,6 +1169,54 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
         </div>
       </section>}
 
+      {page.inquiry && <section id="inquiry" style={s.section}>
+        <div style={s.inquiryCard}>
+          {inquiryStatus.state === 'sent' ? (
+            <div style={{textAlign:'center',padding:'12px 0'}}>
+              <div style={{fontSize:42}}>✅</div>
+              <h2 style={{...s.contactHeading,fontSize:26}}>Thank you! We got your message.</h2>
+              <p style={s.contactLead}>We will contact you within 24 hours using the details you gave.</p>
+            </div>
+          ) : (
+            <form onSubmit={submitInquiry}>
+              <span style={s.contactKicker}>GET STARTED</span>
+              <h2 style={{...s.contactHeading,fontSize:'clamp(22px,3.5vw,30px)',margin:'8px 0 6px'}}>Tell us about your business</h2>
+              <p style={{...s.contactLead,marginBottom:18}}>It takes a minute. We will reach out within 24 hours.</p>
+              <div style={s.inquiryGrid}>
+                <label style={s.inquiryLabel}>Your name *
+                  <input style={s.inquiryInput} required minLength={2} maxLength={120} value={inquiry.name} onChange={e=>setInquiry(v=>({...v,name:e.target.value}))} autoComplete="name" />
+                </label>
+                <label style={s.inquiryLabel}>Business name *
+                  <input style={s.inquiryInput} required minLength={2} maxLength={160} value={inquiry.business_name} onChange={e=>setInquiry(v=>({...v,business_name:e.target.value}))} autoComplete="organization" />
+                </label>
+                <label style={s.inquiryLabel}>Type of business
+                  <select style={s.inquiryInput} value={inquiry.business_type} onChange={e=>setInquiry(v=>({...v,business_type:e.target.value}))}>
+                    <option value="">Select…</option>
+                    {['Cafe / Restaurant','Salon / Spa / Barbershop','Retail store','Gym / Fitness','Clinic / Wellness','Online shop','Other'].map(o=><option key={o} value={o}>{o}</option>)}
+                  </select>
+                </label>
+                <label style={s.inquiryLabel}>Mobile number
+                  <input style={s.inquiryInput} type="tel" inputMode="tel" maxLength={40} placeholder="09XX XXX XXXX" value={inquiry.phone} onChange={e=>setInquiry(v=>({...v,phone:e.target.value}))} autoComplete="tel" />
+                </label>
+                <label style={{...s.inquiryLabel,gridColumn:'1 / -1'}}>Email
+                  <input style={s.inquiryInput} type="email" maxLength={200} value={inquiry.email} onChange={e=>setInquiry(v=>({...v,email:e.target.value}))} autoComplete="email" />
+                </label>
+                <label style={{...s.inquiryLabel,gridColumn:'1 / -1'}}>What would you like to achieve? (optional)
+                  <textarea style={{...s.inquiryInput,minHeight:84,resize:'vertical'}} maxLength={1000} value={inquiry.message} onChange={e=>setInquiry(v=>({...v,message:e.target.value}))} />
+                </label>
+                {/* Honeypot: hidden from people, bots fill it in */}
+                <input tabIndex={-1} autoComplete="off" aria-hidden="true" value={inquiry.website} onChange={e=>setInquiry(v=>({...v,website:e.target.value}))} style={{position:'absolute',left:'-9999px',width:1,height:1,opacity:0}} />
+              </div>
+              <div style={{fontSize:12,color:'#64748b',margin:'4px 0 14px'}}>* Please give a mobile number or an email so we can reach you.</div>
+              {inquiryStatus.state === 'error' && <div role="alert" style={{color:'#b91c1c',fontSize:13,fontWeight:700,marginBottom:12}}>{inquiryStatus.error}</div>}
+              <button type="submit" disabled={inquiryStatus.state === 'sending'} style={{...s.primary,width:'100%',opacity:inquiryStatus.state === 'sending' ? .7 : 1}}>
+                {inquiryStatus.state === 'sending' ? 'Sending…' : 'Contact me'}
+              </button>
+            </form>
+          )}
+        </div>
+      </section>}
+
       {page.contact && <section style={s.section}>
         <div style={s.contactIntroCard}>
           <span style={s.contactKicker}>LET'S CONNECT</span>
@@ -1428,6 +1511,10 @@ const s={
   founderMediaNote:{fontSize:11.5,lineHeight:1.55,color:'#64748b',margin:'6px 0 11px'},
   founderMediaLinks:{display:'flex',flexWrap:'wrap',gap:8},
   founderMediaLink:{display:'inline-flex',alignItems:'center',gap:4,padding:'8px 10px',borderRadius:9,background:'#fff',border:'1px solid #99f6e4',color:'#0f766e',fontSize:11.5,fontWeight:800,textDecoration:'none'},
+  inquiryCard:{maxWidth:640,margin:'0 auto',border:'1px solid #e2e8f0',borderRadius:20,padding:'clamp(20px,4vw,32px)',background:'#fff',boxShadow:'0 16px 42px rgba(15,23,42,.08)',position:'relative'},
+  inquiryGrid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:14,marginBottom:6},
+  inquiryLabel:{display:'flex',flexDirection:'column',gap:6,fontSize:12.5,fontWeight:800,color:'#334155'},
+  inquiryInput:{boxSizing:'border-box',width:'100%',padding:'11px 12px',border:'1px solid #cbd5e1',borderRadius:11,fontSize:14,fontFamily:'inherit',color:'#0f172a',background:'#fff'},
   contactIntroCard:{maxWidth:760,margin:'0 auto 28px',textAlign:'center'},
   contactKicker:{fontSize:10,fontWeight:900,letterSpacing:1.5,color:'#0f766e'},
   contactHeading:{fontSize:'clamp(26px,4vw,40px)',lineHeight:1.12,fontWeight:900,margin:'8px 0 12px',color:'#0f172a'},
