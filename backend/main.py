@@ -9240,10 +9240,12 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     # branch posts to avoid repeating the branch twice.
     if ann_scope == 'branch' and ann_branch_name:
         announcement_value = f"{ann_branch_name} — {base_announcement_value}"
-        announcement_change_message = f"{biz_name}: %@"
+        announcement_change_message = "%@"
     else:
         announcement_value = base_announcement_value
-        announcement_change_message = f"{ann_notification_header}: %@"
+        # iOS already shows the pass organizationName/logo as the notification
+        # title, so prefixing the business name here printed it twice.
+        announcement_change_message = "%@"
 
     card_cycle_reset_on = card_cycle_reset_on_date(customer, program)
     # Keep cycle/reset calculations in the backend, but do not expose RESET ON
@@ -9509,14 +9511,14 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
             back_fields.append({
                 'key': 'announcement',
                 'label': '📢 ANNOUNCEMENT',
-                'value': announcement_value[:150],
+                'value': announcement_value[:600],
                 'changeMessage': announcement_change_message,
             })
-            if ann_message.strip() and ann_message.strip() != ann_title.strip():
+            if ann_message.strip() and ann_message.strip() != ann_title.strip() and ann_message.strip() != announcement_value:
                 back_fields.append({
                     'key': 'announcement_detail',
                     'label': ' ',
-                    'value': ann_message.strip()[:400],
+                    'value': ann_message.strip()[:1000],
                 })
 
         back_fields += [
@@ -9555,7 +9557,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
             {
                 'key': 'announcement',
                 'label': '📢 ANNOUNCEMENT',
-                'value': announcement_value[:150],
+                'value': announcement_value[:600],
                 'changeMessage': announcement_change_message,
             },
         ]
@@ -9570,7 +9572,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
             if order_ahead_status_field:
                 back_fields.insert(-1, order_ahead_status_field)
         if ann_message.strip() and ann_message.strip() != announcement_value:
-            back_fields.append({'key': 'announcement_detail', 'label': ' ', 'value': ann_message.strip()[:400]})
+            back_fields.append({'key': 'announcement_detail', 'label': ' ', 'value': ann_message.strip()[:1000]})
 
     # Membership expiry reminder on Apple Wallet. The daily cron marks the pass
     # dirty and wakes the device on each exact configured stage. On non-reminder
@@ -11837,12 +11839,12 @@ def build_cl_apple_pass_json(customer: dict, business: dict, contract: Optional[
         {
             'key': 'announcement',
             'label': '📢 ANNOUNCEMENT',
-            'value': announcement_value[:150],
+            'value': announcement_value[:600],
             'changeMessage': '%@',
         },
     ]
     if ann_message.strip() and ann_message.strip() != announcement_value:
-        back_fields.append({'key': 'announcement_detail', 'label': ' ', 'value': ann_message.strip()[:400]})
+        back_fields.append({'key': 'announcement_detail', 'label': ' ', 'value': ann_message.strip()[:1000]})
 
     return {
         'formatVersion': 1,
