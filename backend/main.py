@@ -37962,6 +37962,27 @@ async def apple_log(request: Request):
 # These jobs are safe to call more than once a day because each uses its own
 # durable dedupe rule before delivering a customer notification.
 
+def _log_automation_send(business: dict, customer: dict, automation_type: str, header: str, body: str, message_id: str):
+    """Best-effort record of a delivered birthday / win-back message.
+
+    Powers the Automations tab's "messages sent" numbers. Never raises: if the
+    automation_message_log table has not been created yet, sending still works
+    and the stats endpoint falls back to the per-customer markers.
+    """
+    try:
+        supabase.table('automation_message_log').insert({
+            'business_id': business.get('id'),
+            'customer_id': customer.get('id'),
+            'automation_type': automation_type,
+            'header': (header or '')[:200],
+            'body': (body or '')[:1000],
+            'message_id': message_id,
+            'sent_at': datetime.utcnow().isoformat(),
+        }).execute()
+    except Exception as exc:
+        print(f"AUTOMATION LOG skipped ({automation_type}): {exc}")
+
+
 @app.post("/api/v1/cron/birthday-greetings")
 async def run_birthday_greetings(_: bool = Depends(require_cron)):
     today = _loyalty_today()
@@ -38032,6 +38053,7 @@ async def run_birthday_greetings(_: bool = Depends(require_cron)):
             )
             if ok:
                 sent += 1
+                _log_automation_send(business, customer, 'birthday', notification_header, body, f"birthday-{customer.get('id')}-{occasion_year}")
                 try:
                     supabase.table("customers").update({'last_birthday_greeting_year': occasion_year}).eq("id", customer.get("id")).execute()
                 except Exception:
@@ -38087,19 +38109,22 @@ async def run_win_back(_: bool = Depends(require_cron)):
                 continue
 
             object_id = f"{GOOGLE_WALLET_ISSUER_ID}.{customer.get('public_id', '')}"
+            winback_body = _render_retention_message(
+                retention_settings['win_back_message'],
+                business_name=business.get('name','us'),
+                customer_name=customer.get('name') or 'Customer',
+                first_name=_first_name(customer.get('name')),
+                days_inactive=(now-reference_date).days if reference_date else None
+            )
             ok = send_wallet_object_message(
                 object_id,
                 header="We miss you! 🌱",
-                body=_render_retention_message(
-                    retention_settings['win_back_message'],
-                    business_name=business.get('name','us'),
-                    customer_name=customer.get('name') or 'Customer',
-                    days_inactive=(now-reference_date).days if reference_date else None
-                ),
+                body=winback_body,
                 message_id=f"winback-{customer.get('id')}-{now.strftime('%Y%m%d')}",
             )
             if ok:
                 sent += 1
+                _log_automation_send(business, customer, 'win_back', "We miss you! 🌱", winback_body, f"winback-{customer.get('id')}-{now.strftime('%Y%m%d')}")
                 try:
                     supabase.table("customers").update({'last_winback_sent_at': now.isoformat()}).eq("id", customer.get("id")).execute()
                 except Exception:
@@ -39825,6 +39850,78 @@ async def birthday_storage_diagnostic(public_id: str, authorization: str = Heade
                 'error': friendly_db_error(exc),
             },
         )
+
+
+@app.get('/api/v1/business/{public_id}/automation-stats')
+async def get_automation_stats(public_id:str, authorization:str=Header(default='')):
+    """How many birthday / win-back messages LoyaltyTree has sent for this business."""
+    require_owner_session(public_id,authorization)
+    business=safe_get_business(public_id)
+    if not business: raise HTTPException(status_code=404,detail='Business not found')
+    biz_id=business.get('id')
+    now=datetime.utcnow()
+    d7=(now-timedelta(days=7)).isoformat()
+    d30=(now-timedelta(days=30)).isoformat()
+    month_start=now.replace(day=1,hour=0,minute=0,second=0,microsecond=0).isoformat()
+    year_start=now.replace(month=1,day=1,hour=0,minute=0,second=0,microsecond=0).isoformat()
+    types=('birthday','win_back')
+    stats={t:{'total':0,'last_7_days':0,'last_30_days':0,'this_month':0,'this_year':0} for t in types}
+    recent=[]
+    tracking='log'
+    try:
+        rows=[]
+        page=0
+        while True:
+            chunk=(supabase.table('automation_message_log')
+                   .select('customer_id,automation_type,header,body,sent_at')
+                   .eq('business_id',biz_id).order('sent_at',desc=True)
+                   .range(page*1000,page*1000+999).execute().data or [])
+            rows.extend(chunk)
+            if len(chunk)<1000 or len(rows)>=20000: break
+            page+=1
+        for r in rows:
+            t=r.get('automation_type')
+            if t not in stats: continue
+            ts=str(r.get('sent_at') or '')
+            stats[t]['total']+=1
+            if ts>=d7: stats[t]['last_7_days']+=1
+            if ts>=d30: stats[t]['last_30_days']+=1
+            if ts>=month_start: stats[t]['this_month']+=1
+            if ts>=year_start: stats[t]['this_year']+=1
+        recent_rows=rows[:20]
+        ids=list({r.get('customer_id') for r in recent_rows if r.get('customer_id')})
+        names={}
+        if ids:
+            for c in (supabase.table('customers').select('id,name').in_('id',ids).execute().data or []):
+                names[c.get('id')]=c.get('name')
+        recent=[{
+            'automation_type':r.get('automation_type'),
+            'customer_name':names.get(r.get('customer_id')) or 'Customer',
+            'header':r.get('header'),'body':r.get('body'),'sent_at':r.get('sent_at'),
+        } for r in recent_rows]
+    except Exception as exc:
+        # Log table not created yet: estimate from the per-customer markers the
+        # cron jobs already write. Birthday = greeted this year; win-back =
+        # most recent nudge only (older ones are not recoverable).
+        print(f"AUTOMATION STATS fallback business_id={biz_id}: {exc}")
+        tracking='estimate'
+        try:
+            custs=(supabase.table('customers').select('last_birthday_greeting_year,last_winback_sent_at')
+                   .eq('business_id',biz_id).execute().data or [])
+            for c in custs:
+                if c.get('last_birthday_greeting_year') == now.year:
+                    stats['birthday']['this_year']+=1
+                    stats['birthday']['total']+=1
+                ts=str(c.get('last_winback_sent_at') or '')
+                if ts:
+                    stats['win_back']['total']+=1
+                    if ts>=d7: stats['win_back']['last_7_days']+=1
+                    if ts>=d30: stats['win_back']['last_30_days']+=1
+                    if ts>=month_start: stats['win_back']['this_month']+=1
+                    if ts>=year_start: stats['win_back']['this_year']+=1
+        except Exception:
+            pass
+    return {'tracking':tracking,'birthday':stats['birthday'],'win_back':stats['win_back'],'recent':recent}
 
 
 @app.get('/api/v1/business/{public_id}/retention-settings')

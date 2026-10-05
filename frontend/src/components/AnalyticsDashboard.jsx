@@ -45,6 +45,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
   })
   const [savingRetentionSettings, setSavingRetentionSettings] = useState(false)
   const [retentionSettingsMessage, setRetentionSettingsMessage] = useState('')
+  const [automationStats, setAutomationStats] = useState({ tracking: 'log', birthday: {}, win_back: {}, recent: [] })
   const [redemptionDrilldown, setRedemptionDrilldown] = useState({ open: false, loading: false, error: '', rows: [], total: 0 })
 
   useEffect(() => {
@@ -57,6 +58,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
 
   useEffect(() => {
     fetchExtendedAnalytics()
+    fetchAutomationStats()
   }, [user.business_slug, user.token])
 
   const authFetch = (url, options = {}) => {
@@ -115,6 +117,15 @@ function AnalyticsDashboard({ API_BASE, user }) {
       setExtendedError('Could not load CRM, Wallet Queue, Retention, or Transaction Security.')
     }
     setExtendedLoading(false)
+  }
+
+  const fetchAutomationStats = async () => {
+    if (!user?.business_slug || !user?.token) return
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/automation-stats`)
+      const data = await res.json().catch(() => ({}))
+      if (res.ok) setAutomationStats(data)
+    } catch (err) { /* stats are optional; leave previous numbers */ }
   }
 
   const saveRetentionSettings = async () => {
@@ -507,6 +518,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
             ['overview','Overview'],
             ['customers','Customers'],
             ['interbranch','Inter-Branch'],
+            ['automations','Automations'],
             ['activity','Activity'],
             ['reports','Reports'],
           ].map(([key,label]) => (
@@ -1019,7 +1031,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
         <details open={advancedOpen} onToggle={e=>setAdvancedOpen(e.currentTarget.open)} style={styles.advancedDetails}>
           <summary style={styles.advancedSummary}>
             <span>Advanced analytics & operations</span>
-            <span style={styles.mutedText}>Wallet health, CRM, security and retention settings</span>
+            <span style={styles.mutedText}>Wallet health, CRM, security and retention analytics</span>
           </summary>
           <div style={{paddingTop:18}}>
       {/* Wallet Queue — operational analytics, not an Owner Dashboard tab */}
@@ -1123,6 +1135,143 @@ function AnalyticsDashboard({ API_BASE, user }) {
       <div id="retention-analytics" style={styles.section}>
         <h2 className="an-section-title" style={styles.sectionTitle}>🔁 Retention Analytics</h2>
 
+        <div id="birthday-celebrants-detail" style={{...styles.insightCard,marginBottom:16,scrollMarginTop:16}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12,flexWrap:'wrap',marginBottom:14}}>
+            <div>
+              <h4 style={{...styles.insightTitle,marginBottom:4}}>🎉 Birthday Celebrants</h4>
+              <div style={styles.mutedText}>See this month's celebrants and upcoming birthdays. Reward eligibility uses unique qualifying visit days, so same-day adjustments or redemptions do not inflate eligibility.</div>
+            </div>
+            <div style={styles.birthdayFilterBar}>
+              {[
+                ['all','All Birthdays',birthdayData.counts?.all || birthdayData.diagnostics?.resolved_people_with_birthday || 0],
+                ['month','This Month',birthdayData.counts?.this_month || 0],
+                ['today','Today',birthdayData.counts?.today || 0],
+                ['7d','Next 7 Days',birthdayData.counts?.next_7_days || 0],
+                ['30d','Next 30 Days',birthdayData.counts?.next_30_days || 0],
+              ].map(([key,label,count])=>(
+                <button key={key} type="button" onClick={()=>setBirthdayFilter(key)} style={{...styles.filterChip,...(birthdayFilter===key?styles.filterChipActive:{})}}>{label} · {count}</button>
+              ))}
+            </div>
+          </div>
+
+          <div className="an-overview-grid" style={{...styles.overviewGrid,marginBottom:14}}>
+            <MiniMetric label="Saved Birthdays" value={birthdayData.counts?.all || birthdayData.diagnostics?.resolved_people_with_birthday || 0} />
+            <MiniMetric label="This Month" value={birthdayData.counts?.this_month || 0} />
+            <MiniMetric label="Today" value={birthdayData.counts?.today || 0} />
+            <MiniMetric label="Next 30 Days" value={birthdayData.counts?.next_30_days || 0} />
+          </div>
+
+          <div style={{fontSize:12,color:'#64748b',marginBottom:10}}>
+            Birthday data: {birthdayData.diagnostics?.resolved_people_with_birthday ?? birthdayData.counts?.all ?? 0} people ·
+            {' '}{birthdayData.diagnostics?.total_membership_rows ?? '—'} membership rows
+            {(birthdayData.diagnostics?.unreadable_birthday_rows || 0) > 0 ? ` · ${birthdayData.diagnostics.unreadable_birthday_rows} unreadable` : ''}
+          </div>
+          <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:8}}>{birthdayFilterLabel}</div>
+          {birthdayRows.length === 0 ? <div style={styles.noData}>No birthday celebrants in this view.</div> : (
+            <div>
+              {birthdayRows.map(c=>(
+                <div key={`${c.customer_public_id}-${c.birthday}`} style={styles.birthdayRow}>
+                  <div style={{minWidth:0,flex:1}}>
+                    <div style={{fontWeight:800,color:'#1e293b'}}>{c.customer_name}</div>
+                    <div style={styles.mutedText}>
+                      🎂 {c.birthday ? new Date(`${c.birthday}T00:00:00`).toLocaleDateString(undefined,{month:'short',day:'numeric'}) : '—'}
+                      {c.is_today ? ' · Today!' : c.days_until >= 0 ? ` · ${c.days_until} day${c.days_until===1?'':'s'} away` : ''}
+                      {c.total_visits != null ? ` · ${c.total_visits} recorded visit${c.total_visits===1?'':'s'}` : ''}
+                    </div>
+                    {c.last_visit_at && <div style={styles.mutedText}>Last qualifying visit: {new Date(c.last_visit_at).toLocaleDateString()}</div>}
+                  </div>
+                  <div style={{textAlign:'right',minWidth:150}}>
+                    {!retentionSettings.birthday_reward_enabled ? (
+                      <span style={styles.statusPill}>Greeting only</span>
+                    ) : c.reward_status ? (
+                      <>
+                        <span style={{...styles.statusPill,...(c.reward_status==='redeemed'?styles.statusGood:c.reward_status==='issued'?styles.statusWarn:{})}}>Reward {c.reward_status}</span>
+                        {c.reward_expires_at && <div style={styles.mutedText}>Expires {c.reward_expires_at}</div>}
+                      </>
+                    ) : c.reward_eligible ? (
+                      <span style={{...styles.statusPill,...styles.statusGood}}>Reward eligible</span>
+                    ) : (
+                      <>
+                        <span style={{...styles.statusPill,...styles.statusBad}}>Not eligible</span>
+                        {!!c.reward_eligibility_reasons?.length && <div style={{...styles.mutedText,maxWidth:240}}>{c.reward_eligibility_reasons.join(' · ')}</div>}
+                      </>
+                    )}
+                    {c.verification_required && <div style={styles.mutedText}>ID verification requested</div>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="an-overview-grid" style={styles.overviewGrid}>
+          <MiniMetric label="Repeat Customer Rate" value={`${retentionData.repeat_customer_rate || 0}%`} />
+          <MiniMetric label="Active ≤30 Days" value={`${retentionData.retention_30_rate || 0}%`} />
+          <MiniMetric label="Active ≤60 Days" value={`${retentionData.retention_60_rate || 0}%`} />
+          <MiniMetric label="Active ≤90 Days" value={`${retentionData.retention_90_rate || 0}%`} />
+          <MiniMetric label="Avg. Days Between Activity" value={retentionData.average_days_between_activity ?? '—'} />
+          <MiniMetric label="Retention Opportunities" value={retentionOps.length} />
+        </div>
+        <div className="an-module-grid" style={styles.moduleGrid}>
+          {retentionOps.length === 0 ? <div style={styles.insightCard}><div style={styles.noData}>No retention opportunities detected right now.</div></div> :
+            retentionOps.slice(0, 30).map((o, i) => (
+              <div key={`${o.customer_public_id || 'customer'}-${i}`} style={styles.insightCard}>
+                <div style={{display:'flex',justifyContent:'space-between',gap:10}}>
+                  <strong>{o.customer_name || 'Customer'}</strong>
+                  <span style={styles.statusPill}>{(o.type || 'retention').replaceAll('_',' ')}</span>
+                </div>
+                <div style={{...styles.mutedText,marginTop:8}}>{o.suggested_message}</div>
+                {o.days_inactive != null && <div style={{fontSize:12,color:'#b45309',marginTop:7}}>{o.days_inactive} days inactive</div>}
+              </div>
+            ))}
+        </div>
+      </div>
+
+          </div>
+        </details>
+      )}
+
+
+      {activeTab === 'automations' && <>
+        <div style={styles.section}>
+          <h2 className="an-section-title" style={styles.sectionTitle}>⚙️ Automations</h2>
+          <div style={{...styles.mutedText,marginBottom:16}}>Edit the messages that LoyaltyTree sends for you, and see how many have gone out.</div>
+
+          <div style={{...styles.insightCard,marginBottom:16}}>
+            <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start',flexWrap:'wrap',marginBottom:12}}>
+              <div>
+                <h4 style={{...styles.insightTitle,marginBottom:4}}>📨 Messages Sent</h4>
+                <div style={styles.mutedText}>Birthday and win-back messages delivered to customers' wallet cards.</div>
+              </div>
+              <button type="button" style={styles.actionBtnCompact} onClick={fetchAutomationStats}>Refresh</button>
+            </div>
+            <div className="an-overview-grid" style={{...styles.overviewGrid,marginBottom:14}}>
+              <MiniMetric label="🎂 Birthday · This Month" value={automationStats.birthday?.this_month || 0} />
+              <MiniMetric label="🎂 Birthday · This Year" value={automationStats.birthday?.this_year || 0} />
+              <MiniMetric label="🎂 Birthday · All Time" value={automationStats.birthday?.total || 0} />
+              <MiniMetric label="🔁 Win-Back · Last 7 Days" value={automationStats.win_back?.last_7_days || 0} />
+              <MiniMetric label="🔁 Win-Back · Last 30 Days" value={automationStats.win_back?.last_30_days || 0} />
+              <MiniMetric label="🔁 Win-Back · All Time" value={automationStats.win_back?.total || 0} />
+            </div>
+            {automationStats.tracking === 'estimate' && (
+              <div style={{...styles.mutedText,marginBottom:12}}>Showing estimates from customer records. Exact counts and the recent-messages list start once the message log is enabled.</div>
+            )}
+            <div style={{...styles.settingTitle,marginBottom:8}}>Recent messages</div>
+            {(automationStats.recent || []).length === 0 ? <div style={styles.noData}>No automated messages sent yet.</div> :
+              automationStats.recent.map((m,i)=>(
+                <div key={`${m.sent_at}-${i}`} style={styles.auditRow}>
+                  <div>
+                    <strong>{m.automation_type === 'birthday' ? '🎂' : '🔁'} {m.customer_name}</strong>
+                    <div style={styles.mutedText}>{m.body}</div>
+                  </div>
+                  <div style={{textAlign:'right'}}>
+                    <span style={{...styles.statusPill,...styles.statusGood}}>{m.automation_type === 'birthday' ? 'Birthday' : 'Win-back'}</span>
+                    <div style={styles.mutedText}>{m.sent_at ? new Date(m.sent_at.endsWith('Z') || m.sent_at.includes('+') ? m.sent_at : m.sent_at + 'Z').toLocaleString() : ''}</div>
+                  </div>
+                </div>
+              ))}
+          </div>
+
         <div style={{...styles.insightCard, marginBottom:16}}>
           <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start',flexWrap:'wrap',marginBottom:14}}>
             <div>
@@ -1130,7 +1279,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
               <div style={styles.mutedText}>Choose an early send timing to greet customers before their birthday. When Birthday Rewards are enabled, the coupon is issued on the same scheduled run.</div>
             </div>
             <button className="an-actionbtn" style={styles.actionBtn} disabled={savingRetentionSettings} onClick={saveRetentionSettings}>
-              {savingRetentionSettings ? 'Saving…' : 'Save Birthday & Retention Settings'}
+              {savingRetentionSettings ? 'Saving…' : 'Save Birthday Settings'}
             </button>
           </div>
 
@@ -1247,8 +1396,19 @@ function AnalyticsDashboard({ API_BASE, user }) {
             </div>}
           </>}
 
-          <div style={{height:18}} />
-          <div style={{borderTop:'1px solid #e2e8f0',paddingTop:16}}>
+          {retentionSettingsMessage && <div style={{marginTop:10,fontSize:13,fontWeight:700,color:retentionSettingsMessage.includes('Saved')?'#166534':'#b91c1c'}}>{retentionSettingsMessage}</div>}
+        </div>
+
+          <div style={{...styles.insightCard,marginBottom:16}}>
+            <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start',flexWrap:'wrap',marginBottom:14}}>
+              <div>
+                <h4 style={{...styles.insightTitle,marginBottom:4}}>🔁 Churn / Win-Back Automation</h4>
+                <div style={styles.mutedText}>Automatically nudge customers who stopped coming back. Each customer gets at most one win-back message every 30 days.</div>
+              </div>
+              <button className="an-actionbtn" style={styles.actionBtn} disabled={savingRetentionSettings} onClick={saveRetentionSettings}>
+                {savingRetentionSettings ? 'Saving…' : 'Save Win-Back Settings'}
+              </button>
+            </div>
           <label style={styles.editorLabel}>Churn / Win-Back Message</label>
           <textarea
             value={retentionSettings.win_back_message || ''}
@@ -1257,7 +1417,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
             rows={3}
             style={styles.editorTextarea}
           />
-          <div style={styles.editorHelp}>Available: {'{business_name}'}, {'{customer_name}'}, {'{days_inactive}'}</div>
+          <div style={styles.editorHelp}>Available: {'{business_name}'}, {'{first_name}'}, {'{customer_name}'}, {'{days_inactive}'}</div>
 
           <div style={{height:14}} />
           <label style={styles.editorLabel}>Mark Customer as Churn Risk After</label>
@@ -1272,105 +1432,10 @@ function AnalyticsDashboard({ API_BASE, user }) {
             />
             <span style={styles.mutedText}>days without loyalty activity</span>
           </div>
-          </div>
           {retentionSettingsMessage && <div style={{marginTop:10,fontSize:13,fontWeight:700,color:retentionSettingsMessage.includes('Saved')?'#166534':'#b91c1c'}}>{retentionSettingsMessage}</div>}
-        </div>
-
-        <div id="birthday-celebrants-detail" style={{...styles.insightCard,marginBottom:16,scrollMarginTop:16}}>
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12,flexWrap:'wrap',marginBottom:14}}>
-            <div>
-              <h4 style={{...styles.insightTitle,marginBottom:4}}>🎉 Birthday Celebrants</h4>
-              <div style={styles.mutedText}>See this month's celebrants and upcoming birthdays. Reward eligibility uses unique qualifying visit days, so same-day adjustments or redemptions do not inflate eligibility.</div>
-            </div>
-            <div style={styles.birthdayFilterBar}>
-              {[
-                ['all','All Birthdays',birthdayData.counts?.all || birthdayData.diagnostics?.resolved_people_with_birthday || 0],
-                ['month','This Month',birthdayData.counts?.this_month || 0],
-                ['today','Today',birthdayData.counts?.today || 0],
-                ['7d','Next 7 Days',birthdayData.counts?.next_7_days || 0],
-                ['30d','Next 30 Days',birthdayData.counts?.next_30_days || 0],
-              ].map(([key,label,count])=>(
-                <button key={key} type="button" onClick={()=>setBirthdayFilter(key)} style={{...styles.filterChip,...(birthdayFilter===key?styles.filterChipActive:{})}}>{label} · {count}</button>
-              ))}
-            </div>
           </div>
-
-          <div className="an-overview-grid" style={{...styles.overviewGrid,marginBottom:14}}>
-            <MiniMetric label="Saved Birthdays" value={birthdayData.counts?.all || birthdayData.diagnostics?.resolved_people_with_birthday || 0} />
-            <MiniMetric label="This Month" value={birthdayData.counts?.this_month || 0} />
-            <MiniMetric label="Today" value={birthdayData.counts?.today || 0} />
-            <MiniMetric label="Next 30 Days" value={birthdayData.counts?.next_30_days || 0} />
-          </div>
-
-          <div style={{fontSize:12,color:'#64748b',marginBottom:10}}>
-            Birthday data: {birthdayData.diagnostics?.resolved_people_with_birthday ?? birthdayData.counts?.all ?? 0} people ·
-            {' '}{birthdayData.diagnostics?.total_membership_rows ?? '—'} membership rows
-            {(birthdayData.diagnostics?.unreadable_birthday_rows || 0) > 0 ? ` · ${birthdayData.diagnostics.unreadable_birthday_rows} unreadable` : ''}
-          </div>
-          <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:8}}>{birthdayFilterLabel}</div>
-          {birthdayRows.length === 0 ? <div style={styles.noData}>No birthday celebrants in this view.</div> : (
-            <div>
-              {birthdayRows.map(c=>(
-                <div key={`${c.customer_public_id}-${c.birthday}`} style={styles.birthdayRow}>
-                  <div style={{minWidth:0,flex:1}}>
-                    <div style={{fontWeight:800,color:'#1e293b'}}>{c.customer_name}</div>
-                    <div style={styles.mutedText}>
-                      🎂 {c.birthday ? new Date(`${c.birthday}T00:00:00`).toLocaleDateString(undefined,{month:'short',day:'numeric'}) : '—'}
-                      {c.is_today ? ' · Today!' : c.days_until >= 0 ? ` · ${c.days_until} day${c.days_until===1?'':'s'} away` : ''}
-                      {c.total_visits != null ? ` · ${c.total_visits} recorded visit${c.total_visits===1?'':'s'}` : ''}
-                    </div>
-                    {c.last_visit_at && <div style={styles.mutedText}>Last qualifying visit: {new Date(c.last_visit_at).toLocaleDateString()}</div>}
-                  </div>
-                  <div style={{textAlign:'right',minWidth:150}}>
-                    {!retentionSettings.birthday_reward_enabled ? (
-                      <span style={styles.statusPill}>Greeting only</span>
-                    ) : c.reward_status ? (
-                      <>
-                        <span style={{...styles.statusPill,...(c.reward_status==='redeemed'?styles.statusGood:c.reward_status==='issued'?styles.statusWarn:{})}}>Reward {c.reward_status}</span>
-                        {c.reward_expires_at && <div style={styles.mutedText}>Expires {c.reward_expires_at}</div>}
-                      </>
-                    ) : c.reward_eligible ? (
-                      <span style={{...styles.statusPill,...styles.statusGood}}>Reward eligible</span>
-                    ) : (
-                      <>
-                        <span style={{...styles.statusPill,...styles.statusBad}}>Not eligible</span>
-                        {!!c.reward_eligibility_reasons?.length && <div style={{...styles.mutedText,maxWidth:240}}>{c.reward_eligibility_reasons.join(' · ')}</div>}
-                      </>
-                    )}
-                    {c.verification_required && <div style={styles.mutedText}>ID verification requested</div>}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
-
-        <div className="an-overview-grid" style={styles.overviewGrid}>
-          <MiniMetric label="Repeat Customer Rate" value={`${retentionData.repeat_customer_rate || 0}%`} />
-          <MiniMetric label="Active ≤30 Days" value={`${retentionData.retention_30_rate || 0}%`} />
-          <MiniMetric label="Active ≤60 Days" value={`${retentionData.retention_60_rate || 0}%`} />
-          <MiniMetric label="Active ≤90 Days" value={`${retentionData.retention_90_rate || 0}%`} />
-          <MiniMetric label="Avg. Days Between Activity" value={retentionData.average_days_between_activity ?? '—'} />
-          <MiniMetric label="Retention Opportunities" value={retentionOps.length} />
-        </div>
-        <div className="an-module-grid" style={styles.moduleGrid}>
-          {retentionOps.length === 0 ? <div style={styles.insightCard}><div style={styles.noData}>No retention opportunities detected right now.</div></div> :
-            retentionOps.slice(0, 30).map((o, i) => (
-              <div key={`${o.customer_public_id || 'customer'}-${i}`} style={styles.insightCard}>
-                <div style={{display:'flex',justifyContent:'space-between',gap:10}}>
-                  <strong>{o.customer_name || 'Customer'}</strong>
-                  <span style={styles.statusPill}>{(o.type || 'retention').replaceAll('_',' ')}</span>
-                </div>
-                <div style={{...styles.mutedText,marginTop:8}}>{o.suggested_message}</div>
-                {o.days_inactive != null && <div style={{fontSize:12,color:'#b45309',marginTop:7}}>{o.days_inactive} days inactive</div>}
-              </div>
-            ))}
-        </div>
-      </div>
-
-          </div>
-        </details>
-      )}
+      </>}
 
       {activeTab === 'reports' && (
         <div style={styles.section}>
