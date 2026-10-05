@@ -327,6 +327,14 @@ function CustomerJoin({ API_BASE }) {
     setLoading(false)
   }
 
+  const businessCtaUrl = `/start?ref=signup&biz=${encodeURIComponent(businessInfo?.public_id || businessSlug || '')}`
+  const businessCta = (
+    <div style={styles.businessCta}>
+      Integrate your business with LoyaltyTree?{' '}
+      <a href={businessCtaUrl} target="_blank" rel="noopener noreferrer" style={styles.businessCtaLink}>Learn how →</a>
+    </div>
+  )
+
   if (submitted) {
     const brandColor = businessInfo?.primary_color || '#0f766e'
 
@@ -418,6 +426,7 @@ function CustomerJoin({ API_BASE }) {
               <span>✓</span>
               <span>Your card stays on your phone and can be shown on every visit.</span>
             </div>
+            {businessCta}
           </section>
         </div>
       </div>
@@ -808,6 +817,7 @@ function CustomerJoin({ API_BASE }) {
               LoyaltyTree helps the business manage your loyalty membership and digital card.
             </span>
           </div>
+          {businessCta}
         </section>
       </div>
     </div>
@@ -1003,6 +1013,8 @@ const styles = {
   appleBtn:{background:'#000000'},
   googleBtn:{background:'#4285f4'},
   walletChoiceDisabled:{opacity:.55,cursor:'not-allowed'},
+  businessCta:{marginTop:14,textAlign:'center',fontSize:12,color:'#94a3b8',lineHeight:1.5},
+  businessCtaLink:{color:'#0f766e',fontWeight:800,textDecoration:'none'},
   secureNote:{display:'flex',alignItems:'flex-start',gap:7,marginTop:18,color:'#94a3b8',fontSize:10,lineHeight:1.5},
 }
 

@@ -1109,6 +1109,19 @@ def send_email(to_email: str, subject: str, html_body: str, from_email: Optional
         print(f"EMAIL send error: {e}")
         return False
 
+def loyaltytree_business_cta_url(source: str, business_public_id: str = '') -> str:
+    """Tracked link to the "Bring LoyaltyTree to your business" page.
+
+    ?ref says where the visitor came from (wallet_apple, wallet_google, signup)
+    and ?biz which business's card/page referred them - saved with the lead.
+    """
+    site = (FRONTEND_URL or 'https://theloyaltytree.com').rstrip('/')
+    from urllib.parse import quote
+    url = f"{site}/start?ref={quote(source)}"
+    if business_public_id:
+        url += f"&biz={quote(str(business_public_id))}"
+    return url
+
 def _password_reset_token_hash(token: str) -> str:
     return hashlib.sha256(str(token or '').encode('utf-8')).hexdigest()
 
@@ -7713,6 +7726,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
                 *[{'uri': action['url'], 'description': f"↗ {action['label']}"} for action in custom_wallet_actions],
                 {'uri': f'{BASE_URL}/feedback/{cust_public_id}', 'description': '⭐ Rate Your Experience'},
                 {'uri': f'{BASE_URL}/wallet/{cust_public_id}', 'description': 'View Rewards / Account'},
+                {'uri': loyaltytree_business_cta_url('wallet_google', business.get('public_id', '')), 'description': 'Integrate your business with LoyaltyTree?'},
             ]
         },
         **({
@@ -9573,6 +9587,14 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                 back_fields.insert(-1, order_ahead_status_field)
         if ann_message.strip() and ann_message.strip() != announcement_value:
             back_fields.append({'key': 'announcement_detail', 'label': ' ', 'value': ann_message.strip()[:1000]})
+
+    # Soft call-to-action for business owners who see the card. Back of the pass only.
+    back_fields.append({
+        'key': 'loyaltytree_for_business',
+        'label': 'FOR BUSINESS OWNERS',
+        'value': 'Integrate your business with LoyaltyTree? ›',
+        'attributedValue': f'<a href="{loyaltytree_business_cta_url("wallet_apple", business.get("public_id", ""))}">Integrate your business with LoyaltyTree? ›</a>',
+    })
 
     # Membership expiry reminder on Apple Wallet. The daily cron marks the pass
     # dirty and wakes the device on each exact configured stage. On non-reminder
@@ -31996,6 +32018,9 @@ async def customer_join_page(business_public_id: str):
             '</div>'
             '<button type="submit" id="joinButton" disabled>Join &amp; Get Your Card &#127793;</button>'
             '</form></div>'
+            '<div style="text-align:center;margin:18px auto 4px;font-size:12.5px;color:#94a3b8;">Integrate your business with LoyaltyTree? '
+            '<a href="' + html_lib.escape(loyaltytree_business_cta_url('signup', business.get('public_id') or business_public_id), quote=True) + '" target="_blank" rel="noopener" '
+            'style="color:#0f766e;font-weight:700;text-decoration:none;">Learn how &rarr;</a></div>'
             '<script>'
             '(function(){'
             'const API_BASE=' + json.dumps(BASE_URL) + ';'
