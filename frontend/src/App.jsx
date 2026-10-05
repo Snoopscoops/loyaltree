@@ -47,6 +47,7 @@ function PublicRouteAnalytics({ API_BASE }) {
       path === '/signup' ||
       path === '/about' ||
       path === '/contact' ||
+      path === '/start' ||
       path === '/privacy' ||
       path === '/terms' ||
       path === '/business-agreement' ||
@@ -61,6 +62,7 @@ function PublicRouteAnalytics({ API_BASE }) {
       '/signup': 'Business Application',
       '/about': 'About Us',
       '/contact': 'Contact Us',
+      '/start': 'Business Inquiry',
       '/privacy': 'Privacy Policy',
       '/terms': 'Terms of Service',
       '/business-agreement': 'Business Agreement',
@@ -157,6 +159,7 @@ function App() {
         <Route path="/how-it-works/customers" element={<PublicInfoPage type="customers" API_BASE={API_BASE} />} />
         <Route path="/about" element={<PublicInfoPage type="about" API_BASE={API_BASE} />} />
         <Route path="/contact" element={<PublicInfoPage type="contact" API_BASE={API_BASE} />} />
+        <Route path="/start" element={<PublicInfoPage type="start" API_BASE={API_BASE} />} />
         <Route path="/privacy" element={<LegalPage type="privacy" />} />
         <Route path="/terms" element={<LegalPage type="terms" />} />
         <Route path="/business-agreement" element={<LegalPage type="business" />} />
