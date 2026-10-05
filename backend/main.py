@@ -13813,6 +13813,9 @@ class BusinessInquiry(BaseModel):
     business_type: Optional[str] = Field(default=None, max_length=80)
     phone: Optional[str] = Field(default=None, max_length=40)
     email: Optional[str] = Field(default=None, max_length=200)
+    address: Optional[str] = Field(default=None, max_length=240)
+    current_system: Optional[str] = Field(default=None, max_length=80)
+    card_interest: Optional[str] = Field(default=None, max_length=80)
     message: Optional[str] = Field(default=None, max_length=1000)
     # Attribution: ?ref=wallet&biz=<slug>&utm_source=...
     source: Optional[str] = Field(default=None, max_length=80)
@@ -13847,6 +13850,9 @@ async def submit_business_inquiry(req: BusinessInquiry, request: Request):
         'business_type': (req.business_type or '').strip() or None,
         'phone': phone or None,
         'email': email or None,
+        'address': (req.address or '').strip() or None,
+        'current_system': (req.current_system or '').strip() or None,
+        'card_interest': (req.card_interest or '').strip() or None,
         'message': (req.message or '').strip() or None,
         'source': (req.source or '').strip() or None,
         'source_business': (req.source_business or '').strip() or None,
@@ -13866,7 +13872,7 @@ async def submit_business_inquiry(req: BusinessInquiry, request: Request):
         "<div style='font-family:Arial,sans-serif;font-size:14px;color:#0f172a'>"
         "<h2 style='margin:0 0 12px'>New LoyaltyTree business inquiry</h2><table>"
         + line('Name', row['name']) + line('Business', row['business_name'])
-        + line('Type', row['business_type']) + line('Mobile', row['phone']) + line('Email', row['email'])
+        + line('Type', row['business_type']) + line('Address', row['address']) + line('Current loyalty system', row['current_system']) + line('Card interest', row['card_interest']) + line('Mobile', row['phone']) + line('Email', row['email'])
         + line('Came from', ' / '.join(x for x in (row['source'], row['source_business'], row['page']) if x) or 'direct')
         + "</table>"
         + (f"<p style='margin-top:14px;white-space:pre-wrap'>{esc(row['message'])}</p>" if row['message'] else '')

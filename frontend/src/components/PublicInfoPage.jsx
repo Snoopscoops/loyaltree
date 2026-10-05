@@ -148,7 +148,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
   const [customerStep, setCustomerStep] = useState(0)
   const [businessStep, setBusinessStep] = useState(0)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
-  const [inquiry, setInquiry] = useState({ name:'', business_name:'', business_type:'', phone:'', email:'', message:'', website:'' })
+  const [inquiry, setInquiry] = useState({ name:'', business_name:'', business_type:'', address:'', current_system:'', card_interest:'', phone:'', email:'', message:'', website:'' })
   const [inquiryStatus, setInquiryStatus] = useState({ state:'idle', error:'' })
 
   const submitInquiry = async (e) => {
@@ -1176,8 +1176,18 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
               <div style={{fontSize:42}}>✅</div>
               <h2 style={{...s.contactHeading,fontSize:26}}>Thank you! We got your message.</h2>
               <p style={s.contactLead}>We will contact you within 24 hours using the details you gave.</p>
+              <button type="button" onClick={()=>applyBusiness('inquiry_thank_you')} style={{...s.primary,marginTop:18}}>Don't want to wait? Sign up your business now →</button>
             </div>
           ) : (
+            <>
+            <div style={s.signupNowBox}>
+              <div>
+                <strong style={{fontSize:15}}>Ready to start?</strong>
+                <div style={{fontSize:12.5,color:'#475569',marginTop:3}}>Create your account, set up your card and go live on your own.</div>
+              </div>
+              <button type="button" onClick={()=>applyBusiness('inquiry_signup_now')} style={{...s.primary,whiteSpace:'nowrap'}}>Sign up your business now →</button>
+            </div>
+            <div style={s.orDivider}><span>or let us contact you</span></div>
             <form onSubmit={submitInquiry}>
               <span style={s.contactKicker}>GET STARTED</span>
               <h2 style={{...s.contactHeading,fontSize:'clamp(22px,3.5vw,30px)',margin:'8px 0 6px'}}>Tell us about your business</h2>
@@ -1193,6 +1203,21 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
                   <select style={s.inquiryInput} value={inquiry.business_type} onChange={e=>setInquiry(v=>({...v,business_type:e.target.value}))}>
                     <option value="">Select…</option>
                     {['Cafe / Restaurant','Salon / Spa / Barbershop','Retail store','Gym / Fitness','Clinic / Wellness','Online shop','Other'].map(o=><option key={o} value={o}>{o}</option>)}
+                  </select>
+                </label>
+                <label style={{...s.inquiryLabel,gridColumn:'1 / -1'}}>Business address
+                  <input style={s.inquiryInput} maxLength={240} placeholder="Street, barangay, city / municipality, province" value={inquiry.address} onChange={e=>setInquiry(v=>({...v,address:e.target.value}))} autoComplete="street-address" />
+                </label>
+                <label style={s.inquiryLabel}>Do you have a loyalty system now?
+                  <select style={s.inquiryInput} value={inquiry.current_system} onChange={e=>setInquiry(v=>({...v,current_system:e.target.value}))}>
+                    <option value="">Select…</option>
+                    {['None yet','Paper / stamp card','Another loyalty app','POS loyalty feature','Other'].map(o=><option key={o} value={o}>{o}</option>)}
+                  </select>
+                </label>
+                <label style={s.inquiryLabel}>Which card are you considering?
+                  <select style={s.inquiryInput} value={inquiry.card_interest} onChange={e=>setInquiry(v=>({...v,card_interest:e.target.value}))}>
+                    <option value="">Not sure yet</option>
+                    {['Stamp card','Points card','Membership / subscription','Hybrid (membership + stamps/points)','Gift cards','Multi-pass / sessions'].map(o=><option key={o} value={o}>{o}</option>)}
                   </select>
                 </label>
                 <label style={s.inquiryLabel}>Mobile number
@@ -1213,6 +1238,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
                 {inquiryStatus.state === 'sending' ? 'Sending…' : 'Contact me'}
               </button>
             </form>
+            </>
           )}
         </div>
       </section>}
@@ -1512,6 +1538,8 @@ const s={
   founderMediaLinks:{display:'flex',flexWrap:'wrap',gap:8},
   founderMediaLink:{display:'inline-flex',alignItems:'center',gap:4,padding:'8px 10px',borderRadius:9,background:'#fff',border:'1px solid #99f6e4',color:'#0f766e',fontSize:11.5,fontWeight:800,textDecoration:'none'},
   inquiryCard:{maxWidth:640,margin:'0 auto',border:'1px solid #e2e8f0',borderRadius:20,padding:'clamp(20px,4vw,32px)',background:'#fff',boxShadow:'0 16px 42px rgba(15,23,42,.08)',position:'relative'},
+  signupNowBox:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:14,flexWrap:'wrap',padding:'16px 18px',borderRadius:14,background:'linear-gradient(135deg,#f0fdf4,#ecfdf5)',border:'1px solid #bbf7d0'},
+  orDivider:{textAlign:'center',margin:'18px 0',fontSize:11.5,fontWeight:800,color:'#94a3b8',textTransform:'uppercase',letterSpacing:.8},
   inquiryGrid:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:14,marginBottom:6},
   inquiryLabel:{display:'flex',flexDirection:'column',gap:6,fontSize:12.5,fontWeight:800,color:'#334155'},
   inquiryInput:{boxSizing:'border-box',width:'100%',padding:'11px 12px',border:'1px solid #cbd5e1',borderRadius:11,fontSize:14,fontFamily:'inherit',color:'#0f172a',background:'#fff'},
