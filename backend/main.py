@@ -7977,20 +7977,6 @@ async def _refresh_all_wallets_job(business_public_id: Optional[str], refresh_ap
     print("WALLET REFRESH ALL: finished")
 
 
-@app.post("/api/v1/admin/refresh-all-wallets")
-async def admin_refresh_all_wallets(
-    business_public_id: Optional[str] = None,
-    apple: bool = True,
-    _: bool = Depends(require_admin),
-):
-    """Admin: re-sync every already-issued Wallet card so pass changes (new links,
-    wording) reach existing customers. Runs in the background.
-    Optional ?business_public_id=... limits it to one business; ?apple=false skips Apple pushes."""
-    asyncio.create_task(_refresh_all_wallets_job(business_public_id, apple))
-    return {"started": True, "scope": business_public_id or "all active businesses", "apple": apple,
-            "note": "Running in the background. Watch the server logs for 'WALLET REFRESH ALL: finished'."}
-
-
 _GOOGLE_WALLET_ROUTINE_MESSAGE_PREFIXES = (
     'points-',
     'points-redeem-',
@@ -38119,6 +38105,20 @@ async def apple_log(request: Request):
 #   POST {BASE_URL}/api/v1/cron/membership-expiry-reminders   header: X-Cron-Secret: <CRON_SECRET>
 # These jobs are safe to call more than once a day because each uses its own
 # durable dedupe rule before delivering a customer notification.
+
+@app.post("/api/v1/admin/refresh-all-wallets")
+async def admin_refresh_all_wallets(
+    business_public_id: Optional[str] = None,
+    apple: bool = True,
+    _: bool = Depends(require_admin),
+):
+    """Admin: re-sync every already-issued Wallet card so pass changes (new links,
+    wording) reach existing customers. Runs in the background.
+    Optional ?business_public_id=... limits it to one business; ?apple=false skips Apple pushes."""
+    asyncio.create_task(_refresh_all_wallets_job(business_public_id, apple))
+    return {"started": True, "scope": business_public_id or "all active businesses", "apple": apple,
+            "note": "Running in the background. Watch the server logs for 'WALLET REFRESH ALL: finished'."}
+
 
 def _log_automation_send(business: dict, customer: dict, automation_type: str, header: str, body: str, message_id: str):
     """Best-effort record of a delivered birthday / win-back message.
