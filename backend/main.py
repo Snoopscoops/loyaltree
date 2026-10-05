@@ -7950,6 +7950,47 @@ async def republish_wallet_class_and_refresh(business: dict, program: dict):
             print(f"WALLET SYNC: class PUT error: {e}")
     await refresh_existing_member_wallets(business, program)
 
+async def _refresh_all_wallets_job(business_public_id: Optional[str], refresh_apple: bool):
+    """Sequentially refresh every issued wallet card (Google + Apple).
+
+    One business at a time with a short pause, so a big run never starves the
+    API or trips Google/Apple rate limits.
+    """
+    try:
+        query = supabase.table('businesses').select('*').eq('status', 'ACTIVE')
+        if business_public_id:
+            query = query.eq('public_id', business_public_id)
+        businesses = query.execute().data or []
+    except Exception as exc:
+        print(f"WALLET REFRESH ALL: could not list businesses: {exc}")
+        return
+    print(f"WALLET REFRESH ALL: starting, businesses={len(businesses)} apple={refresh_apple}")
+    for business in businesses:
+        try:
+            programs = (supabase.table('loyalty_programs').select('*')
+                        .eq('business_id', business.get('id')).execute().data or [])
+            for program in (programs or [{}]):
+                await refresh_existing_member_wallets(business, program, refresh_apple=refresh_apple)
+        except Exception as exc:
+            print(f"WALLET REFRESH ALL: {business.get('name')} failed: {exc}")
+        await asyncio.sleep(1)
+    print("WALLET REFRESH ALL: finished")
+
+
+@app.post("/api/v1/admin/refresh-all-wallets")
+async def admin_refresh_all_wallets(
+    business_public_id: Optional[str] = None,
+    apple: bool = True,
+    _: bool = Depends(require_admin),
+):
+    """Admin: re-sync every already-issued Wallet card so pass changes (new links,
+    wording) reach existing customers. Runs in the background.
+    Optional ?business_public_id=... limits it to one business; ?apple=false skips Apple pushes."""
+    asyncio.create_task(_refresh_all_wallets_job(business_public_id, apple))
+    return {"started": True, "scope": business_public_id or "all active businesses", "apple": apple,
+            "note": "Running in the background. Watch the server logs for 'WALLET REFRESH ALL: finished'."}
+
+
 _GOOGLE_WALLET_ROUTINE_MESSAGE_PREFIXES = (
     'points-',
     'points-redeem-',

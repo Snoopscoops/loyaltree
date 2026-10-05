@@ -125,6 +125,24 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const [helpError,setHelpError]=useState('')
   const [helpReviewing,setHelpReviewing]=useState('')
 
+  const [walletRefresh,setWalletRefresh]=useState({busy:false,msg:'',businessId:'',apple:true})
+  const runWalletRefresh = async () => {
+    const scope = walletRefresh.businessId.trim() || 'ALL active businesses'
+    if (!window.confirm(`Refresh every issued wallet card for ${scope}${walletRefresh.apple ? ' (including Apple push)' : ' (Google only)'}?`)) return
+    setWalletRefresh(w=>({...w,busy:true,msg:''}))
+    try {
+      const qs = new URLSearchParams()
+      if (walletRefresh.businessId.trim()) qs.set('business_public_id', walletRefresh.businessId.trim())
+      qs.set('apple', walletRefresh.apple ? 'true' : 'false')
+      const res = await authedFetch(`/api/v1/admin/refresh-all-wallets?${qs.toString()}`, { method:'POST' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not start the refresh')
+      setWalletRefresh(w=>({...w,busy:false,msg:`Started for ${data.scope}. It runs in the background; check the server logs for “WALLET REFRESH ALL: finished”.`}))
+    } catch (err) {
+      setWalletRefresh(w=>({...w,busy:false,msg:err.message || 'Could not start the refresh'}))
+    }
+  }
+
   const authedFetch = async (path, opts = {}) => {
     const res = await fetch(`${API_BASE}${path}`, {
       ...opts,
@@ -1674,6 +1692,28 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
           <>
             <PlatformAnnouncementsAdmin API_BASE={API_BASE} token={token} />
             <GiftCardPrintRequestsAdmin API_BASE={API_BASE} token={token} />
+            <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:16,padding:20,marginTop:16}}>
+              <h3 style={{margin:'0 0 6px',fontSize:17}}>👛 Refresh wallet cards</h3>
+              <div style={{fontSize:13,color:'#64748b',lineHeight:1.6,marginBottom:14}}>
+                Re-sync cards that customers already saved so pass changes (new links, wording) reach them. Runs in the background, one business at a time. Leave the business ID empty to refresh everyone.
+              </div>
+              <div style={{display:'flex',gap:12,flexWrap:'wrap',alignItems:'center'}}>
+                <input
+                  value={walletRefresh.businessId}
+                  onChange={e=>setWalletRefresh(w=>({...w,businessId:e.target.value}))}
+                  placeholder="Business public ID (optional)"
+                  style={{padding:'10px 12px',border:'1px solid #cbd5e1',borderRadius:10,fontSize:14,minWidth:240}}
+                />
+                <label style={{display:'flex',gap:6,alignItems:'center',fontSize:13,color:'#334155'}}>
+                  <input type="checkbox" checked={walletRefresh.apple} onChange={e=>setWalletRefresh(w=>({...w,apple:e.target.checked}))} />
+                  Include Apple Wallet push
+                </label>
+                <button style={styles.approveBtn} disabled={walletRefresh.busy} onClick={runWalletRefresh}>
+                  {walletRefresh.busy ? 'Starting…' : 'Refresh cards'}
+                </button>
+              </div>
+              {walletRefresh.msg && <div style={{marginTop:12,fontSize:13,color:walletRefresh.msg.startsWith('Started')?'#166534':'#b91c1c',fontWeight:700}}>{walletRefresh.msg}</div>}
+            </div>
           </>
         )}
 
