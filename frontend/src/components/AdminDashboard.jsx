@@ -118,6 +118,10 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const [clientPerfTrendFilter,setClientPerfTrendFilter]=useState('')
   const [showClientPresentation,setShowClientPresentation]=useState(false)
   const [presentationAnonymized,setPresentationAnonymized]=useState(true)
+  const [referralSearch,setReferralSearch]=useState('')
+  const [referralData,setReferralData]=useState(null)
+  const [referralLoading,setReferralLoading]=useState(false)
+  const [referralError,setReferralError]=useState('')
 
   const [helpInsights,setHelpInsights]=useState(null)
   const [helpDays,setHelpDays]=useState(30)
@@ -188,6 +192,24 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
       setClientPerfError(err.message || 'Could not load client performance')
     } finally {
       setClientPerfLoading(false)
+    }
+  }
+
+
+  const loadReferralRewards = async (term = referralSearch) => {
+    if (!token) return
+    setReferralLoading(true)
+    setReferralError('')
+    try {
+      const qs = term.trim() ? `?search=${encodeURIComponent(term.trim())}` : ''
+      const res = await authedFetch(`/api/v1/admin/referrals${qs}`, { cache:'no-store' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not load referral rewards')
+      setReferralData(data)
+    } catch (err) {
+      setReferralError(err.message || 'Could not load referral rewards')
+    } finally {
+      setReferralLoading(false)
     }
   }
 
@@ -315,6 +337,11 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
     if (!token || activeAdminTab !== 'help') return
     loadHelpInsights()
   }, [token, helpDays, activeAdminTab])
+
+  useEffect(() => {
+    if (!token || activeAdminTab !== 'referrals') return
+    loadReferralRewards(referralSearch)
+  }, [token, activeAdminTab])
 
   const openDetail = async (biz) => {
     setSelected(biz)
@@ -903,6 +930,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
     { key:'help', label:'Help Questions', icon:'?', description:'See what owners and managers ask most, review unanswered questions, and grow the FAQ from real usage.' },
     { key:'operations', label:'Operations', icon:'⚙', description:'Announcements, print requests and QR / PR kit fulfillment.' },
     { key:'partners', label:'Partners', icon:'◎', description:'Region / province / city operators, expense approvals and homepage partner management.' },
+    { key:'referrals', label:'Referrals', icon:'↗', description:'See which businesses earned the 1-month referral bonus.' },
   ]
   const activeAdminTabMeta = adminTabs.find(tab => tab.key === activeAdminTab) || adminTabs[0]
 
@@ -1856,6 +1884,49 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
         </section>
         )}
 
+
+        {activeAdminTab === 'referrals' && (
+          <section style={styles.analyticsSection}>
+            <div style={styles.analyticsHeader}>
+              <div>
+                <div style={styles.analyticsEyebrow}>REFERRAL REWARDS</div>
+                <h2 style={styles.analyticsTitle}>Who got the 1 month bonus</h2>
+                <p style={styles.analyticsSubtitle}>Search a business name, email, or code. A row marked Bonus given means that referrer already received 1 free month because the referred business paid.</p>
+              </div>
+              <form style={styles.analyticsControls} onSubmit={e=>{e.preventDefault();loadReferralRewards(referralSearch)}}>
+                <input value={referralSearch} onChange={e=>setReferralSearch(e.target.value)} placeholder="Search business or code" style={{...styles.input,width:260}} />
+                <button type="submit" style={styles.approveBtn}>{referralLoading?'Checking…':'Search'}</button>
+              </form>
+            </div>
+            {referralError && <div style={styles.analyticsError}>{referralError}</div>}
+            <div style={styles.tableWrap}>
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>Referrer</th>
+                    <th style={styles.th}>Code</th>
+                    <th style={styles.th}>Referred business</th>
+                    <th style={styles.th}>Signed up</th>
+                    <th style={styles.th}>Bonus</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(referralData?.referrals || []).length === 0 ? (
+                    <tr><td style={styles.td} colSpan={5}>{referralLoading?'Loading…':'No referral rewards yet for this search.'}</td></tr>
+                  ) : (referralData.referrals || []).map(row => (
+                    <tr key={`${row.referrer_public_id}-${row.business_public_id}`} style={styles.tr}>
+                      <td style={styles.td}><b>{row.referrer_name}</b><div style={styles.bizEmail}>{row.referrer_public_id}</div></td>
+                      <td style={styles.td}>{row.referrer_code || '—'}</td>
+                      <td style={styles.td}>{row.business_name}<div style={styles.bizEmail}>{row.business_email}</div></td>
+                      <td style={styles.td}>{String(row.signed_up_at || '').slice(0,10) || '—'}</td>
+                      <td style={styles.td}>{row.bonus_given ? `Given ${String(row.bonus_given_at || '').slice(0,10)}` : row.paid ? 'Paid, bonus pending' : 'Not yet — waiting for payment'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
         {activeAdminTab === 'businesses' && (
         <>
         {/* Filters */}

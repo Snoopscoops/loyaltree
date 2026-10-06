@@ -685,6 +685,98 @@ def subscription_expiry_from(base: datetime, billing_cycle: str) -> datetime:
     return _add_calendar_months(base, BILLING_CYCLE_CONFIG[cycle]['access_months'])
 
 
+
+def generate_business_referral_code(name: str) -> str:
+    """Public code a business shares. Separate from network partner codes."""
+    base = re.sub(r"[^A-Z0-9]", "", (name or "BIZ").upper())[:6] or "BIZ"
+    return f"{base}-{secrets.token_hex(2).upper()}"
+
+
+def ensure_business_referral_code(business: dict) -> str:
+    existing = (business or {}).get("referral_code")
+    if existing:
+        return existing
+    for _ in range(6):
+        code = generate_business_referral_code((business or {}).get("name") or "BIZ")
+        try:
+            clash = supabase.table("businesses").select("id").eq("referral_code", code).limit(1).execute().data or []
+            if clash:
+                continue
+            supabase.table("businesses").update({"referral_code": code}).eq("id", business.get("id")).execute()
+            business["referral_code"] = code
+            return code
+        except Exception as exc:
+            print(f"REFERRAL code generate error: {exc}")
+            break
+    return existing or ""
+
+
+def lookup_business_referral(code: str, exclude_email: str = ""):
+    cleaned = re.sub(r"[^A-Z0-9_-]", "", (code or "").strip().upper())
+    if len(cleaned) < 3:
+        return None
+    try:
+        row = supabase.table("businesses").select("id,public_id,name,email,referral_code,status").eq("referral_code", cleaned).limit(1).execute().data or []
+    except Exception as exc:
+        print(f"REFERRAL lookup error: {exc}")
+        return None
+    if not row:
+        return None
+    referrer = row[0]
+    if exclude_email and (referrer.get("email") or "").strip().lower() == exclude_email.strip().lower():
+        return None
+    return referrer
+
+
+def grant_business_referral_month(business: dict, payment_intent_id: str):
+    """First successful subscription payment grants the referrer 30 days free.
+
+    Idempotent via referral_rewarded_at. Does not touch network-partner commissions.
+    """
+    if not business or not business.get("referred_by_business_id") or business.get("referral_rewarded_at"):
+        return
+    if business.get("is_demo"):
+        return
+    try:
+        prior = (
+            supabase.table("subscription_payments")
+            .select("id")
+            .eq("business_id", business.get("id"))
+            .eq("status", "paid")
+            .execute()
+            .data or []
+        )
+    except Exception:
+        prior = []
+    # The current payment may already be marked paid by the caller. One paid
+    # row is still the first payment; more than one means this is a renewal.
+    if len(prior) > 1:
+        return
+    try:
+        referrer_rows = supabase.table("businesses").select("id,subscription_expires_at,status").eq("id", business.get("referred_by_business_id")).limit(1).execute().data or []
+    except Exception as exc:
+        print(f"REFERRAL referrer lookup error: {exc}")
+        return
+    if not referrer_rows:
+        return
+    referrer = referrer_rows[0]
+    now = datetime.utcnow()
+    current_expiry = _parse_ts(referrer.get("subscription_expires_at"))
+    base = current_expiry if current_expiry and current_expiry > now else now
+    new_expiry = (base + timedelta(days=MONTHLY_SUBSCRIPTION_PERIOD_DAYS)).date().isoformat()
+    try:
+        supabase.table("businesses").update({
+            "subscription_expires_at": new_expiry,
+        }).eq("id", referrer.get("id")).execute()
+        supabase.table("businesses").update({
+            "referral_rewarded_at": now.isoformat(),
+            "referral_reward_payment_intent_id": payment_intent_id or None,
+        }).eq("id", business.get("id")).execute()
+        print(f"REFERRAL rewarded referrer={referrer.get('id')} referred={business.get('id')} through={new_expiry}")
+    except Exception as exc:
+        print(f"REFERRAL reward error: {exc}")
+
+
 def determine_plan_from_branch_count(branch_count: int) -> str:
     """Default plan suggestion when the signup form doesn't specify one
     explicitly - 1 branch -> Starter, 2-3 -> Growth, 4+ -> Pro. A business
@@ -1847,6 +1939,7 @@ class BusinessCreate(BaseModel):
     kit_delivery_address: Optional[str] = None
     kit_delivery_instructions: Optional[str] = None
     partner_code: Optional[str] = Field(default=None, max_length=64)
+    referral_code: Optional[str] = Field(default=None, max_length=64)
     agreement: Optional[BusinessAgreementAcceptance] = None
 
 class SubscriptionCheckoutRequest(BaseModel):
@@ -13561,14 +13654,20 @@ async def register(biz: BusinessCreate, request: Request):
     if not hmac.compare_digest(str(acceptance.agreement_sha256).lower(), agreement_doc['agreement_sha256']):
         raise HTTPException(status_code=409, detail='Agreement details changed. Please review the updated agreement before signing.')
     assigned_partner = None
+    referring_business = None
+    raw_referral = (getattr(biz, 'referral_code', None) or biz.partner_code or '').strip()
     if (biz.partner_code or '').strip():
         code = biz.partner_code.strip().upper()
         try:
             assigned_partner = supabase.table('network_partners').select('*').eq('partner_code', code).eq('is_active', True).maybe_single().execute().data
         except Exception:
             assigned_partner = None
-        if not assigned_partner:
-            raise HTTPException(status_code=400, detail='Partner/referral code is not valid or is inactive')
+    if raw_referral and not assigned_partner:
+        referring_business = lookup_business_referral(raw_referral, biz.email)
+    if (biz.partner_code or '').strip() and not assigned_partner and not referring_business:
+        raise HTTPException(status_code=400, detail='Partner/referral code is not valid or is inactive')
+    if referring_business and (referring_business.get('email') or '').strip().lower() == biz.email.strip().lower():
+        raise HTTPException(status_code=400, detail='A business cannot use its own referral code')
     business_data = {
         'public_id': public_id,
         'name': biz.name,
@@ -13597,6 +13696,8 @@ async def register(biz: BusinessCreate, request: Request):
         'created_at': datetime.utcnow().isoformat(),
         'partner_id': assigned_partner.get('id') if assigned_partner else None,
         'partner_code_at_signup': assigned_partner.get('partner_code') if assigned_partner else None,
+        'referred_by_business_id': referring_business.get('id') if referring_business else None,
+        'referral_code_used': referring_business.get('referral_code') if referring_business else None,
     }
 
     if biz.setup_kit_requested:
@@ -13613,6 +13714,10 @@ async def register(biz: BusinessCreate, request: Request):
 
     if not business_id:
         raise HTTPException(status_code=500, detail='Business account could not be created')
+    try:
+        ensure_business_referral_code({'id': business_id, 'name': biz.name})
+    except Exception as exc:
+        print(f"REFERRAL code on signup error: {exc}")
 
     signed_at = datetime.now(timezone.utc).isoformat()
     try:
@@ -14826,6 +14931,82 @@ async def admin_get_business(public_id: str, _: bool = Depends(require_admin)):
         'apple_nfc_configured': bool(APPLE_NFC_ENABLED and APPLE_NFC_ENCRYPTION_PUBLIC_KEY),
     }
     return summary
+
+@app.get("/api/v1/admin/referrals")
+async def admin_referral_rewards(search: Optional[str] = None, _: bool = Depends(require_admin)):
+    """Super-admin check: did this business earn the 1-month referral bonus?"""
+    needle = (search or "").strip()
+    try:
+        query = supabase.table("businesses").select(
+            "id,public_id,name,email,plan,status,referral_code,referral_code_used,referred_by_business_id,referral_rewarded_at,referral_reward_payment_intent_id,subscription_expires_at,last_paid_at,created_at"
+        )
+        if needle:
+            query = query.or_(f"name.ilike.%{needle}%,email.ilike.%{needle}%,public_id.eq.{needle},referral_code.eq.{needle.upper()}")
+        rows = query.order("created_at", desc=True).limit(50).execute().data or []
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Referral columns missing. Run business_referral.sql. {exc}")
+    by_id = {row.get("id"): row for row in rows}
+    missing_ids = [row.get("referred_by_business_id") for row in rows if row.get("referred_by_business_id") and row.get("referred_by_business_id") not in by_id]
+    if missing_ids:
+        try:
+            extra = supabase.table("businesses").select("id,public_id,name,email,referral_code").in_("id", missing_ids).execute().data or []
+            for row in extra:
+                by_id[row.get("id")] = row
+        except Exception:
+            pass
+    out = []
+    for row in rows:
+        referrer = by_id.get(row.get("referred_by_business_id"))
+        rewarded = bool(row.get("referral_rewarded_at"))
+        out.append({
+            "public_id": row.get("public_id"),
+            "name": row.get("name"),
+            "email": row.get("email"),
+            "referral_code": row.get("referral_code"),
+            "used_code": row.get("referral_code_used"),
+            "referred_by": None if not referrer else {"public_id": referrer.get("public_id"), "name": referrer.get("name"), "email": referrer.get("email")},
+            "bonus_given": rewarded,
+            "bonus_given_at": row.get("referral_rewarded_at"),
+            "bonus_payment_intent": row.get("referral_reward_payment_intent_id"),
+            "subscription_expires_at": row.get("subscription_expires_at"),
+            "last_paid_at": row.get("last_paid_at"),
+        })
+    referrer_ids = [row.get("id") for row in rows if row.get("id")]
+    referred_out = []
+    if referrer_ids:
+        try:
+            children = supabase.table("businesses").select(
+                "public_id,name,email,status,plan,created_at,last_paid_at,referral_code_used,referral_rewarded_at,referral_reward_payment_intent_id,referred_by_business_id"
+            ).in_("referred_by_business_id", referrer_ids).order("created_at", desc=True).execute().data or []
+        except Exception:
+            children = []
+        id_to_public = {row.get("id"): row for row in rows}
+        for child in children:
+            parent = id_to_public.get(child.get("referred_by_business_id")) or {}
+            referred_out.append({
+                "referrer_name": parent.get("name"),
+                "referrer_public_id": parent.get("public_id"),
+                "referrer_code": parent.get("referral_code"),
+                "business_name": child.get("name"),
+                "business_email": child.get("email"),
+                "business_public_id": child.get("public_id"),
+                "signed_up_at": child.get("created_at"),
+                "paid": bool(child.get("last_paid_at") or child.get("referral_rewarded_at")),
+                "bonus_given": bool(child.get("referral_rewarded_at")),
+                "bonus_given_at": child.get("referral_rewarded_at"),
+                "bonus_payment_intent": child.get("referral_reward_payment_intent_id"),
+            })
+    months = {}
+    for item in referred_out:
+        if item["bonus_given"]:
+            months[item["referrer_public_id"]] = months.get(item["referrer_public_id"], 0) + 1
+    return {
+        "matches": out,
+        "referrals": referred_out,
+        "months_earned": months,
+        "note": "bonus_given means that referrer already received 1 free month because this business paid",
+    }
+
 
 def _supabase_first_row(response):
     """Return the first row from a Supabase/PostgREST response safely.
@@ -19443,6 +19624,68 @@ async def create_subscription_checkout(public_id: str, req: Optional[Subscriptio
         })
     return payload
 
+
+
+@app.get("/api/v1/public/business-referral/{code}")
+async def public_business_referral(code: str):
+    """Signup page uses this when the owner opened /signup?ref=CODE."""
+    row = lookup_business_referral(code)
+    if not row:
+        raise HTTPException(status_code=404, detail="Referral code is not valid")
+    return {
+        "referral_code": row.get("referral_code"),
+        "business_name": row.get("name"),
+        "valid": True,
+    }
+
+
+@app.get("/api/v1/business/{public_id}/referrals")
+async def get_business_referrals(public_id: str, authorization: str = Header(default="")):
+    """Owner dashboard payload: share code, signups, and free months earned."""
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    code = ensure_business_referral_code(business)
+    site = (FRONTEND_URL or "https://theloyaltytree.com").rstrip("/")
+    try:
+        rows = (
+            supabase.table("businesses")
+            .select("public_id,name,status,plan,created_at,last_paid_at,referral_rewarded_at,referral_code_used")
+            .eq("referred_by_business_id", business.get("id"))
+            .order("created_at", desc=True)
+            .execute()
+            .data or []
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Referral columns are missing. Run business_referral.sql first. {exc}")
+    rewarded = [r for r in rows if r.get("referral_rewarded_at")]
+    link = f"{site}/signup?ref={code}" if code else None
+    return {
+        "referral_code": code,
+        "business_code": code,
+        "referral_link": link,
+        "copy_code": code,
+        "copy_link": link,
+        "reward": "1 month free on the referrer after the referred business pays",
+        "signups": len(rows),
+        "paying": len(rewarded),
+        "months_earned": len(rewarded),
+        "referrals": [
+            {
+                "public_id": r.get("public_id"),
+                "name": r.get("name"),
+                "plan": r.get("plan"),
+                "status": r.get("status"),
+                "signed_up_at": r.get("created_at"),
+                "paid": bool(r.get("referral_rewarded_at") or r.get("last_paid_at")),
+                "rewarded_at": r.get("referral_rewarded_at"),
+            }
+            for r in rows
+        ],
+    }
+
+
 @app.get("/api/v1/business/{public_id}/subscription")
 async def get_subscription_status(public_id: str):
     business = safe_get_business(public_id)
@@ -19783,6 +20026,11 @@ async def paymongo_webhook(request: Request):
                 }).eq("paymongo_payment_intent_id", payment_intent_id).execute()
             except Exception as e:
                 print(f"WEBHOOK payment log update error: {e}")
+
+            try:
+                grant_business_referral_month(business, payment_intent_id)
+            except Exception as e:
+                print(f"REFERRAL reward hook error: {e}")
 
             # Partner commission ledger: idempotent per PayMongo payment intent.
             # Partners never receive customer data; this ledger only references
@@ -30316,6 +30564,31 @@ async def delete_membership_leaf(public_id: str, leaf_id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
+
+@app.get("/api/v1/business/{public_id}/staff/session")
+async def cashier_session_status(public_id: str, request: Request, authorization: str = Header(default="")):
+    """Restore a cashier shift without asking for the PIN again.
+
+    The stamp page is a new document for every customer. A valid 12-hour
+    session cookie or bearer token is enough to keep stamping.
+    """
+    token = ""
+    if authorization.startswith("Bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+    if not token:
+        token = request.cookies.get("lt_cashier_session") or ""
+    claims = verify_staff_session_token(token) if token else None
+    if not claims or claims.get("business_public_id") != public_id:
+        raise HTTPException(status_code=401, detail="Cashier session expired")
+    return {
+        "success": True,
+        "name": claims.get("name") or "",
+        "role": claims.get("role") or "cashier",
+        "session_token": token,
+        "expires_in_hours": STAFF_SESSION_TTL_HOURS,
+    }
+
+
 @app.post("/api/v1/business/{public_id}/staff/verify-pin")
 async def verify_staff_pin(public_id: str, req: PinVerify, request: Request):
     """Verify a cashier PIN with a server-side three-strike device lock.
@@ -30445,15 +30718,27 @@ async def verify_staff_pin(public_id: str, req: PinVerify, request: Request):
             'name': staff.get('name', ''),
             'role': staff.get('role', 'cashier'),
             'device_id': device_id,
+            'expires_in_hours': STAFF_SESSION_TTL_HOURS,
         }
         _clear_auth_failures('cashier', request, email)
-        if STAFF_SESSION_SECRET:
-            response['session_token'] = create_staff_session_token(
-                public_id, staff.get('id'), staff.get('role', 'cashier'),
-                staff.get('name', ''), staff.get('branch_id'),
-            )
-            response['expires_in_hours'] = STAFF_SESSION_TTL_HOURS
-        return response
+        if not STAFF_SESSION_SECRET:
+            raise HTTPException(status_code=503, detail='STAFF_SESSION_SECRET is not configured')
+        token = create_staff_session_token(
+            public_id, staff.get('id'), staff.get('role', 'cashier'),
+            staff.get('name', ''), staff.get('branch_id'),
+        )
+        response['session_token'] = token
+        json_response = JSONResponse(response)
+        json_response.set_cookie(
+            'lt_cashier_session',
+            token,
+            max_age=STAFF_SESSION_TTL_HOURS * 3600,
+            httponly=True,
+            samesite='lax',
+            secure=True,
+            path='/',
+        )
+        return json_response
     except HTTPException:
         raise
     except Exception as e:
@@ -36587,7 +36872,7 @@ async def cashier_stamp_page(customer_public_id: str):
         '}));'
         '}'
 
-        'function clearSession(){localStorage.removeItem(sessionKey);cachedPin=null;}'
+        'function clearSession(){localStorage.removeItem(sessionKey);cachedPin=null;document.cookie="lt_cashier_session=; Max-Age=0; path=/";}'
 
         'function authHeaders(){'
         'const s=getSession();'
@@ -36604,7 +36889,7 @@ async def cashier_stamp_page(customer_public_id: str):
         '"<input id=\'email\' type=\'email\' inputmode=\'email\' placeholder=\'Your Email\' autocomplete=\'username\'>"+'
         '"<input id=\'pin\' type=\'password\' inputmode=\'numeric\' placeholder=\'Staff PIN\' autocomplete=\'current-password\'>"+'
         '"<button class=\'btn-primary\' id=\'loginBtn\'>Log In</button>"+'
-        '"<p class=\'hint\'>Stays signed in on this phone for your shift.</p>";'
+        '"<p class=\'hint\'>One login lasts 12 hours on this phone. You do not need to log in for every stamp.</p>";'
         'document.getElementById("loginBtn").addEventListener("click",doLogin);'
         'document.getElementById("pin").addEventListener("keydown",function(e){if(e.key==="Enter")doLogin();});'
         'document.getElementById("email").focus();'
@@ -37080,10 +37365,17 @@ async def cashier_stamp_page(customer_public_id: str):
         '}'
         '}'
 
-        '(function init(){'
+        'async function restoreShift(){'
         'const s=getSession();'
-        'if(s){renderCard(s.name,null);}else{renderLogin();}'
-        '})();'
+        'if(s){renderCard(s.name,null);return;}'
+        'try{'
+        'const res=await fetch("/api/v1/business/"+DATA.business_public_id+"/staff/session",{credentials:"include",cache:"no-store"});'
+        'const d=await res.json();'
+        'if(res.ok&&d.session_token){saveSession(d.session_token,d.name,d.expires_in_hours||12);renderCard(d.name,null);return;}'
+        '}catch(e){}'
+        'renderLogin();'
+        '}'
+        'restoreShift();'
         '</script>'
     )
 

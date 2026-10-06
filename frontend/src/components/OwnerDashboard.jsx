@@ -808,6 +808,8 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
   const [creatingProgram, setCreatingProgram] = useState(false)
   const [newProgram, setNewProgram] = useState({ name: '', card_type: 'stamp' })
   const [subscription, setSubscription] = useState(null)
+  const [referrals, setReferrals] = useState(null)
+  const [referralsLoading, setReferralsLoading] = useState(false)
   const businessCurrency = business?.display_currency || subscription?.display_currency || 'PHP'
   const [loading, setLoading] = useState(true)
   const [showInviteModal, setShowInviteModal] = useState(false)
@@ -1630,6 +1632,11 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
     if (activeTab === 'satisfaction') loadSatisfaction()
     if (['crm','retention','operations','walletqueue'].includes(activeTab)) loadGrowthSuite()
   }, [activeTab])
+
+  useEffect(() => {
+    if (activeTab === 'referrals') loadReferrals()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, user?.business_slug])
 
   const inviteStaff = async (e) => {
     e.preventDefault()
@@ -2640,6 +2647,33 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
     return days >= 0 && days <= 7
   }).length
   const growthStage = customers.length < 10 ? 'seedling' : customers.length < 50 ? 'sapling' : customers.length < 200 ? 'growing' : 'mature'
+
+  const loadReferrals = async () => {
+    if (!user?.business_slug) return
+    setReferralsLoading(true)
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/referrals`, { cache: 'no-store' })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body.detail || 'Could not load referrals')
+      setReferrals(body)
+    } catch (err) {
+      setMessage(err.message || 'Could not load referrals')
+    } finally {
+      setReferralsLoading(false)
+    }
+  }
+
+  const copyReferral = async (kind) => {
+    const value = kind === 'link' ? referrals?.copy_link : referrals?.copy_code
+    if (!value) return
+    try {
+      await navigator.clipboard.writeText(value)
+      setMessage(kind === 'link' ? 'Signup link copied' : 'Business code copied')
+    } catch {
+      setMessage('Could not copy')
+    }
+  }
+
   const subStatus = subscription?.subscription_status
   const needsRenewal = subStatus === 'expiring_soon' || subStatus === 'expired'
   const industry = INDUSTRY_META[business?.business_type] || INDUSTRY_META.other
@@ -2663,7 +2697,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
     ? 'grow'
     : activeTab === 'program'
     ? 'card'
-    : ['billing','security','walletqueue'].includes(activeTab)
+    : ['billing','security','walletqueue','referrals'].includes(activeTab)
     ? 'more'
     : activeTab
 
@@ -3033,6 +3067,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
         {activeNavGroup === 'more' && (
           <div style={{...styles.subTabs,...(isMobile?styles.subTabsMobile:{})}}>
             <button style={{...styles.subTab,...(activeTab==='billing'?styles.subTabActive:{})}} onClick={()=>setActiveTab('billing')}>{needsRenewal?'Billing ⚠️':'Billing'}</button>
+            <button style={{...styles.subTab,...(activeTab==='referrals'?styles.subTabActive:{})}} onClick={()=>setActiveTab('referrals')}>Referrals</button>
             <button style={styles.subTab} onClick={()=>{setOnboardingStep(0);setShowOnboarding(true)}}>Setup Guide</button>
             <button style={styles.subTab} onClick={contactLoyaltyTreeSupport}>Support</button>
           </div>
@@ -3929,6 +3964,45 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
 
         {activeTab === 'billing' && (
           <SubscriptionPayment API_BASE={API_BASE} businessSlug={user.business_slug} onPaid={loadData} />
+        )}
+
+        {activeTab === 'referrals' && (
+          <div style={styles.programCard}>
+            <div style={styles.sectionHeader}>
+              <div>
+                <div style={{background:'linear-gradient(135deg,#0f766e,#14b8a6)',color:'#fff',borderRadius:14,padding:'14px 16px',marginBottom:12}}>
+                  <div style={{fontSize:11,fontWeight:900,letterSpacing:.6}}>LOYALTYTREE REFERRAL</div>
+                  <div style={{fontSize:18,fontWeight:850,marginTop:4}}>Refer a business, get a free 1 month in your LoyaltyTree subscription</div>
+                  <div style={{fontSize:12,opacity:.9,marginTop:4}}>The free month is added after the business you refer pays.</div>
+                </div>
+                <h3 style={{...styles.sectionTitle, marginBottom: 4}}>Your business code</h3>
+                <p style={{margin: 0, color: '#64748b', fontSize: 13}}>Copy the code or the signup link and send it to another business.</p>
+              </div>
+              <button type="button" style={styles.addBtn} onClick={loadReferrals} disabled={referralsLoading}>{referralsLoading ? 'Loading…' : 'Refresh'}</button>
+            </div>
+            <div style={{background:'#f0fdfa', border:'1px dashed #99f6e4', borderRadius:12, padding:14, marginBottom:14}}>
+              <div style={{fontSize:12, color:'#0f766e', fontWeight:800}}>BUSINESS CODE</div>
+              <div style={{fontSize:28, letterSpacing:2, fontWeight:800, margin:'6px 0 12px'}}>{referrals?.copy_code || referrals?.referral_code || '—'}</div>
+              <div style={{display:'flex', gap:8, flexWrap:'wrap'}}>
+                <button type="button" style={styles.addBtn} onClick={() => copyReferral('code')}>Copy code</button>
+                <button type="button" style={{...styles.addBtn, background:'#134e4a'}} onClick={() => copyReferral('link')}>Copy signup link</button>
+              </div>
+              <p style={{fontSize:12, color:'#64748b', wordBreak:'break-all', margin:'12px 0 0'}}>{referrals?.copy_link || 'Signup link appears after the code is generated.'}</p>
+            </div>
+            <div style={{display:'flex', gap:10, flexWrap:'wrap', marginBottom:14}}>
+              <div style={styles.statOrb}><span style={styles.orbNumber}>{referrals?.signups || 0}</span><span style={styles.orbLabel}>Signups</span></div>
+              <div style={styles.statOrb}><span style={styles.orbNumber}>{referrals?.paying || 0}</span><span style={styles.orbLabel}>Paid</span></div>
+              <div style={styles.statOrb}><span style={styles.orbNumber}>{referrals?.months_earned || 0}</span><span style={styles.orbLabel}>Months free</span></div>
+            </div>
+            {(referrals?.referrals || []).length === 0 ? (
+              <p style={styles.searchEmptyText}>No referrals yet. Copy the signup link and send it to another business.</p>
+            ) : (referrals.referrals || []).map(row => (
+              <div key={row.public_id} style={styles.activityRow}>
+                <span style={styles.activityName}>{row.name}</span>
+                <span style={styles.activityStamps}>{row.rewarded_at ? '1 month credited' : row.paid ? 'Paid' : 'Signed up'}</span>
+              </div>
+            ))}
+          </div>
         )}
       </div>
 

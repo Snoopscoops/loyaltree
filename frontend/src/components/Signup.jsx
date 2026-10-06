@@ -230,6 +230,7 @@ function Signup({ API_BASE }) {
   const [pricingContext,setPricingContext]=useState({country_code:'PH',currency:'PHP',currency_symbol:'₱',country_name:'Philippines',setup_kit_available:true})
   const [logoUpload,setLogoUpload]=useState({uploading:false,error:''})
   const [error,setError]=useState('')
+  const [referralFromLink,setReferralFromLink]=useState('')
   const [loading,setLoading]=useState(false)
   const [businessSlug,setBusinessSlug]=useState('')
   const [registered,setRegistered]=useState(false)
@@ -251,6 +252,11 @@ function Signup({ API_BASE }) {
     const params=new URLSearchParams(window.location.search)
     const requestedCountry=params.get('country')
     const requestedBillingCycle=params.get('billing_cycle')
+    const referredCode=(params.get('ref') || params.get('referral') || params.get('partner') || '').trim().toUpperCase()
+    if(referredCode){
+      setReferralFromLink(referredCode)
+      setForm(f=>({...f, partner_code: referredCode}))
+    }
 
     if(requestedBillingCycle){
       const normalizedBillingCycle=normalizeSelfServeBillingCycle(requestedBillingCycle)
@@ -418,7 +424,8 @@ function Signup({ API_BASE }) {
       {wizardStep===1&&<section><p style={styles.eyebrow}>1 · APPLY</p><h1 style={styles.title}>Start your LoyaltyTree</h1><p style={styles.subtitle}>Create the account you’ll use to manage your business.</p>
         <Field label="Business email"><input name="email" type="email" value={form.email} onChange={handleChange} style={styles.input} placeholder="you@business.com"/></Field>
         <Field label="Password"><input name="password" type="password" minLength={8} value={form.password} onChange={handleChange} style={styles.input} placeholder="Minimum 8 characters"/></Field>
-        <Field label="LoyaltyTree Partner Code (optional)"><input name="partner_code" value={form.partner_code} onChange={e=>setForm({...form,partner_code:e.target.value.toUpperCase()})} style={styles.input} placeholder="e.g. LT-CAUAYAN"/></Field>
+        <Field label="Business or partner code (optional)"><input name="partner_code" value={form.partner_code} onChange={e=>setForm({...form,partner_code:e.target.value.toUpperCase()})} style={styles.input} placeholder="e.g. NORTH-A1B2"/></Field>
+        {referralFromLink && <div style={styles.paymentNextNotice}><strong>Referral code applied.</strong><span>{referralFromLink} came from the signup link. The referring business gets 1 month free after you pay.</span></div>}
       </section>}
       {wizardStep===2&&<section><p style={styles.eyebrow}>2 · BUSINESS PROFILE</p><h1 style={styles.title}>Tell us about your business</h1><p style={styles.subtitle}>These details become your business profile and will also appear in the agreement you review before registration.</p>
         <div className="lt-signup-two" style={styles.twoCol}><Field label="Business name"><input name="name" value={form.name} onChange={handleChange} style={styles.input}/></Field><Field label="Primary contact person"><input name="contact_person" value={form.contact_person} onChange={handleChange} style={styles.input} placeholder="Owner / manager name"/></Field></div>
