@@ -9044,11 +9044,15 @@ def _send_announcement_notification(business: dict, announcement: dict, resend: 
             supabase.table('loyalty_programs')
             .select('*')
             .eq('business_id', business.get('id'))
-            .eq('is_active', True)
         )
         if target_program_id is not None:
             q = q.eq('id', target_program_id)
-        target_programs = q.execute().data or []
+        # NULL is_active is an older card, not a disabled one. Only an
+        # explicit false should be left out of the Wallet broadcast.
+        target_programs = [
+            row for row in (q.execute().data or [])
+            if row.get('is_active') is not False
+        ]
     except Exception as exc:
         print(f"ANNOUNCEMENT PROGRAM LOOKUP warning: {exc}")
         fallback = (
