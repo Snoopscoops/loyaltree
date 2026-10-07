@@ -635,9 +635,9 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
   }
 
   const applyBusiness = (placement = 'homepage') => {
-    // The homepage may show the monthly-equivalent price, but a new
-    // self-serve account starts with the 3-month prepaid minimum.
-    const signupBillingCycle = homeBillingCycle === 'monthly' ? '3_months' : homeBillingCycle
+    // Monthly is a real 30-day self-serve term again. Prepaid 3-month,
+    // 6-month, and annual options stay available.
+    const signupBillingCycle = homeBillingCycle || 'monthly'
 
     trackEvent(API_BASE, 'apply_business_click', {
       page_name: 'Homepage',

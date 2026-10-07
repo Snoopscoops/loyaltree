@@ -27,7 +27,7 @@ const BILLING_TERMS = {
 }
 
 function normalizeBillingCycle(value) {
-  return ['3_months', '6_months', 'annual'].includes(value) ? value : '3_months'
+  return ['monthly', '3_months', '6_months', 'annual'].includes(value) ? value : 'monthly'
 }
 
 function billingCycleLabel(value) {
@@ -342,7 +342,7 @@ function SubscriptionPayment({
         {!checkout ? (
           <>
             <div style={styles.billingToggle}>
-              {Object.entries(BILLING_TERMS).filter(([key]) => key !== 'monthly').map(([key, term]) => (
+              {Object.entries(BILLING_TERMS).map(([key, term]) => (
                 <button
                   key={key}
                   type="button"
@@ -357,7 +357,7 @@ function SubscriptionPayment({
                 </button>
               ))}
             </div>
-            <div style={styles.billingSummary}>{BILLING_TERMS[billingCycle]?.summary || BILLING_TERMS['3_months'].summary}</div>
+            <div style={styles.billingSummary}>{BILLING_TERMS[billingCycle]?.summary || BILLING_TERMS.monthly.summary}</div>
 
             {isPH && (
               <div style={styles.methodRow}>

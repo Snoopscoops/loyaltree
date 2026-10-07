@@ -1572,7 +1572,7 @@ LOYALTYTREE_LEGAL_NAME = 'LoyaltyTree Information Technology Solutions'
 LOYALTYTREE_LEGAL_LOCATION = 'Isabela, Philippines'
 LOYALTYTREE_LEGAL_PHONE = '0939 799 2144'
 LOYALTYTREE_LEGAL_EMAIL = 'theloyaltytree@gmail.com'
-BUSINESS_AGREEMENT_VERSION = '2026-09-22-v2'
+BUSINESS_AGREEMENT_VERSION = '2026-10-08-v3'
 TERMS_VERSION = '2026-09-12'
 PRIVACY_VERSION = '2026-09-12'
 DPA_VERSION = '2026-09-12-v1'
@@ -1598,7 +1598,7 @@ def _signup_agreement_sections() -> list:
             'title': 'Subscription, billing, renewal, and optional PR Kit',
             'paragraphs': [
                 'The Business will pay the subscription price shown in the Subscription Summary. A successful subscription payment activates or extends access for the applicable subscription period. Unless a separate recurring-payment arrangement is expressly enabled, LoyaltyTree does not represent that renewal is automatic.',
-                'The standard self-serve subscription has a minimum initial term of three (3) months, payable in advance. Prices displayed as a monthly amount are monthly-equivalent reference prices only and do not create a month-to-month payment option. The Business may instead select a longer prepaid term offered at checkout.',
+                'The Business may pay monthly (30 days of access per successful payment) or select a longer prepaid term of 3 months, 6 months, or 1 year. The annual term is priced as 10 monthly periods for 12 months of access. A displayed monthly amount is the price of one 30-day period, not a promise of automatic card debit unless a separate recurring-payment arrangement is expressly enabled.',
                 'Failure to pay may result in the account remaining pending, being limited, or being suspended until payment is received. Taxes, custom work, hardware, delivery, and third-party charges may be separate where disclosed.',
                 'If the Business selects the Physical QR / PR Kit, the one-time amount shown in the Subscription Summary is additional to the subscription fee and is based on the number of branches selected at signup. Fulfillment begins after the applicable payment is confirmed.',
                 'Except where required by law or expressly stated in a written order, fees already earned for an activated subscription period, completed setup work, custom development, or fulfilled physical items are not automatically refundable merely because the Business later stops using the service.',
@@ -1913,7 +1913,7 @@ class SignupAgreementPreviewRequest(BaseModel):
     contact_person: Optional[str] = None
     plan: str
     branch_count: int = Field(default=1, ge=1, le=10)
-    billing_cycle: Literal['3_months', '6_months', 'annual'] = '3_months'
+    billing_cycle: Literal['monthly', '3_months', '6_months', 'annual'] = 'monthly'
     country_code: str = Field(default='PH', min_length=2, max_length=3)
     pricing_region: Optional[str] = Field(default=None, min_length=2, max_length=3)
     setup_kit_requested: bool = False
@@ -1930,7 +1930,7 @@ class BusinessCreate(BaseModel):
     address: Optional[str] = None  # business's main address - lets super admin organize businesses by location
     branch_count: int = Field(default=1, ge=1, le=50)
     plan: Optional[str] = None  # explicit plan choice; if omitted, derived from branch_count
-    billing_cycle: Literal['3_months', '6_months', 'annual'] = '3_months'
+    billing_cycle: Literal['monthly', '3_months', '6_months', 'annual'] = 'monthly'
     country_code: str = Field(default='PH', min_length=2, max_length=3)
     pricing_region: Optional[str] = Field(default=None, min_length=2, max_length=3)
     setup_kit_requested: bool = False
@@ -1943,7 +1943,7 @@ class BusinessCreate(BaseModel):
     agreement: Optional[BusinessAgreementAcceptance] = None
 
 class SubscriptionCheckoutRequest(BaseModel):
-    billing_cycle: Literal['3_months', '6_months', 'annual'] = '3_months'
+    billing_cycle: Literal['monthly', '3_months', '6_months', 'annual'] = 'monthly'
     payment_method: Optional[Literal['qrph', 'card']] = None
 
 

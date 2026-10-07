@@ -21,10 +21,10 @@ const BILLING_TERMS = {
   annual: { label: '1 Year', unit: '/year', multiplier: 10, savings: '2 months free' },
 }
 
-const SELF_SERVE_BILLING_CYCLES = new Set(['3_months', '6_months', 'annual'])
+const SELF_SERVE_BILLING_CYCLES = new Set(['monthly', '3_months', '6_months', 'annual'])
 
 function normalizeSelfServeBillingCycle(value) {
-  return SELF_SERVE_BILLING_CYCLES.has(value) ? value : '3_months'
+  return SELF_SERVE_BILLING_CYCLES.has(value) ? value : 'monthly'
 }
 
 function apiErrorMessage(payload, fallback) {
@@ -54,7 +54,7 @@ function apiErrorMessage(payload, fallback) {
   return fallback
 }
 
-function priceFor(planData, branchCount, billingCycle = '3_months') {
+function priceFor(planData, branchCount, billingCycle = 'monthly') {
   if (!planData) return null
 
   const n = Math.max(1, Number(branchCount) || 1)
@@ -69,7 +69,7 @@ function priceFor(planData, branchCount, billingCycle = '3_months') {
     monthly = fiveBranches + ((n - 5) * oneBranch)
   }
 
-  const cycle = BILLING_TERMS[billingCycle] ? billingCycle : '3_months'
+  const cycle = BILLING_TERMS[billingCycle] ? billingCycle : 'monthly'
   return Number(monthly || 0) * BILLING_TERMS[cycle].multiplier
 }
 
@@ -212,7 +212,7 @@ function Signup({ API_BASE }) {
   const [wizardStep, setWizardStep] = useState(1)
   const [form, setForm] = useState({
     name:'', email:'', password:'', phone:'', address:'', contact_person:'',
-    logo_url:'', business_type:'spa', branch_count:1, plan:'starter', billing_cycle:'3_months',
+    logo_url:'', business_type:'spa', branch_count:1, plan:'starter', billing_cycle:'monthly',
     country_code:'PH', pricing_region:'PH',
     setup_kit_requested:false, kit_recipient_name:'', kit_contact_number:'',
     kit_delivery_address:'', kit_delivery_instructions:'', partner_code:''
@@ -262,10 +262,8 @@ function Signup({ API_BASE }) {
       const normalizedBillingCycle=normalizeSelfServeBillingCycle(requestedBillingCycle)
       setForm(f=>({...f,billing_cycle:normalizedBillingCycle}))
 
-      // Monthly can still be displayed as a pricing reference on the homepage,
-      // but new self-serve subscriptions start at the 3-month prepaid minimum.
-      // Rewrite stale/legacy signup URLs so Step 5 never sends "monthly" to the
-      // agreement API.
+      // Keep the selected cycle, including monthly. Only rewrite a URL when
+      // the value is not a supported self-serve term.
       if(requestedBillingCycle!==normalizedBillingCycle){
         params.set('billing_cycle',normalizedBillingCycle)
         const query=params.toString()
@@ -438,9 +436,9 @@ function Signup({ API_BASE }) {
       {wizardStep===3&&<section><p style={styles.eyebrow}>3 · BRAND</p><h1 style={styles.title}>Upload your logo</h1><p style={styles.subtitle}>Your logo will appear throughout your LoyaltyTree experience and helps us prepare your PR Kit.</p>
         <label style={styles.uploadBox}><input type="file" accept="image/png,image/jpeg,image/webp" onChange={e=>handleLogoUpload(e.target.files?.[0])} style={{display:'none'}}/>{form.logo_url?<><img src={form.logo_url} alt="Business logo" style={styles.logoPreview}/><strong>Logo uploaded</strong><span>Click to replace</span></>:<><div style={{fontSize:42}}>🖼️</div><strong>Choose your business logo</strong><span>PNG, JPG or WebP · maximum 8MB</span></>}</label>{logoUpload.uploading&&<p style={styles.tip}>Uploading…</p>}{logoUpload.error&&<div style={styles.error}>{logoUpload.error}</div>}
       </section>}
-      {wizardStep===4&&<section><p style={styles.eyebrow}>4 · PLAN + PR KIT</p><h1 style={styles.title}>Choose how you’ll launch</h1><p style={styles.subtitle}>Choose your prepaid subscription term: 3 months, 6 months, or 1 year. The minimum initial term is 3 months, paid in advance. The 1-year option gives 12 months of access for the price of 10. Your exact plan, branch count, billing term, subscription price, and optional PR Kit total will appear in the agreement you sign next.</p>
+      {wizardStep===4&&<section><p style={styles.eyebrow}>4 · PLAN + PR KIT</p><h1 style={styles.title}>Choose how you’ll launch</h1><p style={styles.subtitle}>Choose monthly (30 days) or a prepaid term of 3 months, 6 months, or 1 year. The 1-year option gives 12 months of access for the price of 10. Your exact plan, branch count, billing term, subscription price, and optional PR Kit total will appear in the agreement you sign next.</p>
         <div style={styles.billingToggle}>
-          {Object.entries(BILLING_TERMS).filter(([key])=>key!=='monthly').map(([key,term])=><button key={key} type="button" onClick={()=>setForm({...form,billing_cycle:key})} style={{...styles.billingToggleBtn,...(form.billing_cycle===key?styles.billingToggleBtnActive:{})}}>{term.label}{term.savings?` · ${term.savings}`:''}</button>)}
+          {Object.entries(BILLING_TERMS).map(([key,term])=><button key={key} type="button" onClick={()=>setForm({...form,billing_cycle:key})} style={{...styles.billingToggleBtn,...(form.billing_cycle===key?styles.billingToggleBtnActive:{})}}>{term.label}{term.savings?` · ${term.savings}`:''}</button>)}
         </div>
         <div className="lt-signup-plans" style={styles.planGrid}>{plans&&Object.entries(plans).map(([key,p])=>{const price=priceFor(p,branchCount,form.billing_cycle),selected=form.plan===key,cap=p.max_branches!=null&&branchCount>p.max_branches,highlights=planHighlights(p);return <button type="button" key={key} onClick={()=>setForm({...form,plan:key})} style={{...styles.planCard,...(selected?styles.planSelected:{})}}><b>{p.label}</b><strong>{formatMoney(price,pricingContext.currency)}<small>{BILLING_TERMS[form.billing_cycle]?.unit || '/30 days'}</small></strong>{form.billing_cycle==='annual'&&<span style={styles.annualNote}>12 months access · 2 months free</span>}{highlights.length>0&&<span style={styles.planIncludes}>Includes {highlights.join(' + ')}</span>}{key==='growth'&&<span style={styles.planBadge}>MOST POPULAR</span>}{cap&&<span style={styles.warning}>Up to {p.max_branches} branch(es)</span>}</button>})}</div>
         {pricingContext.setup_kit_available ? <><label style={{...styles.kitCard,...(form.setup_kit_requested?styles.kitSelected:{})}}><input type="checkbox" checked={form.setup_kit_requested} onChange={e=>setForm({...form,setup_kit_requested:e.target.checked})}/><div><strong>Add Physical QR / PR Kit · ₱150 per branch one-time</strong><p>{form.setup_kit_requested ? `For ${branchCount} branch${branchCount===1?'':'es'}: ₱${kitTotal.toLocaleString()} total.` : 'Sintra board QR display prepared per branch and delivered after payment confirmation.'}</p></div></label>
