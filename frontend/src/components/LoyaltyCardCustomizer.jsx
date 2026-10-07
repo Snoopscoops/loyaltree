@@ -3385,7 +3385,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                     Detail text size · {Math.round((Number(form.wallet_detail_font_scale)||1)*100)}%
                     <input type="range" min="75" max="150" step="1" value={Math.round((Number(form.wallet_detail_font_scale)||1)*100)} onChange={e=>update('wallet_detail_font_scale', Number(e.target.value)/100)} style={{width:'100%',marginTop:6}} />
                   </label>
-                  <p style={{...styles.hint,margin:0}}>Scales the reward, progress, and description drawn on the Google hero and the Apple card strip. Apple's own field labels stay system-sized; a larger setting also promotes those details into Apple's bigger field row.</p>
+                  <p style={{...styles.hint,margin:0}}>This is the "150 Off" and "1/8" row. Apple will not shrink that native text, so LoyaltyTree draws it on the card strip and removes the large system row. 75% is smaller than today's pass. 150% is larger. Republish so existing passes rebuild.</p>
                 </div>
                 <div style={{marginTop:12,padding:12,borderRadius:14,background:walletPreviewBackground,color:'#fff',overflow:'hidden'}}>
                   <div style={{fontSize:10,fontWeight:900,letterSpacing:.8,opacity:.8}}>DYNAMIC BANNER PREVIEW</div>

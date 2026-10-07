@@ -10002,9 +10002,14 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                     {'key': 'card_name', 'label': 'CARD', 'value': card_title[:32]}
                 ],
                 'primaryFields': [],
-                'secondaryFields': stamp_front_secondary_fields,
-                'auxiliaryFields': stamp_front_auxiliary_fields,
-                'backFields': back_fields,
+                # Native secondary/auxiliary text cannot be sized. The large
+                # "150 Off" and "1/8" row is drawn on the strip instead.
+                'secondaryFields': [],
+                'auxiliaryFields': [*cycle_auxiliary_fields],
+                'backFields': back_fields + [
+                    {**stamp_next_reward_front, 'key': 'next_reward_back'},
+                    {**stamp_balance_front, 'key': 'stamps_back'},
+                ],
             }
             if card_type == 'stamp' else
             {
@@ -11047,9 +11052,49 @@ def generate_apple_strip_bytes(customer: dict, business: dict, program: dict, wi
         top = (img.height - new_h) // 2
         img = img.crop((0, top, img.width, top + new_h))
     img = img.resize((width, height), Image.LANCZOS)
+    _draw_apple_strip_details(img, customer, program, business)
     buf = BytesIO()
     img.save(buf, format='PNG')
     return buf.getvalue()
+
+
+def _draw_apple_strip_details(img, customer: dict, program: dict, business: dict) -> None:
+    """Draw NEXT REWARD and STAMPS on the strip.
+
+    Apple will not accept a font size for native Store Card fields, and that
+    is the large "150 Off" / "1/8" row under the artwork. Drawing it here is
+    the size the owner slider actually controls.
+    """
+    from PIL import ImageDraw, ImageFont
+    card_type = str((program or {}).get('card_type') or 'stamp')
+    if card_type not in ('stamp', 'hybrid'):
+        return
+    scale = normalize_wallet_detail_font_scale(program)
+    width, height = img.size
+    reward = str((program or {}).get('reward_name') or 'Reward').strip()
+    goal = int((program or {}).get('stamp_goal') or 0)
+    current = int((customer or {}).get('stamp_count') or 0)
+    if card_type == 'hybrid' and not hybrid_stamps_enabled(program):
+        reward = f"{int((customer or {}).get('points_balance') or 0)} points"
+        stamp_text = ''
+    else:
+        stamp_text = f'{current}/{goal}' if goal else str(current)
+    value_size = max(13, int(round(height * 0.085 * scale)))
+    label_size = max(9, int(round(value_size * 0.58)))
+    draw = ImageDraw.Draw(img, 'RGBA')
+    band_top = int(height * 0.78)
+    draw.rectangle((0, band_top, width, height), fill=(0, 0, 0, 78))
+    font_label = ImageFont.load_default(size=label_size)
+    font_value = ImageFont.load_default(size=value_size)
+    pad = max(16, int(width * 0.04))
+    draw.text((pad, band_top + 6), 'NEXT REWARD', font=font_label, fill=(255, 255, 255, 210))
+    draw.text((pad, band_top + 8 + label_size), reward[:42], font=font_value, fill=(255, 255, 255, 255))
+    if stamp_text:
+        label = 'STAMPS'
+        label_box = draw.textbbox((0, 0), label, font=font_label)
+        value_box = draw.textbbox((0, 0), stamp_text, font=font_value)
+        draw.text((width - pad - (label_box[2] - label_box[0]), band_top + 6), label, font=font_label, fill=(255, 255, 255, 210))
+        draw.text((width - pad - (value_box[2] - value_box[0]), band_top + 8 + label_size), stamp_text, font=font_value, fill=(255, 255, 255, 255))
 
 def _resize_png_bytes(png_bytes: bytes, width: int, height: int) -> Optional[bytes]:
     """Resize an already-rendered PNG without regenerating the underlying artwork."""
