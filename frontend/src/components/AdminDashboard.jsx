@@ -2210,7 +2210,41 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 <DetailRow label="Branches" value={detail.branch_count} />
                 <DetailRow label="Onboarding" value={`${onboardingLabel(detail)} · Step ${detail.onboarding_step||0}/9`} />
                 <div style={styles.detailRow}><span style={styles.detailLabel}>Customer Join QR</span><div style={styles.joinQrAdmin}><img src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(joinUrl(detail))}`} alt="Business join QR" style={styles.joinQrImage}/><div><button style={styles.viewBtn} onClick={()=>navigator.clipboard?.writeText(joinUrl(detail))}>Copy join link</button><div style={styles.joinUrlText}>{joinUrl(detail)}</div></div></div></div>
-                <DetailRow label="Price" value={detail.price_month != null ? `₱${detail.price_month.toLocaleString()}/mo` : '—'} />
+                <DetailRow label="Effective price" value={detail.price_month != null ? `${detail.currency || 'PHP'} ${Number(detail.price_month).toLocaleString()}/mo` : '—'} />
+                <div style={styles.detailRow}>
+                  <span style={styles.detailLabel}>Custom monthly price</span>
+                  <input
+                    type="number"
+                    min="1"
+                    defaultValue={detail.custom_monthly_price || ''}
+                    key={`${detail.public_id}-price-${detail.custom_monthly_price || ''}`}
+                    onBlur={e => {
+                      const raw = e.target.value.trim()
+                      if (!raw) return
+                      const next = Number(raw)
+                      if (!Number.isFinite(next) || next < 1 || next === Number(detail.custom_monthly_price || 0)) return
+                      updateBusiness(selected.public_id, { custom_monthly_price: next })
+                    }}
+                    placeholder="Region price"
+                    style={styles.addressInput}
+                  />
+                </div>
+                <div style={styles.detailRow}>
+                  <span style={styles.detailLabel}>Pay in currency</span>
+                  <select
+                    value={detail.currency || 'PHP'}
+                    onChange={e => updateBusiness(selected.public_id, { currency: e.target.value })}
+                    style={styles.planSelect}
+                  >
+                    {['PHP','SGD','GBP','HKD','USD','NZD','MYR','AED'].map(code => <option key={code} value={code}>{code}</option>)}
+                  </select>
+                </div>
+                {detail.custom_monthly_price ? (
+                  <div style={styles.detailRow}>
+                    <span style={styles.detailLabel}>Custom override</span>
+                    <button type="button" style={styles.viewBtn} onClick={() => updateBusiness(selected.public_id, { clear_custom_price: true })}>Use region price</button>
+                  </div>
+                ) : null}
                 <div style={styles.detailRow}>
                   <span style={styles.detailLabel}>
                     Announcements/mo

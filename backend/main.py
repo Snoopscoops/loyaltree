@@ -3086,6 +3086,9 @@ class AdminBusinessUpdate(BaseModel):
     business_type: Optional[str] = None
     logo_url: Optional[str] = None
     announcement_limit_adjustment: Optional[int] = None  # +/- adjustment to the plan's announcements_per_month for this business only
+    custom_monthly_price: Optional[int] = Field(default=None, ge=1, le=1000000)
+    clear_custom_price: bool = False
+    currency: Optional[str] = Field(default=None, min_length=3, max_length=3)
 
 class AdminNfcTrialUpdate(BaseModel):
     # Experimental NFC is deliberately controlled only by the LoyaltyTree
@@ -17946,6 +17949,15 @@ async def admin_update_business(public_id: str, update: AdminBusinessUpdate, _: 
         data['address'] = update.address
     if update.announcement_limit_adjustment is not None:
         data['announcement_limit_adjustment'] = update.announcement_limit_adjustment
+    if update.clear_custom_price:
+        data['custom_monthly_price'] = None
+    elif update.custom_monthly_price is not None:
+        data['custom_monthly_price'] = int(update.custom_monthly_price)
+    if update.currency is not None:
+        currency = str(update.currency).upper()
+        if currency not in _fx_to_php_map():
+            raise HTTPException(status_code=400, detail=f'Unsupported currency. Use one of: {", ".join(sorted(_fx_to_php_map()))}.')
+        data['display_currency'] = currency
     if not data:
         raise HTTPException(status_code=400, detail="No fields to update")
     data['updated_at'] = datetime.utcnow().isoformat()
