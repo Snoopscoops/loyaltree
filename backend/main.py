@@ -2455,6 +2455,9 @@ class LoyaltyConfig(BaseModel):
     wallet_progress_scale: float = Field(default=1.0, ge=0.7, le=1.3)
     wallet_progress_density: float = Field(default=0.56, ge=0.4, le=1.05)
     wallet_progress_align: Literal['start', 'center', 'end'] = 'center'
+    # 0 = flush left, 0.5 = centered, 1 = flush right. Buttons only snap this.
+    wallet_progress_offset: float = Field(default=0.5, ge=0, le=1)
+    wallet_detail_font_scale: float = Field(default=1.0, ge=0.75, le=1.5)
     card_name: Optional[str] = None
     # --- LoyaltyTree Wallet 2.0 ---
     wallet_style: Literal['modern', 'premium', 'minimal', 'dark', 'classic', 'gradient'] = 'modern'
@@ -6349,6 +6352,27 @@ def normalize_wallet_progress_align(program: Optional[dict]) -> str:
     return value if value in ('start', 'center', 'end') else 'center'
 
 
+def normalize_wallet_progress_offset(program: Optional[dict]) -> float:
+    raw = (program or {}).get('wallet_progress_offset')
+    if raw is None:
+        align = normalize_wallet_progress_align(program)
+        return 0.0 if align == 'start' else 1.0 if align == 'end' else 0.5
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = 0.5
+    return max(0.0, min(1.0, value))
+
+
+def normalize_wallet_detail_font_scale(program: Optional[dict]) -> float:
+    raw = (program or {}).get('wallet_detail_font_scale')
+    try:
+        value = float(1 if raw is None else raw)
+    except (TypeError, ValueError):
+        value = 1.0
+    return max(0.75, min(1.5, value))
+
+
 def wallet_progress_state(customer: Optional[dict], program: Optional[dict], business: Optional[dict] = None) -> Optional[dict]:
     """Resolve the member-specific progress shown in a Dynamic Progress Banner.
 
@@ -6657,6 +6681,7 @@ def _draw_dynamic_progress_row(
     progress_scale: float = 1.0,
     progress_density: float = 0.56,
     progress_align: str = 'center',
+    progress_offset: float = 0.5,
 ) -> bool:
     """Draw a reusable Wallet progress row from two owner-supplied PNGs.
 
@@ -6689,8 +6714,11 @@ def _draw_dynamic_progress_row(
         density = max(0.4, min(1.05, float(0.56 if progress_density is None else progress_density)))
     except (TypeError, ValueError):
         density = 0.56
-    align = progress_align if progress_align in ('start', 'center', 'end') else 'center'
-    side_margin = 28 if align != 'center' else 8
+    try:
+        offset = max(0.0, min(1.0, float(0.5 if progress_offset is None else progress_offset)))
+    except (TypeError, ValueError):
+        offset = 0.5
+    side_margin = 28
     available = HERO_SIZE[0] - (side_margin * 2)
     if slots <= 10:
         base = max(86, min(182, int(round(HERO_SIZE[1] * 0.52))))
@@ -6713,12 +6741,9 @@ def _draw_dynamic_progress_row(
                 if total_w > available:
                     stride = max(1, int((available - size) / (slots - 1)))
                     total_w = size + ((slots - 1) * stride)
-    if align == 'start':
-        start_x = side_margin
-    elif align == 'end':
-        start_x = HERO_SIZE[0] - side_margin - total_w
-    else:
-        start_x = max(0, (HERO_SIZE[0] - total_w) // 2)
+    left_edge = side_margin
+    right_edge = max(left_edge, HERO_SIZE[0] - side_margin - total_w)
+    start_x = int(round(left_edge + (right_edge - left_edge) * offset))
 
     # Pronounced alternating wave: neighboring icons sit visibly higher/lower.
     # The offset scales with icon size so an 8-slot banner has a strong ~84 px
@@ -6939,6 +6964,8 @@ def generate_personalized_hero_image_bytes(
     progress_scale: float = 1.0,
     progress_density: float = 0.56,
     progress_align: str = 'center',
+    progress_offset: float = 0.5,
+    detail_font_scale: float = 1.0,
 ) -> bytes:
     """Same gradient as generate_hero_image_bytes, but with a bottom banner
     burned in showing the reward/progress and short description - the
@@ -6993,10 +7020,10 @@ def generate_personalized_hero_image_bytes(
     draw = ImageDraw.Draw(img)
 
     if include_text_overlay and business_name:
-        font_brand = ImageFont.load_default(size=20)
+        font_brand = ImageFont.load_default(size=max(14, int(round(20 * detail_font_scale))))
         draw.text((40, 28), str(business_name)[:38], font=font_brand, fill=(255,255,255,225))
     if include_text_overlay and card_label:
-        font_label = ImageFont.load_default(size=16)
+        font_label = ImageFont.load_default(size=max(12, int(round(16 * detail_font_scale))))
         label = str(card_label).upper()
         bbox = draw.textbbox((0,0), label, font=font_label)
         draw.text((HERO_SIZE[0]-40-(bbox[2]-bbox[0]), 30), label, font=font_label, fill=(255,255,255,185))
@@ -7022,6 +7049,7 @@ def generate_personalized_hero_image_bytes(
             progress_scale=progress_scale,
             progress_density=progress_density,
             progress_align=progress_align,
+            progress_offset=progress_offset,
         )
     elif stamp_visual_active:
         _draw_stamp_progress_row(
@@ -7057,9 +7085,13 @@ def generate_personalized_hero_image_bytes(
     draw = ImageDraw.Draw(img)
     pad = 40
     max_w = HERO_SIZE[0] - pad * 2
-    font_reward = ImageFont.load_default(size=34)
-    font_progress = ImageFont.load_default(size=24)
-    font_desc = ImageFont.load_default(size=19)
+    try:
+        detail_scale = max(0.75, min(1.5, float(detail_font_scale or 1)))
+    except (TypeError, ValueError):
+        detail_scale = 1.0
+    font_reward = ImageFont.load_default(size=max(18, int(round(34 * detail_scale))))
+    font_progress = ImageFont.load_default(size=max(14, int(round(24 * detail_scale))))
+    font_desc = ImageFont.load_default(size=max(12, int(round(19 * detail_scale))))
 
     if card_type == 'hybrid':
         reward_line = f'Membership · {membership_status.upper() if membership_status else "INACTIVE"}'
@@ -7928,7 +7960,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
                 f"{normalize_wallet_banner_mode(program)}|{normalize_wallet_progress_type(program)}|"
                 f"{(program or {}).get('wallet_progress_filled_icon_url') or ''}|"
                 f"{(program or {}).get('wallet_progress_empty_icon_url') or ''}|"
-                f"{normalize_wallet_progress_scale(program):.2f}|{normalize_wallet_progress_density(program):.2f}|{normalize_wallet_progress_align(program)}|"
+                f"{normalize_wallet_progress_scale(program):.2f}|{normalize_wallet_progress_density(program):.2f}|{normalize_wallet_progress_align(program)}|{normalize_wallet_progress_offset(program):.2f}|"
                 f"{(program or {}).get('hero_image_url') or ''}|"
                 f"{design.get('style') or ''}|{design.get('background') or ''}|"
                 f"{design.get('secondary') or ''}"
@@ -9821,15 +9853,22 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         stamp_front_auxiliary_fields = _apple_stamp_progress_fields('stamp_front_progress')
     else:
         # Apple PassKit does not expose an exact font-size property for native
-        # Store Card fields. Put the normal numeric NEXT REWARD + STAMPS row in
-        # auxiliaryFields instead of secondaryFields so iOS renders both values
-        # in its smaller native field style.
-        stamp_front_secondary_fields = []
-        stamp_front_auxiliary_fields = [
-            {**stamp_next_reward_front, 'textAlignment': 'PKTextAlignmentLeft'},
-            {**stamp_balance_front, 'textAlignment': 'PKTextAlignmentRight'},
-            *cycle_auxiliary_fields,
-        ]
+        # Store Card fields. Smaller detail text stays in auxiliaryFields.
+        # Larger owner scale promotes the same details into secondaryFields,
+        # which iOS renders in the bigger native field style.
+        if normalize_wallet_detail_font_scale(program) >= 1.2:
+            stamp_front_secondary_fields = [
+                {**stamp_next_reward_front, 'textAlignment': 'PKTextAlignmentLeft'},
+                {**stamp_balance_front, 'textAlignment': 'PKTextAlignmentRight'},
+            ]
+            stamp_front_auxiliary_fields = [*cycle_auxiliary_fields]
+        else:
+            stamp_front_secondary_fields = []
+            stamp_front_auxiliary_fields = [
+                {**stamp_next_reward_front, 'textAlignment': 'PKTextAlignmentLeft'},
+                {**stamp_balance_front, 'textAlignment': 'PKTextAlignmentRight'},
+                *cycle_auxiliary_fields,
+            ]
 
     hybrid_has_points = card_type == 'hybrid' and hybrid_points_enabled(program)
     hybrid_has_stamps = card_type == 'hybrid' and hybrid_stamps_enabled(program)
@@ -10993,6 +11032,8 @@ def generate_apple_strip_bytes(customer: dict, business: dict, program: dict, wi
         progress_scale=normalize_wallet_progress_scale(program),
         progress_density=normalize_wallet_progress_density(program),
         progress_align=normalize_wallet_progress_align(program),
+        progress_offset=normalize_wallet_progress_offset(program),
+        detail_font_scale=normalize_wallet_detail_font_scale(program),
     )
     img = Image.open(BytesIO(raw)).convert('RGB')
     src_ratio = img.width / img.height
@@ -23032,6 +23073,8 @@ async def get_loyalty_config(public_id: str, response: Response, program_id: Opt
             "wallet_progress_scale": 1.0,
             "wallet_progress_density": 0.56,
             "wallet_progress_align": "center",
+            "wallet_progress_offset": 0.5,
+            "wallet_detail_font_scale": 1.0,
             "card_name": None,
             "wallet_style": "modern",
             "wallet_secondary_color": None,
@@ -23642,6 +23685,8 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
         'wallet_progress_scale': round(float(config.wallet_progress_scale or 1), 2),
         'wallet_progress_density': round(float(config.wallet_progress_density or 0.56), 2),
         'wallet_progress_align': config.wallet_progress_align if config.wallet_progress_align in ('start', 'center', 'end') else 'center',
+        'wallet_progress_offset': round(max(0.0, min(1.0, float(config.wallet_progress_offset if config.wallet_progress_offset is not None else 0.5))), 2),
+        'wallet_detail_font_scale': round(max(0.75, min(1.5, float(config.wallet_detail_font_scale or 1))), 2),
         'reward_expiry_days': config.reward_expiry_days,
         # Shared card expiry remains for standalone cards only. Hybrid engines
         # persist isolated clocks below.
@@ -31670,6 +31715,8 @@ async def get_customer_hero_image(customer_public_id: str, s: Optional[str] = No
         progress_scale=normalize_wallet_progress_scale(program),
         progress_density=normalize_wallet_progress_density(program),
         progress_align=normalize_wallet_progress_align(program),
+        progress_offset=normalize_wallet_progress_offset(program),
+        detail_font_scale=normalize_wallet_detail_font_scale(program),
     )
     return Response(
         content=png_bytes,

@@ -111,6 +111,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     wallet_progress_scale: 1,
     wallet_progress_density: 0.56,
     wallet_progress_align: 'center',
+    wallet_progress_offset: 0.5,
+    wallet_detail_font_scale: 1,
     wallet_style: 'gradient',
     wallet_secondary_color: '#14b8a6',
     wallet_show_background: true,
@@ -316,6 +318,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
           wallet_progress_scale: Number(data.wallet_progress_scale) >= 0.7 && Number(data.wallet_progress_scale) <= 1.3 ? Number(data.wallet_progress_scale) : 1,
           wallet_progress_density: Number(data.wallet_progress_density) >= 0.4 && Number(data.wallet_progress_density) <= 1.05 ? Number(data.wallet_progress_density) : 0.56,
           wallet_progress_align: ['start','center','end'].includes(data.wallet_progress_align) ? data.wallet_progress_align : 'center',
+          wallet_progress_offset: Number(data.wallet_progress_offset) >= 0 && Number(data.wallet_progress_offset) <= 1 ? Number(data.wallet_progress_offset) : (data.wallet_progress_align === 'start' ? 0 : data.wallet_progress_align === 'end' ? 1 : 0.5),
+          wallet_detail_font_scale: Number(data.wallet_detail_font_scale) >= 0.75 && Number(data.wallet_detail_font_scale) <= 1.5 ? Number(data.wallet_detail_font_scale) : 1,
           wallet_style: data.wallet_style === 'minimal' ? 'classic' : data.wallet_style === 'modern' ? 'gradient' : (['classic','gradient','premium'].includes(data.wallet_style) ? data.wallet_style : 'gradient'),
           wallet_secondary_color: data.wallet_secondary_color || '#14b8a6',
           wallet_show_background: data.wallet_show_background !== false,
@@ -914,6 +918,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     wallet_progress_scale: Math.max(0.7, Math.min(1.3, Number(form.wallet_progress_scale) || 1)),
     wallet_progress_density: Math.max(0.4, Math.min(1.05, Number(form.wallet_progress_density) || 0.56)),
     wallet_progress_align: ['start','center','end'].includes(form.wallet_progress_align) ? form.wallet_progress_align : 'center',
+    wallet_progress_offset: Math.max(0, Math.min(1, Number(form.wallet_progress_offset ?? (form.wallet_progress_align === 'start' ? 0 : form.wallet_progress_align === 'end' ? 1 : 0.5)))),
+    wallet_detail_font_scale: Math.max(0.75, Math.min(1.5, Number(form.wallet_detail_font_scale) || 1)),
     // UI calls the legacy backend styles Gradient/Classic. Persist the
     // schema-compatible values so FastAPI + the DB CHECK constraint accept it.
     wallet_style: form.wallet_style === 'classic' ? 'minimal' : form.wallet_style === 'gradient' ? 'modern' : (['modern','premium','minimal','dark'].includes(form.wallet_style) ? form.wallet_style : 'modern'),
@@ -1425,8 +1431,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     const availableWidth = compact ? 310 : 620
     const scale = Math.max(0.7, Math.min(1.3, Number(form.wallet_progress_scale) || 1))
     const density = Math.max(0.4, Math.min(1.05, Number(form.wallet_progress_density) || 0.56))
-    const align = ['start','center','end'].includes(form.wallet_progress_align) ? form.wallet_progress_align : 'center'
-    const sideMargin = align === 'center' ? 4 : 16
+    const offset = Math.max(0, Math.min(1, Number(form.wallet_progress_offset ?? 0.5)))
+    const sideMargin = 16
     const fitWidth = availableWidth - sideMargin * 2
     const base = slotCount <= 10 ? (compact ? 54 : 105) : Math.max(compact ? 24 : 38, Math.min(compact ? 48 : 86, Math.floor(fitWidth / (1 + Math.max(0, slotCount - 1) * 0.5))))
     let cellSize = Math.max(compact ? 18 : 28, Math.min(compact ? 72 : 130, Math.round(base * scale)))
@@ -1441,7 +1447,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
         totalWidth = cellSize + (slotCount - 1) * stride
       }
     }
-    const rowLeft = align === 'start' ? sideMargin : align === 'end' ? Math.max(sideMargin, availableWidth - sideMargin - totalWidth) : Math.max(0, (availableWidth - totalWidth) / 2)
+    const leftEdge = sideMargin
+    const rightEdge = Math.max(leftEdge, availableWidth - sideMargin - totalWidth)
+    const rowLeft = leftEdge + (rightEdge - leftEdge) * offset
     const wave = Math.max(compact ? 10 : 16, Math.min(compact ? 20 : 34, Math.round(cellSize * .25)))
     return (
       <div style={{marginTop:compact?6:10}}>
@@ -2326,7 +2334,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
               </div>
               {dynamicBannerActive && <div style={{padding:'0 14px 5px'}}>{renderDynamicProgressPreview(true)}</div>}
               <div style={styles.wallet20PreviewBottom}>
-                <div style={styles.wallet20PreviewInfo}>
+                <div style={{...styles.wallet20PreviewInfo,fontSize:Math.round(13*(Number(form.wallet_detail_font_scale)||1))}}>
                   <div><small>CUSTOMER</small><strong>John Customer</strong></div>
                   <div style={styles.wallet20PreviewMetric}>
                     <small>{form.card_type==='hybrid'?(hybridPointsEnabled?'POINTS':'STAMPS'):form.card_type==='points'?'POINTS':form.card_type==='multipass'?'SESSIONS LEFT':form.card_type==='membership'?(form.membership_employee_mode?'EMPLOYEE ID':'STATUS'):form.card_type==='employee'?'EMPLOYEE ID':form.card_type==='vip'?'TIER':'STAMPS'}</small>
@@ -3363,12 +3371,21 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                   <div>
                     <div style={styles.miniLabel}>Stamp group</div>
                     <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                      {[['start','Left · art on right'],['center','Center'],['end','Right · art on left']].map(([value,label]) => (
-                        <button key={value} type="button" onClick={()=>update('wallet_progress_align', value)} style={{...styles.walletStyleBtn,...(form.wallet_progress_align===value?styles.walletStyleBtnActive:{}),flex:'1 1 140px'}}>{label}</button>
+                      {[[0,'start','Far left'],[0.5,'center','Center'],[1,'end','Far right']].map(([offset,align,label]) => (
+                        <button key={align} type="button" onClick={()=>{setForm(f=>({...f,wallet_progress_offset:offset,wallet_progress_align:align})); setSaved(false)}} style={{...styles.walletStyleBtn,...(Math.abs((Number(form.wallet_progress_offset)||0.5)-offset)<0.02?styles.walletStyleBtnActive:{}),flex:'1 1 120px'}}>{label}</button>
                       ))}
                     </div>
-                    <p style={{...styles.hint,marginTop:6}}>Left leaves the background open on the right. Right leaves it open on the left. Center keeps today's look. Changing the stamp count reflows inside that side; it does not cover the art.</p>
+                    <label style={{fontSize:12,fontWeight:800,color:'#334155',display:'block',marginTop:10}}>
+                      How far left or right · {Math.round((Number(form.wallet_progress_offset)||0.5)*100)}%
+                      <input type="range" min="0" max="100" step="1" value={Math.round((Number(form.wallet_progress_offset)||0.5)*100)} onChange={e=>{const offset=Number(e.target.value)/100; setForm(f=>({...f,wallet_progress_offset:offset,wallet_progress_align:offset<=0.02?'start':offset>=0.98?'end':Math.abs(offset-0.5)<0.02?'center':f.wallet_progress_align})); setSaved(false)}} style={{width:'100%',marginTop:6}} />
+                    </label>
+                    <p style={{...styles.hint,marginTop:6}}>0% sits the whole stamp group on the left edge, so the background stays open on the right. 100% sits it on the right edge. Anything in between parks the group between those edges. Count changes still reflow as one group.</p>
                   </div>
+                  <label style={{fontSize:12,fontWeight:800,color:'#334155'}}>
+                    Detail text size · {Math.round((Number(form.wallet_detail_font_scale)||1)*100)}%
+                    <input type="range" min="75" max="150" step="1" value={Math.round((Number(form.wallet_detail_font_scale)||1)*100)} onChange={e=>update('wallet_detail_font_scale', Number(e.target.value)/100)} style={{width:'100%',marginTop:6}} />
+                  </label>
+                  <p style={{...styles.hint,margin:0}}>Scales the reward, progress, and description drawn on the Google hero and the Apple card strip. Apple's own field labels stay system-sized; a larger setting also promotes those details into Apple's bigger field row.</p>
                 </div>
                 <div style={{marginTop:12,padding:12,borderRadius:14,background:walletPreviewBackground,color:'#fff',overflow:'hidden'}}>
                   <div style={{fontSize:10,fontWeight:900,letterSpacing:.8,opacity:.8}}>DYNAMIC BANNER PREVIEW</div>
